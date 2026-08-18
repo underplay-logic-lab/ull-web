@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Resend } from "resend";
 
 type ContactPayload = {
   name?: string;
@@ -38,6 +39,54 @@ export async function POST(request: Request) {
     receivedAt: new Date().toISOString(),
   });
 
+  const resendApiKey = process.env.RESEND_API_KEY;
+  const receiverEmail = process.env.CONTACT_RECEIVER_EMAIL;
+
+  if (!resendApiKey || !receiverEmail) {
+    console.error(
+      "[Contact Form] RESEND_API_KEY or CONTACT_RECEIVER_EMAIL is not configured.",
+    );
+    return NextResponse.json(
+      { error: "メール送信の設定が完了していません。" },
+      { status: 500 },
+    );
+  }
+
+  const resend = new Resend(resendApiKey);
+  const subject = service ? `【お問い合わせ】${service}` : "【お問い合わせ】UNDERPLAY LOGIC LAB";
+
+  try {
+    const { error } = await resend.emails.send({
+      from: "ULL Contact <onboarding@resend.dev>",
+      to: receiverEmail,
+      replyTo: email,
+      subject,
+      text: [
+        `お名前: ${name}`,
+        `メールアドレス: ${email}`,
+        `会社名 / 組織名: ${company || "-"}`,
+        `ご相談内容: ${service || "-"}`,
+        "",
+        "詳細:",
+        message,
+      ].join("\n"),
+    });
+
+    if (error) {
+      console.error("[Contact Form] Resend send failed:", error);
+      return NextResponse.json(
+        { error: "メール送信に失敗しました。" },
+        { status: 500 },
+      );
+    }
+  } catch (err) {
+    console.error("[Contact Form] Resend send threw:", err);
+    return NextResponse.json(
+      { error: "メール送信に失敗しました。" },
+      { status: 500 },
+    );
+  }
+
   const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
 
   if (webhookUrl) {
@@ -62,5 +111,5 @@ export async function POST(request: Request) {
     }
   }
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ success: true });
 }
