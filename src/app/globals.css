@@ -1,0 +1,104 @@
+@import "tailwindcss";
+
+:root {
+  --background: #121214;
+  --foreground: #ffffff;
+  --muted: #8e8e93;
+  --surface: #1c1c1e;
+  --surface-hover: #242426;
+  --border: #2c2c30;
+  --neon-pink: #ff2a85;
+  --neon-violet: #8b5cf6;
+  --neon-pink-glow: rgba(255, 42, 133, 0.35);
+  --neon-violet-glow: rgba(139, 92, 246, 0.35);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-surface: var(--surface);
+  --color-surface-hover: var(--surface-hover);
+  --color-border: var(--border);
+  --color-neon-pink: var(--neon-pink);
+  --color-neon-violet: var(--neon-violet);
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-jetbrains-mono);
+}
+
+* {
+  scroll-behavior: smooth;
+}
+
+html {
+  scroll-padding-top: 5rem;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-inter), system-ui, sans-serif;
+}
+
+::selection {
+  background: rgba(255, 42, 133, 0.3);
+  color: #fff;
+}
+
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(255, 42, 133, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 42, 133, 0.03) 1px, transparent 1px);
+  background-size: 64px 64px;
+}
+
+.glow-pink {
+  box-shadow: 0 0 20px var(--neon-pink-glow), 0 0 60px rgba(255, 42, 133, 0.1);
+}
+
+.glow-violet {
+  box-shadow: 0 0 20px var(--neon-violet-glow), 0 0 60px rgba(139, 92, 246, 0.1);
+}
+
+.text-gradient {
+  background: linear-gradient(135deg, var(--neon-pink) 0%, var(--neon-violet) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.border-gradient {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    linear-gradient(135deg, rgba(255, 42, 133, 0.4), rgba(139, 92, 246, 0.4))
+      border-box;
+}
+
+@keyframes pulse-glow {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 4s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
