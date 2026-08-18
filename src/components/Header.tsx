@@ -2,21 +2,33 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Menu, X, Zap, LogIn } from "lucide-react";
+import { Menu, X, Zap, LogIn, LogOut, UserCircle2 } from "lucide-react";
 import { navLinks, siteConfig } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
 import { BrandLink } from "@/components/BrandLink";
+import { useSupabaseUser } from "@/hooks/useSupabaseUser";
+import { supabase } from "@/lib/supabaseClient";
 
 export function Header() {
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
+  const { user } = useSupabaseUser();
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 20);
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
+
+  const handleLogout = () => {
+    supabase.auth.signOut();
+  };
+
+  const avatarUrl =
+    user?.user_metadata?.avatar_url ?? user?.user_metadata?.picture ?? null;
+  const displayName =
+    user?.user_metadata?.full_name ?? user?.user_metadata?.name ?? user?.email ?? "";
 
   return (
     <header
@@ -52,14 +64,43 @@ export function Header() {
             10 Credits
           </span>
 
-          <button
-            type="button"
-            onClick={() => setLoginOpen(true)}
-            className="hidden items-center gap-1.5 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 sm:flex"
-          >
-            <LogIn size={14} />
-            ログイン
-          </button>
+          {user ? (
+            <div className="hidden items-center gap-2 sm:flex">
+              <div className="flex max-w-[10rem] items-center gap-2 rounded-full border border-border bg-surface/60 py-1 pl-1 pr-3">
+                {avatarUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={avatarUrl}
+                    alt=""
+                    className="h-6 w-6 rounded-full"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <UserCircle2 size={20} className="text-muted" />
+                )}
+                <span className="truncate text-xs text-foreground">
+                  {displayName}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleLogout}
+                aria-label="ログアウト"
+                className="text-muted transition-colors hover:text-neon-pink"
+              >
+                <LogOut size={18} />
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setLoginOpen(true)}
+              className="hidden items-center gap-1.5 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 sm:flex"
+            >
+              <LogIn size={14} />
+              ログイン
+            </button>
+          )}
 
           <button
             type="button"
@@ -89,17 +130,50 @@ export function Header() {
                 {link.label}
               </Link>
             ))}
-            <button
-              type="button"
-              onClick={() => {
-                setMobileOpen(false);
-                setLoginOpen(true);
-              }}
-              className="flex items-center justify-center gap-1.5 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-center text-sm font-medium text-white"
-            >
-              <LogIn size={14} />
-              ログイン
-            </button>
+
+            {user ? (
+              <div className="flex items-center justify-between gap-3 rounded-full border border-border bg-surface/60 py-1.5 pl-2 pr-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  {avatarUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={avatarUrl}
+                      alt=""
+                      className="h-6 w-6 shrink-0 rounded-full"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <UserCircle2 size={20} className="shrink-0 text-muted" />
+                  )}
+                  <span className="truncate text-xs text-foreground">
+                    {displayName}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileOpen(false);
+                    handleLogout();
+                  }}
+                  aria-label="ログアウト"
+                  className="shrink-0 text-muted transition-colors hover:text-neon-pink"
+                >
+                  <LogOut size={18} />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileOpen(false);
+                  setLoginOpen(true);
+                }}
+                className="flex items-center justify-center gap-1.5 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-center text-sm font-medium text-white"
+              >
+                <LogIn size={14} />
+                ログイン
+              </button>
+            )}
           </div>
         </nav>
       )}

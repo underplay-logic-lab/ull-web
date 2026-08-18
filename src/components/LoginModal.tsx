@@ -1,7 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import { createPortal } from "react-dom";
-import { X } from "lucide-react";
+import { Loader2, X } from "lucide-react";
+import { supabase } from "@/lib/supabaseClient";
 
 type LoginModalProps = {
   open: boolean;
@@ -33,6 +35,26 @@ function GoogleIcon() {
 }
 
 export function LoginModal({ open, onClose, message }: LoginModalProps) {
+  const [signingIn, setSigningIn] = useState(false);
+
+  const handleGoogleLogin = async () => {
+    setSigningIn(true);
+
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}`,
+      },
+    });
+
+    if (error) {
+      setSigningIn(false);
+      alert(`Googleログインに失敗しました: ${error.message}`);
+    }
+    // On success, the browser navigates to Google's consent screen,
+    // so no further local state update is needed here.
+  };
+
   if (!open || typeof document === "undefined") return null;
 
   return createPortal(
@@ -62,13 +84,21 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
 
         <button
           type="button"
-          onClick={() =>
-            alert("Googleログイン連携は準備中です。公開時にここから利用できます。")
-          }
-          className="mt-6 flex w-full items-center justify-center gap-2.5 rounded-xl border border-border bg-background px-6 py-3 text-sm font-medium transition-colors hover:bg-surface-hover"
+          onClick={handleGoogleLogin}
+          disabled={signingIn}
+          className="mt-6 flex w-full items-center justify-center gap-2.5 rounded-xl border border-border bg-background px-6 py-3 text-sm font-medium transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-60"
         >
-          <GoogleIcon />
-          Googleでログイン
+          {signingIn ? (
+            <>
+              <Loader2 size={18} className="animate-spin" />
+              Googleへ接続中...
+            </>
+          ) : (
+            <>
+              <GoogleIcon />
+              Googleでログイン
+            </>
+          )}
         </button>
 
         <p className="mt-4 text-center text-xs text-muted">
