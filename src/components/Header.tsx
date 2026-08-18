@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Menu, X, Zap, LogIn, LogOut, UserCircle2 } from "lucide-react";
+import { Menu, X, LogIn, LogOut, UserCircle2 } from "lucide-react";
 import { navLinks, siteConfig } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
 import { BrandLink } from "@/components/BrandLink";
+import { CreditsBadge } from "@/components/CreditsBadge";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -59,10 +60,7 @@ export function Header() {
         </nav>
 
         <div className="flex items-center gap-2 sm:gap-3">
-          <span className="hidden items-center gap-1.5 rounded-full border border-border bg-surface/60 px-3 py-1.5 font-mono text-xs text-foreground sm:flex">
-            <Zap size={12} className="text-neon-pink" />
-            10 Credits
-          </span>
+          <CreditsBadge user={user} className="hidden sm:flex" />
 
           {user ? (
             <div className="hidden items-center gap-2 sm:flex">
@@ -116,10 +114,7 @@ export function Header() {
       {mobileOpen && (
         <nav className="border-t border-border bg-background/95 backdrop-blur-xl px-6 py-4 md:hidden">
           <div className="flex flex-col gap-4">
-            <span className="flex w-fit items-center gap-1.5 rounded-full border border-border bg-surface/60 px-3 py-1.5 font-mono text-xs text-foreground">
-              <Zap size={12} className="text-neon-pink" />
-              10 Credits
-            </span>
+            <CreditsBadge user={user} className="flex w-fit" />
             {navLinks.map((link) => (
               <Link
                 key={link.href}

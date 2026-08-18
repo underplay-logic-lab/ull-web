@@ -4,6 +4,8 @@ import { useState } from "react";
 import { Download, Loader2, LogIn, Sparkles, Wand2 } from "lucide-react";
 import { aspectRatios, type AspectRatio } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
+import { CreditsBadge } from "@/components/CreditsBadge";
+import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 
 type Status = "idle" | "loading" | "done";
 
@@ -55,6 +57,7 @@ function buildPreviewDataUrl(prompt: string, ratio: AspectRatio) {
 }
 
 export function Studio() {
+  const { user } = useSupabaseUser();
   const [prompt, setPrompt] = useState("");
   const [ratio, setRatio] = useState<AspectRatio>("1:1");
   const [status, setStatus] = useState<Status>("idle");
@@ -62,7 +65,7 @@ export function Studio() {
   const [generationCount, setGenerationCount] = useState(0);
   const [loginOpen, setLoginOpen] = useState(false);
 
-  const isGuestLimitReached = generationCount >= 1;
+  const isGuestLimitReached = !user && generationCount >= 1;
 
   const handleGenerate = () => {
     if (!prompt.trim() || status === "loading") return;
@@ -97,6 +100,11 @@ export function Studio() {
           <p className="mx-auto mt-4 max-w-xl text-muted">
             プロンプトとアスペクト比を指定するだけ。ブラウザから今すぐAI生成を体験できます。
           </p>
+          {user && (
+            <div className="mt-5 flex justify-center">
+              <CreditsBadge user={user} className="inline-flex" />
+            </div>
+          )}
         </div>
 
         <div className="grid gap-8 rounded-2xl border-gradient bg-surface/40 p-6 sm:p-8 lg:grid-cols-2">
@@ -162,9 +170,11 @@ export function Studio() {
 
             <p className="mt-4 flex items-start gap-2 text-xs leading-relaxed text-muted">
               <Sparkles size={14} className="mt-0.5 shrink-0 text-neon-violet" />
-              {isGuestLimitReached
-                ? "無料体験は1回のみです。続けて生成するにはGoogleログインが必要です。"
-                : "登録なしで1回まで無料体験できます。2回目以降はGoogleログインが必要です。"}
+              {user
+                ? "保有クレジットの範囲でいつでも生成できます。"
+                : isGuestLimitReached
+                  ? "無料体験は1回のみです。続けて生成するにはGoogleログインが必要です。"
+                  : "登録なしで1回まで無料体験できます。2回目以降はGoogleログインが必要です。"}
             </p>
           </div>
 
