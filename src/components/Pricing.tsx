@@ -1,15 +1,57 @@
 "use client";
 
-import { Check, Sparkles } from "lucide-react";
-import { pricingPlans } from "@/lib/data";
-
-function handlePurchase(planName: string) {
-  alert(
-    `「${planName}」の Stripe Checkout 連携は準備中です。\n公開時にここから決済ページへ遷移します。`,
-  );
-}
+import { useState } from "react";
+import { Check, Loader2, Sparkles } from "lucide-react";
+import { pricingPlans, type PricingPlan } from "@/lib/data";
+import { LoginModal } from "@/components/LoginModal";
+import { useSupabaseUser } from "@/hooks/useSupabaseUser";
+import { supabase } from "@/lib/supabaseClient";
 
 export function Pricing() {
+  const { user } = useSupabaseUser();
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [processingPlanId, setProcessingPlanId] = useState<string | null>(null);
+
+  const handlePurchase = async (plan: PricingPlan) => {
+    if (!user) {
+      setLoginOpen(true);
+      return;
+    }
+
+    setProcessingPlanId(plan.id);
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session) {
+        setLoginOpen(true);
+        return;
+      }
+
+      const res = await fetch("/api/stripe/checkout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ planId: plan.id }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.url) {
+        throw new Error(data?.error || "決済セッションの作成に失敗しました。");
+      }
+
+      window.location.assign(data.url);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "決済セッションの作成に失敗しました。");
+      setProcessingPlanId(null);
+    }
+  };
+
   return (
     <section id="pricing" className="relative py-24 sm:py-32">
       <div className="mx-auto max-w-5xl px-6">
@@ -71,19 +113,33 @@ export function Pricing() {
 
               <button
                 type="button"
-                onClick={() => handlePurchase(plan.name)}
-                className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90"
+                onClick={() => handlePurchase(plan)}
+                disabled={processingPlanId === plan.id}
+                className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {plan.cta}
+                {processingPlanId === plan.id ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    決済ページへ移動中...
+                  </>
+                ) : (
+                  plan.cta
+                )}
               </button>
             </div>
           ))}
         </div>
 
         <p className="mt-8 text-center text-xs text-muted">
-          決済は Stripe を利用予定です。価格はすべて税込表示です。
+          決済は Stripe を利用しています。価格はすべて税込表示です。
         </p>
       </div>
+
+      <LoginModal
+        open={loginOpen}
+        onClose={() => setLoginOpen(false)}
+        message="購入を続けるにはログインしてください。"
+      />
     </section>
   );
 }
