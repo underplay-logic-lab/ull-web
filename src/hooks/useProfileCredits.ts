@@ -14,6 +14,16 @@ export function useProfileCredits(user: User | null) {
     if (!user) return;
 
     let cancelled = false;
+    const topicPrefix = `profiles-credits-${user.id}`;
+
+    // Defensively purge any stale channel left over from a previous mount
+    // (e.g. React Strict Mode's double-invoke, or a fast-refresh remount)
+    // whose async removeChannel() hadn't finished before this effect reran.
+    for (const existing of supabase.getChannels()) {
+      if (existing.topic === `realtime:${topicPrefix}` || existing.topic.startsWith(`realtime:${topicPrefix}-`)) {
+        supabase.removeChannel(existing);
+      }
+    }
 
     supabase
       .from("profiles")
@@ -31,8 +41,11 @@ export function useProfileCredits(user: User | null) {
         }
       });
 
+    // A unique topic per effect run guarantees supabase.channel() can never
+    // resolve to an already-subscribed instance, which is what triggers
+    // "cannot add 'postgres_changes' callbacks ... after subscribe()".
     const channel = supabase
-      .channel(`profiles-credits-${user.id}`)
+      .channel(`${topicPrefix}-${crypto.randomUUID()}`)
       .on(
         "postgres_changes",
         {
