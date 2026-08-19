@@ -3,17 +3,15 @@ import type { AspectRatio } from "@/lib/data";
 
 const RUNPOD_BASE_URL = "https://api.runpod.ai/v2";
 
-// SDXL-friendly bucket resolutions (multiples of 8) per aspect ratio.
+// FLUX latents are 16-channel and want dimensions that are multiples of 16.
 const RATIO_DIMENSIONS: Record<AspectRatio, { width: number; height: number }> = {
   "1:1": { width: 1024, height: 1024 },
   "16:9": { width: 1344, height: 768 },
   "9:16": { width: 768, height: 1344 },
 };
 
-const NEGATIVE_PROMPT =
-  "worst quality, low quality, blurry, deformed, watermark, text, signature";
-
-const DEFAULT_CHECKPOINT = "sd_xl_base_1.0.safetensors";
+const DEFAULT_CHECKPOINT = "flux1-dev-fp8.safetensors";
+const FLUX_GUIDANCE = 3.5;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -24,15 +22,21 @@ function buildComfyWorkflow(prompt: string, ratio: AspectRatio) {
   const checkpoint = process.env.RUNPOD_COMFYUI_CHECKPOINT || DEFAULT_CHECKPOINT;
   const seed = Math.floor(Math.random() * 2 ** 32);
 
-  // Standard ComfyUI API-format text-to-image graph, compatible with the
-  // official runpod-workers/worker-comfyui input contract.
+  // FLUX.1-dev API-format graph (ComfyUI's official Flux template), for the
+  // deployed worker-comfyui endpoint whose checkpoint list is
+  // ["flux1-dev-fp8.safetensors"]. FLUX differs from SDXL in a few load-
+  // bearing ways: there is no negative prompt (an empty/zeroed conditioning
+  // is fed to KSampler's "negative" input instead), guidance is applied via
+  // a dedicated FluxGuidance node rather than CFG (cfg stays at 1.0), and
+  // the latent must come from EmptySD3LatentImage (16 channels) rather than
+  // EmptyLatentImage (4 channels, SD1.5/SDXL only).
   return {
     "4": {
       class_type: "CheckpointLoaderSimple",
       inputs: { ckpt_name: checkpoint },
     },
     "5": {
-      class_type: "EmptyLatentImage",
+      class_type: "EmptySD3LatentImage",
       inputs: { width, height, batch_size: 1 },
     },
     "6": {
@@ -40,20 +44,24 @@ function buildComfyWorkflow(prompt: string, ratio: AspectRatio) {
       inputs: { text: prompt, clip: ["4", 1] },
     },
     "7": {
-      class_type: "CLIPTextEncode",
-      inputs: { text: NEGATIVE_PROMPT, clip: ["4", 1] },
+      class_type: "ConditioningZeroOut",
+      inputs: { conditioning: ["6", 0] },
+    },
+    "26": {
+      class_type: "FluxGuidance",
+      inputs: { conditioning: ["6", 0], guidance: FLUX_GUIDANCE },
     },
     "3": {
       class_type: "KSampler",
       inputs: {
         seed,
         steps: 20,
-        cfg: 7,
+        cfg: 1,
         sampler_name: "euler",
-        scheduler: "normal",
+        scheduler: "simple",
         denoise: 1,
         model: ["4", 0],
-        positive: ["6", 0],
+        positive: ["26", 0],
         negative: ["7", 0],
         latent_image: ["5", 0],
       },
