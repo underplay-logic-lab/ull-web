@@ -2,7 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { Loader2, Mail, X } from "lucide-react";
+import { KeyRound, Loader2, Mail, X } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 
 type LoginModalProps = {
@@ -12,7 +12,7 @@ type LoginModalProps = {
 };
 
 type Tab = "google" | "email";
-type EmailMode = "login" | "signup";
+type EmailMode = "login" | "signup" | "reset";
 
 function GoogleIcon() {
   return (
@@ -73,7 +73,15 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
     setEmailNotice(null);
 
     try {
-      if (emailMode === "signup") {
+      if (emailMode === "reset") {
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: `${window.location.origin}/reset-password`,
+        });
+        if (error) throw error;
+        setEmailNotice(
+          "パスワード再設定用のメールを送信しました。メール内のリンクから再設定してください。",
+        );
+      } else if (emailMode === "signup") {
         const { data, error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
 
@@ -100,6 +108,7 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
   const handleClose = () => {
     setEmail("");
     setPassword("");
+    setEmailMode("login");
     setEmailError(null);
     setEmailNotice(null);
     onClose();
@@ -192,21 +201,38 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
                 placeholder="you@example.com"
               />
             </div>
-            <div>
-              <label htmlFor="login-password" className="mb-1.5 block text-xs font-medium text-muted">
-                パスワード
-              </label>
-              <input
-                id="login-password"
-                type="password"
-                required
-                minLength={6}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
-                placeholder="6文字以上"
-              />
-            </div>
+
+            {emailMode !== "reset" && (
+              <div>
+                <label htmlFor="login-password" className="mb-1.5 block text-xs font-medium text-muted">
+                  パスワード
+                </label>
+                <input
+                  id="login-password"
+                  type="password"
+                  required
+                  minLength={6}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
+                  placeholder="6文字以上"
+                />
+              </div>
+            )}
+
+            {emailMode === "login" && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEmailMode("reset");
+                  setEmailError(null);
+                  setEmailNotice(null);
+                }}
+                className="block text-xs text-muted hover:text-neon-violet hover:underline"
+              >
+                パスワードをお忘れですか？
+              </button>
+            )}
 
             {emailError && (
               <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
@@ -226,16 +252,22 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
             >
               {emailSubmitting ? (
                 <Loader2 size={16} className="animate-spin" />
+              ) : emailMode === "reset" ? (
+                <KeyRound size={16} />
               ) : (
                 <Mail size={16} />
               )}
-              {emailMode === "signup" ? "アカウントを作成" : "ログイン"}
+              {emailMode === "signup"
+                ? "アカウントを作成"
+                : emailMode === "reset"
+                  ? "リセットメールを送信"
+                  : "ログイン"}
             </button>
 
             <button
               type="button"
               onClick={() => {
-                setEmailMode(emailMode === "signup" ? "login" : "signup");
+                setEmailMode(emailMode === "signup" ? "login" : emailMode === "reset" ? "login" : "signup");
                 setEmailError(null);
                 setEmailNotice(null);
               }}
@@ -243,7 +275,9 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
             >
               {emailMode === "signup"
                 ? "すでにアカウントをお持ちの方はこちら"
-                : "アカウントをお持ちでない方はこちら"}
+                : emailMode === "reset"
+                  ? "ログインに戻る"
+                  : "アカウントをお持ちでない方はこちら"}
             </button>
           </form>
         )}

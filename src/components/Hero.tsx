@@ -28,7 +28,7 @@ export function Hero() {
 
         <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-neon-pink/30 bg-neon-pink/10 px-4 py-1.5 text-xs font-mono font-medium text-neon-pink">
           <Gift size={14} />
-          Googleログインで即時10クレジット無料進呈（クレカ登録不要）
+          新規アカウント登録で即時10クレジット無料進呈（クレカ登録不要）
         </div>
 
         <div className="mt-8 flex flex-col items-center justify-center gap-4 sm:flex-row">
