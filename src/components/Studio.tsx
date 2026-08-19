@@ -16,12 +16,21 @@ const RATIO_ASPECT_CLASS: Record<AspectRatio, string> = {
   "1:1": "aspect-square",
 };
 
+function buildDownloadFilename() {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const datePart = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
+  const timePart = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `ullstudio_${datePart}_${timePart}.png`;
+}
+
 export function Studio() {
   const { user } = useSupabaseUser();
   const [prompt, setPrompt] = useState("");
   const [ratio, setRatio] = useState<AspectRatio>("1:1");
   const [status, setStatus] = useState<Status>("idle");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [downloadFilename, setDownloadFilename] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
 
@@ -35,6 +44,7 @@ export function Studio() {
 
     setStatus("loading");
     setPreviewUrl(null);
+    setDownloadFilename(null);
     setErrorMessage(null);
 
     try {
@@ -63,6 +73,7 @@ export function Studio() {
       }
 
       setPreviewUrl(data.image as string);
+      setDownloadFilename(buildDownloadFilename());
       setStatus("done");
     } catch (err) {
       console.error("[Studio] generation failed:", err);
@@ -238,7 +249,7 @@ export function Studio() {
             {status === "done" && previewUrl && (
               <a
                 href={previewUrl}
-                download="underplay-studio-generation.png"
+                download={downloadFilename ?? buildDownloadFilename()}
                 className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-border bg-surface/60 px-6 py-3 text-sm font-medium text-foreground transition-colors hover:border-neon-pink/50 hover:bg-surface-hover"
               >
                 <Download size={16} />
