@@ -1,4 +1,4 @@
-import { ArrowDown, Download, Sparkles, Wand2 } from "lucide-react";
+import { ArrowDown, Download, Gift, Sparkles, Wand2 } from "lucide-react";
 
 export function Hero() {
   return (
@@ -25,7 +25,12 @@ export function Hero() {
           最新モデルをクラウドGPUで高速生成。独自AI環境の構築受託・自動化相談も受付中。
         </p>
 
-        <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
+        <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-neon-pink/30 bg-neon-pink/10 px-4 py-1.5 text-xs font-mono font-medium text-neon-pink">
+          <Gift size={14} />
+          Googleログインで即時10クレジット無料進呈（クレカ登録不要）
+        </div>
+
+        <div className="mt-8 flex flex-col items-center justify-center gap-4 sm:flex-row">
           <a
             href="#studio"
             className="group flex items-center gap-2 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-8 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 glow-pink"
@@ -46,7 +51,7 @@ export function Hero() {
           {[
             { value: "¥500〜", label: "都度チャージで開始" },
             { value: "180日", label: "クレジット有効期限" },
-            { value: "100%", label: "オープン配布" },
+            { value: "100%", label: "商用利用可能" },
           ].map((stat) => (
             <div key={stat.label} className="hidden sm:block">
               <div className="font-mono text-2xl font-bold text-gradient">

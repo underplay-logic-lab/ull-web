@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { generateImageWithRunpod } from "@/lib/runpod";
+import { translateToEnglish } from "@/lib/translate";
 import { aspectRatios, type AspectRatio } from "@/lib/data";
 
 // GPU cold starts + ComfyUI inference can comfortably exceed the default
@@ -86,7 +87,10 @@ export async function POST(request: Request) {
 
   let imageDataUrl: string;
   try {
-    imageDataUrl = await generateImageWithRunpod(prompt, ratio);
+    // FLUX.1-dev is trained on English captions, so translate a Japanese
+    // prompt before it's dropped into the ComfyUI workflow.
+    const generationPrompt = await translateToEnglish(prompt);
+    imageDataUrl = await generateImageWithRunpod(generationPrompt, ratio);
   } catch (err) {
     console.error("[generate] RunPod generation failed:", err);
     return NextResponse.json(

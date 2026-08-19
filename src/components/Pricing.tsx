@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Loader2, Sparkles } from "lucide-react";
+import { Check, Gift, Loader2, Sparkles } from "lucide-react";
 import { pricingPlans, type PricingPlan } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
@@ -65,6 +65,10 @@ export function Pricing() {
           <p className="mx-auto mt-4 max-w-xl text-muted">
             必要な分だけの都度チャージか、毎月クレジットが自動付与される月額プラン。
           </p>
+          <div className="mt-5 inline-flex items-center gap-2 rounded-full border border-neon-pink/30 bg-neon-pink/10 px-4 py-1.5 text-xs font-mono font-medium text-neon-pink">
+            <Gift size={14} />
+            Googleログインで即時10クレジット無料進呈（クレカ登録不要）
+          </div>
         </div>
 
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
@@ -132,6 +136,7 @@ export function Pricing() {
 
         <p className="mt-8 text-center text-xs text-muted">
           決済は Stripe を利用しています。価格はすべて税込表示です。
+          生成物の商用利用は全プラン・都度購入ともに完全自由です。
         </p>
       </div>
 

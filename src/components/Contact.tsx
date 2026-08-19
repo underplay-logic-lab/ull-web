@@ -56,8 +56,8 @@ export function Contact() {
               技術支援・受託相談
             </h2>
             <p className="mt-4 leading-relaxed text-muted">
-              AIワークフロー設計、ComfyUIカスタムノード開発、大規模自動化基盤の構築など、
-              高単価の技術支援・受託開発を承っています。
+              AIワークフロー設計、ComfyUIカスタムノード開発、業務特化型AI環境の構築まで、
+              幅広くご相談を承っています。
               まずはお気軽にご相談ください。
             </p>
 
@@ -183,7 +183,6 @@ export function Contact() {
                         {service}
                       </option>
                     ))}
-                    <option value="other">その他</option>
                   </select>
                 </div>
 

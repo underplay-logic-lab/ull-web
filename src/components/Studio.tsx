@@ -209,6 +209,10 @@ export function Studio() {
               )}
             </div>
 
+            <p className="mt-3 text-xs leading-relaxed text-muted">
+              ※生成画像はブラウザを閉じると消滅します。生成後すぐにダウンロードしてください（履歴を保持しない完全プライバシー仕様）。
+            </p>
+
             {status === "done" && previewUrl && (
               <a
                 href={previewUrl}
