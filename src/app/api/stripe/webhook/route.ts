@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type Stripe from "stripe";
-import { stripe, type SubscriptionTier } from "@/lib/stripe";
+import { stripe, STRIPE_PLAN_CATALOG, TIER_BY_PRICE_ID, type SubscriptionTier } from "@/lib/stripe";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 const CREDIT_VALIDITY_DAYS = 180;
@@ -127,6 +127,47 @@ export async function POST(request: Request) {
           return NextResponse.json({ error: "Credit grant failed." }, { status: 500 });
         }
       }
+    }
+  }
+
+  if (event.type === "customer.subscription.updated") {
+    const subscription = event.data.object as Stripe.Subscription;
+    const userId = subscription.metadata?.userId;
+    const priceId = subscription.items.data[0]?.price?.id;
+    const newTier = priceId ? TIER_BY_PRICE_ID[priceId] : undefined;
+    const previousPlanId = subscription.metadata?.planId;
+
+    // Only act when the price actually changed from what we last recorded
+    // (subscription.updated also fires for unrelated changes like payment
+    // method or cancel_at_period_end toggles) — and skip past cancellation,
+    // which customer.subscription.deleted handles on its own.
+    if (userId && newTier && newTier !== previousPlanId && subscription.status !== "canceled") {
+      const newPlan = STRIPE_PLAN_CATALOG[newTier];
+
+      const { error: tierError } = await supabaseAdmin
+        .from("profiles")
+        .update({ subscription_tier: newTier })
+        .eq("id", userId);
+
+      if (tierError) {
+        console.error("[stripe/webhook] failed to update tier on plan change:", tierError.message);
+        return NextResponse.json({ error: "Tier update failed." }, { status: 500 });
+      }
+
+      // Keep the subscription's own metadata in sync with the new plan, so
+      // the next invoice.paid renewal grants the new plan's credits instead
+      // of the stale amount from whatever plan the subscription started on.
+      try {
+        await stripe.subscriptions.update(subscription.id, {
+          metadata: { userId, planId: newTier, credits: String(newPlan.credits) },
+        });
+      } catch (err) {
+        console.error("[stripe/webhook] failed to sync subscription metadata:", err);
+      }
+
+      console.log(
+        `[stripe/webhook] user ${userId} switched plans: ${previousPlanId ?? "unknown"} -> ${newTier}`,
+      );
     }
   }
 

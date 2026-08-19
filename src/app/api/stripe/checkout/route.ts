@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import {
   stripe,
+  createBillingPortalSession,
   STRIPE_PLAN_CATALOG,
   TOPUP_PRICE_BY_TIER,
   type SubscriptionTier,
@@ -51,26 +52,55 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "不明なプランです。" }, { status: 400 });
   }
 
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from("profiles")
+    .select("subscription_tier, stripe_customer_id")
+    .eq("id", user.id)
+    .single();
+
+  if (profileError) {
+    console.error("[stripe/checkout] failed to load profile:", profileError.message);
+    return NextResponse.json({ error: "プロフィールの取得に失敗しました。" }, { status: 500 });
+  }
+
+  const tier = (profile?.subscription_tier as SubscriptionTier | null) ?? "free";
   const origin = request.headers.get("origin") ?? new URL(request.url).origin;
 
-  // The one-time top-up is discounted for active subscribers — look up the
-  // caller's own tier server-side rather than trusting anything the client
-  // could pass in.
-  let amountJpy = plan.amountJpy;
-  if (planId === "topup") {
-    const { data: profile, error: profileError } = await supabaseAdmin
-      .from("profiles")
-      .select("subscription_tier")
-      .eq("id", user.id)
-      .single();
-
-    if (profileError) {
-      console.error("[stripe/checkout] failed to load subscription tier:", profileError.message);
-      return NextResponse.json({ error: "プロフィールの取得に失敗しました。" }, { status: 500 });
+  // Already on a paid tier and trying to buy another subscription plan:
+  // send them to the Customer Portal to change/cancel instead of letting a
+  // second, concurrent subscription (and a second monthly charge) happen.
+  if (plan.mode === "subscription" && tier !== "free") {
+    if (!profile?.stripe_customer_id) {
+      console.error(
+        `[stripe/checkout] user ${user.id} has tier "${tier}" but no stripe_customer_id`,
+      );
+      return NextResponse.json(
+        { error: "決済情報の確認に失敗しました。お手数ですがお問い合わせください。" },
+        { status: 409 },
+      );
     }
 
-    const tier = (profile?.subscription_tier as SubscriptionTier | null) ?? "free";
-    amountJpy = TOPUP_PRICE_BY_TIER[tier] ?? plan.amountJpy;
+    try {
+      const portalSession = await createBillingPortalSession(
+        profile.stripe_customer_id,
+        `${origin}/?portal=return#pricing`,
+      );
+      return NextResponse.json({ url: portalSession.url });
+    } catch (err) {
+      console.error("[stripe/checkout] failed to create portal session:", err);
+      return NextResponse.json(
+        { error: "カスタマーポータルの起動に失敗しました。" },
+        { status: 500 },
+      );
+    }
+  }
+
+  // The one-time top-up is discounted for active subscribers.
+  const amountJpy = planId === "topup" ? (TOPUP_PRICE_BY_TIER[tier] ?? plan.amountJpy) : plan.amountJpy;
+
+  if (plan.mode === "subscription" && !plan.priceId) {
+    console.error(`[stripe/checkout] plan "${planId}" is missing its Stripe priceId`);
+    return NextResponse.json({ error: "プランの設定エラーです。" }, { status: 500 });
   }
 
   try {
@@ -78,17 +108,16 @@ export async function POST(request: Request) {
       mode: plan.mode,
       payment_method_types: ["card"],
       line_items: [
-        {
-          price_data: {
-            currency: "jpy",
-            product_data: { name: plan.name },
-            unit_amount: amountJpy,
-            ...(plan.mode === "subscription"
-              ? { recurring: { interval: plan.recurringInterval ?? "month" } }
-              : {}),
-          },
-          quantity: 1,
-        },
+        plan.mode === "subscription"
+          ? { price: plan.priceId as string, quantity: 1 }
+          : {
+              price_data: {
+                currency: "jpy",
+                product_data: { name: plan.name },
+                unit_amount: amountJpy,
+              },
+              quantity: 1,
+            },
       ],
       metadata: {
         userId: user.id,
