@@ -33,6 +33,7 @@ export type Product = {
   features: string[];
   downloadUrl?: string;
   badge?: string;
+  note?: string;
 };
 
 export const products: Product[] = [
@@ -51,6 +52,7 @@ export const products: Product[] = [
     ],
     downloadUrl: "/downloads/underplay_dl_manager.py",
     badge: "無料配布",
+    note: "※本ツールは Windows 10 / 11 専用です（Python環境不要のポータブル版準備中）",
   },
 ];
 

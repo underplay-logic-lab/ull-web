@@ -19,7 +19,7 @@ export function CreditsBadge({ user, className = "" }: CreditsBadgeProps) {
       className={`items-center gap-1.5 rounded-full border border-border bg-surface/60 px-3 py-1.5 font-mono text-xs text-foreground ${className}`}
     >
       <Zap size={12} className="text-neon-pink" />
-      {loading ? "…" : (credits ?? "—")} Credits
+      {loading ? "…" : (credits?.toLocaleString() ?? "—")} Credits
     </span>
   );
 }

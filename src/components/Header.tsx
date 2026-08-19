@@ -121,7 +121,7 @@ export function Header() {
               className="hidden items-center gap-1.5 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 sm:flex"
             >
               <LogIn size={14} />
-              ログイン
+              新規登録 / ログイン
             </button>
           )}
 

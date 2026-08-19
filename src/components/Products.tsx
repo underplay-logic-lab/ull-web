@@ -77,6 +77,10 @@ export function Products() {
                 ))}
               </ul>
 
+              {product.note && (
+                <p className="mt-4 text-xs leading-relaxed text-muted">{product.note}</p>
+              )}
+
               <DownloadButton
                 productName={product.name}
                 version={product.version}

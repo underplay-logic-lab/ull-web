@@ -15,7 +15,7 @@ export function Hero() {
         </div>
 
         <h1 className="mx-auto max-w-4xl text-4xl font-bold leading-tight tracking-tight sm:text-5xl md:text-6xl lg:text-7xl">
-          <span className="inline-block text-gradient">スマホや低スペックPCから</span>
+          <span className="inline-block text-gradient">スマホ・Mac・低スペックPCから</span>
           <br />
           <span className="inline-block text-foreground">ブラウザで手軽に動く</span>
           <br />
