@@ -6,14 +6,9 @@ import { aspectRatios, type AspectRatio } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
 import { CreditsBadge } from "@/components/CreditsBadge";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
+import { supabase } from "@/lib/supabaseClient";
 
-type Status = "idle" | "loading" | "done";
-
-const RATIO_DIMENSIONS: Record<AspectRatio, [number, number]> = {
-  "16:9": [640, 360],
-  "9:16": [360, 640],
-  "1:1": [480, 480],
-};
+type Status = "idle" | "loading" | "done" | "error";
 
 const RATIO_ASPECT_CLASS: Record<AspectRatio, string> = {
   "16:9": "aspect-video",
@@ -21,68 +16,59 @@ const RATIO_ASPECT_CLASS: Record<AspectRatio, string> = {
   "1:1": "aspect-square",
 };
 
-function escapeXml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function buildPreviewDataUrl(prompt: string, ratio: AspectRatio) {
-  const [w, h] = RATIO_DIMENSIONS[ratio];
-  const trimmed = prompt.trim();
-  const label = escapeXml(
-    trimmed.length > 64 ? `${trimmed.slice(0, 64)}…` : trimmed || "Generated Preview",
-  );
-
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
-    <defs>
-      <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stop-color="#ff2a85"/>
-        <stop offset="100%" stop-color="#8b5cf6"/>
-      </linearGradient>
-    </defs>
-    <rect width="${w}" height="${h}" fill="#1c1c1e"/>
-    <rect width="${w}" height="${h}" fill="url(#g)" opacity="0.28"/>
-    <foreignObject x="24" y="${h / 2 - 40}" width="${w - 48}" height="80">
-      <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: monospace; font-size: 15px; line-height: 1.5; color: #ffffff; text-align: center; word-break: break-word;">
-        ${label}
-      </div>
-    </foreignObject>
-    <text x="16" y="${h - 16}" fill="#ffffff" fill-opacity="0.6" font-family="monospace" font-size="11">UNDERPLAY STUDIO · ${ratio}</text>
-  </svg>`;
-
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
-}
-
 export function Studio() {
   const { user } = useSupabaseUser();
   const [prompt, setPrompt] = useState("");
   const [ratio, setRatio] = useState<AspectRatio>("1:1");
   const [status, setStatus] = useState<Status>("idle");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [generationCount, setGenerationCount] = useState(0);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
 
-  const isGuestLimitReached = !user && generationCount >= 1;
-
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
     if (!prompt.trim() || status === "loading") return;
 
-    if (isGuestLimitReached) {
+    if (!user) {
       setLoginOpen(true);
       return;
     }
 
     setStatus("loading");
     setPreviewUrl(null);
+    setErrorMessage(null);
 
-    window.setTimeout(() => {
-      setPreviewUrl(buildPreviewDataUrl(prompt, ratio));
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
+
+      if (!accessToken) {
+        setLoginOpen(true);
+        setStatus("idle");
+        return;
+      }
+
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ prompt, ratio }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data?.error || "画像生成に失敗しました。");
+      }
+
+      setPreviewUrl(data.image as string);
       setStatus("done");
-      setGenerationCount((count) => count + 1);
-    }, 1800);
+    } catch (err) {
+      console.error("[Studio] generation failed:", err);
+      setErrorMessage(err instanceof Error ? err.message : "画像生成に失敗しました。");
+      setStatus("error");
+    }
   };
 
   return (
@@ -155,10 +141,10 @@ export function Studio() {
                   <Loader2 size={16} className="animate-spin" />
                   生成中...
                 </>
-              ) : isGuestLimitReached ? (
+              ) : !user ? (
                 <>
                   <LogIn size={16} />
-                  ログインして続ける
+                  ログインして生成
                 </>
               ) : (
                 <>
@@ -171,11 +157,15 @@ export function Studio() {
             <p className="mt-4 flex items-start gap-2 text-xs leading-relaxed text-muted">
               <Sparkles size={14} className="mt-0.5 shrink-0 text-neon-violet" />
               {user
-                ? "保有クレジットの範囲でいつでも生成できます。"
-                : isGuestLimitReached
-                  ? "無料体験は1回のみです。続けて生成するにはGoogleログインが必要です。"
-                  : "登録なしで1回まで無料体験できます。2回目以降はGoogleログインが必要です。"}
+                ? "保有クレジットの範囲でいつでも生成できます（1生成につき1クレジット消費）。"
+                : "Studioの利用にはGoogleログインが必要です。ログインすると10クレジットが付与されます。"}
             </p>
+
+            {status === "error" && errorMessage && (
+              <p className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+                {errorMessage}
+              </p>
+            )}
           </div>
 
           <div className="flex flex-col">
@@ -187,7 +177,10 @@ export function Studio() {
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface/60">
                   <Loader2 size={28} className="animate-spin text-neon-pink" />
                   <span className="font-mono text-xs text-muted">
-                    生成しています...
+                    GPUを起動して生成しています...
+                  </span>
+                  <span className="max-w-[80%] text-center text-[11px] text-muted/70">
+                    初回起動には数十秒〜数分かかる場合があります
                   </span>
                 </div>
               )}
@@ -196,6 +189,13 @@ export function Studio() {
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted">
                   <Wand2 size={28} className="opacity-40" />
                   <span className="text-xs">生成結果がここに表示されます</span>
+                </div>
+              )}
+
+              {status === "error" && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted">
+                  <Wand2 size={28} className="opacity-40" />
+                  <span className="text-xs">生成に失敗しました</span>
                 </div>
               )}
 
@@ -212,7 +212,7 @@ export function Studio() {
             {status === "done" && previewUrl && (
               <a
                 href={previewUrl}
-                download="underplay-studio-preview.svg"
+                download="underplay-studio-generation.png"
                 className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-border bg-surface/60 px-6 py-3 text-sm font-medium text-foreground transition-colors hover:border-neon-pink/50 hover:bg-surface-hover"
               >
                 <Download size={16} />
@@ -226,7 +226,7 @@ export function Studio() {
       <LoginModal
         open={loginOpen}
         onClose={() => setLoginOpen(false)}
-        message="無料体験は1回のみです。続けてStudioを利用するにはログインしてください。"
+        message="Studioで画像を生成するにはログインしてください。"
       />
     </section>
   );
