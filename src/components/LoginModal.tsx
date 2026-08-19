@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { Loader2, X } from "lucide-react";
+import { Loader2, Mail, X } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 
 type LoginModalProps = {
@@ -10,6 +10,9 @@ type LoginModalProps = {
   onClose: () => void;
   message?: string;
 };
+
+type Tab = "google" | "email";
+type EmailMode = "login" | "signup";
 
 function GoogleIcon() {
   return (
@@ -35,7 +38,15 @@ function GoogleIcon() {
 }
 
 export function LoginModal({ open, onClose, message }: LoginModalProps) {
+  const [tab, setTab] = useState<Tab>("google");
   const [signingIn, setSigningIn] = useState(false);
+
+  const [emailMode, setEmailMode] = useState<EmailMode>("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [emailSubmitting, setEmailSubmitting] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [emailNotice, setEmailNotice] = useState<string | null>(null);
 
   const handleGoogleLogin = async () => {
     setSigningIn(true);
@@ -55,12 +66,51 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
     // so no further local state update is needed here.
   };
 
+  const handleEmailSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setEmailSubmitting(true);
+    setEmailError(null);
+    setEmailNotice(null);
+
+    try {
+      if (emailMode === "signup") {
+        const { data, error } = await supabase.auth.signUp({ email, password });
+        if (error) throw error;
+
+        if (!data.session) {
+          // Email confirmation is required before the account can sign in.
+          setEmailNotice(
+            "確認メールを送信しました。メール内のリンクからログインを完了してください。",
+          );
+        } else {
+          handleClose();
+        }
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        handleClose();
+      }
+    } catch (err) {
+      setEmailError(err instanceof Error ? err.message : "処理に失敗しました。");
+    } finally {
+      setEmailSubmitting(false);
+    }
+  };
+
+  const handleClose = () => {
+    setEmail("");
+    setPassword("");
+    setEmailError(null);
+    setEmailNotice(null);
+    onClose();
+  };
+
   if (!open || typeof document === "undefined") return null;
 
   return createPortal(
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
-      onClick={onClose}
+      onClick={handleClose}
     >
       <div
         className="w-full max-w-sm rounded-2xl border-gradient bg-surface p-8"
@@ -70,7 +120,7 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
           <h3 className="text-lg font-bold">ログイン</h3>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             aria-label="閉じる"
             className="text-muted transition-colors hover:text-foreground"
           >
@@ -82,24 +132,121 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
           {message ?? "続行するにはログインしてください。"}
         </p>
 
-        <button
-          type="button"
-          onClick={handleGoogleLogin}
-          disabled={signingIn}
-          className="mt-6 flex w-full items-center justify-center gap-2.5 rounded-xl border border-border bg-background px-6 py-3 text-sm font-medium transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {signingIn ? (
-            <>
-              <Loader2 size={18} className="animate-spin" />
-              Googleへ接続中...
-            </>
-          ) : (
-            <>
-              <GoogleIcon />
-              Googleでログイン
-            </>
-          )}
-        </button>
+        <div className="mt-6 flex gap-1 rounded-lg border border-border bg-background p-1">
+          <button
+            type="button"
+            onClick={() => setTab("google")}
+            className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              tab === "google"
+                ? "bg-surface-hover text-foreground"
+                : "text-muted hover:text-foreground"
+            }`}
+          >
+            Google
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("email")}
+            className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              tab === "email"
+                ? "bg-surface-hover text-foreground"
+                : "text-muted hover:text-foreground"
+            }`}
+          >
+            メールアドレス
+          </button>
+        </div>
+
+        {tab === "google" ? (
+          <button
+            type="button"
+            onClick={handleGoogleLogin}
+            disabled={signingIn}
+            className="mt-4 flex w-full items-center justify-center gap-2.5 rounded-xl border border-border bg-background px-6 py-3 text-sm font-medium transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {signingIn ? (
+              <>
+                <Loader2 size={18} className="animate-spin" />
+                Googleへ接続中...
+              </>
+            ) : (
+              <>
+                <GoogleIcon />
+                Googleでログイン
+              </>
+            )}
+          </button>
+        ) : (
+          <form onSubmit={handleEmailSubmit} className="mt-4 space-y-3">
+            <div>
+              <label htmlFor="login-email" className="mb-1.5 block text-xs font-medium text-muted">
+                メールアドレス
+              </label>
+              <input
+                id="login-email"
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
+                placeholder="you@example.com"
+              />
+            </div>
+            <div>
+              <label htmlFor="login-password" className="mb-1.5 block text-xs font-medium text-muted">
+                パスワード
+              </label>
+              <input
+                id="login-password"
+                type="password"
+                required
+                minLength={6}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
+                placeholder="6文字以上"
+              />
+            </div>
+
+            {emailError && (
+              <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+                {emailError}
+              </p>
+            )}
+            {emailNotice && (
+              <p className="rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-xs text-neon-violet">
+                {emailNotice}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={emailSubmitting}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {emailSubmitting ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Mail size={16} />
+              )}
+              {emailMode === "signup" ? "アカウントを作成" : "ログイン"}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setEmailMode(emailMode === "signup" ? "login" : "signup");
+                setEmailError(null);
+                setEmailNotice(null);
+              }}
+              className="w-full text-center text-xs text-muted hover:text-neon-violet hover:underline"
+            >
+              {emailMode === "signup"
+                ? "すでにアカウントをお持ちの方はこちら"
+                : "アカウントをお持ちでない方はこちら"}
+            </button>
+          </form>
+        )}
 
         <p className="mt-4 text-center text-xs text-muted">
           ログインすると10クレジットが付与されます。

@@ -30,7 +30,13 @@ export default function TermsPage() {
         </p>
       </LegalSection>
 
-      <LegalSection heading="第4条（禁止事項）">
+      <LegalSection heading="第4条（生成処理の実行制限）">
+        <p>
+          高解像度画像や動画の生成など、処理に時間を要する設定でご利用の場合を含め、1回の生成処理の最大実行時間は30分とします。実行時間が上限に達した場合、処理は自動的に強制終了されます。この場合、当該生成のために消費されたクレジットの返金は行いません。
+        </p>
+      </LegalSection>
+
+      <LegalSection heading="第5条（禁止事項）">
         <p>ユーザーは、本サービスの利用にあたり、以下の行為をしてはなりません。</p>
         <ul className="list-disc space-y-1.5 pl-5">
           <li>法令または公序良俗に違反する行為</li>
@@ -41,25 +47,25 @@ export default function TermsPage() {
         </ul>
       </LegalSection>
 
-      <LegalSection heading="第5条（配布ツールの利用）">
+      <LegalSection heading="第6条（配布ツールの利用）">
         <p>
           当サイトで配布するツール類は、現状有姿（AS IS）で提供されます。ツールの利用によって生じたいかなる損害についても、当サイトは責任を負いません。ツールの利用は自己責任にてお願いいたします。
         </p>
       </LegalSection>
 
-      <LegalSection heading="第6条（免責事項）">
+      <LegalSection heading="第7条（免責事項）">
         <p>
           当サイトは、本サービスに事実上または法律上の瑕疵がないことを保証するものではありません。本サービスの中断・停止・終了、データの消失等によりユーザーに生じた損害について、当サイトの故意または重過失による場合を除き、責任を負いません。
         </p>
       </LegalSection>
 
-      <LegalSection heading="第7条（規約の変更）">
+      <LegalSection heading="第8条（規約の変更）">
         <p>
           当サイトは、必要と判断した場合、ユーザーへの事前通知なく本規約を変更できるものとします。変更後の規約は、本ページに掲載した時点から効力を生じます。
         </p>
       </LegalSection>
 
-      <LegalSection heading="第8条（お問い合わせ）">
+      <LegalSection heading="第9条（お問い合わせ）">
         <p>
           本規約に関するお問い合わせは、サイト内のお問い合わせフォームよりご連絡ください。
         </p>

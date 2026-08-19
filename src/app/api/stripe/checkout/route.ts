@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { stripe, STRIPE_PLAN_CATALOG } from "@/lib/stripe";
+import {
+  stripe,
+  STRIPE_PLAN_CATALOG,
+  TOPUP_PRICE_BY_TIER,
+  type SubscriptionTier,
+} from "@/lib/stripe";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 export async function POST(request: Request) {
   const authHeader = request.headers.get("authorization");
@@ -47,6 +53,26 @@ export async function POST(request: Request) {
 
   const origin = request.headers.get("origin") ?? new URL(request.url).origin;
 
+  // The one-time top-up is discounted for active subscribers — look up the
+  // caller's own tier server-side rather than trusting anything the client
+  // could pass in.
+  let amountJpy = plan.amountJpy;
+  if (planId === "topup") {
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from("profiles")
+      .select("subscription_tier")
+      .eq("id", user.id)
+      .single();
+
+    if (profileError) {
+      console.error("[stripe/checkout] failed to load subscription tier:", profileError.message);
+      return NextResponse.json({ error: "プロフィールの取得に失敗しました。" }, { status: 500 });
+    }
+
+    const tier = (profile?.subscription_tier as SubscriptionTier | null) ?? "free";
+    amountJpy = TOPUP_PRICE_BY_TIER[tier] ?? plan.amountJpy;
+  }
+
   try {
     const session = await stripe.checkout.sessions.create({
       mode: plan.mode,
@@ -56,7 +82,7 @@ export async function POST(request: Request) {
           price_data: {
             currency: "jpy",
             product_data: { name: plan.name },
-            unit_amount: plan.amountJpy,
+            unit_amount: amountJpy,
             ...(plan.mode === "subscription"
               ? { recurring: { interval: plan.recurringInterval ?? "month" } }
               : {}),

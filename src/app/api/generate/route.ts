@@ -85,6 +85,21 @@ export async function POST(request: Request) {
     );
   }
 
+  // Deduct up front (rather than after a successful generation) so two
+  // concurrent requests can't both pass the balance check above and
+  // overdraw the account. If generation then fails, the credit is refunded
+  // below — the user is never charged for a failed run.
+  const debitedCredits = currentCredits - 1;
+  const { error: debitError } = await supabaseAdmin
+    .from("profiles")
+    .update({ credits: debitedCredits })
+    .eq("id", user.id);
+
+  if (debitError) {
+    console.error("[generate] failed to debit credit:", debitError.message);
+    return NextResponse.json({ error: "クレジットの処理に失敗しました。" }, { status: 500 });
+  }
+
   let imageDataUrl: string;
   try {
     // FLUX.1-dev is trained on English captions, so translate a Japanese
@@ -93,25 +108,21 @@ export async function POST(request: Request) {
     imageDataUrl = await generateImageWithRunpod(generationPrompt, ratio);
   } catch (err) {
     console.error("[generate] RunPod generation failed:", err);
+
+    const { error: refundError } = await supabaseAdmin
+      .from("profiles")
+      .update({ credits: currentCredits })
+      .eq("id", user.id);
+
+    if (refundError) {
+      console.error("[generate] failed to refund credit after error:", refundError.message);
+    }
+
     return NextResponse.json(
       { error: "画像生成に失敗しました。しばらくしてから再度お試しください。" },
       { status: 502 },
     );
   }
 
-  const { error: updateError } = await supabaseAdmin
-    .from("profiles")
-    .update({ credits: currentCredits - 1 })
-    .eq("id", user.id);
-
-  if (updateError) {
-    // The image was already generated; surface it to the user even if the
-    // credit deduction failed, but log loudly since balances will drift.
-    console.error("[generate] failed to deduct credit:", updateError.message);
-  }
-
-  return NextResponse.json({
-    image: imageDataUrl,
-    credits: updateError ? currentCredits : currentCredits - 1,
-  });
+  return NextResponse.json({ image: imageDataUrl, credits: debitedCredits });
 }

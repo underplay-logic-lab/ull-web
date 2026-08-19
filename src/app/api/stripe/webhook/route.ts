@@ -1,14 +1,20 @@
 import { NextResponse } from "next/server";
 import type Stripe from "stripe";
-import { stripe } from "@/lib/stripe";
+import { stripe, type SubscriptionTier } from "@/lib/stripe";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 const CREDIT_VALIDITY_DAYS = 180;
+const SUBSCRIPTION_TIERS = new Set<SubscriptionTier>(["entry", "standard"]);
 
 // Grants credits and pushes the expiry 180 days out from now — used both
 // for one-time top-ups and every subscription renewal, so a subscriber's
-// balance keeps rolling forward as long as they keep paying.
-async function grantCreditsAndExtendExpiry(userId: string, creditsToAdd: number) {
+// balance keeps rolling forward as long as they keep paying. Also updates
+// subscription_tier when a subscription plan's credits are being granted.
+async function grantCreditsAndExtendExpiry(
+  userId: string,
+  creditsToAdd: number,
+  tier?: SubscriptionTier,
+) {
   const { data: profile, error: fetchError } = await supabaseAdmin
     .from("profiles")
     .select("credits")
@@ -25,7 +31,11 @@ async function grantCreditsAndExtendExpiry(userId: string, creditsToAdd: number)
 
   const { error: updateError } = await supabaseAdmin
     .from("profiles")
-    .update({ credits: newCredits, credits_expire_at: newExpiry.toISOString() })
+    .update({
+      credits: newCredits,
+      credits_expire_at: newExpiry.toISOString(),
+      ...(tier ? { subscription_tier: tier } : {}),
+    })
     .eq("id", userId);
 
   if (updateError) {
@@ -34,7 +44,7 @@ async function grantCreditsAndExtendExpiry(userId: string, creditsToAdd: number)
   }
 
   console.log(
-    `[stripe/webhook] granted ${creditsToAdd} credits to user ${userId} (new balance: ${newCredits}, expires: ${newExpiry.toISOString()})`,
+    `[stripe/webhook] granted ${creditsToAdd} credits to user ${userId} (new balance: ${newCredits}, expires: ${newExpiry.toISOString()}${tier ? `, tier: ${tier}` : ""})`,
   );
   return true;
 }
@@ -84,12 +94,33 @@ export async function POST(request: Request) {
 
     const userId = subscriptionMetadata?.userId;
     const creditsToAdd = Number(subscriptionMetadata?.credits ?? "0");
+    const planId = subscriptionMetadata?.planId as SubscriptionTier | undefined;
+    const tier = planId && SUBSCRIPTION_TIERS.has(planId) ? planId : undefined;
 
     if (userId && creditsToAdd > 0) {
-      const granted = await grantCreditsAndExtendExpiry(userId, creditsToAdd);
+      const granted = await grantCreditsAndExtendExpiry(userId, creditsToAdd, tier);
       if (!granted) {
         return NextResponse.json({ error: "Credit grant failed." }, { status: 500 });
       }
+    }
+  }
+
+  if (event.type === "customer.subscription.deleted") {
+    const subscription = event.data.object as Stripe.Subscription;
+    const userId = subscription.metadata?.userId;
+
+    if (userId) {
+      const { error: downgradeError } = await supabaseAdmin
+        .from("profiles")
+        .update({ subscription_tier: "free" satisfies SubscriptionTier })
+        .eq("id", userId);
+
+      if (downgradeError) {
+        console.error("[stripe/webhook] failed to downgrade tier:", downgradeError.message);
+        return NextResponse.json({ error: "Tier downgrade failed." }, { status: 500 });
+      }
+
+      console.log(`[stripe/webhook] subscription ended, reverted user ${userId} to free tier`);
     }
   }
 

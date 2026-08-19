@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Download, Loader2, LogIn, Sparkles, Wand2 } from "lucide-react";
+import { AlertTriangle, Download, Loader2, LogIn, Sparkles, Wand2 } from "lucide-react";
 import { aspectRatios, type AspectRatio } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
 import { CreditsBadge } from "@/components/CreditsBadge";
@@ -91,6 +91,23 @@ export function Studio() {
               <CreditsBadge user={user} className="inline-flex" />
             </div>
           )}
+
+          <div className="mt-8 flex flex-wrap items-center justify-center gap-2">
+            <span className="rounded-full border border-neon-pink/40 bg-neon-pink/10 px-4 py-1.5 text-xs font-mono font-medium text-neon-pink">
+              画像生成
+            </span>
+            {["特化ワークフロー", "AI動画生成スタジオ"].map((label) => (
+              <span
+                key={label}
+                className="flex cursor-not-allowed items-center gap-2 rounded-full border border-border bg-surface/40 px-4 py-1.5 text-xs font-mono text-muted opacity-70"
+              >
+                {label}
+                <span className="rounded-full bg-border px-1.5 py-0.5 text-[10px] tracking-wide text-muted">
+                  Coming Soon
+                </span>
+              </span>
+            ))}
+          </div>
         </div>
 
         <div className="grid gap-8 rounded-2xl border-gradient bg-surface/40 p-6 sm:p-8 lg:grid-cols-2">
@@ -149,7 +166,7 @@ export function Studio() {
               ) : (
                 <>
                   <Wand2 size={16} />
-                  Generate
+                  生成する
                 </>
               )}
             </button>
@@ -159,6 +176,11 @@ export function Studio() {
               {user
                 ? "保有クレジットの範囲でいつでも生成できます（1生成につき1クレジット消費）。"
                 : "Studioの利用にはGoogleログインが必要です。ログインすると10クレジットが付与されます。"}
+            </p>
+
+            <p className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-400">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              高解像度・動画生成など高負荷な設定は処理に時間がかかる場合があります。最大実行時間は30分です。超過した場合は処理が強制終了され、消費済みクレジットの返金はできませんのでご了承ください。
             </p>
 
             {status === "error" && errorMessage && (
@@ -210,7 +232,7 @@ export function Studio() {
             </div>
 
             <p className="mt-3 text-xs leading-relaxed text-muted">
-              ※生成画像はブラウザを閉じると消滅します。生成後すぐにダウンロードしてください（履歴を保持しない完全プライバシー仕様）。
+              ※生成画像はブラウザを閉じると消滅します。生成後すぐにダウンロードしてください（サーバーに履歴を保持しない完全プライバシー仕様）。
             </p>
 
             {status === "done" && previewUrl && (

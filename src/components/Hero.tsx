@@ -15,10 +15,11 @@ export function Hero() {
         </div>
 
         <h1 className="mx-auto max-w-4xl text-4xl font-bold leading-tight tracking-tight sm:text-5xl md:text-6xl lg:text-7xl">
-          <span className="text-gradient">スマホ・低スペックPCから</span>
-          <span className="text-foreground">ブラウザで動く、</span>
+          <span className="inline-block text-gradient">スマホや低スペックPCから</span>
           <br />
-          <span className="text-gradient">商用AI画像・動画生成スタジオ</span>
+          <span className="inline-block text-foreground">ブラウザで手軽に動く</span>
+          <br />
+          <span className="inline-block text-gradient">商用AI画像・動画生成スタジオ</span>
         </h1>
 
         <p className="mx-auto mt-8 max-w-2xl text-base leading-relaxed text-muted sm:text-lg">

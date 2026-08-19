@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Gift, Loader2, Sparkles } from "lucide-react";
+import { ArrowRight, Check, Gift, Loader2, Sparkles } from "lucide-react";
 import { pricingPlans, type PricingPlan } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
@@ -133,6 +133,19 @@ export function Pricing() {
             </div>
           ))}
         </div>
+
+        <a
+          href="#contact"
+          className="mt-10 flex flex-col items-center justify-between gap-4 rounded-2xl border border-neon-violet/30 bg-neon-violet/5 p-6 text-center transition-colors hover:bg-neon-violet/10 sm:flex-row sm:text-left"
+        >
+          <p className="text-sm leading-relaxed text-foreground/90">
+            🏢 自社専用のComfyUI / RunPod環境を無制限に使いたい事業者様へ：クラウド環境の構築代行・特注ワークフロー開発（リモート対応）を承ります。
+          </p>
+          <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-sm font-semibold text-white">
+            お問い合わせはこちら
+            <ArrowRight size={16} />
+          </span>
+        </a>
 
         <p className="mt-8 text-center text-xs text-muted">
           決済は Stripe を利用しています。価格はすべて税込表示です。
