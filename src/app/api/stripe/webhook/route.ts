@@ -6,15 +6,29 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 const CREDIT_VALIDITY_DAYS = 180;
 const SUBSCRIPTION_TIERS = new Set<SubscriptionTier>(["entry", "standard", "pro", "master"]);
 
-// Grants credits and pushes the expiry 180 days out from now — used both
-// for one-time top-ups and every subscription renewal, so a subscriber's
-// balance keeps rolling forward as long as they keep paying. Also updates
-// subscription_tier when a subscription plan's credits are being granted.
-async function grantCreditsAndExtendExpiry(
-  userId: string,
-  creditsToAdd: number,
-  tier?: SubscriptionTier,
-) {
+function resolveTier(planId: string | undefined): SubscriptionTier | undefined {
+  return planId && SUBSCRIPTION_TIERS.has(planId as SubscriptionTier)
+    ? (planId as SubscriptionTier)
+    : undefined;
+}
+
+function resolveCustomerId(customer: string | Stripe.Customer | Stripe.DeletedCustomer | null | undefined) {
+  if (!customer) return null;
+  return typeof customer === "string" ? customer : customer.id;
+}
+
+type GrantOptions = {
+  // Set profiles.subscription_tier — omitted (not undefined-but-passed) for
+  // a one-time top-up, which keeps whatever tier the buyer already has.
+  tier?: SubscriptionTier;
+  stripeCustomerId?: string | null;
+};
+
+// Grants credits and pushes the expiry 180 days out from now. Used for the
+// initial checkout (top-up or first subscription payment) and every
+// subsequent subscription renewal, so a subscriber's balance keeps rolling
+// forward as long as they keep paying.
+async function grantCredits(userId: string, creditsToAdd: number, options: GrantOptions = {}) {
   const { data: profile, error: fetchError } = await supabaseAdmin
     .from("profiles")
     .select("credits")
@@ -34,7 +48,8 @@ async function grantCreditsAndExtendExpiry(
     .update({
       credits: newCredits,
       credits_expire_at: newExpiry.toISOString(),
-      ...(tier ? { subscription_tier: tier } : {}),
+      ...(options.tier ? { subscription_tier: options.tier } : {}),
+      ...(options.stripeCustomerId ? { stripe_customer_id: options.stripeCustomerId } : {}),
     })
     .eq("id", userId);
 
@@ -44,7 +59,7 @@ async function grantCreditsAndExtendExpiry(
   }
 
   console.log(
-    `[stripe/webhook] granted ${creditsToAdd} credits to user ${userId} (new balance: ${newCredits}, expires: ${newExpiry.toISOString()}${tier ? `, tier: ${tier}` : ""})`,
+    `[stripe/webhook] granted ${creditsToAdd} credits to user ${userId} (new balance: ${newCredits}, expires: ${newExpiry.toISOString()}${options.tier ? `, tier: ${options.tier}` : ""})`,
   );
   return true;
 }
@@ -72,35 +87,45 @@ export async function POST(request: Request) {
   if (event.type === "checkout.session.completed") {
     const session = event.data.object as Stripe.Checkout.Session;
 
-    // Subscription-mode checkouts are granted via `invoice.paid` instead
-    // (below), so the same first payment isn't credited twice: Stripe also
-    // fires invoice.paid for a subscription's initial invoice.
-    if (session.mode === "payment") {
-      const userId = session.metadata?.userId;
-      const creditsToAdd = Number(session.metadata?.credits ?? "0");
+    const userId = session.metadata?.userId;
+    const planId = session.metadata?.planId;
+    const creditsToAdd = parseInt(session.metadata?.credits || "0", 10);
 
-      if (userId && creditsToAdd > 0) {
-        const granted = await grantCreditsAndExtendExpiry(userId, creditsToAdd);
-        if (!granted) {
-          return NextResponse.json({ error: "Credit grant failed." }, { status: 500 });
-        }
+    if (userId && creditsToAdd > 0) {
+      const granted = await grantCredits(userId, creditsToAdd, {
+        // A one-time top-up doesn't change tier — resolveTier returns
+        // undefined for planId "topup", leaving the existing tier alone.
+        tier: resolveTier(planId),
+        stripeCustomerId: resolveCustomerId(session.customer),
+      });
+
+      if (!granted) {
+        return NextResponse.json({ error: "Credit grant failed." }, { status: 500 });
       }
     }
   }
 
   if (event.type === "invoice.paid") {
     const invoice = event.data.object as Stripe.Invoice;
-    const subscriptionMetadata = invoice.parent?.subscription_details?.metadata;
 
-    const userId = subscriptionMetadata?.userId;
-    const creditsToAdd = Number(subscriptionMetadata?.credits ?? "0");
-    const planId = subscriptionMetadata?.planId as SubscriptionTier | undefined;
-    const tier = planId && SUBSCRIPTION_TIERS.has(planId) ? planId : undefined;
+    // The first invoice on a new subscription is already credited above via
+    // checkout.session.completed — only renewals should land here.
+    if (invoice.billing_reason !== "subscription_create") {
+      const subscriptionMetadata = invoice.parent?.subscription_details?.metadata;
 
-    if (userId && creditsToAdd > 0) {
-      const granted = await grantCreditsAndExtendExpiry(userId, creditsToAdd, tier);
-      if (!granted) {
-        return NextResponse.json({ error: "Credit grant failed." }, { status: 500 });
+      const userId = subscriptionMetadata?.userId;
+      const creditsToAdd = parseInt(subscriptionMetadata?.credits || "0", 10);
+      const planId = subscriptionMetadata?.planId;
+
+      if (userId && creditsToAdd > 0) {
+        const granted = await grantCredits(userId, creditsToAdd, {
+          tier: resolveTier(planId),
+          stripeCustomerId: resolveCustomerId(invoice.customer),
+        });
+
+        if (!granted) {
+          return NextResponse.json({ error: "Credit grant failed." }, { status: 500 });
+        }
       }
     }
   }
