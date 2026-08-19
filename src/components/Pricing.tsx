@@ -54,7 +54,7 @@ export function Pricing() {
 
   return (
     <section id="pricing" className="relative py-24 sm:py-32">
-      <div className="mx-auto max-w-5xl px-6">
+      <div className="mx-auto max-w-6xl px-6">
         <div className="mb-16 text-center">
           <p className="mb-3 font-mono text-xs uppercase tracking-widest text-neon-violet">
             Pricing
@@ -63,11 +63,11 @@ export function Pricing() {
             料金プラン
           </h2>
           <p className="mx-auto mt-4 max-w-xl text-muted">
-            必要な分だけの都度チャージか、使い放題の月額サブスクリプション。
+            必要な分だけの都度チャージか、毎月クレジットが自動付与される月額プラン。
           </p>
         </div>
 
-        <div className="grid gap-8 sm:grid-cols-2">
+        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {pricingPlans.map((plan) => (
             <div
               key={plan.id}

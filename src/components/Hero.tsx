@@ -1,5 +1,4 @@
 import { ArrowDown, Download, Sparkles, Wand2 } from "lucide-react";
-import { siteConfig } from "@/lib/data";
 
 export function Hero() {
   return (
@@ -16,16 +15,14 @@ export function Hero() {
         </div>
 
         <h1 className="mx-auto max-w-4xl text-4xl font-bold leading-tight tracking-tight sm:text-5xl md:text-6xl lg:text-7xl">
-          <span className="text-gradient">AI生成を自動化し、</span>
+          <span className="text-gradient">スマホ・低スペックPCから</span>
+          <span className="text-foreground">ブラウザで動く、</span>
           <br />
-          <span className="text-foreground">独自ツールで</span>
-          <span className="text-gradient"> 加速する</span>
+          <span className="text-gradient">商用AI画像・動画生成スタジオ</span>
         </h1>
 
         <p className="mx-auto mt-8 max-w-2xl text-base leading-relaxed text-muted sm:text-lg">
-          {siteConfig.description}
-          <br className="hidden sm:block" />
-          ブラウザから今すぐ試せる生成Studioと、実践で磨いた自動化ツールをここから配布しています。
+          最新モデルをクラウドGPUで高速生成。独自AI環境の構築受託・自動化相談も受付中。
         </p>
 
         <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
@@ -47,8 +44,8 @@ export function Hero() {
 
         <div className="mt-20 flex items-center justify-center gap-8 text-center">
           {[
-            { value: "1回", label: "無料でStudio体験" },
-            { value: "4x", label: "並列DL接続" },
+            { value: "¥500〜", label: "都度チャージで開始" },
+            { value: "180日", label: "クレジット有効期限" },
             { value: "100%", label: "オープン配布" },
           ].map((stat) => (
             <div key={stat.label} className="hidden sm:block">

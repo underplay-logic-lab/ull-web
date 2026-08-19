@@ -18,7 +18,7 @@ export function Products() {
           </p>
         </div>
 
-        <div className="grid gap-8 lg:grid-cols-2">
+        <div className="mx-auto grid max-w-xl gap-8">
           {products.map((product, index) => (
             <article
               key={product.id}

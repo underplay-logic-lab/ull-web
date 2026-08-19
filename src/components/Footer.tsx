@@ -36,7 +36,7 @@ export function Footer() {
         </div>
 
         <p className="mt-8 text-center text-xs text-muted sm:text-left">
-          &copy; {year} {siteConfig.author}. All rights reserved.
+          &copy; {year} {siteConfig.legalName}. All rights reserved.
         </p>
       </div>
     </footer>

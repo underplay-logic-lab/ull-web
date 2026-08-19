@@ -34,7 +34,7 @@ const entries: { label: string; value: string }[] = [
   },
   {
     label: "お支払い方法",
-    value: "クレジットカード決済（Stripeを利用予定）",
+    value: "クレジットカード決済（Stripe）",
   },
   {
     label: "お支払い時期",

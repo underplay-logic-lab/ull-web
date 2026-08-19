@@ -59,7 +59,7 @@ export async function POST(request: Request) {
 
   const { data: profile, error: profileError } = await supabaseAdmin
     .from("profiles")
-    .select("credits")
+    .select("credits, credits_expire_at")
     .eq("id", user.id)
     .single();
 
@@ -68,11 +68,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "プロフィールの取得に失敗しました。" }, { status: 500 });
   }
 
-  const currentCredits = profile?.credits ?? 0;
+  const isExpired = profile?.credits_expire_at
+    ? new Date(profile.credits_expire_at).getTime() < Date.now()
+    : false;
+  const currentCredits = isExpired ? 0 : (profile?.credits ?? 0);
 
   if (currentCredits < 1) {
     return NextResponse.json(
-      { error: "クレジットが不足しています。チャージしてから再度お試しください。" },
+      {
+        error: isExpired
+          ? "クレジットの有効期限が切れています（残高0）。チャージしてから再度お試しください。"
+          : "クレジットが不足しています。チャージしてから再度お試しください。",
+      },
       { status: 402 },
     );
   }

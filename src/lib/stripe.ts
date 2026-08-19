@@ -20,17 +20,24 @@ export type StripePlan = {
 // Source of truth for what a given Pricing plan actually charges and grants.
 // Never trust a client-supplied price/credit amount — always look it up here.
 export const STRIPE_PLAN_CATALOG: Record<string, StripePlan> = {
-  "credits-10": {
-    name: "都度チャージ / 10 Credits",
+  "credits-100": {
+    name: "都度チャージ / 100 Credits",
     mode: "payment",
     amountJpy: 500,
-    credits: 10,
+    credits: 100,
   },
-  "creator-pro": {
-    name: "Creator Pro",
+  "standard-monthly": {
+    name: "月額スタンダード",
     mode: "subscription",
-    amountJpy: 2000,
-    credits: 0,
+    amountJpy: 1980,
+    credits: 500,
+    recurringInterval: "month",
+  },
+  "pro-monthly": {
+    name: "月額プロ",
+    mode: "subscription",
+    amountJpy: 4980,
+    credits: 1500,
     recurringInterval: "month",
   },
 };

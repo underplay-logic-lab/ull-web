@@ -69,6 +69,17 @@ export async function POST(request: Request) {
         planId,
         credits: String(plan.credits),
       },
+      ...(plan.mode === "subscription"
+        ? {
+            subscription_data: {
+              metadata: {
+                userId: user.id,
+                planId,
+                credits: String(plan.credits),
+              },
+            },
+          }
+        : {}),
       success_url: `${origin}/?checkout=success#pricing`,
       cancel_url: `${origin}/?checkout=cancelled#pricing`,
     });

@@ -4,17 +4,14 @@ export const siteConfig = {
   tagline: "AI Generation & Automation",
   description:
     "AI生成の自動化と独自ツールの配布を行う、AIクリエイター・自動化エンジニアのためのWeb拠点。",
-  // Short brand form for general display (footer copyright, etc.)
-  author: "ULL",
-  // Formal registered name for legal disclosures (e.g. /tokushoho)
-  legalName: "Underplay Logic Lab",
+  // Formal registered name for legal disclosures and the footer copyright line.
+  legalName: "ULL (Underplay Logic Lab)",
 };
 
 export const navLinks = [
   { label: "Studio", href: "/#studio" },
   { label: "Products", href: "/#products" },
   { label: "Pricing", href: "/#pricing" },
-  { label: "Articles", href: "/#articles" },
   { label: "Contact", href: "/#contact" },
 ];
 
@@ -45,36 +42,19 @@ export const products: Product[] = [
     version: "v2.1",
     tagline: "大容量モデルを最速でローカルへ",
     description:
-      "Civitai / Hugging Face など複数ソースからの並列ダウンロード、自動仕分け、高速マージを一体化。AI開発環境のセットアップ時間を劇的に短縮します。",
-    quickBadges: ["4並列DL", "自動仕分け", "高速マージ"],
+      "Civitai / Hugging Face など複数ソースからのマルチスレッド並列ダウンロード、自動仕分け、高速マージを一体化。AI開発環境のセットアップ時間を劇的に短縮します。",
+    quickBadges: ["並列DL", "自動仕分け", "高速マージ"],
     features: [
-      "4並列ダウンロード接続で帯域を最大活用",
+      "マルチスレッド高速並列ダウンロード対応",
       "拡張子・種別ごとの自動フォルダ仕分け",
+      "二重階層パス自動防止",
       "分割ダウンロードの高速マージ処理",
       "中断・再開（レジューム）対応",
       "SHA256 / ファイルサイズ自動検証",
-      "CLI / GUI デュアルモード",
+      "洗練された専用GUI",
     ],
     downloadUrl: "/downloads/underplay_dl_manager.py",
     badge: "無料配布",
-  },
-  {
-    id: "comfyui-turbo-lora",
-    name: "ComfyUI Turbo LoRA Suite",
-    version: "v1.0",
-    tagline: "LoRA推論パイプラインを極限まで最適化",
-    description:
-      "ComfyUI向けカスタムノード群。LoRAの動的ロード、アテンション最適化、VRAM効率化をワンクリックで実現。Stable Diffusion / Flux ワークフローの生成速度を大幅に向上させます。",
-    quickBadges: ["遅延ロード", "VRAM最適化", "バッチ推論"],
-    features: [
-      "Turbo LoRA Loader — 遅延ロード & キャッシュ",
-      "Attention Slicing / xFormers 自動切替",
-      "VRAM使用量リアルタイムモニタリング",
-      "プリセット: SDXL / Flux / Pony 対応",
-      "バッチ推論パイプライン最適化",
-      "ワンクリック ワークフロー テンプレート",
-    ],
-    badge: "近日公開",
   },
 ];
 
@@ -91,34 +71,47 @@ export type PricingPlan = {
 
 export const pricingPlans: PricingPlan[] = [
   {
-    id: "credits-10",
+    id: "credits-100",
     name: "都度チャージ",
     price: "¥500",
-    period: "/ 10 Credits",
-    description: "必要な分だけチャージ。有効期限なしでいつでも使えます。",
+    period: "/ 100 Credits",
+    description: "必要な分だけ都度購入。サブスクリプション不要でいつでも使えます。",
     features: [
-      "Studio生成 10回分のクレジット",
+      "100クレジット付与",
       "全アスペクト比（16:9 / 9:16 / 1:1）対応",
-      "有効期限なし",
+      "購入日から180日間有効",
       "追加チャージは何度でも",
     ],
     cta: "購入する",
   },
   {
-    id: "creator-pro",
-    name: "Creator Pro",
-    price: "¥2,000",
+    id: "standard-monthly",
+    name: "月額スタンダード",
+    price: "¥1,980",
     period: "/ 月",
-    description: "毎日使い放題。本格的にAI生成を使い倒すクリエイター向けサブスクリプション。",
+    description: "毎月安定してStudioを使いたい方向けの月額プラン。",
     features: [
-      "毎日生成し放題（クレジット消費なし）",
-      "優先生成キューで待ち時間を短縮",
-      "配布ツールをすべて無料ダウンロード",
-      "生成物の商用利用ライセンス付き",
+      "毎月500クレジットを自動付与",
+      "サブスク会員特典として毎月更新",
+      "全アスペクト比（16:9 / 9:16 / 1:1）対応",
       "いつでも解約可能",
     ],
     cta: "購入する",
     highlighted: true,
+  },
+  {
+    id: "pro-monthly",
+    name: "月額プロ",
+    price: "¥4,980",
+    period: "/ 月",
+    description: "本格的に使い倒すクリエイター・受託案件向けの上位プラン。",
+    features: [
+      "毎月1,500クレジットを自動付与",
+      "サブスク会員特典として毎月更新",
+      "全アスペクト比（16:9 / 9:16 / 1:1）対応",
+      "いつでも解約可能",
+    ],
+    cta: "購入する",
   },
 ];
 
