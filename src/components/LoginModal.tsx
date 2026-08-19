@@ -44,6 +44,7 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
   const [emailMode, setEmailMode] = useState<EmailMode>("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [emailSubmitting, setEmailSubmitting] = useState(false);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [emailNotice, setEmailNotice] = useState<string | null>(null);
@@ -68,9 +69,21 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
 
   const handleEmailSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    setEmailSubmitting(true);
     setEmailError(null);
     setEmailNotice(null);
+
+    if (emailMode === "signup") {
+      if (password.length < 6) {
+        setEmailError("パスワードは6文字以上で入力してください。");
+        return;
+      }
+      if (password !== confirmPassword) {
+        setEmailError("パスワードが一致しません。");
+        return;
+      }
+    }
+
+    setEmailSubmitting(true);
 
     try {
       if (emailMode === "reset") {
@@ -108,6 +121,7 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
   const handleClose = () => {
     setEmail("");
     setPassword("");
+    setConfirmPassword("");
     setEmailMode("login");
     setEmailError(null);
     setEmailNotice(null);
@@ -216,6 +230,24 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
                   placeholder="6文字以上"
+                />
+              </div>
+            )}
+
+            {emailMode === "signup" && (
+              <div>
+                <label htmlFor="signup-confirm-password" className="mb-1.5 block text-xs font-medium text-muted">
+                  パスワード（確認用）
+                </label>
+                <input
+                  id="signup-confirm-password"
+                  type="password"
+                  required
+                  minLength={6}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
+                  placeholder="もう一度入力してください"
                 />
               </div>
             )}
