@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { KeyRound, Loader2, Mail, X } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
+import { PasswordInput } from "@/components/PasswordInput";
 
 type LoginModalProps = {
   open: boolean;
@@ -221,15 +222,14 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
                 <label htmlFor="login-password" className="mb-1.5 block text-xs font-medium text-muted">
                   パスワード
                 </label>
-                <input
+                <PasswordInput
                   id="login-password"
-                  type="password"
                   required
                   minLength={6}
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
+                  onChange={setPassword}
                   placeholder="6文字以上"
+                  autoComplete={emailMode === "signup" ? "new-password" : "current-password"}
                 />
               </div>
             )}
@@ -239,15 +239,14 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
                 <label htmlFor="signup-confirm-password" className="mb-1.5 block text-xs font-medium text-muted">
                   パスワード（確認用）
                 </label>
-                <input
+                <PasswordInput
                   id="signup-confirm-password"
-                  type="password"
                   required
                   minLength={6}
                   value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
+                  onChange={setConfirmPassword}
                   placeholder="もう一度入力してください"
+                  autoComplete="new-password"
                 />
               </div>
             )}

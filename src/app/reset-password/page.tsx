@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle, KeyRound, Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
+import { PasswordInput } from "@/components/PasswordInput";
 
 type Status = "idle" | "submitting" | "success";
 
@@ -78,15 +79,14 @@ export default function ResetPasswordPage() {
               >
                 新しいパスワード
               </label>
-              <input
+              <PasswordInput
                 id="new-password"
-                type="password"
                 required
                 minLength={6}
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm text-foreground outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
+                onChange={setPassword}
                 placeholder="6文字以上"
+                autoComplete="new-password"
               />
             </div>
 
@@ -97,15 +97,14 @@ export default function ResetPasswordPage() {
               >
                 パスワード（確認用）
               </label>
-              <input
+              <PasswordInput
                 id="confirm-password"
-                type="password"
                 required
                 minLength={6}
                 value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm text-foreground outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
+                onChange={setConfirmPassword}
                 placeholder="もう一度入力してください"
+                autoComplete="new-password"
               />
             </div>
 
