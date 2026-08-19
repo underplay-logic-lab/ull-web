@@ -4,7 +4,7 @@ import { stripe, type SubscriptionTier } from "@/lib/stripe";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 const CREDIT_VALIDITY_DAYS = 180;
-const SUBSCRIPTION_TIERS = new Set<SubscriptionTier>(["entry", "standard"]);
+const SUBSCRIPTION_TIERS = new Set<SubscriptionTier>(["entry", "standard", "pro", "master"]);
 
 // Grants credits and pushes the expiry 180 days out from now — used both
 // for one-time top-ups and every subscription renewal, so a subscriber's

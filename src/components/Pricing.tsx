@@ -71,35 +71,35 @@ export function Pricing() {
           </div>
         </div>
 
-        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           {pricingPlans.map((plan) => (
             <div
               key={plan.id}
-              className={`relative flex flex-col rounded-2xl p-8 ${
+              className={`relative flex flex-col rounded-2xl p-6 ${
                 plan.highlighted
                   ? "border-gradient bg-surface/60 glow-pink"
                   : "border border-border bg-surface/40"
               }`}
             >
               {plan.highlighted && (
-                <span className="absolute top-6 right-6 flex items-center gap-1 rounded-full bg-neon-pink/10 px-3 py-1 text-xs font-mono font-medium text-neon-pink">
+                <span className="absolute top-5 right-5 flex items-center gap-1 rounded-full bg-neon-pink/10 px-3 py-1 text-xs font-mono font-medium text-neon-pink">
                   <Sparkles size={12} />
                   おすすめ
                 </span>
               )}
 
-              <h3 className="text-lg font-bold text-muted">{plan.name}</h3>
+              <h3 className="text-base font-bold text-muted">{plan.name}</h3>
               <div className="mt-3 flex items-baseline gap-1">
-                <span className="text-4xl font-bold tracking-tight text-gradient">
+                <span className="text-3xl font-bold tracking-tight text-gradient">
                   {plan.price}
                 </span>
                 {plan.period && (
-                  <span className="font-mono text-sm text-muted">
+                  <span className="font-mono text-xs text-muted">
                     {plan.period}
                   </span>
                 )}
               </div>
-              <p className="mt-4 text-sm leading-relaxed text-muted">
+              <p className="mt-4 text-xs leading-relaxed text-muted">
                 {plan.description}
               </p>
 
@@ -107,9 +107,9 @@ export function Pricing() {
                 {plan.features.map((feature) => (
                   <li
                     key={feature}
-                    className="flex items-start gap-2.5 text-sm text-foreground/80"
+                    className="flex items-start gap-2.5 text-xs text-foreground/80"
                   >
-                    <Check size={16} className="mt-0.5 shrink-0 text-neon-pink" />
+                    <Check size={14} className="mt-0.5 shrink-0 text-neon-pink" />
                     {feature}
                   </li>
                 ))}
@@ -119,7 +119,7 @@ export function Pricing() {
                 type="button"
                 onClick={() => handlePurchase(plan)}
                 disabled={processingPlanId === plan.id}
-                className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {processingPlanId === plan.id ? (
                   <>
@@ -149,7 +149,7 @@ export function Pricing() {
 
         <p className="mt-8 text-center text-xs text-muted">
           決済は Stripe を利用しています。価格はすべて税込表示です。
-          生成物の商用利用は全プラン・都度購入ともに完全自由です。
+          生成物の権利はユーザーに帰属しますが、商用利用の可否は使用した各AIモデル・LoRA固有のオープンソースライセンスに準じます。
         </p>
       </div>
 

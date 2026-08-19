@@ -10,8 +10,8 @@ export const siteConfig = {
 
 export const navLinks = [
   { label: "Studio", href: "/#studio" },
-  { label: "Products", href: "/#products" },
   { label: "Pricing", href: "/#pricing" },
+  { label: "Products", href: "/#products" },
   { label: "Contact", href: "/#contact" },
 ];
 
@@ -75,7 +75,6 @@ export const pricingPlans: PricingPlan[] = [
     features: [
       "120クレジット付与",
       "購入日から180日間有効",
-      "生成物は商用利用完全自由",
       "追加チャージは何度でも",
     ],
     cta: "購入する",
@@ -89,9 +88,8 @@ export const pricingPlans: PricingPlan[] = [
     features: [
       "毎月300クレジットを自動付与",
       "デイリーボーナスで毎日+1クレジット",
-      "追加チャージが¥400に割引",
+      "追加チャージが10%OFFの¥450に割引",
       "全スタジオご利用可能",
-      "生成物は商用利用完全自由",
     ],
     cta: "購入する",
   },
@@ -100,17 +98,46 @@ export const pricingPlans: PricingPlan[] = [
     name: "月額スタンダード",
     price: "¥2,480",
     period: "/ 月",
-    description: "本格的に使い倒すクリエイター・受託案件向けの上位プラン。",
+    description: "本格的にStudioを使い倒すクリエイター向けのプラン。",
     features: [
       "毎月1,000クレジットを自動付与",
-      "デイリーボーナスで毎日+3クレジット",
-      "追加チャージが¥300に割引",
+      "デイリーボーナスで毎日+2クレジット",
+      "追加チャージが20%OFFの¥400に割引",
       "全スタジオご利用可能",
       "優先サポート対応",
-      "生成物は商用利用完全自由",
+    ],
+    cta: "購入する",
+  },
+  {
+    id: "pro",
+    name: "月額プロ",
+    price: "¥4,980",
+    period: "/ 月",
+    description: "受託案件・大量生成にも対応する上位プラン。",
+    features: [
+      "毎月2,500クレジットを自動付与",
+      "デイリーボーナスで毎日+4クレジット",
+      "追加チャージが30%OFFの¥350に割引",
+      "全スタジオご利用可能",
+      "優先サポート対応",
     ],
     cta: "購入する",
     highlighted: true,
+  },
+  {
+    id: "master",
+    name: "月額マスター",
+    price: "¥9,980",
+    period: "/ 月",
+    description: "チーム利用・大規模制作向けの最上位プラン。",
+    features: [
+      "毎月6,000クレジットを自動付与",
+      "デイリーボーナスで毎日+10クレジット",
+      "追加チャージが50%OFFの¥250に割引",
+      "全スタジオご利用可能",
+      "最優先VIPサポート",
+    ],
+    cta: "購入する",
   },
 ];
 

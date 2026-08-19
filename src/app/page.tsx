@@ -1,7 +1,7 @@
 import { Hero } from "@/components/Hero";
 import { Studio } from "@/components/Studio";
-import { Products } from "@/components/Products";
 import { Pricing } from "@/components/Pricing";
+import { Products } from "@/components/Products";
 import { Contact } from "@/components/Contact";
 import { HomeScrollReset } from "@/components/HomeScrollReset";
 
@@ -14,8 +14,8 @@ export default function Home() {
       <HomeScrollReset />
       <Hero />
       <Studio />
-      <Products />
       <Pricing />
+      <Products />
       <Contact />
     </>
   );

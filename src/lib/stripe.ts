@@ -9,7 +9,7 @@ if (!stripeSecretKey) {
 
 export const stripe = new Stripe(stripeSecretKey);
 
-export type SubscriptionTier = "free" | "entry" | "standard";
+export type SubscriptionTier = "free" | "entry" | "standard" | "pro" | "master";
 
 export type StripePlan = {
   name: string;
@@ -23,8 +23,8 @@ export type StripePlan = {
 
 // Source of truth for what a given Pricing plan actually charges and grants.
 // Never trust a client-supplied price/credit amount — always look it up here.
-// Plan ids "entry" and "standard" double as the subscription_tier values
-// granted on payment (see the webhook).
+// Plan ids "entry"/"standard"/"pro"/"master" double as the subscription_tier
+// values granted on payment (see the webhook).
 export const STRIPE_PLAN_CATALOG: Record<string, StripePlan> = {
   topup: {
     name: "都度チャージ / 120 Credits",
@@ -46,18 +46,36 @@ export const STRIPE_PLAN_CATALOG: Record<string, StripePlan> = {
     credits: 1000,
     recurringInterval: "month",
   },
+  pro: {
+    name: "月額プロ",
+    mode: "subscription",
+    amountJpy: 4980,
+    credits: 2500,
+    recurringInterval: "month",
+  },
+  master: {
+    name: "月額マスター",
+    mode: "subscription",
+    amountJpy: 9980,
+    credits: 6000,
+    recurringInterval: "month",
+  },
 };
 
 // Discounted one-time top-up price by the buyer's current subscription tier.
 export const TOPUP_PRICE_BY_TIER: Record<SubscriptionTier, number> = {
   free: 500,
-  entry: 400,
-  standard: 300,
+  entry: 450,
+  standard: 400,
+  pro: 350,
+  master: 250,
 };
 
 // Credits auto-granted the first time a member logs in on a given day.
 export const DAILY_BONUS_BY_TIER: Record<SubscriptionTier, number> = {
   free: 0,
   entry: 1,
-  standard: 3,
+  standard: 2,
+  pro: 4,
+  master: 10,
 };

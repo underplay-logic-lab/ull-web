@@ -52,7 +52,7 @@ export function Hero() {
           {[
             { value: "¥500〜", label: "都度チャージで開始" },
             { value: "180日", label: "クレジット有効期限" },
-            { value: "100%", label: "商用利用可能" },
+            { value: "5段階", label: "料金プラン" },
           ].map((stat) => (
             <div key={stat.label} className="hidden sm:block">
               <div className="font-mono text-2xl font-bold text-gradient">
