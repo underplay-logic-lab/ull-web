@@ -186,7 +186,7 @@ export function Studio() {
               <Sparkles size={14} className="mt-0.5 shrink-0 text-neon-violet" />
               {user
                 ? "保有クレジットの範囲でいつでも生成できます（1生成につき1クレジット消費）。"
-                : "Studioの利用にはGoogleログインが必要です。ログインすると10クレジットが付与されます。"}
+                : "Studioの利用には新規登録 / ログインが必要です。初回登録で10クレジットが付与されます。"}
             </p>
 
             <p className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-400">
@@ -203,6 +203,11 @@ export function Studio() {
 
           <div className="flex flex-col">
             <p className="mb-1.5 text-xs font-medium text-muted">プレビュー</p>
+
+            <p className="mb-3 text-xs leading-relaxed text-muted">
+              ※生成画像はブラウザを閉じると消滅します。生成後すぐにダウンロードしてください（サーバーに履歴を保持しない完全プライバシー仕様）。
+            </p>
+
             <div
               className={`relative w-full overflow-hidden rounded-xl border border-border bg-background ${RATIO_ASPECT_CLASS[ratio]}`}
             >
@@ -241,10 +246,6 @@ export function Studio() {
                 />
               )}
             </div>
-
-            <p className="mt-3 text-xs leading-relaxed text-muted">
-              ※生成画像はブラウザを閉じると消滅します。生成後すぐにダウンロードしてください（サーバーに履歴を保持しない完全プライバシー仕様）。
-            </p>
 
             {status === "done" && previewUrl && (
               <a
