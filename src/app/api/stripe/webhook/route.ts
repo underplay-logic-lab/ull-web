@@ -360,7 +360,15 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
   if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.created") {
     const subscription = event.data.object as Stripe.Subscription;
     const customerId = resolveCustomerId(subscription.customer);
-    const cancelAtPeriodEnd = Boolean(subscription.cancel_at_period_end);
+    // cancel_at_period_end alone can read false even when a cancellation
+    // has actually been scheduled via the Customer Portal — Stripe sets
+    // cancel_at/canceled_at as timestamps in that case, so treat either as
+    // present as also meaning "reserved to cancel".
+    const cancelAtPeriodEnd = Boolean(
+      subscription.cancel_at_period_end ||
+        subscription.cancel_at !== null ||
+        subscription.canceled_at !== null,
+    );
     const userId = await resolveUserIdForCustomer(customerId, subscription.metadata?.userId);
 
     if (!userId) {
