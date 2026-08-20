@@ -26,15 +26,27 @@ const RANK_STYLE: Record<SubscriptionTier, string> = {
 };
 
 export function MemberRankBadge({ user, className = "" }: MemberRankBadgeProps) {
-  const { tier } = useProfileCredits(user);
+  const { tier, cancelAtPeriodEnd } = useProfileCredits(user);
 
   if (!user || !tier) return null;
+
+  // A reserved cancellation (Customer Portal "cancel at period end") stops
+  // every continuation perk immediately, even though subscription_tier
+  // itself stays at the paid tier until the period actually ends — the
+  // badge needs to say so, not just show the paid tier as if nothing
+  // changed.
+  const showsCancelNotice = cancelAtPeriodEnd && tier !== "free";
 
   return (
     <span
       className={`items-center rounded-full border px-2.5 py-1.5 font-mono text-[10px] font-bold tracking-wider ${RANK_STYLE[tier]} ${className}`}
     >
       {RANK_LABEL[tier]}
+      {showsCancelNotice && (
+        <span className="ml-1 font-sans font-normal tracking-normal text-red-400">
+          （解約予約中・特典停止）
+        </span>
+      )}
     </span>
   );
 }

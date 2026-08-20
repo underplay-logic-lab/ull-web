@@ -7,15 +7,14 @@ export const metadata: Metadata = {
 };
 
 const entries: { label: string; value: string }[] = [
-  { label: "販売事業者名", value: siteConfig.legalName },
+  { label: "販売事業者名", value: "ULL Studio" },
   {
     label: "運営統括責任者",
     value: siteConfig.legalName,
   },
   {
     label: "所在地",
-    value:
-      "請求があった場合には遅滞なく開示いたします。お問い合わせフォームよりご請求ください。",
+    value: "〒150-0043 東京都渋谷区道玄坂1丁目10番8号 渋谷道玄坂東急ビル2F−C",
   },
   {
     label: "電話番号",
@@ -62,7 +61,7 @@ export default function TokushohoPage() {
   return (
     <LegalPage
       title="特定商取引法に基づく表記"
-      updatedAt="2026年8月18日"
+      updatedAt="2026年8月20日"
     >
       <div className="overflow-hidden rounded-2xl border border-border">
         <dl className="divide-y divide-border">
@@ -84,7 +83,7 @@ export default function TokushohoPage() {
 
       <p className="mt-8 text-xs leading-relaxed text-muted">
         ※
-        本表記における所在地・電話番号は、消費者庁の通達に基づき、個人事業主が運営するサービスとして、請求があった場合に遅滞なく開示する対応としています。
+        本表記における電話番号は、消費者庁の通達に基づき、請求があった場合に遅滞なく開示する対応としています。
       </p>
     </LegalPage>
   );

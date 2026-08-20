@@ -85,7 +85,7 @@ export async function POST(request: Request) {
 
     const { data: profile, error: profileError } = await getOrCreateProfile(
       user.id,
-      "subscription_tier, stripe_customer_id",
+      "subscription_tier, stripe_customer_id, cancel_at_period_end",
     );
 
     if (profileError) {
@@ -94,6 +94,10 @@ export async function POST(request: Request) {
 
     let tier = (profile?.subscription_tier as SubscriptionTier | null) ?? "free";
     let stripeCustomerId = profile?.stripe_customer_id as string | null | undefined;
+    // A reserved cancellation forfeits the member top-up discount
+    // immediately, even though subscription_tier stays at the paid tier
+    // until the period actually ends — see the pricing page's notice.
+    const cancelAtPeriodEnd = Boolean(profile?.cancel_at_period_end);
     const origin = request.headers.get("origin") ?? new URL(request.url).origin;
 
     if (!stripeCustomerId) {
@@ -137,8 +141,15 @@ export async function POST(request: Request) {
       }
     }
 
-    // The one-time top-up is discounted for active subscribers.
-    const amountJpy = planId === "topup" ? (TOPUP_PRICE_BY_TIER[tier] ?? plan.amountJpy) : plan.amountJpy;
+    // The one-time top-up is discounted for active subscribers only — a
+    // reserved cancellation forces full price (plan.amountJpy) regardless
+    // of tier, same as "free".
+    const amountJpy =
+      planId === "topup"
+        ? cancelAtPeriodEnd
+          ? plan.amountJpy
+          : (TOPUP_PRICE_BY_TIER[tier] ?? plan.amountJpy)
+        : plan.amountJpy;
 
     if (plan.mode === "subscription" && !plan.priceId) {
       return apiErrorResponse(

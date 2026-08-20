@@ -131,7 +131,11 @@ export function Pricing() {
                 )}
               </button>
 
-              {plan.id !== "topup" && (
+              {plan.id === "topup" ? (
+                <p className="mt-3 text-[11px] leading-relaxed text-muted">
+                  ※ 会員限定割引（最大50%OFF）は【サブスクリプション継続中】の方限定の特別優待です。解約予約中またはFreeプランは通常価格（500円）となります。
+                </p>
+              ) : (
                 <p className="mt-3 text-[11px] leading-relaxed text-muted">
                   ※サブスクリプションを解約予約された場合、デイリーログインボーナスの付与は即日停止されます（保有クレジットは有効期限までご利用可能）。
                 </p>

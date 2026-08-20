@@ -3,20 +3,24 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Menu, X, LogIn, LogOut, UserCircle2 } from "lucide-react";
+import { Menu, X, LogIn, LogOut, Settings, UserCircle2 } from "lucide-react";
 import { navLinks, siteConfig } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
 import { BrandLink } from "@/components/BrandLink";
 import { CreditsBadge } from "@/components/CreditsBadge";
 import { MemberRankBadge } from "@/components/MemberRankBadge";
+import { CancellationWarningModal } from "@/components/CancellationWarningModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
+import { useProfileCredits } from "@/hooks/useProfileCredits";
 import { supabase } from "@/lib/supabaseClient";
 
 export function Header() {
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
+  const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const { user } = useSupabaseUser();
+  const { tier } = useProfileCredits(user);
   const pathname = usePathname();
 
   useEffect(() => {
@@ -123,6 +127,17 @@ export function Header() {
                   {displayName}
                 </span>
               </div>
+              {tier && tier !== "free" && (
+                <button
+                  type="button"
+                  onClick={() => setCancelModalOpen(true)}
+                  aria-label="契約管理"
+                  title="契約管理"
+                  className="text-muted transition-colors hover:text-neon-violet"
+                >
+                  <Settings size={18} />
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleLogout}
@@ -193,17 +208,33 @@ export function Header() {
                     {displayName}
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMobileOpen(false);
-                    handleLogout();
-                  }}
-                  aria-label="ログアウト"
-                  className="shrink-0 text-muted transition-colors hover:text-neon-pink"
-                >
-                  <LogOut size={18} />
-                </button>
+                <div className="flex shrink-0 items-center gap-3">
+                  {tier && tier !== "free" && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMobileOpen(false);
+                        setCancelModalOpen(true);
+                      }}
+                      aria-label="契約管理"
+                      title="契約管理"
+                      className="text-muted transition-colors hover:text-neon-violet"
+                    >
+                      <Settings size={18} />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileOpen(false);
+                      handleLogout();
+                    }}
+                    aria-label="ログアウト"
+                    className="text-muted transition-colors hover:text-neon-pink"
+                  >
+                    <LogOut size={18} />
+                  </button>
+                </div>
               </div>
             ) : (
               <button
@@ -223,6 +254,11 @@ export function Header() {
       )}
 
       <LoginModal open={loginOpen} onClose={() => setLoginOpen(false)} />
+      <CancellationWarningModal
+        open={cancelModalOpen}
+        onClose={() => setCancelModalOpen(false)}
+        tier={tier ?? "free"}
+      />
     </header>
   );
 }

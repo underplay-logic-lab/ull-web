@@ -38,6 +38,9 @@ export function Footer() {
         <p className="mt-8 text-center text-xs text-muted sm:text-left">
           &copy; {year} {siteConfig.legalName}. All rights reserved.
         </p>
+        <p className="mt-1.5 text-center text-[11px] text-muted/70 sm:text-left">
+          〒150-0043 東京都渋谷区道玄坂1丁目10番8号 渋谷道玄坂東急ビル2F−C
+        </p>
       </div>
     </footer>
   );

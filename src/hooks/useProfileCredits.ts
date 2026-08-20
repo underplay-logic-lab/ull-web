@@ -8,6 +8,17 @@ import { supabase } from "@/lib/supabaseClient";
 // since this hook runs in the browser.
 export type SubscriptionTier = "free" | "entry" | "standard" | "pro" | "master";
 
+// Mirrors lib/stripe.ts's TOPUP_PRICE_BY_TIER — the discounted top-up price
+// this tier currently gets, for display only (the checkout route is the
+// actual source of truth and re-derives this server-side).
+export const TOPUP_PRICE_BY_TIER: Record<SubscriptionTier, number> = {
+  free: 500,
+  entry: 450,
+  standard: 400,
+  pro: 350,
+  master: 250,
+};
+
 type FetchStatus = "idle" | "ready" | "error";
 
 const CREDITS_UPDATED_EVENT = "profile-credits-updated";
@@ -28,6 +39,7 @@ export function broadcastCreditsUpdate(userId: string, credits: number) {
 export function useProfileCredits(user: User | null) {
   const [rawCredits, setCredits] = useState<number | null>(null);
   const [tier, setTier] = useState<SubscriptionTier | null>(null);
+  const [cancelAtPeriodEnd, setCancelAtPeriodEnd] = useState(false);
   const [status, setStatus] = useState<FetchStatus>("idle");
 
   useEffect(() => {
@@ -47,7 +59,7 @@ export function useProfileCredits(user: User | null) {
 
     supabase
       .from("profiles")
-      .select("credits, subscription_tier")
+      .select("credits, subscription_tier, cancel_at_period_end")
       .eq("id", user.id)
       .single()
       .then(({ data, error }) => {
@@ -58,6 +70,7 @@ export function useProfileCredits(user: User | null) {
         } else {
           setCredits(data?.credits ?? null);
           setTier((data?.subscription_tier as SubscriptionTier | null) ?? "free");
+          setCancelAtPeriodEnd(Boolean(data?.cancel_at_period_end));
           setStatus("ready");
         }
       });
@@ -76,12 +89,19 @@ export function useProfileCredits(user: User | null) {
           filter: `id=eq.${user.id}`,
         },
         (payload) => {
-          const next = payload.new as { credits?: number; subscription_tier?: string };
+          const next = payload.new as {
+            credits?: number;
+            subscription_tier?: string;
+            cancel_at_period_end?: boolean;
+          };
           if (typeof next.credits === "number") {
             setCredits(next.credits);
           }
           if (typeof next.subscription_tier === "string") {
             setTier(next.subscription_tier as SubscriptionTier);
+          }
+          if (typeof next.cancel_at_period_end === "boolean") {
+            setCancelAtPeriodEnd(next.cancel_at_period_end);
           }
         },
       )
@@ -103,8 +123,8 @@ export function useProfileCredits(user: User | null) {
   }, [user]);
 
   if (!user) {
-    return { credits: null, tier: null, loading: false };
+    return { credits: null, tier: null, cancelAtPeriodEnd: false, loading: false };
   }
 
-  return { credits: rawCredits, tier, loading: status === "idle" };
+  return { credits: rawCredits, tier, cancelAtPeriodEnd, loading: status === "idle" };
 }
