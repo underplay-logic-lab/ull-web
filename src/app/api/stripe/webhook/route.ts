@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import type Stripe from "stripe";
-import { stripe, STRIPE_PLAN_CATALOG, TIER_BY_PRICE_ID, type SubscriptionTier } from "@/lib/stripe";
+import {
+  stripe,
+  STRIPE_PLAN_CATALOG,
+  TIER_BY_PRICE_ID,
+  SUBSCRIPTION_TIER_RANK,
+  type SubscriptionTier,
+} from "@/lib/stripe";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 const CREDIT_VALIDITY_DAYS = 180;
@@ -162,41 +168,100 @@ export async function POST(request: Request) {
   if (event.type === "customer.subscription.updated") {
     const subscription = event.data.object as Stripe.Subscription;
     const userId = subscription.metadata?.userId;
-    const priceId = subscription.items.data[0]?.price?.id;
-    const newTier = priceId ? TIER_BY_PRICE_ID[priceId] : undefined;
-    const previousPlanId = subscription.metadata?.planId;
 
-    // Only act when the price actually changed from what we last recorded
-    // (subscription.updated also fires for unrelated changes like payment
-    // method or cancel_at_period_end toggles) — and skip past cancellation,
-    // which customer.subscription.deleted handles on its own.
-    if (userId && newTier && newTier !== previousPlanId && subscription.status !== "canceled") {
-      const newPlan = STRIPE_PLAN_CATALOG[newTier];
-
-      const { error: tierError } = await supabaseAdmin
+    // Skip past cancellation, which customer.subscription.deleted handles
+    // on its own.
+    if (userId && subscription.status !== "canceled") {
+      // Sync the "cancel at period end" reservation flag on every update —
+      // toggling it in the Customer Portal fires this event without
+      // necessarily changing the price/tier, and the daily login bonus
+      // route needs to see it immediately (bonus stops the moment a
+      // cancellation is reserved, not at period end). Non-fatal on failure
+      // so a hiccup here doesn't block the tier/credit logic below.
+      const { error: cancelFlagError } = await supabaseAdmin
         .from("profiles")
-        .update({ subscription_tier: newTier })
+        .update({ cancel_at_period_end: subscription.cancel_at_period_end })
         .eq("id", userId);
 
-      if (tierError) {
-        console.error("[stripe/webhook] failed to update tier on plan change:", tierError.message);
-        return NextResponse.json({ error: "Tier update failed." }, { status: 500 });
+      if (cancelFlagError) {
+        console.error(
+          "[stripe/webhook] failed to sync cancel_at_period_end:",
+          cancelFlagError.message,
+        );
       }
 
-      // Keep the subscription's own metadata in sync with the new plan, so
-      // the next invoice.paid renewal grants the new plan's credits instead
-      // of the stale amount from whatever plan the subscription started on.
-      try {
-        await stripe.subscriptions.update(subscription.id, {
-          metadata: { userId, planId: newTier, credits: String(newPlan.credits) },
-        });
-      } catch (err) {
-        console.error("[stripe/webhook] failed to sync subscription metadata:", err);
-      }
+      const priceId = subscription.items.data[0]?.price?.id;
+      const newTier = priceId ? TIER_BY_PRICE_ID[priceId] : undefined;
 
-      console.log(
-        `[stripe/webhook] user ${userId} switched plans: ${previousPlanId ?? "unknown"} -> ${newTier}`,
-      );
+      if (newTier) {
+        // Compare against profiles.subscription_tier (the source of truth),
+        // not the subscription's own metadata — that mirror can drift, and
+        // a Customer Portal plan switch is exactly the kind of external
+        // change that wouldn't have updated it yet.
+        const { data: profile, error: profileError } = await supabaseAdmin
+          .from("profiles")
+          .select("subscription_tier")
+          .eq("id", userId)
+          .single();
+
+        if (profileError) {
+          console.error(
+            "[stripe/webhook] failed to load profile for plan-change check:",
+            profileError.message,
+          );
+          return NextResponse.json({ error: "Profile lookup failed." }, { status: 500 });
+        }
+
+        const currentTier = (profile?.subscription_tier as SubscriptionTier | undefined) ?? "free";
+
+        // subscription.updated also fires for unrelated changes (payment
+        // method, cancel_at_period_end toggles) — only act on an actual
+        // plan change.
+        if (newTier !== currentTier) {
+          const newPlan = STRIPE_PLAN_CATALOG[newTier];
+          const isUpgrade = SUBSCRIPTION_TIER_RANK[newTier] > SUBSCRIPTION_TIER_RANK[currentTier];
+
+          if (isUpgrade) {
+            // Grant the new tier's full monthly credits immediately
+            // instead of waiting for the next invoice.paid renewal, so an
+            // upgrade takes effect right away rather than up to a month
+            // later. grantCredits also updates subscription_tier and
+            // pushes credits_expire_at 180 days out.
+            const granted = await grantCredits(userId, newPlan.credits, { tier: newTier });
+
+            if (!granted) {
+              return NextResponse.json({ error: "Credit grant failed." }, { status: 500 });
+            }
+          } else {
+            // A downgrade takes effect on tier alone — no immediate credit
+            // grant, and the existing balance/expiry are left untouched.
+            const { error: tierError } = await supabaseAdmin
+              .from("profiles")
+              .update({ subscription_tier: newTier })
+              .eq("id", userId);
+
+            if (tierError) {
+              console.error("[stripe/webhook] failed to update tier on plan change:", tierError.message);
+              return NextResponse.json({ error: "Tier update failed." }, { status: 500 });
+            }
+          }
+
+          // Keep the subscription's own metadata in sync with the new
+          // plan, so the next invoice.paid renewal grants the new plan's
+          // credits.
+          try {
+            await stripe.subscriptions.update(subscription.id, {
+              metadata: { userId, planId: newTier, credits: String(newPlan.credits) },
+            });
+          } catch (err) {
+            console.error("[stripe/webhook] failed to sync subscription metadata:", err);
+          }
+
+          console.log(
+            `[stripe/webhook] user ${userId} switched plans: ${currentTier} -> ${newTier}${isUpgrade ? " (upgrade, credits granted immediately)" : ""}`,
+          );
+        }
+      }
     }
   }
 
@@ -207,7 +272,10 @@ export async function POST(request: Request) {
     if (userId) {
       const { error: downgradeError } = await supabaseAdmin
         .from("profiles")
-        .update({ subscription_tier: "free" satisfies SubscriptionTier })
+        .update({
+          subscription_tier: "free" satisfies SubscriptionTier,
+          cancel_at_period_end: false,
+        })
         .eq("id", userId);
 
       if (downgradeError) {

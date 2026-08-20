@@ -33,7 +33,7 @@ export async function POST(request: Request) {
 
   const { data: profile, error: profileError } = await getOrCreateProfile(
     userId,
-    "credits, subscription_tier, last_login_bonus_at",
+    "credits, subscription_tier, last_login_bonus_at, cancel_at_period_end",
   );
 
   if (profileError) {
@@ -44,7 +44,12 @@ export async function POST(request: Request) {
   const tier = (profile?.subscription_tier as SubscriptionTier | null) ?? "free";
   const bonus = DAILY_BONUS_BY_TIER[tier] ?? 0;
 
-  if (bonus <= 0) {
+  // A reserved cancellation (Customer Portal "cancel at period end") stops
+  // the daily login bonus immediately, even though subscription_tier stays
+  // at the paid tier until the period actually ends.
+  const cancelAtPeriodEnd = Boolean(profile?.cancel_at_period_end);
+
+  if (bonus <= 0 || cancelAtPeriodEnd) {
     return NextResponse.json({ granted: false });
   }
 

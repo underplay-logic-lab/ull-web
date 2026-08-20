@@ -130,6 +130,12 @@ export function Pricing() {
                   plan.cta
                 )}
               </button>
+
+              {plan.id !== "topup" && (
+                <p className="mt-3 text-[11px] leading-relaxed text-muted">
+                  ※サブスクリプションを解約予約された場合、デイリーログインボーナスの付与は即日停止されます（保有クレジットは有効期限までご利用可能）。
+                </p>
+              )}
             </div>
           ))}
         </div>
@@ -150,6 +156,8 @@ export function Pricing() {
         <p className="mt-8 text-center text-xs text-muted">
           決済は Stripe を利用しています。価格はすべて税込表示です。
           生成物の権利はユーザーに帰属しますが、商用利用の可否は使用した各AIモデル・LoRA固有のオープンソースライセンスに準じます。
+          <br />
+          ※サブスクリプションを解約予約された場合、デイリーログインボーナスの付与は即日停止されます（保有クレジットは有効期限までご利用可能）。
         </p>
       </div>
 

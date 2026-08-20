@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 
 export default function TermsPage() {
   return (
-    <LegalPage title="利用規約" updatedAt="2026年8月18日">
+    <LegalPage title="利用規約" updatedAt="2026年8月20日">
       <LegalSection heading="第1条（適用）">
         <p>
           本規約は、{siteConfig.name}（以下「当サイト」といいます）が提供するAI生成サービス「Studio」、ツール配布、および関連コンテンツ（以下「本サービス」といいます）の利用条件を定めるものです。ユーザーは本サービスを利用することで、本規約に同意したものとみなされます。
@@ -21,6 +21,9 @@ export default function TermsPage() {
         </p>
         <p>
           決済処理は外部決済代行事業者（Stripe等）を通じて行われます。購入手続きが完了した後のクレジットの返金は、法令に定める場合を除き、原則として行いません。
+        </p>
+        <p>
+          月額サブスクリプションプランには、ログイン日ごとに1日1回付与されるデイリーログインボーナスが含まれます。サブスクリプションの解約予約（次回更新日をもって解約する設定）がされた場合、デイリーログインボーナスの付与は予約された時点で即日停止されます。なお、既に保有しているクレジットは、その有効期限まで引き続きご利用いただけます。
         </p>
       </LegalSection>
 

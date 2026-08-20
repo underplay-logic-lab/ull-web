@@ -100,6 +100,16 @@ export const DAILY_BONUS_BY_TIER: Record<SubscriptionTier, number> = {
   master: 10,
 };
 
+// Numeric ordering used to tell an upgrade from a downgrade when a Customer
+// Portal plan switch fires customer.subscription.updated (see the webhook).
+export const SUBSCRIPTION_TIER_RANK: Record<SubscriptionTier, number> = {
+  free: 0,
+  entry: 1,
+  standard: 2,
+  pro: 3,
+  master: 4,
+};
+
 // Shared by /api/stripe/portal and /api/stripe/checkout's existing-subscriber
 // redirect. Uses the pre-configured portal (plan switching enabled across
 // the 4 subscription products) when STRIPE_PORTAL_CONFIGURATION_ID is set,
