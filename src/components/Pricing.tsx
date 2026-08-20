@@ -4,17 +4,30 @@ import { useState } from "react";
 import { ArrowRight, Check, Gift, Loader2, Sparkles } from "lucide-react";
 import { pricingPlans, type PricingPlan } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
+import { CancellationWarningModal } from "@/components/CancellationWarningModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
+import { useProfileCredits } from "@/hooks/useProfileCredits";
 import { supabase } from "@/lib/supabaseClient";
 
 export function Pricing() {
   const { user } = useSupabaseUser();
+  const { tier } = useProfileCredits(user);
   const [loginOpen, setLoginOpen] = useState(false);
+  const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [processingPlanId, setProcessingPlanId] = useState<string | null>(null);
 
   const handlePurchase = async (plan: PricingPlan) => {
     if (!user) {
       setLoginOpen(true);
+      return;
+    }
+
+    // An existing paid subscriber clicking any subscription-plan button
+    // (upgrade, downgrade, or the plan they're already on) is routed
+    // server-side straight to the Customer Portal — show what they'd lose
+    // first instead of letting that redirect happen silently.
+    if (plan.id !== "topup" && tier && tier !== "free") {
+      setCancelModalOpen(true);
       return;
     }
 
@@ -162,6 +175,8 @@ export function Pricing() {
           生成物の権利はユーザーに帰属しますが、商用利用の可否は使用した各AIモデル・LoRA固有のオープンソースライセンスに準じます。
           <br />
           ※サブスクリプションを解約予約された場合、デイリーログインボーナスの付与は即日停止されます（保有クレジットは有効期限までご利用可能）。
+          <br />
+          ※ 請求書・領収書（PDF）は【契約管理 ➔ 請求履歴】より24時間いつでもダウンロードいただけます（インボイス・確定申告対応）。
         </p>
       </div>
 
@@ -169,6 +184,11 @@ export function Pricing() {
         open={loginOpen}
         onClose={() => setLoginOpen(false)}
         message="購入を続けるにはログインしてください。"
+      />
+      <CancellationWarningModal
+        open={cancelModalOpen}
+        onClose={() => setCancelModalOpen(false)}
+        tier={tier ?? "free"}
       />
     </section>
   );

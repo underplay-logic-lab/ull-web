@@ -96,6 +96,10 @@ export function CancellationWarningModal({ open, onClose, tier }: CancellationWa
           ※ ご購入済みの保有クレジット残高は有効期限までそのままご利用いただけます。
         </p>
 
+        <p className="mt-2 text-xs leading-relaxed text-muted">
+          ※ 請求書・領収書（PDF）は【契約管理 ➔ 請求履歴】より24時間いつでもダウンロードいただけます（インボイス・確定申告対応）。
+        </p>
+
         {error && (
           <p className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
             {error}
@@ -122,7 +126,7 @@ export function CancellationWarningModal({ open, onClose, tier }: CancellationWa
               手続きページへ移動中...
             </>
           ) : (
-            "特典を失っても解約手続きへ進む"
+            "特典を失っても変更・解約手続きへ進む"
           )}
         </button>
       </div>

@@ -131,8 +131,8 @@ export function Header() {
                 <button
                   type="button"
                   onClick={() => setCancelModalOpen(true)}
-                  aria-label="契約管理"
-                  title="契約管理"
+                  aria-label="契約管理 / 領収書発行"
+                  title="契約管理 / 領収書発行"
                   className="text-muted transition-colors hover:text-neon-violet"
                 >
                   <Settings size={18} />
@@ -216,11 +216,10 @@ export function Header() {
                         setMobileOpen(false);
                         setCancelModalOpen(true);
                       }}
-                      aria-label="契約管理"
-                      title="契約管理"
-                      className="text-muted transition-colors hover:text-neon-violet"
+                      className="flex items-center gap-1 text-[11px] text-muted transition-colors hover:text-neon-violet"
                     >
-                      <Settings size={18} />
+                      <Settings size={16} />
+                      契約管理 / 領収書発行
                     </button>
                   )}
                   <button
