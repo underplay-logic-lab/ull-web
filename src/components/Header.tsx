@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Menu, X, LogIn, LogOut, UserCircle2 } from "lucide-react";
 import { navLinks, siteConfig } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
@@ -16,6 +17,7 @@ export function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const { user } = useSupabaseUser();
+  const pathname = usePathname();
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 20);
@@ -52,6 +54,19 @@ export function Header() {
     supabase.auth.signOut();
   };
 
+  // Re-clicking a nav link for the section already in view is a no-op for
+  // the browser (the URL hash doesn't change, so it never scrolls) — force
+  // it here. Only applies on the homepage itself; links from another page
+  // (e.g. /privacy) fall through to Link's normal navigation.
+  const handleNavClick = (event: React.MouseEvent<HTMLAnchorElement>, href: string) => {
+    const targetId = href.split("#")[1];
+    if (!targetId || pathname !== "/") return;
+
+    event.preventDefault();
+    document.getElementById(targetId)?.scrollIntoView({ behavior: "smooth" });
+    window.history.replaceState(null, "", `#${targetId}`);
+  };
+
   const avatarUrl =
     user?.user_metadata?.avatar_url ?? user?.user_metadata?.picture ?? null;
   const displayName =
@@ -78,6 +93,7 @@ export function Header() {
             <Link
               key={link.href}
               href={link.href}
+              onClick={(e) => handleNavClick(e, link.href)}
               className="text-sm text-muted transition-colors hover:text-neon-pink"
             >
               {link.label}
@@ -150,7 +166,10 @@ export function Header() {
                 key={link.href}
                 href={link.href}
                 className="text-sm text-muted transition-colors hover:text-neon-pink"
-                onClick={() => setMobileOpen(false)}
+                onClick={(e) => {
+                  setMobileOpen(false);
+                  handleNavClick(e, link.href);
+                }}
               >
                 {link.label}
               </Link>

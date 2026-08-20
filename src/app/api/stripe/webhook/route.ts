@@ -90,6 +90,26 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid signature." }, { status: 400 });
   }
 
+  // Every branch below writes to Supabase and none of it is expected to
+  // throw synchronously, but a malformed/unexpected Stripe payload could
+  // still do so — and an uncaught throw here means Stripe just sees a
+  // generic 500 with nothing in our own logs to explain why a purchase's
+  // credits never landed. Wrap the whole dispatch so any such failure is
+  // logged with the event id/type before Stripe retries.
+  try {
+    await handleEvent(event);
+  } catch (err) {
+    console.error(
+      `[stripe/webhook] unhandled error processing event ${event.id} (${event.type}):`,
+      err,
+    );
+    return NextResponse.json({ error: "Webhook handler failed." }, { status: 500 });
+  }
+
+  return NextResponse.json({ received: true });
+}
+
+async function handleEvent(event: Stripe.Event): Promise<void> {
   if (event.type === "checkout.session.completed") {
     const session = event.data.object as Stripe.Checkout.Session;
 
@@ -101,7 +121,15 @@ export async function POST(request: Request) {
     // happen whenever userId is present.
     const userId = session.metadata?.userId;
 
-    if (userId) {
+    console.log(
+      `[stripe/webhook] checkout.session.completed: session=${session.id} mode=${session.mode} userId=${userId ?? "(none)"} metadata=${JSON.stringify(session.metadata)}`,
+    );
+
+    if (!userId) {
+      console.error(
+        `[stripe/webhook] checkout.session.completed ${session.id} has no metadata.userId — cannot credit anyone.`,
+      );
+    } else {
       const planId = session.metadata?.planId;
       const creditsToAdd = parseInt(session.metadata?.credits || "0", 10) || 0;
 
@@ -118,7 +146,7 @@ export async function POST(request: Request) {
       });
 
       if (!granted) {
-        return NextResponse.json({ error: "Credit grant failed." }, { status: 500 });
+        throw new Error(`Credit grant failed for session ${session.id} (user ${userId}).`);
       }
     }
   }
@@ -147,11 +175,9 @@ export async function POST(request: Request) {
           .single();
 
         if (profileError) {
-          console.error(
-            "[stripe/webhook] failed to load profile for renewal credit grant:",
-            profileError.message,
+          throw new Error(
+            `Failed to load profile for renewal credit grant (user ${userId}): ${profileError.message}`,
           );
-          return NextResponse.json({ error: "Profile lookup failed." }, { status: 500 });
         }
 
         const tier = profile?.subscription_tier as SubscriptionTier | undefined;
@@ -163,7 +189,7 @@ export async function POST(request: Request) {
           });
 
           if (!granted) {
-            return NextResponse.json({ error: "Credit grant failed." }, { status: 500 });
+            throw new Error(`Renewal credit grant failed for user ${userId}.`);
           }
         }
       }
@@ -210,11 +236,9 @@ export async function POST(request: Request) {
           .single();
 
         if (profileError) {
-          console.error(
-            "[stripe/webhook] failed to load profile for plan-change check:",
-            profileError.message,
+          throw new Error(
+            `Failed to load profile for plan-change check (user ${userId}): ${profileError.message}`,
           );
-          return NextResponse.json({ error: "Profile lookup failed." }, { status: 500 });
         }
 
         const currentTier = (profile?.subscription_tier as SubscriptionTier | undefined) ?? "free";
@@ -235,7 +259,7 @@ export async function POST(request: Request) {
             const granted = await grantCredits(userId, newPlan.credits, { tier: newTier });
 
             if (!granted) {
-              return NextResponse.json({ error: "Credit grant failed." }, { status: 500 });
+              throw new Error(`Upgrade credit grant failed for user ${userId} (-> ${newTier}).`);
             }
           } else {
             // A downgrade takes effect on tier alone — no immediate credit
@@ -246,8 +270,9 @@ export async function POST(request: Request) {
               .eq("id", userId);
 
             if (tierError) {
-              console.error("[stripe/webhook] failed to update tier on plan change:", tierError.message);
-              return NextResponse.json({ error: "Tier update failed." }, { status: 500 });
+              throw new Error(
+                `Failed to update tier on plan change (user ${userId} -> ${newTier}): ${tierError.message}`,
+              );
             }
           }
 
@@ -284,13 +309,10 @@ export async function POST(request: Request) {
         .eq("id", userId);
 
       if (downgradeError) {
-        console.error("[stripe/webhook] failed to downgrade tier:", downgradeError.message);
-        return NextResponse.json({ error: "Tier downgrade failed." }, { status: 500 });
+        throw new Error(`Failed to downgrade tier for user ${userId}: ${downgradeError.message}`);
       }
 
       console.log(`[stripe/webhook] subscription ended, reverted user ${userId} to free tier`);
     }
   }
-
-  return NextResponse.json({ received: true });
 }

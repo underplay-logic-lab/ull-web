@@ -31,6 +31,11 @@ export function Studio() {
   const [ratio, setRatio] = useState<AspectRatio>("1:1");
   const [status, setStatus] = useState<Status>("idle");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  // The aspect ratio the currently-displayed preview was actually generated
+  // with — kept separate from `ratio` (the live selector) so changing the
+  // selector after a generation doesn't stretch/crop the image already on
+  // screen.
+  const [previewRatio, setPreviewRatio] = useState<AspectRatio | null>(null);
   const [downloadFilename, setDownloadFilename] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
@@ -74,6 +79,7 @@ export function Studio() {
       }
 
       setPreviewUrl(data.image as string);
+      setPreviewRatio(ratio);
       setDownloadFilename(buildDownloadFilename());
       setStatus("done");
 
@@ -216,7 +222,9 @@ export function Studio() {
             </p>
 
             <div
-              className={`relative w-full overflow-hidden rounded-xl border border-border bg-background ${RATIO_ASPECT_CLASS[ratio]}`}
+              className={`relative w-full overflow-hidden rounded-xl border border-border bg-background ${
+                RATIO_ASPECT_CLASS[status === "done" && previewRatio ? previewRatio : ratio]
+              }`}
             >
               {status === "loading" && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface/60">
@@ -249,7 +257,7 @@ export function Studio() {
                 <img
                   src={previewUrl}
                   alt={prompt || "生成されたプレビュー"}
-                  className="h-full w-full object-cover"
+                  className="h-full w-full object-contain"
                 />
               )}
             </div>
