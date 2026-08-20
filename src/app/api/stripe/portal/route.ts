@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { createBillingPortalSession } from "@/lib/stripe";
+import { createBillingPortalSession, resolveStripeCustomerId, type SubscriptionTier } from "@/lib/stripe";
 import { getOrCreateProfile } from "@/lib/profile";
 import { apiErrorResponse } from "@/lib/apiError";
 
@@ -59,14 +59,29 @@ export async function POST(request: Request) {
 
     const { data: profile, error: profileError } = await getOrCreateProfile(
       userData.user.id,
-      "stripe_customer_id",
+      "stripe_customer_id, subscription_tier",
     );
 
     if (profileError) {
       return apiErrorResponse(profileError, "load_profile", 500, LOG_PREFIX);
     }
 
-    const stripeCustomerId = profile?.stripe_customer_id as string | null | undefined;
+    let stripeCustomerId = profile?.stripe_customer_id as string | null | undefined;
+    const subscriptionTier = profile?.subscription_tier as SubscriptionTier | null | undefined;
+
+    if (!stripeCustomerId) {
+      try {
+        const healed = await resolveStripeCustomerId({
+          userId: userData.user.id,
+          email: userData.user.email,
+          stripeCustomerId,
+          subscriptionTier,
+        });
+        stripeCustomerId = healed.customerId ?? undefined;
+      } catch (err) {
+        return apiErrorResponse(err, "resolve_stripe_customer_id", 500, LOG_PREFIX);
+      }
+    }
 
     if (!stripeCustomerId) {
       return NextResponse.json(

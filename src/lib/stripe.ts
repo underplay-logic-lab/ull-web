@@ -1,5 +1,6 @@
 import "server-only";
 import Stripe from "stripe";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
 
@@ -111,4 +112,67 @@ export async function createBillingPortalSession(customerId: string, returnUrl: 
     return_url: returnUrl,
     ...(configurationId ? { configuration: configurationId } : {}),
   });
+}
+
+// Self-heals a profile whose stripe_customer_id is null — this can happen if
+// a customer was created directly in Stripe (e.g. by support) without the
+// webhook ever writing it back, or if a past write to profiles failed after
+// Stripe already had the customer. Rather than erroring, look the customer
+// up by email and repair the row; only in the genuine "not found" case is
+// the row corrected the other way (subscription_tier forced back to "free"),
+// since a tier without a matching Stripe customer can't actually be billed.
+export async function resolveStripeCustomerId(params: {
+  userId: string;
+  email: string | null | undefined;
+  stripeCustomerId: string | null | undefined;
+  subscriptionTier: SubscriptionTier | null | undefined;
+}): Promise<{ customerId: string | null; tierWasReset: boolean }> {
+  const { userId, email, stripeCustomerId, subscriptionTier } = params;
+
+  if (stripeCustomerId) {
+    return { customerId: stripeCustomerId, tierWasReset: false };
+  }
+
+  let foundCustomerId: string | null = null;
+
+  if (email) {
+    const existing = await stripe.customers.list({ email, limit: 1 });
+    foundCustomerId = existing.data[0]?.id ?? null;
+  }
+
+  if (foundCustomerId) {
+    const { error } = await supabaseAdmin
+      .from("profiles")
+      .update({ stripe_customer_id: foundCustomerId })
+      .eq("id", userId);
+
+    if (error) {
+      console.error(
+        `[resolveStripeCustomerId] failed to persist healed stripe_customer_id for user ${userId}:`,
+        error.message,
+      );
+    }
+
+    return { customerId: foundCustomerId, tierWasReset: false };
+  }
+
+  let tierWasReset = false;
+
+  if (subscriptionTier && subscriptionTier !== "free") {
+    const { error } = await supabaseAdmin
+      .from("profiles")
+      .update({ subscription_tier: "free" })
+      .eq("id", userId);
+
+    if (error) {
+      console.error(
+        `[resolveStripeCustomerId] failed to reset stale subscription_tier for user ${userId}:`,
+        error.message,
+      );
+    } else {
+      tierWasReset = true;
+    }
+  }
+
+  return { customerId: null, tierWasReset };
 }

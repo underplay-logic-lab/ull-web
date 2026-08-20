@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   stripe,
   createBillingPortalSession,
+  resolveStripeCustomerId,
   STRIPE_PLAN_CATALOG,
   TOPUP_PRICE_BY_TIER,
   type SubscriptionTier,
@@ -91,9 +92,26 @@ export async function POST(request: Request) {
       return apiErrorResponse(profileError, "load_profile", 500, LOG_PREFIX);
     }
 
-    const tier = (profile?.subscription_tier as SubscriptionTier | null) ?? "free";
-    const stripeCustomerId = profile?.stripe_customer_id as string | null | undefined;
+    let tier = (profile?.subscription_tier as SubscriptionTier | null) ?? "free";
+    let stripeCustomerId = profile?.stripe_customer_id as string | null | undefined;
     const origin = request.headers.get("origin") ?? new URL(request.url).origin;
+
+    if (!stripeCustomerId) {
+      try {
+        const healed = await resolveStripeCustomerId({
+          userId: user.id,
+          email: user.email,
+          stripeCustomerId,
+          subscriptionTier: tier,
+        });
+        stripeCustomerId = healed.customerId ?? undefined;
+        if (healed.tierWasReset) {
+          tier = "free";
+        }
+      } catch (err) {
+        return apiErrorResponse(err, "resolve_stripe_customer_id", 500, LOG_PREFIX);
+      }
+    }
 
     // Already on a paid tier and trying to buy another subscription plan:
     // send them to the Customer Portal to change/cancel instead of letting a
@@ -135,6 +153,7 @@ export async function POST(request: Request) {
       const session = await stripe.checkout.sessions.create({
         mode: plan.mode,
         payment_method_types: ["card"],
+        ...(stripeCustomerId ? { customer: stripeCustomerId } : {}),
         line_items: [
           plan.mode === "subscription"
             ? { price: plan.priceId as string, quantity: 1 }
