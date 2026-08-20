@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, Loader2, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Loader2, X } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 import { TOPUP_PRICE_BY_TIER, type SubscriptionTier } from "@/hooks/useProfileCredits";
 
@@ -13,6 +13,15 @@ type CancellationWarningModalProps = {
 };
 
 const FULL_PRICE = TOPUP_PRICE_BY_TIER.free;
+
+// What the Stripe Customer Portal actually lets a member do — shown up
+// front so someone here only for a receipt or an upgrade isn't greeted
+// with cancellation-flavored copy before they even reach the portal.
+const PORTAL_CAPABILITIES = [
+  "領収書・請求書（PDF）のダウンロード（インボイス・確定申告対応）",
+  "プランのアップグレード・変更",
+  "お支払い方法の更新・解約手続き",
+];
 
 export function CancellationWarningModal({ open, onClose, tier }: CancellationWarningModalProps) {
   const [redirecting, setRedirecting] = useState(false);
@@ -41,12 +50,12 @@ export function CancellationWarningModal({ open, onClose, tier }: CancellationWa
       const data = await res.json();
 
       if (!res.ok || !data.url) {
-        throw new Error(data?.error || "解約手続きページの作成に失敗しました。");
+        throw new Error(data?.error || "契約管理画面の作成に失敗しました。");
       }
 
       window.location.assign(data.url);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "解約手続きページの作成に失敗しました。");
+      setError(err instanceof Error ? err.message : "契約管理画面の作成に失敗しました。");
       setRedirecting(false);
     }
   };
@@ -63,10 +72,7 @@ export function CancellationWarningModal({ open, onClose, tier }: CancellationWa
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-4">
-          <h3 className="flex items-center gap-2 text-lg font-bold text-foreground">
-            <AlertTriangle size={20} className="shrink-0 text-amber-400" />
-            サブスクリプションを解約しますか？
-          </h3>
+          <h3 className="text-lg font-bold text-foreground">📋 サブスクリプション・契約管理</h3>
           <button
             type="button"
             onClick={onClose}
@@ -78,27 +84,33 @@ export function CancellationWarningModal({ open, onClose, tier }: CancellationWa
         </div>
 
         <p className="mt-4 text-sm leading-relaxed text-foreground/90">
-          解約手続きを行うと、以下の【継続特典】が即日失われます。
+          Stripeの安全な管理画面へ移動します。以下の手続き・確認が可能です：
         </p>
 
-        <ul className="mt-4 space-y-2.5 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-foreground/90">
-          <li className="flex items-start gap-2">
-            <span className="shrink-0 text-red-400">❌</span>
-            毎日のログインボーナスが【即日停止】されます
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="shrink-0 text-red-400">❌</span>
-            追加チャージ優待（¥{currentTopupPrice} ➔ 定価¥{FULL_PRICE}）が【即日剥奪】されます
-          </li>
+        <ul className="mt-3 space-y-2">
+          {PORTAL_CAPABILITIES.map((item) => (
+            <li key={item} className="flex items-start gap-2 text-sm text-foreground/80">
+              <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-neon-violet" />
+              {item}
+            </li>
+          ))}
         </ul>
 
-        <p className="mt-4 text-xs leading-relaxed text-muted">
-          ※ ご購入済みの保有クレジット残高は有効期限までそのままご利用いただけます。
-        </p>
-
-        <p className="mt-2 text-xs leading-relaxed text-muted">
-          ※ 請求書・領収書（PDF）は【契約管理 ➔ 請求履歴】より24時間いつでもダウンロードいただけます（インボイス・確定申告対応）。
-        </p>
+        <div className="mt-5 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+          <p className="flex items-center gap-1.5 text-xs font-bold text-amber-400">
+            <AlertTriangle size={14} className="shrink-0" />
+            【ご注意】
+          </p>
+          <p className="mt-2 text-xs leading-relaxed text-foreground/80">
+            プランの解約やダウングレードを行った場合、会員限定の「追加チャージ優待（¥{currentTopupPrice} ➔ 定価¥{FULL_PRICE}）」や「毎日のログインボーナス」等の継続特典が即日停止・変更されますのでご留意ください。
+          </p>
+          <p className="mt-2 text-xs leading-relaxed text-muted">
+            ※ ご購入済みの保有クレジット残高は有効期限までそのままご利用いただけます。
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-muted">
+            ※ 請求書・領収書（PDF）は、移動先の【請求履歴】よりいつでもダウンロードいただけます。
+          </p>
+        </div>
 
         {error && (
           <p className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
@@ -108,26 +120,26 @@ export function CancellationWarningModal({ open, onClose, tier }: CancellationWa
 
         <button
           type="button"
-          onClick={onClose}
-          className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
+          onClick={handleProceedToPortal}
+          disabled={redirecting}
+          className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          プランを継続して特典を維持する
+          {redirecting ? (
+            <>
+              <Loader2 size={16} className="animate-spin" />
+              移動中...
+            </>
+          ) : (
+            "契約管理画面（Stripe）へ進む"
+          )}
         </button>
 
         <button
           type="button"
-          onClick={handleProceedToPortal}
-          disabled={redirecting}
-          className="mt-3 flex w-full items-center justify-center gap-2 text-xs text-red-400/80 underline-offset-2 transition-colors hover:text-red-400 hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+          onClick={onClose}
+          className="mt-3 flex w-full items-center justify-center text-xs text-muted transition-colors hover:text-foreground"
         >
-          {redirecting ? (
-            <>
-              <Loader2 size={14} className="animate-spin" />
-              手続きページへ移動中...
-            </>
-          ) : (
-            "特典を失っても変更・解約手続きへ進む"
-          )}
+          キャンセル
         </button>
       </div>
     </div>,
