@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import { Zap } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
 import { useProfileCredits } from "@/hooks/useProfileCredits";
@@ -19,16 +18,21 @@ function formatExpiryDate(iso: string) {
 
 export function CreditsBadge({ user, className = "" }: CreditsBadgeProps) {
   const { credits, loading, creditsExpireAt } = useProfileCredits(user);
-  // Date.now() is impure and must not be called during render. A useState
-  // lazy initializer is the sanctioned place for a one-time impure read —
-  // it runs once per mount, giving a stable "now" the render body can do
-  // pure arithmetic against.
-  const [referenceNow] = useState(() => Date.now());
 
   if (!user) return null;
 
+  // A one-time `Date.now()` snapshot captured at mount (e.g. via a useState
+  // lazy initializer) goes stale the moment credits_expire_at changes later
+  // in the same session — a login-bonus grant received hours after mount
+  // extends the expiry from a point in time well after that stale
+  // snapshot, so the diff comes out over 180 days and Math.ceil rounds it
+  // up to 181. Reading the clock fresh on every render is what keeps this
+  // correct; the trade-off (a lint-flagged impure read) is unavoidable for
+  // a live "days remaining" display.
+  // eslint-disable-next-line react-hooks/purity -- see comment above
+  const now = Date.now();
   const daysRemaining = creditsExpireAt
-    ? Math.max(0, Math.ceil((new Date(creditsExpireAt).getTime() - referenceNow) / MS_PER_DAY))
+    ? Math.max(0, Math.ceil((new Date(creditsExpireAt).getTime() - now) / MS_PER_DAY))
     : null;
 
   return (

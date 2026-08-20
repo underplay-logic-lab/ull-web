@@ -23,6 +23,45 @@ function resolveCustomerId(customer: string | Stripe.Customer | Stripe.DeletedCu
   return typeof customer === "string" ? customer : customer.id;
 }
 
+// subscription.metadata.userId is normally set at checkout time
+// (subscription_data.metadata) and kept in sync on plan changes, but it can
+// still go missing or stale — a subscription created directly in the Stripe
+// Dashboard, an old test purchase that predates the current checkout flow,
+// or metadata that was cleared some other way. Trusting it blindly means
+// the whole event silently no-ops: the webhook still returns 200 (nothing
+// throws), but nothing in Supabase gets touched. Falling back to a lookup
+// by stripe_customer_id — always set on checkout, independent of
+// subscription metadata — is what actually makes this robust.
+async function resolveUserIdForCustomer(
+  customerId: string | null,
+  metadataUserId: string | undefined,
+): Promise<string | null> {
+  if (metadataUserId) return metadataUserId;
+  if (!customerId) return null;
+
+  const { data: profile, error } = await supabaseAdmin
+    .from("profiles")
+    .select("id")
+    .eq("stripe_customer_id", customerId)
+    .maybeSingle();
+
+  if (error) {
+    console.error(
+      `[stripe/webhook] failed to resolve user by stripe_customer_id ${customerId}:`,
+      error.message,
+    );
+    return null;
+  }
+
+  if (profile?.id) {
+    console.log(
+      `[stripe/webhook] recovered user ${profile.id} for customer ${customerId} via stripe_customer_id fallback (subscription metadata.userId was missing).`,
+    );
+  }
+
+  return profile?.id ?? null;
+}
+
 type GrantOptions = {
   // Set profiles.subscription_tier — omitted (not undefined-but-passed) for
   // a one-time top-up, which keeps whatever tier the buyer already has.
@@ -169,7 +208,15 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
     // swap/proration) are deliberately excluded too.
     if (invoice.billing_reason === "subscription_cycle") {
       const subscriptionMetadata = invoice.parent?.subscription_details?.metadata;
-      const userId = subscriptionMetadata?.userId;
+      const customerId = resolveCustomerId(invoice.customer);
+      const userId = await resolveUserIdForCustomer(customerId, subscriptionMetadata?.userId);
+
+      if (!userId) {
+        console.error(
+          `[stripe/webhook] invoice.paid (renewal) for invoice ${invoice.id}: could not resolve a user ` +
+            `(subscription metadata.userId missing and no profile matches stripe_customer_id ${customerId ?? "(none)"}) — skipping.`,
+        );
+      }
 
       if (userId) {
         // Look up the credit amount from the user's current tier on file
@@ -206,8 +253,16 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
 
   if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.created") {
     const subscription = event.data.object as Stripe.Subscription;
-    const userId = subscription.metadata?.userId;
-    const cancelAtPeriodEnd = subscription.cancel_at_period_end;
+    const customerId = resolveCustomerId(subscription.customer);
+    const cancelAtPeriodEnd = Boolean(subscription.cancel_at_period_end);
+    const userId = await resolveUserIdForCustomer(customerId, subscription.metadata?.userId);
+
+    if (!userId) {
+      console.error(
+        `[stripe/webhook] ${event.type} for subscription ${subscription.id}: could not resolve a user ` +
+          `(metadata.userId missing and no profile matches stripe_customer_id ${customerId ?? "(none)"}) — skipping.`,
+      );
+    }
 
     // Skip past cancellation, which customer.subscription.deleted handles
     // on its own.
@@ -306,7 +361,15 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
 
   if (event.type === "customer.subscription.deleted") {
     const subscription = event.data.object as Stripe.Subscription;
-    const userId = subscription.metadata?.userId;
+    const customerId = resolveCustomerId(subscription.customer);
+    const userId = await resolveUserIdForCustomer(customerId, subscription.metadata?.userId);
+
+    if (!userId) {
+      console.error(
+        `[stripe/webhook] customer.subscription.deleted for subscription ${subscription.id}: could not resolve a user ` +
+          `(metadata.userId missing and no profile matches stripe_customer_id ${customerId ?? "(none)"}) — skipping.`,
+      );
+    }
 
     if (userId) {
       const { error: downgradeError } = await supabaseAdmin
