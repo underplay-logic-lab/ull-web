@@ -126,5 +126,5 @@ export async function POST(request: Request) {
     );
   }
 
-  return NextResponse.json({ image: imageDataUrl, credits: debitedCredits });
+  return NextResponse.json({ success: true, image: imageDataUrl, remainingCredits: debitedCredits });
 }

@@ -4,10 +4,30 @@ import { useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
 
+// Duplicated from lib/stripe.ts (marked "server-only") rather than imported,
+// since this hook runs in the browser.
+export type SubscriptionTier = "free" | "entry" | "standard" | "pro" | "master";
+
 type FetchStatus = "idle" | "ready" | "error";
+
+const CREDITS_UPDATED_EVENT = "profile-credits-updated";
+
+type CreditsUpdatedDetail = { userId: string; credits: number };
+
+// Lets a caller that already knows the new balance (e.g. Studio right after
+// a generation debits a credit) push it to every mounted useProfileCredits
+// instance for that user immediately, instead of waiting on the Postgres
+// realtime round-trip.
+export function broadcastCreditsUpdate(userId: string, credits: number) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<CreditsUpdatedDetail>(CREDITS_UPDATED_EVENT, { detail: { userId, credits } }),
+  );
+}
 
 export function useProfileCredits(user: User | null) {
   const [rawCredits, setCredits] = useState<number | null>(null);
+  const [tier, setTier] = useState<SubscriptionTier | null>(null);
   const [status, setStatus] = useState<FetchStatus>("idle");
 
   useEffect(() => {
@@ -27,7 +47,7 @@ export function useProfileCredits(user: User | null) {
 
     supabase
       .from("profiles")
-      .select("credits")
+      .select("credits, subscription_tier")
       .eq("id", user.id)
       .single()
       .then(({ data, error }) => {
@@ -37,6 +57,7 @@ export function useProfileCredits(user: User | null) {
           setStatus("error");
         } else {
           setCredits(data?.credits ?? null);
+          setTier((data?.subscription_tier as SubscriptionTier | null) ?? "free");
           setStatus("ready");
         }
       });
@@ -55,23 +76,35 @@ export function useProfileCredits(user: User | null) {
           filter: `id=eq.${user.id}`,
         },
         (payload) => {
-          const nextCredits = (payload.new as { credits?: number }).credits;
-          if (typeof nextCredits === "number") {
-            setCredits(nextCredits);
+          const next = payload.new as { credits?: number; subscription_tier?: string };
+          if (typeof next.credits === "number") {
+            setCredits(next.credits);
+          }
+          if (typeof next.subscription_tier === "string") {
+            setTier(next.subscription_tier as SubscriptionTier);
           }
         },
       )
       .subscribe();
 
+    const handleBroadcast = (event: Event) => {
+      const detail = (event as CustomEvent<CreditsUpdatedDetail>).detail;
+      if (detail?.userId === user.id) {
+        setCredits(detail.credits);
+      }
+    };
+    window.addEventListener(CREDITS_UPDATED_EVENT, handleBroadcast);
+
     return () => {
       cancelled = true;
       supabase.removeChannel(channel);
+      window.removeEventListener(CREDITS_UPDATED_EVENT, handleBroadcast);
     };
   }, [user]);
 
   if (!user) {
-    return { credits: null, loading: false };
+    return { credits: null, tier: null, loading: false };
   }
 
-  return { credits: rawCredits, loading: status === "idle" };
+  return { credits: rawCredits, tier, loading: status === "idle" };
 }

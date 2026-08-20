@@ -7,6 +7,7 @@ import { navLinks, siteConfig } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
 import { BrandLink } from "@/components/BrandLink";
 import { CreditsBadge } from "@/components/CreditsBadge";
+import { MemberRankBadge } from "@/components/MemberRankBadge";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -85,6 +86,7 @@ export function Header() {
         </nav>
 
         <div className="flex items-center gap-2 sm:gap-3">
+          <MemberRankBadge user={user} className="hidden sm:flex" />
           <CreditsBadge user={user} className="hidden sm:flex" />
 
           {user ? (
@@ -139,7 +141,10 @@ export function Header() {
       {mobileOpen && (
         <nav className="border-t border-border bg-background/95 backdrop-blur-xl px-6 py-4 md:hidden">
           <div className="flex flex-col gap-4">
-            <CreditsBadge user={user} className="flex w-fit" />
+            <div className="flex flex-wrap items-center gap-2">
+              <MemberRankBadge user={user} className="flex w-fit" />
+              <CreditsBadge user={user} className="flex w-fit" />
+            </div>
             {navLinks.map((link) => (
               <Link
                 key={link.href}

@@ -6,6 +6,7 @@ import { aspectRatios, type AspectRatio } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
 import { CreditsBadge } from "@/components/CreditsBadge";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
+import { broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { supabase } from "@/lib/supabaseClient";
 
 type Status = "idle" | "loading" | "done" | "error";
@@ -75,6 +76,12 @@ export function Studio() {
       setPreviewUrl(data.image as string);
       setDownloadFilename(buildDownloadFilename());
       setStatus("done");
+
+      // Reflect the new balance in the header/Studio credit badges right
+      // away instead of waiting on the Postgres realtime round-trip.
+      if (typeof data.remainingCredits === "number") {
+        broadcastCreditsUpdate(user.id, data.remainingCredits);
+      }
     } catch (err) {
       console.error("[Studio] generation failed:", err);
       setErrorMessage(err instanceof Error ? err.message : "画像生成に失敗しました。");

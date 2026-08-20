@@ -57,6 +57,14 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
       provider: "google",
       options: {
         redirectTo: `${window.location.origin}`,
+        // Force Google's account chooser every time, even for a browser
+        // that's already signed into a single Google account — otherwise
+        // Google silently re-authenticates the last-used account, which
+        // is wrong for a shared/kiosk browser or a user switching accounts.
+        queryParams: {
+          prompt: "select_account",
+          access_type: "offline",
+        },
       },
     });
 
