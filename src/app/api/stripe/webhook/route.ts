@@ -105,10 +105,15 @@ export async function POST(request: Request) {
       const planId = session.metadata?.planId;
       const creditsToAdd = parseInt(session.metadata?.credits || "0", 10) || 0;
 
+      // A one-time top-up must never touch subscription_tier — a master
+      // subscriber buying a discounted top-up stays on "master". Only a
+      // subscription-mode session (new subscription or an existing one
+      // re-run through Checkout) is allowed to set a tier, and only to a
+      // recognized plan id (resolveTier returns undefined otherwise).
+      const tier = session.mode === "subscription" ? resolveTier(planId) : undefined;
+
       const granted = await grantCredits(userId, creditsToAdd, {
-        // A one-time top-up (or an unresolvable planId) doesn't change tier
-        // — resolveTier returns undefined, leaving the existing tier alone.
-        tier: resolveTier(planId),
+        tier,
         stripeCustomerId: resolveCustomerId(session.customer),
       });
 
