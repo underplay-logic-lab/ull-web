@@ -11,7 +11,7 @@ import { supabase } from "@/lib/supabaseClient";
 
 export function Pricing() {
   const { user } = useSupabaseUser();
-  const { tier } = useProfileCredits(user);
+  const { tier, cancelAtPeriodEnd } = useProfileCredits(user);
   const [loginOpen, setLoginOpen] = useState(false);
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [processingPlanId, setProcessingPlanId] = useState<string | null>(null);
@@ -189,6 +189,7 @@ export function Pricing() {
         open={cancelModalOpen}
         onClose={() => setCancelModalOpen(false)}
         tier={tier ?? "free"}
+        cancelAtPeriodEnd={cancelAtPeriodEnd}
       />
     </section>
   );

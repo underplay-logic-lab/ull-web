@@ -75,6 +75,13 @@ export function Studio() {
       const data = await res.json();
 
       if (!res.ok) {
+        // Some failures (expired/insufficient credits) mean the DB balance
+        // was already reset server-side — sync the header/Studio badges
+        // immediately instead of leaving the stale pre-request number
+        // shown until the page is reloaded.
+        if (typeof data?.remainingCredits === "number") {
+          broadcastCreditsUpdate(user.id, data.remainingCredits);
+        }
         throw new Error(data?.error || "画像生成に失敗しました。");
       }
 

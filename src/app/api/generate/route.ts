@@ -97,6 +97,11 @@ export async function POST(request: Request) {
         error: isExpired
           ? "クレジットの有効期限が切れています（残高0）。チャージしてから再度お試しください。"
           : "クレジットが不足しています。チャージしてから再度お試しください。",
+        // The expiry branch above already reset profiles.credits to 0 in
+        // the DB — tell the frontend so it can sync the header/Studio
+        // balance display immediately instead of leaving the stale
+        // pre-request number shown until the next full refresh.
+        remainingCredits: currentCredits,
       },
       { status: 402 },
     );

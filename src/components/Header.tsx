@@ -22,7 +22,7 @@ export function Header() {
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [streakModalData, setStreakModalData] = useState<LoginStreakData | null>(null);
   const { user } = useSupabaseUser();
-  const { tier } = useProfileCredits(user);
+  const { tier, cancelAtPeriodEnd } = useProfileCredits(user);
   const pathname = usePathname();
 
   useEffect(() => {
@@ -272,6 +272,7 @@ export function Header() {
         open={cancelModalOpen}
         onClose={() => setCancelModalOpen(false)}
         tier={tier ?? "free"}
+        cancelAtPeriodEnd={cancelAtPeriodEnd}
       />
       <LoginStreakModal data={streakModalData} onClose={() => setStreakModalData(null)} />
     </header>
