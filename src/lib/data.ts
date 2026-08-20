@@ -50,9 +50,9 @@ export const products: Product[] = [
       "マルチスレッド並列処理による超高速ダウンロード",
       "フォルダ階層の自動正規化配置",
     ],
-    downloadUrl: "/downloads/underplay_dl_manager.py",
+    downloadUrl: "/downloads/underplay_dl_manager.zip",
     badge: "無料配布",
-    note: "※本ツールは Windows 10 / 11 専用です（インストール不要・ダブルクリックで即起動）",
+    note: "※本ツールは Windows 10 / 11 専用です（ZIPを解凍後、exeをダブルクリックで即起動・インストール不要）",
   },
 ];
 
