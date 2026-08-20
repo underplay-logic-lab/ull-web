@@ -23,15 +23,78 @@ function resolveCustomerId(customer: string | Stripe.Customer | Stripe.DeletedCu
   return typeof customer === "string" ? customer : customer.id;
 }
 
+// Updates profiles and always logs the outcome — including the case where
+// the update runs cleanly but matches zero rows (userId resolved to
+// something that isn't actually a profile), which would otherwise look
+// identical to a successful update from the caller's point of view.
+async function updateProfile(
+  userId: string,
+  updates: Record<string, unknown>,
+  context: string,
+): Promise<boolean> {
+  const { data, error } = await supabaseAdmin
+    .from("profiles")
+    .update(updates)
+    .eq("id", userId)
+    .select("id");
+
+  if (error) {
+    console.error(
+      `[stripe/webhook] ${context}: UPDATE failed for user ${userId} (fields: ${Object.keys(updates).join(", ")}):`,
+      error.message,
+    );
+    return false;
+  }
+
+  const rowCount = data?.length ?? 0;
+  console.log(
+    `[stripe/webhook] ${context}: UPDATE matched ${rowCount} row(s) for user ${userId} (fields: ${Object.keys(updates).join(", ")}).`,
+  );
+
+  if (rowCount === 0) {
+    console.error(
+      `[stripe/webhook] ${context}: UPDATE matched 0 rows for user ${userId} — no such profile exists.`,
+    );
+  }
+
+  return rowCount > 0;
+}
+
+async function findUserIdByEmail(email: string): Promise<string | null> {
+  const normalized = email.toLowerCase();
+  let page = 1;
+
+  for (;;) {
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 200 });
+
+    if (error) {
+      console.error(`[stripe/webhook] failed to list users while resolving email ${email}:`, error.message);
+      return null;
+    }
+
+    const found = data.users.find((u) => u.email?.toLowerCase() === normalized);
+    if (found) return found.id;
+    if (data.users.length < 200) return null;
+    page += 1;
+  }
+}
+
 // subscription.metadata.userId is normally set at checkout time
 // (subscription_data.metadata) and kept in sync on plan changes, but it can
 // still go missing or stale — a subscription created directly in the Stripe
 // Dashboard, an old test purchase that predates the current checkout flow,
 // or metadata that was cleared some other way. Trusting it blindly means
 // the whole event silently no-ops: the webhook still returns 200 (nothing
-// throws), but nothing in Supabase gets touched. Falling back to a lookup
-// by stripe_customer_id — always set on checkout, independent of
-// subscription metadata — is what actually makes this robust.
+// throws), but nothing in Supabase gets touched. This resolves the user in
+// three tiers, each a fallback for the last:
+//   1. subscription.metadata.userId (fast path, no extra I/O)
+//   2. profiles.stripe_customer_id === customerId (always set at checkout,
+//      independent of subscription metadata)
+//   3. the Stripe customer's email matched against Supabase auth users —
+//      last resort, since it costs a Stripe API call plus a paginated
+//      auth admin scan. On success this also backfills
+//      profiles.stripe_customer_id so future events for this customer
+//      resolve on tier 2 instead.
 async function resolveUserIdForCustomer(
   customerId: string | null,
   metadataUserId: string | undefined,
@@ -50,16 +113,42 @@ async function resolveUserIdForCustomer(
       `[stripe/webhook] failed to resolve user by stripe_customer_id ${customerId}:`,
       error.message,
     );
-    return null;
-  }
-
-  if (profile?.id) {
+  } else if (profile?.id) {
     console.log(
       `[stripe/webhook] recovered user ${profile.id} for customer ${customerId} via stripe_customer_id fallback (subscription metadata.userId was missing).`,
     );
+    return profile.id;
   }
 
-  return profile?.id ?? null;
+  try {
+    const customer = await stripe.customers.retrieve(customerId);
+    const email = !customer.deleted ? customer.email : null;
+
+    if (!email) {
+      console.error(`[stripe/webhook] customer ${customerId} has no email to fall back on.`);
+      return null;
+    }
+
+    const userId = await findUserIdByEmail(email);
+
+    if (!userId) {
+      console.error(
+        `[stripe/webhook] no Supabase user matches email for customer ${customerId} — giving up.`,
+      );
+      return null;
+    }
+
+    console.log(
+      `[stripe/webhook] recovered user ${userId} for customer ${customerId} via email fallback; backfilling stripe_customer_id.`,
+    );
+
+    await updateProfile(userId, { stripe_customer_id: customerId }, "email-fallback self-heal");
+
+    return userId;
+  } catch (err) {
+    console.error(`[stripe/webhook] failed to fetch Stripe customer ${customerId} for email fallback:`, err);
+    return null;
+  }
 }
 
 type GrantOptions = {
@@ -93,9 +182,9 @@ async function grantCredits(userId: string, creditsToAdd: number, options: Grant
   const newCredits = (profile?.credits ?? 0) + creditsToAdd;
   const newExpiry = new Date(Date.now() + CREDIT_VALIDITY_DAYS * 24 * 60 * 60 * 1000);
 
-  const { error: updateError } = await supabaseAdmin
-    .from("profiles")
-    .update({
+  const ok = await updateProfile(
+    userId,
+    {
       credits: newCredits,
       credits_expire_at: newExpiry.toISOString(),
       ...(options.tier ? { subscription_tier: options.tier } : {}),
@@ -103,13 +192,11 @@ async function grantCredits(userId: string, creditsToAdd: number, options: Grant
       ...(options.cancelAtPeriodEnd !== undefined
         ? { cancel_at_period_end: options.cancelAtPeriodEnd }
         : {}),
-    })
-    .eq("id", userId);
+    },
+    "grantCredits",
+  );
 
-  if (updateError) {
-    console.error("[stripe/webhook] failed to grant credits:", updateError.message);
-    return false;
-  }
+  if (!ok) return false;
 
   console.log(
     `[stripe/webhook] granted ${creditsToAdd} credits to user ${userId} (new balance: ${newCredits}, expires: ${newExpiry.toISOString()}${options.tier ? `, tier: ${options.tier}` : ""})`,
@@ -314,15 +401,14 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
         } else {
           // A downgrade takes effect on tier alone — no immediate credit
           // grant, and the existing balance/expiry are left untouched.
-          const { error: tierError } = await supabaseAdmin
-            .from("profiles")
-            .update({ subscription_tier: newTier, cancel_at_period_end: cancelAtPeriodEnd })
-            .eq("id", userId);
+          const ok = await updateProfile(
+            userId,
+            { subscription_tier: newTier, cancel_at_period_end: cancelAtPeriodEnd },
+            "downgrade plan change",
+          );
 
-          if (tierError) {
-            throw new Error(
-              `Failed to update tier on plan change (user ${userId} -> ${newTier}): ${tierError.message}`,
-            );
+          if (!ok) {
+            throw new Error(`Failed to update tier on plan change (user ${userId} -> ${newTier}).`);
           }
         }
 
@@ -345,15 +431,14 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
         // update. This is the branch that actually has to fire for a
         // reservation to take effect: sync the flag on its own so it's
         // never silently skipped.
-        const { error: cancelFlagError } = await supabaseAdmin
-          .from("profiles")
-          .update({ cancel_at_period_end: cancelAtPeriodEnd })
-          .eq("id", userId);
+        const ok = await updateProfile(
+          userId,
+          { cancel_at_period_end: cancelAtPeriodEnd },
+          "cancel_at_period_end sync",
+        );
 
-        if (cancelFlagError) {
-          throw new Error(
-            `Failed to sync cancel_at_period_end for user ${userId}: ${cancelFlagError.message}`,
-          );
+        if (!ok) {
+          throw new Error(`Failed to sync cancel_at_period_end for user ${userId}.`);
         }
       }
     }
@@ -372,16 +457,14 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
     }
 
     if (userId) {
-      const { error: downgradeError } = await supabaseAdmin
-        .from("profiles")
-        .update({
-          subscription_tier: "free" satisfies SubscriptionTier,
-          cancel_at_period_end: false,
-        })
-        .eq("id", userId);
+      const ok = await updateProfile(
+        userId,
+        { subscription_tier: "free" satisfies SubscriptionTier, cancel_at_period_end: false },
+        "subscription deleted",
+      );
 
-      if (downgradeError) {
-        throw new Error(`Failed to downgrade tier for user ${userId}: ${downgradeError.message}`);
+      if (!ok) {
+        throw new Error(`Failed to downgrade tier for user ${userId}.`);
       }
 
       console.log(`[stripe/webhook] subscription ended, reverted user ${userId} to free tier`);

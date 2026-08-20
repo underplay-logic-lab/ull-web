@@ -16,24 +16,38 @@ function formatExpiryDate(iso: string) {
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
+function startOfLocalDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+// Whole calendar days between "now" and the expiry, not a raw ms/86400000
+// division. A grant sets credits_expire_at to exactly now+180*86400000ms —
+// diffing that against a later "now" on raw milliseconds is always a hair
+// under 180 days, but Math.ceil rounds that up, and if "now" was itself a
+// stale snapshot from long before the grant, the gap can exceed 180 days
+// entirely and round up to 181. Truncating both sides to local midnight
+// first removes the sub-day noise: the result is an exact day count that
+// reads "180" the moment a grant lands and ticks down by exactly 1 at each
+// local-midnight rollover, matching how a user actually reads a date.
+function daysUntil(expireAtIso: string, referenceMs: number) {
+  const diffMs = startOfLocalDay(new Date(expireAtIso)) - startOfLocalDay(new Date(referenceMs));
+  return Math.max(0, Math.round(diffMs / MS_PER_DAY));
+}
+
 export function CreditsBadge({ user, className = "" }: CreditsBadgeProps) {
   const { credits, loading, creditsExpireAt } = useProfileCredits(user);
 
   if (!user) return null;
 
-  // A one-time `Date.now()` snapshot captured at mount (e.g. via a useState
-  // lazy initializer) goes stale the moment credits_expire_at changes later
-  // in the same session — a login-bonus grant received hours after mount
-  // extends the expiry from a point in time well after that stale
-  // snapshot, so the diff comes out over 180 days and Math.ceil rounds it
-  // up to 181. Reading the clock fresh on every render is what keeps this
-  // correct; the trade-off (a lint-flagged impure read) is unavoidable for
-  // a live "days remaining" display.
+  // Reading the clock during render is unavoidable for a live "days
+  // remaining" display — there's no prop/state this can be purely derived
+  // from. A one-time snapshot (e.g. captured via a useState lazy
+  // initializer) would go stale the moment credits_expire_at changes later
+  // in the same session, which is exactly what previously caused this to
+  // occasionally read "181日" instead of "180日" right after a grant.
   // eslint-disable-next-line react-hooks/purity -- see comment above
   const now = Date.now();
-  const daysRemaining = creditsExpireAt
-    ? Math.max(0, Math.ceil((new Date(creditsExpireAt).getTime() - now) / MS_PER_DAY))
-    : null;
+  const daysRemaining = creditsExpireAt ? daysUntil(creditsExpireAt, now) : null;
 
   return (
     <span
