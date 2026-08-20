@@ -1,10 +1,13 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
+import { Turnstile, type TurnstileInstance } from "@marsidev/react-turnstile";
 import { KeyRound, Loader2, Mail, X } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 import { PasswordInput } from "@/components/PasswordInput";
+
+const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_CLOUDFLARE_TURNSTILE_SITE_KEY;
 
 type LoginModalProps = {
   open: boolean;
@@ -49,6 +52,8 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
   const [emailSubmitting, setEmailSubmitting] = useState(false);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [emailNotice, setEmailNotice] = useState<string | null>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstileRef = useRef<TurnstileInstance>(null);
 
   const handleGoogleLogin = async () => {
     setSigningIn(true);
@@ -92,9 +97,30 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
       }
     }
 
+    if (!turnstileToken) {
+      setEmailError("ボット認証を完了してください。");
+      return;
+    }
+
     setEmailSubmitting(true);
 
     try {
+      // Verify the Turnstile token server-side before touching Supabase
+      // auth at all — this is what actually blocks a bot from creating
+      // accounts or burning through the Resend email quota via password
+      // resets, not just the client-side "is a token present" check above.
+      const verifyRes = await fetch("/api/turnstile/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: turnstileToken }),
+      });
+      const verifyData = await verifyRes.json();
+
+      if (!verifyRes.ok || !verifyData.success) {
+        setEmailError(verifyData?.error || "ボット検証に失敗しました。もう一度お試しください。");
+        return;
+      }
+
       if (emailMode === "reset") {
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
           redirectTo: `${window.location.origin}/reset-password`,
@@ -124,6 +150,10 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
       setEmailError(err instanceof Error ? err.message : "処理に失敗しました。");
     } finally {
       setEmailSubmitting(false);
+      // Turnstile tokens are single-use regardless of outcome — force a
+      // fresh solve for the next attempt.
+      turnstileRef.current?.reset();
+      setTurnstileToken(null);
     }
   };
 
@@ -134,6 +164,7 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
     setEmailMode("login");
     setEmailError(null);
     setEmailNotice(null);
+    setTurnstileToken(null);
     onClose();
   };
 
@@ -284,9 +315,22 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
               </p>
             )}
 
+            {TURNSTILE_SITE_KEY && (
+              <div className="flex justify-center">
+                <Turnstile
+                  ref={turnstileRef}
+                  siteKey={TURNSTILE_SITE_KEY}
+                  onSuccess={setTurnstileToken}
+                  onExpire={() => setTurnstileToken(null)}
+                  onError={() => setTurnstileToken(null)}
+                  options={{ theme: "dark" }}
+                />
+              </div>
+            )}
+
             <button
               type="submit"
-              disabled={emailSubmitting}
+              disabled={emailSubmitting || !turnstileToken}
               className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {emailSubmitting ? (

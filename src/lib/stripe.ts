@@ -91,14 +91,33 @@ export const TOPUP_PRICE_BY_TIER: Record<SubscriptionTier, number> = {
   master: 250,
 };
 
-// Credits auto-granted the first time a member logs in on a given day.
+// "Opening campaign" fixed daily login bonus for paid subscribers, credited
+// every login day regardless of streak (see the /api/daily-bonus route).
+// "free" is unused here — free members get FREE_STREAK_DAY_BONUS's 7-day
+// cyclical bonus instead.
 export const DAILY_BONUS_BY_TIER: Record<SubscriptionTier, number> = {
   free: 0,
-  entry: 1,
-  standard: 2,
-  pro: 4,
-  master: 10,
+  entry: 4,
+  standard: 8,
+  pro: 15,
+  master: 30,
 };
+
+// Free member's 7-day cyclical login-streak bonus: days 1-6 grant a small
+// bonus, day 7 grants a large "complete the streak" bonus, then the cycle
+// repeats from day 1. Keyed by day-in-cycle (1-7) — see /api/daily-bonus
+// for how streak_count maps onto this.
+export const FREE_STREAK_DAY_BONUS: Record<number, number> = {
+  1: 2,
+  2: 2,
+  3: 2,
+  4: 2,
+  5: 2,
+  6: 2,
+  7: 8,
+};
+
+export const STREAK_CYCLE_LENGTH = 7;
 
 // Numeric ordering used to tell an upgrade from a downgrade when a Customer
 // Portal plan switch fires customer.subscription.updated (see the webhook).

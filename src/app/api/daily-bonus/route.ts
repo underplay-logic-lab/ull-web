@@ -2,9 +2,16 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
-import { DAILY_BONUS_BY_TIER, type SubscriptionTier } from "@/lib/stripe";
+import {
+  DAILY_BONUS_BY_TIER,
+  FREE_STREAK_DAY_BONUS,
+  STREAK_CYCLE_LENGTH,
+  type SubscriptionTier,
+} from "@/lib/stripe";
 
-// Called once per login (see Header.tsx) to grant a paid member's daily
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+// Called once per login (see Header.tsx) to grant the "opening campaign"
 // login bonus. Idempotent per calendar day via last_login_bonus_at, so
 // repeat calls in the same UTC day are silent no-ops.
 export async function POST(request: Request) {
@@ -33,7 +40,7 @@ export async function POST(request: Request) {
 
   const { data: profile, error: profileError } = await getOrCreateProfile(
     userId,
-    "credits, subscription_tier, last_login_bonus_at, cancel_at_period_end",
+    "credits, subscription_tier, last_login_bonus_at, cancel_at_period_end, streak_count",
   );
 
   if (profileError) {
@@ -42,19 +49,10 @@ export async function POST(request: Request) {
   }
 
   const tier = (profile?.subscription_tier as SubscriptionTier | null) ?? "free";
-  const bonus = DAILY_BONUS_BY_TIER[tier] ?? 0;
-
-  // A reserved cancellation (Customer Portal "cancel at period end") stops
-  // the daily login bonus immediately, even though subscription_tier stays
-  // at the paid tier until the period actually ends.
   const cancelAtPeriodEnd = Boolean(profile?.cancel_at_period_end);
-
-  if (bonus <= 0 || cancelAtPeriodEnd) {
-    return NextResponse.json({ granted: false });
-  }
-
   const lastLoginBonusAt = profile?.last_login_bonus_at as string | null | undefined;
   const rawCredits = profile?.credits as number | null | undefined;
+  const rawStreak = (profile?.streak_count as number | null | undefined) ?? 0;
 
   const today = new Date().toISOString().slice(0, 10);
   const lastBonusDay = lastLoginBonusAt
@@ -65,11 +63,50 @@ export async function POST(request: Request) {
     return NextResponse.json({ granted: false });
   }
 
+  // Streak continues only if the last grant was exactly yesterday; any
+  // bigger gap (or no prior grant at all) starts a fresh streak at day 1.
+  const daysSinceLastBonus = lastBonusDay
+    ? Math.round((new Date(today).getTime() - new Date(lastBonusDay).getTime()) / MS_PER_DAY)
+    : null;
+  const newStreak = daysSinceLastBonus === 1 ? rawStreak + 1 : 1;
+
+  let bonus = 0;
+  let dayInCycle: number | null = null;
+
+  if (!cancelAtPeriodEnd) {
+    if (tier === "free") {
+      dayInCycle = ((newStreak - 1) % STREAK_CYCLE_LENGTH) + 1;
+      bonus = FREE_STREAK_DAY_BONUS[dayInCycle] ?? 0;
+    } else {
+      bonus = DAILY_BONUS_BY_TIER[tier] ?? 0;
+    }
+  }
+
+  // A reserved cancellation zeroes the bonus, but the login streak itself
+  // still advances — so if the reservation is later undone, the streak
+  // picks back up where it left off instead of being penalized twice.
+  if (bonus <= 0) {
+    const { error: streakOnlyError } = await supabaseAdmin
+      .from("profiles")
+      .update({ streak_count: newStreak, last_login_bonus_at: new Date().toISOString() })
+      .eq("id", userId);
+
+    if (streakOnlyError) {
+      console.error("[daily-bonus] failed to record streak:", streakOnlyError.message);
+    }
+
+    return NextResponse.json({ granted: false, streak: newStreak, cancelAtPeriodEnd });
+  }
+
   const newCredits = (rawCredits ?? 0) + bonus;
 
   const { error: updateError } = await supabaseAdmin
     .from("profiles")
-    .update({ credits: newCredits, last_login_bonus_at: new Date().toISOString() })
+    .update({
+      credits: newCredits,
+      last_login_bonus_at: new Date().toISOString(),
+      streak_count: newStreak,
+    })
     .eq("id", userId);
 
   if (updateError) {
@@ -77,5 +114,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "ボーナス付与に失敗しました。" }, { status: 500 });
   }
 
-  return NextResponse.json({ granted: true, bonus, credits: newCredits });
+  return NextResponse.json({
+    granted: true,
+    bonus,
+    credits: newCredits,
+    streak: newStreak,
+    dayInCycle,
+    tier,
+  });
 }
