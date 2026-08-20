@@ -10,50 +10,17 @@ import { BrandLink } from "@/components/BrandLink";
 import { CreditsBadge } from "@/components/CreditsBadge";
 import { MemberRankBadge } from "@/components/MemberRankBadge";
 import { CancellationWarningModal } from "@/components/CancellationWarningModal";
-import { LoginBonusToast, type LoginBonusToastData } from "@/components/LoginBonusToast";
+import { LoginStreakModal, type LoginStreakData } from "@/components/LoginStreakModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { supabase } from "@/lib/supabaseClient";
-
-const STREAK_CYCLE_LENGTH = 7;
-
-// Builds the "🔥 正式オープン記念ボーナス" toast copy from the
-// /api/daily-bonus response — a 7-day cyclical countdown for free members,
-// a flat continuation-perk message for paid ones.
-function buildBonusToastData(data: {
-  bonus: number;
-  streak: number;
-  dayInCycle: number | null;
-  tier: string;
-}): LoginBonusToastData {
-  const title = "🔥 正式オープン記念ボーナス獲得！";
-
-  if (data.tier === "free" && data.dayInCycle) {
-    if (data.dayInCycle === STREAK_CYCLE_LENGTH) {
-      return {
-        title,
-        message: `【7日目・コンプリート達成！】ログインボーナス +${data.bonus} Credits を獲得しました！次のサイクルも継続でさらにお得に。`,
-      };
-    }
-    const remaining = STREAK_CYCLE_LENGTH - data.dayInCycle;
-    return {
-      title,
-      message: `【${data.dayInCycle}日目】ログインボーナス +${data.bonus} Credits を獲得しました！（7日目まであと${remaining}日）`,
-    };
-  }
-
-  return {
-    title,
-    message: `会員限定デイリーログインボーナス +${data.bonus} Credits を獲得しました！（${data.streak}日連続ログイン中）`,
-  };
-}
 
 export function Header() {
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
-  const [bonusToast, setBonusToast] = useState<LoginBonusToastData | null>(null);
+  const [streakModalData, setStreakModalData] = useState<LoginStreakData | null>(null);
   const { user } = useSupabaseUser();
   const { tier } = useProfileCredits(user);
   const pathname = usePathname();
@@ -82,7 +49,12 @@ export function Header() {
         const data = await res.json();
 
         if (!cancelled && res.ok && data.granted) {
-          setBonusToast(buildBonusToastData(data));
+          setStreakModalData({
+            bonus: data.bonus,
+            streak: data.streak,
+            dayInCycle: data.dayInCycle,
+            tier: data.tier,
+          });
           if (typeof data.credits === "number") {
             broadcastCreditsUpdate(user.id, data.credits);
           }
@@ -301,13 +273,7 @@ export function Header() {
         onClose={() => setCancelModalOpen(false)}
         tier={tier ?? "free"}
       />
-      {bonusToast && (
-        <LoginBonusToast
-          title={bonusToast.title}
-          message={bonusToast.message}
-          onDismiss={() => setBonusToast(null)}
-        />
-      )}
+      <LoginStreakModal data={streakModalData} onClose={() => setStreakModalData(null)} />
     </header>
   );
 }

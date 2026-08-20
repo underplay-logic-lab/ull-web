@@ -76,6 +76,21 @@ export async function POST(request: Request) {
     : false;
   const currentCredits = isExpired ? 0 : (rawCredits ?? 0);
 
+  // JIT (just-in-time) expiry: write the reset back to the DB now rather
+  // than only treating the balance as 0 for this request's check, so the
+  // stale credits don't linger and get miscounted by anything else that
+  // reads profiles.credits directly (e.g. the header's balance display).
+  if (isExpired && (rawCredits ?? 0) > 0) {
+    const { error: expireError } = await supabaseAdmin
+      .from("profiles")
+      .update({ credits: 0 })
+      .eq("id", user.id);
+
+    if (expireError) {
+      console.error("[generate] failed to apply credit expiry reset:", expireError.message);
+    }
+  }
+
   if (currentCredits < 1) {
     return NextResponse.json(
       {

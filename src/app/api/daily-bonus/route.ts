@@ -10,6 +10,7 @@ import {
 } from "@/lib/stripe";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const CREDIT_VALIDITY_DAYS = 180;
 
 // Called once per login (see Header.tsx) to grant the "opening campaign"
 // login bonus. Idempotent per calendar day via last_login_bonus_at, so
@@ -40,7 +41,7 @@ export async function POST(request: Request) {
 
   const { data: profile, error: profileError } = await getOrCreateProfile(
     userId,
-    "credits, subscription_tier, last_login_bonus_at, cancel_at_period_end, streak_count",
+    "credits, subscription_tier, last_login_bonus_at, cancel_at_period_end, streak_count, credits_expire_at",
   );
 
   if (profileError) {
@@ -51,8 +52,28 @@ export async function POST(request: Request) {
   const tier = (profile?.subscription_tier as SubscriptionTier | null) ?? "free";
   const cancelAtPeriodEnd = Boolean(profile?.cancel_at_period_end);
   const lastLoginBonusAt = profile?.last_login_bonus_at as string | null | undefined;
-  const rawCredits = profile?.credits as number | null | undefined;
   const rawStreak = (profile?.streak_count as number | null | undefined) ?? 0;
+  const creditsExpireAt = profile?.credits_expire_at as string | null | undefined;
+
+  // JIT (just-in-time) expiry: rather than a scheduled job, every login
+  // checks whether the 180-day rolling window has lapsed and, if so,
+  // zeroes the stale balance right here before anything else runs.
+  let rawCredits = (profile?.credits as number | null | undefined) ?? 0;
+  const isExpired = creditsExpireAt ? new Date(creditsExpireAt).getTime() < Date.now() : false;
+
+  if (isExpired && rawCredits > 0) {
+    const { error: expireError } = await supabaseAdmin
+      .from("profiles")
+      .update({ credits: 0 })
+      .eq("id", userId);
+
+    if (expireError) {
+      console.error("[daily-bonus] failed to apply credit expiry reset:", expireError.message);
+    } else {
+      console.log(`[daily-bonus] credits expired for user ${userId} (expired ${creditsExpireAt}); reset to 0.`);
+      rawCredits = 0;
+    }
+  }
 
   const today = new Date().toISOString().slice(0, 10);
   const lastBonusDay = lastLoginBonusAt
@@ -98,7 +119,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ granted: false, streak: newStreak, cancelAtPeriodEnd });
   }
 
-  const newCredits = (rawCredits ?? 0) + bonus;
+  const newCredits = rawCredits + bonus;
+  // Every actual bonus grant rolls the 180-day expiry window forward, same
+  // as a top-up/subscription payment — this is what keeps an active user's
+  // balance from ever lapsing.
+  const newExpiry = new Date(Date.now() + CREDIT_VALIDITY_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
   const { error: updateError } = await supabaseAdmin
     .from("profiles")
@@ -106,6 +131,7 @@ export async function POST(request: Request) {
       credits: newCredits,
       last_login_bonus_at: new Date().toISOString(),
       streak_count: newStreak,
+      credits_expire_at: newExpiry,
     })
     .eq("id", userId);
 
@@ -116,6 +142,7 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     granted: true,
+    creditsExpireAt: newExpiry,
     bonus,
     credits: newCredits,
     streak: newStreak,

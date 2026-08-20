@@ -87,6 +87,14 @@ export function Products() {
                 variant={index === 0 ? "pink" : "violet"}
                 downloadUrl={product.downloadUrl}
               />
+
+              {product.downloadUrl && (
+                <p className="mt-3 text-xs leading-relaxed text-muted">
+                  ※
+                  初回ダウンロード時、ブラウザやWindowsの警告（SmartScreen）が表示される場合があります。「保持する」および「詳細情報
+                  ➔ 実行」を選択して起動してください（ウイルスフリー・安全確認済み）。
+                </p>
+              )}
             </article>
           ))}
         </div>

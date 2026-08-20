@@ -40,6 +40,7 @@ export function useProfileCredits(user: User | null) {
   const [rawCredits, setCredits] = useState<number | null>(null);
   const [tier, setTier] = useState<SubscriptionTier | null>(null);
   const [cancelAtPeriodEnd, setCancelAtPeriodEnd] = useState(false);
+  const [creditsExpireAt, setCreditsExpireAt] = useState<string | null>(null);
   const [status, setStatus] = useState<FetchStatus>("idle");
 
   useEffect(() => {
@@ -59,7 +60,7 @@ export function useProfileCredits(user: User | null) {
 
     supabase
       .from("profiles")
-      .select("credits, subscription_tier, cancel_at_period_end")
+      .select("credits, subscription_tier, cancel_at_period_end, credits_expire_at")
       .eq("id", user.id)
       .single()
       .then(({ data, error }) => {
@@ -71,6 +72,7 @@ export function useProfileCredits(user: User | null) {
           setCredits(data?.credits ?? null);
           setTier((data?.subscription_tier as SubscriptionTier | null) ?? "free");
           setCancelAtPeriodEnd(Boolean(data?.cancel_at_period_end));
+          setCreditsExpireAt((data?.credits_expire_at as string | null) ?? null);
           setStatus("ready");
         }
       });
@@ -93,6 +95,7 @@ export function useProfileCredits(user: User | null) {
             credits?: number;
             subscription_tier?: string;
             cancel_at_period_end?: boolean;
+            credits_expire_at?: string | null;
           };
           if (typeof next.credits === "number") {
             setCredits(next.credits);
@@ -102,6 +105,9 @@ export function useProfileCredits(user: User | null) {
           }
           if (typeof next.cancel_at_period_end === "boolean") {
             setCancelAtPeriodEnd(next.cancel_at_period_end);
+          }
+          if (typeof next.credits_expire_at === "string" || next.credits_expire_at === null) {
+            setCreditsExpireAt(next.credits_expire_at ?? null);
           }
         },
       )
@@ -123,8 +129,8 @@ export function useProfileCredits(user: User | null) {
   }, [user]);
 
   if (!user) {
-    return { credits: null, tier: null, cancelAtPeriodEnd: false, loading: false };
+    return { credits: null, tier: null, cancelAtPeriodEnd: false, creditsExpireAt: null, loading: false };
   }
 
-  return { credits: rawCredits, tier, cancelAtPeriodEnd, loading: status === "idle" };
+  return { credits: rawCredits, tier, cancelAtPeriodEnd, creditsExpireAt, loading: status === "idle" };
 }
