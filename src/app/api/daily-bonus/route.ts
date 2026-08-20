@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getOrCreateProfile } from "@/lib/profile";
 import { DAILY_BONUS_BY_TIER, type SubscriptionTier } from "@/lib/stripe";
 
 // Called once per login (see Header.tsx) to grant a paid member's daily
@@ -30,11 +31,10 @@ export async function POST(request: Request) {
 
   const userId = userData.user.id;
 
-  const { data: profile, error: profileError } = await supabaseAdmin
-    .from("profiles")
-    .select("credits, subscription_tier, last_login_bonus_at")
-    .eq("id", userId)
-    .single();
+  const { data: profile, error: profileError } = await getOrCreateProfile(
+    userId,
+    "credits, subscription_tier, last_login_bonus_at",
+  );
 
   if (profileError) {
     console.error("[daily-bonus] failed to load profile:", profileError.message);
@@ -48,16 +48,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ granted: false });
   }
 
+  const lastLoginBonusAt = profile?.last_login_bonus_at as string | null | undefined;
+  const rawCredits = profile?.credits as number | null | undefined;
+
   const today = new Date().toISOString().slice(0, 10);
-  const lastBonusDay = profile?.last_login_bonus_at
-    ? new Date(profile.last_login_bonus_at).toISOString().slice(0, 10)
+  const lastBonusDay = lastLoginBonusAt
+    ? new Date(lastLoginBonusAt).toISOString().slice(0, 10)
     : null;
 
   if (lastBonusDay === today) {
     return NextResponse.json({ granted: false });
   }
 
-  const newCredits = (profile?.credits ?? 0) + bonus;
+  const newCredits = (rawCredits ?? 0) + bonus;
 
   const { error: updateError } = await supabaseAdmin
     .from("profiles")

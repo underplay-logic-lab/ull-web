@@ -7,7 +7,7 @@ import {
   TOPUP_PRICE_BY_TIER,
   type SubscriptionTier,
 } from "@/lib/stripe";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getOrCreateProfile } from "@/lib/profile";
 
 export async function POST(request: Request) {
   const authHeader = request.headers.get("authorization");
@@ -52,11 +52,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "不明なプランです。" }, { status: 400 });
   }
 
-  const { data: profile, error: profileError } = await supabaseAdmin
-    .from("profiles")
-    .select("subscription_tier, stripe_customer_id")
-    .eq("id", user.id)
-    .single();
+  const { data: profile, error: profileError } = await getOrCreateProfile(
+    user.id,
+    "subscription_tier, stripe_customer_id",
+  );
 
   if (profileError) {
     console.error("[stripe/checkout] failed to load profile:", profileError.message);
@@ -64,13 +63,14 @@ export async function POST(request: Request) {
   }
 
   const tier = (profile?.subscription_tier as SubscriptionTier | null) ?? "free";
+  const stripeCustomerId = profile?.stripe_customer_id as string | null | undefined;
   const origin = request.headers.get("origin") ?? new URL(request.url).origin;
 
   // Already on a paid tier and trying to buy another subscription plan:
   // send them to the Customer Portal to change/cancel instead of letting a
   // second, concurrent subscription (and a second monthly charge) happen.
   if (plan.mode === "subscription" && tier !== "free") {
-    if (!profile?.stripe_customer_id) {
+    if (!stripeCustomerId) {
       console.error(
         `[stripe/checkout] user ${user.id} has tier "${tier}" but no stripe_customer_id`,
       );
@@ -82,7 +82,7 @@ export async function POST(request: Request) {
 
     try {
       const portalSession = await createBillingPortalSession(
-        profile.stripe_customer_id,
+        stripeCustomerId,
         `${origin}/?portal=return#pricing`,
       );
       return NextResponse.json({ url: portalSession.url });

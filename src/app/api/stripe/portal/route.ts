@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { createBillingPortalSession } from "@/lib/stripe";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getOrCreateProfile } from "@/lib/profile";
 
 export async function POST(request: Request) {
   const authHeader = request.headers.get("authorization");
@@ -27,18 +27,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "認証に失敗しました。" }, { status: 401 });
   }
 
-  const { data: profile, error: profileError } = await supabaseAdmin
-    .from("profiles")
-    .select("stripe_customer_id")
-    .eq("id", userData.user.id)
-    .single();
+  const { data: profile, error: profileError } = await getOrCreateProfile(
+    userData.user.id,
+    "stripe_customer_id",
+  );
 
   if (profileError) {
     console.error("[stripe/portal] failed to load profile:", profileError.message);
     return NextResponse.json({ error: "プロフィールの取得に失敗しました。" }, { status: 500 });
   }
 
-  if (!profile?.stripe_customer_id) {
+  const stripeCustomerId = profile?.stripe_customer_id as string | null | undefined;
+
+  if (!stripeCustomerId) {
     return NextResponse.json(
       { error: "決済情報が見つかりません。まずはプランをご購入ください。" },
       { status: 400 },
@@ -49,7 +50,7 @@ export async function POST(request: Request) {
 
   try {
     const session = await createBillingPortalSession(
-      profile.stripe_customer_id,
+      stripeCustomerId,
       `${origin}/?portal=return#pricing`,
     );
 

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getOrCreateProfile } from "@/lib/profile";
 import { generateImageWithRunpod } from "@/lib/runpod";
 import { translateToEnglish } from "@/lib/translate";
 import { aspectRatios, type AspectRatio } from "@/lib/data";
@@ -58,21 +59,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "アスペクト比が不正です。" }, { status: 400 });
   }
 
-  const { data: profile, error: profileError } = await supabaseAdmin
-    .from("profiles")
-    .select("credits, credits_expire_at")
-    .eq("id", user.id)
-    .single();
+  const { data: profile, error: profileError } = await getOrCreateProfile(
+    user.id,
+    "credits, credits_expire_at",
+  );
 
   if (profileError) {
     console.error("[generate] failed to load profile:", profileError.message);
     return NextResponse.json({ error: "プロフィールの取得に失敗しました。" }, { status: 500 });
   }
 
-  const isExpired = profile?.credits_expire_at
-    ? new Date(profile.credits_expire_at).getTime() < Date.now()
+  const creditsExpireAt = profile?.credits_expire_at as string | null | undefined;
+  const rawCredits = profile?.credits as number | null | undefined;
+  const isExpired = creditsExpireAt
+    ? new Date(creditsExpireAt).getTime() < Date.now()
     : false;
-  const currentCredits = isExpired ? 0 : (profile?.credits ?? 0);
+  const currentCredits = isExpired ? 0 : (rawCredits ?? 0);
 
   if (currentCredits < 1) {
     return NextResponse.json(
