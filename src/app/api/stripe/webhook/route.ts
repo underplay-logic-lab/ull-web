@@ -87,14 +87,21 @@ export async function POST(request: Request) {
   if (event.type === "checkout.session.completed") {
     const session = event.data.object as Stripe.Checkout.Session;
 
+    // Grant on any completed Checkout — top-up ("payment" mode) or a new
+    // subscription's first payment ("subscription" mode) alike — as long as
+    // we know who to credit. Gating this on creditsToAdd > 0 previously
+    // meant a session whose credits metadata failed to parse silently
+    // skipped the stripe_customer_id/expiry updates too; now those always
+    // happen whenever userId is present.
     const userId = session.metadata?.userId;
-    const planId = session.metadata?.planId;
-    const creditsToAdd = parseInt(session.metadata?.credits || "0", 10);
 
-    if (userId && creditsToAdd > 0) {
+    if (userId) {
+      const planId = session.metadata?.planId;
+      const creditsToAdd = parseInt(session.metadata?.credits || "0", 10) || 0;
+
       const granted = await grantCredits(userId, creditsToAdd, {
-        // A one-time top-up doesn't change tier — resolveTier returns
-        // undefined for planId "topup", leaving the existing tier alone.
+        // A one-time top-up (or an unresolvable planId) doesn't change tier
+        // — resolveTier returns undefined, leaving the existing tier alone.
         tier: resolveTier(planId),
         stripeCustomerId: resolveCustomerId(session.customer),
       });
@@ -109,22 +116,44 @@ export async function POST(request: Request) {
     const invoice = event.data.object as Stripe.Invoice;
 
     // The first invoice on a new subscription is already credited above via
-    // checkout.session.completed — only renewals should land here.
-    if (invoice.billing_reason !== "subscription_create") {
+    // checkout.session.completed — crediting it again here would double
+    // the initial grant. Only a genuine monthly renewal should land here;
+    // other reasons (e.g. "subscription_update" from a mid-cycle plan
+    // swap/proration) are deliberately excluded too.
+    if (invoice.billing_reason === "subscription_cycle") {
       const subscriptionMetadata = invoice.parent?.subscription_details?.metadata;
-
       const userId = subscriptionMetadata?.userId;
-      const creditsToAdd = parseInt(subscriptionMetadata?.credits || "0", 10);
-      const planId = subscriptionMetadata?.planId;
 
-      if (userId && creditsToAdd > 0) {
-        const granted = await grantCredits(userId, creditsToAdd, {
-          tier: resolveTier(planId),
-          stripeCustomerId: resolveCustomerId(invoice.customer),
-        });
+      if (userId) {
+        // Look up the credit amount from the user's current tier on file
+        // rather than the subscription's own metadata, so a renewal always
+        // grants the right amount even if that metadata ever drifts out of
+        // sync with the actual subscribed price.
+        const { data: profile, error: profileError } = await supabaseAdmin
+          .from("profiles")
+          .select("subscription_tier")
+          .eq("id", userId)
+          .single();
 
-        if (!granted) {
-          return NextResponse.json({ error: "Credit grant failed." }, { status: 500 });
+        if (profileError) {
+          console.error(
+            "[stripe/webhook] failed to load profile for renewal credit grant:",
+            profileError.message,
+          );
+          return NextResponse.json({ error: "Profile lookup failed." }, { status: 500 });
+        }
+
+        const tier = profile?.subscription_tier as SubscriptionTier | undefined;
+        const creditsToAdd = tier ? (STRIPE_PLAN_CATALOG[tier]?.credits ?? 0) : 0;
+
+        if (creditsToAdd > 0) {
+          const granted = await grantCredits(userId, creditsToAdd, {
+            stripeCustomerId: resolveCustomerId(invoice.customer),
+          });
+
+          if (!granted) {
+            return NextResponse.json({ error: "Credit grant failed." }, { status: 500 });
+          }
         }
       }
     }
