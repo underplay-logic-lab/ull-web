@@ -81,44 +81,63 @@ async function findUserIdByEmail(email: string): Promise<string | null> {
 
 // subscription.metadata.userId is normally set at checkout time
 // (subscription_data.metadata) and kept in sync on plan changes, but it can
-// still go missing or stale — a subscription created directly in the Stripe
-// Dashboard, an old test purchase that predates the current checkout flow,
-// or metadata that was cleared some other way. Trusting it blindly means
-// the whole event silently no-ops: the webhook still returns 200 (nothing
-// throws), but nothing in Supabase gets touched. This resolves the user in
-// three tiers, each a fallback for the last:
-//   1. subscription.metadata.userId (fast path, no extra I/O)
-//   2. profiles.stripe_customer_id === customerId (always set at checkout,
-//      independent of subscription metadata)
+// point at a user who no longer exists — a deleted/recreated account, or an
+// old test purchase whose metadata predates the current checkout flow.
+// Trusting it as the top priority meant a stale-but-present UUID would win
+// over the real, current profile: the webhook still returns 200 (nothing
+// throws), but the UPDATE's WHERE id = <stale uuid> silently matches zero
+// rows. This resolves the user in three tiers, each a fallback for the
+// last, with the *live* lookup checked before the metadata mirror:
+//   1. profiles.stripe_customer_id === customerId (always set at checkout,
+//      independent of subscription metadata, and reflects who currently
+//      owns this Stripe customer — not a snapshot of who owned it once)
+//   2. subscription.metadata.userId, but only after confirming a profile
+//      with that id still actually exists
 //   3. the Stripe customer's email matched against Supabase auth users —
 //      last resort, since it costs a Stripe API call plus a paginated
 //      auth admin scan. On success this also backfills
 //      profiles.stripe_customer_id so future events for this customer
-//      resolve on tier 2 instead.
+//      resolve on tier 1 instead.
 async function resolveUserIdForCustomer(
   customerId: string | null,
   metadataUserId: string | undefined,
 ): Promise<string | null> {
-  if (metadataUserId) return metadataUserId;
-  if (!customerId) return null;
+  // 1. stripe_customer_id で現在の実在ユーザーを最優先検索
+  if (customerId) {
+    const { data: profile, error } = await supabaseAdmin
+      .from("profiles")
+      .select("id")
+      .eq("stripe_customer_id", customerId)
+      .maybeSingle();
 
-  const { data: profile, error } = await supabaseAdmin
-    .from("profiles")
-    .select("id")
-    .eq("stripe_customer_id", customerId)
-    .maybeSingle();
-
-  if (error) {
-    console.error(
-      `[stripe/webhook] failed to resolve user by stripe_customer_id ${customerId}:`,
-      error.message,
-    );
-  } else if (profile?.id) {
-    console.log(
-      `[stripe/webhook] recovered user ${profile.id} for customer ${customerId} via stripe_customer_id fallback (subscription metadata.userId was missing).`,
-    );
-    return profile.id;
+    if (error) {
+      console.error(
+        `[stripe/webhook] failed to resolve user by stripe_customer_id ${customerId}:`,
+        error.message,
+      );
+    } else if (profile?.id) {
+      return profile.id;
+    }
   }
+
+  // 2. stripe_customer_id で見つからない場合のみ metadata.userId を検証して使用
+  if (metadataUserId) {
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("id")
+      .eq("id", metadataUserId)
+      .maybeSingle();
+
+    if (profile?.id) return profile.id;
+
+    console.error(
+      `[stripe/webhook] subscription metadata.userId ${metadataUserId} does not match any profile ` +
+        `(stale/deleted user) — falling through to email lookup for customer ${customerId ?? "(none)"}.`,
+    );
+  }
+
+  // 3. 顧客メールアドレスによるフォールバック
+  if (!customerId) return null;
 
   try {
     const customer = await stripe.customers.retrieve(customerId);
