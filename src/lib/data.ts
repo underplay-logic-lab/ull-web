@@ -23,6 +23,36 @@ export const aspectRatios: { id: AspectRatio; label: string }[] = [
   { id: "1:1", label: "1:1" },
 ];
 
+export const WAN_ANIMATE_GENERATION_COST = 10;
+
+export type WanAnimateMotionPreset = {
+  id: string;
+  label: string;
+  description: string;
+  videoUrl: string;
+};
+
+export const wanAnimateMotionPresets: WanAnimateMotionPreset[] = [
+  {
+    id: "street-dance",
+    label: "ストリートダンス",
+    description: "テンポの良いフリースタイルダンス",
+    videoUrl: "/mock/wan-animate/preset-street-dance.mp4",
+  },
+  {
+    id: "runway",
+    label: "ランウェイ",
+    description: "モデルウォークで魅せるファッションポーズ",
+    videoUrl: "/mock/wan-animate/preset-runway.mp4",
+  },
+  {
+    id: "action",
+    label: "アクション",
+    description: "躍動感あるアクションムーブ",
+    videoUrl: "/mock/wan-animate/preset-action.mp4",
+  },
+];
+
 export type Product = {
   id: string;
   name: string;

@@ -1,106 +1,33 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, Download, Loader2, LogIn, Sparkles, Wand2 } from "lucide-react";
-import { aspectRatios, type AspectRatio } from "@/lib/data";
-import { LoginModal } from "@/components/LoginModal";
+import { Wrench } from "lucide-react";
 import { CreditsBadge } from "@/components/CreditsBadge";
+import { WanAnimateTab } from "@/components/studio/WanAnimateTab";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
-import { broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
-import { supabase } from "@/lib/supabaseClient";
 
-type Status = "idle" | "loading" | "done" | "error";
+type StudioTab = "wan-animate" | "image";
 
-const RATIO_ASPECT_CLASS: Record<AspectRatio, string> = {
-  "16:9": "aspect-video",
-  "9:16": "aspect-[9/16]",
-  "1:1": "aspect-square",
-};
+const STUDIO_TABS: { id: StudioTab; label: string }[] = [
+  { id: "wan-animate", label: "Wan Animate 2" },
+  { id: "image", label: "画像生成" },
+];
 
-function buildDownloadFilename() {
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const datePart = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
-  const timePart = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-  return `ullstudio_${datePart}_${timePart}.png`;
+function ImageGenMaintenancePlaceholder() {
+  return (
+    <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border-gradient bg-surface/40 px-6 py-20 text-center">
+      <Wrench size={32} className="text-muted opacity-50" />
+      <p className="text-sm font-medium text-foreground">画像生成機能は現在メンテナンス中です</p>
+      <p className="max-w-md text-xs leading-relaxed text-muted">
+        次世代エンジンへの切り替え作業を行っています。次期アップデートでの再開をお待ちください。
+      </p>
+    </div>
+  );
 }
 
 export function Studio() {
   const { user } = useSupabaseUser();
-  const [prompt, setPrompt] = useState("");
-  const [ratio, setRatio] = useState<AspectRatio>("1:1");
-  const [status, setStatus] = useState<Status>("idle");
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  // The aspect ratio the currently-displayed preview was actually generated
-  // with — kept separate from `ratio` (the live selector) so changing the
-  // selector after a generation doesn't stretch/crop the image already on
-  // screen.
-  const [previewRatio, setPreviewRatio] = useState<AspectRatio | null>(null);
-  const [downloadFilename, setDownloadFilename] = useState<string | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [loginOpen, setLoginOpen] = useState(false);
-
-  const handleGenerate = async () => {
-    if (!prompt.trim() || status === "loading") return;
-
-    if (!user) {
-      setLoginOpen(true);
-      return;
-    }
-
-    setStatus("loading");
-    setPreviewUrl(null);
-    setDownloadFilename(null);
-    setErrorMessage(null);
-
-    try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData.session?.access_token;
-
-      if (!accessToken) {
-        setLoginOpen(true);
-        setStatus("idle");
-        return;
-      }
-
-      const res = await fetch("/api/generate", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({ prompt, ratio }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        // Some failures (expired/insufficient credits) mean the DB balance
-        // was already reset server-side — sync the header/Studio badges
-        // immediately instead of leaving the stale pre-request number
-        // shown until the page is reloaded.
-        if (typeof data?.remainingCredits === "number") {
-          broadcastCreditsUpdate(user.id, data.remainingCredits);
-        }
-        throw new Error(data?.error || "画像生成に失敗しました。");
-      }
-
-      setPreviewUrl(data.image as string);
-      setPreviewRatio(ratio);
-      setDownloadFilename(buildDownloadFilename());
-      setStatus("done");
-
-      // Reflect the new balance in the header/Studio credit badges right
-      // away instead of waiting on the Postgres realtime round-trip.
-      if (typeof data.remainingCredits === "number") {
-        broadcastCreditsUpdate(user.id, data.remainingCredits);
-      }
-    } catch (err) {
-      console.error("[Studio] generation failed:", err);
-      setErrorMessage(err instanceof Error ? err.message : "画像生成に失敗しました。");
-      setStatus("error");
-    }
-  };
+  const [activeTab, setActiveTab] = useState<StudioTab>("wan-animate");
 
   return (
     <section id="studio" className="relative py-24 sm:py-32">
@@ -115,7 +42,9 @@ export function Studio() {
             AI Generation Studio
           </h2>
           <p className="mx-auto mt-4 max-w-xl text-muted">
-            プロンプトとアスペクト比を指定するだけ。ブラウザから今すぐAI生成を体験できます。
+            {activeTab === "wan-animate"
+              ? "キャラクター画像とモーションを指定するだけ。Wan Animate 2 が高品質なアニメーション動画を生成します。"
+              : "画像生成機能は現在メンテナンス中です。次期アップデートをお待ちください。"}
           </p>
           {user && (
             <div className="mt-5 flex justify-center">
@@ -124,170 +53,31 @@ export function Studio() {
           )}
 
           <div className="mt-8 flex flex-wrap items-center justify-center gap-2">
-            <span className="rounded-full border border-neon-pink/40 bg-neon-pink/10 px-4 py-1.5 text-xs font-mono font-medium text-neon-pink">
-              画像生成
-            </span>
-            {["特化ワークフロー", "AI動画生成スタジオ"].map((label) => (
-              <span
-                key={label}
-                className="flex cursor-not-allowed items-center gap-2 rounded-full border border-border bg-surface/40 px-4 py-1.5 text-xs font-mono text-muted opacity-70"
+            {STUDIO_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`rounded-full border px-4 py-1.5 text-xs font-mono font-medium transition-colors ${
+                  activeTab === tab.id
+                    ? "border-neon-pink/40 bg-neon-pink/10 text-neon-pink"
+                    : "border-border bg-surface/40 text-muted hover:border-neon-violet/40 hover:text-foreground"
+                }`}
               >
-                {label}
-                <span className="rounded-full bg-border px-1.5 py-0.5 text-[10px] tracking-wide text-muted">
-                  Coming Soon
-                </span>
-              </span>
+                {tab.label}
+              </button>
             ))}
+            <span className="flex cursor-not-allowed items-center gap-2 rounded-full border border-border bg-surface/40 px-4 py-1.5 text-xs font-mono text-muted opacity-70">
+              特化ワークフロー
+              <span className="rounded-full bg-border px-1.5 py-0.5 text-[10px] tracking-wide text-muted">
+                Coming Soon
+              </span>
+            </span>
           </div>
         </div>
 
-        <div className="grid gap-8 rounded-2xl border-gradient bg-surface/40 p-6 sm:p-8 lg:grid-cols-2">
-          <div className="flex flex-col">
-            <label
-              htmlFor="prompt"
-              className="mb-1.5 block text-xs font-medium text-muted"
-            >
-              プロンプト
-            </label>
-            <textarea
-              id="prompt"
-              rows={5}
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder="例: 夜のネオン街を歩くサイバーパンクな猫、シネマティックライティング"
-              className="w-full resize-none rounded-lg border border-border bg-background px-4 py-3 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
-            />
-
-            <div className="mt-5">
-              <p className="mb-2 text-xs font-medium text-muted">アスペクト比</p>
-              <div className="flex gap-2">
-                {aspectRatios.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    onClick={() => setRatio(option.id)}
-                    className={`flex-1 rounded-lg border px-3 py-2.5 font-mono text-sm transition-colors ${
-                      ratio === option.id
-                        ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
-                        : "border-border bg-background text-muted hover:border-neon-violet/40 hover:text-foreground"
-                    }`}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleGenerate}
-              disabled={!prompt.trim() || status === "loading"}
-              className="mt-6 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 glow-pink"
-            >
-              {status === "loading" ? (
-                <>
-                  <Loader2 size={16} className="animate-spin" />
-                  生成中...
-                </>
-              ) : !user ? (
-                <>
-                  <LogIn size={16} />
-                  ログインして生成
-                </>
-              ) : (
-                <>
-                  <Wand2 size={16} />
-                  生成する
-                </>
-              )}
-            </button>
-
-            <p className="mt-4 flex items-start gap-2 text-xs leading-relaxed text-muted">
-              <Sparkles size={14} className="mt-0.5 shrink-0 text-neon-violet" />
-              {user
-                ? "保有クレジットの範囲でいつでも生成できます（1生成につき1クレジット消費）。"
-                : "Studioの利用には新規登録 / ログインが必要です。初回登録で10クレジットが付与されます。"}
-            </p>
-
-            <p className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-400">
-              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-              高解像度・動画生成など高負荷な設定は処理に時間がかかる場合があります。最大実行時間は30分です。超過した場合は処理が強制終了され、消費済みクレジットの返金はできませんのでご了承ください。
-            </p>
-
-            {status === "error" && errorMessage && (
-              <p className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
-                {errorMessage}
-              </p>
-            )}
-          </div>
-
-          <div className="flex flex-col">
-            <p className="mb-1.5 text-xs font-medium text-muted">プレビュー</p>
-
-            <p className="mb-3 text-xs leading-relaxed text-muted">
-              ※生成画像はブラウザを閉じると消滅します。生成後すぐにダウンロードしてください（サーバーに履歴を保持しない完全プライバシー仕様）。
-            </p>
-
-            <div
-              className={`relative w-full overflow-hidden rounded-xl border border-border bg-background ${
-                RATIO_ASPECT_CLASS[status === "done" && previewRatio ? previewRatio : ratio]
-              }`}
-            >
-              {status === "loading" && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface/60">
-                  <Loader2 size={28} className="animate-spin text-neon-pink" />
-                  <span className="font-mono text-xs text-muted">
-                    GPUを起動して生成しています...
-                  </span>
-                  <span className="max-w-[80%] text-center text-[11px] text-muted/70">
-                    初回起動には数十秒〜数分かかる場合があります
-                  </span>
-                </div>
-              )}
-
-              {status === "idle" && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted">
-                  <Wand2 size={28} className="opacity-40" />
-                  <span className="text-xs">生成結果がここに表示されます</span>
-                </div>
-              )}
-
-              {status === "error" && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted">
-                  <Wand2 size={28} className="opacity-40" />
-                  <span className="text-xs">生成に失敗しました</span>
-                </div>
-              )}
-
-              {status === "done" && previewUrl && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={previewUrl}
-                  alt={prompt || "生成されたプレビュー"}
-                  className="h-full w-full object-contain"
-                />
-              )}
-            </div>
-
-            {status === "done" && previewUrl && (
-              <a
-                href={previewUrl}
-                download={downloadFilename ?? buildDownloadFilename()}
-                className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-border bg-surface/60 px-6 py-3 text-sm font-medium text-foreground transition-colors hover:border-neon-pink/50 hover:bg-surface-hover"
-              >
-                <Download size={16} />
-                Download
-              </a>
-            )}
-          </div>
-        </div>
+        {activeTab === "wan-animate" ? <WanAnimateTab /> : <ImageGenMaintenancePlaceholder />}
       </div>
-
-      <LoginModal
-        open={loginOpen}
-        onClose={() => setLoginOpen(false)}
-        message="Studioで画像を生成するにはログインしてください。"
-      />
     </section>
   );
 }

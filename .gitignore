@@ -36,6 +36,13 @@ yarn-error.log*
 # vercel
 .vercel
 
+# python (scripts/modal_wan_animate.py)
+__pycache__/
+*.pyc
+
+# supabase CLI local machine linkage (not portable)
+supabase/.temp/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
