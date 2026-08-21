@@ -12,6 +12,14 @@ import {
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const CREDIT_VALIDITY_DAYS = 180;
 
+// This runs from a non-blocking useEffect in Header.tsx right after login —
+// it must never be the thing a user is left waiting on. Every DB call below
+// is bound to this signal so a slow/hanging round-trip aborts instead of
+// dragging the whole request out; the client also has its own fetch timeout.
+const REQUEST_TIMEOUT_MS = 3000;
+
+export const maxDuration = 10;
+
 // Called once per login (see Header.tsx) to grant the "opening campaign"
 // login bonus. Idempotent per calendar day via last_login_bonus_at, so
 // repeat calls in the same UTC day are silent no-ops.
@@ -39,114 +47,132 @@ export async function POST(request: Request) {
 
   const userId = userData.user.id;
 
-  const { data: profile, error: profileError } = await getOrCreateProfile(
-    userId,
-    "credits, subscription_tier, last_login_bonus_at, cancel_at_period_end, streak_count, credits_expire_at",
-  );
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
-  if (profileError) {
-    console.error("[daily-bonus] failed to load profile:", profileError.message);
-    return NextResponse.json({ error: "プロフィールの取得に失敗しました。" }, { status: 500 });
-  }
+  try {
+    const { data: profile, error: profileError } = await getOrCreateProfile(
+      userId,
+      "credits, subscription_tier, last_login_bonus_at, cancel_at_period_end, streak_count, credits_expire_at",
+      controller.signal,
+    );
 
-  const tier = (profile?.subscription_tier as SubscriptionTier | null) ?? "free";
-  const cancelAtPeriodEnd = Boolean(profile?.cancel_at_period_end);
-  const lastLoginBonusAt = profile?.last_login_bonus_at as string | null | undefined;
-  const rawStreak = (profile?.streak_count as number | null | undefined) ?? 0;
-  const creditsExpireAt = profile?.credits_expire_at as string | null | undefined;
+    if (profileError) {
+      console.error("[daily-bonus] failed to load profile:", profileError.message);
+      return NextResponse.json({ granted: false });
+    }
 
-  // JIT (just-in-time) expiry: rather than a scheduled job, every login
-  // checks whether the 180-day rolling window has lapsed and, if so,
-  // zeroes the stale balance right here before anything else runs.
-  let rawCredits = (profile?.credits as number | null | undefined) ?? 0;
-  const isExpired = creditsExpireAt ? new Date(creditsExpireAt).getTime() < Date.now() : false;
+    const tier = (profile?.subscription_tier as SubscriptionTier | null) ?? "free";
+    const cancelAtPeriodEnd = Boolean(profile?.cancel_at_period_end);
+    const lastLoginBonusAt = profile?.last_login_bonus_at as string | null | undefined;
+    const rawStreak = (profile?.streak_count as number | null | undefined) ?? 0;
+    const creditsExpireAt = profile?.credits_expire_at as string | null | undefined;
 
-  if (isExpired && rawCredits > 0) {
-    const { error: expireError } = await supabaseAdmin
+    // JIT (just-in-time) expiry: rather than a scheduled job, every login
+    // checks whether the 180-day rolling window has lapsed and, if so,
+    // zeroes the stale balance right here before anything else runs.
+    let rawCredits = (profile?.credits as number | null | undefined) ?? 0;
+    const isExpired = creditsExpireAt ? new Date(creditsExpireAt).getTime() < Date.now() : false;
+
+    if (isExpired && rawCredits > 0) {
+      const { error: expireError } = await supabaseAdmin
+        .from("profiles")
+        .update({ credits: 0 })
+        .eq("id", userId)
+        .abortSignal(controller.signal);
+
+      if (expireError) {
+        console.error("[daily-bonus] failed to apply credit expiry reset:", expireError.message);
+      } else {
+        console.log(`[daily-bonus] credits expired for user ${userId} (expired ${creditsExpireAt}); reset to 0.`);
+        rawCredits = 0;
+      }
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const lastBonusDay = lastLoginBonusAt
+      ? new Date(lastLoginBonusAt).toISOString().slice(0, 10)
+      : null;
+
+    if (lastBonusDay === today) {
+      return NextResponse.json({ granted: false });
+    }
+
+    // Streak continues only if the last grant was exactly yesterday; any
+    // bigger gap (or no prior grant at all) starts a fresh streak at day 1.
+    const daysSinceLastBonus = lastBonusDay
+      ? Math.round((new Date(today).getTime() - new Date(lastBonusDay).getTime()) / MS_PER_DAY)
+      : null;
+    const newStreak = daysSinceLastBonus === 1 ? rawStreak + 1 : 1;
+
+    let bonus = 0;
+    let dayInCycle: number | null = null;
+
+    if (!cancelAtPeriodEnd) {
+      if (tier === "free") {
+        dayInCycle = ((newStreak - 1) % STREAK_CYCLE_LENGTH) + 1;
+        bonus = FREE_STREAK_DAY_BONUS[dayInCycle] ?? 0;
+      } else {
+        bonus = DAILY_BONUS_BY_TIER[tier] ?? 0;
+      }
+    }
+
+    // A reserved cancellation zeroes the bonus, but the login streak itself
+    // still advances — so if the reservation is later undone, the streak
+    // picks back up where it left off instead of being penalized twice.
+    if (bonus <= 0) {
+      const { error: streakOnlyError } = await supabaseAdmin
+        .from("profiles")
+        .update({ streak_count: newStreak, last_login_bonus_at: new Date().toISOString() })
+        .eq("id", userId)
+        .abortSignal(controller.signal);
+
+      if (streakOnlyError) {
+        console.error("[daily-bonus] failed to record streak:", streakOnlyError.message);
+      }
+
+      return NextResponse.json({ granted: false, streak: newStreak, cancelAtPeriodEnd });
+    }
+
+    const newCredits = rawCredits + bonus;
+    // Every actual bonus grant rolls the 180-day expiry window forward, same
+    // as a top-up/subscription payment — this is what keeps an active user's
+    // balance from ever lapsing.
+    const newExpiry = new Date(Date.now() + CREDIT_VALIDITY_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
+    const { error: updateError } = await supabaseAdmin
       .from("profiles")
-      .update({ credits: 0 })
-      .eq("id", userId);
+      .update({
+        credits: newCredits,
+        last_login_bonus_at: new Date().toISOString(),
+        streak_count: newStreak,
+        credits_expire_at: newExpiry,
+      })
+      .eq("id", userId)
+      .abortSignal(controller.signal);
 
-    if (expireError) {
-      console.error("[daily-bonus] failed to apply credit expiry reset:", expireError.message);
-    } else {
-      console.log(`[daily-bonus] credits expired for user ${userId} (expired ${creditsExpireAt}); reset to 0.`);
-      rawCredits = 0;
-    }
-  }
-
-  const today = new Date().toISOString().slice(0, 10);
-  const lastBonusDay = lastLoginBonusAt
-    ? new Date(lastLoginBonusAt).toISOString().slice(0, 10)
-    : null;
-
-  if (lastBonusDay === today) {
-    return NextResponse.json({ granted: false });
-  }
-
-  // Streak continues only if the last grant was exactly yesterday; any
-  // bigger gap (or no prior grant at all) starts a fresh streak at day 1.
-  const daysSinceLastBonus = lastBonusDay
-    ? Math.round((new Date(today).getTime() - new Date(lastBonusDay).getTime()) / MS_PER_DAY)
-    : null;
-  const newStreak = daysSinceLastBonus === 1 ? rawStreak + 1 : 1;
-
-  let bonus = 0;
-  let dayInCycle: number | null = null;
-
-  if (!cancelAtPeriodEnd) {
-    if (tier === "free") {
-      dayInCycle = ((newStreak - 1) % STREAK_CYCLE_LENGTH) + 1;
-      bonus = FREE_STREAK_DAY_BONUS[dayInCycle] ?? 0;
-    } else {
-      bonus = DAILY_BONUS_BY_TIER[tier] ?? 0;
-    }
-  }
-
-  // A reserved cancellation zeroes the bonus, but the login streak itself
-  // still advances — so if the reservation is later undone, the streak
-  // picks back up where it left off instead of being penalized twice.
-  if (bonus <= 0) {
-    const { error: streakOnlyError } = await supabaseAdmin
-      .from("profiles")
-      .update({ streak_count: newStreak, last_login_bonus_at: new Date().toISOString() })
-      .eq("id", userId);
-
-    if (streakOnlyError) {
-      console.error("[daily-bonus] failed to record streak:", streakOnlyError.message);
+    if (updateError) {
+      console.error("[daily-bonus] failed to grant bonus:", updateError.message);
+      return NextResponse.json({ granted: false });
     }
 
-    return NextResponse.json({ granted: false, streak: newStreak, cancelAtPeriodEnd });
-  }
-
-  const newCredits = rawCredits + bonus;
-  // Every actual bonus grant rolls the 180-day expiry window forward, same
-  // as a top-up/subscription payment — this is what keeps an active user's
-  // balance from ever lapsing.
-  const newExpiry = new Date(Date.now() + CREDIT_VALIDITY_DAYS * 24 * 60 * 60 * 1000).toISOString();
-
-  const { error: updateError } = await supabaseAdmin
-    .from("profiles")
-    .update({
+    return NextResponse.json({
+      granted: true,
+      creditsExpireAt: newExpiry,
+      bonus,
       credits: newCredits,
-      last_login_bonus_at: new Date().toISOString(),
-      streak_count: newStreak,
-      credits_expire_at: newExpiry,
-    })
-    .eq("id", userId);
-
-  if (updateError) {
-    console.error("[daily-bonus] failed to grant bonus:", updateError.message);
-    return NextResponse.json({ error: "ボーナス付与に失敗しました。" }, { status: 500 });
+      streak: newStreak,
+      dayInCycle,
+      tier,
+    });
+  } catch (err) {
+    // Aborted by the timeout above, or any other unexpected failure — this
+    // is a best-effort background grant, not something worth failing the
+    // page over. last_login_bonus_at was never written, so the next login
+    // simply retries it.
+    console.error("[daily-bonus] request timed out or failed:", err);
+    return NextResponse.json({ granted: false });
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  return NextResponse.json({
-    granted: true,
-    creditsExpireAt: newExpiry,
-    bonus,
-    credits: newCredits,
-    streak: newStreak,
-    dayInCycle,
-    tier,
-  });
 }

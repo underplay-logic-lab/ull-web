@@ -19,21 +19,29 @@ type ProfileResult = { data: Record<string, unknown> | null; error: PostgrestErr
 // Supabase's `.single()` errors with PGRST116 ("no rows returned") when an
 // authenticated user has no matching profiles row. Rather than failing the
 // request, create the missing row on the fly and continue.
-export async function getOrCreateProfile(userId: string, columns: string): Promise<ProfileResult> {
+// `signal` lets a caller bound the total time spent here (e.g. the
+// daily-bonus route, which must never let a slow/hanging DB round-trip
+// stall the post-login UX) — each query aborts individually rather than
+// the whole function hanging on whichever step is slow.
+export async function getOrCreateProfile(
+  userId: string,
+  columns: string,
+  signal?: AbortSignal,
+): Promise<ProfileResult> {
   // Cast away the `select()` overload's literal-string parsing: `columns`
   // is a runtime string, not a type-level literal, so there's nothing for
-  // it to infer field types from anyway.
-  const first = (await supabaseAdmin
-    .from("profiles")
-    .select(columns)
-    .eq("id", userId)
-    .single()) as unknown as ProfileResult;
+  // it to infer field types from anyway. abortSignal() must be applied
+  // before .single() — it's a filter-builder method, not available on the
+  // single-row builder .single() returns.
+  let selectQuery = supabaseAdmin.from("profiles").select(columns).eq("id", userId);
+  if (signal) selectQuery = selectQuery.abortSignal(signal);
+  const first = (await selectQuery.single()) as unknown as ProfileResult;
 
   if (!first.error || first.error.code !== "PGRST116") {
     return first;
   }
 
-  const { error: insertError } = await supabaseAdmin.from("profiles").insert({
+  let insertQuery = supabaseAdmin.from("profiles").insert({
     id: userId,
     credits: SIGNUP_BONUS_CREDITS,
     credits_expire_at: new Date(
@@ -41,6 +49,8 @@ export async function getOrCreateProfile(userId: string, columns: string): Promi
     ).toISOString(),
     subscription_tier: "free",
   });
+  if (signal) insertQuery = insertQuery.abortSignal(signal);
+  const { error: insertError } = await insertQuery;
 
   // 23505 = unique_violation: another concurrent request already created
   // the row between our select and insert — just re-read it.
@@ -49,9 +59,7 @@ export async function getOrCreateProfile(userId: string, columns: string): Promi
     return { data: null, error: insertError };
   }
 
-  return (await supabaseAdmin
-    .from("profiles")
-    .select(columns)
-    .eq("id", userId)
-    .single()) as unknown as ProfileResult;
+  let reselectQuery = supabaseAdmin.from("profiles").select(columns).eq("id", userId);
+  if (signal) reselectQuery = reselectQuery.abortSignal(signal);
+  return (await reselectQuery.single()) as unknown as ProfileResult;
 }

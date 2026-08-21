@@ -11,9 +11,23 @@ import { CreditsBadge } from "@/components/CreditsBadge";
 import { MemberRankBadge } from "@/components/MemberRankBadge";
 import { CancellationWarningModal } from "@/components/CancellationWarningModal";
 import { LoginStreakModal, type LoginStreakData } from "@/components/LoginStreakModal";
+import { ToastStack, type ToastData } from "@/components/Toast";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { supabase } from "@/lib/supabaseClient";
+
+const PAID_TIER_LABEL: Record<string, string> = {
+  entry: "Entry",
+  standard: "Standard",
+  pro: "Pro",
+  master: "Master",
+};
+
+// The daily-bonus route bounds its own DB work to REQUEST_TIMEOUT_MS (see
+// src/app/api/daily-bonus/route.ts) — this gives it a little extra room for
+// the network round-trip on top of that before this background fetch gives
+// up client-side. Never blocks the logged-in UI either way.
+const DAILY_BONUS_FETCH_TIMEOUT_MS = 5000;
 
 export function Header() {
   const [scrolled, setScrolled] = useState(false);
@@ -21,6 +35,7 @@ export function Header() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [streakModalData, setStreakModalData] = useState<LoginStreakData | null>(null);
+  const [toasts, setToasts] = useState<ToastData[]>([]);
   const { user } = useSupabaseUser();
   const { tier, cancelAtPeriodEnd } = useProfileCredits(user);
   const pathname = usePathname();
@@ -45,21 +60,33 @@ export function Header() {
         const res = await fetch("/api/daily-bonus", {
           method: "POST",
           headers: { Authorization: `Bearer ${accessToken}` },
+          signal: AbortSignal.timeout(DAILY_BONUS_FETCH_TIMEOUT_MS),
         });
         const data = await res.json();
 
         if (!cancelled && res.ok && data.granted) {
-          setStreakModalData({
-            bonus: data.bonus,
-            streak: data.streak,
-            dayInCycle: data.dayInCycle,
-            tier: data.tier,
-          });
           if (typeof data.credits === "number") {
             broadcastCreditsUpdate(user.id, data.credits);
           }
+
+          if (data.tier === "free") {
+            setStreakModalData({
+              bonus: data.bonus,
+              streak: data.streak,
+              dayInCycle: data.dayInCycle,
+              tier: data.tier,
+            });
+          } else {
+            const tierLabel = PAID_TIER_LABEL[data.tier] ?? data.tier;
+            setToasts((prev) => [
+              ...prev,
+              { id: Date.now(), message: `💎 ${tierLabel}デイリー特典: +${data.bonus}C を受け取りました` },
+            ]);
+          }
         }
       } catch (err) {
+        // Background bonus claim — a timeout or network error here should
+        // never surface to the user; just skip it for this login.
         console.error("[Header] daily bonus claim failed:", err);
       }
     })();
@@ -68,6 +95,10 @@ export function Header() {
       cancelled = true;
     };
   }, [user]);
+
+  const dismissToast = (id: number) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
 
   const handleLogout = () => {
     supabase.auth.signOut();
@@ -275,6 +306,7 @@ export function Header() {
         cancelAtPeriodEnd={cancelAtPeriodEnd}
       />
       <LoginStreakModal data={streakModalData} onClose={() => setStreakModalData(null)} />
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </header>
   );
 }
