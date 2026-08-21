@@ -16,7 +16,12 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { wanAnimateMotionPresets } from "@/lib/data";
+import {
+  wanAnimateMotionPresets,
+  WAN_ANIMATE_GPU_SPEC,
+  WAN_ANIMATE_MODEL_NAME,
+  WAN_ANIMATE_MODEL_PARAMS,
+} from "@/lib/data";
 import { generateWanAnimateVideo } from "@/lib/wanAnimateApi";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
@@ -475,9 +480,17 @@ export function WanAnimateTab() {
           {status === "loading" && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface/60">
               <div className="absolute inset-4 animate-pulse rounded-lg bg-surface-hover/60" />
+
+              <span className="relative z-10 flex items-center gap-1.5 rounded-full border border-neon-pink/40 bg-neon-pink/10 px-3 py-1 font-mono text-[11px] font-medium text-neon-pink">
+                <Zap size={12} />
+                {WAN_ANIMATE_GPU_SPEC.name} ({WAN_ANIMATE_GPU_SPEC.vramGb}GB VRAM){" "}
+                {WAN_ANIMATE_GPU_SPEC.deploymentMode}
+              </span>
+
               <Loader2 size={28} className="relative z-10 animate-spin text-neon-pink" />
+
               <span className="relative z-10 font-mono text-xs text-muted">
-                Blackwell GPU で超高速生成中...
+                {WAN_ANIMATE_MODEL_NAME} ({WAN_ANIMATE_MODEL_PARAMS}) モデルで高精度サンプリング中...
               </span>
               <span className="relative z-10 max-w-[80%] text-center text-[11px] text-muted/70">
                 キャラクターの動きを解析し、アニメーションを合成しています

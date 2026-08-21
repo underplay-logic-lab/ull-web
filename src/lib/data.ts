@@ -25,6 +25,24 @@ export const aspectRatios: { id: AspectRatio; label: string }[] = [
 
 export const WAN_ANIMATE_GENERATION_COST = 10;
 
+// Must match the GPU actually attached to the deployed Modal endpoint (see
+// gpu=... in scripts/modal_wan_animate.py) — swapping hardware there means
+// updating only this object, not any component markup.
+export type WanAnimateGpuSpec = {
+  name: string;
+  vramGb: number;
+  deploymentMode: string;
+};
+
+export const WAN_ANIMATE_GPU_SPEC: WanAnimateGpuSpec = {
+  name: "NVIDIA L40S",
+  vramGb: 48,
+  deploymentMode: "サーバーレス稼働中",
+};
+
+export const WAN_ANIMATE_MODEL_NAME = "Wan Animate 2";
+export const WAN_ANIMATE_MODEL_PARAMS = "14B";
+
 export type WanAnimateMotionPreset = {
   id: string;
   label: string;
