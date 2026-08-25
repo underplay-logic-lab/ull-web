@@ -31,6 +31,7 @@ import { LoginModal } from "@/components/LoginModal";
 import { GpuTierSelector } from "@/components/studio/GpuTierSelector";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
+import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
 
 type Status = "idle" | "loading" | "done" | "error";
 
@@ -372,6 +373,8 @@ export function CustomWorkflowsTab() {
   const [downloadFilename, setDownloadFilename] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const elapsedMs = useElapsedTimer(status === "loading");
+
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -678,7 +681,7 @@ export function CustomWorkflowsTab() {
           {status === "loading" ? (
             <>
               <Loader2 size={16} className="animate-spin" />
-              生成中...
+              生成中... {formatElapsedSeconds(elapsedMs)}s
             </>
           ) : !user ? (
             <>
@@ -722,6 +725,9 @@ export function CustomWorkflowsTab() {
                 <img src={resultUrl} alt="生成結果" className="h-full w-full object-contain" />
               )}
             </div>
+            <p className="text-center font-mono text-xs text-muted">
+              ⚡ 生成完了（所要時間: {formatElapsedSeconds(elapsedMs)}秒）
+            </p>
             <a
               href={resultUrl}
               download={downloadFilename ?? `custom_workflow.${resultKind === "video" ? "mp4" : "png"}`}
@@ -734,10 +740,15 @@ export function CustomWorkflowsTab() {
         )}
 
         {status === "loading" && (
-          <div className="flex items-center justify-center gap-2 rounded-xl border border-border bg-background py-10 text-xs text-muted">
-            <Film size={16} className="opacity-40" />
-            <Zap size={12} className="text-neon-pink" />
-            生成中... GPU: {gpuTier === "ultra" ? "NVIDIA B300 (ULTRA)" : "NVIDIA L40S (Standard)"}
+          <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-border bg-background py-10 text-xs text-muted">
+            <div className="flex items-center gap-2">
+              <Film size={16} className="opacity-40" />
+              <Zap size={12} className="text-neon-pink" />
+              生成中... GPU: {gpuTier === "ultra" ? "NVIDIA B300 (ULTRA)" : "NVIDIA L40S (Standard)"}
+            </div>
+            <span className="font-mono text-[11px] font-medium text-neon-pink">
+              ⏳ {formatElapsedSeconds(elapsedMs)}s
+            </span>
           </div>
         )}
       </div>

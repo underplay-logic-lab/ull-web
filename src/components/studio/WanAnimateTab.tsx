@@ -32,6 +32,7 @@ import { GpuTierSelector } from "@/components/studio/GpuTierSelector";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits } from "@/hooks/useProfileCredits";
 import { broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
+import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
 
 type Status = "idle" | "loading" | "done" | "error";
 type MotionMode = "preset" | "custom";
@@ -282,6 +283,8 @@ export function WanAnimateTab() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeModalOpen, setChargeModalOpen] = useState(false);
 
+  const elapsedMs = useElapsedTimer(status === "loading");
+
   useEffect(() => {
     (async () => {
       setPresetsLoading(true);
@@ -384,7 +387,7 @@ export function WanAnimateTab() {
     buttonLabel = (
       <>
         <Loader2 size={16} className="animate-spin" />
-        生成中...
+        生成中... {formatElapsedSeconds(elapsedMs)}s
       </>
     );
   } else if (!user) {
@@ -591,6 +594,10 @@ export function WanAnimateTab() {
                 {activeGpuSpec.deploymentMode}
               </span>
 
+              <span className="relative z-10 flex items-center gap-1.5 rounded-full border border-border bg-background/80 px-3 py-1 font-mono text-[11px] font-medium text-foreground">
+                ⏳ 生成中... {formatElapsedSeconds(elapsedMs)}s
+              </span>
+
               <Loader2 size={28} className="relative z-10 animate-spin text-neon-pink" />
 
               <span className="relative z-10 font-mono text-xs text-muted">
@@ -629,14 +636,19 @@ export function WanAnimateTab() {
         </div>
 
         {status === "done" && resultUrl && (
-          <a
-            href={resultUrl}
-            download={downloadFilename ?? buildDownloadFilename()}
-            className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-border bg-surface/60 px-6 py-3 text-sm font-medium text-foreground transition-colors hover:border-neon-pink/50 hover:bg-surface-hover"
-          >
-            <Download size={16} />
-            Download
-          </a>
+          <>
+            <p className="mt-3 text-center font-mono text-xs text-muted">
+              ⚡ 生成完了（所要時間: {formatElapsedSeconds(elapsedMs)}秒）
+            </p>
+            <a
+              href={resultUrl}
+              download={downloadFilename ?? buildDownloadFilename()}
+              className="mt-2 flex items-center justify-center gap-2 rounded-xl border border-border bg-surface/60 px-6 py-3 text-sm font-medium text-foreground transition-colors hover:border-neon-pink/50 hover:bg-surface-hover"
+            >
+              <Download size={16} />
+              Download
+            </a>
+          </>
         )}
       </div>
 
