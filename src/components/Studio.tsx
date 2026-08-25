@@ -5,6 +5,7 @@ import { Wrench } from "lucide-react";
 import { CreditsBadge } from "@/components/CreditsBadge";
 import { WanAnimateTab } from "@/components/studio/WanAnimateTab";
 import { CustomWorkflowsTab } from "@/components/studio/CustomWorkflowsTab";
+import { GpuWarmBadge } from "@/components/studio/GpuWarmBadge";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { EditableText } from "@/components/EditableText";
 
@@ -73,6 +74,8 @@ export function Studio() {
               <CreditsBadge user={user} className="inline-flex" />
             </div>
           )}
+
+          <GpuWarmBadge />
 
           <div className="mt-8 flex flex-wrap items-center justify-center gap-2">
             {STUDIO_TABS.map((tab) => (
