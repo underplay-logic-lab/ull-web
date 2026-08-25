@@ -92,6 +92,17 @@ image = (
         f"git clone https://github.com/IAMCCS/IAMCCS-nodes.git"
         f" {COMFY_DIR}/custom_nodes/IAMCCS-nodes || echo 'IAMCCS-nodes clone failed, continuing without it'",
     )
+    # ComfyUI-Manager — baked into the image (not installed via the admin's
+    # Volume-based custom-node installer) so it's always present the moment
+    # this dev server comes up. _link_custom_nodes()'s "an image-baked dir
+    # with this name wins" check (see below) means this real directory is
+    # never replaced even if the Volume also happens to have a
+    # custom_nodes/ComfyUI-Manager from that installer.
+    .run_commands(
+        "git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git"
+        f" {COMFY_DIR}/custom_nodes/ComfyUI-Manager",
+        f"pip install --no-cache-dir -r {COMFY_DIR}/custom_nodes/ComfyUI-Manager/requirements.txt",
+    )
 )
 
 
@@ -189,7 +200,7 @@ def _tail_log(max_chars: int = 4000) -> str:
     timeout=TIMEOUT_SECONDS,
     volumes={VOLUME_MOUNT_DIR: vol},
 )
-@modal.web_server(port=COMFYUI_PORT, startup_timeout=300)
+@modal.web_server(port=COMFYUI_PORT, startup_timeout=300, requires_proxy_auth=False)
 def comfyui_server():
     _link_model_folders()
     _link_custom_nodes()
