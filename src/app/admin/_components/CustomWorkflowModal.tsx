@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Loader2, Plus, Trash2, UploadCloud, X, Zap } from "lucide-react";
 import {
@@ -11,7 +11,12 @@ import {
   type WorkflowInputFieldType,
   type WorkflowInputFieldSection,
 } from "@/lib/customWorkflows";
-import type { StudioCustomWorkflow } from "./types";
+import {
+  categorizeVolumeFiles,
+  inferModelCategoryFromFieldName,
+  type ModelFileCategory,
+} from "@/lib/modelFileCategories";
+import type { StudioCustomWorkflow, VolumeFile } from "./types";
 
 const FIELD_TYPE_LABEL: Record<WorkflowInputFieldType, string> = {
   text: "テキスト",
@@ -120,6 +125,72 @@ function parseWorkflowNodes(jsonText: string): WorkflowNodeInfo[] {
     nodes.push({ nodeId, classType, title, inputs });
   }
   return nodes;
+}
+
+// Rewrites one node's one input value inside the raw workflow_json text —
+// backs the "モデル / VAE / CLIP / LoRA ファイル" combo boxes below, which
+// edit workflow_json node values directly rather than going through
+// input_schema. Returns the text unchanged (rather than throwing) if the
+// JSON, node, or inputs object isn't in the expected shape, since this runs
+// on every keystroke/selection.
+function updateNodeInputValue(jsonText: string, nodeId: string, fieldName: string, newValue: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return jsonText;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return jsonText;
+  const obj = parsed as Record<string, unknown>;
+
+  const node = obj[nodeId];
+  if (!node || typeof node !== "object" || Array.isArray(node)) return jsonText;
+  const nodeObj = node as Record<string, unknown>;
+
+  const inputs = nodeObj.inputs;
+  if (!inputs || typeof inputs !== "object" || Array.isArray(inputs)) return jsonText;
+  (inputs as Record<string, unknown>)[fieldName] = newValue;
+
+  return JSON.stringify(obj, null, 2);
+}
+
+// A model/VAE/CLIP/LoRA filename field: a plain <input> backed by a
+// <datalist> of matching Volume files. Falls back to an ordinary manual-
+// entry text input whenever `options` is empty (list not fetched yet, empty
+// Volume, or no match for this field's category) — never blocks typing an
+// arbitrary path.
+function ModelFileCombobox({
+  value,
+  onChange,
+  options,
+  listId,
+  placeholder,
+  className,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: string[];
+  listId: string;
+  placeholder?: string;
+  className: string;
+}) {
+  return (
+    <>
+      <input
+        list={listId}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className={className}
+        autoComplete="off"
+      />
+      <datalist id={listId}>
+        {options.map((opt) => (
+          <option key={opt} value={opt} />
+        ))}
+      </datalist>
+    </>
+  );
 }
 
 // Suggested Japanese labels for common ComfyUI input field names — falls
@@ -296,6 +367,71 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
     () => parsedNodes.filter((n) => OUTPUT_NODE_CLASS_TYPES.has(n.classType)),
     [parsedNodes],
   );
+
+  // Best-effort Volume file listing for the model/VAE/CLIP/LoRA combo
+  // boxes below — fetched once on open. A failure (or an empty Volume)
+  // just leaves every combo box's options empty, which degrades to a
+  // plain manual-entry input rather than breaking the form.
+  const [volumeFiles, setVolumeFiles] = useState<VolumeFile[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/admin/modal/storage");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled && Array.isArray(data?.files)) {
+          setVolumeFiles(data.files as VolumeFile[]);
+        }
+      } catch {
+        // Ignored — combo boxes fall back to manual entry.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const fileCategories = useMemo(() => categorizeVolumeFiles(volumeFiles), [volumeFiles]);
+
+  // Every string-valued node input across the parsed workflow whose field
+  // name looks like a model/VAE/CLIP/LoRA filename (see
+  // inferModelCategoryFromFieldName) — these edit workflow_json directly,
+  // independent of input_schema.
+  const modelInputRows = useMemo(() => {
+    const rows: {
+      key: string;
+      nodeId: string;
+      nodeTitle: string;
+      classType: string;
+      fieldName: string;
+      category: ModelFileCategory;
+      value: string;
+    }[] = [];
+    for (const node of parsedNodes) {
+      for (const [fieldName, rawValue] of Object.entries(node.inputs)) {
+        if (typeof rawValue !== "string") continue;
+        const category = inferModelCategoryFromFieldName(fieldName);
+        if (!category) continue;
+        rows.push({
+          key: `${node.nodeId}:${fieldName}`,
+          nodeId: node.nodeId,
+          nodeTitle: node.title,
+          classType: node.classType,
+          fieldName,
+          category,
+          value: rawValue,
+        });
+      }
+    }
+    return rows;
+  }, [parsedNodes]);
+
+  const handleModelInputChange = (nodeId: string, fieldName: string, newValue: string) => {
+    setValues((v) => ({
+      ...v,
+      workflowJsonText: updateNodeInputValue(v.workflowJsonText, nodeId, fieldName, newValue),
+    }));
+  };
 
   const handleFileUpload = async (file: File) => {
     try {
@@ -611,6 +747,39 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
                 SaveVideo / SaveImage / PreviewImage / VHS_VideoCombine を自動検出します。複数の出力ノードがあるワークフローで、生成結果として返す出力を明示的に固定したい場合に指定してください。
               </p>
             </div>
+
+            {modelInputRows.length > 0 && (
+              <div className="mt-3 space-y-2 rounded-lg border border-border bg-background/60 p-3">
+                <p className="text-[10px] font-medium text-muted">
+                  🗂️ モデル / VAE / CLIP / LoRA ファイル（Modal Volume: ull-wan-models）
+                </p>
+                {modelInputRows.map((row) => (
+                  <div key={row.key} className="grid gap-1.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] sm:items-center">
+                    <label
+                      className="truncate text-[10px] text-muted"
+                      title={`[${row.nodeId}] ${row.nodeTitle} (${row.classType})`}
+                    >
+                      <span className="font-mono">{row.fieldName}</span>{" "}
+                      <span className="text-neon-violet">({row.category})</span>
+                      <br />
+                      <span className="opacity-70">{`[${row.nodeId}] ${row.nodeTitle}`}</span>
+                    </label>
+                    <ModelFileCombobox
+                      value={row.value}
+                      onChange={(val) => handleModelInputChange(row.nodeId, row.fieldName, val)}
+                      options={fileCategories[row.category]}
+                      listId={`model-node-${row.key}`}
+                      className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-mono outline-none focus:border-neon-violet/50"
+                    />
+                  </div>
+                ))}
+                {volumeFiles.length === 0 && (
+                  <p className="text-[10px] text-muted">
+                    Modal Volumeのファイル一覧が未取得（または空）です。上の欄にはそのままファイル名を手入力できます。
+                  </p>
+                )}
+              </div>
+            )}
           </section>
 
           <section className="rounded-xl border border-border">
@@ -740,6 +909,8 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
                 {fields.map((f) => {
                   const selectedNode = parsedNodes.find((n) => n.nodeId === f.node_id);
                   const fieldOptions = selectedNode ? Object.keys(selectedNode.inputs) : [];
+                  const defaultValueCategory = inferModelCategoryFromFieldName(f.field);
+                  const defaultValueOptions = defaultValueCategory ? fileCategories[defaultValueCategory] : [];
                   return (
                   <div key={f.key} className="rounded-xl border border-border bg-background/60 p-3">
                     <div className="grid gap-2 sm:grid-cols-5">
@@ -836,12 +1007,29 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
                     <div className="mt-2 grid gap-2 sm:grid-cols-5">
                       {f.type === "text" && (
                         <div className="sm:col-span-2">
-                          <label className="mb-1 block text-[10px] font-medium text-muted">初期値</label>
-                          <input
-                            value={f.defaultValue}
-                            onChange={(e) => updateField(f.key, { defaultValue: e.target.value })}
-                            className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs outline-none focus:border-neon-violet/50"
-                          />
+                          <label className="mb-1 block text-[10px] font-medium text-muted">
+                            初期値
+                            {defaultValueCategory && (
+                              <span className="ml-1 font-mono text-[9px] text-neon-violet">
+                                ({defaultValueCategory})
+                              </span>
+                            )}
+                          </label>
+                          {defaultValueCategory ? (
+                            <ModelFileCombobox
+                              value={f.defaultValue}
+                              onChange={(val) => updateField(f.key, { defaultValue: val })}
+                              options={defaultValueOptions}
+                              listId={`model-field-${f.key}`}
+                              className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-mono outline-none focus:border-neon-violet/50"
+                            />
+                          ) : (
+                            <input
+                              value={f.defaultValue}
+                              onChange={(e) => updateField(f.key, { defaultValue: e.target.value })}
+                              className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs outline-none focus:border-neon-violet/50"
+                            />
+                          )}
                         </div>
                       )}
                       {f.type === "toggle" && (

@@ -893,7 +893,7 @@ class WanAnimate(_WanAnimateBase):
     image=image,
     gpu=ULTRA_GPU_TYPE,  # 288GB VRAM — see module docstring re: availability risk
     timeout=600,
-    scaledown_window=2,
+    scaledown_window=60,
     volumes={MODELS_DIR: vol},
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
