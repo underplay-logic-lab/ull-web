@@ -80,7 +80,13 @@ vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
 # note.
 control_dict = modal.Dict.from_name("ull-comfyui-dev-control", create_if_missing=True)
 STOP_REQUESTED_AT_KEY = "stop_requested_at"
+HEARTBEAT_AT_KEY = "heartbeat_at"
+RUNNING_SINCE_KEY = "running_since"
 STOP_POLL_INTERVAL_SECONDS = 3
+# How stale a heartbeat can be before the admin "状態確認" check considers
+# the container gone — comfortably more than one poll interval so a single
+# slow tick doesn't read as "stopped".
+HEARTBEAT_STALE_AFTER_SECONDS = 12
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -137,16 +143,20 @@ def _authorize(request: fastapi.Request) -> None:
 
 def _watch_for_stop(started_at: float) -> None:
     """
-    Background daemon thread started from comfyui_server(): polls
-    control_dict every STOP_POLL_INTERVAL_SECONDS and hard-exits this
-    container the instant a stop request newer than *this* container's own
-    start time shows up. `requested_at > started_at` is what keeps a stop
-    request from also killing a fresh container that happens to start after
-    it — a new container's started_at is always later than any stop request
-    already on file, so it never matches an old one.
+    Background daemon thread started from comfyui_server(): every
+    STOP_POLL_INTERVAL_SECONDS, (1) writes a heartbeat to control_dict so
+    the admin "状態確認" check can tell a live container from a stopped one
+    (see control()'s "status" action), and (2) hard-exits this container
+    the instant a stop request newer than *this* container's own start time
+    shows up. `requested_at > started_at` is what keeps a stop request from
+    also killing a fresh container that happens to start after it — a new
+    container's started_at is always later than any stop request already on
+    file, so it never matches an old one.
     """
+    control_dict[RUNNING_SINCE_KEY] = started_at
     while True:
         try:
+            control_dict[HEARTBEAT_AT_KEY] = time.time()
             requested_at = control_dict.get(STOP_REQUESTED_AT_KEY)
             if isinstance(requested_at, (int, float)) and requested_at > started_at:
                 print("[comfyui-dev] stop requested — shutting down.")
@@ -292,7 +302,9 @@ def comfyui_server():
 # GPU-less and cheap (no `gpu=` set) — this is a tiny control-plane endpoint,
 # not the dev server itself. The admin "🛑 終了" button POSTs
 # {"action": "stop"} here; comfyui_server()'s background thread picks the
-# request up from control_dict within STOP_POLL_INTERVAL_SECONDS.
+# request up from control_dict within STOP_POLL_INTERVAL_SECONDS. The
+# "状態確認" status check POSTs {"action": "status"} to read the same
+# container's heartbeat back out.
 @app.function(image=image, timeout=30, secrets=[modal.Secret.from_name("wan-animate-auth")])
 @modal.fastapi_endpoint(method="POST")
 def control(item: dict, request: fastapi.Request):
@@ -301,4 +313,13 @@ def control(item: dict, request: fastapi.Request):
     if action == "stop":
         control_dict[STOP_REQUESTED_AT_KEY] = time.time()
         return {"ok": True, "stop_requested": True}
+    if action == "status":
+        now = time.time()
+        heartbeat_at = control_dict.get(HEARTBEAT_AT_KEY)
+        running_since = control_dict.get(RUNNING_SINCE_KEY)
+        is_running = isinstance(heartbeat_at, (int, float)) and (now - heartbeat_at) < HEARTBEAT_STALE_AFTER_SECONDS
+        return {
+            "running": is_running,
+            "running_since": running_since if is_running else None,
+        }
     raise fastapi.HTTPException(status_code=400, detail=f"Unknown action: {action!r}")

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Loader2, Square, Wrench } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Loader2, RefreshCw, Square, Wrench } from "lucide-react";
 
 // Persistent (modal deploy, not ephemeral serve) URL for the T4 ComfyUI dev
 // GUI — see modal_comfyui_dev.py at the repo root. Hardcoded rather than an
@@ -9,17 +9,73 @@ import { Loader2, Square, Wrench } from "lucide-react";
 // changes if that app is redeployed under a different name.
 const COMFYUI_DEV_URL = "https://axelbh5--ull-comfyui-dev-comfyui-server.modal.run";
 
-// Admin-header pair for the ComfyUI dev GUI: an "open" link plus a "🛑 終了"
-// button that force-stops the GPU container without waiting for its idle
-// timeout. There's no public Modal API to reach into and kill a running
-// container from here — the button instead POSTs to
-// /api/admin/modal/comfyui-dev/stop, which forwards to
-// modal_comfyui_dev.py's control() endpoint; that just leaves a note in a
-// shared modal.Dict, and the running container's own background thread
-// notices it within a few seconds and self-terminates.
+// How often the status badge re-checks on its own — cheap (the status
+// check hits a GPU-less control-plane function, never the GPU itself), so
+// a short interval is fine.
+const STATUS_POLL_INTERVAL_MS = 8000;
+
+function formatRunningSince(runningSince: number, now: number): string {
+  const totalSeconds = Math.max(0, Math.floor(now / 1000 - runningSince));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    return `${hours}時間${minutes % 60}分`;
+  }
+  return `${minutes}分${String(seconds).padStart(2, "0")}秒`;
+}
+
+// Admin-header trio for the ComfyUI dev GUI: an "open" link, a live
+// running/stopped status badge, and a "🛑 終了" button that force-stops the
+// GPU container without waiting for its idle timeout. There's no public
+// Modal API to reach into and list/kill a running container from here —
+// both the status check and the stop button instead talk to
+// modal_comfyui_dev.py's control() endpoint, which reads/writes a shared
+// modal.Dict that the running container's own background thread maintains
+// (a heartbeat for status, a stop-request flag for the kill switch).
 export function ComfyUiDevControls() {
   const [stopping, setStopping] = useState(false);
   const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  const [status, setStatus] = useState<{ running: boolean; runningSince: number | null } | null>(null);
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  const checkStatus = async () => {
+    setStatusLoading(true);
+    try {
+      const res = await fetch("/api/admin/modal/comfyui-dev/status");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? "状態確認に失敗しました。");
+      setStatus({ running: Boolean(data.running), runningSince: data.runningSince ?? null });
+      setStatusError(null);
+    } catch (err) {
+      setStatusError(err instanceof Error ? err.message : "状態確認に失敗しました。");
+    } finally {
+      setStatusLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // Deferred rather than called directly in the effect body (React's
+    // set-state-in-effect lint rule flags synchronous setState calls
+    // there) — fires on the next tick instead of waiting for the first
+    // interval tick below.
+    const initialId = setTimeout(checkStatus, 0);
+    const intervalId = setInterval(checkStatus, STATUS_POLL_INTERVAL_MS);
+    return () => {
+      clearTimeout(initialId);
+      clearInterval(intervalId);
+    };
+  }, []);
+
+  // Local 1s ticker for the running-duration display — status.runningSince
+  // itself only changes when the container actually starts/stops.
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const handleStop = async () => {
     setStopping(true);
@@ -29,6 +85,7 @@ export function ComfyUiDevControls() {
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? "終了に失敗しました。");
       setNotice({ kind: "success", text: "終了リクエストを送信しました（数秒で停止します）。" });
+      checkStatus();
     } catch (err) {
       setNotice({ kind: "error", text: err instanceof Error ? err.message : "終了に失敗しました。" });
     } finally {
@@ -48,6 +105,30 @@ export function ComfyUiDevControls() {
         <Wrench size={14} />
         🛠️ クラウドComfyUIを開く
       </a>
+
+      <button
+        type="button"
+        onClick={checkStatus}
+        disabled={statusLoading}
+        title="今すぐ状態を再確認します"
+        className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+          status?.running
+            ? "border-green-500/40 bg-green-500/10 text-green-400 hover:bg-green-500/20"
+            : "border-border bg-surface/60 text-muted hover:border-neon-violet/40 hover:text-foreground"
+        }`}
+      >
+        {statusLoading ? (
+          <Loader2 size={14} className="animate-spin" />
+        ) : (
+          <RefreshCw size={14} />
+        )}
+        {status === null
+          ? "状態確認中..."
+          : status.running
+            ? `🟢 稼働中（起動から${status.runningSince !== null ? formatRunningSince(status.runningSince, now) : "?"}）`
+            : "⚫ 停止中"}
+      </button>
+
       <button
         type="button"
         onClick={handleStop}
@@ -58,9 +139,10 @@ export function ComfyUiDevControls() {
         {stopping ? <Loader2 size={14} className="animate-spin" /> : <Square size={14} />}
         🛑 終了
       </button>
-      {notice && (
-        <span className={`text-[11px] ${notice.kind === "success" ? "text-neon-pink" : "text-red-400"}`}>
-          {notice.text}
+
+      {(notice || statusError) && (
+        <span className={`text-[11px] ${notice?.kind === "error" || statusError ? "text-red-400" : "text-neon-pink"}`}>
+          {notice?.text ?? statusError}
         </span>
       )}
     </div>
