@@ -129,6 +129,99 @@ function parseWorkflowNodes(jsonText: string): WorkflowNodeInfo[] {
   return nodes;
 }
 
+// A ComfyUI API-format graph link: [sourceNodeId, sourceOutputSlot]. Node ids
+// are always exported as strings, which is what distinguishes a real link
+// from a same-shaped literal value (e.g. a [width, height] pair, which is
+// [number, number]).
+function isLinkValue(value: unknown): value is [string, number] {
+  return Array.isArray(value) && value.length === 2 && typeof value[0] === "string" && typeof value[1] === "number";
+}
+
+type BypassSnapshotEntry = { nodeId: string; inputName: string; originalValue: [string, number] };
+
+// Rewires every downstream node currently pointing at `nodeId` to instead
+// point at whatever `nodeId` itself was fed from — the "🚫 バイパス" button's
+// effect: skip this node, wire its consumers straight to its own source.
+// Node N itself is never touched (its class_type/inputs are left exactly as
+// they are), so toggling bypass off is a pure inverse via the returned
+// snapshot, and N — now referenced by nothing — simply never executes
+// rather than needing to be deleted or otherwise marked.
+//
+// Slots are matched positionally: N's own link-type inputs, in declaration
+// order, stand in for its (unknown — API-format JSON carries no output
+// schema) output slots. This mirrors how simple wrapper/patch nodes are
+// written (LoraLoader's "model"/"clip" inputs and MODEL/CLIP outputs are
+// both declared in that same order), which covers the LoraLoader /
+// LoraLoaderModelOnly / EasyCache / SageAttention-style patch nodes this
+// feature targets. A downstream connection whose slot has no positional
+// match on N is left untouched rather than guessed at.
+function bypassNode(jsonText: string, nodeId: string): { text: string; snapshot: BypassSnapshotEntry[] } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const obj = parsed as Record<string, unknown>;
+
+  const targetNode = obj[nodeId];
+  if (!targetNode || typeof targetNode !== "object" || Array.isArray(targetNode)) return null;
+  const targetInputs = (targetNode as Record<string, unknown>).inputs;
+  if (!targetInputs || typeof targetInputs !== "object" || Array.isArray(targetInputs)) return null;
+
+  const upstreamBySlot: [string, number][] = [];
+  for (const value of Object.values(targetInputs as Record<string, unknown>)) {
+    if (isLinkValue(value)) upstreamBySlot.push(value);
+  }
+  if (upstreamBySlot.length === 0) return null;
+
+  const snapshot: BypassSnapshotEntry[] = [];
+  for (const [otherNodeId, otherNode] of Object.entries(obj)) {
+    if (otherNodeId === nodeId) continue;
+    if (!otherNode || typeof otherNode !== "object" || Array.isArray(otherNode)) continue;
+    const inputs = (otherNode as Record<string, unknown>).inputs;
+    if (!inputs || typeof inputs !== "object" || Array.isArray(inputs)) continue;
+    const inputsObj = inputs as Record<string, unknown>;
+
+    for (const [inputName, value] of Object.entries(inputsObj)) {
+      if (!isLinkValue(value)) continue;
+      const [refId, refSlot] = value;
+      if (refId !== nodeId) continue;
+      const replacement = upstreamBySlot[refSlot];
+      if (!replacement) continue; // no matching pass-through slot — leave this connection alone
+      snapshot.push({ nodeId: otherNodeId, inputName, originalValue: value });
+      inputsObj[inputName] = replacement;
+    }
+  }
+
+  return { text: JSON.stringify(obj, null, 2), snapshot };
+}
+
+// Inverse of bypassNode — restores every rewired downstream input back to
+// its pre-bypass value from the snapshot bypassNode returned.
+function restoreBypass(jsonText: string, snapshot: BypassSnapshotEntry[]): string {
+  if (snapshot.length === 0) return jsonText;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return jsonText;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return jsonText;
+  const obj = parsed as Record<string, unknown>;
+
+  for (const entry of snapshot) {
+    const node = obj[entry.nodeId];
+    if (!node || typeof node !== "object" || Array.isArray(node)) continue;
+    const inputs = (node as Record<string, unknown>).inputs;
+    if (!inputs || typeof inputs !== "object" || Array.isArray(inputs)) continue;
+    (inputs as Record<string, unknown>)[entry.inputName] = entry.originalValue;
+  }
+
+  return JSON.stringify(obj, null, 2);
+}
+
 // Rewrites one node's one input value inside the raw workflow_json text —
 // backs the "モデル / VAE / CLIP / LoRA ファイル" combo boxes below, which
 // edit workflow_json node values directly rather than going through
@@ -512,6 +605,34 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
     }));
   };
 
+  // nodeId -> the downstream rewiring bypassNode() made, so toggling back
+  // off can restore it exactly. A node's presence as a key here is what
+  // "currently bypassed" means — purely client-side editing-session state,
+  // not persisted (saving just persists whatever workflow_json currently
+  // reads, rewired or not).
+  const [bypassSnapshots, setBypassSnapshots] = useState<Record<string, BypassSnapshotEntry[]>>({});
+
+  const handleToggleBypass = (nodeId: string) => {
+    const existingSnapshot = bypassSnapshots[nodeId];
+    if (existingSnapshot) {
+      setValues((v) => ({ ...v, workflowJsonText: restoreBypass(v.workflowJsonText, existingSnapshot) }));
+      setBypassSnapshots((prev) => {
+        const next = { ...prev };
+        delete next[nodeId];
+        return next;
+      });
+      return;
+    }
+
+    const result = bypassNode(values.workflowJsonText, nodeId);
+    if (!result) {
+      setError("このノードにはバイパス可能な配線（上流ノードからの接続）が見つかりませんでした。");
+      return;
+    }
+    setValues((v) => ({ ...v, workflowJsonText: result.text }));
+    setBypassSnapshots((prev) => ({ ...prev, [nodeId]: result.snapshot }));
+  };
+
   const handleFileUpload = async (file: File) => {
     try {
       const text = await file.text();
@@ -863,6 +984,58 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
                     </p>
                   )
                 )}
+              </div>
+            )}
+          </section>
+
+          <section className="space-y-2">
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-neon-violet">
+              ノード一覧（バイパス）
+            </h4>
+            <p className="text-[10px] text-muted">
+              LoRAやパッチノード（EasyCache / SageAttention等）を挟んだまま試行錯誤したい時に、配線を手作業で書き換えずワンクリックで前後を直結できます。バイパス解除でいつでも元に戻せます。
+            </p>
+            {parsedNodes.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-border px-3 py-3 text-center text-xs text-muted">
+                workflow_json を入力するとノード一覧が表示されます。
+              </p>
+            ) : (
+              <div className="max-h-64 space-y-1.5 overflow-y-auto rounded-lg border border-border bg-background/60 p-2">
+                {parsedNodes.map((node) => {
+                  const isBypassed = Boolean(bypassSnapshots[node.nodeId]);
+                  const canBypass = isBypassed || Object.values(node.inputs).some(isLinkValue);
+                  return (
+                    <div
+                      key={node.nodeId}
+                      className="flex items-center justify-between gap-2 rounded-md border border-border bg-background px-2.5 py-1.5"
+                    >
+                      <span
+                        className="truncate text-[11px] text-foreground"
+                        title={`[${node.nodeId}] ${node.title} (${node.classType})`}
+                      >
+                        <span className="font-mono">[{node.nodeId}]</span> {node.title}{" "}
+                        <span className="text-muted">({node.classType})</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleBypass(node.nodeId)}
+                        disabled={!canBypass}
+                        title={
+                          canBypass
+                            ? undefined
+                            : "上流ノードからの配線（リンク値の入力）が見つからないためバイパスできません"
+                        }
+                        className={`shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                          isBypassed
+                            ? "border-amber-500/40 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
+                            : "border-border text-muted hover:border-red-400/40 hover:text-red-400"
+                        }`}
+                      >
+                        {isBypassed ? "↩️ バイパス解除" : "🚫 バイパス"}
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </section>
