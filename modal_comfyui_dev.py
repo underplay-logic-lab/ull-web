@@ -35,11 +35,14 @@ Env override:
   COMFYUI_DEV_GPU — GPU type to request (default: T4)
 """
 
+import hmac
 import os
 import subprocess
+import threading
 import time
 import urllib.request
 
+import fastapi
 import modal
 
 app = modal.App("ull-comfyui-dev")
@@ -68,6 +71,16 @@ TIMEOUT_SECONDS = 1800  # 30 min safety valve — auto-shuts-down the GPU rather
 READY_TIMEOUT_SECONDS = 240  # Comfortably under startup_timeout below, leaving Modal margin to notice readiness too.
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
+
+# Out-of-band control channel for the admin "🛑 終了" button: Modal exposes
+# no public API to force-stop a container from outside, so instead a running
+# comfyui_server container watches this Dict itself (see _watch_for_stop)
+# and self-terminates the moment a newer stop request appears — the control
+# endpoint below never touches the container directly, it just leaves a
+# note.
+control_dict = modal.Dict.from_name("ull-comfyui-dev-control", create_if_missing=True)
+STOP_REQUESTED_AT_KEY = "stop_requested_at"
+STOP_POLL_INTERVAL_SECONDS = 3
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -104,6 +117,43 @@ image = (
         f"pip install --no-cache-dir -r {COMFY_DIR}/custom_nodes/ComfyUI-Manager/requirements.txt",
     )
 )
+
+
+def _authorize(request: fastapi.Request) -> None:
+    """Shared bearer-token check — same shape as _authorize in
+    scripts/modal_wan_animate.py, and reuses the same MODAL_AUTH_TOKEN
+    secret/env var so the Next.js side needs no new secret to call this."""
+    expected = os.environ.get("MODAL_AUTH_TOKEN")
+    if not expected:
+        raise fastapi.HTTPException(status_code=500, detail="Server auth is not configured.")
+
+    provided = request.headers.get("x-modal-secret") or request.headers.get(
+        "authorization", ""
+    ).removeprefix("Bearer ").strip()
+
+    if not provided or not hmac.compare_digest(provided, expected):
+        raise fastapi.HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _watch_for_stop(started_at: float) -> None:
+    """
+    Background daemon thread started from comfyui_server(): polls
+    control_dict every STOP_POLL_INTERVAL_SECONDS and hard-exits this
+    container the instant a stop request newer than *this* container's own
+    start time shows up. `requested_at > started_at` is what keeps a stop
+    request from also killing a fresh container that happens to start after
+    it — a new container's started_at is always later than any stop request
+    already on file, so it never matches an old one.
+    """
+    while True:
+        try:
+            requested_at = control_dict.get(STOP_REQUESTED_AT_KEY)
+            if isinstance(requested_at, (int, float)) and requested_at > started_at:
+                print("[comfyui-dev] stop requested — shutting down.")
+                os._exit(0)
+        except Exception as exc:  # noqa: BLE001 — a control-channel hiccup must never crash ComfyUI itself
+            print(f"[comfyui-dev] stop-watcher error (ignored): {exc}")
+        time.sleep(STOP_POLL_INTERVAL_SECONDS)
 
 
 def _link_model_folders():
@@ -205,6 +255,10 @@ def comfyui_server():
     _link_model_folders()
     _link_custom_nodes()
 
+    # Lets the admin "🛑 終了" button (POST to the control() endpoint below)
+    # end this container immediately instead of waiting out TIMEOUT_SECONDS.
+    threading.Thread(target=_watch_for_stop, args=(time.time(),), daemon=True).start()
+
     # ComfyUI's stdout/stderr is captured to a file (rather than left to
     # inherit the parent's, which @modal.web_server doesn't reliably
     # surface once this function has returned) so a crash's traceback is
@@ -233,3 +287,18 @@ def comfyui_server():
 
     _wait_until_ready(proc, READY_TIMEOUT_SECONDS)
     print("[comfyui-dev] ComfyUI is up and responding on :8188.")
+
+
+# GPU-less and cheap (no `gpu=` set) — this is a tiny control-plane endpoint,
+# not the dev server itself. The admin "🛑 終了" button POSTs
+# {"action": "stop"} here; comfyui_server()'s background thread picks the
+# request up from control_dict within STOP_POLL_INTERVAL_SECONDS.
+@app.function(image=image, timeout=30, secrets=[modal.Secret.from_name("wan-animate-auth")])
+@modal.fastapi_endpoint(method="POST")
+def control(item: dict, request: fastapi.Request):
+    _authorize(request)
+    action = item.get("action")
+    if action == "stop":
+        control_dict[STOP_REQUESTED_AT_KEY] = time.time()
+        return {"ok": True, "stop_requested": True}
+    raise fastapi.HTTPException(status_code=400, detail=f"Unknown action: {action!r}")

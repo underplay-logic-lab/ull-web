@@ -1,14 +1,9 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowLeft, ShieldCheck, Wrench } from "lucide-react";
+import { ArrowLeft, ShieldCheck } from "lucide-react";
 import { getAdminUser } from "@/lib/adminAuth";
-
-// Persistent (modal deploy, not ephemeral serve) URL for the T4 ComfyUI dev
-// GUI — see modal_comfyui_dev.py at the repo root. Hardcoded rather than an
-// env var: it's a fixed dev-tool endpoint, not a secret, and only ever
-// changes if that app is redeployed under a different name.
-const COMFYUI_DEV_URL = "https://axelbh5--ull-comfyui-dev-comfyui-server.modal.run";
+import { ComfyUiDevControls } from "@/components/admin/ComfyUiDevControls";
 
 export default async function AdminLayout({ children }: { children: ReactNode }) {
   const user = await getAdminUser();
@@ -36,16 +31,7 @@ export default async function AdminLayout({ children }: { children: ReactNode })
             <span className="hidden max-w-[14rem] truncate text-xs text-muted sm:inline">
               {user.email}
             </span>
-            <a
-              href={COMFYUI_DEV_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              title="アクセス時にT4 GPUが自動起動します（放置時は自動スリープし、その間の課金はありません）"
-              className="flex items-center gap-1.5 rounded-full border border-neon-violet/50 bg-neon-violet/15 px-3 py-1.5 text-xs font-medium text-neon-violet transition-colors hover:bg-neon-violet/25"
-            >
-              <Wrench size={14} />
-              🛠️ クラウドComfyUIを開く
-            </a>
+            <ComfyUiDevControls />
             <Link
               href="/#studio"
               className="flex items-center gap-1.5 rounded-full border border-border bg-surface/60 px-3 py-1.5 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
