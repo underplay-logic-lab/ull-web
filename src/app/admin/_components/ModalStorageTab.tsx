@@ -377,9 +377,15 @@ export function ModalStorageTab() {
   // on mount), so admins who don't need it skip the Modal round-trip.
   const [filesOpen, setFilesOpen] = useState(false);
 
+  // "file" = single-file URL download (existing behavior); "repo" = a whole
+  // Hugging Face repo via snapshot_download (e.g. a sharded LLM) — see
+  // download_repo_async in scripts/modal_wan_animate.py.
+  const [downloadMode, setDownloadMode] = useState<"file" | "repo">("file");
   const [downloadUrl, setDownloadUrl] = useState("");
   const [downloadSubfolder, setDownloadSubfolder] = useState<string>(MODEL_SUBFOLDERS[0]);
   const [downloadFilename, setDownloadFilename] = useState("");
+  const [repoId, setRepoId] = useState("");
+  const [repoSaveDir, setRepoSaveDir] = useState("");
   const [downloading, setDownloading] = useState(false);
   const [downloadNotice, setDownloadNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   // Bumped after each successful download start so DownloadTasksPanel
@@ -415,6 +421,33 @@ export function ModalStorageTab() {
   }, [filesOpen]);
 
   const handleDownload = async () => {
+    if (downloadMode === "repo") {
+      if (!repoId.trim() || !repoSaveDir.trim()) return;
+      setDownloading(true);
+      setDownloadNotice(null);
+      try {
+        const res = await fetch("/api/admin/modal/storage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "repo", repo_id: repoId.trim(), save_dir: repoSaveDir.trim() }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error ?? "ダウンロードに失敗しました。");
+        setDownloadNotice({
+          kind: "success",
+          text: `✅ ${data.download.save_path}/ へのリポジトリ一括ダウンロードを開始しました。進捗は下の「📥 ダウンロードタスク一覧」でご確認ください。`,
+        });
+        setRepoId("");
+        setRepoSaveDir("");
+        setDownloadTasksRefresh((n) => n + 1);
+      } catch (err) {
+        setDownloadNotice({ kind: "error", text: err instanceof Error ? err.message : "ダウンロードに失敗しました。" });
+      } finally {
+        setDownloading(false);
+      }
+      return;
+    }
+
     if (!downloadUrl.trim() || !downloadFilename.trim()) return;
     setDownloading(true);
     setDownloadNotice(null);
@@ -504,54 +537,114 @@ export function ModalStorageTab() {
           <Download size={16} className="text-neon-violet" />
           リモートダウンローダー
         </h3>
-        <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
-          <input
-            type="text"
-            value={downloadUrl}
-            onChange={(e) => {
-              const value = e.target.value;
-              setDownloadUrl(value);
-              // Auto-fill save path from the URL itself (e.g. .../diffusion_models/model.safetensors)
-              // so pasting a model URL is enough — the admin can still edit either field afterward.
-              const { subfolder, filename } = extractDownloadInfo(value);
-              if (subfolder) setDownloadSubfolder(subfolder);
-              if (filename) setDownloadFilename(filename);
-            }}
-            placeholder="https://huggingface.co/... または https://civitai.com/..."
-            className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
-          />
-          <select
-            value={downloadSubfolder}
-            onChange={(e) => setDownloadSubfolder(e.target.value)}
-            className="rounded-lg border border-border bg-background px-3 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50"
-          >
-            {MODEL_SUBFOLDERS.map((sub) => (
-              <option key={sub} value={sub}>
-                {sub}
-              </option>
-            ))}
-          </select>
+
+        <div className="mb-3 flex gap-2">
+          {(
+            [
+              { id: "file", label: "単一ファイルURL" },
+              { id: "repo", label: "HFリポジトリ一括" },
+            ] as const
+          ).map((mode) => (
+            <button
+              key={mode.id}
+              type="button"
+              onClick={() => {
+                setDownloadMode(mode.id);
+                setDownloadNotice(null);
+              }}
+              className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                downloadMode === mode.id
+                  ? "border-neon-pink/40 bg-neon-pink/10 text-neon-pink"
+                  : "border-border bg-background text-muted hover:border-neon-violet/40 hover:text-foreground"
+              }`}
+            >
+              {mode.label}
+            </button>
+          ))}
         </div>
-        <input
-          type="text"
-          value={downloadFilename}
-          onChange={(e) => setDownloadFilename(e.target.value)}
-          placeholder="保存ファイル名（例: my_model.safetensors）"
-          className="mt-3 w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
-        />
-        <button
-          type="button"
-          onClick={handleDownload}
-          disabled={downloading || !downloadUrl.trim() || !downloadFilename.trim()}
-          className="mt-3 flex items-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {downloading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
-          ⚡ Modalへ直接ダウンロード
-        </button>
-        <p className="mt-2 text-[11px] text-muted">
-          許可ドメイン: huggingface.co / civitai.com のみ。ダウンロードは Modal
-          側でバックグラウンド実行され、このサーバーは経由しません。URLを貼り付けると保存先フォルダとファイル名を自動入力します。
-        </p>
+
+        {downloadMode === "file" ? (
+          <>
+            <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+              <input
+                type="text"
+                value={downloadUrl}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setDownloadUrl(value);
+                  // Auto-fill save path from the URL itself (e.g. .../diffusion_models/model.safetensors)
+                  // so pasting a model URL is enough — the admin can still edit either field afterward.
+                  const { subfolder, filename } = extractDownloadInfo(value);
+                  if (subfolder) setDownloadSubfolder(subfolder);
+                  if (filename) setDownloadFilename(filename);
+                }}
+                placeholder="https://huggingface.co/... または https://civitai.com/..."
+                className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
+              />
+              <select
+                value={downloadSubfolder}
+                onChange={(e) => setDownloadSubfolder(e.target.value)}
+                className="rounded-lg border border-border bg-background px-3 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50"
+              >
+                {MODEL_SUBFOLDERS.map((sub) => (
+                  <option key={sub} value={sub}>
+                    {sub}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <input
+              type="text"
+              value={downloadFilename}
+              onChange={(e) => setDownloadFilename(e.target.value)}
+              placeholder="保存ファイル名（例: my_model.safetensors）"
+              className="mt-3 w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
+            />
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={downloading || !downloadUrl.trim() || !downloadFilename.trim()}
+              className="mt-3 flex items-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {downloading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+              ⚡ Modalへ直接ダウンロード
+            </button>
+            <p className="mt-2 text-[11px] text-muted">
+              許可ドメイン: huggingface.co / civitai.com のみ。ダウンロードは Modal
+              側でバックグラウンド実行され、このサーバーは経由しません。URLを貼り付けると保存先フォルダとファイル名を自動入力します。
+            </p>
+          </>
+        ) : (
+          <>
+            <input
+              type="text"
+              value={repoId}
+              onChange={(e) => setRepoId(e.target.value)}
+              placeholder="リポジトリID（例: hotdogs/Qwen3.8-27B-Abliterated）"
+              className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
+            />
+            <input
+              type="text"
+              value={repoSaveDir}
+              onChange={(e) => setRepoSaveDir(e.target.value)}
+              placeholder="保存先ディレクトリ（例: LLM/Qwen3.8-27B-Abliterated/）"
+              className="mt-3 w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
+            />
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={downloading || !repoId.trim() || !repoSaveDir.trim()}
+              className="mt-3 flex items-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {downloading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+              ⚡ リポジトリを一括ダウンロード
+            </button>
+            <p className="mt-2 text-[11px] text-muted">
+              Hugging Face のリポジトリ全体（分割モデル等）を、Volume内の指定ディレクトリへまとめてダウンロードします。
+              huggingface.co 上の公開リポジトリのみ対応です。
+            </p>
+          </>
+        )}
         {downloadNotice && (
           <p
             className={`mt-3 rounded-lg border px-3 py-2 text-xs ${

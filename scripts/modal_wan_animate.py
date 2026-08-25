@@ -37,6 +37,7 @@ import hmac
 import json
 import os
 import pathlib
+import re
 import time
 from urllib.parse import urlparse
 
@@ -141,6 +142,9 @@ image = (
         "requests",
         "aiohttp",
         "fastapi[standard]",
+        # Repo-wide model downloads (download_repo_async / snapshot_download)
+        # for the admin Storage tab's Hugging Face repo bulk-download mode.
+        "huggingface_hub",
     )
     .run_commands(
         f"git clone https://github.com/comfyanonymous/ComfyUI.git {COMFY_DIR}",
@@ -220,6 +224,36 @@ def _validate_host(url: str, allowed_hosts: tuple, label: str) -> None:
             status_code=400,
             detail=f"{label} host not allowed: {host or url!r} (allowed: {', '.join(allowed_hosts)})",
         )
+
+
+_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _is_valid_repo_id(repo_id: str) -> bool:
+    """owner/name only (e.g. hotdogs/Qwen3.8-27B-Abliterated) — no nested
+    paths, no '..'."""
+    return bool(repo_id) and bool(_REPO_ID_RE.match(repo_id)) and ".." not in repo_id
+
+
+def _sanitize_relative_dir(raw: str) -> str | None:
+    """
+    Normalizes a MODELS_DIR-relative directory path for the repo downloader
+    (e.g. "LLM/Qwen3.8-27B-Abliterated/"). Unlike the single-file downloader,
+    this isn't restricted to MODEL_SUBFOLDERS — a whole repo (an LLM, say)
+    doesn't belong in one of ComfyUI's symlinked model-type folders. Returns
+    None for anything that would escape MODELS_DIR (absolute paths, '..',
+    empty segments) instead of the normalized relative path.
+    """
+    if not raw or not raw.strip():
+        return None
+    candidate = raw.strip().strip("/")
+    if not candidate:
+        return None
+    base = os.path.normpath(MODELS_DIR)
+    full = os.path.normpath(os.path.join(base, candidate))
+    if full == base or not full.startswith(base + os.sep):
+        return None
+    return os.path.relpath(full, base).replace(os.sep, "/")
 
 
 @app.function(image=image, volumes={MODELS_DIR: vol}, timeout=1800)
@@ -366,6 +400,84 @@ def download_model_async(download_id: str, url: str, subfolder: str, filename: s
         vol.commit()
         update(status="completed", progress_percent=100)
     except Exception as exc:
+        update(status="failed", error_message=str(exc)[:500])
+        raise
+
+
+@app.function(
+    image=image,
+    volumes={MODELS_DIR: vol},
+    timeout=7200,
+    secrets=[modal.Secret.from_name("supabase-model-downloads")],
+)
+def download_repo_async(download_id: str, repo_id: str, save_dir: str):
+    """
+    Background half of ModalStorage._download_repo_async — snapshot_downloads
+    an entire Hugging Face repo (e.g. a sharded LLM) into
+    MODELS_DIR/save_dir via .spawn(), reporting progress into `download_id`'s
+    model_downloads row the same way download_model_async does for single
+    files. Unlike download_model_async, there's no single response with a
+    content-length to track progress against — instead, a background thread
+    polls save_dir's total size on disk against an upfront size estimate
+    (via HfApi.model_info) while snapshot_download runs.
+    """
+    import threading
+
+    from huggingface_hub import HfApi, snapshot_download
+
+    def update(**fields):
+        _supabase_patch_download(download_id, fields)
+
+    dest_dir = os.path.join(MODELS_DIR, save_dir)
+    stop_progress = threading.Event()
+
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        update(status="downloading", progress_percent=0)
+
+        total_bytes = 0
+        try:
+            info = HfApi().model_info(repo_id, files_metadata=True)
+            total_bytes = sum((s.size or 0) for s in (info.siblings or []))
+        except Exception as exc:  # noqa: BLE001 — size estimate is best-effort
+            print(f"[download_repo_async] could not estimate size for {repo_id}: {exc}")
+
+        def _poll_progress():
+            last_reported = -1
+            while not stop_progress.wait(2):
+                if total_bytes <= 0:
+                    continue
+                written = 0
+                for root, _dirs, filenames in os.walk(dest_dir):
+                    for name in filenames:
+                        try:
+                            written += os.path.getsize(os.path.join(root, name))
+                        except OSError:
+                            continue
+                percent = min(99, int(written * 100 / total_bytes))
+                if percent != last_reported:
+                    update(progress_percent=percent)
+                    last_reported = percent
+
+        progress_thread = threading.Thread(target=_poll_progress, daemon=True)
+        progress_thread.start()
+
+        try:
+            snapshot_download(
+                repo_id=repo_id,
+                local_dir=dest_dir,
+                # Skip repo bookkeeping files — the actual model weights
+                # (including sharded ones) are what the admin asked for.
+                ignore_patterns=[".gitattributes", ".gitignore"],
+            )
+        finally:
+            stop_progress.set()
+            progress_thread.join(timeout=5)
+
+        vol.commit()
+        update(status="completed", progress_percent=100)
+    except Exception as exc:
+        stop_progress.set()
         update(status="failed", error_message=str(exc)[:500])
         raise
 
@@ -839,6 +951,27 @@ class ModalStorage:
         download_model_async.spawn(download_id, url, subfolder, filename)
         return {"ok": True, "spawned": True}
 
+    def _download_repo_async(self, item: dict) -> dict:
+        """
+        Validates the request, then spawns download_repo_async as a detached
+        Modal function call and returns immediately — mirrors _download_async
+        above, but for a whole Hugging Face repo (snapshot_download) rather
+        than a single file. save_dir is any path under MODELS_DIR, not
+        limited to MODEL_SUBFOLDERS: a full repo (an LLM, say) doesn't belong
+        in one of ComfyUI's symlinked model-type folders.
+        """
+        repo_id = item["repo_id"]
+        download_id = item["download_id"]
+
+        if not _is_valid_repo_id(repo_id):
+            raise fastapi.HTTPException(status_code=400, detail="Invalid repo_id.")
+        save_dir = _sanitize_relative_dir(item.get("save_dir", ""))
+        if save_dir is None:
+            raise fastapi.HTTPException(status_code=400, detail="Invalid save_dir.")
+
+        download_repo_async.spawn(download_id, repo_id, save_dir)
+        return {"ok": True, "spawned": True}
+
     def _read_file(self, item: dict) -> dict:
         """Reads a file back out of the volume as base64 — used by the admin
         Storage tab's download button (e.g. for outputs/admin/* generations
@@ -928,6 +1061,8 @@ class ModalStorage:
             return self._list()
         if action == "download_async":
             return self._download_async(item)
+        if action == "download_repo_async":
+            return self._download_repo_async(item)
         if action == "read_file":
             return self._read_file(item)
         if action == "delete":

@@ -28,6 +28,7 @@ const MODAL_STORAGE_LONG_TIMEOUT_MS = 180_000;
 type ModalStorageAction =
   | { action: "list" }
   | { action: "download_async"; download_id: string; url: string; subfolder: string; filename: string }
+  | { action: "download_repo_async"; download_id: string; repo_id: string; save_dir: string }
   | { action: "read_file"; file_path: string }
   | { action: "delete"; file_path: string }
   | { action: "delete_dir"; file_path: string }
@@ -81,6 +82,18 @@ export async function spawnDownloadToVolume(
   filename: string,
 ): Promise<{ ok: true; spawned: true }> {
   return callModalStorage({ action: "download_async", download_id: downloadId, url, subfolder, filename });
+}
+
+// Triggers the background repo-wide download (see download_repo_async in
+// scripts/modal_wan_animate.py) — same spawn-and-return-immediately shape as
+// spawnDownloadToVolume above, but for an entire Hugging Face repo
+// (snapshot_download) instead of a single file.
+export async function spawnRepoDownloadToVolume(
+  downloadId: string,
+  repoId: string,
+  saveDir: string,
+): Promise<{ ok: true; spawned: true }> {
+  return callModalStorage({ action: "download_repo_async", download_id: downloadId, repo_id: repoId, save_dir: saveDir });
 }
 
 export async function readVolumeFile(filePath: string): Promise<{ filename: string; base64: string }> {
