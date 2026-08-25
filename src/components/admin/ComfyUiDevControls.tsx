@@ -27,12 +27,7 @@ export function ComfyUiDevControls() {
     try {
       const res = await fetch("/api/admin/modal/comfyui-dev/stop", { method: "POST" });
       const data = await res.json();
-      if (!res.ok) {
-        // Temporary: surface the debug payload inline while tracking down
-        // why the env vars aren't reading in production. Remove once resolved.
-        const debugText = data?.debug ? ` [${JSON.stringify(data.debug)}]` : "";
-        throw new Error((data?.error ?? "終了に失敗しました。") + debugText);
-      }
+      if (!res.ok) throw new Error(data?.error ?? "終了に失敗しました。");
       setNotice({ kind: "success", text: "終了リクエストを送信しました（数秒で停止します）。" });
     } catch (err) {
       setNotice({ kind: "error", text: err instanceof Error ? err.message : "終了に失敗しました。" });
