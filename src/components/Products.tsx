@@ -4,7 +4,7 @@ import { DownloadButton } from "@/components/DownloadButton";
 
 export function Products() {
   return (
-    <section id="products" className="relative py-24 sm:py-32">
+    <section id="products" data-source-file="src/components/Products.tsx" className="relative py-24 sm:py-32">
       <div className="mx-auto max-w-6xl px-6">
         <div className="mb-16 text-center">
           <p className="mb-3 font-mono text-xs uppercase tracking-widest text-neon-pink">

@@ -28,6 +28,7 @@ export function LoginStreakModal({ data, onClose }: LoginStreakModalProps) {
 
   return createPortal(
     <div
+      data-source-file="src/components/LoginStreakModal.tsx"
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
       onClick={onClose}
     >

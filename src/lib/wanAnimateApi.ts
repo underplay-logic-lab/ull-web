@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
+import type { GpuTier } from "@/lib/gpuTier";
 
 export type WanAnimateGenerateParams = {
   characterImage: File;
@@ -6,6 +7,7 @@ export type WanAnimateGenerateParams = {
   presetId?: string | null;
   customMotionVideo?: File | null;
   prompt: string;
+  gpuTier: GpuTier;
 };
 
 export type WanAnimateGenerateResult = {
@@ -44,6 +46,7 @@ export async function generateWanAnimateVideo(
     formData.append("customMotionVideo", params.customMotionVideo);
   }
   formData.append("prompt", params.prompt);
+  formData.append("gpuTier", params.gpuTier);
 
   const res = await fetch("/api/wan-animate/generate", {
     method: "POST",

@@ -1,22 +1,15 @@
-import { Hero } from "@/components/Hero";
-import { Studio } from "@/components/Studio";
-import { Pricing } from "@/components/Pricing";
-import { Products } from "@/components/Products";
-import { Contact } from "@/components/Contact";
+import { HomeSections } from "@/components/HomeSections";
 import { HomeScrollReset } from "@/components/HomeScrollReset";
 
-// Articles is temporarily unrendered — component and content are kept
-// in place so the section can be restored later without rebuilding it.
+// Section order/visibility (including Articles, off by default) is now
+// admin-controlled via site_contents.page_sections_order — see
+// HomeSections.tsx and the Visual Editor's SectionManager controls.
 
 export default function Home() {
   return (
     <>
       <HomeScrollReset />
-      <Hero />
-      <Studio />
-      <Pricing />
-      <Products />
-      <Contact />
+      <HomeSections />
     </>
   );
 }

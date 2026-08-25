@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { LegalPage, LegalSection } from "@/components/LegalPage";
-import { siteConfig } from "@/lib/data";
+import { siteConfig, CONTACT_EMAIL } from "@/lib/data";
 
 export const metadata: Metadata = {
   title: `プライバシーポリシー — ${siteConfig.name}`,
@@ -24,7 +24,11 @@ export default function PrivacyPage() {
           <li>Cookie、アクセスログ等のサービス利用状況に関する情報</li>
         </ul>
         <p className="mt-3">
-          なお、Studio機能で入力されたプロンプトおよび生成された画像データは、サーバー上に永続保存されません。生成結果はリクエスト処理の完了後に破棄される、完全プライバシー保護設計です。
+          <strong className="text-foreground">
+            【生成データおよびアップロードファイルの取り扱い】
+          </strong>
+          <br />
+          Studio機能において生成されたメディアデータおよび入力設定は、サービス品質向上、不具合調査および不正利用防止の目的のため、一時ストレージ（最長7日間）に保持された後、自動的に安全に破棄されます。第三者への提供や公開は一切行われません。
         </p>
       </LegalSection>
 
@@ -57,7 +61,7 @@ export default function PrivacyPage() {
 
       <LegalSection heading="7. 開示・訂正・削除等の請求">
         <p>
-          ユーザーは、当サイトが保有する自己の個人情報について、開示・訂正・削除等を請求することができます。ご希望の場合は、お問い合わせフォームよりご連絡ください。合理的な期間内に対応いたします。
+          ユーザーは、当サイトが保有する自己の個人情報について、開示・訂正・削除等を請求することができます。ご希望の場合は、サイト内のお問い合わせフォームまたは{CONTACT_EMAIL}宛にご連絡ください。合理的な期間内に対応いたします。
         </p>
       </LegalSection>
 
@@ -69,7 +73,7 @@ export default function PrivacyPage() {
 
       <LegalSection heading="9. お問い合わせ窓口">
         <p>
-          個人情報の取り扱いに関するお問い合わせは、サイト内のお問い合わせフォームよりご連絡ください。
+          個人情報の取り扱いに関するお問い合わせは、サイト内のお問い合わせフォームまたは{CONTACT_EMAIL}宛にご連絡ください。
         </p>
       </LegalSection>
     </LegalPage>

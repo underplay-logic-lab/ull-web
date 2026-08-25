@@ -8,6 +8,7 @@ import { CancellationWarningModal } from "@/components/CancellationWarningModal"
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits } from "@/hooks/useProfileCredits";
 import { supabase } from "@/lib/supabaseClient";
+import { EditableText } from "@/components/EditableText";
 
 export function Pricing() {
   const { user } = useSupabaseUser();
@@ -66,18 +67,27 @@ export function Pricing() {
   };
 
   return (
-    <section id="pricing" className="relative py-24 sm:py-32">
+    <section id="pricing" data-source-file="src/components/Pricing.tsx" className="relative py-24 sm:py-32">
       <div className="mx-auto max-w-6xl px-6">
         <div className="mb-16 text-center">
-          <p className="mb-3 font-mono text-xs uppercase tracking-widest text-neon-violet">
-            Pricing
-          </p>
-          <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-            料金プラン
-          </h2>
-          <p className="mx-auto mt-4 max-w-xl text-muted">
-            必要な分だけの都度チャージか、毎月クレジットが自動付与される月額プラン。
-          </p>
+          <EditableText
+            as="p"
+            siteKey="pricing_eyebrow"
+            fallback="Pricing"
+            className="mb-3 font-mono text-xs uppercase tracking-widest text-neon-violet"
+          />
+          <EditableText
+            as="h2"
+            siteKey="pricing_title"
+            fallback="料金プラン"
+            className="text-3xl font-bold tracking-tight sm:text-4xl"
+          />
+          <EditableText
+            as="p"
+            siteKey="pricing_subtitle"
+            fallback="必要な分だけの都度チャージか、毎月クレジットが自動付与される月額プラン。"
+            className="mx-auto mt-4 max-w-xl text-muted"
+          />
           <div className="mt-5 inline-flex items-center gap-2 rounded-full border border-neon-pink/30 bg-neon-pink/10 px-4 py-1.5 text-xs font-mono font-medium text-neon-pink">
             <Gift size={14} />
             新規アカウント登録で即時10クレジット無料進呈（クレカ登録不要）

@@ -1,6 +1,9 @@
+"use client";
+
 import Link from "next/link";
-import { siteConfig } from "@/lib/data";
+import { siteConfig, CONTACT_EMAIL } from "@/lib/data";
 import { BrandLink } from "@/components/BrandLink";
+import { EditableText } from "@/components/EditableText";
 
 const legalLinks = [
   { label: "利用規約", href: "/terms" },
@@ -12,7 +15,7 @@ export function Footer() {
   const year = new Date().getFullYear();
 
   return (
-    <footer className="border-t border-border bg-surface/30">
+    <footer data-source-file="src/components/Footer.tsx" className="border-t border-border bg-surface/30">
       <div className="mx-auto max-w-6xl px-6 py-10">
         <div className="flex flex-col items-center justify-between gap-6 sm:flex-row">
           <BrandLink className="flex items-center gap-2">
@@ -32,16 +35,22 @@ export function Footer() {
                 {link.label}
               </Link>
             ))}
+            <a
+              href={`mailto:${CONTACT_EMAIL}`}
+              className="text-xs text-muted transition-colors hover:text-neon-pink"
+            >
+              {CONTACT_EMAIL}
+            </a>
           </nav>
         </div>
 
-        <p className="mt-8 text-center text-xs text-muted sm:text-left">
-          &copy; {year} {siteConfig.legalName}. All rights reserved.
-        </p>
-        <p className="mt-1.5 text-center text-[11px] text-muted/70 sm:text-left">
-          〒150-0043 東京都渋谷区道玄坂1丁目10番8号 渋谷道玄坂東急ビル2F−C
-        </p>
-      </div>
+        <EditableText
+          as="p"
+          siteKey="footer_copyright"
+          fallback={`© ${year} ${siteConfig.legalName}. All rights reserved.`}
+          className="mt-2 text-center text-xs text-muted sm:text-left"
+        />
+        </div>
     </footer>
   );
 }

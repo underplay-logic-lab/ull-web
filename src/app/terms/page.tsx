@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { LegalPage, LegalSection } from "@/components/LegalPage";
-import { siteConfig } from "@/lib/data";
+import { siteConfig, CONTACT_EMAIL } from "@/lib/data";
 
 export const metadata: Metadata = {
   title: `利用規約 — ${siteConfig.name}`,
@@ -70,7 +70,7 @@ export default function TermsPage() {
 
       <LegalSection heading="第9条（お問い合わせ）">
         <p>
-          本規約に関するお問い合わせは、サイト内のお問い合わせフォームよりご連絡ください。
+          本規約に関するお問い合わせは、サイト内のお問い合わせフォームまたは{CONTACT_EMAIL}宛にご連絡ください。
         </p>
       </LegalSection>
     </LegalPage>

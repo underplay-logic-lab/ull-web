@@ -15,6 +15,7 @@ export function Contact() {
     company: "",
     service: "",
     message: "",
+    hp_company_url: "",
   });
 
   const handleSubmit = async (e: FormEvent) => {
@@ -35,7 +36,14 @@ export function Contact() {
       }
 
       setFormState("success");
-      setFormData({ name: "", email: "", company: "", service: "", message: "" });
+      setFormData({
+        name: "",
+        email: "",
+        company: "",
+        service: "",
+        message: "",
+        hp_company_url: "",
+      });
     } catch (err) {
       setFormState("error");
       setErrorMessage(
@@ -45,7 +53,7 @@ export function Contact() {
   };
 
   return (
-    <section id="contact" className="relative py-24 sm:py-32">
+    <section id="contact" data-source-file="src/components/Contact.tsx" className="relative py-24 sm:py-32">
       <div className="mx-auto max-w-6xl px-6">
         <div className="grid gap-12 lg:grid-cols-2 lg:gap-16">
           <div>
@@ -101,6 +109,19 @@ export function Contact() {
               </div>
             ) : (
               <form onSubmit={handleSubmit} className="space-y-5">
+                <input
+                  type="text"
+                  name="hp_company_url"
+                  value={formData.hp_company_url}
+                  onChange={(e) =>
+                    setFormData({ ...formData, hp_company_url: e.target.value })
+                  }
+                  tabIndex={-1}
+                  autoComplete="off"
+                  aria-hidden="true"
+                  className="absolute -z-10 h-0 w-0 opacity-0"
+                  style={{ position: "absolute", left: "-9999px", pointerEvents: "none" }}
+                />
                 <div className="grid gap-5 sm:grid-cols-2">
                   <div>
                     <label

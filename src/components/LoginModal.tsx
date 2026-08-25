@@ -61,7 +61,7 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: `${window.location.origin}`,
+        redirectTo: `${window.location.origin}/auth/callback`,
         // Force Google's account chooser every time, even for a browser
         // that's already signed into a single Google account — otherwise
         // Google silently re-authenticates the last-used account, which
@@ -123,7 +123,7 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
 
       if (emailMode === "reset") {
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
-          redirectTo: `${window.location.origin}/reset-password`,
+          redirectTo: `${window.location.origin}/auth/callback?next=/reset-password`,
         });
         if (error) throw error;
         setEmailNotice(
@@ -172,6 +172,7 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
 
   return createPortal(
     <div
+      data-source-file="src/components/LoginModal.tsx"
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
       onClick={handleClose}
     >

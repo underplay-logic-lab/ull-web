@@ -17,13 +17,18 @@ import {
   Zap,
 } from "lucide-react";
 import {
-  wanAnimateMotionPresets,
+  WAN_ANIMATE_GENERATION_COST,
   WAN_ANIMATE_GPU_SPEC,
+  WAN_ANIMATE_GPU_ULTRA_ADDON,
   WAN_ANIMATE_MODEL_NAME,
   WAN_ANIMATE_MODEL_PARAMS,
+  WAN_ANIMATE_ULTRA_GPU_SPEC,
 } from "@/lib/data";
 import { generateWanAnimateVideo } from "@/lib/wanAnimateApi";
+import type { GpuTier } from "@/lib/gpuTier";
+import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { LoginModal } from "@/components/LoginModal";
+import { GpuTierSelector } from "@/components/studio/GpuTierSelector";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits } from "@/hooks/useProfileCredits";
 import { broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
@@ -31,7 +36,33 @@ import { broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 type Status = "idle" | "loading" | "done" | "error";
 type MotionMode = "preset" | "custom";
 
-const GENERATION_COST = 10;
+const GPU_TIER_ADDON_KEY = "wan_animate_gpu_ultra_addon";
+
+// This tab has no per-workflow slug (unlike CustomWorkflowsTab), so it uses
+// a single fixed persistence id — see studioFormPersistence.ts. Image/video
+// File values are never persisted (browsers can't restore an actual File).
+const WAN_ANIMATE_FORM_ID = "wan-animate-2";
+
+type PersistedWanAnimateForm = {
+  motionMode: MotionMode;
+  gpuTier: GpuTier;
+  selectedPresetId: string | null;
+  prompt: string;
+};
+
+type StudioMotionPreset = {
+  id: string;
+  title: string;
+  category: string;
+  video_url: string;
+  thumbnail_url: string | null;
+  priority: number;
+};
+
+const PRICING_KEY_BY_MODE: Record<MotionMode, string> = {
+  preset: "wan_animate_preset",
+  custom: "wan_animate_custom",
+};
 
 function useObjectUrl(file: File | null): string | null {
   const url = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
@@ -173,15 +204,18 @@ function InsufficientCreditsModal({
   open,
   onClose,
   credits,
+  cost,
 }: {
   open: boolean;
   onClose: () => void;
   credits: number | null;
+  cost: number;
 }) {
   if (!open || typeof document === "undefined") return null;
 
   return createPortal(
     <div
+      data-source-file="src/components/studio/WanAnimateTab.tsx"
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
       onClick={onClose}
     >
@@ -202,7 +236,7 @@ function InsufficientCreditsModal({
         </div>
 
         <p className="mt-2 text-sm leading-relaxed text-muted">
-          Wan Animate 2 の動画生成には {GENERATION_COST} クレジット必要です。現在の保有クレジット:{" "}
+          Wan Animate 2 の動画生成には {cost} クレジット必要です。現在の保有クレジット:{" "}
           {credits ?? 0}
         </p>
 
@@ -227,12 +261,19 @@ export function WanAnimateTab() {
   const [characterImage, setCharacterImage] = useState<File | null>(null);
   const characterPreviewUrl = useObjectUrl(characterImage);
 
-  const [motionMode, setMotionMode] = useState<MotionMode>("preset");
-  const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
+  const savedForm = useMemo(() => loadFormState<PersistedWanAnimateForm>(WAN_ANIMATE_FORM_ID), []);
+
+  const [motionMode, setMotionMode] = useState<MotionMode>(savedForm?.motionMode ?? "preset");
+  const [gpuTier, setGpuTier] = useState<GpuTier>(savedForm?.gpuTier === "ultra" ? "ultra" : "standard");
+  const [selectedPresetId, setSelectedPresetId] = useState<string | null>(savedForm?.selectedPresetId ?? null);
   const [customVideoFile, setCustomVideoFile] = useState<File | null>(null);
   const customVideoPreviewUrl = useObjectUrl(customVideoFile);
 
-  const [prompt, setPrompt] = useState("");
+  const [presets, setPresets] = useState<StudioMotionPreset[]>([]);
+  const [presetsLoading, setPresetsLoading] = useState(true);
+  const [pricing, setPricing] = useState<Record<string, number>>({});
+
+  const [prompt, setPrompt] = useState(savedForm?.prompt ?? "");
   const [status, setStatus] = useState<Status>("idle");
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [downloadFilename, setDownloadFilename] = useState<string | null>(null);
@@ -241,10 +282,55 @@ export function WanAnimateTab() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeModalOpen, setChargeModalOpen] = useState(false);
 
+  useEffect(() => {
+    (async () => {
+      setPresetsLoading(true);
+      try {
+        const res = await fetch("/api/studio/presets");
+        const data = await res.json();
+        if (res.ok) {
+          setPresets(data.presets as StudioMotionPreset[]);
+        } else {
+          console.error("[WanAnimateTab] failed to load presets:", data?.error);
+        }
+      } catch (err) {
+        console.error("[WanAnimateTab] failed to load presets:", err);
+      } finally {
+        setPresetsLoading(false);
+      }
+    })();
+
+    (async () => {
+      try {
+        const res = await fetch("/api/studio/pricing");
+        const data = await res.json();
+        if (res.ok) {
+          setPricing(data.pricing as Record<string, number>);
+        } else {
+          console.error("[WanAnimateTab] failed to load pricing:", data?.error);
+        }
+      } catch (err) {
+        console.error("[WanAnimateTab] failed to load pricing:", err);
+      }
+    })();
+  }, []);
+
+  // Auto-save text/mode/preset selection + GPU tier — image/video File
+  // values are intentionally excluded (see PersistedWanAnimateForm).
+  useEffect(() => {
+    const state: PersistedWanAnimateForm = { motionMode, gpuTier, selectedPresetId, prompt };
+    saveFormState(WAN_ANIMATE_FORM_ID, state);
+  }, [motionMode, gpuTier, selectedPresetId, prompt]);
+
+  const baseGenerationCost = pricing[PRICING_KEY_BY_MODE[motionMode]] ?? WAN_ANIMATE_GENERATION_COST;
+  const gpuTierAddon = pricing[GPU_TIER_ADDON_KEY] ?? WAN_ANIMATE_GPU_ULTRA_ADDON;
+  const generationCost = baseGenerationCost + (gpuTier === "ultra" ? gpuTierAddon : 0);
+  const activeGpuSpec = gpuTier === "ultra" ? WAN_ANIMATE_ULTRA_GPU_SPEC : WAN_ANIMATE_GPU_SPEC;
+
   const missingInputs =
     !characterImage || (motionMode === "preset" ? !selectedPresetId : !customVideoFile);
   const insufficientCredits =
-    Boolean(user) && !creditsLoading && (credits ?? 0) < GENERATION_COST;
+    Boolean(user) && !creditsLoading && (credits ?? 0) < generationCost;
 
   const handleGenerate = async () => {
     if (status === "loading" || missingInputs || !characterImage) return;
@@ -271,6 +357,7 @@ export function WanAnimateTab() {
         presetId: motionMode === "preset" ? selectedPresetId : null,
         customMotionVideo: motionMode === "custom" ? customVideoFile : null,
         prompt,
+        gpuTier,
       });
 
       setResultUrl((previous) => {
@@ -318,13 +405,16 @@ export function WanAnimateTab() {
     buttonLabel = (
       <>
         <Wand2 size={16} />
-        {GENERATION_COST} クレジットで生成
+        {generationCost} クレジットで生成
       </>
     );
   }
 
   return (
-    <div className="grid gap-8 rounded-2xl border-gradient bg-surface/40 p-6 sm:p-8 lg:grid-cols-2">
+    <div
+      data-source-file="src/components/studio/WanAnimateTab.tsx"
+      className="grid gap-8 rounded-2xl border-gradient bg-surface/40 p-6 sm:p-8 lg:grid-cols-2"
+    >
       <div className="flex flex-col gap-6">
         <div>
           <label className="mb-1.5 block text-xs font-medium text-muted">
@@ -371,41 +461,53 @@ export function WanAnimateTab() {
           </div>
 
           {motionMode === "preset" ? (
-            <div className="mt-3 grid grid-cols-3 gap-3">
-              {wanAnimateMotionPresets.map((preset) => {
-                const isSelected = selectedPresetId === preset.id;
-                return (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    onClick={() => setSelectedPresetId(preset.id)}
-                    className={`group relative aspect-video overflow-hidden rounded-lg border transition-colors ${
-                      isSelected
-                        ? "border-neon-pink"
-                        : "border-border hover:border-neon-violet/50"
-                    }`}
-                  >
-                    <video
-                      src={preset.videoUrl}
-                      className="h-full w-full object-cover"
-                      muted
-                      loop
-                      autoPlay
-                      playsInline
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/5 to-transparent" />
-                    <span className="absolute inset-x-0 bottom-0 p-1.5 text-center text-[11px] font-medium leading-tight text-white">
-                      {preset.label}
-                    </span>
-                    {isSelected && (
-                      <span className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-neon-pink text-white">
-                        <Check size={12} />
+            presetsLoading ? (
+              <div className="mt-3 flex items-center justify-center gap-2 rounded-lg border border-border bg-background py-10 text-xs text-muted">
+                <Loader2 size={16} className="animate-spin" />
+                プリセットを読み込み中...
+              </div>
+            ) : presets.length === 0 ? (
+              <div className="mt-3 rounded-lg border border-border bg-background py-10 text-center text-xs text-muted">
+                利用可能なプリセットがありません。カスタム動画をご利用ください。
+              </div>
+            ) : (
+              <div className="mt-3 grid grid-cols-3 gap-3">
+                {presets.map((preset) => {
+                  const isSelected = selectedPresetId === preset.id;
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => setSelectedPresetId(preset.id)}
+                      className={`group relative aspect-video overflow-hidden rounded-lg border transition-colors ${
+                        isSelected
+                          ? "border-neon-pink"
+                          : "border-border hover:border-neon-violet/50"
+                      }`}
+                    >
+                      <video
+                        src={preset.video_url}
+                        poster={preset.thumbnail_url ?? undefined}
+                        className="h-full w-full object-cover"
+                        muted
+                        loop
+                        autoPlay
+                        playsInline
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/5 to-transparent" />
+                      <span className="absolute inset-x-0 bottom-0 p-1.5 text-center text-[11px] font-medium leading-tight text-white">
+                        {preset.title}
                       </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+                      {isSelected && (
+                        <span className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-neon-pink text-white">
+                          <Check size={12} />
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )
           ) : (
             <div className="mt-3">
               <FileDropzone
@@ -437,6 +539,8 @@ export function WanAnimateTab() {
           />
         </div>
 
+        <GpuTierSelector value={gpuTier} onChange={setGpuTier} baseCost={baseGenerationCost} addonCost={gpuTierAddon} />
+
         <button
           type="button"
           onClick={handleGenerate}
@@ -453,7 +557,7 @@ export function WanAnimateTab() {
         <p className="-mt-3 flex items-start gap-2 text-xs leading-relaxed text-muted">
           <Sparkles size={14} className="mt-0.5 shrink-0 text-neon-violet" />
           {user
-            ? "保有クレジットの範囲でいつでも生成できます（1生成につき10クレジット消費）。"
+            ? `保有クレジットの範囲でいつでも生成できます（1生成につき${generationCost}クレジット消費）。`
             : "Wan Animate 2 の利用には新規登録 / ログインが必要です。初回登録で10クレジットが付与されます。"}
         </p>
 
@@ -473,7 +577,7 @@ export function WanAnimateTab() {
         <p className="mb-1.5 text-xs font-medium text-muted">プレビュー</p>
 
         <p className="mb-3 text-xs leading-relaxed text-muted">
-          ※生成動画はブラウザを閉じると消滅します。生成後すぐにダウンロードしてください（サーバーに履歴を保持しない完全プライバシー仕様）。
+          ※生成動画自体はサーバー上に保存されず、ブラウザを閉じると消滅します。生成後すぐにダウンロードしてください。
         </p>
 
         <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-border bg-background">
@@ -483,8 +587,8 @@ export function WanAnimateTab() {
 
               <span className="relative z-10 flex items-center gap-1.5 rounded-full border border-neon-pink/40 bg-neon-pink/10 px-3 py-1 font-mono text-[11px] font-medium text-neon-pink">
                 <Zap size={12} />
-                {WAN_ANIMATE_GPU_SPEC.name} ({WAN_ANIMATE_GPU_SPEC.vramGb}GB VRAM){" "}
-                {WAN_ANIMATE_GPU_SPEC.deploymentMode}
+                {activeGpuSpec.name} ({activeGpuSpec.vramGb}GB VRAM){" "}
+                {activeGpuSpec.deploymentMode}
               </span>
 
               <Loader2 size={28} className="relative z-10 animate-spin text-neon-pink" />
@@ -545,6 +649,7 @@ export function WanAnimateTab() {
         open={chargeModalOpen}
         onClose={() => setChargeModalOpen(false)}
         credits={credits}
+        cost={generationCost}
       />
     </div>
   );

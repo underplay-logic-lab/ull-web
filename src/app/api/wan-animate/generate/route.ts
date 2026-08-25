@@ -7,13 +7,15 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { generateWithModal } from "@/lib/modalWanAnimate";
 import { buildWanAnimateWorkflow } from "@/lib/wanAnimateWorkflow";
 import { logGenerationActivity } from "@/lib/generationLogger";
-import { WAN_ANIMATE_GENERATION_COST, wanAnimateMotionPresets } from "@/lib/data";
+import { getWanAnimateGenerationCost } from "@/lib/wanAnimatePricing";
+import { getGpuTierUltraAddon } from "@/lib/gpuTierPricing";
+import type { GpuTier } from "@/lib/gpuTier";
+import { startActiveJob, endActiveJob } from "@/lib/activeGenerationJobs";
+import { getAdminEmails } from "@/lib/adminAuth";
 
 // Cold-started GPU inference on Modal (container spin-up + model load +
 // sampling) runs ~2-3 minutes end to end — see modalWanAnimate.ts.
 export const maxDuration = 300;
-
-const PRESET_BY_ID = new Map(wanAnimateMotionPresets.map((p) => [p.id, p]));
 
 function extensionFromMime(mime: string): string {
   if (mime === "image/png") return ".png";
@@ -50,6 +52,10 @@ export async function POST(request: Request) {
   }
 
   const user = userData.user;
+  // Admin-triggered generations are also persisted into the Modal Volume
+  // (outputs/admin/) so staff can review/download them later from the
+  // Storage tab — see requirement in the "管理者生成動画のVolume保存" task.
+  const isAdmin = getAdminEmails().includes((user.email ?? "").toLowerCase());
 
   let formData: FormData;
   try {
@@ -63,6 +69,8 @@ export async function POST(request: Request) {
   const presetId = formData.get("presetId");
   const customMotionVideo = formData.get("customMotionVideo");
   const prompt = formData.get("prompt");
+  const gpuTierRaw = formData.get("gpuTier");
+  const gpuTier: GpuTier = gpuTierRaw === "ultra" ? "ultra" : "standard";
 
   if (!(characterImage instanceof File) || characterImage.size === 0) {
     return NextResponse.json({ error: "キャラクター画像をアップロードしてください。" }, { status: 400 });
@@ -72,13 +80,35 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "動作の指定方法が不正です。" }, { status: 400 });
   }
 
-  const preset = typeof presetId === "string" ? PRESET_BY_ID.get(presetId) : undefined;
-  if (motionMode === "preset" && !preset) {
-    return NextResponse.json({ error: "プリセットを選択してください。" }, { status: 400 });
+  let preset: { id: string; video_url: string; category: string } | null = null;
+  if (motionMode === "preset") {
+    if (typeof presetId !== "string" || !presetId) {
+      return NextResponse.json({ error: "プリセットを選択してください。" }, { status: 400 });
+    }
+    const { data: presetRow, error: presetError } = await supabaseAdmin
+      .from("studio_presets")
+      .select("id, video_url, category")
+      .eq("id", presetId)
+      .eq("is_active", true)
+      .maybeSingle();
+    if (presetError) {
+      console.error("[wan-animate/generate] failed to load preset:", presetError.message);
+      return NextResponse.json({ error: "プリセットの取得に失敗しました。" }, { status: 500 });
+    }
+    if (!presetRow) {
+      return NextResponse.json({ error: "プリセットを選択してください。" }, { status: 400 });
+    }
+    preset = presetRow;
   }
   if (motionMode === "custom" && !(customMotionVideo instanceof File)) {
     return NextResponse.json({ error: "カスタム動画をアップロードしてください。" }, { status: 400 });
   }
+
+  const [baseGenerationCost, gpuTierAddon] = await Promise.all([
+    getWanAnimateGenerationCost(motionMode),
+    gpuTier === "ultra" ? getGpuTierUltraAddon() : Promise.resolve(0),
+  ]);
+  const generationCost = baseGenerationCost + gpuTierAddon;
 
   const { data: profile, error: profileError } = await getOrCreateProfile(
     user.id,
@@ -105,7 +135,7 @@ export async function POST(request: Request) {
     }
   }
 
-  if (currentCredits < WAN_ANIMATE_GENERATION_COST) {
+  if (currentCredits < generationCost) {
     return NextResponse.json(
       {
         error: isExpired
@@ -119,7 +149,7 @@ export async function POST(request: Request) {
 
   // Deducted up front (refunded below on failure) so two concurrent
   // requests can't both pass the balance check and overdraw the account.
-  const debitedCredits = currentCredits - WAN_ANIMATE_GENERATION_COST;
+  const debitedCredits = currentCredits - generationCost;
   const { error: debitError } = await supabaseAdmin
     .from("profiles")
     .update({ credits: debitedCredits })
@@ -132,6 +162,7 @@ export async function POST(request: Request) {
 
   const startedAt = Date.now();
   const promptText = typeof prompt === "string" ? prompt : "";
+  const activeJobId = await startActiveJob(user.id, "wan-animate-2", gpuTier);
 
   try {
     const referenceImageName = `character${extensionFromMime(characterImage.type)}`;
@@ -140,8 +171,8 @@ export async function POST(request: Request) {
     let poseVideoName: string;
     let poseVideoB64: string;
     if (motionMode === "preset" && preset) {
-      poseVideoName = path.basename(preset.videoUrl);
-      const posePath = path.join(process.cwd(), "public", preset.videoUrl);
+      poseVideoName = path.basename(preset.video_url);
+      const posePath = path.join(process.cwd(), "public", preset.video_url);
       const poseBuf = await readFile(posePath);
       poseVideoB64 = poseBuf.toString("base64");
     } else {
@@ -152,7 +183,7 @@ export async function POST(request: Request) {
 
     const workflow = buildWanAnimateWorkflow({
       prompt: promptText,
-      presetId: motionMode === "preset" ? preset?.id : null,
+      motionCategory: motionMode === "preset" ? (preset?.category ?? null) : null,
       referenceImageName,
       poseVideoName,
     });
@@ -163,6 +194,8 @@ export async function POST(request: Request) {
       referenceImageName,
       poseVideoB64,
       poseVideoName,
+      gpuTier,
+      saveToVolume: isAdmin,
     });
 
     const executionTimeMs = Date.now() - startedAt;
@@ -173,8 +206,10 @@ export async function POST(request: Request) {
       promptInput: promptText || null,
       promptOptimized: null,
       executionTimeMs,
-      creditsConsumed: WAN_ANIMATE_GENERATION_COST,
+      creditsConsumed: generationCost,
       status: "success",
+      gpuTier,
+      outputFileName: result.output_path,
     });
 
     return NextResponse.json({
@@ -202,6 +237,7 @@ export async function POST(request: Request) {
       creditsConsumed: 0,
       status: "failed",
       errorMessage: err instanceof Error ? err.message : String(err),
+      gpuTier,
     });
 
     return NextResponse.json(
@@ -211,5 +247,7 @@ export async function POST(request: Request) {
       },
       { status: 502 },
     );
+  } finally {
+    await endActiveJob(activeJobId);
   }
 }

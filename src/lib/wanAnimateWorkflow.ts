@@ -243,9 +243,11 @@ const WORKFLOW_TEMPLATE = {
 const DEFAULT_CHARACTER_PROMPT =
   "Character exactly as shown in the uploaded reference image — preserve original appearance, clothing, and proportions. Soft even lighting, plain background.";
 
-const MOTION_PROMPTS_BY_PRESET: Record<string, string> = {
-  "street-dance":
-    "A person doing energetic street dance with rhythmic steps and dynamic arm gestures, background stationary",
+// Keyed by studio_presets.category (admin-editable, free text) — presets
+// tagged with a known category get a tailored prompt; anything else (or a
+// custom-uploaded motion video) falls back to the generic prompt below.
+const MOTION_PROMPTS_BY_CATEGORY: Record<string, string> = {
+  dance: "A person doing energetic street dance with rhythmic steps and dynamic arm gestures, background stationary",
   runway: "A person walking a fashion runway with a confident, poised model walk, background stationary",
   action: "A person performing dynamic action movements with powerful, fluid motion, background stationary",
 };
@@ -258,14 +260,14 @@ export type WanAnimateWorkflow = Record<
 
 export type BuildWorkflowParams = {
   prompt?: string | null;
-  presetId?: string | null;
+  motionCategory?: string | null;
   referenceImageName: string;
   poseVideoName: string;
 };
 
 export function buildWanAnimateWorkflow({
   prompt,
-  presetId,
+  motionCategory,
   referenceImageName,
   poseVideoName,
 }: BuildWorkflowParams): WanAnimateWorkflow {
@@ -280,7 +282,7 @@ export function buildWanAnimateWorkflow({
     : DEFAULT_CHARACTER_PROMPT;
 
   workflow["261:222"].inputs.text =
-    (presetId && MOTION_PROMPTS_BY_PRESET[presetId]) || DEFAULT_MOTION_PROMPT;
+    (motionCategory && MOTION_PROMPTS_BY_CATEGORY[motionCategory]) || DEFAULT_MOTION_PROMPT;
 
   return workflow;
 }

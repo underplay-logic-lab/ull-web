@@ -1,12 +1,8 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient } from "@/utils/supabase/client";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error(
-    "Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY environment variables.",
-  );
-}
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Cookie-backed browser client (see utils/supabase/client.ts) so the same
+// session is readable server-side in Server Components / Route Handlers via
+// utils/supabase/server.ts. Keeps the existing singleton export shape so
+// every current `import { supabase } from "@/lib/supabaseClient"` call site
+// is unaffected.
+export const supabase = createClient();

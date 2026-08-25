@@ -3,6 +3,9 @@ import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
+import { AdminEditBar } from "@/components/AdminEditBar";
+import { LiveInspector } from "@/components/LiveInspector";
+import { SiteContentEditorProvider } from "@/components/SiteContentEditorProvider";
 import { siteConfig } from "@/lib/data";
 
 const inter = Inter({
@@ -34,10 +37,19 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="ja"
       className={`${inter.variable} ${jetbrainsMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-background text-foreground">
-        <Header />
-        <main className="flex-1">{children}</main>
-        <Footer />
+      <body
+        className="min-h-full flex flex-col bg-background text-foreground"
+        data-project-root={
+          process.env.NODE_ENV === "development" ? process.cwd().replace(/\\/g, "/") : undefined
+        }
+      >
+        <SiteContentEditorProvider>
+          <Header />
+          <main className="flex-1">{children}</main>
+          <Footer />
+          <AdminEditBar />
+          <LiveInspector />
+        </SiteContentEditorProvider>
       </body>
     </html>
   );

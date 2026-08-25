@@ -10,7 +10,7 @@ const categoryColors: Record<string, string> = {
 
 export function Articles() {
   return (
-    <section id="articles" className="relative py-24 sm:py-32">
+    <section id="articles" data-source-file="src/components/Articles.tsx" className="relative py-24 sm:py-32">
       <div className="pointer-events-none absolute inset-0 grid-bg opacity-50" />
 
       <div className="relative mx-auto max-w-6xl px-6">

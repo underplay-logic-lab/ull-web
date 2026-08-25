@@ -12,6 +12,11 @@ export type LogGenerationActivityInput = {
   creditsConsumed?: number | null;
   status: GenerationLogStatus;
   errorMessage?: string | null;
+  gpuTier?: string | null;
+  // Volume-relative path of the output Modal saved to outputs/all/ (7-day
+  // retention) — see _save_output_temp in scripts/modal_wan_animate.py.
+  // Only set on success; lets the Admin logs UI preview the result.
+  outputFileName?: string | null;
 };
 
 // Fire-and-forget-friendly: logs the insert error instead of throwing, so a
@@ -26,6 +31,8 @@ export async function logGenerationActivity(input: LogGenerationActivityInput): 
     credits_consumed: input.creditsConsumed ?? null,
     status: input.status,
     error_message: input.errorMessage ?? null,
+    gpu_tier: input.gpuTier ?? "standard",
+    output_file_name: input.outputFileName ?? "",
   });
 
   if (error) {

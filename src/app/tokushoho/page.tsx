@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { LegalPage } from "@/components/LegalPage";
-import { siteConfig } from "@/lib/data";
+import { siteConfig, CONTACT_EMAIL } from "@/lib/data";
 
 export const metadata: Metadata = {
   title: `特定商取引法に基づく表記 — ${siteConfig.name}`,
@@ -21,7 +21,7 @@ const entries: { label: string; value: string }[] = [
     value:
       "請求があった場合には遅滞なく開示いたします。お問い合わせフォームよりご請求ください。",
   },
-  { label: "メールアドレス", value: "お問い合わせフォームよりご連絡ください。" },
+  { label: "メールアドレス", value: CONTACT_EMAIL },
   {
     label: "販売価格",
     value:

@@ -8,6 +8,12 @@ export const siteConfig = {
   legalName: "ULL (Underplay Logic Lab)",
 };
 
+// Single source of truth for the site's public-facing contact address —
+// referenced by the footer, legal pages (特商法/プライバシーポリシー/利用規約),
+// so it only needs updating in one place. The actual inbox the /api/contact
+// form delivers to is configured separately via CONTACT_RECEIVER_EMAIL.
+export const CONTACT_EMAIL = "contact@ullstudio.com";
+
 export const navLinks = [
   { label: "Studio", href: "/#studio" },
   { label: "Pricing", href: "/#pricing" },
@@ -23,6 +29,10 @@ export const aspectRatios: { id: AspectRatio; label: string }[] = [
   { id: "1:1", label: "1:1" },
 ];
 
+// Fallback only — the credits actually charged/displayed are read live from
+// the studio_pricing table (see src/lib/wanAnimatePricing.ts). This value is
+// used solely if that DB read fails, so generation never hard-blocks on a
+// pricing-table outage.
 export const WAN_ANIMATE_GENERATION_COST = 10;
 
 // Must match the GPU actually attached to the deployed Modal endpoint (see
@@ -40,36 +50,21 @@ export const WAN_ANIMATE_GPU_SPEC: WanAnimateGpuSpec = {
   deploymentMode: "サーバーレス稼働中",
 };
 
-export const WAN_ANIMATE_MODEL_NAME = "Wan Animate 2";
-export const WAN_ANIMATE_MODEL_PARAMS = "14B";
-
-export type WanAnimateMotionPreset = {
-  id: string;
-  label: string;
-  description: string;
-  videoUrl: string;
+// ULTRA tier — must match gpu=... on WanAnimateUltra in
+// scripts/modal_wan_animate.py.
+export const WAN_ANIMATE_ULTRA_GPU_SPEC: WanAnimateGpuSpec = {
+  name: "NVIDIA B300",
+  vramGb: 288,
+  deploymentMode: "サーバーレス稼働中",
 };
 
-export const wanAnimateMotionPresets: WanAnimateMotionPreset[] = [
-  {
-    id: "street-dance",
-    label: "ストリートダンス",
-    description: "テンポの良いフリースタイルダンス",
-    videoUrl: "/mock/wan-animate/preset-street-dance.mp4",
-  },
-  {
-    id: "runway",
-    label: "ランウェイ",
-    description: "モデルウォークで魅せるファッションポーズ",
-    videoUrl: "/mock/wan-animate/preset-runway.mp4",
-  },
-  {
-    id: "action",
-    label: "アクション",
-    description: "躍動感あるアクションムーブ",
-    videoUrl: "/mock/wan-animate/preset-action.mp4",
-  },
-];
+// Fallback only — the credits actually charged/displayed are read live from
+// studio_pricing.wan_animate_gpu_ultra_addon (see wanAnimatePricing.ts),
+// same convention as WAN_ANIMATE_GENERATION_COST above.
+export const WAN_ANIMATE_GPU_ULTRA_ADDON = 40;
+
+export const WAN_ANIMATE_MODEL_NAME = "Wan Animate 2";
+export const WAN_ANIMATE_MODEL_PARAMS = "14B";
 
 export type Product = {
   id: string;
