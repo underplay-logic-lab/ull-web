@@ -14,6 +14,8 @@ import {
 import {
   categorizeVolumeFiles,
   inferModelCategoryFromFieldName,
+  listAllModelFiles,
+  MODEL_FILE_CATEGORIES,
   type ModelFileCategory,
 } from "@/lib/modelFileCategories";
 import type { StudioCustomWorkflow, VolumeFile } from "./types";
@@ -154,42 +156,103 @@ function updateNodeInputValue(jsonText: string, nodeId: string, fieldName: strin
   return JSON.stringify(obj, null, 2);
 }
 
-// A model/VAE/CLIP/LoRA filename field: a plain <input> backed by a
-// <datalist> of matching Volume files. Falls back to an ordinary manual-
-// entry text input whenever `options` is empty (list not fetched yet, empty
-// Volume, or no match for this field's category) — never blocks typing an
-// arbitrary path.
+// A model/VAE/CLIP/LoRA filename field. Uses a real <select> rather than an
+// <input list>+<datalist> combo — datalist's "click/type to see suggestions"
+// affordance renders with no visible dropdown arrow in several browsers, so
+// admins had no way to tell a file list was even available (this is what
+// the "選択肢に出てこない" bug report actually was: the category matching
+// and Volume fetch were both working — the suggestions were just invisible
+// until you knew to start typing). The ✏️ button always lets an admin drop
+// back to manual entry, and 📂 switches back to picking. When `options` is
+// empty, this renders as a plain input from the start — never blocks typing
+// an arbitrary path.
 function ModelFileCombobox({
   value,
   onChange,
   options,
-  listId,
+  allOptions,
   placeholder,
   className,
 }: {
   value: string;
   onChange: (value: string) => void;
   options: string[];
-  listId: string;
+  allOptions: string[];
   placeholder?: string;
   className: string;
 }) {
+  // No effect needed to keep this in sync with option availability: render
+  // falls back to the manual input below whenever activeOptions is empty
+  // regardless of this flag, and defaults to select-mode (false) so the
+  // picker activates on its own the moment the Volume fetch resolves.
+  const [manualMode, setManualMode] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+
+  const activeOptions = showAll ? allOptions : options;
+  const canPick = options.length > 0 || allOptions.length > 0;
+
+  if (manualMode || activeOptions.length === 0) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className={className}
+        />
+        {canPick && (
+          <button
+            type="button"
+            onClick={() => setManualMode(false)}
+            className="shrink-0 rounded-md border border-border px-2 py-1.5 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+            title="Volume内のファイルから選択"
+          >
+            📂
+          </button>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <>
-      <input
-        list={listId}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className={className}
-        autoComplete="off"
-      />
-      <datalist id={listId}>
-        {options.map((opt) => (
-          <option key={opt} value={opt} />
-        ))}
-      </datalist>
-    </>
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1.5">
+        <select
+          value={activeOptions.includes(value) ? value : ""}
+          onChange={(e) => onChange(e.target.value)}
+          className={className}
+        >
+          <option value="" disabled>
+            {`選択してください（${activeOptions.length}件）`}
+          </option>
+          {activeOptions.map((opt) => (
+            <option key={opt} value={opt}>
+              {opt}
+            </option>
+          ))}
+          {value && !activeOptions.includes(value) && <option value={value}>{`${value}（未検出）`}</option>}
+        </select>
+        <button
+          type="button"
+          onClick={() => setManualMode(true)}
+          className="shrink-0 rounded-md border border-border px-2 py-1.5 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+          title="手動入力に切り替え"
+        >
+          ✏️
+        </button>
+      </div>
+      {allOptions.length > options.length && (
+        <label className="flex items-center gap-1 text-[9px] text-muted">
+          <input
+            type="checkbox"
+            checked={showAll}
+            onChange={(e) => setShowAll(e.target.checked)}
+            className="h-3 w-3 accent-neon-pink"
+          />
+          {`全モデル一覧から選択（カテゴリ判定を無視して${allOptions.length}件から選ぶ）`}
+        </label>
+      )}
+    </div>
   );
 }
 
@@ -373,18 +436,25 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
   // just leaves every combo box's options empty, which degrades to a
   // plain manual-entry input rather than breaking the form.
   const [volumeFiles, setVolumeFiles] = useState<VolumeFile[]>([]);
+  const [volumeFilesError, setVolumeFilesError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const res = await fetch("/api/admin/modal/storage");
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          console.error("[Storage Model List] fetch failed:", res.status, data?.error);
+          if (!cancelled) setVolumeFilesError(data?.error ?? `取得に失敗しました（${res.status}）`);
+          return;
+        }
         if (!cancelled && Array.isArray(data?.files)) {
+          console.log("[Storage Model List] fetched", data.files.length, "files:", data.files);
           setVolumeFiles(data.files as VolumeFile[]);
         }
-      } catch {
-        // Ignored — combo boxes fall back to manual entry.
+      } catch (err) {
+        console.error("[Storage Model List] fetch threw:", err);
+        if (!cancelled) setVolumeFilesError(err instanceof Error ? err.message : String(err));
       }
     })();
     return () => {
@@ -392,6 +462,15 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
     };
   }, []);
   const fileCategories = useMemo(() => categorizeVolumeFiles(volumeFiles), [volumeFiles]);
+  const allModelFiles = useMemo(() => listAllModelFiles(volumeFiles), [volumeFiles]);
+
+  useEffect(() => {
+    console.log("[Storage Model List] categorized:", {
+      total: volumeFiles.length,
+      allModelFiles: allModelFiles.length,
+      ...Object.fromEntries(MODEL_FILE_CATEGORIES.map((c) => [c, fileCategories[c].length])),
+    });
+  }, [volumeFiles, fileCategories, allModelFiles]);
 
   // Every string-valued node input across the parsed workflow whose field
   // name looks like a model/VAE/CLIP/LoRA filename (see
@@ -768,15 +847,21 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
                       value={row.value}
                       onChange={(val) => handleModelInputChange(row.nodeId, row.fieldName, val)}
                       options={fileCategories[row.category]}
-                      listId={`model-node-${row.key}`}
+                      allOptions={allModelFiles}
                       className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-mono outline-none focus:border-neon-violet/50"
                     />
                   </div>
                 ))}
-                {volumeFiles.length === 0 && (
-                  <p className="text-[10px] text-muted">
-                    Modal Volumeのファイル一覧が未取得（または空）です。上の欄にはそのままファイル名を手入力できます。
+                {volumeFilesError ? (
+                  <p className="text-[10px] text-red-400">
+                    {`Modal Volumeのファイル一覧の取得に失敗しました: ${volumeFilesError}（上の欄にはそのままファイル名を手入力できます）`}
                   </p>
+                ) : (
+                  volumeFiles.length === 0 && (
+                    <p className="text-[10px] text-muted">
+                      Modal Volumeのファイル一覧を取得中、または空です。上の欄にはそのままファイル名を手入力できます。
+                    </p>
+                  )
                 )}
               </div>
             )}
@@ -1020,7 +1105,7 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
                               value={f.defaultValue}
                               onChange={(val) => updateField(f.key, { defaultValue: val })}
                               options={defaultValueOptions}
-                              listId={`model-field-${f.key}`}
+                              allOptions={allModelFiles}
                               className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-mono outline-none focus:border-neon-violet/50"
                             />
                           ) : (

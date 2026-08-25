@@ -30,9 +30,21 @@ const FOLDER_TO_CATEGORY: Record<string, ModelFileCategory> = {
   checkpoints: "checkpoints",
 };
 
-function hasModelExtension(path: string): boolean {
+export function hasModelExtension(path: string): boolean {
   const lower = path.toLowerCase();
   return MODEL_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+// Every model-extension file on the Volume, regardless of folder/category —
+// the "全モデル一覧" fallback so an admin can always find a file even if
+// categoryForPath's folder-name heuristic doesn't recognize where it lives
+// (e.g. a custom folder layout, or a category this module doesn't know
+// about yet).
+export function listAllModelFiles(files: { path: string }[]): string[] {
+  return files
+    .filter((f) => hasModelExtension(f.path))
+    .map((f) => f.path)
+    .sort((a, b) => a.localeCompare(b));
 }
 
 // Categorizes by the file's Volume folder — checks every path segment (not
