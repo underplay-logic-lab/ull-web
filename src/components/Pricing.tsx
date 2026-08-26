@@ -4,31 +4,27 @@ import { useState } from "react";
 import { ArrowRight, Check, Gift, Loader2, Sparkles } from "lucide-react";
 import { pricingPlans, type PricingPlan } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
-import { CancellationWarningModal } from "@/components/CancellationWarningModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
-import { useProfileCredits } from "@/hooks/useProfileCredits";
 import { supabase } from "@/lib/supabaseClient";
 import { EditableText } from "@/components/EditableText";
 
 export function Pricing() {
   const { user } = useSupabaseUser();
-  const { tier, cancelAtPeriodEnd } = useProfileCredits(user);
   const [loginOpen, setLoginOpen] = useState(false);
-  const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [processingPlanId, setProcessingPlanId] = useState<string | null>(null);
 
+  // Only the one-time top-up has a Polar product configured
+  // (NEXT_PUBLIC_POLAR_PRODUCT_ID_120 — see src/lib/polar.ts). The four
+  // subscription plans' purchase buttons are disabled ("準備中") below
+  // until they have Polar products of their own; Stripe checkout, which
+  // used to serve all five, is retired (see src/app/api/stripe/checkout).
+  const isPurchasable = (planId: string) => planId === "topup";
+
   const handlePurchase = async (plan: PricingPlan) => {
+    if (!isPurchasable(plan.id)) return;
+
     if (!user) {
       setLoginOpen(true);
-      return;
-    }
-
-    // An existing paid subscriber clicking any subscription-plan button
-    // (upgrade, downgrade, or the plan they're already on) is routed
-    // server-side straight to the Customer Portal — show what they'd lose
-    // first instead of letting that redirect happen silently.
-    if (plan.id !== "topup" && tier && tier !== "free") {
-      setCancelModalOpen(true);
       return;
     }
 
@@ -44,22 +40,22 @@ export function Pricing() {
         return;
       }
 
-      const res = await fetch("/api/stripe/checkout", {
+      const res = await fetch("/api/checkout/polar", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ planId: plan.id }),
+        body: JSON.stringify({}),
       });
 
       const data = await res.json();
 
-      if (!res.ok || !data.url) {
+      if (!res.ok || !data.checkoutUrl) {
         throw new Error(data?.error || "決済セッションの作成に失敗しました。");
       }
 
-      window.location.assign(data.url);
+      window.location.assign(data.checkoutUrl);
     } catch (err) {
       alert(err instanceof Error ? err.message : "決済セッションの作成に失敗しました。");
       setProcessingPlanId(null);
@@ -141,7 +137,7 @@ export function Pricing() {
               <button
                 type="button"
                 onClick={() => handlePurchase(plan)}
-                disabled={processingPlanId === plan.id}
+                disabled={!isPurchasable(plan.id) || processingPlanId === plan.id}
                 className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {processingPlanId === plan.id ? (
@@ -149,6 +145,8 @@ export function Pricing() {
                     <Loader2 size={16} className="animate-spin" />
                     決済ページへ移動中...
                   </>
+                ) : !isPurchasable(plan.id) ? (
+                  "準備中（Coming Soon）"
                 ) : (
                   plan.cta
                 )}
@@ -156,11 +154,11 @@ export function Pricing() {
 
               {plan.id === "topup" ? (
                 <p className="mt-3 text-[11px] leading-relaxed text-muted">
-                  ※ 会員限定割引（最大50%OFF）は【サブスクリプション継続中】の方限定の特別優待です。解約予約中またはFreeプランは通常価格（500円）となります。
+                  ※ 決済完了後、直ちにクレジットが付与されます。
                 </p>
               ) : (
                 <p className="mt-3 text-[11px] leading-relaxed text-muted">
-                  ※サブスクリプションを解約予約された場合、デイリーログインボーナスの付与は即日停止されます（保有クレジットは有効期限までご利用可能）。
+                  ※ 月額サブスクリプションプランは現在準備中です。公開までしばらくお待ちください。
                 </p>
               )}
             </div>
@@ -181,12 +179,13 @@ export function Pricing() {
         </a>
 
         <p className="mt-8 text-center text-xs text-muted">
-          決済は Stripe を利用しています。価格はすべて税込表示です。
+          安全な決済プラットフォーム（Polar.sh）により、クレジットカード、Apple Pay、Google
+          Payに対応しています。価格はすべて税込表示です。
           生成物の権利はユーザーに帰属しますが、商用利用の可否は使用した各AIモデル・LoRA固有のオープンソースライセンスに準じます。
           <br />
           ※サブスクリプションを解約予約された場合、デイリーログインボーナスの付与は即日停止されます（保有クレジットは有効期限までご利用可能）。
           <br />
-          ※ 請求書・領収書（PDF）は【契約管理 ➔ 請求履歴】より24時間いつでもダウンロードいただけます（インボイス・確定申告対応）。
+          ※ 請求書・領収書に関するお問い合わせはサポート窓口（support@ullstudio.com）までご連絡ください。
         </p>
       </div>
 
@@ -194,12 +193,6 @@ export function Pricing() {
         open={loginOpen}
         onClose={() => setLoginOpen(false)}
         message="購入を続けるにはログインしてください。"
-      />
-      <CancellationWarningModal
-        open={cancelModalOpen}
-        onClose={() => setCancelModalOpen(false)}
-        tier={tier ?? "free"}
-        cancelAtPeriodEnd={cancelAtPeriodEnd}
       />
     </section>
   );

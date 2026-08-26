@@ -1,10 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { Mail, AlertTriangle, CheckCircle2, X } from "lucide-react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, CheckCircle2, Loader2, X } from "lucide-react";
-import { supabase } from "@/lib/supabaseClient";
 import { TOPUP_PRICE_BY_TIER, type SubscriptionTier } from "@/hooks/useProfileCredits";
+
+// Support inbox for subscription management now that the self-service
+// Stripe Customer Portal (/api/stripe/portal) is retired — see
+// src/app/api/stripe/portal/route.ts. Same address as the tokushoho
+// (特定商取引法に基づく表記) page's contact point.
+const SUPPORT_EMAIL = "support@ullstudio.com";
 
 type CancellationWarningModalProps = {
   open: boolean;
@@ -27,56 +31,17 @@ const TIER_LABEL: Record<SubscriptionTier, string> = {
   master: "Master",
 };
 
-// What the Stripe Customer Portal actually lets a member do — shown up
-// front so someone here only for a receipt or an upgrade isn't greeted
-// with cancellation-flavored copy before they even reach the portal.
-const PORTAL_CAPABILITIES = [
-  "領収書・請求書（PDF）のダウンロード（インボイス・確定申告対応）",
-  "プランのアップグレード・変更",
+// What support can help with when someone reaches out — shown up front so
+// someone here only for a receipt or an upgrade isn't greeted with
+// cancellation-flavored copy before they even see what's possible.
+const SUPPORT_CAPABILITIES = [
+  "領収書・請求書（PDF）の発行（インボイス・確定申告対応）",
+  "プランのアップグレード・変更のご相談",
   "お支払い方法の更新・解約手続き",
 ];
 
-export function CancellationWarningModal({
-  open,
-  onClose,
-  tier,
-  cancelAtPeriodEnd = false,
-}: CancellationWarningModalProps) {
-  const [redirecting, setRedirecting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
+export function CancellationWarningModal({ open, onClose, tier, cancelAtPeriodEnd = false }: CancellationWarningModalProps) {
   const currentTopupPrice = TOPUP_PRICE_BY_TIER[tier];
-
-  const handleProceedToPortal = async () => {
-    setRedirecting(true);
-    setError(null);
-
-    try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      if (!session) {
-        throw new Error("ログイン情報が見つかりません。再度ログインしてください。");
-      }
-
-      const res = await fetch("/api/stripe/portal", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
-
-      const data = await res.json();
-
-      if (!res.ok || !data.url) {
-        throw new Error(data?.error || "契約管理画面の作成に失敗しました。");
-      }
-
-      window.location.assign(data.url);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "契約管理画面の作成に失敗しました。");
-      setRedirecting(false);
-    }
-  };
 
   if (!open || typeof document === "undefined") return null;
 
@@ -103,11 +68,11 @@ export function CancellationWarningModal({
         </div>
 
         <p className="mt-4 text-sm leading-relaxed text-foreground/90">
-          Stripeの安全な管理画面へ移動します。以下の手続き・確認が可能です：
+          現在、契約管理はサポート窓口での対応となっております。以下のご相談を承ります：
         </p>
 
         <ul className="mt-3 space-y-2">
-          {PORTAL_CAPABILITIES.map((item) => (
+          {SUPPORT_CAPABILITIES.map((item) => (
             <li key={item} className="flex items-start gap-2 text-sm text-foreground/80">
               <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-neon-violet" />
               {item}
@@ -122,7 +87,7 @@ export function CancellationWarningModal({
           </p>
           {cancelAtPeriodEnd ? (
             <p className="mt-2 text-xs leading-relaxed text-foreground/80">
-              現在、解約予約中のため優待特典（割引・ログインボーナス）は一時停止されています。Stripe管理画面でサブスクリプションを再開すると、{TIER_LABEL[tier]}優待が即座に復活します。
+              現在、解約予約中のため優待特典（割引・ログインボーナス）は一時停止されています。サブスクリプションの再開をご希望の場合はサポート窓口までご連絡ください。{TIER_LABEL[tier]}優待は再開次第すぐに復活します。
             </p>
           ) : (
             <p className="mt-2 text-xs leading-relaxed text-foreground/80">
@@ -133,33 +98,17 @@ export function CancellationWarningModal({
             ※ ご購入済みの保有クレジット残高は有効期限までそのままご利用いただけます。
           </p>
           <p className="mt-1 text-xs leading-relaxed text-muted">
-            ※ 請求書・領収書（PDF）は、移動先の【請求履歴】よりいつでもダウンロードいただけます。
+            ※ 請求書・領収書（PDF）が必要な場合は、サポート窓口までお申し付けください。
           </p>
         </div>
 
-        {error && (
-          <p className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
-            {error}
-          </p>
-        )}
-
-        <button
-          type="button"
-          onClick={handleProceedToPortal}
-          disabled={redirecting}
-          className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+        <a
+          href={`mailto:${SUPPORT_EMAIL}`}
+          className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
         >
-          {redirecting ? (
-            <>
-              <Loader2 size={16} className="animate-spin" />
-              移動中...
-            </>
-          ) : cancelAtPeriodEnd ? (
-            "契約管理・サブスク再開へ進む"
-          ) : (
-            "契約管理画面（Stripe）へ進む"
-          )}
-        </button>
+          <Mail size={16} />
+          サポート窓口へ連絡する
+        </a>
 
         <button
           type="button"
