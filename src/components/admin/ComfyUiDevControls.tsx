@@ -3,11 +3,6 @@
 import { useEffect, useState } from "react";
 import { Loader2, RefreshCw, Square, Wrench } from "lucide-react";
 
-// How often the status badge re-checks on its own — cheap (the status
-// check hits a GPU-less control-plane function, never the GPU itself), so
-// a short interval is fine.
-const STATUS_POLL_INTERVAL_MS = 8000;
-
 function formatRunningSince(runningSince: number, now: number): string {
   const totalSeconds = Math.max(0, Math.floor(now / 1000 - runningSince));
   const minutes = Math.floor(totalSeconds / 60);
@@ -36,6 +31,12 @@ export function ComfyUiDevControls() {
   const [statusError, setStatusError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
+  // Deliberately NOT auto-run on mount or on any interval — merely having
+  // /admin open must generate zero requests toward ComfyUI, full stop. This
+  // used to poll every few seconds in the background, which combined with
+  // status/route.ts's (now opt-in-only) GPU readiness probe meant simply
+  // leaving an admin tab open kept bouncing the T4 container up and down.
+  // The admin has to explicitly click "状態確認" below every time.
   const checkStatus = async () => {
     setStatusLoading(true);
     try {
@@ -50,19 +51,6 @@ export function ComfyUiDevControls() {
       setStatusLoading(false);
     }
   };
-
-  useEffect(() => {
-    // Deferred rather than called directly in the effect body (React's
-    // set-state-in-effect lint rule flags synchronous setState calls
-    // there) — fires on the next tick instead of waiting for the first
-    // interval tick below.
-    const initialId = setTimeout(checkStatus, 0);
-    const intervalId = setInterval(checkStatus, STATUS_POLL_INTERVAL_MS);
-    return () => {
-      clearTimeout(initialId);
-      clearInterval(intervalId);
-    };
-  }, []);
 
   // Local 1s ticker for the running-duration display — status.runningSince
   // itself only changes when the container actually starts/stops.
@@ -131,7 +119,7 @@ export function ComfyUiDevControls() {
           <RefreshCw size={14} />
         )}
         {status === null
-          ? "状態確認中..."
+          ? "状態未確認（クリックで確認）"
           : status.running
             ? `🟢 稼働中（起動から${status.runningSince !== null ? formatRunningSince(status.runningSince, now) : "?"}）`
             : "⚫ 停止中"}

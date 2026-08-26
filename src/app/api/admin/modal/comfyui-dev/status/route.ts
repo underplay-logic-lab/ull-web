@@ -34,11 +34,22 @@ async function probeComfyUiReady(): Promise<boolean> {
   }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const { user, response } = await requireAdmin();
   if (!user) return response;
 
-  const ready = await probeComfyUiReady();
+  // The GPU-hitting probe below is opt-in (?probe=1) and used *only* by the
+  // launch-loading page (src/app/admin/comfyui-loading/page.tsx) while an
+  // admin is actively waiting for the container to come up. Every other
+  // caller — most importantly ComfyUiDevControls.tsx's admin-header status
+  // badge — must never trigger it: a request to the ComfyUI URL wakes
+  // Modal's scale-to-zero container regardless of the response status, so
+  // probing it on routine/automatic polling would itself keep bouncing the
+  // GPU up (this is exactly how a previous revision of this route caused
+  // the container to spin up repeatedly just from the admin page being
+  // open, before that badge polling was removed and this was made opt-in).
+  const shouldProbe = new URL(request.url).searchParams.get("probe") === "1";
+  const ready = shouldProbe ? await probeComfyUiReady() : false;
 
   const url = process.env.MODAL_COMFYUI_DEV_CONTROL_URL;
   const authToken = process.env.MODAL_AUTH_TOKEN;

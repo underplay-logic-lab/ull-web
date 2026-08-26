@@ -5,8 +5,12 @@ import { AlertTriangle, ExternalLink, Wrench } from "lucide-react";
 import { COMFYUI_DEV_URL } from "@/lib/comfyuiDevUrl";
 
 // How often this polls the same-origin status API (see status/route.ts) for
-// the "ready" flag. Cheap — that endpoint hits a GPU-less Modal
-// control-plane function, never the GPU container itself.
+// the "ready" flag while this page is mounted. This is the *only* place in
+// the admin app allowed to do this — status/route.ts only runs its
+// GPU-hitting readiness probe when called with ?probe=1, and this is the
+// only caller that ever passes it, specifically so routine/automatic
+// polling elsewhere (e.g. the admin header's status badge) can never
+// accidentally wake the container.
 const POLL_INTERVAL_MS = 2000;
 
 // Past this, a cold T4 + ComfyUI boot is taking unusually long (or genuinely
@@ -48,6 +52,13 @@ export default function ComfyUiLoadingPage() {
   const [timedOut, setTimedOut] = useState(false);
   const [checkError, setCheckError] = useState<string | null>(null);
   const startedAtRef = useRef<number | null>(null);
+  // Tracks whichever setTimeout is currently pending so the effect cleanup
+  // can clear it outright (rather than only relying on the `cancelled`
+  // flag to no-op a poll that still fires after unmount) — this is a
+  // recursive setTimeout chain rather than setInterval specifically so
+  // each next poll can only ever be scheduled after the previous one's
+  // fetch has fully settled, never overlapping it.
+  const timeoutIdRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -57,7 +68,11 @@ export default function ComfyUiLoadingPage() {
     const poll = async () => {
       if (cancelled) return;
       try {
-        const res = await fetch("/api/admin/modal/comfyui-dev/status", { cache: "no-store" });
+        // ?probe=1 is what tells status/route.ts to actually reach out to
+        // the ComfyUI URL for a real readiness check — see that route and
+        // the POLL_INTERVAL_MS comment above for why every other caller in
+        // this app must never pass it.
+        const res = await fetch("/api/admin/modal/comfyui-dev/status?probe=1", { cache: "no-store" });
         const data = await res.json().catch(() => null);
         if (cancelled) return;
 
@@ -70,8 +85,9 @@ export default function ComfyUiLoadingPage() {
         if (!cancelled) setCheckError(err instanceof Error ? err.message : "状態確認に失敗しました。");
       }
 
+      if (cancelled) return;
       if (Date.now() - (startedAtRef.current ?? Date.now()) >= TIMEOUT_MS) {
-        if (!cancelled) setTimedOut(true);
+        setTimedOut(true);
         return;
       }
       // Re-fires the warm-up request alongside every poll tick too — a
@@ -79,13 +95,13 @@ export default function ComfyUiLoadingPage() {
       // container that was already mid-shutdown, so repeating it costs
       // nothing and closes that gap.
       triggerWarmup();
-      setTimeout(poll, POLL_INTERVAL_MS);
+      timeoutIdRef.current = setTimeout(poll, POLL_INTERVAL_MS);
     };
 
-    const initialId = setTimeout(poll, POLL_INTERVAL_MS);
+    timeoutIdRef.current = setTimeout(poll, POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
-      clearTimeout(initialId);
+      if (timeoutIdRef.current !== null) clearTimeout(timeoutIdRef.current);
     };
   }, []);
 
