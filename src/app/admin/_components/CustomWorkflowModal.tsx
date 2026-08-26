@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Loader2, Plus, Trash2, UploadCloud, X, Zap } from "lucide-react";
+import { ChevronDown, Clipboard, Loader2, Plus, Trash2, UploadCloud, X, Zap } from "lucide-react";
+import { ToastStack, type ToastData } from "@/components/Toast";
 import {
   WORKFLOW_INPUT_FIELD_TYPES,
   WORKFLOW_INPUT_FIELD_SECTIONS,
@@ -281,14 +282,21 @@ function ModelFileCombobox({
   const [manualMode, setManualMode] = useState(false);
   const [showAll, setShowAll] = useState(false);
 
-  const activeOptions = showAll ? allOptions : options;
-  const canPick = options.length > 0 || allOptions.length > 0;
+  // Defensive against every phase of the Volume fetch this depends on
+  // (CustomWorkflowModal.tsx's useEffect: not-yet-fired, in flight, failed,
+  // or resolved) — none of those states should ever hand this component
+  // something it can't safely render.
+  const safeOptions = options ?? [];
+  const safeAllOptions = allOptions ?? [];
+  const safeValue = value ?? "";
+  const activeOptions = showAll ? safeAllOptions : safeOptions;
+  const canPick = safeOptions.length > 0 || safeAllOptions.length > 0;
 
   if (manualMode || activeOptions.length === 0) {
     return (
       <div className="flex items-center gap-1.5">
         <input
-          value={value}
+          value={safeValue}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
           className={className}
@@ -310,8 +318,17 @@ function ModelFileCombobox({
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-1.5">
+        {/* `value` (not gated behind activeOptions.includes(value)) so the
+            currently configured filename is preselected the moment it
+            appears — either as a real <option> once activeOptions includes
+            it, or via the "未検出" fallback <option> below. Gating this on
+            activeOptions.includes(value) (as a previous revision did) forced
+            the select back to the disabled placeholder even when that
+            fallback option existed, which is exactly the "初期選択されない"
+            bug: the currently-set model never appeared selected until the
+            admin manually reselected it. */}
         <select
-          value={activeOptions.includes(value) ? value : ""}
+          value={safeValue}
           onChange={(e) => onChange(e.target.value)}
           className={className}
         >
@@ -323,7 +340,9 @@ function ModelFileCombobox({
               {opt}
             </option>
           ))}
-          {value && !activeOptions.includes(value) && <option value={value}>{`${value}（未検出）`}</option>}
+          {safeValue && !activeOptions.includes(safeValue) && (
+            <option value={safeValue}>{`${safeValue}（未検出）`}</option>
+          )}
         </select>
         <button
           type="button"
@@ -334,7 +353,7 @@ function ModelFileCombobox({
           ✏️
         </button>
       </div>
-      {allOptions.length > options.length && (
+      {safeAllOptions.length > safeOptions.length && (
         <label className="flex items-center gap-1 text-[9px] text-muted">
           <input
             type="checkbox"
@@ -342,7 +361,7 @@ function ModelFileCombobox({
             onChange={(e) => setShowAll(e.target.checked)}
             className="h-3 w-3 accent-neon-pink"
           />
-          {`全モデル一覧から選択（カテゴリ判定を無視して${allOptions.length}件から選ぶ）`}
+          {`全モデル一覧から選択（カテゴリ判定を無視して${safeAllOptions.length}件から選ぶ）`}
         </label>
       )}
     </div>
@@ -517,6 +536,27 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
   const [error, setError] = useState<string | null>(null);
   const [execConfigOpen, setExecConfigOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [toasts, setToasts] = useState<ToastData[]>([]);
+  const dismissToast = (id: number) => setToasts((prev) => prev.filter((t) => t.id !== id));
+
+  const handleCopyJson = async () => {
+    let text = values.workflowJsonText;
+    try {
+      text = JSON.stringify(JSON.parse(values.workflowJsonText), null, 2);
+    } catch {
+      // Not (yet) valid JSON — copy the raw textarea contents as-is rather
+      // than blocking the copy on validity.
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setToasts((prev) => [...prev, { id: Date.now(), message: "ワークフローJSONをコピーしました" }]);
+    } catch (err) {
+      setToasts((prev) => [
+        ...prev,
+        { id: Date.now(), message: `コピーに失敗しました: ${err instanceof Error ? err.message : String(err)}` },
+      ]);
+    }
+  };
 
   const parsedNodes = useMemo(() => parseWorkflowNodes(values.workflowJsonText), [values.workflowJsonText]);
   const outputNodeCandidates = useMemo(
@@ -789,11 +829,13 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
 
   if (typeof document === "undefined") return null;
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4 py-8 backdrop-blur-sm"
-      onClick={onClose}
-    >
+  return (
+    <>
+      {createPortal(
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4 py-8 backdrop-blur-sm"
+          onClick={onClose}
+        >
       <div
         className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl border-gradient bg-surface p-6"
         onClick={(e) => e.stopPropagation()}
@@ -894,6 +936,14 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
                 workflow_json（ComfyUI API形式）
               </h4>
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleCopyJson}
+                  className="flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+                >
+                  <Clipboard size={13} />
+                  📋 JSONをコピー
+                </button>
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -1419,17 +1469,38 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
             </p>
           )}
 
-          <button
-            type="submit"
-            disabled={submitting}
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {submitting && <Loader2 size={16} className="animate-spin" />}
-            {isEdit ? "変更を保存" : "ワークフローを作成"}
-          </button>
+          {/* Sticky footer: the modal card itself scrolls (max-h-[90vh]
+              overflow-y-auto above), so a save button placed at the natural
+              end of a long form — many parameters, a large workflow_json,
+              a long node list — could scroll out of view entirely and read
+              as "missing" rather than "below the fold". -mx-6/-mb-6 bleeds
+              back out through the card's own p-6 so this footer's
+              background spans the full card width/bottom edge instead of
+              floating with a gap around it. */}
+          <div className="sticky bottom-0 z-10 -mx-6 -mb-6 flex items-center justify-end gap-3 rounded-b-2xl border-t border-border bg-surface px-6 py-4">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="rounded-full border border-border bg-background px-5 py-2.5 text-sm font-medium text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              キャンセル
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {submitting && <Loader2 size={16} className="animate-spin" />}
+              💾 {isEdit ? "変更を保存" : "ワークフローを作成"}
+            </button>
+          </div>
         </form>
       </div>
     </div>,
-    document.body,
+        document.body,
+      )}
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
+    </>
   );
 }

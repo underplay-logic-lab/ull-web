@@ -30,7 +30,14 @@ const FOLDER_TO_CATEGORY: Record<string, ModelFileCategory> = {
   checkpoints: "checkpoints",
 };
 
-export function hasModelExtension(path: string): boolean {
+// Guards against malformed Volume-listing entries (a missing/null `path`
+// from a partial API response, a storage backend hiccup, etc.) — every
+// helper below runs on every keystroke/render of the admin's workflow
+// editor, so a single bad row must degrade gracefully instead of throwing
+// and blanking the whole modal (save button included, since it lives in
+// the same render tree).
+export function hasModelExtension(path: string | null | undefined): boolean {
+  if (typeof path !== "string" || !path) return false;
   const lower = path.toLowerCase();
   return MODEL_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
@@ -40,17 +47,18 @@ export function hasModelExtension(path: string): boolean {
 // categoryForPath's folder-name heuristic doesn't recognize where it lives
 // (e.g. a custom folder layout, or a category this module doesn't know
 // about yet).
-export function listAllModelFiles(files: { path: string }[]): string[] {
-  return files
-    .filter((f) => hasModelExtension(f.path))
-    .map((f) => f.path)
+export function listAllModelFiles(files: { path: string }[] | null | undefined): string[] {
+  return (files ?? [])
+    .filter((f) => hasModelExtension(f?.path))
+    .map((f) => toComfyRelativeName(f.path))
     .sort((a, b) => a.localeCompare(b));
 }
 
 // Categorizes by the file's Volume folder — checks every path segment (not
 // just the first) so nested layouts (e.g. a snapshot_download'd repo under
 // diffusion_models/some-repo/...) still resolve.
-function categoryForPath(path: string): ModelFileCategory | null {
+function categoryForPath(path: string | null | undefined): ModelFileCategory | null {
+  if (typeof path !== "string" || !path) return null;
   for (const segment of path.split("/")) {
     const category = FOLDER_TO_CATEGORY[segment];
     if (category) return category;
@@ -58,7 +66,31 @@ function categoryForPath(path: string): ModelFileCategory | null {
   return null;
 }
 
-export function categorizeVolumeFiles(files: { path: string }[]): Record<ModelFileCategory, string[]> {
+// Volume file listing paths are relative to the Volume mount (e.g.
+// "diffusion_models/wan2.1.safetensors"), but ComfyUI's own loader nodes
+// (UNETLoader.unet_name, VAELoader.vae_name, ...) store filenames relative
+// to *that model-type folder itself* — no "diffusion_models/" prefix (see
+// workflow_json samples like wan_animate2_export.json: "unet_name":
+// "wan_animate_2_int8_convrot.safetensors"). Comparing/writing raw Volume
+// paths against those values would never match (every combo box would
+// silently fail to preselect the model actually configured), so this strips
+// through the first recognized category-folder segment — mirroring
+// categoryForPath's "search every segment" behavior — leaving exactly what
+// ComfyUI expects, including any nested subfolder a repo download may have
+// created (e.g. "diffusion_models/some-repo/model.safetensors" ->
+// "some-repo/model.safetensors"). Falls back to the full path when no
+// recognized segment is found, since there's nothing meaningful to strip.
+export function toComfyRelativeName(path: string | null | undefined): string {
+  if (typeof path !== "string" || !path) return "";
+  const segments = path.split("/");
+  const idx = segments.findIndex((segment) => FOLDER_TO_CATEGORY[segment]);
+  if (idx === -1) return path;
+  return segments.slice(idx + 1).join("/");
+}
+
+export function categorizeVolumeFiles(
+  files: { path: string }[] | null | undefined,
+): Record<ModelFileCategory, string[]> {
   const result: Record<ModelFileCategory, string[]> = {
     diffusion_models: [],
     vae: [],
@@ -66,10 +98,10 @@ export function categorizeVolumeFiles(files: { path: string }[]): Record<ModelFi
     loras: [],
     checkpoints: [],
   };
-  for (const file of files) {
-    if (!hasModelExtension(file.path)) continue;
+  for (const file of files ?? []) {
+    if (!hasModelExtension(file?.path)) continue;
     const category = categoryForPath(file.path);
-    if (category) result[category].push(file.path);
+    if (category) result[category].push(toComfyRelativeName(file.path));
   }
   for (const category of MODEL_FILE_CATEGORIES) {
     result[category].sort((a, b) => a.localeCompare(b));
@@ -95,7 +127,8 @@ const FIELD_NAME_CATEGORY_PATTERNS: [RegExp, ModelFileCategory][] = [
   [/model_name/i, "diffusion_models"],
 ];
 
-export function inferModelCategoryFromFieldName(fieldName: string): ModelFileCategory | null {
+export function inferModelCategoryFromFieldName(fieldName: string | null | undefined): ModelFileCategory | null {
+  if (typeof fieldName !== "string" || !fieldName) return null;
   for (const [pattern, category] of FIELD_NAME_CATEGORY_PATTERNS) {
     if (pattern.test(fieldName)) return category;
   }
