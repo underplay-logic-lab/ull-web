@@ -16,6 +16,7 @@
     "next": "16.3.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "react-easy-crop": "^6.2.3",
     "resend": "^6.20.0",
     "server-only": "^0.0.1",
     "stripe": "^22.5.0"

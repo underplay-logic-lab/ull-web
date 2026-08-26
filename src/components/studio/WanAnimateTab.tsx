@@ -29,6 +29,7 @@ import type { GpuTier } from "@/lib/gpuTier";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { LoginModal } from "@/components/LoginModal";
 import { GpuTierSelector } from "@/components/studio/GpuTierSelector";
+import { GpuWarmStokeWidget } from "@/components/studio/GpuWarmStokeWidget";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits } from "@/hooks/useProfileCredits";
 import { broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
@@ -543,6 +544,8 @@ export function WanAnimateTab() {
         </div>
 
         <GpuTierSelector value={gpuTier} onChange={setGpuTier} baseCost={baseGenerationCost} addonCost={gpuTierAddon} />
+
+        <GpuWarmStokeWidget />
 
         <button
           type="button"

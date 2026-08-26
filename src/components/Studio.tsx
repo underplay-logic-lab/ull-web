@@ -4,15 +4,17 @@ import { useState } from "react";
 import { Wrench } from "lucide-react";
 import { CreditsBadge } from "@/components/CreditsBadge";
 import { WanAnimateTab } from "@/components/studio/WanAnimateTab";
+import { CinematicVideoTab } from "@/components/studio/CinematicVideoTab";
 import { CustomWorkflowsTab } from "@/components/studio/CustomWorkflowsTab";
 import { GpuWarmBadge } from "@/components/studio/GpuWarmBadge";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { EditableText } from "@/components/EditableText";
 
-type StudioTab = "wan-animate" | "image" | "custom";
+type StudioTab = "wan-animate" | "cinematic" | "image" | "custom";
 
 const STUDIO_TABS: { id: StudioTab; label: string }[] = [
   { id: "wan-animate", label: "Wan Animate 2" },
+  { id: "cinematic", label: "Cinematic Video" },
   { id: "image", label: "画像生成" },
   { id: "custom", label: "特化ワークフロー" },
 ];
@@ -57,6 +59,11 @@ export function Studio() {
                 siteKey="studio_desc_wan_animate"
                 fallback="キャラクター画像とモーションを指定するだけ。Wan Animate 2 が高品質なアニメーション動画を生成します。"
               />
+            ) : activeTab === "cinematic" ? (
+              <EditableText
+                siteKey="studio_desc_cinematic"
+                fallback="画像を1枚アップロードするだけ。独自のLogic Engineが音声付きシネマティック動画を自動生成します。"
+              />
             ) : activeTab === "custom" ? (
               <EditableText
                 siteKey="studio_desc_custom"
@@ -97,6 +104,8 @@ export function Studio() {
 
         {activeTab === "wan-animate" ? (
           <WanAnimateTab />
+        ) : activeTab === "cinematic" ? (
+          <CinematicVideoTab />
         ) : activeTab === "custom" ? (
           <CustomWorkflowsTab />
         ) : (

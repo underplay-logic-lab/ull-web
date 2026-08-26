@@ -29,6 +29,7 @@ import { generateCustomWorkflow } from "@/lib/customWorkflowApi";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { LoginModal } from "@/components/LoginModal";
 import { GpuTierSelector } from "@/components/studio/GpuTierSelector";
+import { GpuWarmStokeWidget } from "@/components/studio/GpuWarmStokeWidget";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
@@ -667,6 +668,8 @@ export function CustomWorkflowsTab() {
           baseCost={selectedWorkflow.credits_cost + extraCredits}
           addonCost={gpuTierAddon}
         />
+
+        <GpuWarmStokeWidget />
 
         <button
           type="button"
