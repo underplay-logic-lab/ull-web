@@ -271,6 +271,14 @@ def _tail_log(max_chars: int = 4000) -> str:
     gpu=os.environ.get("COMFYUI_DEV_GPU", DEFAULT_GPU),
     timeout=TIMEOUT_SECONDS,
     volumes={VOLUME_MOUNT_DIR: vol},
+    # Hard cap at one T4 container ever, no matter how many concurrent
+    # requests/polls hit this endpoint (the loading page alone fires one
+    # every POLL_INTERVAL_MS from every open tab) — this is a disposable
+    # single-admin dev tool, not a production service that should scale out
+    # under load. `concurrency_limit` is the old (pre-1.0 modal-client)
+    # name for this and no longer exists on modal.App.function; the
+    # installed SDK here (1.5.4) only recognizes max_containers.
+    max_containers=1,
 )
 @modal.web_server(port=COMFYUI_PORT, startup_timeout=300, requires_proxy_auth=False)
 def comfyui_server():
