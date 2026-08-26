@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, Pencil, Plus, Trash2, ToggleLeft, ToggleRight, Workflow } from "lucide-react";
+import { Clipboard, Download, Loader2, Pencil, Plus, Trash2, ToggleLeft, ToggleRight, Workflow } from "lucide-react";
 import { CustomWorkflowModal } from "./CustomWorkflowModal";
+import { ToastStack, type ToastData } from "@/components/Toast";
+import { downloadJson } from "@/lib/downloadJson";
 import type { StudioCustomWorkflow } from "./types";
 
 export function CustomWorkflowsTab() {
@@ -14,6 +16,26 @@ export function CustomWorkflowsTab() {
     workflow: null,
   });
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<ToastData[]>([]);
+  const dismissToast = (id: number) => setToasts((prev) => prev.filter((t) => t.id !== id));
+
+  const handleCopyJson = async (workflow: StudioCustomWorkflow) => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(workflow.workflow_json, null, 2));
+      setToasts((prev) => [...prev, { id: Date.now(), message: "ワークフローJSONをコピーしました" }]);
+    } catch (err) {
+      setToasts((prev) => [
+        ...prev,
+        { id: Date.now(), message: `コピーに失敗しました: ${err instanceof Error ? err.message : String(err)}` },
+      ]);
+    }
+  };
+
+  const handleDownloadJson = (workflow: StudioCustomWorkflow) => {
+    const filename = `${workflow.slug || "workflow"}_api.json`;
+    downloadJson(workflow.workflow_json, filename);
+    setToasts((prev) => [...prev, { id: Date.now(), message: `${filename} をダウンロードしました` }]);
+  };
 
   const loadWorkflows = async () => {
     setLoading(true);
@@ -158,6 +180,24 @@ export function CustomWorkflowsTab() {
                     <div className="flex items-center justify-end gap-3">
                       <button
                         type="button"
+                        onClick={() => handleCopyJson(workflow)}
+                        aria-label="JSONをコピー"
+                        title="📋 workflow_json をコピー"
+                        className="text-muted transition-colors hover:text-neon-violet"
+                      >
+                        <Clipboard size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadJson(workflow)}
+                        aria-label="JSONをダウンロード"
+                        title="📥 workflow_json をダウンロード"
+                        className="text-muted transition-colors hover:text-neon-violet"
+                      >
+                        <Download size={16} />
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => setModalState({ open: true, workflow })}
                         aria-label="編集"
                         className="text-muted transition-colors hover:text-neon-violet"
@@ -189,6 +229,7 @@ export function CustomWorkflowsTab() {
           onSaved={handleSaved}
         />
       )}
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

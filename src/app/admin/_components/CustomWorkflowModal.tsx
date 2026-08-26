@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Clipboard, Loader2, Plus, Trash2, UploadCloud, X, Zap } from "lucide-react";
+import { ChevronDown, Clipboard, Download, Loader2, Plus, Trash2, UploadCloud, X, Zap } from "lucide-react";
 import { ToastStack, type ToastData } from "@/components/Toast";
+import { downloadJson } from "@/lib/downloadJson";
 import {
   WORKFLOW_INPUT_FIELD_TYPES,
   WORKFLOW_INPUT_FIELD_SECTIONS,
@@ -558,6 +559,12 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
     }
   };
 
+  const handleDownloadJson = () => {
+    const filename = `${values.slug.trim() || "workflow"}_api.json`;
+    downloadJson(values.workflowJsonText, filename);
+    setToasts((prev) => [...prev, { id: Date.now(), message: `${filename} をダウンロードしました` }]);
+  };
+
   const parsedNodes = useMemo(() => parseWorkflowNodes(values.workflowJsonText), [values.workflowJsonText]);
   const outputNodeCandidates = useMemo(
     () => parsedNodes.filter((n) => OUTPUT_NODE_CLASS_TYPES.has(n.classType)),
@@ -943,6 +950,14 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
                 >
                   <Clipboard size={13} />
                   📋 JSONをコピー
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadJson}
+                  className="flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+                >
+                  <Download size={13} />
+                  📥 JSONをダウンロード
                 </button>
                 <input
                   ref={fileInputRef}
