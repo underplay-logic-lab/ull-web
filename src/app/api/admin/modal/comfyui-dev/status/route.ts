@@ -5,7 +5,12 @@ import { requireAdmin } from "@/lib/adminApiGuard";
 // which reports whether comfyui_server's background thread has written a
 // heartbeat within HEARTBEAT_STALE_AFTER_SECONDS — the only way to tell
 // "is the GPU container actually alive right now" from outside, since
-// Modal exposes no public container-list API.
+// Modal exposes no public container-list API. `running` only means the
+// container function has started (the heartbeat thread starts before the
+// ComfyUI subprocess is even spawned) — `ready` is the stronger signal
+// that ComfyUI itself finished booting and is actually serving HTTP (see
+// READY_AT_KEY in modal_comfyui_dev.py), which is what the launch-loading
+// page (src/app/admin/comfyui-loading/page.tsx) polls for.
 export async function GET() {
   const { user, response } = await requireAdmin();
   if (!user) return response;
@@ -31,7 +36,11 @@ export async function GET() {
     }
 
     const data = await res.json();
-    return NextResponse.json({ running: Boolean(data.running), runningSince: data.running_since ?? null });
+    return NextResponse.json({
+      running: Boolean(data.running),
+      runningSince: data.running_since ?? null,
+      ready: Boolean(data.ready),
+    });
   } catch (err) {
     console.error("[admin/modal/comfyui-dev/status] failed:", err);
     return NextResponse.json(

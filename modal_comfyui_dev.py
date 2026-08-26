@@ -68,7 +68,8 @@ COMFYUI_LOG_PATH = "/tmp/comfyui.log"
 
 DEFAULT_GPU = "T4"
 TIMEOUT_SECONDS = 1800  # 30 min safety valve — auto-shuts-down the GPU rather than risking a forgotten session.
-READY_TIMEOUT_SECONDS = 240  # Comfortably under startup_timeout below, leaving Modal margin to notice readiness too.
+READY_POLL_INTERVAL_SECONDS = 1
+READY_TIMEOUT_SECONDS = 60
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
 
@@ -82,6 +83,17 @@ control_dict = modal.Dict.from_name("ull-comfyui-dev-control", create_if_missing
 STOP_REQUESTED_AT_KEY = "stop_requested_at"
 HEARTBEAT_AT_KEY = "heartbeat_at"
 RUNNING_SINCE_KEY = "running_since"
+# Written only once _wait_until_ready() actually succeeds (see
+# comfyui_server()) — HEARTBEAT_AT_KEY/RUNNING_SINCE_KEY alone can't tell
+# "the container function has started" from "ComfyUI is done booting and
+# actually serving HTTP", since the heartbeat thread starts before the
+# ComfyUI subprocess is even spawned. The admin's launch-loading page polls
+# this (via control()'s "status" action's "ready" field) instead of hitting
+# the public ComfyUI URL directly, because Modal's own edge can return a
+# real (non-2xx) HTTP response — not just refuse the connection — while a
+# container is still cold, which a client-side fetch can't tell apart from
+# success once page navigation (not fetch) is involved.
+READY_AT_KEY = "ready_at"
 STOP_POLL_INTERVAL_SECONDS = 3
 # How stale a heartbeat can be before the admin "状態確認" check considers
 # the container gone — comfortably more than one poll interval so a single
@@ -242,7 +254,7 @@ def _wait_until_ready(proc: subprocess.Popen, timeout: float) -> None:
             urllib.request.urlopen(f"http://127.0.0.1:{COMFYUI_PORT}/system_stats", timeout=2)
             return
         except Exception:
-            time.sleep(1)
+            time.sleep(READY_POLL_INTERVAL_SECONDS)
     raise RuntimeError(f"ComfyUI did not become ready within {timeout}s. Last output:\n{_tail_log()}")
 
 
@@ -296,7 +308,8 @@ def comfyui_server():
     )
 
     _wait_until_ready(proc, READY_TIMEOUT_SECONDS)
-    print("[comfyui-dev] ComfyUI is up and responding on :8188.")
+    control_dict[READY_AT_KEY] = time.time()
+    print(f"[INFO] ComfyUI server is fully ready on port {COMFYUI_PORT}.")
 
 
 # GPU-less and cheap (no `gpu=` set) — this is a tiny control-plane endpoint,
@@ -317,9 +330,22 @@ def control(item: dict, request: fastapi.Request):
         now = time.time()
         heartbeat_at = control_dict.get(HEARTBEAT_AT_KEY)
         running_since = control_dict.get(RUNNING_SINCE_KEY)
+        ready_at = control_dict.get(READY_AT_KEY)
         is_running = isinstance(heartbeat_at, (int, float)) and (now - heartbeat_at) < HEARTBEAT_STALE_AFTER_SECONDS
+        # ready_at >= running_since guards against a stale readiness flag
+        # left over from a previous container generation reading as "ready"
+        # for a fresh one that hasn't finished booting yet — same
+        # started_at-comparison pattern _watch_for_stop uses for stop
+        # requests above.
+        is_ready = (
+            is_running
+            and isinstance(ready_at, (int, float))
+            and isinstance(running_since, (int, float))
+            and ready_at >= running_since
+        )
         return {
             "running": is_running,
             "running_since": running_since if is_running else None,
+            "ready": is_ready,
         }
     raise fastapi.HTTPException(status_code=400, detail=f"Unknown action: {action!r}")

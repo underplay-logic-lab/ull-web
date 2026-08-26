@@ -3,12 +3,6 @@
 import { useEffect, useState } from "react";
 import { Loader2, RefreshCw, Square, Wrench } from "lucide-react";
 
-// Persistent (modal deploy, not ephemeral serve) URL for the T4 ComfyUI dev
-// GUI — see modal_comfyui_dev.py at the repo root. Hardcoded rather than an
-// env var: it's a fixed dev-tool endpoint, not a secret, and only ever
-// changes if that app is redeployed under a different name.
-const COMFYUI_DEV_URL = "https://axelbh5--ull-comfyui-dev-comfyui-server.modal.run";
-
 // How often the status badge re-checks on its own — cheap (the status
 // check hits a GPU-less control-plane function, never the GPU itself), so
 // a short interval is fine.
@@ -77,6 +71,21 @@ export function ComfyUiDevControls() {
     return () => clearInterval(id);
   }, []);
 
+  // Opens the launch-loading relay page (src/app/admin/comfyui-loading)
+  // instead of the ComfyUI URL itself or a warmed-up "about:blank" tab — a
+  // previous revision redirected as soon as a warm-up fetch merely
+  // *settled* (success or failure) or after a few seconds, whichever came
+  // first, which fired well before a cold T4 GPU actually finished booting
+  // ComfyUI and landed the admin on Modal's own "still cold" error page.
+  // The loading page instead polls this app's own status API for a real
+  // readiness flag and only navigates once that comes back true. A plain
+  // window.open() to a real URL is a synchronous, direct result of this
+  // click, so there's no popup-blocker concern the way an awaited redirect
+  // would have.
+  const handleLaunch = () => {
+    window.open("/admin/comfyui-loading", "_blank");
+  };
+
   const handleStop = async () => {
     setStopping(true);
     setNotice(null);
@@ -95,16 +104,15 @@ export function ComfyUiDevControls() {
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <a
-        href={COMFYUI_DEV_URL}
-        target="_blank"
-        rel="noopener noreferrer"
+      <button
+        type="button"
+        onClick={handleLaunch}
         title="アクセス時にT4 GPUが自動起動します（放置時は自動スリープし、その間の課金はありません）"
         className="flex items-center gap-1.5 rounded-full border border-neon-violet/50 bg-neon-violet/15 px-3 py-1.5 text-xs font-medium text-neon-violet transition-colors hover:bg-neon-violet/25"
       >
         <Wrench size={14} />
         🛠️ クラウドComfyUIを開く
-      </a>
+      </button>
 
       <button
         type="button"
