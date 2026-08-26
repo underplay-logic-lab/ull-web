@@ -61,12 +61,11 @@ export function Contact() {
               Contact
             </p>
             <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-              技術支援・受託相談
+              お問い合わせ
             </h2>
             <p className="mt-4 leading-relaxed text-muted">
-              AIワークフロー設計、ComfyUIカスタムノード開発、業務特化型AI環境の構築まで、
-              幅広くご相談を承っています。
-              まずはお気軽にご相談ください。
+              ご利用中のサービスに関するご質問、決済・アカウントのお困りごと、
+              不具合のご報告、法人でのご利用まで、お気軽にお問い合わせください。
             </p>
 
             <ul className="mt-8 space-y-3">
@@ -109,6 +108,12 @@ export function Contact() {
               </div>
             ) : (
               <form onSubmit={handleSubmit} className="space-y-5">
+                <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs leading-relaxed text-amber-400">
+                  <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                  <span>
+                    ※ 独自最適化エンジンの内部構造、使用モデル、インフラ仕様等に関するお問い合わせには一切回答いたしかねます。
+                  </span>
+                </div>
                 <input
                   type="text"
                   name="hp_company_url"
@@ -223,7 +228,7 @@ export function Contact() {
                       setFormData({ ...formData, message: e.target.value })
                     }
                     className="w-full resize-none rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
-                    placeholder="プロジェクトの概要、予算感、希望スケジュールなど"
+                    placeholder="お問い合わせ内容の詳細をご記入ください"
                   />
                 </div>
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDown, Download, Gift, Sparkles, Wand2 } from "lucide-react";
+import { ArrowDown, Gift, Sparkles, Wand2 } from "lucide-react";
 import { EditableText } from "@/components/EditableText";
 import { EditableLink } from "@/components/EditableLink";
 import { EditableMedia } from "@/components/EditableMedia";
@@ -45,7 +45,7 @@ export function Hero() {
         <p className="mx-auto mt-8 max-w-2xl text-base leading-relaxed text-muted sm:text-lg">
           <EditableText
             siteKey="hero_subtitle"
-            fallback="最新モデルをクラウドGPUで高速生成。独自AI環境の構築受託・自動化相談も受付中。"
+            fallback="最新モデルをクラウドGPUで高速生成。新規登録で今すぐ10クレジット無料進呈。"
           />
         </p>
 
@@ -65,14 +65,6 @@ export function Hero() {
           >
             <Wand2 size={16} />
             <EditableText siteKey="hero_cta_primary" fallback="Studioを試す" />
-          </EditableLink>
-          <EditableLink
-            siteKey="hero_cta_secondary_href"
-            fallback="#products"
-            className="flex items-center gap-2 rounded-full border border-border bg-surface/60 px-8 py-3.5 text-sm font-medium text-foreground backdrop-blur-sm transition-colors hover:border-neon-violet/50 hover:bg-surface-hover"
-          >
-            <Download size={16} />
-            <EditableText siteKey="hero_cta_secondary" fallback="ツールをダウンロード" />
           </EditableLink>
         </div>
 

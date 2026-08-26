@@ -17,7 +17,6 @@ export const CONTACT_EMAIL = "contact@ullstudio.com";
 export const navLinks = [
   { label: "Studio", href: "/#studio" },
   { label: "Pricing", href: "/#pricing" },
-  { label: "Products", href: "/#products" },
   { label: "Contact", href: "/#contact" },
 ];
 
@@ -65,39 +64,6 @@ export const WAN_ANIMATE_GPU_ULTRA_ADDON = 40;
 
 export const WAN_ANIMATE_MODEL_NAME = "Wan Animate 2";
 export const WAN_ANIMATE_MODEL_PARAMS = "14B";
-
-export type Product = {
-  id: string;
-  name: string;
-  version: string;
-  tagline: string;
-  description: string;
-  quickBadges: string[];
-  features: string[];
-  downloadUrl?: string;
-  badge?: string;
-  note?: string;
-};
-
-export const products: Product[] = [
-  {
-    id: "model-downloader",
-    name: "Underplay High-Speed Model Downloader",
-    version: "v2.1",
-    tagline: "大容量モデルを最速でローカルへ",
-    description:
-      "Civitai / Hugging Face など複数ソースからのマルチスレッド並列ダウンロード、自動仕分け、高速マージを一体化。AI開発環境のセットアップ時間を劇的に短縮します。",
-    quickBadges: ["並列DL", "自動仕分け", "高速マージ"],
-    features: [
-      "Civitai / Hugging Face等のモデル・LoRA・素材を一括ダウンロード",
-      "マルチスレッド並列処理による超高速ダウンロード",
-      "フォルダ階層の自動正規化配置",
-    ],
-    downloadUrl: "/downloads/underplay_dl_manager.zip",
-    badge: "無料配布",
-    note: "※本ツールは Windows 10 / 11 専用です（ZIPを解凍後、exeをダブルクリックで即起動・インストール不要）",
-  },
-];
 
 export type PricingPlan = {
   id: string;
@@ -155,7 +121,7 @@ export const pricingPlans: PricingPlan[] = [
     name: "月額プロ",
     price: "¥4,980",
     period: "/ 月",
-    description: "受託案件・大量生成にも対応する上位プラン。",
+    description: "大量生成・優先処理にも対応する上位プラン。",
     features: [
       "毎月2,500クレジットを自動付与",
       "デイリーログインボーナス（1日1回）で毎日+15クレジット（※プラン継続特典）",
@@ -235,8 +201,8 @@ export const articles: Article[] = [
 ];
 
 export const contactServices = [
-  "特注ワークフロー・モデル追加のリクエスト",
-  "ローカル / クラウド環境構築（遠隔リモート対応可能）",
-  "業務特化型AIワークフローの設計・導入支援",
-  "その他のお問い合わせ",
+  "決済・アカウントに関するご質問",
+  "システムの不具合・バグ報告",
+  "法人大口利用・エンタープライズプランのご相談",
+  "その他サポート",
 ];

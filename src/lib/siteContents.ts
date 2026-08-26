@@ -44,7 +44,6 @@ export const DEFAULT_PAGE_SECTIONS: PageSectionConfig[] = [
   { id: "hero", visible: true },
   { id: "studio", visible: true },
   { id: "pricing", visible: true },
-  { id: "products", visible: true },
   { id: "contact", visible: true },
   { id: "articles", visible: false },
 ];

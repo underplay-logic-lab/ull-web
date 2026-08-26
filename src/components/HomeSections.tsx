@@ -4,7 +4,6 @@ import type { ComponentType } from "react";
 import { Hero } from "@/components/Hero";
 import { Studio } from "@/components/Studio";
 import { Pricing } from "@/components/Pricing";
-import { Products } from "@/components/Products";
 import { Contact } from "@/components/Contact";
 import { Articles } from "@/components/Articles";
 import { SectionManager } from "@/components/SectionManager";
@@ -15,7 +14,6 @@ const SECTION_REGISTRY: Record<string, { label: string; Component: ComponentType
   hero: { label: "Hero", Component: Hero },
   studio: { label: "Studio", Component: Studio },
   pricing: { label: "Pricing", Component: Pricing },
-  products: { label: "Products", Component: Products },
   contact: { label: "Contact", Component: Contact },
   articles: { label: "Articles", Component: Articles },
 };

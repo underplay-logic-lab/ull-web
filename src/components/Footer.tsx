@@ -47,7 +47,7 @@ export function Footer() {
         <EditableText
           as="p"
           siteKey="footer_copyright"
-          fallback={`© ${year} ${siteConfig.legalName}. All rights reserved.`}
+          fallback={`© ${year} ULL Studio. Powered by Underplay Logic Engine.`}
           className="mt-2 text-center text-xs text-muted sm:text-left"
         />
         </div>

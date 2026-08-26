@@ -172,7 +172,7 @@ export function Pricing() {
           className="mt-10 flex flex-col items-center justify-between gap-4 rounded-2xl border border-neon-violet/30 bg-neon-violet/5 p-6 text-center transition-colors hover:bg-neon-violet/10 sm:flex-row sm:text-left"
         >
           <p className="text-sm leading-relaxed text-foreground/90">
-            ⚙️ ComfyUI / RunPod環境を専用で無制限に使いたい方へ：法人・個人（フリーランス含む）問わず、クラウド環境の構築代行・特注ワークフロー開発（リモート対応）を承ります。
+            ⚙️ 大量生成・専用リソースが必要な法人のお客様へ：エンタープライズプラン・大口契約のご相談を承ります。
           </p>
           <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-sm font-semibold text-white">
             お問い合わせはこちら
