@@ -1,27 +1,66 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/adminApiGuard";
+import { COMFYUI_DEV_URL } from "@/lib/comfyuiDevUrl";
 
-// Forwards to modal_comfyui_dev.py's control() endpoint's "status" action,
-// which reports whether comfyui_server's background thread has written a
-// heartbeat within HEARTBEAT_STALE_AFTER_SECONDS — the only way to tell
-// "is the GPU container actually alive right now" from outside, since
-// Modal exposes no public container-list API. `running` only means the
-// container function has started (the heartbeat thread starts before the
-// ComfyUI subprocess is even spawned) — `ready` is the stronger signal
-// that ComfyUI itself finished booting and is actually serving HTTP (see
-// READY_AT_KEY in modal_comfyui_dev.py), which is what the launch-loading
-// page (src/app/admin/comfyui-loading/page.tsx) polls for.
+// How long to wait for the ComfyUI dev GPU's own HTTP response before
+// treating it as "not ready yet" — this is a liveness probe fired every
+// couple seconds by the launch-loading page, not a real request, so it
+// must fail fast rather than hang the whole status check.
+const PROBE_TIMEOUT_MS = 3000;
+
+// The launch-loading page (src/app/admin/comfyui-loading/page.tsx) used to
+// trust modal_comfyui_dev.py's own READY_AT_KEY Dict flag (compared against
+// RUNNING_SINCE_KEY to reject stale values from a previous container
+// generation) — but that comparison is wall-clock timestamps written by
+// whatever physical host each container generation happened to land on,
+// and Modal containers routinely land on different hosts across restarts.
+// Clock skew between those hosts can make a *stale* previous generation's
+// ready_at read as newer than the *new* generation's running_since,
+// producing exactly the instant-false-"ready" flying-redirect bug this is
+// meant to prevent. A server-side HTTP probe sidesteps all of that: unlike
+// a browser fetch (which in no-cors mode can't read the status of a
+// cross-origin response at all — a 403 and a 200 look identical), this
+// runs in Node.js with no CORS restriction whatsoever, so it can just read
+// the real status code directly. Only a literal 200 counts as ready.
+async function probeComfyUiReady(): Promise<boolean> {
+  try {
+    const res = await fetch(COMFYUI_DEV_URL, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    return res.status === 200;
+  } catch {
+    return false;
+  }
+}
+
 export async function GET() {
   const { user, response } = await requireAdmin();
   if (!user) return response;
+
+  const ready = await probeComfyUiReady();
 
   const url = process.env.MODAL_COMFYUI_DEV_CONTROL_URL;
   const authToken = process.env.MODAL_AUTH_TOKEN;
 
   if (!url || !authToken) {
-    return NextResponse.json({ error: "サーバー設定エラーです（Modal未設定）。" }, { status: 500 });
+    // A genuine misconfiguration (unlike a transient control-plane call
+    // failure below) — still worth erroring loudly for the admin header's
+    // status badge, but `ready` (needed by the loading page's redirect
+    // decision) is included regardless since it never depended on these.
+    return NextResponse.json(
+      { error: "サーバー設定エラーです（Modal未設定）。", running: false, runningSince: null, ready },
+      { status: 500 },
+    );
   }
 
+  // Auxiliary only, from here down: modal_comfyui_dev.py's control()
+  // "status" action reports whether comfyui_server's background thread has
+  // written a heartbeat recently — used solely for the admin header's
+  // "🟢 稼働中（起動から…）" badge, not for the loading page's redirect
+  // decision above, since it can't tell "container function has started"
+  // from "ComfyUI is actually serving HTTP" (the heartbeat thread starts
+  // before the ComfyUI subprocess is even spawned).
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -39,13 +78,10 @@ export async function GET() {
     return NextResponse.json({
       running: Boolean(data.running),
       runningSince: data.running_since ?? null,
-      ready: Boolean(data.ready),
+      ready,
     });
   } catch (err) {
-    console.error("[admin/modal/comfyui-dev/status] failed:", err);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "状態確認に失敗しました。" },
-      { status: 502 },
-    );
+    console.error("[admin/modal/comfyui-dev/status] control-plane check failed (non-fatal for `ready`):", err);
+    return NextResponse.json({ running: false, runningSince: null, ready });
   }
 }

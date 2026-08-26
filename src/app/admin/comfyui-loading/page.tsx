@@ -20,17 +20,28 @@ const TIMEOUT_MS = 40_000;
 // resolves (doesn't throw) for both a real 200 AND an HTTP error response
 // like the 403 Modal's own edge can return while a container is still
 // cold — it only *rejects* on an actual network-level failure. That opacity
-// makes it useless as a readiness signal once real navigation is involved
-// (unlike a background fetch, a top-level page load surfaces the real
-// status code), which is exactly how the premature-redirect bug this page
-// exists to fix happened: the previous implementation redirected the
-// instant a warm-up fetch merely *settled*, not once ComfyUI was actually
-// serving traffic. Readiness here instead comes from polling this app's own
-// /api/admin/modal/comfyui-dev/status — same-origin, real readable JSON,
-// backed by a flag modal_comfyui_dev.py only writes after its own
-// _wait_until_ready() health-check loop succeeds.
+// makes it useless as a readiness signal from the browser. Readiness
+// instead comes from polling this app's own /api/admin/modal/comfyui-dev/
+// status, which runs its own real HTTP probe server-side (Node has no CORS
+// restriction, so it can just read the actual status code — see that
+// route for why this no longer trusts modal_comfyui_dev.py's Dict-based
+// ready flag alone).
 function triggerWarmup() {
   fetch(COMFYUI_DEV_URL, { mode: "no-cors" }).catch(() => {});
+}
+
+// window.location.href sends a Referer header on the resulting cross-origin
+// request; Modal's proxy has been observed rejecting the dev GPU URL when
+// one is present. A synthetic <a rel="noreferrer"> click navigates the same
+// way (target="_self" keeps it in this tab) without ever sending one.
+function navigateNoReferrer(url: string) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.rel = "noreferrer";
+  a.target = "_self";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 export default function ComfyUiLoadingPage() {
@@ -51,7 +62,7 @@ export default function ComfyUiLoadingPage() {
         if (cancelled) return;
 
         if (res.ok && data?.ready) {
-          window.location.href = COMFYUI_DEV_URL;
+          navigateNoReferrer(COMFYUI_DEV_URL);
           return;
         }
         setCheckError(null);
@@ -128,6 +139,7 @@ export default function ComfyUiLoadingPage() {
 
             <a
               href={COMFYUI_DEV_URL}
+              rel="noreferrer"
               className="mt-6 flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
             >
               <ExternalLink size={15} />
