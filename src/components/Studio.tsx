@@ -15,7 +15,9 @@ type StudioTab = "wan-animate" | "cinematic" | "image" | "custom";
 const STUDIO_TABS: { id: StudioTab; label: string }[] = [
   { id: "wan-animate", label: "Wan Animate 2" },
   { id: "cinematic", label: "Cinematic Video" },
-  { id: "image", label: "画像生成" },
+  // "image" (画像生成) is temporarily hidden from navigation — the engine
+  // behind it is mid-swap and ImageGenMaintenancePlaceholder is the only
+  // thing it currently renders. Re-add here once the new engine ships.
   { id: "custom", label: "特化ワークフロー" },
 ];
 
