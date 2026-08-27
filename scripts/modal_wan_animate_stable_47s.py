@@ -164,16 +164,6 @@ image = (
         # image build, but the node pack simply won't be present if wrong.
         f"git clone https://github.com/IAMCCS/IAMCCS-nodes.git"
         f" {COMFY_DIR}/custom_nodes/IAMCCS-nodes || echo 'IAMCCS-nodes clone failed, continuing without it'",
-        # kijai/ComfyUI-KJNodes — ships PathchSageAttentionKJ (a per-model
-        # "patch this model to run through the sageattention package built
-        # above" node), among many other general-purpose nodes. Note there is
-        # no separate "ComfyUI-EasyCache" node pack to install: EasyCache is
-        # a native node shipped in ComfyUI core itself as of this pinned tag
-        # (comfy_extras/nodes_easycache.py), so it's already available with
-        # no extra step.
-        f"git clone https://github.com/kijai/ComfyUI-KJNodes.git"
-        f" {COMFY_DIR}/custom_nodes/ComfyUI-KJNodes",
-        f"pip install -r {COMFY_DIR}/custom_nodes/ComfyUI-KJNodes/requirements.txt",
     )
 )
 
@@ -500,14 +490,6 @@ class _WanAnimateBase:
     """
 
     GPU_TIER = "standard"
-    # exec_config generate_video() starts ComfyUI with when the caller (the
-    # main app, via /generate — unlike /custom_workflow, it has no way to
-    # pass its own exec_config) doesn't specify one. None here means
-    # "ComfyUI's own defaults", preserving the Standard/L40S tier's existing,
-    # already-tuned behavior exactly. WanAnimateUltra overrides this to
-    # actually spend its 288GB of VRAM and the sage-attention kernel built
-    # into the image instead of sitting on ComfyUI's conservative defaults.
-    DEFAULT_EXEC_CONFIG = None
 
     @modal.enter()
     def setup(self):
@@ -572,13 +554,13 @@ class _WanAnimateBase:
         """
         Starts ComfyUI on first use, and restarts it whenever the requested
         exec_config (disable_smart_memory / cpu_vae / gpu_only /
-        use_pytorch_cross_attention / use_sage_attention / high_vram /
-        extra_args) differs from what it's currently running with — these
-        are all process-startup-only ComfyUI CLI flags (verified against
-        comfy/model_management.py in the pinned ComfyUI version: e.g.
-        DISABLE_SMART_MEMORY is copied from args.disable_smart_memory into a
-        module-level constant exactly once at import time), so there is no
-        way to apply them to an already-running process.
+        use_pytorch_cross_attention / high_vram / extra_args) differs from
+        what it's currently running with — these are all process-startup-only ComfyUI
+        CLI flags (verified against comfy/model_management.py in the pinned
+        ComfyUI version: e.g. DISABLE_SMART_MEMORY is copied from
+        args.disable_smart_memory into a module-level constant exactly once
+        at import time), so there is no way to apply them to an
+        already-running process.
 
         use_pytorch_cross_attention maps to `--use-pytorch-cross-attention`
         rather than `--use-flash-attention`: the standalone `flash-attn`
@@ -590,15 +572,6 @@ class _WanAnimateBase:
         (which this flag switches ComfyUI to) already includes a flash-
         attention backend and needs no extra package, so it gets the same
         practical speedup without that risk.
-
-        use_sage_attention maps to `--use-sage-attention`, which ComfyUI
-        core (comfy/ldm/modules/attention.py) only engages if the
-        `sageattention` package actually imports — it's built from source
-        for both GPU tiers' architectures in the image above (see the
-        TORCH_CUDA_ARCH_LIST env var), and ComfyUI wraps every sage-
-        attention call in a try/except that falls back to plain PyTorch SDPA
-        on any error, so turning this on is safe even if the compiled kernel
-        turns out not to work for a given input shape at runtime.
         """
         import shlex
         import subprocess
@@ -609,7 +582,6 @@ class _WanAnimateBase:
             bool(cfg.get("cpu_vae", False)),
             bool(cfg.get("gpu_only", False)),
             bool(cfg.get("use_pytorch_cross_attention", False)),
-            bool(cfg.get("use_sage_attention", False)),
             bool(cfg.get("high_vram", False)),
             str(cfg.get("extra_args") or "").strip(),
         )
@@ -625,15 +597,7 @@ class _WanAnimateBase:
                 self._proc.kill()
                 self._proc.wait(timeout=5)
 
-        (
-            disable_smart_memory,
-            cpu_vae,
-            gpu_only,
-            use_pytorch_cross_attention,
-            use_sage_attention,
-            high_vram,
-            extra_args,
-        ) = normalized
+        disable_smart_memory, cpu_vae, gpu_only, use_pytorch_cross_attention, high_vram, extra_args = normalized
         try:
             extra_tokens = shlex.split(extra_args)
         except ValueError as exc:
@@ -649,8 +613,6 @@ class _WanAnimateBase:
             argv.append("--gpu-only")
         if use_pytorch_cross_attention:
             argv.append("--use-pytorch-cross-attention")
-        if use_sage_attention:
-            argv.append("--use-sage-attention")
         if high_vram:
             argv.append("--highvram")
         # Fixed and placed last so nothing smuggled into extra_args can
@@ -825,7 +787,7 @@ class _WanAnimateBase:
         pose_video_name: str,
         save_to_volume: bool = False,
     ) -> dict:
-        self._ensure_comfy_running(self.DEFAULT_EXEC_CONFIG)
+        self._ensure_comfy_running(None)  # Wan Animate 2 standard flow always uses default flags.
         workflow = json.loads(workflow_json)
         started = time.time()
         try:
@@ -937,17 +899,6 @@ class WanAnimate(_WanAnimateBase):
 )
 class WanAnimateUltra(_WanAnimateBase):
     GPU_TIER = "ultra"
-    # B300 (288GB VRAM, Blackwell/sm_100): keep every model weight resident
-    # in VRAM (--gpu-only, --highvram — there's no need to ever offload to
-    # host RAM on this tier) and route attention through the sage-attention
-    # kernel built for sm_100 in the image (--use-sage-attention; falls back
-    # to plain PyTorch SDPA on its own if anything about a given run doesn't
-    # support it — see _ensure_comfy_running's docstring).
-    DEFAULT_EXEC_CONFIG = {
-        "gpu_only": True,
-        "high_vram": True,
-        "use_sage_attention": True,
-    }
 
 
 @app.cls(
