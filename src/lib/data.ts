@@ -12,7 +12,7 @@ export const siteConfig = {
 // referenced by the footer, legal pages (特商法/プライバシーポリシー/利用規約),
 // so it only needs updating in one place. The actual inbox the /api/contact
 // form delivers to is configured separately via CONTACT_RECEIVER_EMAIL.
-export const CONTACT_EMAIL = "contact@ullstudio.com";
+export const CONTACT_EMAIL = "support@ullstudio.com";
 
 export const navLinks = [
   { label: "Studio", href: "/#studio" },

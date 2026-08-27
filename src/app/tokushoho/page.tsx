@@ -7,10 +7,10 @@ export const metadata: Metadata = {
   title: `特定商取引法に基づく表記 — ${siteConfig.name}`,
 };
 
-// Support inbox for this legal notice specifically — kept as a literal here
-// rather than reusing CONTACT_EMAIL (src/lib/data.ts, "contact@ullstudio.com")
-// since Polar.sh's Merchant-of-Record model means this page's contact point
-// is scoped to platform/billing support, not the general inbox.
+// Kept as its own literal (matches CONTACT_EMAIL in src/lib/data.ts, both
+// now "support@ullstudio.com" since the contact address was unified) rather
+// than importing CONTACT_EMAIL, so this page's Merchant-of-Record contact
+// point stays independently pinned if the general inbox ever changes again.
 const SUPPORT_EMAIL = "support@ullstudio.com";
 
 type LegalEntry = { label: string; value: ReactNode };
