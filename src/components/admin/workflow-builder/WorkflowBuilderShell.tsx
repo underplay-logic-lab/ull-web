@@ -4,11 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Eye, Loader2, Monitor, Save, Smartphone, Zap } from "lucide-react";
 import {
-  DEFAULT_WORKFLOW_GPU_TIER,
   SYSTEM_FIELD_GPU_TIER,
   WORKFLOW_FIELD_TIERS,
   WORKFLOW_FIELD_TIER_LABELS,
-  WORKFLOW_GPU_TIERS,
   makeGpuTierField,
   workflowCreditsBreakdown,
   type StudioCustomWorkflow,
@@ -30,7 +28,9 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
   const [sections, setSections] = useState<WorkflowSection[]>([]);
   const [isActive, setIsActive] = useState(true);
   const [creditsCost, setCreditsCost] = useState(0);
-  const [gpuTier, setGpuTier] = useState<WorkflowGpuTier>(DEFAULT_WORKFLOW_GPU_TIER);
+  // GPU config is fully unified into this priority-ordered fallback chain
+  // (edited in the right pane). The first entry doubles as the legacy
+  // default_gpu_tier on save — see handleSave.
   const [gpuFallbackList, setGpuFallbackList] = useState<WorkflowGpuTier[]>([]);
   const [badgeLabel, setBadgeLabel] = useState("");
 
@@ -61,12 +61,21 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
         setSections(row.sections ?? []);
         setIsActive(row.is_active);
         setCreditsCost(row.credits_cost);
-        setGpuTier(row.default_gpu_tier ?? DEFAULT_WORKFLOW_GPU_TIER);
-        setGpuFallbackList(
-          Array.isArray(row.gpu_fallback_list)
+        {
+          // Seed the chain from gpu_fallback_list; if a row predates that
+          // column, fall back to its single default_gpu_tier so its GPU
+          // choice isn't silently lost.
+          const savedChain = Array.isArray(row.gpu_fallback_list)
             ? (row.gpu_fallback_list as WorkflowGpuTier[])
-            : [],
-        );
+            : [];
+          setGpuFallbackList(
+            savedChain.length > 0
+              ? savedChain
+              : row.default_gpu_tier
+                ? [row.default_gpu_tier as WorkflowGpuTier]
+                : [],
+          );
+        }
         setBadgeLabel(row.gpu_badge_label ?? "");
       } catch (err) {
         setError(err instanceof Error ? err.message : "取得に失敗しました。");
@@ -255,7 +264,9 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
           sections,
           is_active: isActive,
           credits_cost: creditsCost,
-          default_gpu_tier: gpuTier,
+          // Legacy scalar kept in sync with the chain head for backend
+          // compatibility (the generate route still reads default_gpu_tier).
+          default_gpu_tier: gpuFallbackList[0] ?? "l4",
           gpu_fallback_list: gpuFallbackList,
           gpu_badge_label: badgeLabel,
         }),
@@ -322,24 +333,6 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
               placeholder="⚡ Logic Core V2（空欄で非表示）"
               className="w-44 rounded-md border border-border bg-background px-2 py-1 text-xs outline-none focus:border-neon-violet/50"
             />
-          </label>
-
-          <label className="flex items-center gap-1.5 text-[11px] text-muted">
-            実行GPU
-            <select
-              value={gpuTier}
-              onChange={(e) => {
-                setGpuTier(e.target.value as WorkflowGpuTier);
-                touch();
-              }}
-              className="rounded-md border border-border bg-background px-2 py-1 text-xs outline-none focus:border-neon-violet/50"
-            >
-              {WORKFLOW_GPU_TIERS.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}（{t.vram}）
-                </option>
-              ))}
-            </select>
           </label>
 
           <label className="flex items-center gap-1.5 text-[11px] text-muted">
