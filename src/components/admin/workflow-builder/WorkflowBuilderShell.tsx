@@ -299,7 +299,7 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
             >
               {WORKFLOW_GPU_TIERS.map((t) => (
                 <option key={t.value} value={t.value}>
-                  {t.label}
+                  {t.label}（{t.vram}）
                 </option>
               ))}
             </select>
@@ -323,7 +323,8 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
             <Zap size={13} />
             {credits.total} Credits
             <span className="font-normal text-neon-pink/70">
-              （基本 {credits.base} + アドオン {credits.addons}）
+              （基本 {credits.base} + アドオン {credits.addons}
+              {credits.multiplier !== 1 ? ` × ${credits.multiplier}` : ""}）
             </span>
           </span>
 

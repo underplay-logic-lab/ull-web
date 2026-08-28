@@ -4,6 +4,7 @@ import { Trash2 } from "lucide-react";
 import {
   SYSTEM_FIELD_GPU_TIER,
   WORKFLOW_GPU_TIERS,
+  WORKFLOW_GPU_SPEC_BY_TIER,
   WORKFLOW_INPUT_FIELD_TYPES,
   WORKFLOW_FIELD_TIERS,
   type WorkflowFieldColSpan,
@@ -181,10 +182,14 @@ export function ParameterInspectorPane({
         {/* GPU tier option editor */}
         {isGpuField && (
           <div className="space-y-1.5 rounded-lg border border-neon-pink/30 bg-neon-pink/5 p-2.5">
-            <p className="text-[10px] font-semibold text-neon-pink">⚡ GPU選択肢 ＆ 加算クレジット</p>
+            <p className="text-[10px] font-semibold text-neon-pink">⚡ GPU選択肢 ＆ 課金設定</p>
+            <p className="text-[8px] text-muted">
+              総クレジット = ⌈(ベース + Σ固定加算) × Π倍率⌉
+            </p>
             {gpuOptionRows.map((row) => {
               const opt = options.find((o) => String(o.value) === row.value);
               const enabled = opt ? opt.enabled !== false : true;
+              const spec = WORKFLOW_GPU_SPEC_BY_TIER[row.value];
               return (
                 <div key={row.value} className="rounded-md border border-border bg-background p-1.5">
                   <div className="flex items-center gap-2">
@@ -202,8 +207,33 @@ export function ParameterInspectorPane({
                       onChange={(e) => setGpuOption(row.value, { label: e.target.value })}
                       placeholder={row.defaultLabel}
                       className={`${inputCls} flex-1`}
+                      title="ユーザーに見える表示名"
                     />
-                    <div className="flex shrink-0 items-center gap-1">
+                  </div>
+                  {spec && (
+                    <p className="mt-1 rounded bg-border/60 px-1.5 py-0.5 font-mono text-[8px] text-muted">
+                      物理: {spec.label} {spec.vram} / ${spec.hourlyUsd.toFixed(2)}/h
+                    </p>
+                  )}
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <label className="flex flex-1 items-center gap-1 text-[9px] text-muted">
+                      倍率 ×
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        value={opt?.multiplier ?? ""}
+                        onChange={(e) =>
+                          setGpuOption(row.value, {
+                            multiplier: e.target.value === "" ? undefined : Number(e.target.value),
+                          })
+                        }
+                        placeholder="1.0"
+                        className={`${inputCls} w-16`}
+                      />
+                    </label>
+                    <label className="flex flex-1 items-center gap-1 text-[9px] text-muted">
+                      固定加算 +
                       <input
                         type="number"
                         step="any"
@@ -213,13 +243,12 @@ export function ParameterInspectorPane({
                             credits_add: e.target.value === "" ? undefined : Number(e.target.value),
                           })
                         }
-                        placeholder="加算C"
+                        placeholder="0"
                         className={`${inputCls} w-16`}
                       />
-                      <span className="text-[9px] text-muted">C</span>
-                    </div>
+                      C
+                    </label>
                   </div>
-                  <p className="mt-0.5 font-mono text-[8px] text-muted">value: {row.value}</p>
                 </div>
               );
             })}

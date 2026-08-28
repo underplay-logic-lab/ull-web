@@ -5,6 +5,7 @@ import { getOrCreateProfile } from "@/lib/profile";
 import {
   calculateTotalWorkflowCredits,
   isTierLocked,
+  isUltraGpuTier,
   isValidWorkflowGpuTier,
   SYSTEM_FIELD_GPU_TIER,
   type WorkflowGpuTier,
@@ -176,8 +177,7 @@ export async function POST(request: Request) {
     ? formGpu
     : ((workflowRow.default_gpu_tier as WorkflowGpuTier | null) ?? "l4");
   // Compat value for the standard/ultra-only job tracker.
-  const legacyTier: GpuTier =
-    effectiveGpuTier === "h100" || effectiveGpuTier === "b300" ? "ultra" : "standard";
+  const legacyTier: GpuTier = isUltraGpuTier(effectiveGpuTier) ? "ultra" : "standard";
 
   // Server-side re-derivation of the price via the shared engine — the
   // client's displayed total is never trusted.

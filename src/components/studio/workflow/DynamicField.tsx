@@ -350,20 +350,39 @@ export const DynamicField = memo(function DynamicField({
   if (field.type === "select") {
     const options = (field.options ?? []).filter((o) => o.enabled !== false);
     const current = value === undefined || value === null ? "" : String(value);
+    const selected = options.find((o) => String(o.value) === current);
+    const optNote = (o: (typeof options)[number]) => {
+      const parts: string[] = [];
+      if (typeof o.multiplier === "number" && o.multiplier > 0 && o.multiplier !== 1) {
+        parts.push(`×${o.multiplier}倍`);
+      }
+      if (o.credits_add) parts.push(`${o.is_base_override ? "" : "+"}${o.credits_add}C`);
+      return parts.join(" ・ ");
+    };
     return (
-      <select
-        value={current}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
-      >
-        {options.length === 0 && <option value="">（選択肢が未設定です）</option>}
-        {options.map((opt) => (
-          <option key={String(opt.value)} value={String(opt.value)}>
-            {opt.label}
-            {opt.credits_add ? `（${opt.is_base_override ? "" : "+"}${opt.credits_add}C）` : ""}
-          </option>
-        ))}
-      </select>
+      <div>
+        <select
+          value={current}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
+        >
+          {options.length === 0 && <option value="">（選択肢が未設定です）</option>}
+          {options.map((opt) => {
+            const note = optNote(opt);
+            return (
+              <option key={String(opt.value)} value={String(opt.value)}>
+                {opt.label}
+                {note ? `（${note}）` : ""}
+              </option>
+            );
+          })}
+        </select>
+        {selected && optNote(selected) && (
+          <p className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-neon-pink/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-neon-pink">
+            {optNote(selected)}
+          </p>
+        )}
+      </div>
     );
   }
 

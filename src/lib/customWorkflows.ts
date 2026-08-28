@@ -26,6 +26,10 @@ export type WorkflowFieldOption = {
   is_base_override?: boolean;
   // false = hidden from the rendered <select>. Undefined/true = shown.
   enabled?: boolean;
+  // Multiplicative price factor while this option is selected (e.g. 1.5).
+  // Undefined = 1.0. Every selected option's multiplier is multiplied
+  // together, then applied to (base + Σ fixed add-ons).
+  multiplier?: number;
 };
 
 export type WorkflowInputFieldSection = "main" | "advanced";
@@ -77,23 +81,58 @@ export function isTierLocked(
 }
 
 // Which Modal GPU a workflow runs on — an admin, per-workflow choice
-// (studio_custom_workflows.default_gpu_tier), independent of the user-facing
-// Standard/ULTRA selector. Passed through to the Modal request as `gpu_tier`.
-export type WorkflowGpuTier = "t4" | "l4" | "a100_40gb" | "a100_80gb" | "h100" | "b300";
+// (studio_custom_workflows.default_gpu_tier). Passed to Modal as `gpu_tier`.
+export type WorkflowGpuTier =
+  | "b300"
+  | "b200"
+  | "h200"
+  | "h100"
+  | "rtx_pro_6000"
+  | "a100_80gb"
+  | "a100_40gb"
+  | "l40s"
+  | "a10"
+  | "l4"
+  | "t4";
 
-export const WORKFLOW_GPU_TIERS: { value: WorkflowGpuTier; label: string }[] = [
-  { value: "t4", label: "T4" },
-  { value: "l4", label: "L4" },
-  { value: "a100_40gb", label: "A100 40GB" },
-  { value: "a100_80gb", label: "A100 80GB" },
-  { value: "h100", label: "H100" },
-  { value: "b300", label: "B300 (Blackwell Ultra)" },
+export type WorkflowGpuSpec = {
+  value: WorkflowGpuTier;
+  // Physical model name — also the default user-facing display name.
+  label: string;
+  vram: string;
+  hourlyUsd: number;
+};
+
+// The full GPU master, high → low. `hourlyUsd` is the raw Modal hourly cost;
+// `vram` the physical memory. Ordered so the select reads top-spec first.
+export const WORKFLOW_GPU_TIERS: WorkflowGpuSpec[] = [
+  { value: "b300", label: "NVIDIA B300", vram: "288GB HBM3e", hourlyUsd: 7.1 },
+  { value: "b200", label: "NVIDIA B200", vram: "192GB HBM3e", hourlyUsd: 6.25 },
+  { value: "h200", label: "NVIDIA H200 SXM", vram: "141GB HBM3e", hourlyUsd: 4.54 },
+  { value: "h100", label: "NVIDIA H100 SXM5", vram: "80GB HBM3", hourlyUsd: 3.95 },
+  { value: "rtx_pro_6000", label: "NVIDIA RTX PRO 6000", vram: "96GB GDDR7", hourlyUsd: 3.03 },
+  { value: "a100_80gb", label: "NVIDIA A100 80GB", vram: "80GB HBM2e", hourlyUsd: 2.5 },
+  { value: "a100_40gb", label: "NVIDIA A100 40GB", vram: "40GB HBM2", hourlyUsd: 2.1 },
+  { value: "l40s", label: "NVIDIA L40S", vram: "48GB GDDR6", hourlyUsd: 1.95 },
+  { value: "a10", label: "NVIDIA A10", vram: "24GB GDDR6", hourlyUsd: 1.1 },
+  { value: "l4", label: "NVIDIA L4", vram: "24GB GDDR6", hourlyUsd: 0.8 },
+  { value: "t4", label: "NVIDIA T4", vram: "16GB GDDR6", hourlyUsd: 0.59 },
 ];
+
+export const WORKFLOW_GPU_SPEC_BY_TIER: Record<string, WorkflowGpuSpec> = Object.fromEntries(
+  WORKFLOW_GPU_TIERS.map((s) => [s.value, s]),
+);
 
 export const DEFAULT_WORKFLOW_GPU_TIER: WorkflowGpuTier = "l4";
 
 export function isValidWorkflowGpuTier(value: unknown): value is WorkflowGpuTier {
-  return typeof value === "string" && WORKFLOW_GPU_TIERS.some((t) => t.value === value);
+  return typeof value === "string" && value in WORKFLOW_GPU_SPEC_BY_TIER;
+}
+
+// Legacy Standard/ULTRA classification for the two-tier job tracker
+// (activeGenerationJobs) — anything ≥ $3.00/h counts as "ultra".
+export function isUltraGpuTier(tier: string): boolean {
+  return (WORKFLOW_GPU_SPEC_BY_TIER[tier]?.hourlyUsd ?? 0) >= 3.0;
 }
 
 // Virtual "system" input the admin can drop onto the canvas like any other
@@ -114,6 +153,7 @@ export function defaultGpuTierOptions(): WorkflowFieldOption[] {
     label: t.label,
     value: t.value,
     credits_add: 0,
+    multiplier: 1,
     enabled: true,
   }));
 }
@@ -319,6 +359,7 @@ export function isValidInputSchema(value: unknown): value is WorkflowInputField[
         if (o.credits_add !== undefined && typeof o.credits_add !== "number") return false;
         if (o.is_base_override !== undefined && typeof o.is_base_override !== "boolean") return false;
         if (o.enabled !== undefined && typeof o.enabled !== "boolean") return false;
+        if (o.multiplier !== undefined && (typeof o.multiplier !== "number" || o.multiplier < 0)) return false;
       }
     }
   }
@@ -406,8 +447,10 @@ export type WorkflowCreditsInput = {
 export type WorkflowCreditsBreakdown = {
   // The effective base: credits_cost, or a selected is_base_override option's amount.
   base: number;
-  // Sum of every field add-on currently in effect.
+  // Sum of every field's fixed add-on currently in effect.
   addons: number;
+  // Combined product of every selected option's multiplier (1.0 = no effect).
+  multiplier: number;
   gpuTierAddon: number;
   total: number;
 };
@@ -416,16 +459,17 @@ export type WorkflowCreditsBreakdown = {
 // the Studio renderer (live total), the builder (⚡ preview), and the
 // server generate route (actual debit). Never trust a client-sent total.
 //
-//   total = base + Σ(field add-ons) + gpuTierAddon
+//   total = Math.ceil( (base + Σ fixed add-ons + gpuTierAddon) * Π multipliers )
 //
 // where `base` is credits_cost unless a selected "select" option is marked
-// is_base_override, in which case that option's credits_add becomes the base
-// (the last such option in schema order wins).
+// is_base_override, and every selected select option can also carry a
+// `multiplier` (e.g. the GPU tier) that scales the whole subtotal.
 export function workflowCreditsBreakdown(input: WorkflowCreditsInput): WorkflowCreditsBreakdown {
   const { creditsCost, inputSchema, values, gpuTierAddon = 0 } = input;
 
   let base = creditsCost;
   let addons = 0;
+  let multiplier = 1;
 
   for (const field of inputSchema) {
     const value = values[field.id];
@@ -437,6 +481,9 @@ export function workflowCreditsBreakdown(input: WorkflowCreditsInput): WorkflowC
           if (typeof opt.credits_add === "number") base = opt.credits_add;
         } else if (typeof opt.credits_add === "number") {
           addons += opt.credits_add;
+        }
+        if (typeof opt.multiplier === "number" && opt.multiplier > 0 && opt.multiplier !== 1) {
+          multiplier *= opt.multiplier;
         }
       }
       continue;
@@ -475,8 +522,9 @@ export function workflowCreditsBreakdown(input: WorkflowCreditsInput): WorkflowC
 
   base = Math.max(0, Math.round(base));
   addons = Math.round(addons);
-  const total = Math.max(0, base + addons + Math.round(gpuTierAddon));
-  return { base, addons, gpuTierAddon: Math.round(gpuTierAddon), total };
+  const gpu = Math.round(Math.max(0, gpuTierAddon));
+  const total = Math.max(0, Math.ceil((base + addons + gpu) * multiplier));
+  return { base, addons, multiplier, gpuTierAddon: gpu, total };
 }
 
 // Just the total — the common case, and the shape existing callers expect.
