@@ -1,3 +1,5 @@
+import { POLAR_PRODUCT_IDS } from "@/lib/polarProducts";
+
 export const siteConfig = {
   name: "UNDERPLAY LOGIC LAB",
   shortName: "UPLL",
@@ -67,9 +69,8 @@ export const WAN_ANIMATE_MODEL_PARAMS = "14B";
 
 export type PricingPlan = {
   id: string;
-  // Polar product id this plan checks out through (from NEXT_PUBLIC_POLAR_*
-  // env vars — inlined into the client bundle at build time). Undefined only
-  // if the env var is unset, in which case Pricing.tsx disables the button.
+  // Polar product id this plan checks out through — see POLAR_PRODUCT_IDS in
+  // src/lib/polarProducts.ts (synced from the live catalog, env-overridable).
   productId?: string;
   name: string;
   price: string;
@@ -83,7 +84,7 @@ export type PricingPlan = {
 export const pricingPlans: PricingPlan[] = [
   {
     id: "topup",
-    productId: process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_120,
+    productId: POLAR_PRODUCT_IDS.topup,
     name: "都度チャージ",
     price: "¥500",
     period: "/ 120 Credits",
@@ -97,7 +98,7 @@ export const pricingPlans: PricingPlan[] = [
   },
   {
     id: "entry",
-    productId: process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_ENTRY,
+    productId: POLAR_PRODUCT_IDS.entry,
     name: "月額エントリー",
     price: "¥980",
     period: "/ 月",
@@ -111,7 +112,7 @@ export const pricingPlans: PricingPlan[] = [
   },
   {
     id: "standard",
-    productId: process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_STANDARD,
+    productId: POLAR_PRODUCT_IDS.standard,
     name: "月額スタンダード",
     price: "¥2,480",
     period: "/ 月",
@@ -125,7 +126,7 @@ export const pricingPlans: PricingPlan[] = [
   },
   {
     id: "pro",
-    productId: process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_PRO,
+    productId: POLAR_PRODUCT_IDS.pro,
     name: "月額プロ",
     price: "¥4,980",
     period: "/ 月",
@@ -141,7 +142,7 @@ export const pricingPlans: PricingPlan[] = [
   },
   {
     id: "master",
-    productId: process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_MASTER,
+    productId: POLAR_PRODUCT_IDS.master,
     name: "月額マスター",
     price: "¥9,980",
     period: "/ 月",

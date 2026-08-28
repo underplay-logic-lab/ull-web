@@ -1,5 +1,6 @@
 import "server-only";
 import { Polar } from "@polar-sh/sdk";
+import { POLAR_PRODUCT_IDS } from "@/lib/polarProducts";
 
 const accessToken = process.env.POLAR_ACCESS_TOKEN;
 
@@ -26,30 +27,19 @@ export type PolarProductConfig = {
 };
 
 // Every Polar product this app knows how to fulfil, keyed by its Polar
-// product id. Product ids come from env so the exact same code runs against
-// Polar's sandbox and production with different catalogs; an entry is only
-// registered when its env var is actually set, so a missing/mistyped id
-// fails closed — the checkout route rejects it as an unknown product and
-// the webhook ignores its events — rather than granting the wrong thing.
-type ProductEnvSpec = {
-  env: string | undefined;
-  tier: PolarTier;
-  credits: number;
-  isSubscription: boolean;
-};
-
-const PRODUCT_ENV_SPECS: ProductEnvSpec[] = [
-  { env: process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_120, tier: "topup", credits: 120, isSubscription: false },
-  { env: process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_ENTRY, tier: "entry", credits: 300, isSubscription: true },
-  { env: process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_STANDARD, tier: "standard", credits: 1000, isSubscription: true },
-  { env: process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_PRO, tier: "pro", credits: 2500, isSubscription: true },
-  { env: process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_MASTER, tier: "master", credits: 6000, isSubscription: true },
+// product id (from POLAR_PRODUCT_IDS — synced from the live catalog, env-
+// overridable). Any id not in this map fails closed: the checkout route
+// rejects it as an unknown product and the webhook ignores its events.
+const PRODUCT_SPECS: { id: string; config: PolarProductConfig }[] = [
+  { id: POLAR_PRODUCT_IDS.topup, config: { tier: "topup", credits: 120, isSubscription: false } },
+  { id: POLAR_PRODUCT_IDS.entry, config: { tier: "entry", credits: 300, isSubscription: true } },
+  { id: POLAR_PRODUCT_IDS.standard, config: { tier: "standard", credits: 1000, isSubscription: true } },
+  { id: POLAR_PRODUCT_IDS.pro, config: { tier: "pro", credits: 2500, isSubscription: true } },
+  { id: POLAR_PRODUCT_IDS.master, config: { tier: "master", credits: 6000, isSubscription: true } },
 ];
 
 export const POLAR_PRODUCT_CONFIG: Record<string, PolarProductConfig> = Object.fromEntries(
-  PRODUCT_ENV_SPECS.filter(
-    (spec): spec is ProductEnvSpec & { env: string } => Boolean(spec.env),
-  ).map((spec) => [spec.env, { tier: spec.tier, credits: spec.credits, isSubscription: spec.isSubscription }]),
+  PRODUCT_SPECS.map((spec) => [spec.id, spec.config]),
 );
 
 export function polarProductConfig(productId: string | null | undefined): PolarProductConfig | null {

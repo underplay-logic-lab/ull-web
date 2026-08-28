@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { polar, polarProductConfig, topupDiscountForTier } from "@/lib/polar";
+import { POLAR_PRODUCT_IDS } from "@/lib/polarProducts";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { apiErrorResponse } from "@/lib/apiError";
 
@@ -46,7 +47,7 @@ export async function POST(request: Request) {
   // Defaults to the 120-credit top-up when the client sends no productId
   // (see POLAR_PRODUCT_CONFIG in src/lib/polar.ts for the full catalog:
   // topup + the four subscription tiers).
-  const productId = body.productId || process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_120;
+  const productId = body.productId || POLAR_PRODUCT_IDS.topup;
   const config = polarProductConfig(productId);
 
   if (!productId || !config) {

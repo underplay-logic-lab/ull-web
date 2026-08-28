@@ -41,8 +41,8 @@ export function Pricing() {
   const topupPrice = TOPUP_PRICE_BY_TIER[effectiveTopupTier] ?? TOPUP_FULL_PRICE;
   const topupDiscountPct = Math.round((1 - topupPrice / TOPUP_FULL_PRICE) * 100);
 
-  // All five plans check out through Polar via their NEXT_PUBLIC_POLAR_PRODUCT_ID_*
-  // product id (see src/lib/data.ts / src/lib/polar.ts). A button only stays
+  // All five plans check out through Polar via their product id (see
+  // POLAR_PRODUCT_IDS in src/lib/polarProducts.ts). A button only stays
   // disabled when that id is missing.
   const isPurchasable = (plan: PricingPlan) => Boolean(plan.productId);
   const isCurrentPlan = (plan: PricingPlan) =>
