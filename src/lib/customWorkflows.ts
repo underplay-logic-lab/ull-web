@@ -24,6 +24,8 @@ export type WorkflowFieldOption = {
   value: string | number;
   credits_add?: number;
   is_base_override?: boolean;
+  // false = hidden from the rendered <select>. Undefined/true = shown.
+  enabled?: boolean;
 };
 
 export type WorkflowInputFieldSection = "main" | "advanced";
@@ -92,6 +94,41 @@ export const DEFAULT_WORKFLOW_GPU_TIER: WorkflowGpuTier = "l4";
 
 export function isValidWorkflowGpuTier(value: unknown): value is WorkflowGpuTier {
   return typeof value === "string" && WORKFLOW_GPU_TIERS.some((t) => t.value === value);
+}
+
+// Virtual "system" input the admin can drop onto the canvas like any other
+// field: a GPU-tier <select> the user picks at generation time. It has no
+// ComfyUI node binding (node_id/field are ""), so validators and the graph
+// patcher must treat it specially.
+export const SYSTEM_FIELD_GPU_TIER = "__gpu_tier__";
+
+export function isSystemField(id: string): boolean {
+  return id === SYSTEM_FIELD_GPU_TIER;
+}
+
+// One option per hardware tier, all enabled with no add-on — the admin edits
+// label / enabled / credits_add per tier in the inspector. `value` stays the
+// tier id so the server can resolve the choice.
+export function defaultGpuTierOptions(): WorkflowFieldOption[] {
+  return WORKFLOW_GPU_TIERS.map((t) => ({
+    label: t.label,
+    value: t.value,
+    credits_add: 0,
+    enabled: true,
+  }));
+}
+
+export function makeGpuTierField(): WorkflowInputField {
+  return {
+    id: SYSTEM_FIELD_GPU_TIER,
+    label: "⚡ 実行GPU",
+    type: "select",
+    node_id: "",
+    field: "",
+    default: DEFAULT_WORKFLOW_GPU_TIER,
+    options: defaultGpuTierOptions(),
+    colSpan: 12,
+  };
 }
 
 // Named layout section on a workflow (studio_custom_workflows.sections) —
@@ -226,8 +263,10 @@ export function isValidInputSchema(value: unknown): value is WorkflowInputField[
     if (typeof f.type !== "string" || !WORKFLOW_INPUT_FIELD_TYPES.includes(f.type as WorkflowInputFieldType)) {
       return false;
     }
-    if (typeof f.node_id !== "string" || !f.node_id.trim()) return false;
-    if (typeof f.field !== "string" || !f.field.trim()) return false;
+    // Virtual system fields (e.g. __gpu_tier__) have no ComfyUI node binding.
+    const isSystem = isSystemField(f.id);
+    if (typeof f.node_id !== "string" || (!isSystem && !f.node_id.trim())) return false;
+    if (typeof f.field !== "string" || (!isSystem && !f.field.trim())) return false;
     if (f.min !== undefined && typeof f.min !== "number") return false;
     if (f.max !== undefined && typeof f.max !== "number") return false;
     if (f.step !== undefined && typeof f.step !== "number") return false;
@@ -279,6 +318,7 @@ export function isValidInputSchema(value: unknown): value is WorkflowInputField[
         if (typeof o.value !== "string" && typeof o.value !== "number") return false;
         if (o.credits_add !== undefined && typeof o.credits_add !== "number") return false;
         if (o.is_base_override !== undefined && typeof o.is_base_override !== "boolean") return false;
+        if (o.enabled !== undefined && typeof o.enabled !== "boolean") return false;
       }
     }
   }

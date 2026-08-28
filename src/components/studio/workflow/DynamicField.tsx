@@ -36,7 +36,8 @@ export function defaultValueFor(field: WorkflowInputField): FieldValue {
   }
   if (field.type === "select") {
     if (field.default !== undefined && typeof field.default !== "boolean") return String(field.default);
-    return field.options?.[0] !== undefined ? String(field.options[0].value) : "";
+    const first = field.options?.find((o) => o.enabled !== false);
+    return first !== undefined ? String(first.value) : "";
   }
   return typeof field.default === "string" ? field.default : "";
 }
@@ -347,7 +348,7 @@ export const DynamicField = memo(function DynamicField({
   }
 
   if (field.type === "select") {
-    const options = field.options ?? [];
+    const options = (field.options ?? []).filter((o) => o.enabled !== false);
     const current = value === undefined || value === null ? "" : String(value);
     return (
       <select

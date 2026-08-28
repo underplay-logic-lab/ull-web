@@ -8,6 +8,7 @@ import { downloadJson } from "@/lib/downloadJson";
 import {
   WORKFLOW_INPUT_FIELD_TYPES,
   WORKFLOW_INPUT_FIELD_SECTIONS,
+  SYSTEM_FIELD_GPU_TIER,
   isValidWorkflowJson,
   type WorkflowInputField,
   type WorkflowInputFieldType,
@@ -570,7 +571,8 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
     }
 
     for (const f of fields) {
-      if (!f.id.trim() || !f.label.trim() || !f.node_id.trim() || !f.field.trim()) {
+      const isSystem = f.id.trim() === SYSTEM_FIELD_GPU_TIER;
+      if (!f.id.trim() || !f.label.trim() || (!isSystem && (!f.node_id.trim() || !f.field.trim()))) {
         setError("入力パラメータはパラメータ名・ラベル・node_id・fieldをすべて入力してください。");
         return;
       }

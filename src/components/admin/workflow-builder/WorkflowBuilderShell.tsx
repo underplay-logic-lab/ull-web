@@ -5,9 +5,11 @@ import Link from "next/link";
 import { ArrowLeft, Eye, Loader2, Monitor, Save, Smartphone, Zap } from "lucide-react";
 import {
   DEFAULT_WORKFLOW_GPU_TIER,
+  SYSTEM_FIELD_GPU_TIER,
   WORKFLOW_FIELD_TIERS,
   WORKFLOW_FIELD_TIER_LABELS,
   WORKFLOW_GPU_TIERS,
+  makeGpuTierField,
   workflowCreditsBreakdown,
   type StudioCustomWorkflow,
   type WorkflowGpuTier,
@@ -96,6 +98,21 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
     setDirty(true);
     setNotice(null);
   }, []);
+
+  const hasGpuTierField = useMemo(
+    () => fields.some((f) => f.id === SYSTEM_FIELD_GPU_TIER),
+    [fields],
+  );
+
+  const addGpuTierField = useCallback(() => {
+    setFields((prev) => {
+      if (prev.some((f) => f.id === SYSTEM_FIELD_GPU_TIER)) return prev;
+      const next = renumberOrder([...prev, makeGpuTierField()]);
+      setSelectedId(SYSTEM_FIELD_GPU_TIER);
+      return next;
+    });
+    touch();
+  }, [touch]);
 
   const handleExpose = useCallback(
     (node: WorkflowNodeInfo, fieldName: string) => {
@@ -391,7 +408,13 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
 
       {/* 3-pane workstation: 25 / 45 / 30 */}
       <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: "25% 45% 30%" }}>
-        <NodeTreePane nodes={nodes} exposedKeys={exposedKeys} onExpose={handleExpose} />
+        <NodeTreePane
+          nodes={nodes}
+          exposedKeys={exposedKeys}
+          onExpose={handleExpose}
+          hasGpuTierField={hasGpuTierField}
+          onAddGpuTierField={addGpuTierField}
+        />
         <LiveCanvasPane
           fields={fields}
           sections={sections}

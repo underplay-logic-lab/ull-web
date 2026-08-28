@@ -6,6 +6,7 @@ import {
   calculateTotalWorkflowCredits,
   isTierLocked,
   isValidWorkflowGpuTier,
+  SYSTEM_FIELD_GPU_TIER,
   type WorkflowGpuTier,
   type WorkflowInputField,
   type WorkflowSection,
@@ -163,10 +164,14 @@ export async function POST(request: Request) {
     .map((f) => `${f.label}: ${values[f.id] as string}`)
     .join("\n");
 
-  // GPU: a user-form field named `gpuTier` / `gpu_tier` wins if the workflow
-  // exposes one and its value is valid; otherwise the workflow's saved
-  // default_gpu_tier is used. Forwarded to Modal as `gpu_tier`.
-  const formGpu = formData.get("field:gpuTier") ?? formData.get("field:gpu_tier");
+  // GPU: the virtual __gpu_tier__ select (or a legacy gpuTier/gpu_tier form
+  // field) wins if the workflow exposes one and its value is valid;
+  // otherwise the workflow's saved default_gpu_tier is used. Forwarded to
+  // Modal as `gpu_tier`.
+  const formGpu =
+    formData.get(fieldFormKey(SYSTEM_FIELD_GPU_TIER)) ??
+    formData.get("field:gpuTier") ??
+    formData.get("field:gpu_tier");
   const effectiveGpuTier: WorkflowGpuTier = isValidWorkflowGpuTier(formGpu)
     ? formGpu
     : ((workflowRow.default_gpu_tier as WorkflowGpuTier | null) ?? "l4");

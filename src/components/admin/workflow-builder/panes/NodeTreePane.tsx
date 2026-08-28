@@ -1,21 +1,26 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronDown, Plus, Search } from "lucide-react";
+import { ChevronDown, Cpu, Plus, Search } from "lucide-react";
 import type { WorkflowNodeInfo } from "@/lib/workflowGraph";
 import { isLinkValue } from "@/lib/workflowGraph";
 
-// Left pane (25%): every node parsed from workflow_json, searchable, with a
-// "+ UI に公開" button next to each literal (non-wired) input.
+// Left pane (25%): a "system inputs" block (GPU selector), then every node
+// parsed from workflow_json, searchable, with a "+ UI に公開" button next to
+// each literal (non-wired) input.
 export function NodeTreePane({
   nodes,
   exposedKeys,
   onExpose,
+  hasGpuTierField,
+  onAddGpuTierField,
 }: {
   nodes: WorkflowNodeInfo[];
   // `${nodeId}:${fieldName}` for every input already mapped by an input_schema entry.
   exposedKeys: Set<string>;
   onExpose: (node: WorkflowNodeInfo, fieldName: string) => void;
+  hasGpuTierField: boolean;
+  onAddGpuTierField: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [openNodeId, setOpenNodeId] = useState<string | null>(null);
@@ -33,6 +38,27 @@ export function NodeTreePane({
 
   return (
     <div className="flex h-full flex-col border-r border-border bg-surface/30">
+      <div className="border-b border-border p-3">
+        <h2 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-neon-pink">
+          <Cpu size={12} />
+          システム入力
+        </h2>
+        <button
+          type="button"
+          disabled={hasGpuTierField}
+          onClick={onAddGpuTierField}
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-neon-pink/40 bg-neon-pink/10 px-2 py-1.5 text-[11px] font-medium text-neon-pink transition-colors hover:bg-neon-pink/20 disabled:cursor-not-allowed disabled:border-border disabled:bg-transparent disabled:text-muted"
+        >
+          {hasGpuTierField ? (
+            "⚡ GPU選択セレクター（配置済み）"
+          ) : (
+            <>
+              <Plus size={11} />⚡ GPU選択セレクターを配置
+            </>
+          )}
+        </button>
+      </div>
+
       <div className="border-b border-border p-3">
         <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neon-violet">
           ノードツリー（{nodes.length}）

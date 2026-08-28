@@ -2,6 +2,8 @@
 
 import { Trash2 } from "lucide-react";
 import {
+  SYSTEM_FIELD_GPU_TIER,
+  WORKFLOW_GPU_TIERS,
   WORKFLOW_INPUT_FIELD_TYPES,
   WORKFLOW_FIELD_TIERS,
   type WorkflowFieldColSpan,
@@ -75,6 +77,24 @@ export function ParameterInspectorPane({
     onChange({ options: [...options, { label: `選択肢${options.length + 1}`, value: `opt${options.length + 1}` }] });
   const removeOption = (i: number) => onChange({ options: options.filter((_, idx) => idx !== i) });
 
+  const isGpuField = field.id === SYSTEM_FIELD_GPU_TIER;
+  const gpuOptionRows = WORKFLOW_GPU_TIERS.map((t) => ({ value: t.value, defaultLabel: t.label }));
+  const setGpuOption = (val: string, patch: Partial<WorkflowFieldOption>) => {
+    const existing = options.find((o) => String(o.value) === val);
+    const next = existing
+      ? options.map((o) => (String(o.value) === val ? { ...o, ...patch } : o))
+      : [
+          ...options,
+          {
+            label: WORKFLOW_GPU_TIERS.find((t) => t.value === val)?.label ?? val,
+            value: val,
+            enabled: true,
+            ...patch,
+          },
+        ];
+    onChange({ options: next });
+  };
+
   return (
     <div className="flex h-full flex-col border-l border-border bg-surface/30">
       <div className="flex items-center justify-between border-b border-border p-3">
@@ -90,63 +110,121 @@ export function ParameterInspectorPane({
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto p-3">
+        {isGpuField && (
+          <div className="rounded-lg border border-neon-pink/30 bg-neon-pink/5 p-2.5 text-[10px] text-neon-pink">
+            ⚡ システムフィールド（GPU選択セレクター）。位置・横幅・セクション・MinTier
+            と各GPUの表示名／有効化／加算クレジットを設定できます。
+          </div>
+        )}
         <div className="space-y-2">
           <div>
             <label className={labelCls}>ラベル</label>
             <input value={field.label} onChange={(e) => onChange({ label: e.target.value })} className={inputCls} />
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className={labelCls}>パラメータ名 (id)</label>
-              <input
-                value={field.id}
-                onChange={(e) => onChange({ id: e.target.value })}
-                className={`${inputCls} font-mono`}
-              />
-            </div>
-            <div>
-              <label className={labelCls}>タイプ</label>
-              <select
-                value={field.type}
-                onChange={(e) => onChange({ type: e.target.value as WorkflowInputFieldType })}
-                className={inputCls}
-              >
-                {WORKFLOW_INPUT_FIELD_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {TYPE_LABEL[t]}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className={`${labelCls} flex items-center gap-1`}>
-                node_id <span className="rounded bg-border px-1 text-[8px] text-muted">🔒 自動</span>
-              </label>
-              <input
-                value={field.node_id}
-                readOnly
-                disabled
-                className={`${inputCls} cursor-not-allowed font-mono opacity-60`}
-              />
-            </div>
-            <div>
-              <label className={`${labelCls} flex items-center gap-1`}>
-                field <span className="rounded bg-border px-1 text-[8px] text-muted">🔒 自動</span>
-              </label>
-              <input
-                value={field.field}
-                readOnly
-                disabled
-                className={`${inputCls} cursor-not-allowed font-mono opacity-60`}
-              />
-            </div>
-          </div>
-          <p className="text-[9px] text-muted">
-            node_id / field は左ペインの「UIに公開」からのみバインドされます（手動変更による ComfyUI グラフ破壊を防止）。
-          </p>
+          {!isGpuField && (
+            <>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className={labelCls}>パラメータ名 (id)</label>
+                  <input
+                    value={field.id}
+                    onChange={(e) => onChange({ id: e.target.value })}
+                    className={`${inputCls} font-mono`}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>タイプ</label>
+                  <select
+                    value={field.type}
+                    onChange={(e) => onChange({ type: e.target.value as WorkflowInputFieldType })}
+                    className={inputCls}
+                  >
+                    {WORKFLOW_INPUT_FIELD_TYPES.map((t) => (
+                      <option key={t} value={t}>
+                        {TYPE_LABEL[t]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className={`${labelCls} flex items-center gap-1`}>
+                    node_id <span className="rounded bg-border px-1 text-[8px] text-muted">🔒 自動</span>
+                  </label>
+                  <input
+                    value={field.node_id}
+                    readOnly
+                    disabled
+                    className={`${inputCls} cursor-not-allowed font-mono opacity-60`}
+                  />
+                </div>
+                <div>
+                  <label className={`${labelCls} flex items-center gap-1`}>
+                    field <span className="rounded bg-border px-1 text-[8px] text-muted">🔒 自動</span>
+                  </label>
+                  <input
+                    value={field.field}
+                    readOnly
+                    disabled
+                    className={`${inputCls} cursor-not-allowed font-mono opacity-60`}
+                  />
+                </div>
+              </div>
+              <p className="text-[9px] text-muted">
+                node_id / field は左ペインの「UIに公開」からのみバインドされます（手動変更による ComfyUI グラフ破壊を防止）。
+              </p>
+            </>
+          )}
         </div>
+
+        {/* GPU tier option editor */}
+        {isGpuField && (
+          <div className="space-y-1.5 rounded-lg border border-neon-pink/30 bg-neon-pink/5 p-2.5">
+            <p className="text-[10px] font-semibold text-neon-pink">⚡ GPU選択肢 ＆ 加算クレジット</p>
+            {gpuOptionRows.map((row) => {
+              const opt = options.find((o) => String(o.value) === row.value);
+              const enabled = opt ? opt.enabled !== false : true;
+              return (
+                <div key={row.value} className="rounded-md border border-border bg-background p-1.5">
+                  <div className="flex items-center gap-2">
+                    <label className="flex shrink-0 items-center gap-1 text-[9px] text-muted">
+                      <input
+                        type="checkbox"
+                        checked={enabled}
+                        onChange={(e) => setGpuOption(row.value, { enabled: e.target.checked })}
+                        className="h-3 w-3 accent-neon-pink"
+                      />
+                      有効
+                    </label>
+                    <input
+                      value={opt?.label ?? row.defaultLabel}
+                      onChange={(e) => setGpuOption(row.value, { label: e.target.value })}
+                      placeholder={row.defaultLabel}
+                      className={`${inputCls} flex-1`}
+                    />
+                    <div className="flex shrink-0 items-center gap-1">
+                      <input
+                        type="number"
+                        step="any"
+                        value={opt?.credits_add ?? ""}
+                        onChange={(e) =>
+                          setGpuOption(row.value, {
+                            credits_add: e.target.value === "" ? undefined : Number(e.target.value),
+                          })
+                        }
+                        placeholder="加算C"
+                        className={`${inputCls} w-16`}
+                      />
+                      <span className="text-[9px] text-muted">C</span>
+                    </div>
+                  </div>
+                  <p className="mt-0.5 font-mono text-[8px] text-muted">value: {row.value}</p>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         {/* Field height */}
         {field.type === "text" && (
@@ -322,7 +400,8 @@ export function ParameterInspectorPane({
           </div>
         )}
 
-        {/* ⚡ Dynamic credit pricing */}
+        {/* ⚡ Dynamic credit pricing (the GPU field uses its own editor above) */}
+        {!isGpuField && (
         <div className="space-y-2 rounded-lg border border-neon-pink/30 bg-neon-pink/5 p-2.5">
           <p className="text-[10px] font-semibold text-neon-pink">⚡ 動的クレジット課金設定</p>
 
@@ -393,7 +472,7 @@ export function ParameterInspectorPane({
             </div>
           )}
 
-          {field.type === "select" && (
+          {field.type === "select" && !isGpuField && (
             <div className="space-y-1.5">
               <label className={labelCls}>選択肢と各オプションの加算クレジット</label>
               {options.map((opt, i) => (
@@ -453,6 +532,7 @@ export function ParameterInspectorPane({
             </div>
           )}
         </div>
+        )}
       </div>
     </div>
   );
