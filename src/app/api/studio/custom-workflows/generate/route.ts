@@ -7,6 +7,7 @@ import {
   isTierLocked,
   isUltraGpuTier,
   isValidWorkflowGpuTier,
+  resolveGpuFallbackChain,
   SYSTEM_FIELD_GPU_TIER,
   type WorkflowGpuTier,
   type WorkflowInputField,
@@ -82,7 +83,7 @@ export async function POST(request: Request) {
   const { data: workflowRow, error: workflowError } = await supabaseAdmin
     .from("studio_custom_workflows")
     .select(
-      "id, slug, workflow_json, input_schema, sections, credits_cost, disable_smart_memory, cpu_vae, gpu_only, use_pytorch_cross_attention, high_vram, extra_args, output_node_id, default_gpu_tier",
+      "id, slug, workflow_json, input_schema, sections, credits_cost, disable_smart_memory, cpu_vae, gpu_only, use_pytorch_cross_attention, high_vram, extra_args, output_node_id, default_gpu_tier, gpu_fallback_list",
     )
     .eq("slug", slug)
     .eq("is_active", true)
@@ -179,6 +180,14 @@ export async function POST(request: Request) {
   // Compat value for the standard/ultra-only job tracker.
   const legacyTier: GpuTier = isUltraGpuTier(effectiveGpuTier) ? "ultra" : "standard";
 
+  // Priority-ordered GPU chain: the effective tier first, then the
+  // workflow's configured fallbacks. Modal hops down this list when the
+  // preferred GPU is congested / out of capacity.
+  const gpuFallbackChain = resolveGpuFallbackChain(
+    effectiveGpuTier,
+    workflowRow.gpu_fallback_list,
+  );
+
   // Server-side re-derivation of the price via the shared engine — the
   // client's displayed total is never trusted.
   const generationCost = calculateTotalWorkflowCredits({
@@ -240,6 +249,7 @@ export async function POST(request: Request) {
       workflow,
       files,
       gpuTier: effectiveGpuTier,
+      gpuFallbackChain,
       execConfig: {
         disable_smart_memory: workflowRow.disable_smart_memory as boolean,
         cpu_vae: workflowRow.cpu_vae as boolean,

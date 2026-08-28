@@ -135,6 +135,36 @@ export function isUltraGpuTier(tier: string): boolean {
   return (WORKFLOW_GPU_SPEC_BY_TIER[tier]?.hourlyUsd ?? 0) >= 3.0;
 }
 
+// Validates studio_custom_workflows.gpu_fallback_list — a priority-ordered
+// array of GPU tier ids. Empty array is valid (the default). Non-arrays,
+// unknown tier ids, and duplicates are rejected.
+export function isValidWorkflowGpuFallbackList(value: unknown): value is WorkflowGpuTier[] {
+  if (!Array.isArray(value)) return false;
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (!isValidWorkflowGpuTier(item)) return false;
+    if (seen.has(item)) return false;
+    seen.add(item);
+  }
+  return true;
+}
+
+// Normalises a raw (possibly untrusted) fallback list into a clean,
+// deduped chain of valid tier ids, always led by `primary`. Used by the
+// generate route to build the ordered list sent to Modal.
+export function resolveGpuFallbackChain(
+  primary: WorkflowGpuTier,
+  rawList: unknown,
+): WorkflowGpuTier[] {
+  const chain: WorkflowGpuTier[] = [primary];
+  if (Array.isArray(rawList)) {
+    for (const item of rawList) {
+      if (isValidWorkflowGpuTier(item) && !chain.includes(item)) chain.push(item);
+    }
+  }
+  return chain;
+}
+
 // Virtual "system" input the admin can drop onto the canvas like any other
 // field: a GPU-tier <select> the user picks at generation time. It has no
 // ComfyUI node binding (node_id/field are ""), so validators and the graph
@@ -244,6 +274,10 @@ export type StudioCustomWorkflow = {
   // Free-text badge shown on the Studio card/header. Empty string = hidden.
   // Absent on rows read before the 20260843000000 migration ran.
   gpu_badge_label?: string;
+  // Priority-ordered GPU fallback chain (descending priority). Forwarded to
+  // Modal so the scheduler can hop past a congested GPU. Empty = no
+  // fallback. Absent on rows read before the 20260844000000 migration ran.
+  gpu_fallback_list?: WorkflowGpuTier[];
   credits_cost: number;
   priority: number;
   is_active: boolean;

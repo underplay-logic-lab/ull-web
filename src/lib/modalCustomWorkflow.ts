@@ -34,6 +34,10 @@ export type RunCustomWorkflowParams = {
   // default_gpu_tier, or a user-form override if the workflow exposes one.
   // Forwarded to Modal as `gpu_tier`.
   gpuTier?: WorkflowGpuTier;
+  // Priority-ordered GPU fallback chain (the primary tier first, then the
+  // workflow's configured fallbacks). Forwarded to Modal as
+  // `gpu_fallback_list` so its scheduler can hop past a congested GPU.
+  gpuFallbackChain?: WorkflowGpuTier[];
 };
 
 // Same cold-start budget as generateWithModal (modalWanAnimate.ts) — a
@@ -68,6 +72,10 @@ export async function runCustomWorkflowOnModal(params: RunCustomWorkflowParams):
       save_to_volume: params.saveToVolume,
       output_node_id: params.outputNodeId,
       gpu_tier: params.gpuTier ?? DEFAULT_WORKFLOW_GPU_TIER,
+      gpu_fallback_list:
+        params.gpuFallbackChain && params.gpuFallbackChain.length > 0
+          ? params.gpuFallbackChain
+          : [params.gpuTier ?? DEFAULT_WORKFLOW_GPU_TIER],
     }),
     signal: AbortSignal.timeout(MODAL_TIMEOUT_MS),
   });

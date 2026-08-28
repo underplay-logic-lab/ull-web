@@ -30,6 +30,7 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
   const [isActive, setIsActive] = useState(true);
   const [creditsCost, setCreditsCost] = useState(0);
   const [gpuTier, setGpuTier] = useState<WorkflowGpuTier>(DEFAULT_WORKFLOW_GPU_TIER);
+  const [gpuFallbackList, setGpuFallbackList] = useState<WorkflowGpuTier[]>([]);
   const [badgeLabel, setBadgeLabel] = useState("");
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -58,6 +59,11 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
         setIsActive(row.is_active);
         setCreditsCost(row.credits_cost);
         setGpuTier(row.default_gpu_tier ?? DEFAULT_WORKFLOW_GPU_TIER);
+        setGpuFallbackList(
+          Array.isArray(row.gpu_fallback_list)
+            ? (row.gpu_fallback_list as WorkflowGpuTier[])
+            : [],
+        );
         setBadgeLabel(row.gpu_badge_label ?? "");
       } catch (err) {
         setError(err instanceof Error ? err.message : "取得に失敗しました。");
@@ -220,6 +226,7 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
           is_active: isActive,
           credits_cost: creditsCost,
           default_gpu_tier: gpuTier,
+          gpu_fallback_list: gpuFallbackList,
           gpu_badge_label: badgeLabel,
         }),
       });
@@ -434,7 +441,12 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
         <ParameterInspectorPane
           field={selectedField}
           sections={sections}
+          gpuFallbackList={gpuFallbackList}
           onChange={(patch) => selectedField && patchField(selectedField.id, patch)}
+          onGpuFallbackChange={(next) => {
+            setGpuFallbackList(next);
+            touch();
+          }}
           onRemove={() => selectedField && removeField(selectedField.id)}
         />
       </div>

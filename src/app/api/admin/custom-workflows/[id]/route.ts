@@ -6,6 +6,7 @@ import {
   isValidWorkflowJson,
   isValidWorkflowSections,
   isValidWorkflowGpuTier,
+  isValidWorkflowGpuFallbackList,
 } from "@/lib/customWorkflows";
 
 type RouteParams = { params: Promise<{ id: string }> };
@@ -75,6 +76,12 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   }
   if (typeof body.gpu_badge_label === "string") {
     update.gpu_badge_label = body.gpu_badge_label.trim().slice(0, 60);
+  }
+  if (body.gpu_fallback_list !== undefined) {
+    if (!isValidWorkflowGpuFallbackList(body.gpu_fallback_list)) {
+      return NextResponse.json({ error: "gpu_fallback_list の形式が不正です。" }, { status: 400 });
+    }
+    update.gpu_fallback_list = body.gpu_fallback_list;
   }
   if (typeof body.credits_cost === "number") update.credits_cost = body.credits_cost;
   if (typeof body.priority === "number") update.priority = body.priority;

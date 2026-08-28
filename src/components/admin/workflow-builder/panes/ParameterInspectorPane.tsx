@@ -1,6 +1,6 @@
 "use client";
 
-import { Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Trash2 } from "lucide-react";
 import {
   SYSTEM_FIELD_GPU_TIER,
   WORKFLOW_GPU_TIERS,
@@ -10,6 +10,7 @@ import {
   type WorkflowFieldColSpan,
   type WorkflowFieldOption,
   type WorkflowFieldTier,
+  type WorkflowGpuTier,
   type WorkflowInputField,
   type WorkflowInputFieldType,
   type WorkflowSection,
@@ -50,22 +51,130 @@ function numPatch(
   return { [key]: Number.isNaN(n) ? undefined : n };
 }
 
+// Workflow-level GPU fallback chain editor — a priority-ordered list Modal
+// walks down when the preferred GPU is congested. Rendered whether or not a
+// field is selected (it's workflow config, not field config).
+function GpuFallbackChainEditor({
+  list,
+  onChange,
+}: {
+  list: WorkflowGpuTier[];
+  onChange: (next: WorkflowGpuTier[]) => void;
+}) {
+  const move = (i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (j < 0 || j >= list.length) return;
+    const next = [...list];
+    [next[i], next[j]] = [next[j], next[i]];
+    onChange(next);
+  };
+  const remove = (i: number) => onChange(list.filter((_, idx) => idx !== i));
+  const add = (tier: WorkflowGpuTier) => {
+    if (list.includes(tier)) return;
+    onChange([...list, tier]);
+  };
+  const remaining = WORKFLOW_GPU_TIERS.filter((t) => !list.includes(t.value));
+
+  return (
+    <div className="space-y-1.5 rounded-lg border border-neon-violet/30 bg-neon-violet/5 p-2.5">
+      <p className="text-[10px] font-semibold text-neon-violet">⚡ GPU フォールバックチェーン（混雑回避）</p>
+      <p className="text-[8px] text-muted">
+        優先順位順（上ほど優先）。先頭の GPU が在庫切れ・混雑時に、次の GPU へ自動でフォールバックします。
+        空の場合はワークフロー既定の GPU のみで実行します。
+      </p>
+      {list.length === 0 && (
+        <p className="rounded bg-border/40 px-2 py-1.5 text-[9px] text-muted">未設定（フォールバックなし）</p>
+      )}
+      {list.map((tier, i) => {
+        const spec = WORKFLOW_GPU_SPEC_BY_TIER[tier];
+        return (
+          <div key={tier} className="flex items-center gap-1.5 rounded-md border border-border bg-background p-1.5">
+            <span className="w-4 shrink-0 text-center font-mono text-[9px] text-neon-violet">{i + 1}</span>
+            <span className="flex-1 truncate text-[10px] text-foreground">
+              {spec?.label ?? tier}
+              <span className="ml-1 font-mono text-[8px] text-muted">
+                {spec ? `${spec.vram} / $${spec.hourlyUsd.toFixed(2)}/h` : ""}
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={() => move(i, -1)}
+              disabled={i === 0}
+              className="shrink-0 text-muted transition-colors hover:text-foreground disabled:opacity-30"
+              title="優先度を上げる"
+            >
+              <ChevronUp size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={() => move(i, 1)}
+              disabled={i === list.length - 1}
+              className="shrink-0 text-muted transition-colors hover:text-foreground disabled:opacity-30"
+              title="優先度を下げる"
+            >
+              <ChevronDown size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={() => remove(i)}
+              className="shrink-0 text-muted transition-colors hover:text-red-400"
+              title="チェーンから外す"
+            >
+              <Trash2 size={11} />
+            </button>
+          </div>
+        );
+      })}
+      {remaining.length > 0 && (
+        <select
+          value=""
+          onChange={(e) => {
+            if (e.target.value) add(e.target.value as WorkflowGpuTier);
+          }}
+          className={`${inputCls} mt-1`}
+        >
+          <option value="">＋ GPU をチェーンに追加…</option>
+          {remaining.map((t) => (
+            <option key={t.value} value={t.value}>
+              {t.label}（{t.vram} / ${t.hourlyUsd.toFixed(2)}/h）
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+}
+
 // Right pane (30%): full property + dynamic-pricing editor for the selected field.
 export function ParameterInspectorPane({
   field,
   sections,
+  gpuFallbackList = [],
   onChange,
+  onGpuFallbackChange,
   onRemove,
 }: {
   field: WorkflowInputField | null;
   sections: WorkflowSection[];
+  gpuFallbackList?: WorkflowGpuTier[];
   onChange: (patch: Partial<WorkflowInputField>) => void;
+  onGpuFallbackChange?: (next: WorkflowGpuTier[]) => void;
   onRemove: () => void;
 }) {
   if (!field) {
     return (
-      <div className="flex h-full items-center justify-center border-l border-border bg-surface/30 p-6 text-center text-[11px] text-muted">
-        中央のキャンバスでフィールドを選択すると、ここで詳細を編集できます。
+      <div className="flex h-full flex-col border-l border-border bg-surface/30">
+        <div className="border-b border-border p-3">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-neon-violet">ワークフロー設定</h2>
+        </div>
+        <div className="flex-1 space-y-4 overflow-y-auto p-3">
+          <p className="rounded-lg border border-dashed border-border p-3 text-center text-[11px] text-muted">
+            中央のキャンバスでフィールドを選択すると、ここで詳細を編集できます。
+          </p>
+          {onGpuFallbackChange && (
+            <GpuFallbackChainEditor list={gpuFallbackList} onChange={onGpuFallbackChange} />
+          )}
+        </div>
       </div>
     );
   }
@@ -253,6 +362,11 @@ export function ParameterInspectorPane({
               );
             })}
           </div>
+        )}
+
+        {/* GPU fallback chain — workflow-level, shown alongside the GPU field editor */}
+        {isGpuField && onGpuFallbackChange && (
+          <GpuFallbackChainEditor list={gpuFallbackList} onChange={onGpuFallbackChange} />
         )}
 
         {/* Field height */}
