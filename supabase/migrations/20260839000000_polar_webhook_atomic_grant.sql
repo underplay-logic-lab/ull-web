@@ -1,20 +1,21 @@
 -- Emergency hardening for the Polar order.paid webhook
--- (src/app/api/webhooks/polar/route.ts). Two problems this fixes:
+-- (src/app/api/webhooks/polar/route.ts).
 --
---   1. The prior flow issued three separate writes from the route — INSERT
---      into polar_processed_orders (the idempotency claim), the
---      increment_profile_credits RPC, and an UPDATE of subscription_tier. If
---      the claim succeeded but a later step failed, the order was recorded as
---      "processed" while the credits were never granted, and every Polar
---      retry then short-circuited on the claim. grant_polar_order_credits()
---      below does the claim + credit grant + tier update in ONE function
---      (one transaction): all of it commits, or none of it does.
+--   1. The prior flow issued three separate writes from the route (the
+--      idempotency claim INSERT, the credit RPC, and a tier UPDATE). A
+--      failure after the claim left the order recorded as processed but
+--      uncredited, and Polar retries then no-opped. grant_polar_order_credits()
+--      does the claim + credit grant + tier update in one function / one
+--      transaction: all of it commits or none of it does.
 --
 --   2. This file is idempotent and self-contained so it can be pasted
---      straight into the Supabase SQL Editor on an environment where the
---      earlier Polar migrations (20260836000000_polar_payments.sql,
---      20260838000000_polar_subscription_credits.sql) were never applied —
---      a missing table / function was the actual cause of the 500s.
+--      straight into the Supabase SQL Editor where the earlier Polar
+--      migrations were never applied (a missing table / function was the
+--      actual cause of the webhook 500s).
+--
+-- Function bodies use the $polar$ dollar-quote tag (not $$) and carry no
+-- inline comments, so nothing can prematurely close the body or confuse the
+-- PL/pgSQL statement scanner.
 
 -- ---------------------------------------------------------------------------
 -- Idempotency ledger for processed Polar orders
@@ -30,6 +31,7 @@ alter table public.polar_processed_orders enable row level security;
 
 drop policy if exists "Service role has full access to polar_processed_orders"
   on public.polar_processed_orders;
+
 create policy "Service role has full access to polar_processed_orders"
   on public.polar_processed_orders
   for all
@@ -39,27 +41,30 @@ create policy "Service role has full access to polar_processed_orders"
 
 -- ---------------------------------------------------------------------------
 -- increment_profile_credits: kept for backward compatibility. Adds credits
--- and rolls the 180-day validity window forward in one atomic UPDATE.
+-- and rolls the 180-day validity window forward.
 -- ---------------------------------------------------------------------------
 create or replace function public.increment_profile_credits(p_user_id uuid, p_amount integer)
 returns integer
 language plpgsql
 security definer
 set search_path = public
-as $$
+as $polar$
 declare
+  v_expiry timestamptz;
   v_new_credits integer;
 begin
+  v_expiry := now() + interval '180 days';
+
   update public.profiles
-  set credits = credits + p_amount,
-      credits_expire_at = now() + interval '180 days',
-      updated_at = now()
-  where id = p_user_id
+     set credits = credits + p_amount,
+         credits_expire_at = v_expiry,
+         updated_at = now()
+   where id = p_user_id
   returning credits into v_new_credits;
 
   return v_new_credits;
 end;
-$$;
+$polar$;
 
 revoke all on function public.increment_profile_credits(uuid, integer) from public;
 grant execute on function public.increment_profile_credits(uuid, integer) to service_role;
@@ -84,40 +89,49 @@ returns jsonb
 language plpgsql
 security definer
 set search_path = public
-as $$
+as $polar$
 declare
+  v_expiry timestamptz;
   v_claimed integer;
   v_new_credits integer;
 begin
   insert into public.polar_processed_orders (order_id, user_id, credits_granted)
   values (p_order_id, p_user_id, p_amount)
-  on conflict (order_id) do nothing;
+  on conflict (order_id) do nothing
+  returning 1 into v_claimed;
 
-  get diagnostics v_claimed = row_count;
-
-  if v_claimed = 0 then
+  if v_claimed is null then
     return jsonb_build_object('status', 'already_processed');
   end if;
 
-  update public.profiles
-  set credits = credits + p_amount,
-      credits_expire_at = now() + interval '180 days',
-      subscription_tier = coalesce(p_tier, subscription_tier),
-      cancel_at_period_end = case when p_tier is not null then false else cancel_at_period_end end,
-      updated_at = now()
-  where id = p_user_id
-  returning credits into v_new_credits;
+  v_expiry := now() + interval '180 days';
+
+  if p_tier is null then
+    update public.profiles
+       set credits = credits + p_amount,
+           credits_expire_at = v_expiry,
+           updated_at = now()
+     where id = p_user_id
+    returning credits into v_new_credits;
+  else
+    update public.profiles
+       set credits = credits + p_amount,
+           credits_expire_at = v_expiry,
+           subscription_tier = p_tier,
+           cancel_at_period_end = false,
+           updated_at = now()
+     where id = p_user_id
+    returning credits into v_new_credits;
+  end if;
 
   if not found then
-    -- Aborts the transaction: the idempotency row inserted above is rolled
-    -- back too, so a Polar retry can re-attempt once the profile exists.
-    raise exception 'grant_polar_order_credits: no profiles row for user % (order %)',
-      p_user_id, p_order_id using errcode = 'P0002';
+    raise exception 'grant_polar_order_credits: no profiles row for user % (order %)', p_user_id, p_order_id
+      using errcode = 'P0002';
   end if;
 
   return jsonb_build_object('status', 'granted', 'credits', v_new_credits);
 end;
-$$;
+$polar$;
 
 revoke all on function public.grant_polar_order_credits(text, uuid, integer, text) from public;
 grant execute on function public.grant_polar_order_credits(text, uuid, integer, text) to service_role;
