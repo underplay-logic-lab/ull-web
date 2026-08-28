@@ -109,7 +109,19 @@ export async function POST(request: Request) {
       metadata: { userId: user.id, tier: config.tier, credits: config.credits },
     });
 
-    return NextResponse.json({ checkoutUrl: checkout.url, url: checkout.url });
+    // Belt-and-suspenders on top of the `locale: "ja"` create param: force
+    // ?locale=ja onto the hosted checkout URL so the page always renders in
+    // Japanese regardless of the visitor's browser locale.
+    let checkoutUrl = checkout.url;
+    try {
+      const localized = new URL(checkout.url);
+      localized.searchParams.set("locale", "ja");
+      checkoutUrl = localized.toString();
+    } catch {
+      // checkout.url wasn't a parseable absolute URL — return it as-is.
+    }
+
+    return NextResponse.json({ checkoutUrl, url: checkoutUrl });
   } catch (err) {
     return apiErrorResponse(err, "create_checkout", 502, LOG_PREFIX);
   }
