@@ -17,6 +17,30 @@ export type WorkflowInputFieldSection = "main" | "advanced";
 
 export const WORKFLOW_INPUT_FIELD_SECTIONS: WorkflowInputFieldSection[] = ["main", "advanced"];
 
+// 12-column grid span for the UI builder: 3 = 1/4, 4 = 1/3, 6 = 1/2,
+// 12 = full width. Undefined = full width (12), so every field created
+// before the builder existed keeps rendering exactly as it did.
+export type WorkflowFieldColSpan = 3 | 4 | 6 | 12;
+
+export const WORKFLOW_FIELD_COL_SPANS: WorkflowFieldColSpan[] = [3, 4, 6, 12];
+
+// Subscription tier gate for a field or section — a value below `minTier`
+// hides/locks it in the Studio renderer (server also enforces it, Phase 2).
+export type WorkflowFieldTier = "free" | "entry" | "standard" | "pro" | "master";
+
+export const WORKFLOW_FIELD_TIERS: WorkflowFieldTier[] = ["free", "entry", "standard", "pro", "master"];
+
+// Named layout section on a workflow (studio_custom_workflows.sections) —
+// supersedes the two-way main/advanced split. Phase 1 only defines the
+// shape and validator; the renderer/builder wire it in Phase 2.
+export type WorkflowSection = {
+  id: string;
+  label: string;
+  description?: string;
+  defaultCollapsed?: boolean;
+  minTier?: WorkflowFieldTier;
+};
+
 export type WorkflowInputField = {
   id: string;
   label: string;
@@ -38,6 +62,15 @@ export type WorkflowInputField = {
   // field is "actively selected" away from its baseline — see
   // fieldAppliesCreditsAdd() for exactly what that means per type.
   credits_add?: number;
+  // --- UI builder layout (all optional; undefined = pre-builder behaviour) ---
+  // 12-col grid span (3/4/6/12). Undefined → full width.
+  colSpan?: WorkflowFieldColSpan;
+  // Explicit grid row; fields without one flow by `order`.
+  row?: number;
+  // Named section id (references a WorkflowSection). Falls back to `section`.
+  sectionId?: string;
+  // Lowest subscription tier that may see/use this field.
+  minTier?: WorkflowFieldTier;
 };
 
 export type StudioCustomWorkflow = {
@@ -123,6 +156,49 @@ export function isValidInputSchema(value: unknown): value is WorkflowInputField[
       return false;
     }
     if (f.credits_add !== undefined && typeof f.credits_add !== "number") return false;
+    // UI builder layout fields — all optional, all backward compatible.
+    if (
+      f.colSpan !== undefined &&
+      !WORKFLOW_FIELD_COL_SPANS.includes(f.colSpan as WorkflowFieldColSpan)
+    ) {
+      return false;
+    }
+    if (f.row !== undefined && typeof f.row !== "number") return false;
+    if (f.sectionId !== undefined && (typeof f.sectionId !== "string" || !f.sectionId.trim())) return false;
+    if (
+      f.minTier !== undefined &&
+      !WORKFLOW_FIELD_TIERS.includes(f.minTier as WorkflowFieldTier)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+// Validates studio_custom_workflows.sections — a plain array of named
+// layout sections. Empty array is valid (the default).
+export function isValidWorkflowSections(value: unknown): value is WorkflowSection[] {
+  if (!Array.isArray(value)) return false;
+
+  const seenIds = new Set<string>();
+  for (const item of value) {
+    if (!item || typeof item !== "object") return false;
+    const s = item as Record<string, unknown>;
+
+    if (typeof s.id !== "string" || !s.id.trim()) return false;
+    if (seenIds.has(s.id)) return false;
+    seenIds.add(s.id);
+
+    if (typeof s.label !== "string" || !s.label.trim()) return false;
+    if (s.description !== undefined && typeof s.description !== "string") return false;
+    if (s.defaultCollapsed !== undefined && typeof s.defaultCollapsed !== "boolean") return false;
+    if (
+      s.minTier !== undefined &&
+      !WORKFLOW_FIELD_TIERS.includes(s.minTier as WorkflowFieldTier)
+    ) {
+      return false;
+    }
   }
 
   return true;
