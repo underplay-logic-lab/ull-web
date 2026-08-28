@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { validateEvent, WebhookVerificationError } from "@polar-sh/sdk/webhooks";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getOrCreateProfile } from "@/lib/profile";
 import { polarProductConfig, tierForPolarProduct } from "@/lib/polar";
+import { apiErrorResponse } from "@/lib/apiError";
 
 const LOG_PREFIX = "[webhooks/polar]";
 
@@ -9,16 +11,21 @@ type PolarEvent = ReturnType<typeof validateEvent>;
 type OrderData = Extract<PolarEvent, { type: "order.paid" }>["data"];
 type SubscriptionData = Extract<PolarEvent, { type: "subscription.canceled" }>["data"];
 
+// Polar metadata values are string | number | boolean (see the SDK's
+// MetadataOutputType). userId is always a UUID string when set by our
+// checkout route; anything else means "not set / unusable" — resolve to
+// undefined so the caller skips with a 200 rather than throwing a 500.
 function metadataUserId(metadata: Record<string, unknown> | undefined | null): string | undefined {
   const value = metadata?.userId;
-  return typeof value === "string" && value ? value : undefined;
+  if (typeof value === "string") return value.trim() || undefined;
+  return undefined;
 }
 
 export async function POST(request: Request) {
   const secret = process.env.POLAR_WEBHOOK_SECRET;
   if (!secret) {
     console.error(`${LOG_PREFIX} POLAR_WEBHOOK_SECRET is not configured.`);
-    return NextResponse.json({ error: "Server is not configured." }, { status: 500 });
+    return NextResponse.json({ error: "Server is not configured.", step: "config" }, { status: 500 });
   }
 
   // Signature verification needs the exact raw bytes Polar signed — reading
@@ -37,10 +44,10 @@ export async function POST(request: Request) {
   } catch (err) {
     if (err instanceof WebhookVerificationError) {
       console.error(`${LOG_PREFIX} signature verification failed:`, err.message);
-      return NextResponse.json({ error: "Invalid signature." }, { status: 403 });
+      return NextResponse.json({ error: "Invalid signature.", step: "verify" }, { status: 403 });
     }
     console.error(`${LOG_PREFIX} failed to parse event:`, err);
-    return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
+    return apiErrorResponse(err, "parse_event", 400, LOG_PREFIX);
   }
 
   try {
@@ -73,8 +80,11 @@ export async function POST(request: Request) {
         return NextResponse.json({ ok: true, ignored: event.type });
     }
   } catch (err) {
-    console.error(`${LOG_PREFIX} unhandled error processing ${event.type}:`, err);
-    return NextResponse.json({ error: "Webhook handler failed." }, { status: 500 });
+    // Any unexpected throw inside a handler — surface the full error (name,
+    // message, and any code/details a Postgrest/SDK error carries) in both
+    // the log and the response body so a failing delivery is diagnosable
+    // straight from Polar's webhook dashboard.
+    return apiErrorResponse(err, `handle_${event.type}`, 500, LOG_PREFIX);
   }
 }
 
@@ -82,71 +92,72 @@ async function handleOrderPaid(order: OrderData) {
   const userId = metadataUserId(order.metadata) ?? metadataUserId(order.subscription?.metadata);
   // Prefer the order's own productId; fall back to the subscription's for
   // renewal orders where Polar may only carry it on the subscription.
-  const config = polarProductConfig(order.productId ?? order.subscription?.productId);
+  const productId = order.productId ?? order.subscription?.productId ?? null;
+  const config = polarProductConfig(productId);
 
   if (!userId) {
-    console.error(`${LOG_PREFIX} order ${order.id} has no metadata.userId — cannot credit anyone.`);
-    return NextResponse.json({ ok: true, skipped: "no_user_id" });
+    console.error(
+      `${LOG_PREFIX} order ${order.id} has no usable metadata.userId ` +
+        `(order.metadata=${JSON.stringify(order.metadata)}) — cannot credit anyone.`,
+    );
+    return NextResponse.json({ ok: true, skipped: "no_user_id", orderId: order.id });
   }
   if (!config) {
-    console.error(`${LOG_PREFIX} order ${order.id} has unrecognized productId ${order.productId}.`);
-    return NextResponse.json({ ok: true, skipped: "unknown_product" });
+    console.error(`${LOG_PREFIX} order ${order.id} has unrecognized productId ${productId}.`);
+    return NextResponse.json({ ok: true, skipped: "unknown_product", orderId: order.id, productId });
   }
 
-  // Assert the tier before the idempotency-guarded credit grant: setting a
-  // column to a fixed value is naturally idempotent, so doing it here means
-  // a webhook retry still repairs a drifted subscription_tier even once the
-  // order itself is already recorded as processed. cancel_at_period_end is
-  // cleared too — paying (initial or renewal) means the subscription is
-  // live, so any stale cancellation reservation no longer applies.
-  if (config.isSubscription) {
-    const { error: tierError } = await supabaseAdmin
-      .from("profiles")
-      .update({ subscription_tier: config.tier, cancel_at_period_end: false })
-      .eq("id", userId);
-
-    if (tierError) {
-      console.error(`${LOG_PREFIX} failed to set tier for user ${userId} (order ${order.id}):`, tierError.message);
-      return NextResponse.json({ error: "Failed to set subscription tier." }, { status: 500 });
-    }
+  // Self-heal a missing profiles row (signup trigger never ran / predates
+  // it) before the grant, so a genuinely paid order isn't rejected just
+  // because the row isn't there yet.
+  const { error: profileError } = await getOrCreateProfile(userId, "id");
+  if (profileError) {
+    console.error(`${LOG_PREFIX} order ${order.id}: getOrCreateProfile failed for ${userId}:`, profileError.message);
+    return apiErrorResponse(profileError, "ensure_profile", 500, LOG_PREFIX);
   }
 
-  // Idempotency: claim this order id before crediting anything. A unique-
-  // violation here means a previous delivery (or a concurrent retry) of
-  // this same event already claimed it, so this delivery skips crediting
-  // rather than double-granting.
-  const { error: claimError } = await supabaseAdmin
-    .from("polar_processed_orders")
-    .insert({ order_id: order.id, user_id: userId, credits_granted: config.credits });
+  // One atomic RPC does the whole thing: idempotency claim on order_id,
+  // credit grant + 180-day expiry roll-forward, and (subscriptions only)
+  // the subscription_tier / cancel_at_period_end update. Either all of it
+  // commits or none of it does — a partial failure can never leave the
+  // order recorded as processed but uncredited. See
+  // supabase/migrations/20260839000000_polar_webhook_atomic_grant.sql.
+  const tierArg = config.isSubscription ? config.tier : null;
 
-  if (claimError) {
-    if (claimError.code === "23505") {
-      return NextResponse.json({ ok: true, skipped: "already_processed" });
-    }
-    console.error(`${LOG_PREFIX} failed to claim order ${order.id}:`, claimError.message);
-    return NextResponse.json({ error: "Failed to record order." }, { status: 500 });
-  }
-
-  // Atomically adds the credits and rolls the 180-day expiry window forward
-  // (see increment_profile_credits in
-  // supabase/migrations/20260838000000_polar_subscription_credits.sql) —
-  // one UPDATE, so a purchase can never bump the balance without also
-  // extending its validity, for both top-ups and subscription renewals.
-  const { error: creditError } = await supabaseAdmin.rpc("increment_profile_credits", {
+  const { data, error } = await supabaseAdmin.rpc("grant_polar_order_credits", {
+    p_order_id: order.id,
     p_user_id: userId,
     p_amount: config.credits,
+    p_tier: tierArg,
   });
 
-  if (creditError) {
-    console.error(`${LOG_PREFIX} failed to credit user ${userId} for order ${order.id}:`, creditError.message);
-    return NextResponse.json({ error: "Failed to grant credits." }, { status: 500 });
+  if (error) {
+    console.error(
+      `${LOG_PREFIX} grant_polar_order_credits failed for order ${order.id} / user ${userId}:`,
+      JSON.stringify({ message: error.message, code: error.code, details: error.details, hint: error.hint }),
+    );
+    return apiErrorResponse(error, "grant_polar_order_credits", 500, LOG_PREFIX);
   }
+
+  const result = (data ?? {}) as { status?: string; credits?: number };
+
+  if (result.status === "already_processed") {
+    console.log(`${LOG_PREFIX} order ${order.id} already processed — skipping.`);
+    return NextResponse.json({ ok: true, skipped: "already_processed", orderId: order.id });
+  }
+
+  console.log(
+    `${LOG_PREFIX} order ${order.id}: granted ${config.credits} credits to ${userId}` +
+      `${tierArg ? ` (tier ${tierArg})` : ""}; new balance ${result.credits ?? "?"}.`,
+  );
 
   return NextResponse.json({
     ok: true,
+    orderId: order.id,
     userId,
     creditsGranted: config.credits,
-    tier: config.isSubscription ? config.tier : undefined,
+    balance: result.credits ?? null,
+    tier: tierArg ?? undefined,
   });
 }
 
@@ -163,8 +174,7 @@ async function handleSubscriptionCanceled(subscription: SubscriptionData) {
     .eq("id", userId);
 
   if (error) {
-    console.error(`${LOG_PREFIX} failed to flag cancellation for user ${userId}:`, error.message);
-    return NextResponse.json({ error: "Failed to record cancellation." }, { status: 500 });
+    return apiErrorResponse(error, "flag_cancellation", 500, LOG_PREFIX);
   }
 
   return NextResponse.json({ ok: true, userId, cancelAtPeriodEnd: true });
@@ -183,8 +193,7 @@ async function handleSubscriptionUncanceled(subscription: SubscriptionData) {
     .eq("id", userId);
 
   if (error) {
-    console.error(`${LOG_PREFIX} failed to clear cancellation for user ${userId}:`, error.message);
-    return NextResponse.json({ error: "Failed to clear cancellation." }, { status: 500 });
+    return apiErrorResponse(error, "clear_cancellation", 500, LOG_PREFIX);
   }
 
   return NextResponse.json({ ok: true, userId, cancelAtPeriodEnd: false });
@@ -210,8 +219,7 @@ async function handleSubscriptionRevoked(subscription: SubscriptionData) {
     .maybeSingle();
 
   if (readError) {
-    console.error(`${LOG_PREFIX} failed to load profile for revoked subscription (user ${userId}):`, readError.message);
-    return NextResponse.json({ error: "Failed to load profile." }, { status: 500 });
+    return apiErrorResponse(readError, "load_profile_for_revoke", 500, LOG_PREFIX);
   }
 
   if (!profile || profile.subscription_tier !== revokedTier) {
@@ -224,8 +232,7 @@ async function handleSubscriptionRevoked(subscription: SubscriptionData) {
     .eq("id", userId);
 
   if (error) {
-    console.error(`${LOG_PREFIX} failed to reset tier for revoked subscription (user ${userId}):`, error.message);
-    return NextResponse.json({ error: "Failed to reset tier." }, { status: 500 });
+    return apiErrorResponse(error, "reset_tier_on_revoke", 500, LOG_PREFIX);
   }
 
   return NextResponse.json({ ok: true, userId, subscriptionTier: "free" });
