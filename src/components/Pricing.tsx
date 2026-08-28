@@ -5,13 +5,25 @@ import { ArrowRight, Check, Gift, Loader2, Sparkles } from "lucide-react";
 import { pricingPlans, type PricingPlan } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
+import { useProfileCredits, TOPUP_PRICE_BY_TIER } from "@/hooks/useProfileCredits";
 import { supabase } from "@/lib/supabaseClient";
 import { EditableText } from "@/components/EditableText";
 
+const TOPUP_FULL_PRICE = TOPUP_PRICE_BY_TIER.free;
+
 export function Pricing() {
   const { user } = useSupabaseUser();
+  const { tier, cancelAtPeriodEnd } = useProfileCredits(user);
   const [loginOpen, setLoginOpen] = useState(false);
   const [processingPlanId, setProcessingPlanId] = useState<string | null>(null);
+
+  // The top-up's effective price for this viewer. A signed-in active paid
+  // member sees their standing discount — the same one /api/checkout/polar
+  // applies via a Polar Discount. A reserved cancellation suspends the perk
+  // (matches CancellationWarningModal), and signed-out visitors see full price.
+  const effectiveTopupTier = !user || cancelAtPeriodEnd ? "free" : tier ?? "free";
+  const topupPrice = TOPUP_PRICE_BY_TIER[effectiveTopupTier] ?? TOPUP_FULL_PRICE;
+  const topupDiscountPct = Math.round((1 - topupPrice / TOPUP_FULL_PRICE) * 100);
 
   // All five plans (topup + entry/standard/pro/master) now check out through
   // Polar — each carries its Polar product id from NEXT_PUBLIC_POLAR_PRODUCT_ID_*
@@ -111,8 +123,13 @@ export function Pricing() {
 
               <h3 className="text-base font-bold text-muted">{plan.name}</h3>
               <div className="mt-3 flex items-baseline gap-1">
+                {plan.id === "topup" && topupDiscountPct > 0 && (
+                  <span className="font-mono text-base font-medium text-muted line-through">
+                    ¥{TOPUP_FULL_PRICE.toLocaleString()}
+                  </span>
+                )}
                 <span className="text-3xl font-bold tracking-tight text-gradient">
-                  {plan.price}
+                  {plan.id === "topup" ? `¥${topupPrice.toLocaleString()}` : plan.price}
                 </span>
                 {plan.period && (
                   <span className="font-mono text-xs text-muted">
@@ -120,6 +137,11 @@ export function Pricing() {
                   </span>
                 )}
               </div>
+              {plan.id === "topup" && topupDiscountPct > 0 && (
+                <p className="mt-1.5 inline-flex w-fit items-center gap-1 rounded-full bg-neon-pink/10 px-2.5 py-1 font-mono text-[11px] font-medium text-neon-pink">
+                  会員ランク優待 {topupDiscountPct}%OFF 適用中
+                </p>
+              )}
               <p className="mt-4 text-xs leading-relaxed text-muted">
                 {plan.description}
               </p>
@@ -155,6 +177,8 @@ export function Pricing() {
               {plan.id === "topup" ? (
                 <p className="mt-3 text-[11px] leading-relaxed text-muted">
                   ※ 決済完了後、直ちにクレジットが付与されます。
+                  {topupDiscountPct === 0 &&
+                    " 月額会員は会員ランクに応じて最大50%OFFの優待価格が自動適用されます。"}
                 </p>
               ) : (
                 <p className="mt-3 text-[11px] leading-relaxed text-muted">

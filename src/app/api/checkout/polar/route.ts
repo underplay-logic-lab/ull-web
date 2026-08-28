@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { polar, polarProductConfig } from "@/lib/polar";
+import { polar, polarProductConfig, topupDiscountForTier } from "@/lib/polar";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { apiErrorResponse } from "@/lib/apiError";
 
 const LOG_PREFIX = "[checkout/polar]";
@@ -49,11 +50,45 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "不明な商品IDです。" }, { status: 400 });
   }
 
+  // One-time top-up: an active paid subscriber gets their standing tier
+  // discount (a Polar Discount object — applied automatically and locked so
+  // the customer can't remove it). Read the tier with the service-role
+  // client: the anon client above isn't carrying the user's JWT, so an
+  // RLS-scoped read would come back empty. A reserved cancellation
+  // (cancel_at_period_end) suspends the perk, matching CancellationWarningModal.
+  let discountId: string | undefined;
+  if (config.tier === "topup") {
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from("profiles")
+      .select("subscription_tier, cancel_at_period_end")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (profileError) {
+      // Fall through at full price rather than block the purchase.
+      console.error(`${LOG_PREFIX} could not read tier for ${user.id}:`, profileError.message);
+    }
+
+    const tier = (profile?.subscription_tier as string | null) ?? "free";
+    const perkSuspended = Boolean(profile?.cancel_at_period_end);
+
+    if (!perkSuspended) {
+      discountId = topupDiscountForTier(tier) ?? undefined;
+      if (tier !== "free" && !discountId) {
+        console.warn(
+          `${LOG_PREFIX} user ${user.id} is tier "${tier}" but POLAR_DISCOUNT_ID_TOPUP_${tier.toUpperCase()} ` +
+            `is not set — charging full price.`,
+        );
+      }
+    }
+  }
+
   try {
     const checkout = await polar.checkouts.create({
       products: [productId],
       successUrl: SUCCESS_URL,
       customerEmail: user.email ?? undefined,
+      ...(discountId ? { discountId } : {}),
       // Copied by Polar onto the resulting order *and* (for subscription
       // products) the subscription — this is how the webhook
       // (src/app/api/webhooks/polar/route.ts) knows which Supabase user to
