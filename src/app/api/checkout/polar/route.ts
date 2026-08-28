@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { polar, creditsForPolarProduct } from "@/lib/polar";
+import { polar, polarProductConfig } from "@/lib/polar";
 import { apiErrorResponse } from "@/lib/apiError";
 
 const LOG_PREFIX = "[checkout/polar]";
@@ -39,11 +39,13 @@ export async function POST(request: Request) {
     return apiErrorResponse(err, "parse_body", 400, LOG_PREFIX);
   }
 
-  // Defaults to the 120-credit top-up — the only Polar product currently
-  // configured (see POLAR_PRODUCT_CREDITS in src/lib/polar.ts).
+  // Defaults to the 120-credit top-up when the client sends no productId
+  // (see POLAR_PRODUCT_CONFIG in src/lib/polar.ts for the full catalog:
+  // topup + the four subscription tiers).
   const productId = body.productId || process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_120;
+  const config = polarProductConfig(productId);
 
-  if (!productId || creditsForPolarProduct(productId) === null) {
+  if (!productId || !config) {
     return NextResponse.json({ error: "不明な商品IDです。" }, { status: 400 });
   }
 
@@ -52,10 +54,14 @@ export async function POST(request: Request) {
       products: [productId],
       successUrl: SUCCESS_URL,
       customerEmail: user.email ?? undefined,
-      // Copied onto the resulting order by Polar — this is how the webhook
+      // Copied by Polar onto the resulting order *and* (for subscription
+      // products) the subscription — this is how the webhook
       // (src/app/api/webhooks/polar/route.ts) knows which Supabase user to
-      // credit once payment completes.
-      metadata: { userId: user.id },
+      // credit, how many credits to grant, and which subscription_tier to
+      // set once payment completes. The webhook still re-derives credits/
+      // tier from the product id as the source of truth; these are a
+      // convenience mirror, not trusted input.
+      metadata: { userId: user.id, tier: config.tier, credits: config.credits },
     });
 
     return NextResponse.json({ checkoutUrl: checkout.url, url: checkout.url });

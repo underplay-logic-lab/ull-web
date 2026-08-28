@@ -13,15 +13,16 @@ export function Pricing() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [processingPlanId, setProcessingPlanId] = useState<string | null>(null);
 
-  // Only the one-time top-up has a Polar product configured
-  // (NEXT_PUBLIC_POLAR_PRODUCT_ID_120 — see src/lib/polar.ts). The four
-  // subscription plans' purchase buttons are disabled ("準備中") below
-  // until they have Polar products of their own; Stripe checkout, which
-  // used to serve all five, is retired (see src/app/api/stripe/checkout).
-  const isPurchasable = (planId: string) => planId === "topup";
+  // All five plans (topup + entry/standard/pro/master) now check out through
+  // Polar — each carries its Polar product id from NEXT_PUBLIC_POLAR_PRODUCT_ID_*
+  // (see src/lib/data.ts / src/lib/polar.ts). A plan is purchasable as long
+  // as its product id resolved; a button only stays disabled if the env var
+  // is missing. Stripe checkout, which used to serve all five, is retired
+  // (see src/app/api/stripe/checkout).
+  const isPurchasable = (plan: PricingPlan) => Boolean(plan.productId);
 
   const handlePurchase = async (plan: PricingPlan) => {
-    if (!isPurchasable(plan.id)) return;
+    if (!isPurchasable(plan)) return;
 
     if (!user) {
       setLoginOpen(true);
@@ -36,6 +37,7 @@ export function Pricing() {
       } = await supabase.auth.getSession();
 
       if (!session) {
+        setProcessingPlanId(null);
         setLoginOpen(true);
         return;
       }
@@ -46,7 +48,7 @@ export function Pricing() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ productId: plan.productId }),
       });
 
       const data = await res.json();
@@ -137,7 +139,7 @@ export function Pricing() {
               <button
                 type="button"
                 onClick={() => handlePurchase(plan)}
-                disabled={!isPurchasable(plan.id) || processingPlanId === plan.id}
+                disabled={!isPurchasable(plan) || processingPlanId === plan.id}
                 className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {processingPlanId === plan.id ? (
@@ -145,8 +147,6 @@ export function Pricing() {
                     <Loader2 size={16} className="animate-spin" />
                     決済ページへ移動中...
                   </>
-                ) : !isPurchasable(plan.id) ? (
-                  "準備中（Coming Soon）"
                 ) : (
                   plan.cta
                 )}
@@ -158,7 +158,7 @@ export function Pricing() {
                 </p>
               ) : (
                 <p className="mt-3 text-[11px] leading-relaxed text-muted">
-                  ※ 月額サブスクリプションプランは現在準備中です。公開までしばらくお待ちください。
+                  ※ 毎月自動更新。決済完了後すぐにクレジットが付与され、以降は毎月自動で付与されます。
                 </p>
               )}
             </div>

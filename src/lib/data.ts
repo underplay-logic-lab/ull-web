@@ -67,6 +67,10 @@ export const WAN_ANIMATE_MODEL_PARAMS = "14B";
 
 export type PricingPlan = {
   id: string;
+  // Polar product id this plan checks out through (from NEXT_PUBLIC_POLAR_*
+  // env vars — inlined into the client bundle at build time). Undefined only
+  // if the env var is unset, in which case Pricing.tsx disables the button.
+  productId?: string;
   name: string;
   price: string;
   period?: string;
@@ -79,6 +83,7 @@ export type PricingPlan = {
 export const pricingPlans: PricingPlan[] = [
   {
     id: "topup",
+    productId: process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_120,
     name: "都度チャージ",
     price: "¥500",
     period: "/ 120 Credits",
@@ -92,6 +97,7 @@ export const pricingPlans: PricingPlan[] = [
   },
   {
     id: "entry",
+    productId: process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_ENTRY,
     name: "月額エントリー",
     price: "¥980",
     period: "/ 月",
@@ -105,6 +111,7 @@ export const pricingPlans: PricingPlan[] = [
   },
   {
     id: "standard",
+    productId: process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_STANDARD,
     name: "月額スタンダード",
     price: "¥2,480",
     period: "/ 月",
@@ -118,6 +125,7 @@ export const pricingPlans: PricingPlan[] = [
   },
   {
     id: "pro",
+    productId: process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_PRO,
     name: "月額プロ",
     price: "¥4,980",
     period: "/ 月",
@@ -133,6 +141,7 @@ export const pricingPlans: PricingPlan[] = [
   },
   {
     id: "master",
+    productId: process.env.NEXT_PUBLIC_POLAR_PRODUCT_ID_MASTER,
     name: "月額マスター",
     price: "¥9,980",
     period: "/ 月",
