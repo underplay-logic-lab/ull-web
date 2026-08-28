@@ -10,6 +10,23 @@ import type { WorkflowInputField } from "@/lib/customWorkflows";
 // the UI builder's live canvas render the exact same components.
 export type FieldValue = string | number | boolean | File | null;
 
+// Dropzone height for image/video fields — matches the presets offered in
+// the builder's inspector. Undefined keeps the original 160px minimum.
+function heightPresetClass(preset: WorkflowInputField["heightPreset"]): string {
+  switch (preset) {
+    case "compact":
+      return "min-h-[120px]";
+    case "large":
+      return "min-h-[320px]";
+    case "square":
+      return "aspect-square min-h-[200px]";
+    case "standard":
+      return "min-h-[200px]";
+    default:
+      return "min-h-[160px]";
+  }
+}
+
 export function defaultValueFor(field: WorkflowInputField): FieldValue {
   if (field.type === "image" || field.type === "video") return null;
   if (field.type === "toggle") return typeof field.default === "boolean" ? field.default : false;
@@ -28,10 +45,12 @@ function ImageDropzone({
   file,
   onFileSelected,
   onClear,
+  heightClass,
 }: {
   file: File | null;
   onFileSelected: (file: File) => void;
   onClear: () => void;
+  heightClass: string;
 }) {
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -80,7 +99,7 @@ function ImageDropzone({
           setIsDragging(false);
           handleFiles(e.dataTransfer.files);
         }}
-        className={`relative flex min-h-[160px] cursor-pointer flex-col items-center justify-center gap-2 overflow-hidden rounded-xl border border-dashed p-4 text-center transition-colors ${
+        className={`relative flex ${heightClass} cursor-pointer flex-col items-center justify-center gap-2 overflow-hidden rounded-xl border border-dashed p-4 text-center transition-colors ${
           isDragging ? "border-neon-pink/70 bg-neon-pink/10" : "border-border bg-background hover:border-neon-violet/40"
         }`}
       >
@@ -121,10 +140,12 @@ function VideoDropzone({
   file,
   onFileSelected,
   onClear,
+  heightClass,
 }: {
   file: File | null;
   onFileSelected: (file: File) => void;
   onClear: () => void;
+  heightClass: string;
 }) {
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -200,7 +221,7 @@ function VideoDropzone({
             setIsDragging(false);
             handleFiles(e.dataTransfer.files);
           }}
-          className={`flex min-h-[160px] cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed p-4 text-center transition-colors ${
+          className={`flex ${heightClass} cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed p-4 text-center transition-colors ${
             isDragging ? "border-neon-pink/70 bg-neon-pink/10" : "border-border bg-background hover:border-neon-violet/40"
           }`}
         >
@@ -228,6 +249,7 @@ export function DynamicField({
         file={value instanceof File ? value : null}
         onFileSelected={onChange}
         onClear={() => onChange(null)}
+        heightClass={heightPresetClass(field.heightPreset)}
       />
     );
   }
@@ -238,6 +260,7 @@ export function DynamicField({
         file={value instanceof File ? value : null}
         onFileSelected={onChange}
         onClear={() => onChange(null)}
+        heightClass={heightPresetClass(field.heightPreset)}
       />
     );
   }
@@ -305,10 +328,10 @@ export function DynamicField({
 
   return (
     <textarea
-      rows={3}
+      rows={typeof field.rows === "number" && field.rows > 0 ? field.rows : 3}
       value={typeof value === "string" ? value : ""}
       onChange={(e) => onChange(e.target.value)}
-      className="w-full resize-none rounded-lg border border-border bg-background px-4 py-3 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
+      className="w-full resize-y rounded-lg border border-border bg-background px-4 py-3 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
     />
   );
 }

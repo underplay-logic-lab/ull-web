@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
   DndContext,
   PointerSensor,
   closestCenter,
+  useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -17,7 +18,7 @@ import { COL_SPAN_OPTIONS, colSpanMdClass, fieldColSpan } from "@/lib/workflowLa
 import { DynamicField, defaultValueFor, type FieldValue } from "@/components/studio/workflow/DynamicField";
 import { UNSECTIONED, fieldBucket } from "@/components/admin/workflow-builder/builder";
 
-const DROP_PREFIX = "section-drop:";
+const SECTION_DROP = "sectiondrop:";
 
 function SortableFieldCard({
   field,
@@ -36,10 +37,7 @@ function SortableFieldCard({
   onColSpan: (span: (typeof COL_SPAN_OPTIONS)[number]["value"]) => void;
   onValueChange: (v: FieldValue) => void;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: field.id,
-  });
-
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: field.id });
   const spanClass = previewMode === "mobile" ? "md:col-span-12" : colSpanMdClass(fieldColSpan(field));
 
   return (
@@ -73,7 +71,6 @@ function SortableFieldCard({
           <span className="shrink-0 font-mono text-[9px] text-muted">{field.type}</span>
         </div>
 
-        {/* 1-click colSpan snap */}
         <div className="mb-1.5 flex gap-0.5">
           {COL_SPAN_OPTIONS.map((opt) => (
             <button
@@ -94,9 +91,7 @@ function SortableFieldCard({
           ))}
         </div>
 
-        <div className="pointer-events-auto">
-          <DynamicField field={field} value={value} onChange={onValueChange} />
-        </div>
+        <DynamicField field={field} value={value} onChange={onValueChange} />
         {Boolean(field.credits_add) && (
           <p className="mt-1 font-mono text-[9px] text-neon-pink">+{field.credits_add}C</p>
         )}
@@ -105,45 +100,83 @@ function SortableFieldCard({
   );
 }
 
-function SectionDropHeader({
+function SectionBand({
   section,
+  fields,
+  selectedId,
+  previewMode,
+  previewValues,
+  onSelect,
+  onFieldPatch,
+  onPreviewValue,
   onRemove,
   onLabel,
 }: {
   section: WorkflowSection | null;
+  fields: WorkflowInputField[];
+  selectedId: string | null;
+  previewMode: "desktop" | "mobile";
+  previewValues: Record<string, FieldValue>;
+  onSelect: (id: string | null) => void;
+  onFieldPatch: (id: string, patch: Partial<WorkflowInputField>) => void;
+  onPreviewValue: (id: string, v: FieldValue) => void;
   onRemove?: () => void;
   onLabel?: (label: string) => void;
 }) {
-  const id = `${DROP_PREFIX}${section ? section.id : UNSECTIONED}`;
-  const { setNodeRef, isOver } = useSortable({ id, data: { isSectionDrop: true } });
+  const bid = section ? section.id : UNSECTIONED;
+  const { setNodeRef, isOver } = useDroppable({ id: `${SECTION_DROP}${bid}` });
 
   return (
     <div
       ref={setNodeRef}
-      className={`col-span-1 mb-1 mt-3 flex items-center justify-between gap-2 rounded-md border border-dashed px-2 py-1.5 md:col-span-12 ${
-        isOver ? "border-neon-pink/60 bg-neon-pink/10" : "border-border/70"
+      className={`rounded-xl border p-2.5 transition-colors ${
+        isOver ? "border-neon-pink/60 bg-neon-pink/5" : "border-border/70 bg-surface/20"
       }`}
     >
-      {section ? (
-        <input
-          value={section.label}
-          onChange={(e) => onLabel?.(e.target.value)}
-          className="w-full bg-transparent text-[11px] font-semibold text-neon-violet outline-none"
-        />
-      ) : (
-        <span className="text-[11px] font-semibold text-muted">（セクション未指定）</span>
-      )}
-      {section && onRemove && (
-        <button type="button" onClick={onRemove} className="shrink-0 text-muted hover:text-red-400">
-          <Trash2 size={12} />
-        </button>
-      )}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        {section ? (
+          <input
+            value={section.label}
+            onChange={(e) => onLabel?.(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full bg-transparent text-[11px] font-semibold text-neon-violet outline-none"
+          />
+        ) : (
+          <span className="text-[11px] font-semibold text-muted">（セクション未指定）</span>
+        )}
+        {section && onRemove && (
+          <button type="button" onClick={onRemove} className="shrink-0 text-muted hover:text-red-400">
+            <Trash2 size={12} />
+          </button>
+        )}
+      </div>
+
+      <div className="grid min-h-[52px] grid-cols-1 gap-3 md:grid-cols-12">
+        {fields.length === 0 ? (
+          <p className="col-span-1 flex items-center justify-center rounded-lg border border-dashed border-border py-4 text-center text-[10px] text-muted md:col-span-12">
+            ここにフィールドをドラッグ
+          </p>
+        ) : (
+          fields.map((field) => (
+            <SortableFieldCard
+              key={field.id}
+              field={field}
+              value={previewValues[field.id] ?? defaultValueFor(field)}
+              selected={selectedId === field.id}
+              previewMode={previewMode}
+              onSelect={() => onSelect(field.id)}
+              onColSpan={(span) => onFieldPatch(field.id, { colSpan: span })}
+              onValueChange={(v) => onPreviewValue(field.id, v)}
+            />
+          ))
+        )}
+      </div>
     </div>
   );
 }
 
-// Center pane (45%): the live 12-col canvas — drag to reorder, 1-click width
-// snap, section create/delete, drag fields between sections.
+// Center pane (45%): live 12-col canvas — drag reorder, 1-click width snap,
+// section create/delete, drag fields between sections.
 export function LiveCanvasPane({
   fields,
   sections,
@@ -172,7 +205,6 @@ export function LiveCanvasPane({
   onPreviewValue: (id: string, v: FieldValue) => void;
 }) {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
-  const [dragId, setDragId] = useState<string | null>(null);
 
   const ordered = useMemo(() => sortFieldsByOrder(fields), [fields]);
   const buckets = useMemo(() => {
@@ -188,57 +220,18 @@ export function LiveCanvasPane({
   }, [ordered, sections]);
 
   const handleDragEnd = (e: DragEndEvent) => {
-    setDragId(null);
     const activeId = String(e.active.id);
     if (!e.over) return;
     const overId = String(e.over.id);
     if (overId === activeId) return;
 
-    if (overId.startsWith(DROP_PREFIX)) {
-      const target = overId.slice(DROP_PREFIX.length);
+    if (overId.startsWith(SECTION_DROP)) {
+      const target = overId.slice(SECTION_DROP.length);
       onReorder(activeId, activeId, target === UNSECTIONED ? undefined : target);
       return;
     }
     const overField = fields.find((f) => f.id === overId);
-    const targetSection = overField ? overField.sectionId : undefined;
-    onReorder(activeId, overId, targetSection);
-  };
-
-  const allSortableIds = [
-    `${DROP_PREFIX}${UNSECTIONED}`,
-    ...(buckets.get(UNSECTIONED) ?? []).map((f) => f.id),
-    ...sections.flatMap((s) => [`${DROP_PREFIX}${s.id}`, ...(buckets.get(s.id) ?? []).map((f) => f.id)]),
-  ];
-
-  const renderBucket = (section: WorkflowSection | null) => {
-    const bid = section ? section.id : UNSECTIONED;
-    const list = buckets.get(bid) ?? [];
-    return (
-      <div key={bid} className="contents">
-        <SectionDropHeader
-          section={section}
-          onRemove={section ? () => onRemoveSection(section.id) : undefined}
-          onLabel={section ? (label) => onSectionLabel(section.id, label) : undefined}
-        />
-        {list.length === 0 && (
-          <p className="col-span-1 py-2 text-center text-[10px] text-muted md:col-span-12">
-            ここにフィールドをドラッグ
-          </p>
-        )}
-        {list.map((field) => (
-          <SortableFieldCard
-            key={field.id}
-            field={field}
-            value={previewValues[field.id] ?? defaultValueFor(field)}
-            selected={selectedId === field.id}
-            previewMode={previewMode}
-            onSelect={() => onSelect(field.id)}
-            onColSpan={(span) => onFieldPatch(field.id, { colSpan: span })}
-            onValueChange={(v) => onPreviewValue(field.id, v)}
-          />
-        ))}
-      </div>
-    );
+    onReorder(activeId, overId, overField ? overField.sectionId : undefined);
   };
 
   return (
@@ -261,27 +254,41 @@ export function LiveCanvasPane({
         className={`flex-1 overflow-y-auto p-4 ${previewMode === "mobile" ? "mx-auto w-full max-w-[420px]" : ""}`}
         onClick={() => onSelect(null)}
       >
-        {fields.length === 0 ? (
+        {fields.length === 0 && sections.length === 0 ? (
           <p className="py-16 text-center text-[11px] text-muted">
             左のノードツリーから入力を「UIに公開」すると、ここに追加されます。
           </p>
         ) : (
-          <div onClick={(e) => e.stopPropagation()}>
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragStart={(e) => setDragId(String(e.active.id))}
-              onDragCancel={() => setDragId(null)}
-              onDragEnd={handleDragEnd}
-            >
-              <SortableContext items={allSortableIds} strategy={rectSortingStrategy}>
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-12">
-                  {renderBucket(null)}
-                  {sections.map((s) => renderBucket(s))}
-                </div>
+          <div className="space-y-3" onClick={(e) => e.stopPropagation()}>
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+              <SortableContext items={ordered.map((f) => f.id)} strategy={rectSortingStrategy}>
+                <SectionBand
+                  section={null}
+                  fields={buckets.get(UNSECTIONED) ?? []}
+                  selectedId={selectedId}
+                  previewMode={previewMode}
+                  previewValues={previewValues}
+                  onSelect={onSelect}
+                  onFieldPatch={onFieldPatch}
+                  onPreviewValue={onPreviewValue}
+                />
+                {sections.map((s) => (
+                  <SectionBand
+                    key={s.id}
+                    section={s}
+                    fields={buckets.get(s.id) ?? []}
+                    selectedId={selectedId}
+                    previewMode={previewMode}
+                    previewValues={previewValues}
+                    onSelect={onSelect}
+                    onFieldPatch={onFieldPatch}
+                    onPreviewValue={onPreviewValue}
+                    onRemove={() => onRemoveSection(s.id)}
+                    onLabel={(label) => onSectionLabel(s.id, label)}
+                  />
+                ))}
               </SortableContext>
             </DndContext>
-            {dragId && <p className="mt-2 text-center text-[9px] text-muted">ドラッグ中: {dragId}</p>}
           </div>
         )}
       </div>

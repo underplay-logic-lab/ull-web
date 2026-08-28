@@ -108,23 +108,94 @@ export function ParameterInspectorPane({
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className={labelCls}>node_id</label>
+              <label className={`${labelCls} flex items-center gap-1`}>
+                node_id <span className="rounded bg-border px-1 text-[8px] text-muted">🔒 自動</span>
+              </label>
               <input
                 value={field.node_id}
-                onChange={(e) => onChange({ node_id: e.target.value })}
-                className={`${inputCls} font-mono`}
+                readOnly
+                disabled
+                className={`${inputCls} cursor-not-allowed font-mono opacity-60`}
               />
             </div>
             <div>
-              <label className={labelCls}>field</label>
+              <label className={`${labelCls} flex items-center gap-1`}>
+                field <span className="rounded bg-border px-1 text-[8px] text-muted">🔒 自動</span>
+              </label>
               <input
                 value={field.field}
-                onChange={(e) => onChange({ field: e.target.value })}
-                className={`${inputCls} font-mono`}
+                readOnly
+                disabled
+                className={`${inputCls} cursor-not-allowed font-mono opacity-60`}
               />
             </div>
           </div>
+          <p className="text-[9px] text-muted">
+            node_id / field は左ペインの「UIに公開」からのみバインドされます（手動変更による ComfyUI グラフ破壊を防止）。
+          </p>
         </div>
+
+        {/* Field height */}
+        {field.type === "text" && (
+          <div className="rounded-lg border border-border bg-background/60 p-2.5">
+            <label className={labelCls}>入力欄の行数 (rows)</label>
+            <div className="flex gap-1">
+              {[2, 4, 6, 8].map((r) => (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => onChange({ rows: r })}
+                  className={`flex-1 rounded-md border px-1 py-1 text-[10px] font-medium transition-colors ${
+                    (field.rows ?? 3) === r
+                      ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
+                      : "border-border text-muted hover:text-foreground"
+                  }`}
+                >
+                  {r}行
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => onChange({ rows: undefined })}
+                className={`flex-1 rounded-md border px-1 py-1 text-[10px] font-medium transition-colors ${
+                  field.rows === undefined
+                    ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
+                    : "border-border text-muted hover:text-foreground"
+                }`}
+              >
+                標準
+              </button>
+            </div>
+          </div>
+        )}
+        {(field.type === "image" || field.type === "video") && (
+          <div className="rounded-lg border border-border bg-background/60 p-2.5">
+            <label className={labelCls}>アップロード欄の高さ</label>
+            <div className="grid grid-cols-2 gap-1">
+              {(
+                [
+                  ["compact", "コンパクト"],
+                  ["standard", "標準"],
+                  ["large", "大"],
+                  ["square", "正方形"],
+                ] as const
+              ).map(([v, l]) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => onChange({ heightPreset: field.heightPreset === v ? undefined : v })}
+                  className={`rounded-md border px-1 py-1 text-[10px] font-medium transition-colors ${
+                    field.heightPreset === v
+                      ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
+                      : "border-border text-muted hover:text-foreground"
+                  }`}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Layout */}
         <div className="space-y-2 rounded-lg border border-border bg-background/60 p-2.5">

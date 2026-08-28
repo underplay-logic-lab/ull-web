@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Loader2, Monitor, Save, Smartphone, Zap } from "lucide-react";
 import {
-  calculateTotalWorkflowCredits,
+  workflowCreditsBreakdown,
   type StudioCustomWorkflow,
   type WorkflowInputField,
   type WorkflowSection,
@@ -21,6 +21,7 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
   const [fields, setFields] = useState<WorkflowInputField[]>([]);
   const [sections, setSections] = useState<WorkflowSection[]>([]);
   const [isActive, setIsActive] = useState(true);
+  const [creditsCost, setCreditsCost] = useState(0);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState<"desktop" | "mobile">("desktop");
@@ -45,6 +46,7 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
         setFields(renumberOrder(row.input_schema ?? []));
         setSections(row.sections ?? []);
         setIsActive(row.is_active);
+        setCreditsCost(row.credits_cost);
       } catch (err) {
         setError(err instanceof Error ? err.message : "取得に失敗しました。");
       } finally {
@@ -70,14 +72,15 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
     [fields, selectedId],
   );
 
-  const totalCredits = useMemo(() => {
-    if (!workflow) return 0;
-    return calculateTotalWorkflowCredits({
-      creditsCost: workflow.credits_cost,
-      inputSchema: fields,
-      values: Object.fromEntries(fields.map((f) => [f.id, previewValues[f.id] ?? defaultValueFor(f)])),
-    });
-  }, [workflow, fields, previewValues]);
+  const credits = useMemo(
+    () =>
+      workflowCreditsBreakdown({
+        creditsCost,
+        inputSchema: fields,
+        values: Object.fromEntries(fields.map((f) => [f.id, previewValues[f.id] ?? defaultValueFor(f)])),
+      }),
+    [creditsCost, fields, previewValues],
+  );
 
   const touch = useCallback(() => {
     setDirty(true);
@@ -146,13 +149,16 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
   );
 
   const addSection = useCallback(() => {
+    const label = window.prompt("セクション名を入力", `セクション ${sections.length + 1}`);
+    if (label === null) return;
+    const trimmed = label.trim() || `セクション ${sections.length + 1}`;
     setSections((prev) => {
       const ids = new Set(prev.map((s) => s.id));
       const id = makeFieldId(`section_${prev.length + 1}`, ids);
-      return [...prev, { id, label: `セクション ${prev.length + 1}` }];
+      return [...prev, { id, label: trimmed }];
     });
     touch();
-  }, [touch]);
+  }, [sections.length, touch]);
 
   const removeSection = useCallback(
     (id: string) => {
@@ -181,7 +187,7 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
       const res = await fetch(`/api/admin/custom-workflows/${workflow.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input_schema: fields, sections, is_active: isActive }),
+        body: JSON.stringify({ input_schema: fields, sections, is_active: isActive, credits_cost: creditsCost }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? "保存に失敗しました。");
@@ -234,9 +240,26 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
         </div>
 
         <div className="flex shrink-0 items-center gap-3">
+          <label className="flex items-center gap-1.5 text-[11px] text-muted">
+            基本
+            <input
+              type="number"
+              value={creditsCost}
+              onChange={(e) => {
+                setCreditsCost(Math.max(0, Number(e.target.value) || 0));
+                touch();
+              }}
+              className="w-16 rounded-md border border-border bg-background px-2 py-1 text-center text-xs outline-none focus:border-neon-violet/50"
+            />
+            C
+          </label>
+
           <span className="flex items-center gap-1.5 rounded-full border border-neon-pink/40 bg-neon-pink/10 px-3 py-1 font-mono text-xs font-semibold text-neon-pink">
             <Zap size={13} />
-            {totalCredits} Credits
+            {credits.total} Credits
+            <span className="font-normal text-neon-pink/70">
+              （基本 {credits.base} + アドオン {credits.addons}）
+            </span>
           </span>
 
           <div className="flex overflow-hidden rounded-full border border-border">

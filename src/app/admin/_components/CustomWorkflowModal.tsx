@@ -45,6 +45,31 @@ const FIELD_SECTION_LABEL: Record<WorkflowInputFieldSection, string> = {
   advanced: "詳細設定（アコーディオン）",
 };
 
+// Builder-only props (layout / dynamic pricing / height) the modal doesn't
+// edit — carried through verbatim so editing a builder-authored workflow in
+// this modal doesn't strip them.
+const CARRIED_KEYS = [
+  "colSpan",
+  "row",
+  "sectionId",
+  "minTier",
+  "options",
+  "credits_baseline",
+  "credits_per_unit",
+  "rows",
+  "heightPreset",
+] as const;
+
+type CarriedProps = Partial<Pick<WorkflowInputField, (typeof CARRIED_KEYS)[number]>>;
+
+function pickCarried(field: WorkflowInputField): CarriedProps {
+  const out: CarriedProps = {};
+  for (const k of CARRIED_KEYS) {
+    if (field[k] !== undefined) (out as Record<string, unknown>)[k] = field[k];
+  }
+  return out;
+}
+
 type FieldDraft = {
   key: string;
   id: string;
@@ -59,6 +84,7 @@ type FieldDraft = {
   order: string;
   section: WorkflowInputFieldSection;
   creditsAdd: string;
+  carried: CarriedProps;
 };
 
 let draftKeySeq = 0;
@@ -82,6 +108,7 @@ function fieldToDraft(field: WorkflowInputField): FieldDraft {
     order: field.order === undefined ? "" : String(field.order),
     section: field.section ?? "main",
     creditsAdd: field.credits_add === undefined ? "" : String(field.credits_add),
+    carried: pickCarried(field),
   };
 }
 
@@ -100,6 +127,7 @@ function emptyDraft(order: number): FieldDraft {
     order: String(order),
     section: "main",
     creditsAdd: "",
+    carried: {},
   };
 }
 
@@ -223,6 +251,9 @@ function ModelFileCombobox({
 
 function draftToField(draft: FieldDraft): WorkflowInputField {
   const base = {
+    // Builder-authored layout / pricing / height props first, so the modal's
+    // own fields below still win where they overlap (id, label, order, …).
+    ...draft.carried,
     id: draft.id.trim(),
     label: draft.label.trim(),
     type: draft.type,

@@ -84,6 +84,11 @@ export type WorkflowInputField = {
   sectionId?: string;
   // Lowest subscription tier that may see/use this field.
   minTier?: WorkflowFieldTier;
+  // --- Field height (all optional) ---
+  // "text": textarea row count (2 / 4 / 6 / 8 …). Undefined → 3.
+  rows?: number;
+  // "image" / "video": dropzone height preset.
+  heightPreset?: "compact" | "standard" | "large" | "square";
   // --- Dynamic credit pricing (all optional) ---
   // Choices for a "select" field.
   options?: WorkflowFieldOption[];
@@ -195,6 +200,14 @@ export function isValidInputSchema(value: unknown): value is WorkflowInputField[
     ) {
       return false;
     }
+    // Field height.
+    if (f.rows !== undefined && typeof f.rows !== "number") return false;
+    if (
+      f.heightPreset !== undefined &&
+      !["compact", "standard", "large", "square"].includes(f.heightPreset as string)
+    ) {
+      return false;
+    }
     // Dynamic credit pricing.
     if (f.credits_baseline !== undefined && typeof f.credits_baseline !== "number") return false;
     if (f.credits_per_unit !== undefined && typeof f.credits_per_unit !== "number") return false;
@@ -291,6 +304,15 @@ export type WorkflowCreditsInput = {
   gpuTierAddon?: number;
 };
 
+export type WorkflowCreditsBreakdown = {
+  // The effective base: credits_cost, or a selected is_base_override option's amount.
+  base: number;
+  // Sum of every field add-on currently in effect.
+  addons: number;
+  gpuTierAddon: number;
+  total: number;
+};
+
 // The single source of truth for what a workflow generation costs — used by
 // the Studio renderer (live total), the builder (⚡ preview), and the
 // server generate route (actual debit). Never trust a client-sent total.
@@ -300,7 +322,7 @@ export type WorkflowCreditsInput = {
 // where `base` is credits_cost unless a selected "select" option is marked
 // is_base_override, in which case that option's credits_add becomes the base
 // (the last such option in schema order wins).
-export function calculateTotalWorkflowCredits(input: WorkflowCreditsInput): number {
+export function workflowCreditsBreakdown(input: WorkflowCreditsInput): WorkflowCreditsBreakdown {
   const { creditsCost, inputSchema, values, gpuTierAddon = 0 } = input;
 
   let base = creditsCost;
@@ -342,5 +364,13 @@ export function calculateTotalWorkflowCredits(input: WorkflowCreditsInput): numb
     }
   }
 
-  return Math.max(0, Math.round(base + addons + gpuTierAddon));
+  base = Math.max(0, Math.round(base));
+  addons = Math.round(addons);
+  const total = Math.max(0, base + addons + Math.round(gpuTierAddon));
+  return { base, addons, gpuTierAddon: Math.round(gpuTierAddon), total };
+}
+
+// Just the total — the common case, and the shape existing callers expect.
+export function calculateTotalWorkflowCredits(input: WorkflowCreditsInput): number {
+  return workflowCreditsBreakdown(input).total;
 }
