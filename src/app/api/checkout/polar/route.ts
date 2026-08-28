@@ -91,6 +91,8 @@ export async function POST(request: Request) {
       products: [productId],
       successUrl: SUCCESS_URL,
       returnUrl: RETURN_URL,
+      // Render the hosted Polar checkout in Japanese.
+      locale: "ja",
       customerEmail: user.email ?? undefined,
       // Links the Polar customer to the Supabase user id so /api/portal/polar
       // can mint a customer-portal session straight from external_customer_id
