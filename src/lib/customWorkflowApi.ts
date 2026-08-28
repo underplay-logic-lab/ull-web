@@ -1,11 +1,9 @@
 import { supabase } from "@/lib/supabaseClient";
-import type { GpuTier } from "@/lib/gpuTier";
 
 export type CustomWorkflowFieldValue = string | number | boolean | File | null;
 
 export type GenerateCustomWorkflowParams = {
   slug: string;
-  gpuTier: GpuTier;
   values: Record<string, CustomWorkflowFieldValue>;
 };
 
@@ -47,7 +45,6 @@ export async function generateCustomWorkflow(
 
   const formData = new FormData();
   formData.append("slug", params.slug);
-  formData.append("gpuTier", params.gpuTier);
   for (const [fieldId, value] of Object.entries(params.values)) {
     if (value === null) continue;
     formData.append(`field:${fieldId}`, value instanceof File ? value : String(value));

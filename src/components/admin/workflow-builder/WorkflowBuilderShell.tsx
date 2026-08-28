@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Loader2, Monitor, Save, Smartphone, Zap } from "lucide-react";
+import { ArrowLeft, Eye, Loader2, Monitor, Save, Smartphone, Zap } from "lucide-react";
 import {
   DEFAULT_WORKFLOW_GPU_TIER,
+  WORKFLOW_FIELD_TIERS,
+  WORKFLOW_FIELD_TIER_LABELS,
   WORKFLOW_GPU_TIERS,
   workflowCreditsBreakdown,
   type StudioCustomWorkflow,
@@ -16,7 +18,7 @@ import { parseWorkflowNodes, type WorkflowNodeInfo } from "@/lib/workflowGraph";
 import { defaultValueFor, type FieldValue } from "@/components/studio/workflow/DynamicField";
 import { fieldFromNodeInput, makeFieldId, renumberOrder } from "@/components/admin/workflow-builder/builder";
 import { NodeTreePane } from "@/components/admin/workflow-builder/panes/NodeTreePane";
-import { LiveCanvasPane } from "@/components/admin/workflow-builder/panes/LiveCanvasPane";
+import { LiveCanvasPane, type PreviewMode } from "@/components/admin/workflow-builder/panes/LiveCanvasPane";
 import { ParameterInspectorPane } from "@/components/admin/workflow-builder/panes/ParameterInspectorPane";
 
 export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
@@ -29,7 +31,8 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
   const [badgeLabel, setBadgeLabel] = useState("");
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [previewMode, setPreviewMode] = useState<"desktop" | "mobile">("desktop");
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("desktop");
+  const [previewTier, setPreviewTier] = useState<string>("master");
   const [previewValues, setPreviewValues] = useState<Record<string, FieldValue>>({});
 
   const [loading, setLoading] = useState(true);
@@ -178,9 +181,9 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
     [touch],
   );
 
-  const setSectionLabel = useCallback(
-    (id: string, label: string) => {
-      setSections((prev) => prev.map((s) => (s.id === id ? { ...s, label } : s)));
+  const patchSection = useCallback(
+    (id: string, patch: Partial<WorkflowSection>) => {
+      setSections((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
       touch();
     },
     [touch],
@@ -312,7 +315,7 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
               type="button"
               onClick={() => setPreviewMode("desktop")}
               className={`px-2.5 py-1.5 ${previewMode === "desktop" ? "bg-neon-violet/15 text-neon-violet" : "text-muted"}`}
-              title="PCプレビュー"
+              title="編集（PC幅）"
             >
               <Monitor size={13} />
             </button>
@@ -320,11 +323,36 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
               type="button"
               onClick={() => setPreviewMode("mobile")}
               className={`px-2.5 py-1.5 ${previewMode === "mobile" ? "bg-neon-violet/15 text-neon-violet" : "text-muted"}`}
-              title="モバイルプレビュー"
+              title="編集（モバイル幅）"
             >
               <Smartphone size={13} />
             </button>
+            <button
+              type="button"
+              onClick={() => setPreviewMode("preview")}
+              className={`px-2.5 py-1.5 text-[10px] font-semibold ${previewMode === "preview" ? "bg-neon-pink/15 text-neon-pink" : "text-muted"}`}
+              title="ユーザー画面と完全一致プレビュー"
+            >
+              <Eye size={13} />
+            </button>
           </div>
+
+          {previewMode === "preview" && (
+            <label className="flex items-center gap-1 text-[11px] text-muted">
+              会員
+              <select
+                value={previewTier}
+                onChange={(e) => setPreviewTier(e.target.value)}
+                className="rounded-md border border-border bg-background px-1.5 py-1 text-xs outline-none"
+              >
+                {WORKFLOW_FIELD_TIERS.map((t) => (
+                  <option key={t} value={t}>
+                    {WORKFLOW_FIELD_TIER_LABELS[t]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
 
           <label className="flex items-center gap-1.5 text-xs text-muted">
             <input
@@ -369,13 +397,14 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
           sections={sections}
           selectedId={selectedId}
           previewMode={previewMode}
+          previewTier={previewTier}
           previewValues={previewValues}
           onSelect={setSelectedId}
           onReorder={reorder}
           onFieldPatch={patchField}
           onAddSection={addSection}
           onRemoveSection={removeSection}
-          onSectionLabel={setSectionLabel}
+          onSectionPatch={patchSection}
           onPreviewValue={(id, v) => setPreviewValues((prev) => ({ ...prev, [id]: v }))}
         />
         <ParameterInspectorPane

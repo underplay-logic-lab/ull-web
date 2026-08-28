@@ -43,6 +43,37 @@ export type WorkflowFieldTier = "free" | "entry" | "standard" | "pro" | "master"
 
 export const WORKFLOW_FIELD_TIERS: WorkflowFieldTier[] = ["free", "entry", "standard", "pro", "master"];
 
+export const WORKFLOW_FIELD_TIER_LABELS: Record<WorkflowFieldTier, string> = {
+  free: "Free",
+  entry: "Entry",
+  standard: "Standard",
+  pro: "Pro",
+  master: "Master",
+};
+
+const TIER_RANK: Record<WorkflowFieldTier, number> = {
+  free: 0,
+  entry: 1,
+  standard: 2,
+  pro: 3,
+  master: 4,
+};
+
+export function tierRank(tier: string | null | undefined): number {
+  return tier && tier in TIER_RANK ? TIER_RANK[tier as WorkflowFieldTier] : 0;
+}
+
+// Whether a field/section gated at `minTier` is locked for a viewer on
+// `userTier`. Used by the Studio renderer (visual lock) and the server
+// generate route (value fallback).
+export function isTierLocked(
+  minTier: WorkflowFieldTier | undefined,
+  userTier: string | null | undefined,
+): boolean {
+  if (!minTier) return false;
+  return tierRank(userTier) < tierRank(minTier);
+}
+
 // Which Modal GPU a workflow runs on — an admin, per-workflow choice
 // (studio_custom_workflows.default_gpu_tier), independent of the user-facing
 // Standard/ULTRA selector. Passed through to the Modal request as `gpu_tier`.

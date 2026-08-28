@@ -1,21 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, ChevronDown, Download, Film, Layers, Loader2, LogIn, Settings2, Wand2, Zap } from "lucide-react";
-import {
-  calculateTotalWorkflowCredits,
-  sortFieldsByOrder,
-  type PublicCustomWorkflow,
-  type WorkflowInputField,
-} from "@/lib/customWorkflows";
+import { ArrowLeft, Download, Film, Layers, Loader2, LogIn, Wand2, Zap } from "lucide-react";
+import { calculateTotalWorkflowCredits, type PublicCustomWorkflow } from "@/lib/customWorkflows";
 import { defaultValueFor, type FieldValue } from "@/components/studio/workflow/DynamicField";
-import { WorkflowFieldGrid } from "@/components/studio/workflow/WorkflowFieldGrid";
-import { WAN_ANIMATE_GPU_ULTRA_ADDON } from "@/lib/data";
-import { GPU_TIER_ADDON_PRICING_KEY, type GpuTier } from "@/lib/gpuTier";
+import { WorkflowFieldLayout } from "@/components/studio/workflow/WorkflowFieldLayout";
 import { generateCustomWorkflow } from "@/lib/customWorkflowApi";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { LoginModal } from "@/components/LoginModal";
-import { GpuTierSelector } from "@/components/studio/GpuTierSelector";
 import { GpuWarmStokeWidget } from "@/components/studio/GpuWarmStokeWidget";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
@@ -28,19 +20,17 @@ type Status = "idle" | "loading" | "done" | "error";
 // storage; only text/slider/toggle values survive a reload.
 type PersistedCustomWorkflowForm = {
   values: Record<string, string | number | boolean>;
-  gpuTier: GpuTier;
 };
 
 export function CustomWorkflowsTab() {
   const { user } = useSupabaseUser();
-  const { credits, loading: creditsLoading } = useProfileCredits(user);
+  const { credits, tier, loading: creditsLoading } = useProfileCredits(user);
+  const userTier = user ? (tier ?? "free") : "free";
 
   const [workflows, setWorkflows] = useState<PublicCustomWorkflow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [pricing, setPricing] = useState<Record<string, number>>({});
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, FieldValue>>({});
-  const [gpuTier, setGpuTier] = useState<GpuTier>("standard");
   const [loginOpen, setLoginOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -69,35 +59,16 @@ export function CustomWorkflowsTab() {
         setLoading(false);
       }
     })();
-
-    (async () => {
-      try {
-        const res = await fetch("/api/studio/pricing");
-        const data = await res.json();
-        if (res.ok) {
-          setPricing(data.pricing as Record<string, number>);
-        } else {
-          console.error("[CustomWorkflowsTab] failed to load pricing:", data?.error);
-        }
-      } catch (err) {
-        console.error("[CustomWorkflowsTab] failed to load pricing:", err);
-      }
-    })();
   }, []);
-
-  const gpuTierAddon = pricing[GPU_TIER_ADDON_PRICING_KEY] ?? WAN_ANIMATE_GPU_ULTRA_ADDON;
 
   const selectedWorkflow = useMemo(
     () => workflows.find((w) => w.slug === selectedSlug) ?? null,
     [workflows, selectedSlug],
   );
 
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-
   const selectWorkflow = (workflow: PublicCustomWorkflow) => {
     setSelectedSlug(workflow.slug);
     setNotice(null);
-    setAdvancedOpen(false);
     setStatus("idle");
     setResultUrl((previous) => {
       if (previous) URL.revokeObjectURL(previous);
@@ -108,7 +79,6 @@ export function CustomWorkflowsTab() {
     setErrorMessage(null);
 
     const saved = loadFormState<PersistedCustomWorkflowForm>(workflow.slug);
-    setGpuTier(saved?.gpuTier === "ultra" ? "ultra" : "standard");
     setValues(
       Object.fromEntries(
         workflow.input_schema.map((f) => [
@@ -119,10 +89,9 @@ export function CustomWorkflowsTab() {
     );
   };
 
-  // Auto-save text/slider/toggle inputs + GPU tier per workflow slug —
-  // image/video File values are intentionally excluded (see
-  // PersistedCustomWorkflowForm). Debounced so a slider drag doesn't write
-  // localStorage on every frame.
+  // Auto-save text/slider/toggle inputs per workflow slug — File values are
+  // excluded (see PersistedCustomWorkflowForm). Debounced so a slider drag
+  // doesn't write localStorage on every frame.
   useEffect(() => {
     if (!selectedSlug) return;
     const t = setTimeout(() => {
@@ -132,53 +101,23 @@ export function CustomWorkflowsTab() {
           serializableValues[key] = value;
         }
       }
-      const state: PersistedCustomWorkflowForm = { values: serializableValues, gpuTier };
-      saveFormState(selectedSlug, state);
+      saveFormState(selectedSlug, { values: serializableValues } satisfies PersistedCustomWorkflowForm);
     }, 400);
     return () => clearTimeout(t);
-  }, [selectedSlug, values, gpuTier]);
+  }, [selectedSlug, values]);
 
   // Stable so the memoized field components don't all re-render on every edit.
   const handleFieldChange = useCallback((fieldId: string, value: FieldValue) => {
     setValues((prev) => ({ ...prev, [fieldId]: value }));
   }, []);
 
-  // Layout: named `sections` (from the builder) split fields into titled
-  // bands; `sectionId` wins over the legacy main/advanced flag. Anything
-  // without a valid sectionId and not marked "advanced" is the base band.
-  const namedSections = useMemo(
-    () => selectedWorkflow?.sections ?? [],
-    [selectedWorkflow],
-  );
-  const { baseFields, sectionFieldMap, advancedFields } = useMemo(() => {
-    const map = new Map<string, WorkflowInputField[]>();
-    const base: WorkflowInputField[] = [];
-    const advanced: WorkflowInputField[] = [];
-    if (selectedWorkflow) {
-      const sectionIds = new Set(namedSections.map((s) => s.id));
-      for (const f of selectedWorkflow.input_schema) {
-        if (f.sectionId && sectionIds.has(f.sectionId)) {
-          const arr = map.get(f.sectionId) ?? [];
-          arr.push(f);
-          map.set(f.sectionId, arr);
-        } else if (f.section === "advanced") {
-          advanced.push(f);
-        } else {
-          base.push(f);
-        }
-      }
-    }
-    for (const [k, v] of map) map.set(k, sortFieldsByOrder(v));
-    return {
-      baseFields: sortFieldsByOrder(base),
-      sectionFieldMap: map,
-      advancedFields: sortFieldsByOrder(advanced),
-    };
-  }, [selectedWorkflow, namedSections]);
+  const handleLockedInteract = useCallback(() => {
+    setNotice("この項目は上位プラン限定です。プランをアップグレードするとご利用いただけます。");
+    // Studio lives on "/", so a hash change scrolls to the Pricing section.
+    if (typeof window !== "undefined") window.location.hash = "pricing";
+  }, []);
 
-  // Live total via the shared engine (base / base-override + Σ add-ons +
-  // GPU tier) — the server re-derives the same number on generate.
-  const ultraAddon = gpuTier === "ultra" ? gpuTierAddon : 0;
+  // Live total via the shared engine (base / base-override + Σ add-ons).
   const totalCredits = useMemo(() => {
     if (!selectedWorkflow) return 0;
     return calculateTotalWorkflowCredits({
@@ -187,11 +126,9 @@ export function CustomWorkflowsTab() {
       values: Object.fromEntries(
         selectedWorkflow.input_schema.map((f) => [f.id, values[f.id] ?? defaultValueFor(f)]),
       ),
-      gpuTierAddon: ultraAddon,
     });
-  }, [selectedWorkflow, values, ultraAddon]);
-  // For the button's "（基本X + オプションY）" breakdown only.
-  const extraCredits = Math.max(0, totalCredits - (selectedWorkflow?.credits_cost ?? 0) - ultraAddon);
+  }, [selectedWorkflow, values]);
+  const extraCredits = Math.max(0, totalCredits - (selectedWorkflow?.credits_cost ?? 0));
 
   const insufficientCredits =
     Boolean(user) && !creditsLoading && selectedWorkflow !== null && (credits ?? 0) < totalCredits;
@@ -223,11 +160,7 @@ export function CustomWorkflowsTab() {
     });
 
     try {
-      const result = await generateCustomWorkflow({
-        slug: selectedWorkflow.slug,
-        gpuTier,
-        values,
-      });
+      const result = await generateCustomWorkflow({ slug: selectedWorkflow.slug, values });
       setResultUrl(result.resultUrl);
       setResultKind(result.outputKind);
       setDownloadFilename(`custom_workflow_${Date.now()}.${result.outputKind === "video" ? "mp4" : "png"}`);
@@ -340,64 +273,13 @@ export function CustomWorkflowsTab() {
       </div>
 
       <div className="flex flex-col gap-5">
-        {namedSections.length > 0 && baseFields.length > 0 ? (
-          <div className="rounded-xl border border-border/70 bg-surface/20 p-4">
-            <p className="mb-3 text-xs font-semibold text-neon-violet">基本設定</p>
-            <WorkflowFieldGrid fields={baseFields} values={values} onChange={handleFieldChange} />
-          </div>
-        ) : (
-          <WorkflowFieldGrid fields={baseFields} values={values} onChange={handleFieldChange} />
-        )}
-
-        {namedSections.map((section) => {
-          const sf = sectionFieldMap.get(section.id) ?? [];
-          if (sf.length === 0) return null;
-          return (
-            <div key={section.id} className="rounded-xl border border-border/70 bg-surface/20 p-4">
-              <p className="text-xs font-semibold text-neon-violet">{section.label}</p>
-              {section.description && (
-                <p className="mb-3 mt-0.5 text-[11px] leading-relaxed text-muted">{section.description}</p>
-              )}
-              <div className={section.description ? "" : "mt-3"}>
-                <WorkflowFieldGrid fields={sf} values={values} onChange={handleFieldChange} />
-              </div>
-            </div>
-          );
-        })}
-
-        {advancedFields.length > 0 && (
-          <div className="rounded-xl border border-border">
-            <button
-              type="button"
-              onClick={() => setAdvancedOpen((v) => !v)}
-              className="flex w-full items-center justify-between px-4 py-3 text-xs font-medium text-muted transition-colors hover:text-foreground"
-            >
-              <span className="flex items-center gap-1.5">
-                <Settings2 size={14} />
-                詳細設定
-              </span>
-              <ChevronDown
-                size={14}
-                className={`transition-transform ${advancedOpen ? "rotate-180" : ""}`}
-              />
-            </button>
-            {advancedOpen && (
-              <div className="border-t border-border p-4">
-                <WorkflowFieldGrid
-                  fields={advancedFields}
-                  values={values}
-                  onChange={handleFieldChange}
-                />
-              </div>
-            )}
-          </div>
-        )}
-
-        <GpuTierSelector
-          value={gpuTier}
-          onChange={setGpuTier}
-          baseCost={selectedWorkflow.credits_cost + extraCredits}
-          addonCost={gpuTierAddon}
+        <WorkflowFieldLayout
+          fields={selectedWorkflow.input_schema}
+          sections={selectedWorkflow.sections ?? []}
+          values={values}
+          userTier={userTier}
+          onChange={handleFieldChange}
+          onLockedInteract={handleLockedInteract}
         />
 
         <GpuWarmStokeWidget />
@@ -424,13 +306,10 @@ export function CustomWorkflowsTab() {
             </>
           ) : (
             <>
-              <Wand2 size={16} />
-              {totalCredits} クレジットで生成
-              {(extraCredits > 0 || gpuTier === "ultra") && (
+              <Wand2 size={16} />⚡ {totalCredits} クレジットで生成
+              {extraCredits > 0 && (
                 <span className="font-mono text-xs opacity-80">
-                  （基本{selectedWorkflow.credits_cost}
-                  {extraCredits > 0 && ` + オプション${extraCredits}`}
-                  {gpuTier === "ultra" && ` + ULTRA${gpuTierAddon}`}）
+                  （基本{selectedWorkflow.credits_cost} + オプション{extraCredits}）
                 </span>
               )}
             </>
@@ -478,7 +357,7 @@ export function CustomWorkflowsTab() {
             <div className="flex items-center gap-2">
               <Film size={16} className="opacity-40" />
               <Zap size={12} className="text-neon-pink" />
-              生成中... GPU: {gpuTier === "ultra" ? "NVIDIA B300 (ULTRA)" : "NVIDIA L40S (Standard)"}
+              生成中...
             </div>
             <span className="font-mono text-[11px] font-medium text-neon-pink">
               ⏳ {formatElapsedSeconds(elapsedMs)}s

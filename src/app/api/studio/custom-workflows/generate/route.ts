@@ -4,12 +4,14 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import {
   calculateTotalWorkflowCredits,
+  isTierLocked,
+  isValidWorkflowGpuTier,
   type WorkflowGpuTier,
   type WorkflowInputField,
+  type WorkflowSection,
 } from "@/lib/customWorkflows";
 import { patchCustomWorkflow, type CustomWorkflowFieldValue } from "@/lib/customWorkflowExecution";
 import { runCustomWorkflowOnModal } from "@/lib/modalCustomWorkflow";
-import { getGpuTierUltraAddon } from "@/lib/gpuTierPricing";
 import type { GpuTier } from "@/lib/gpuTier";
 import { logGenerationActivity } from "@/lib/generationLogger";
 import { startActiveJob, endActiveJob } from "@/lib/activeGenerationJobs";
@@ -72,16 +74,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "ワークフローが指定されていません。" }, { status: 400 });
   }
 
-  const gpuTierRaw = formData.get("gpuTier");
-  const gpuTier: GpuTier = gpuTierRaw === "ultra" ? "ultra" : "standard";
-
   // workflow_json/input_schema/credits_cost always come from the DB by
   // slug — never trusted from the client, same posture as the preset video
   // path in /api/wan-animate/generate.
   const { data: workflowRow, error: workflowError } = await supabaseAdmin
     .from("studio_custom_workflows")
     .select(
-      "id, slug, workflow_json, input_schema, credits_cost, disable_smart_memory, cpu_vae, gpu_only, use_pytorch_cross_attention, high_vram, extra_args, output_node_id, default_gpu_tier",
+      "id, slug, workflow_json, input_schema, sections, credits_cost, disable_smart_memory, cpu_vae, gpu_only, use_pytorch_cross_attention, high_vram, extra_args, output_node_id, default_gpu_tier",
     )
     .eq("slug", slug)
     .eq("is_active", true)
@@ -96,12 +95,34 @@ export async function POST(request: Request) {
   }
 
   const inputSchema = workflowRow.input_schema as WorkflowInputField[];
+  const workflowSections = (workflowRow.sections as WorkflowSection[] | null) ?? [];
+
+  const { data: profile, error: profileError } = await getOrCreateProfile(
+    user.id,
+    "credits, credits_expire_at, subscription_tier",
+  );
+  if (profileError) {
+    console.error("[studio/custom-workflows/generate] failed to load profile:", profileError.message);
+    return NextResponse.json({ error: "プロフィールの取得に失敗しました。" }, { status: 500 });
+  }
+  const userTier = (profile?.subscription_tier as string | null) ?? "free";
+
+  // A field is locked if its own minTier — or its section's — outranks the
+  // viewer. Locked fields never take the submitted value: they fall back to
+  // their default, so an unauthorised client can't drive a gated option.
+  const sectionMinTier = new Map(workflowSections.map((s) => [s.id, s.minTier]));
+  const isFieldLocked = (field: WorkflowInputField): boolean =>
+    isTierLocked(field.minTier, userTier) ||
+    isTierLocked(field.sectionId ? sectionMinTier.get(field.sectionId) : undefined, userTier);
+
   const values: Record<string, CustomWorkflowFieldValue> = {};
 
   for (const field of inputSchema) {
-    const raw = formData.get(fieldFormKey(field.id));
+    const locked = isFieldLocked(field);
+    const raw = locked ? null : formData.get(fieldFormKey(field.id));
 
     if (field.type === "image" || field.type === "video") {
+      if (locked) continue; // gated upload — run without it rather than 400
       if (!(raw instanceof File) || raw.size === 0) {
         const noun = field.type === "video" ? "動画" : "画像";
         return NextResponse.json({ error: `「${field.label}」の${noun}をアップロードしてください。` }, { status: 400 });
@@ -142,25 +163,24 @@ export async function POST(request: Request) {
     .map((f) => `${f.label}: ${values[f.id] as string}`)
     .join("\n");
 
-  const gpuTierAddon = gpuTier === "ultra" ? await getGpuTierUltraAddon() : 0;
+  // GPU: a user-form field named `gpuTier` / `gpu_tier` wins if the workflow
+  // exposes one and its value is valid; otherwise the workflow's saved
+  // default_gpu_tier is used. Forwarded to Modal as `gpu_tier`.
+  const formGpu = formData.get("field:gpuTier") ?? formData.get("field:gpu_tier");
+  const effectiveGpuTier: WorkflowGpuTier = isValidWorkflowGpuTier(formGpu)
+    ? formGpu
+    : ((workflowRow.default_gpu_tier as WorkflowGpuTier | null) ?? "l4");
+  // Compat value for the standard/ultra-only job tracker.
+  const legacyTier: GpuTier =
+    effectiveGpuTier === "h100" || effectiveGpuTier === "b300" ? "ultra" : "standard";
+
   // Server-side re-derivation of the price via the shared engine — the
   // client's displayed total is never trusted.
   const generationCost = calculateTotalWorkflowCredits({
     creditsCost: workflowRow.credits_cost as number,
     inputSchema,
     values,
-    gpuTierAddon,
   });
-
-  const { data: profile, error: profileError } = await getOrCreateProfile(
-    user.id,
-    "credits, credits_expire_at",
-  );
-
-  if (profileError) {
-    console.error("[studio/custom-workflows/generate] failed to load profile:", profileError.message);
-    return NextResponse.json({ error: "プロフィールの取得に失敗しました。" }, { status: 500 });
-  }
 
   const creditsExpireAt = profile?.credits_expire_at as string | null | undefined;
   const rawCredits = profile?.credits as number | null | undefined;
@@ -202,7 +222,7 @@ export async function POST(request: Request) {
 
   const startedAt = Date.now();
   const jobType = `custom-workflow:${slug}`;
-  const activeJobId = await startActiveJob(user.id, jobType, gpuTier);
+  const activeJobId = await startActiveJob(user.id, jobType, legacyTier);
 
   try {
     const { workflow, files } = patchCustomWorkflow(
@@ -214,7 +234,7 @@ export async function POST(request: Request) {
     const result = await runCustomWorkflowOnModal({
       workflow,
       files,
-      gpuTier,
+      gpuTier: effectiveGpuTier,
       execConfig: {
         disable_smart_memory: workflowRow.disable_smart_memory as boolean,
         cpu_vae: workflowRow.cpu_vae as boolean,
@@ -225,7 +245,6 @@ export async function POST(request: Request) {
       },
       saveToVolume: isAdmin,
       outputNodeId: (workflowRow.output_node_id as string | null) ?? "",
-      defaultGpuTier: (workflowRow.default_gpu_tier as WorkflowGpuTier | null) ?? undefined,
     });
     const executionTimeMs = Date.now() - startedAt;
 
@@ -236,7 +255,7 @@ export async function POST(request: Request) {
       executionTimeMs,
       creditsConsumed: generationCost,
       status: "success",
-      gpuTier,
+      gpuTier: effectiveGpuTier,
       outputFileName: result.output_path,
     });
 
@@ -269,7 +288,7 @@ export async function POST(request: Request) {
       creditsConsumed: 0,
       status: "failed",
       errorMessage: err instanceof Error ? err.message : String(err),
-      gpuTier,
+      gpuTier: effectiveGpuTier,
     });
 
     return NextResponse.json(

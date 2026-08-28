@@ -1,5 +1,4 @@
 import "server-only";
-import type { GpuTier } from "@/lib/gpuTier";
 import { DEFAULT_WORKFLOW_GPU_TIER, type WorkflowGpuTier } from "@/lib/customWorkflows";
 
 export type CustomWorkflowFile = { filename: string; base64: string };
@@ -7,7 +6,7 @@ export type CustomWorkflowFile = { filename: string; base64: string };
 export type CustomWorkflowResult = {
   filename: string;
   result_base64: string;
-  gpu_tier: GpuTier;
+  gpu_tier: string;
   output_path: string;
 };
 
@@ -23,7 +22,6 @@ export type CustomWorkflowExecConfig = {
 export type RunCustomWorkflowParams = {
   workflow: Record<string, unknown>;
   files: CustomWorkflowFile[];
-  gpuTier: GpuTier;
   execConfig: CustomWorkflowExecConfig;
   // Persists the output into the Modal Volume (outputs/admin/) in addition
   // to returning it — set only for admin-triggered generations, see
@@ -32,9 +30,10 @@ export type RunCustomWorkflowParams = {
   // Node id in the graph to read the final output from — "" means
   // auto-detect (see run_custom_workflow in scripts/modal_wan_animate.py).
   outputNodeId: string;
-  // The Modal GPU the admin picked for this workflow (studio_custom_workflows
-  // .default_gpu_tier). Forwarded to Modal as `gpu_tier`.
-  defaultGpuTier?: WorkflowGpuTier;
+  // The Modal GPU to run this workflow on: the workflow's saved
+  // default_gpu_tier, or a user-form override if the workflow exposes one.
+  // Forwarded to Modal as `gpu_tier`.
+  gpuTier?: WorkflowGpuTier;
 };
 
 // Same cold-start budget as generateWithModal (modalWanAnimate.ts) — a
@@ -42,22 +41,15 @@ export type RunCustomWorkflowParams = {
 // spin-up + model load overhead is identical.
 const MODAL_TIMEOUT_MS = 280_000;
 
-// Reuses the WanAnimate / WanAnimateUltra Modal classes' `custom_workflow`
-// endpoint (see scripts/modal_wan_animate.py) — same containers, models
-// volume, and GPU tier split as Wan Animate 2, just a different entrypoint
-// method that accepts an arbitrary ComfyUI graph instead of the fixed
-// reference-image/pose-video shape.
-const MODAL_URL_ENV_BY_TIER: Record<GpuTier, string> = {
-  standard: "MODAL_CUSTOM_WORKFLOW_URL",
-  ultra: "MODAL_CUSTOM_WORKFLOW_ULTRA_URL",
-};
-
+// A single custom-workflow endpoint now — the old Standard/ULTRA URL split
+// is gone. The GPU is selected per workflow via `gpu_tier` in the body
+// (studio_custom_workflows.default_gpu_tier, see the generate route), which
+// Modal reads to place the container.
 export async function runCustomWorkflowOnModal(params: RunCustomWorkflowParams): Promise<CustomWorkflowResult> {
-  const urlEnvName = MODAL_URL_ENV_BY_TIER[params.gpuTier];
-  const url = process.env[urlEnvName];
+  const url = process.env.MODAL_CUSTOM_WORKFLOW_URL;
   const authToken = process.env.MODAL_AUTH_TOKEN;
   if (!url) {
-    throw new Error(`Modal is not configured (missing ${urlEnvName}).`);
+    throw new Error("Modal is not configured (missing MODAL_CUSTOM_WORKFLOW_URL).");
   }
   if (!authToken) {
     throw new Error("Modal is not configured (missing MODAL_AUTH_TOKEN).");
@@ -75,7 +67,7 @@ export async function runCustomWorkflowOnModal(params: RunCustomWorkflowParams):
       exec_config: params.execConfig,
       save_to_volume: params.saveToVolume,
       output_node_id: params.outputNodeId,
-      gpu_tier: params.defaultGpuTier ?? DEFAULT_WORKFLOW_GPU_TIER,
+      gpu_tier: params.gpuTier ?? DEFAULT_WORKFLOW_GPU_TIER,
     }),
     signal: AbortSignal.timeout(MODAL_TIMEOUT_MS),
   });
