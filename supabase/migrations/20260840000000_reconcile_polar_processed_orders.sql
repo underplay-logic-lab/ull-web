@@ -3,105 +3,50 @@
 --
 -- Symptom this fixes:
 --   ERROR: 42703: column "credits_granted" of relation
---   "polar_processed_orders" does not exist
---   (raised from inside grant_polar_order_credits()).
+--   "polar_processed_orders" does not exist   (from grant_polar_order_credits)
 --
 -- `create table if not exists` is a no-op when the table already exists, so
--- it never adds the missing columns. This migration brings the table up to
--- the shape grant_polar_order_credits() / the webhook expect using only
--- additive, re-runnable statements — no DROP, no data loss.
+-- it never adds the missing columns. Everything below is additive and
+-- re-runnable: no DROP TABLE, no data loss.
+--
+-- Deliberately avoids anonymous DO blocks and double-quoted identifiers so a
+-- paste that mangles straight quotes into smart quotes can't break it
+-- (that was the "syntax error at or near Service" on the old policy name).
 
--- ---------------------------------------------------------------------------
--- 1. Table + columns
--- ---------------------------------------------------------------------------
+-- 1. Table + columns ---------------------------------------------------------
 create table if not exists public.polar_processed_orders (
   order_id text primary key
 );
 
-alter table public.polar_processed_orders
-  add column if not exists order_id        text;
-alter table public.polar_processed_orders
-  add column if not exists user_id         uuid;
-alter table public.polar_processed_orders
-  add column if not exists credits_granted integer not null default 0;
-alter table public.polar_processed_orders
-  add column if not exists created_at      timestamptz not null default now();
+alter table public.polar_processed_orders add column if not exists order_id        text;
+alter table public.polar_processed_orders add column if not exists user_id         uuid;
+alter table public.polar_processed_orders add column if not exists credits_granted integer;
+alter table public.polar_processed_orders add column if not exists created_at      timestamptz not null default now();
 
--- credits_granted is always supplied by the function; the default above only
--- exists so the ADD COLUMN succeeds on a table that already has rows. Drop it
--- to match the canonical schema (no-op if there is no default).
+-- 2. Unique index on order_id so `on conflict (order_id)` resolves ----------
+create unique index if not exists polar_processed_orders_order_id_key
+  on public.polar_processed_orders (order_id);
+
+-- 3. FK user_id -> auth.users (drop-then-add = idempotent) -----------------
 alter table public.polar_processed_orders
-  alter column credits_granted drop default;
+  drop constraint if exists polar_processed_orders_user_id_fkey;
+alter table public.polar_processed_orders
+  add constraint polar_processed_orders_user_id_fkey
+  foreign key (user_id) references auth.users (id) on delete set null;
 
--- ---------------------------------------------------------------------------
--- 2. order_id must be unique for `on conflict (order_id)` to resolve
--- ---------------------------------------------------------------------------
-do $reconcile$
-begin
-  if exists (
-    select 1 from pg_attribute
-    where attrelid = 'public.polar_processed_orders'::regclass
-      and attname = 'order_id'
-      and attnotnull = false
-  ) then
-    delete from public.polar_processed_orders where order_id is null;
-    alter table public.polar_processed_orders alter column order_id set not null;
-  end if;
-
-  if not exists (
-    select 1
-    from pg_index i
-    join pg_class c on c.oid = i.indrelid
-    where c.relname = 'polar_processed_orders'
-      and c.relnamespace = 'public'::regnamespace
-      and i.indisunique
-      and i.indnatts = 1
-      and i.indkey[0] = (
-        select attnum from pg_attribute
-        where attrelid = c.oid and attname = 'order_id'
-      )
-  ) then
-    alter table public.polar_processed_orders
-      add constraint polar_processed_orders_order_id_key unique (order_id);
-  end if;
-end
-$reconcile$;
-
--- ---------------------------------------------------------------------------
--- 3. Optional FK user_id -> auth.users (guarded; skipped if any FK exists)
--- ---------------------------------------------------------------------------
-do $reconcile$
-begin
-  if not exists (
-    select 1 from pg_constraint
-    where conrelid = 'public.polar_processed_orders'::regclass
-      and contype = 'f'
-  ) then
-    alter table public.polar_processed_orders
-      add constraint polar_processed_orders_user_id_fkey
-      foreign key (user_id) references auth.users(id) on delete set null;
-  end if;
-end
-$reconcile$;
-
--- ---------------------------------------------------------------------------
--- 4. RLS + service-role policy
--- ---------------------------------------------------------------------------
+-- 4. RLS + service-role policy (unquoted policy name) ----------------------
 alter table public.polar_processed_orders enable row level security;
 
-drop policy if exists "Service role has full access to polar_processed_orders"
-  on public.polar_processed_orders;
+drop policy if exists polar_processed_orders_service_role on public.polar_processed_orders;
 
-create policy "Service role has full access to polar_processed_orders"
+create policy polar_processed_orders_service_role
   on public.polar_processed_orders
   for all
   to service_role
   using (true)
   with check (true);
 
--- ---------------------------------------------------------------------------
--- 5. Functions (re-assert latest definitions)
--- ---------------------------------------------------------------------------
+-- 5. Functions (re-assert latest definitions) ------------------------------
 create or replace function public.increment_profile_credits(p_user_id uuid, p_amount integer)
 returns integer
 language plpgsql
@@ -185,7 +130,5 @@ $polar$;
 revoke all on function public.grant_polar_order_credits(text, uuid, integer, text) from public;
 grant execute on function public.grant_polar_order_credits(text, uuid, integer, text) to service_role;
 
--- ---------------------------------------------------------------------------
--- 6. Refresh the PostgREST schema cache so the RPC is callable right away
--- ---------------------------------------------------------------------------
+-- 6. Refresh the PostgREST schema cache -----------------------------------
 notify pgrst, 'reload schema';
