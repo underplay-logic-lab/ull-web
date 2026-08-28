@@ -121,7 +121,7 @@ async function handleOrderPaid(order: OrderData) {
   // the subscription_tier / cancel_at_period_end update. Either all of it
   // commits or none of it does — a partial failure can never leave the
   // order recorded as processed but uncredited. See
-  // supabase/migrations/20260839000000_polar_webhook_atomic_grant.sql.
+  // supabase/migrations/20260840000000_reconcile_polar_processed_orders.sql.
   const tierArg = config.isSubscription ? config.tier : null;
 
   const { data, error } = await supabaseAdmin.rpc("grant_polar_order_credits", {
