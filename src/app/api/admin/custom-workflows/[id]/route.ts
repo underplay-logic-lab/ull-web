@@ -73,6 +73,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     }
     update.default_gpu_tier = body.default_gpu_tier;
   }
+  if (typeof body.gpu_badge_label === "string") {
+    update.gpu_badge_label = body.gpu_badge_label.trim().slice(0, 60);
+  }
   if (typeof body.credits_cost === "number") update.credits_cost = body.credits_cost;
   if (typeof body.priority === "number") update.priority = body.priority;
   if (typeof body.is_active === "boolean") update.is_active = body.is_active;

@@ -26,6 +26,7 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
   const [isActive, setIsActive] = useState(true);
   const [creditsCost, setCreditsCost] = useState(0);
   const [gpuTier, setGpuTier] = useState<WorkflowGpuTier>(DEFAULT_WORKFLOW_GPU_TIER);
+  const [badgeLabel, setBadgeLabel] = useState("");
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState<"desktop" | "mobile">("desktop");
@@ -52,6 +53,7 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
         setIsActive(row.is_active);
         setCreditsCost(row.credits_cost);
         setGpuTier(row.default_gpu_tier ?? DEFAULT_WORKFLOW_GPU_TIER);
+        setBadgeLabel(row.gpu_badge_label ?? "");
       } catch (err) {
         setError(err instanceof Error ? err.message : "取得に失敗しました。");
       } finally {
@@ -198,6 +200,7 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
           is_active: isActive,
           credits_cost: creditsCost,
           default_gpu_tier: gpuTier,
+          gpu_badge_label: badgeLabel,
         }),
       });
       const data = await res.json();
@@ -251,6 +254,19 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
         </div>
 
         <div className="flex shrink-0 items-center gap-3">
+          <label className="flex items-center gap-1.5 text-[11px] text-muted">
+            バッジ
+            <input
+              value={badgeLabel}
+              onChange={(e) => {
+                setBadgeLabel(e.target.value.slice(0, 60));
+                touch();
+              }}
+              placeholder="⚡ Logic Core V2（空欄で非表示）"
+              className="w-44 rounded-md border border-border bg-background px-2 py-1 text-xs outline-none focus:border-neon-violet/50"
+            />
+          </label>
+
           <label className="flex items-center gap-1.5 text-[11px] text-muted">
             実行GPU
             <select

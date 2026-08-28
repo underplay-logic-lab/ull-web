@@ -6,6 +6,7 @@ import {
   calculateTotalWorkflowCredits,
   sortFieldsByOrder,
   type PublicCustomWorkflow,
+  type WorkflowInputField,
 } from "@/lib/customWorkflows";
 import { defaultValueFor, type FieldValue } from "@/components/studio/workflow/DynamicField";
 import { WorkflowFieldGrid } from "@/components/studio/workflow/WorkflowFieldGrid";
@@ -142,20 +143,38 @@ export function CustomWorkflowsTab() {
     setValues((prev) => ({ ...prev, [fieldId]: value }));
   }, []);
 
-  const mainFields = useMemo(
-    () =>
-      selectedWorkflow
-        ? sortFieldsByOrder(selectedWorkflow.input_schema.filter((f) => (f.section ?? "main") === "main"))
-        : [],
+  // Layout: named `sections` (from the builder) split fields into titled
+  // bands; `sectionId` wins over the legacy main/advanced flag. Anything
+  // without a valid sectionId and not marked "advanced" is the base band.
+  const namedSections = useMemo(
+    () => selectedWorkflow?.sections ?? [],
     [selectedWorkflow],
   );
-  const advancedFields = useMemo(
-    () =>
-      selectedWorkflow
-        ? sortFieldsByOrder(selectedWorkflow.input_schema.filter((f) => f.section === "advanced"))
-        : [],
-    [selectedWorkflow],
-  );
+  const { baseFields, sectionFieldMap, advancedFields } = useMemo(() => {
+    const map = new Map<string, WorkflowInputField[]>();
+    const base: WorkflowInputField[] = [];
+    const advanced: WorkflowInputField[] = [];
+    if (selectedWorkflow) {
+      const sectionIds = new Set(namedSections.map((s) => s.id));
+      for (const f of selectedWorkflow.input_schema) {
+        if (f.sectionId && sectionIds.has(f.sectionId)) {
+          const arr = map.get(f.sectionId) ?? [];
+          arr.push(f);
+          map.set(f.sectionId, arr);
+        } else if (f.section === "advanced") {
+          advanced.push(f);
+        } else {
+          base.push(f);
+        }
+      }
+    }
+    for (const [k, v] of map) map.set(k, sortFieldsByOrder(v));
+    return {
+      baseFields: sortFieldsByOrder(base),
+      sectionFieldMap: map,
+      advancedFields: sortFieldsByOrder(advanced),
+    };
+  }, [selectedWorkflow, namedSections]);
 
   // Live total via the shared engine (base / base-override + Σ add-ons +
   // GPU tier) — the server re-derives the same number on generate.
@@ -267,9 +286,14 @@ export function CustomWorkflowsTab() {
               onClick={() => selectWorkflow(workflow)}
               className="flex flex-col gap-2 rounded-xl border border-border bg-background p-4 text-left transition-colors hover:border-neon-violet/50"
             >
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Layers size={16} className="shrink-0 text-neon-violet" />
                 <span className="font-medium text-foreground">{workflow.title}</span>
+                {workflow.gpu_badge_label && workflow.gpu_badge_label.trim() && (
+                  <span className="rounded-full border border-neon-pink/40 bg-neon-pink/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-neon-pink">
+                    {workflow.gpu_badge_label}
+                  </span>
+                )}
               </div>
               {workflow.description && (
                 <p className="line-clamp-2 text-xs leading-relaxed text-muted">{workflow.description}</p>
@@ -302,18 +326,44 @@ export function CustomWorkflowsTab() {
       </button>
 
       <div className="mb-6">
-        <h3 className="text-lg font-bold text-foreground">{selectedWorkflow.title}</h3>
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="text-lg font-bold text-foreground">{selectedWorkflow.title}</h3>
+          {selectedWorkflow.gpu_badge_label && selectedWorkflow.gpu_badge_label.trim() && (
+            <span className="rounded-full border border-neon-pink/40 bg-neon-pink/10 px-2.5 py-0.5 font-mono text-[11px] font-semibold text-neon-pink">
+              {selectedWorkflow.gpu_badge_label}
+            </span>
+          )}
+        </div>
         {selectedWorkflow.description && (
           <p className="mt-1 text-sm text-muted">{selectedWorkflow.description}</p>
         )}
       </div>
 
       <div className="flex flex-col gap-5">
-        <WorkflowFieldGrid
-          fields={mainFields}
-          values={values}
-          onChange={handleFieldChange}
-        />
+        {namedSections.length > 0 && baseFields.length > 0 ? (
+          <div className="rounded-xl border border-border/70 bg-surface/20 p-4">
+            <p className="mb-3 text-xs font-semibold text-neon-violet">基本設定</p>
+            <WorkflowFieldGrid fields={baseFields} values={values} onChange={handleFieldChange} />
+          </div>
+        ) : (
+          <WorkflowFieldGrid fields={baseFields} values={values} onChange={handleFieldChange} />
+        )}
+
+        {namedSections.map((section) => {
+          const sf = sectionFieldMap.get(section.id) ?? [];
+          if (sf.length === 0) return null;
+          return (
+            <div key={section.id} className="rounded-xl border border-border/70 bg-surface/20 p-4">
+              <p className="text-xs font-semibold text-neon-violet">{section.label}</p>
+              {section.description && (
+                <p className="mb-3 mt-0.5 text-[11px] leading-relaxed text-muted">{section.description}</p>
+              )}
+              <div className={section.description ? "" : "mt-3"}>
+                <WorkflowFieldGrid fields={sf} values={values} onChange={handleFieldChange} />
+              </div>
+            </div>
+          );
+        })}
 
         {advancedFields.length > 0 && (
           <div className="rounded-xl border border-border">

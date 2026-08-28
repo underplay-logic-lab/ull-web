@@ -8,7 +8,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 export async function GET() {
   const { data, error } = await supabaseAdmin
     .from("studio_custom_workflows")
-    .select("id, slug, title, description, category, input_schema, credits_cost")
+    .select("id, slug, title, description, category, input_schema, sections, credits_cost, gpu_badge_label")
     .eq("is_active", true)
     .order("priority", { ascending: false });
 

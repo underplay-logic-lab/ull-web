@@ -133,6 +133,9 @@ export type StudioCustomWorkflow = {
   // Modal GPU this workflow runs on. Absent on rows read before the
   // 20260842000000 migration ran.
   default_gpu_tier?: WorkflowGpuTier;
+  // Free-text badge shown on the Studio card/header. Empty string = hidden.
+  // Absent on rows read before the 20260843000000 migration ran.
+  gpu_badge_label?: string;
   credits_cost: number;
   priority: number;
   is_active: boolean;
@@ -162,6 +165,8 @@ export type PublicCustomWorkflow = {
   description: string | null;
   category: string;
   input_schema: WorkflowInputField[];
+  sections?: WorkflowSection[];
+  gpu_badge_label?: string;
   credits_cost: number;
 };
 
@@ -366,22 +371,32 @@ export function workflowCreditsBreakdown(input: WorkflowCreditsInput): WorkflowC
       continue;
     }
 
-    if (field.type === "slider" && typeof field.credits_per_unit === "number") {
-      const num = typeof value === "number" ? value : Number(value);
-      const baseline =
-        typeof field.credits_baseline === "number"
-          ? field.credits_baseline
-          : typeof field.default === "number"
-            ? field.default
-            : field.min ?? 0;
-      if (Number.isFinite(num) && num > baseline) {
-        addons += Math.ceil(num - baseline) * field.credits_per_unit;
+    if (field.type === "slider") {
+      // Slider values can reach here as a string ("15") from persisted form
+      // state or a form-data round-trip — parse defensively so the add-on
+      // always lands in the total.
+      const numVal = typeof value === "number" ? value : parseFloat(String(value));
+
+      if (typeof field.credits_per_unit === "number") {
+        const baseline =
+          typeof field.credits_baseline === "number"
+            ? field.credits_baseline
+            : typeof field.default === "number"
+              ? field.default
+              : field.min ?? 0;
+        if (Number.isFinite(numVal) && numVal > baseline) {
+          addons += Math.ceil(numVal - baseline) * field.credits_per_unit;
+        }
+      } else if (typeof field.credits_add === "number") {
+        // Flat add: applies once the slider is moved off its default/min.
+        const baseline = typeof field.default === "number" ? field.default : field.min ?? 0;
+        if (Number.isFinite(numVal) && numVal !== baseline) addons += field.credits_add;
       }
       continue;
     }
 
-    // toggle / text / image / video (and sliders without per-unit pricing):
-    // the flat credits_add, applied when the field is "actively selected".
+    // toggle / text / image / video: the flat credits_add, applied when the
+    // field is "actively selected".
     if (fieldAppliesCreditsAdd(field, value)) {
       addons += field.credits_add ?? 0;
     }

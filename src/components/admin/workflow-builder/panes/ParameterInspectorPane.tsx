@@ -34,6 +34,19 @@ const inputCls =
   "w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs outline-none focus:border-neon-violet/50";
 const labelCls = "mb-1 block text-[10px] font-medium text-muted";
 
+// Builds a numeric field patch from a raw <input> value: "" or an
+// unparseable value clears the prop (undefined), otherwise it's the parsed
+// number. Used by the ⚡ pricing inputs so an admin's typed value is always
+// stored, not left at a stale default.
+function numPatch(
+  key: "credits_baseline" | "credits_per_unit" | "credits_add",
+  raw: string,
+): Partial<WorkflowInputField> {
+  if (raw.trim() === "") return { [key]: undefined };
+  const n = Number(raw);
+  return { [key]: Number.isNaN(n) ? undefined : n };
+}
+
 // Right pane (30%): full property + dynamic-pricing editor for the selected field.
 export function ParameterInspectorPane({
   field,
@@ -320,7 +333,7 @@ export function ParameterInspectorPane({
                 type="number"
                 value={field.credits_add ?? ""}
                 onChange={(e) =>
-                  onChange({ credits_add: e.target.value === "" ? undefined : Number(e.target.value) })
+                  onChange(numPatch("credits_add", e.target.value))
                 }
                 className={inputCls}
               />
@@ -334,7 +347,7 @@ export function ParameterInspectorPane({
                 type="number"
                 value={field.credits_add ?? ""}
                 onChange={(e) =>
-                  onChange({ credits_add: e.target.value === "" ? undefined : Number(e.target.value) })
+                  onChange(numPatch("credits_add", e.target.value))
                 }
                 className={inputCls}
               />
@@ -349,9 +362,7 @@ export function ParameterInspectorPane({
                   type="number"
                   step="any"
                   value={field.credits_baseline ?? ""}
-                  onChange={(e) =>
-                    onChange({ credits_baseline: e.target.value === "" ? undefined : Number(e.target.value) })
-                  }
+                  onChange={(e) => onChange(numPatch("credits_baseline", e.target.value))}
                   className={inputCls}
                 />
               </div>
@@ -361,14 +372,23 @@ export function ParameterInspectorPane({
                   type="number"
                   step="any"
                   value={field.credits_per_unit ?? ""}
-                  onChange={(e) =>
-                    onChange({ credits_per_unit: e.target.value === "" ? undefined : Number(e.target.value) })
-                  }
+                  onChange={(e) => onChange(numPatch("credits_per_unit", e.target.value))}
+                  className={inputCls}
+                />
+              </div>
+              <div className="col-span-2">
+                <label className={labelCls}>固定加算 (Per unit 未設定時)</label>
+                <input
+                  type="number"
+                  step="any"
+                  value={field.credits_add ?? ""}
+                  onChange={(e) => onChange(numPatch("credits_add", e.target.value))}
                   className={inputCls}
                 />
               </div>
               <p className="col-span-2 text-[9px] text-muted">
-                Per unit 未設定時は「基準値から動かしたら +加算クレジット」の固定加算として扱われます。
+                Per unit を設定すると「(値 − Baseline) 単位 × Per unit」で従量課金。未設定なら「Baseline
+                から動かしたら 固定加算」。
               </p>
             </div>
           )}
