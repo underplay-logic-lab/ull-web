@@ -23,7 +23,8 @@ import {
   type CinematicAspectRatio,
   type CinematicModeId,
 } from "@/lib/cinematicPricing";
-import { generateCinematicVideo, pollCinematicJob } from "@/lib/cinematicApi";
+import { generateCinematicVideo, pollCinematicJob, type CinematicQueueInfo } from "@/lib/cinematicApi";
+import { QueueStatusPanel } from "@/components/studio/QueueStatusPanel";
 import { resizeImageBlobTo } from "@/lib/imageCanvas";
 import { ImageCropper } from "@/components/studio/ImageCropper";
 import { GpuWarmStokeWidget } from "@/components/studio/GpuWarmStokeWidget";
@@ -175,6 +176,7 @@ export function CinematicVideoTab() {
   const [prompt, setPrompt] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [jobPhase, setJobPhase] = useState<JobPhase>(null);
+  const [queueInfo, setQueueInfo] = useState<CinematicQueueInfo | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [downloadFilename, setDownloadFilename] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -247,6 +249,7 @@ export function CinematicVideoTab() {
 
     setStatus("loading");
     setJobPhase("queued");
+    setQueueInfo(null);
     setResultUrl(null);
     setDownloadFilename(null);
     setErrorMessage(null);
@@ -279,6 +282,7 @@ export function CinematicVideoTab() {
             setDownloadFilename(buildDownloadFilename());
             setStatus("done");
             setJobPhase(null);
+            setQueueInfo(null);
             setToasts((prev) => [...prev, { id: Date.now(), message: "🎬 動画生成が完了しました" }]);
             return;
           }
@@ -290,6 +294,7 @@ export function CinematicVideoTab() {
             );
             setStatus("error");
             setJobPhase(null);
+            setQueueInfo(null);
             setToasts((prev) => [
               ...prev,
               { id: Date.now(), message: "⚠️ 動画生成に失敗しました（クレジットは返金されました）" },
@@ -297,6 +302,7 @@ export function CinematicVideoTab() {
             return;
           }
           setJobPhase(job.status);
+          setQueueInfo(job.queue);
         } catch (err) {
           // A transient poll failure shouldn't flip the whole job to
           // "error" — the render itself may still be in progress on
@@ -328,7 +334,13 @@ export function CinematicVideoTab() {
     buttonLabel = (
       <>
         <Loader2 size={16} className="animate-spin" />
-        {jobPhase === "queued" ? "⏳ 待機列に並んでいます" : "⚡ レンダリング中"}... {formatElapsedSeconds(elapsedMs)}s
+        {(() => {
+          const pos = queueInfo?.queuePosition ?? (jobPhase === "processing" ? 0 : 1);
+          if (pos >= 2) return `👥 ${pos} 人待ち`;
+          if (pos === 1) return "⏳ まもなくあなたの番です";
+          return "🔥 レンダリング実行中";
+        })()}
+        ... {formatElapsedSeconds(elapsedMs)}s
       </>
     );
   } else if (!user) {
@@ -502,20 +514,17 @@ export function CinematicVideoTab() {
 
           <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-border bg-background">
             {status === "loading" && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface/60">
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface/60 px-4">
                 <div className="absolute inset-4 animate-pulse rounded-lg bg-surface-hover/60" />
                 <span className="relative z-10 flex items-center gap-1.5 rounded-full border border-neon-pink/40 bg-neon-pink/10 px-3 py-1 font-mono text-[11px] font-medium text-neon-pink">
                   <Zap size={12} />
                   Logic Engine ({mode.label})
                 </span>
-                <span className="relative z-10 flex items-center gap-1.5 rounded-full border border-border bg-background/80 px-3 py-1 font-mono text-[11px] font-medium text-foreground">
-                  {jobPhase === "queued"
-                    ? "⏳ サーバー待機列に並んでいます..."
-                    : `⚡ レンダリング中... ${formatElapsedSeconds(elapsedMs)}s`}
-                </span>
-                <Loader2 size={28} className="relative z-10 animate-spin text-neon-pink" />
-                <span className="relative z-10 font-mono text-xs text-muted">
-                  {jobPhase === "queued" ? "空きGPUを確保しています..." : "高精度サンプリング中..."}
+                <div className="relative z-10 w-full">
+                  <QueueStatusPanel phase={jobPhase} queue={queueInfo} className="mx-auto" />
+                </div>
+                <span className="relative z-10 font-mono text-[11px] text-muted">
+                  経過 {formatElapsedSeconds(elapsedMs)}s ・ {jobPhase === "queued" ? "空きGPUを確保しています..." : "高精度サンプリング中..."}
                 </span>
               </div>
             )}

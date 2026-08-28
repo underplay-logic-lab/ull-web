@@ -1082,8 +1082,14 @@ class WanAnimateBlackwell:
         """
         is_async = job_id is not None
         started = time.time()
+
+        def _now_iso() -> str:
+            return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
         if is_async:
-            _supabase_patch_job(job_id, {"status": "processing"})
+            # started_at feeds the "推定待機時間" average (completed_at -
+            # started_at) the Studio queue monitor shows.
+            _supabase_patch_job(job_id, {"status": "processing", "started_at": _now_iso()})
         try:
             self._ensure_comfy_running(exec_config)
             workflow = json.loads(workflow_json)
@@ -1092,7 +1098,10 @@ class WanAnimateBlackwell:
         except Exception as exc:
             self._append_log("failed", time.time() - started, error=str(exc)[:500])
             if is_async:
-                _supabase_patch_job(job_id, {"status": "failed", "error_message": str(exc)[:2000]})
+                _supabase_patch_job(
+                    job_id,
+                    {"status": "failed", "error_message": str(exc)[:2000], "completed_at": _now_iso()},
+                )
                 _refund_credits(user_id, credits_cost)
                 _clear_active_job(active_job_id)
             raise
@@ -1117,7 +1126,12 @@ class WanAnimateBlackwell:
             # workflow types or job history becomes a real feature: a hot
             # table growing multi-MB text rows isn't a great long-term fit.
             _supabase_patch_job(
-                job_id, {"status": "completed", "video_url": f"data:video/mp4;base64,{result_base64}"}
+                job_id,
+                {
+                    "status": "completed",
+                    "video_url": f"data:video/mp4;base64,{result_base64}",
+                    "completed_at": _now_iso(),
+                },
             )
             _extend_gpu_warm(user_id)
             _clear_active_job(active_job_id)

@@ -52,11 +52,23 @@ export async function generateCinematicVideo(
   return { jobId: data.jobId as string, remainingCredits: data.remainingCredits as number };
 }
 
+// Live queue telemetry — present only while the job is queued/processing
+// (see GET /api/jobs/[id] → generation_job_queue_stats).
+export type CinematicQueueInfo = {
+  // Jobs ahead of this one (0 = this job is next / already rendering).
+  queuePosition: number;
+  // Mean render time of the last ~10 completed jobs, in seconds.
+  avgExecutionSeconds: number;
+  // queuePosition * avgExecutionSeconds + ~10s for the running job.
+  estimatedWaitSeconds: number;
+};
+
 export type CinematicJobStatus = {
   jobId: string;
   status: "queued" | "processing" | "completed" | "failed";
   videoUrl: string | null;
   errorMessage: string | null;
+  queue: CinematicQueueInfo | null;
 };
 
 // Single poll of a job's current state — see /api/jobs/[id]. The caller
@@ -85,5 +97,13 @@ export async function pollCinematicJob(jobId: string): Promise<CinematicJobStatu
     status: data.status as CinematicJobStatus["status"],
     videoUrl: (data.videoUrl as string | null) ?? null,
     errorMessage: (data.errorMessage as string | null) ?? null,
+    queue:
+      typeof data.queuePosition === "number"
+        ? {
+            queuePosition: data.queuePosition as number,
+            avgExecutionSeconds: (data.avgExecutionSeconds as number | undefined) ?? 28,
+            estimatedWaitSeconds: (data.estimatedWaitSeconds as number | undefined) ?? 0,
+          }
+        : null,
   };
 }

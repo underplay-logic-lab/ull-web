@@ -49,6 +49,28 @@ export async function GET(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "ジョブが見つかりません。" }, { status: 404 });
   }
 
+  // While the job is still waiting/running, attach live queue telemetry so
+  // the client can show "何人待ち / あと約何分". One indexed RPC round-trip
+  // (see generation_job_queue_stats) — skipped entirely once the job is
+  // completed/failed.
+  let queue: { queuePosition: number; avgExecutionSeconds: number; estimatedWaitSeconds: number } | null =
+    null;
+  if (job.status === "queued" || job.status === "processing") {
+    const { data: stats, error: statsError } = await supabaseAdmin.rpc("generation_job_queue_stats", {
+      p_created_at: job.created_at,
+    });
+    if (statsError) {
+      console.error("[jobs/[id]] queue stats failed:", statsError.message);
+    } else {
+      const row = Array.isArray(stats) ? stats[0] : stats;
+      const queuePosition = Math.max(0, Math.round(Number(row?.queue_position ?? 0)));
+      const avgExecutionSeconds = Math.max(1, Math.round(Number(row?.avg_execution_seconds ?? 28)));
+      // Full renders queued ahead + ~10s left on the one currently running.
+      const estimatedWaitSeconds = queuePosition * avgExecutionSeconds + 10;
+      queue = { queuePosition, avgExecutionSeconds, estimatedWaitSeconds };
+    }
+  }
+
   return NextResponse.json({
     jobId: job.id,
     status: job.status as "queued" | "processing" | "completed" | "failed",
@@ -57,5 +79,12 @@ export async function GET(request: Request, { params }: RouteParams) {
     errorMessage: job.error_message,
     createdAt: job.created_at,
     updatedAt: job.updated_at,
+    ...(queue
+      ? {
+          queuePosition: queue.queuePosition,
+          avgExecutionSeconds: queue.avgExecutionSeconds,
+          estimatedWaitSeconds: queue.estimatedWaitSeconds,
+        }
+      : {}),
   });
 }
