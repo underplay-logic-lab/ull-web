@@ -15,6 +15,7 @@ import { ToastStack, type ToastData } from "@/components/Toast";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { supabase } from "@/lib/supabaseClient";
+import { openPolarPortal } from "@/lib/polarPortal";
 
 const PAID_TIER_LABEL: Record<string, string> = {
   entry: "Entry",
@@ -34,6 +35,7 @@ export function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
+  const [portalLoading, setPortalLoading] = useState(false);
   const [streakModalData, setStreakModalData] = useState<LoginStreakData | null>(null);
   const [toasts, setToasts] = useState<ToastData[]>([]);
   const { user } = useSupabaseUser();
@@ -98,6 +100,22 @@ export function Header() {
 
   const dismissToast = (id: number) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  // Confirmed the warning modal — send the user to the Polar customer portal
+  // (plan change / payment method / cancellation).
+  const handlePortalConfirm = async () => {
+    setPortalLoading(true);
+    const result = await openPolarPortal();
+    if (!result.ok) {
+      setPortalLoading(false);
+      setCancelModalOpen(false);
+      setToasts((prev) => [
+        ...prev,
+        { id: Date.now(), message: `⚠️ ${result.error ?? "管理画面を開けませんでした"}` },
+      ]);
+    }
+    // On success openPolarPortal navigates away.
   };
 
   const handleLogout = () => {
@@ -178,8 +196,8 @@ export function Header() {
                 <button
                   type="button"
                   onClick={() => setCancelModalOpen(true)}
-                  aria-label="契約管理 / 領収書発行"
-                  title="契約管理 / 領収書発行"
+                  aria-label="サブスクリプション管理・解約"
+                  title="サブスクリプション管理・解約"
                   className="text-muted transition-colors hover:text-neon-violet"
                 >
                   <Settings size={18} />
@@ -266,7 +284,7 @@ export function Header() {
                       className="flex items-center gap-1 text-[11px] text-muted transition-colors hover:text-neon-violet"
                     >
                       <Settings size={16} />
-                      契約管理 / 領収書発行
+                      サブスク管理・解約
                     </button>
                   )}
                   <button
@@ -302,9 +320,15 @@ export function Header() {
       <LoginModal open={loginOpen} onClose={() => setLoginOpen(false)} />
       <CancellationWarningModal
         open={cancelModalOpen}
-        onClose={() => setCancelModalOpen(false)}
+        onClose={() => {
+          if (portalLoading) return;
+          setCancelModalOpen(false);
+        }}
+        onConfirm={handlePortalConfirm}
         tier={tier ?? "free"}
+        mode="manage"
         cancelAtPeriodEnd={cancelAtPeriodEnd}
+        loading={portalLoading}
       />
       <LoginStreakModal data={streakModalData} onClose={() => setStreakModalData(null)} />
       <ToastStack toasts={toasts} onDismiss={dismissToast} />

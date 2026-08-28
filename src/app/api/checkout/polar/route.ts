@@ -6,11 +6,14 @@ import { apiErrorResponse } from "@/lib/apiError";
 
 const LOG_PREFIX = "[checkout/polar]";
 
-// Where Polar sends the customer back after a successful payment. A plain
-// literal rather than derived from the request's origin — this app is only
-// ever served from this one domain, and a fixed URL can't be spoofed into
-// redirecting a real payment's success page somewhere unexpected.
-const SUCCESS_URL = "https://www.ullstudio.com/?purchase=success";
+// Where Polar sends the customer after a successful payment, and the "back"
+// target in the checkout itself. Plain literals rather than derived from the
+// request origin — this app is only ever served from this one domain, and a
+// fixed URL can't be spoofed into redirecting a real payment's success page
+// somewhere unexpected. Both land on the pricing section (there is no
+// standalone /pricing route; it's the #pricing anchor on the home page).
+const SUCCESS_URL = "https://www.ullstudio.com/?purchase=success#pricing";
+const RETURN_URL = "https://www.ullstudio.com/#pricing";
 
 export async function POST(request: Request) {
   const authHeader = request.headers.get("authorization");
@@ -87,7 +90,12 @@ export async function POST(request: Request) {
     const checkout = await polar.checkouts.create({
       products: [productId],
       successUrl: SUCCESS_URL,
+      returnUrl: RETURN_URL,
       customerEmail: user.email ?? undefined,
+      // Links the Polar customer to the Supabase user id so /api/portal/polar
+      // can mint a customer-portal session straight from external_customer_id
+      // without us persisting a Polar customer id.
+      externalCustomerId: user.id,
       ...(discountId ? { discountId } : {}),
       // Copied by Polar onto the resulting order *and* (for subscription
       // products) the subscription — this is how the webhook

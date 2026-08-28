@@ -1,25 +1,13 @@
 "use client";
 
-import { Mail, AlertTriangle, CheckCircle2, X } from "lucide-react";
+import { Mail, AlertTriangle, ArrowRight, Loader2, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { TOPUP_PRICE_BY_TIER, type SubscriptionTier } from "@/hooks/useProfileCredits";
 
-// Support inbox for subscription management now that the self-service
-// Stripe Customer Portal (/api/stripe/portal) is retired — see
-// src/app/api/stripe/portal/route.ts. Same address as the tokushoho
-// (特定商取引法に基づく表記) page's contact point.
+// Kept for the receipt/invoice note and as a secondary contact point —
+// self-service plan changes and cancellation now go through the Polar
+// customer portal (see /api/portal/polar), not support.
 const SUPPORT_EMAIL = "support@ullstudio.com";
-
-type CancellationWarningModalProps = {
-  open: boolean;
-  onClose: () => void;
-  tier: SubscriptionTier;
-  // Already reserved to cancel (Customer Portal "cancel at period end").
-  // Warning someone in this state about losing perks they've already lost
-  // reads as broken, not cautious — the copy below switches to explaining
-  // how to get them back instead.
-  cancelAtPeriodEnd?: boolean;
-};
 
 const FULL_PRICE = TOPUP_PRICE_BY_TIER.free;
 
@@ -31,19 +19,47 @@ const TIER_LABEL: Record<SubscriptionTier, string> = {
   master: "Master",
 };
 
-// What support can help with when someone reaches out — shown up front so
-// someone here only for a receipt or an upgrade isn't greeted with
-// cancellation-flavored copy before they even see what's possible.
-const SUPPORT_CAPABILITIES = [
-  "領収書・請求書（PDF）の発行（インボイス・確定申告対応）",
-  "プランのアップグレード・変更のご相談",
-  "お支払い方法の更新・解約手続き",
-];
+// "manage"   → opened from the "サブスクリプションの管理・解約" button; confirm
+//              sends the user to the Polar customer portal.
+// "downgrade"→ opened when a paid member picks a lower-ranked plan; confirm
+//              proceeds to that plan's checkout.
+type WarningMode = "manage" | "downgrade";
 
-export function CancellationWarningModal({ open, onClose, tier, cancelAtPeriodEnd = false }: CancellationWarningModalProps) {
+type CancellationWarningModalProps = {
+  open: boolean;
+  onClose: () => void;
+  // Runs only when the user explicitly accepts the warning.
+  onConfirm: () => void;
+  tier: SubscriptionTier;
+  mode: WarningMode;
+  // Target plan label, shown in "downgrade" mode (e.g. "月額エントリー").
+  targetPlanName?: string;
+  // Already reserved to cancel — warning about perks they've already lost
+  // reads as broken, so the copy switches to how to get them back.
+  cancelAtPeriodEnd?: boolean;
+  // Disables the confirm button while the portal URL is being fetched.
+  loading?: boolean;
+};
+
+export function CancellationWarningModal({
+  open,
+  onClose,
+  onConfirm,
+  tier,
+  mode,
+  targetPlanName,
+  cancelAtPeriodEnd = false,
+  loading = false,
+}: CancellationWarningModalProps) {
   const currentTopupPrice = TOPUP_PRICE_BY_TIER[tier];
 
   if (!open || typeof document === "undefined") return null;
+
+  const title =
+    mode === "downgrade" ? "⚠️ プラン変更前のご確認" : "⚠️ 解約・プラン変更手続きの前に";
+
+  const confirmLabel =
+    mode === "downgrade" ? "承知のうえ変更手続きへ進む" : "承知のうえ管理画面へ進む";
 
   return createPortal(
     <div
@@ -56,7 +72,7 @@ export function CancellationWarningModal({ open, onClose, tier, cancelAtPeriodEn
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-4">
-          <h3 className="text-lg font-bold text-foreground">📋 サブスクリプション・契約管理</h3>
+          <h3 className="text-lg font-bold text-foreground">{title}</h3>
           <button
             type="button"
             onClick={onClose}
@@ -68,55 +84,67 @@ export function CancellationWarningModal({ open, onClose, tier, cancelAtPeriodEn
         </div>
 
         <p className="mt-4 text-sm leading-relaxed text-foreground/90">
-          現在、契約管理はサポート窓口での対応となっております。以下のご相談を承ります：
+          {mode === "downgrade"
+            ? `現在の ${TIER_LABEL[tier]} プランから${targetPlanName ? `「${targetPlanName}」` : "下位プラン"}へ変更しようとしています。`
+            : "サブスクリプションの管理・解約画面（プラン変更・お支払い方法の変更・解約）へ移動します。"}
         </p>
-
-        <ul className="mt-3 space-y-2">
-          {SUPPORT_CAPABILITIES.map((item) => (
-            <li key={item} className="flex items-start gap-2 text-sm text-foreground/80">
-              <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-neon-violet" />
-              {item}
-            </li>
-          ))}
-        </ul>
 
         <div className="mt-5 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
           <p className="flex items-center gap-1.5 text-xs font-bold text-amber-400">
             <AlertTriangle size={14} className="shrink-0" />
-            【ご注意】
+            【ご注意】継続特典について
           </p>
           {cancelAtPeriodEnd ? (
             <p className="mt-2 text-xs leading-relaxed text-foreground/80">
-              現在、解約予約中のため優待特典（割引・ログインボーナス）は一時停止されています。サブスクリプションの再開をご希望の場合はサポート窓口までご連絡ください。{TIER_LABEL[tier]}優待は再開次第すぐに復活します。
+              現在、解約予約中のため優待特典（割引・ログインボーナス）は一時停止されています。
+              {TIER_LABEL[tier]}優待はサブスクリプションを再開次第すぐに復活します。
             </p>
           ) : (
             <p className="mt-2 text-xs leading-relaxed text-foreground/80">
-              プランの解約やダウングレードを行った場合、会員限定の「追加チャージ優待（¥{currentTopupPrice} ➔ 定価¥{FULL_PRICE}）」や「毎日のログインボーナス」等の継続特典が即日停止・変更されますのでご留意ください。
+              プランの解約・ダウングレードを行うと、会員限定の「追加チャージ優待（¥{currentTopupPrice} ➔ 定価¥
+              {FULL_PRICE}）」や「毎日のログインボーナス（現在の付与額）」等の継続特典が、
+              即日または次回請求日をもって停止・変更されます。
             </p>
           )}
           <p className="mt-2 text-xs leading-relaxed text-muted">
             ※ ご購入済みの保有クレジット残高は有効期限までそのままご利用いただけます。
           </p>
-          <p className="mt-1 text-xs leading-relaxed text-muted">
-            ※ 請求書・領収書（PDF）が必要な場合は、サポート窓口までお申し付けください。
-          </p>
         </div>
 
-        <a
-          href={`mailto:${SUPPORT_EMAIL}`}
-          className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={loading}
+          className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          <Mail size={16} />
-          サポート窓口へ連絡する
-        </a>
+          {loading ? (
+            <>
+              <Loader2 size={16} className="animate-spin" />
+              移動中...
+            </>
+          ) : (
+            <>
+              {confirmLabel}
+              <ArrowRight size={16} />
+            </>
+          )}
+        </button>
 
         <button
           type="button"
           onClick={onClose}
           className="mt-3 flex w-full items-center justify-center text-xs text-muted transition-colors hover:text-foreground"
         >
-          キャンセル
+          やめておく（このまま継続する）
         </button>
+
+        <p className="mt-4 flex items-center justify-center gap-1.5 text-[11px] text-muted">
+          <Mail size={12} />
+          請求書・領収書（PDF）が必要な場合は
+          <a href={`mailto:${SUPPORT_EMAIL}`} className="underline transition-colors hover:text-foreground">
+            {SUPPORT_EMAIL}
+          </a>
+        </p>
       </div>
     </div>,
     document.body,

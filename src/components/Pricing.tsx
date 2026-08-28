@@ -1,48 +1,63 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowRight, Check, Gift, Loader2, Sparkles } from "lucide-react";
+import { ArrowRight, Check, Gift, Loader2, Settings, Sparkles } from "lucide-react";
 import { pricingPlans, type PricingPlan } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
+import { CancellationWarningModal } from "@/components/CancellationWarningModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
-import { useProfileCredits, TOPUP_PRICE_BY_TIER } from "@/hooks/useProfileCredits";
+import { useProfileCredits, TOPUP_PRICE_BY_TIER, type SubscriptionTier } from "@/hooks/useProfileCredits";
 import { supabase } from "@/lib/supabaseClient";
+import { openPolarPortal } from "@/lib/polarPortal";
 import { EditableText } from "@/components/EditableText";
 
 const TOPUP_FULL_PRICE = TOPUP_PRICE_BY_TIER.free;
+
+// Numeric order of the subscription tiers — lets us tell an upgrade (skip
+// straight to checkout) from a downgrade (warn first, then checkout).
+const TIER_RANK: Record<string, number> = { free: 0, entry: 1, standard: 2, pro: 3, master: 4 };
+
+type WarningState =
+  | { mode: "downgrade"; plan: PricingPlan }
+  | { mode: "manage" }
+  | null;
 
 export function Pricing() {
   const { user } = useSupabaseUser();
   const { tier, cancelAtPeriodEnd } = useProfileCredits(user);
   const [loginOpen, setLoginOpen] = useState(false);
   const [processingPlanId, setProcessingPlanId] = useState<string | null>(null);
+  const [warning, setWarning] = useState<WarningState>(null);
+  const [portalLoading, setPortalLoading] = useState(false);
+
+  const currentTier: SubscriptionTier = tier ?? "free";
+  const isPaidMember = Boolean(user) && currentTier !== "free";
 
   // The top-up's effective price for this viewer. A signed-in active paid
   // member sees their standing discount — the same one /api/checkout/polar
   // applies via a Polar Discount. A reserved cancellation suspends the perk
   // (matches CancellationWarningModal), and signed-out visitors see full price.
-  const effectiveTopupTier = !user || cancelAtPeriodEnd ? "free" : tier ?? "free";
+  const effectiveTopupTier = !user || cancelAtPeriodEnd ? "free" : currentTier;
   const topupPrice = TOPUP_PRICE_BY_TIER[effectiveTopupTier] ?? TOPUP_FULL_PRICE;
   const topupDiscountPct = Math.round((1 - topupPrice / TOPUP_FULL_PRICE) * 100);
 
-  // All five plans (topup + entry/standard/pro/master) now check out through
-  // Polar — each carries its Polar product id from NEXT_PUBLIC_POLAR_PRODUCT_ID_*
-  // (see src/lib/data.ts / src/lib/polar.ts). A plan is purchasable as long
-  // as its product id resolved; a button only stays disabled if the env var
-  // is missing. Stripe checkout, which used to serve all five, is retired
-  // (see src/app/api/stripe/checkout).
+  // All five plans check out through Polar via their NEXT_PUBLIC_POLAR_PRODUCT_ID_*
+  // product id (see src/lib/data.ts / src/lib/polar.ts). A button only stays
+  // disabled when that id is missing.
   const isPurchasable = (plan: PricingPlan) => Boolean(plan.productId);
+  const isCurrentPlan = (plan: PricingPlan) =>
+    isPaidMember && plan.id !== "topup" && plan.id === currentTier;
 
-  const handlePurchase = async (plan: PricingPlan) => {
-    if (!isPurchasable(plan)) return;
+  const buttonLabel = (plan: PricingPlan) => {
+    if (plan.id === "topup" || !isPaidMember) return plan.cta;
+    if (plan.id === currentTier) return "ご利用中のプラン";
+    return TIER_RANK[plan.id] > TIER_RANK[currentTier]
+      ? "このプランにアップグレード"
+      : "このプランへ変更";
+  };
 
-    if (!user) {
-      setLoginOpen(true);
-      return;
-    }
-
+  const startCheckout = async (plan: PricingPlan) => {
     setProcessingPlanId(plan.id);
-
     try {
       const {
         data: { session },
@@ -74,6 +89,51 @@ export function Pricing() {
       alert(err instanceof Error ? err.message : "決済セッションの作成に失敗しました。");
       setProcessingPlanId(null);
     }
+  };
+
+  const handlePurchase = (plan: PricingPlan) => {
+    if (!isPurchasable(plan) || isCurrentPlan(plan)) return;
+
+    if (!user) {
+      setLoginOpen(true);
+      return;
+    }
+
+    // A paid member moving to a lower-ranked subscription is a downgrade —
+    // gate it behind the perk-loss warning before touching checkout.
+    if (
+      plan.id !== "topup" &&
+      isPaidMember &&
+      TIER_RANK[plan.id] < TIER_RANK[currentTier]
+    ) {
+      setWarning({ mode: "downgrade", plan });
+      return;
+    }
+
+    void startCheckout(plan);
+  };
+
+  const handleManage = () => setWarning({ mode: "manage" });
+
+  const handleWarningConfirm = async () => {
+    if (!warning) return;
+
+    if (warning.mode === "downgrade") {
+      const plan = warning.plan;
+      setWarning(null);
+      void startCheckout(plan);
+      return;
+    }
+
+    // mode === "manage": open the Polar customer portal.
+    setPortalLoading(true);
+    const result = await openPolarPortal();
+    if (!result.ok) {
+      setPortalLoading(false);
+      setWarning(null);
+      alert(result.error ?? "管理画面を開けませんでした。");
+    }
+    // On success openPolarPortal navigates away — nothing more to do.
   };
 
   return (
@@ -161,7 +221,9 @@ export function Pricing() {
               <button
                 type="button"
                 onClick={() => handlePurchase(plan)}
-                disabled={!isPurchasable(plan) || processingPlanId === plan.id}
+                disabled={
+                  !isPurchasable(plan) || isCurrentPlan(plan) || processingPlanId === plan.id
+                }
                 className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {processingPlanId === plan.id ? (
@@ -170,7 +232,7 @@ export function Pricing() {
                     決済ページへ移動中...
                   </>
                 ) : (
-                  plan.cta
+                  buttonLabel(plan)
                 )}
               </button>
 
@@ -188,6 +250,29 @@ export function Pricing() {
             </div>
           ))}
         </div>
+
+        {isPaidMember && (
+          <div className="mt-8 flex flex-col items-center gap-2">
+            <button
+              type="button"
+              onClick={handleManage}
+              disabled={portalLoading}
+              className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface/60 px-5 py-2.5 text-sm font-medium text-foreground/90 transition-colors hover:border-neon-violet/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {portalLoading ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Settings size={16} />
+              )}
+              サブスクリプションの管理・解約
+            </button>
+            <p className="text-[11px] text-muted">
+              {cancelAtPeriodEnd
+                ? "現在、解約予約中です（次回請求日で終了）。管理画面から再開できます。"
+                : "プラン変更・お支払い方法の変更・解約はこちらから行えます。"}
+            </p>
+          </div>
+        )}
 
         <a
           href="#contact"
@@ -217,6 +302,20 @@ export function Pricing() {
         open={loginOpen}
         onClose={() => setLoginOpen(false)}
         message="購入を続けるにはログインしてください。"
+      />
+
+      <CancellationWarningModal
+        open={warning !== null}
+        onClose={() => {
+          if (portalLoading) return;
+          setWarning(null);
+        }}
+        onConfirm={handleWarningConfirm}
+        tier={currentTier}
+        mode={warning?.mode ?? "manage"}
+        targetPlanName={warning?.mode === "downgrade" ? warning.plan.name : undefined}
+        cancelAtPeriodEnd={cancelAtPeriodEnd}
+        loading={portalLoading}
       />
     </section>
   );
