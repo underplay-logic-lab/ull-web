@@ -1,13 +1,8 @@
 "use client";
 
-import { Mail, AlertTriangle, ArrowRight, Loader2, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Loader2, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { TOPUP_PRICE_BY_TIER, type SubscriptionTier } from "@/hooks/useProfileCredits";
-
-// Kept for the receipt/invoice note and as a secondary contact point —
-// self-service plan changes and cancellation now go through the Polar
-// customer portal (see /api/portal/polar), not support.
-const SUPPORT_EMAIL = "support@ullstudio.com";
 
 const FULL_PRICE = TOPUP_PRICE_BY_TIER.free;
 
@@ -138,12 +133,8 @@ export function CancellationWarningModal({
           やめておく（このまま継続する）
         </button>
 
-        <p className="mt-4 flex items-center justify-center gap-1.5 text-[11px] text-muted">
-          <Mail size={12} />
-          請求書・領収書（PDF）が必要な場合は
-          <a href={`mailto:${SUPPORT_EMAIL}`} className="underline transition-colors hover:text-foreground">
-            {SUPPORT_EMAIL}
-          </a>
+        <p className="mt-4 text-center text-[11px] leading-relaxed text-muted">
+          ※領収書・請求明細書（PDF）は、サブスクリプション管理画面（Orders）よりいつでもダウンロード可能です。
         </p>
       </div>
     </div>,
