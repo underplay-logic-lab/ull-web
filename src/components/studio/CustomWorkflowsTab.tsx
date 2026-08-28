@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, ChevronDown, Download, Film, Layers, Loader2, LogIn, Settings2, Wand2, Zap } from "lucide-react";
 import {
-  fieldAppliesCreditsAdd,
+  calculateTotalWorkflowCredits,
   sortFieldsByOrder,
   type PublicCustomWorkflow,
 } from "@/lib/customWorkflows";
@@ -148,17 +148,22 @@ export function CustomWorkflowsTab() {
     [selectedWorkflow],
   );
 
-  // Base credits_cost plus every field's credits_add whose current value
-  // counts as "selected" per fieldAppliesCreditsAdd() — recalculated live
-  // as the user changes any option.
-  const extraCredits = useMemo(() => {
+  // Live total via the shared engine (base / base-override + Σ add-ons +
+  // GPU tier) — the server re-derives the same number on generate.
+  const ultraAddon = gpuTier === "ultra" ? gpuTierAddon : 0;
+  const totalCredits = useMemo(() => {
     if (!selectedWorkflow) return 0;
-    return selectedWorkflow.input_schema.reduce((sum, field) => {
-      const value = values[field.id] ?? defaultValueFor(field);
-      return sum + (fieldAppliesCreditsAdd(field, value) ? (field.credits_add ?? 0) : 0);
-    }, 0);
-  }, [selectedWorkflow, values]);
-  const totalCredits = (selectedWorkflow?.credits_cost ?? 0) + extraCredits + (gpuTier === "ultra" ? gpuTierAddon : 0);
+    return calculateTotalWorkflowCredits({
+      creditsCost: selectedWorkflow.credits_cost,
+      inputSchema: selectedWorkflow.input_schema,
+      values: Object.fromEntries(
+        selectedWorkflow.input_schema.map((f) => [f.id, values[f.id] ?? defaultValueFor(f)]),
+      ),
+      gpuTierAddon: ultraAddon,
+    });
+  }, [selectedWorkflow, values, ultraAddon]);
+  // For the button's "（基本X + オプションY）" breakdown only.
+  const extraCredits = Math.max(0, totalCredits - (selectedWorkflow?.credits_cost ?? 0) - ultraAddon);
 
   const insufficientCredits =
     Boolean(user) && !creditsLoading && selectedWorkflow !== null && (credits ?? 0) < totalCredits;

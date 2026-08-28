@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/adminApiGuard";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { isValidInputSchema, isValidWorkflowJson } from "@/lib/customWorkflows";
+import { isValidInputSchema, isValidWorkflowJson, isValidWorkflowSections } from "@/lib/customWorkflows";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -55,6 +55,12 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: "input_schema の形式が不正です。" }, { status: 400 });
     }
     update.input_schema = body.input_schema;
+  }
+  if (body.sections !== undefined) {
+    if (!isValidWorkflowSections(body.sections)) {
+      return NextResponse.json({ error: "sections の形式が不正です。" }, { status: 400 });
+    }
+    update.sections = body.sections;
   }
   if (typeof body.credits_cost === "number") update.credits_cost = body.credits_cost;
   if (typeof body.priority === "number") update.priority = body.priority;

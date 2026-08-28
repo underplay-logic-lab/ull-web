@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
-import { fieldAppliesCreditsAdd, type WorkflowInputField } from "@/lib/customWorkflows";
+import { calculateTotalWorkflowCredits, type WorkflowInputField } from "@/lib/customWorkflows";
 import { patchCustomWorkflow, type CustomWorkflowFieldValue } from "@/lib/customWorkflowExecution";
 import { runCustomWorkflowOnModal } from "@/lib/modalCustomWorkflow";
 import { getGpuTierUltraAddon } from "@/lib/gpuTierPricing";
@@ -139,10 +139,14 @@ export async function POST(request: Request) {
     .join("\n");
 
   const gpuTierAddon = gpuTier === "ultra" ? await getGpuTierUltraAddon() : 0;
-  const extraCredits = inputSchema.reduce((sum, field) => {
-    return sum + (fieldAppliesCreditsAdd(field, values[field.id]) ? (field.credits_add ?? 0) : 0);
-  }, 0);
-  const generationCost = (workflowRow.credits_cost as number) + extraCredits + gpuTierAddon;
+  // Server-side re-derivation of the price via the shared engine — the
+  // client's displayed total is never trusted.
+  const generationCost = calculateTotalWorkflowCredits({
+    creditsCost: workflowRow.credits_cost as number,
+    inputSchema,
+    values,
+    gpuTierAddon,
+  });
 
   const { data: profile, error: profileError } = await getOrCreateProfile(
     user.id,

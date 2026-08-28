@@ -17,6 +17,10 @@ export function defaultValueFor(field: WorkflowInputField): FieldValue {
     if (typeof field.default === "number") return field.default;
     return field.min ?? 0;
   }
+  if (field.type === "select") {
+    if (field.default !== undefined && typeof field.default !== "boolean") return String(field.default);
+    return field.options?.[0] !== undefined ? String(field.options[0].value) : "";
+  }
   return typeof field.default === "string" ? field.default : "";
 }
 
@@ -260,6 +264,26 @@ export function DynamicField({
           className="w-full accent-neon-pink"
         />
       </div>
+    );
+  }
+
+  if (field.type === "select") {
+    const options = field.options ?? [];
+    const current = value === undefined || value === null ? "" : String(value);
+    return (
+      <select
+        value={current}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
+      >
+        {options.length === 0 && <option value="">（選択肢が未設定です）</option>}
+        {options.map((opt) => (
+          <option key={String(opt.value)} value={String(opt.value)}>
+            {opt.label}
+            {opt.credits_add ? `（${opt.is_base_override ? "" : "+"}${opt.credits_add}C）` : ""}
+          </option>
+        ))}
+      </select>
     );
   }
 

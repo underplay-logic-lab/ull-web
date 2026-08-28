@@ -3,7 +3,7 @@
 // components (admin builder UI, Studio's dynamic form renderer), so this
 // file has no "server-only" guard and no side effects.
 
-export type WorkflowInputFieldType = "text" | "image" | "video" | "slider" | "toggle";
+export type WorkflowInputFieldType = "text" | "image" | "video" | "slider" | "toggle" | "select";
 
 export const WORKFLOW_INPUT_FIELD_TYPES: WorkflowInputFieldType[] = [
   "text",
@@ -11,7 +11,20 @@ export const WORKFLOW_INPUT_FIELD_TYPES: WorkflowInputFieldType[] = [
   "video",
   "slider",
   "toggle",
+  "select",
 ];
+
+// One choice on a "select" field. `credits_add` is added to the total while
+// this option is selected; `is_base_override` instead makes `credits_add`
+// the new base price (replacing the workflow's credits_cost) — for
+// resolution/quality tiers where the price isn't "base + extra" but a flat
+// per-tier amount. See calculateTotalWorkflowCredits().
+export type WorkflowFieldOption = {
+  label: string;
+  value: string | number;
+  credits_add?: number;
+  is_base_override?: boolean;
+};
 
 export type WorkflowInputFieldSection = "main" | "advanced";
 
@@ -71,6 +84,14 @@ export type WorkflowInputField = {
   sectionId?: string;
   // Lowest subscription tier that may see/use this field.
   minTier?: WorkflowFieldTier;
+  // --- Dynamic credit pricing (all optional) ---
+  // Choices for a "select" field.
+  options?: WorkflowFieldOption[];
+  // "slider" per-unit pricing: every whole unit of the field's value above
+  // credits_baseline adds credits_per_unit. Undefined credits_per_unit =>
+  // the slider uses the flat credits_add behaviour instead.
+  credits_baseline?: number;
+  credits_per_unit?: number;
 };
 
 export type StudioCustomWorkflow = {
@@ -81,6 +102,9 @@ export type StudioCustomWorkflow = {
   category: string;
   workflow_json: Record<string, unknown>;
   input_schema: WorkflowInputField[];
+  // Named layout sections (studio_custom_workflows.sections). May be absent
+  // on rows read before the 20260841000000 migration ran.
+  sections?: WorkflowSection[];
   credits_cost: number;
   priority: number;
   is_active: boolean;
@@ -171,6 +195,20 @@ export function isValidInputSchema(value: unknown): value is WorkflowInputField[
     ) {
       return false;
     }
+    // Dynamic credit pricing.
+    if (f.credits_baseline !== undefined && typeof f.credits_baseline !== "number") return false;
+    if (f.credits_per_unit !== undefined && typeof f.credits_per_unit !== "number") return false;
+    if (f.options !== undefined) {
+      if (!Array.isArray(f.options)) return false;
+      for (const opt of f.options) {
+        if (!opt || typeof opt !== "object") return false;
+        const o = opt as Record<string, unknown>;
+        if (typeof o.label !== "string" || !o.label.trim()) return false;
+        if (typeof o.value !== "string" && typeof o.value !== "number") return false;
+        if (o.credits_add !== undefined && typeof o.credits_add !== "number") return false;
+        if (o.is_base_override !== undefined && typeof o.is_base_override !== "boolean") return false;
+      }
+    }
   }
 
   return true;
@@ -240,4 +278,69 @@ export function fieldAppliesCreditsAdd(field: WorkflowInputField, value: unknown
     return typeof value === "string" && value.trim() !== "" && value !== baseline;
   }
   return false;
+}
+
+export type WorkflowCreditsInput = {
+  // The workflow's base price (studio_custom_workflows.credits_cost).
+  creditsCost: number;
+  inputSchema: WorkflowInputField[];
+  // Current form values keyed by field id. File-typed values may be a File,
+  // a Buffer wrapper, or anything truthy — only their presence matters here.
+  values: Record<string, unknown>;
+  // Flat add-on for the selected GPU tier (0 for Standard).
+  gpuTierAddon?: number;
+};
+
+// The single source of truth for what a workflow generation costs — used by
+// the Studio renderer (live total), the builder (⚡ preview), and the
+// server generate route (actual debit). Never trust a client-sent total.
+//
+//   total = base + Σ(field add-ons) + gpuTierAddon
+//
+// where `base` is credits_cost unless a selected "select" option is marked
+// is_base_override, in which case that option's credits_add becomes the base
+// (the last such option in schema order wins).
+export function calculateTotalWorkflowCredits(input: WorkflowCreditsInput): number {
+  const { creditsCost, inputSchema, values, gpuTierAddon = 0 } = input;
+
+  let base = creditsCost;
+  let addons = 0;
+
+  for (const field of inputSchema) {
+    const value = values[field.id];
+
+    if (field.type === "select" && Array.isArray(field.options)) {
+      const opt = field.options.find((o) => String(o.value) === String(value));
+      if (opt) {
+        if (opt.is_base_override) {
+          if (typeof opt.credits_add === "number") base = opt.credits_add;
+        } else if (typeof opt.credits_add === "number") {
+          addons += opt.credits_add;
+        }
+      }
+      continue;
+    }
+
+    if (field.type === "slider" && typeof field.credits_per_unit === "number") {
+      const num = typeof value === "number" ? value : Number(value);
+      const baseline =
+        typeof field.credits_baseline === "number"
+          ? field.credits_baseline
+          : typeof field.default === "number"
+            ? field.default
+            : field.min ?? 0;
+      if (Number.isFinite(num) && num > baseline) {
+        addons += Math.ceil(num - baseline) * field.credits_per_unit;
+      }
+      continue;
+    }
+
+    // toggle / text / image / video (and sliders without per-unit pricing):
+    // the flat credits_add, applied when the field is "actively selected".
+    if (fieldAppliesCreditsAdd(field, value)) {
+      addons += field.credits_add ?? 0;
+    }
+  }
+
+  return Math.max(0, Math.round(base + addons + gpuTierAddon));
 }

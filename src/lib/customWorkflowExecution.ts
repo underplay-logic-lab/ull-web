@@ -53,6 +53,11 @@ export function patchCustomWorkflow(
       node.inputs[field.field] = typeof value === "number" ? value : Number(value);
     } else if (field.type === "toggle") {
       node.inputs[field.field] = value === true || value === "true";
+    } else if (field.type === "select") {
+      // Resolve the picked option so a numeric choice (e.g. steps 4/8/20) is
+      // written back as a number, not a string.
+      const opt = field.options?.find((o) => String(o.value) === String(value));
+      node.inputs[field.field] = opt ? opt.value : String(value);
     } else {
       node.inputs[field.field] = String(value);
     }

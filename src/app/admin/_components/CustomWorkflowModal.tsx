@@ -37,6 +37,7 @@ const FIELD_TYPE_LABEL: Record<WorkflowInputFieldType, string> = {
   video: "動画",
   slider: "スライダー",
   toggle: "トグル",
+  select: "セレクト（UIビルダーで選択肢を設定）",
 };
 
 const FIELD_SECTION_LABEL: Record<WorkflowInputFieldSection, string> = {

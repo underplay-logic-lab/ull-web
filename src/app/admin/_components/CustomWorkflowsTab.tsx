@@ -1,7 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Clipboard, Download, Loader2, Pencil, Plus, Trash2, ToggleLeft, ToggleRight, Workflow } from "lucide-react";
+import {
+  Clipboard,
+  Download,
+  Loader2,
+  Palette,
+  Pencil,
+  Plus,
+  Trash2,
+  ToggleLeft,
+  ToggleRight,
+  Workflow,
+} from "lucide-react";
 import { CustomWorkflowModal } from "./CustomWorkflowModal";
 import { ToastStack, type ToastData } from "@/components/Toast";
 import { downloadJson } from "@/lib/downloadJson";
@@ -196,10 +207,21 @@ export function CustomWorkflowsTab() {
                       >
                         <Download size={16} />
                       </button>
+                      <a
+                        href={`/workflow-builder/${workflow.id}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label="UIビルダーで編集"
+                        title="🎨 UIビルダーで編集（12カラム・動的課金）"
+                        className="text-muted transition-colors hover:text-neon-pink"
+                      >
+                        <Palette size={16} />
+                      </a>
                       <button
                         type="button"
                         onClick={() => setModalState({ open: true, workflow })}
-                        aria-label="編集"
+                        aria-label="編集（JSON・実行設定）"
+                        title="JSON・実行設定を編集"
                         className="text-muted transition-colors hover:text-neon-violet"
                       >
                         <Pencil size={16} />
