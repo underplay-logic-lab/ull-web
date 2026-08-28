@@ -13,6 +13,30 @@ type RouteParams = { params: Promise<{ id: string }> };
 
 const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
+// Single-row fetch for the UI builder — avoids downloading every workflow's
+// full workflow_json (the list endpoint returns them all) just to edit one.
+export async function GET(_request: Request, { params }: RouteParams) {
+  const { user, response } = await requireAdmin();
+  if (!user) return response;
+
+  const { id } = await params;
+  const { data, error } = await supabaseAdmin
+    .from("studio_custom_workflows")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[admin/custom-workflows/[id]] fetch failed:", error.message);
+    return NextResponse.json({ error: "ワークフローの取得に失敗しました。" }, { status: 500 });
+  }
+  if (!data) {
+    return NextResponse.json({ error: "ワークフローが見つかりません。" }, { status: 404 });
+  }
+
+  return NextResponse.json({ workflow: data });
+}
+
 export async function PATCH(request: Request, { params }: RouteParams) {
   const { user, response } = await requireAdmin();
   if (!user) return response;

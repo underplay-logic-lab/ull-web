@@ -20,6 +20,8 @@ function folderSortRank(name: string): number {
 }
 
 function formatSize(bytes: number): string {
+  const tb = bytes / 1024 ** 4;
+  if (tb >= 1) return `${tb.toFixed(2)} TB`;
   const gb = bytes / 1024 ** 3;
   if (gb >= 1) return `${gb.toFixed(2)} GB`;
   const mb = bytes / 1024 ** 2;
@@ -112,6 +114,14 @@ function countFilesRecursive(node: FolderNode): number {
   return count;
 }
 
+function sumSizeRecursive(node: FolderNode): number {
+  let total = node.files.reduce((sum, f) => sum + (f.size_bytes || 0), 0);
+  for (const child of node.subfolders.values()) {
+    total += sumSizeRecursive(child);
+  }
+  return total;
+}
+
 function sortedSubfolders(node: FolderNode): FolderNode[] {
   return Array.from(node.subfolders.values()).sort((a, b) => {
     const rankDiff = folderSortRank(a.name) - folderSortRank(b.name);
@@ -147,6 +157,9 @@ function FolderRow({
           {node.name}/
           <span className="font-mono text-[10px] font-normal text-muted opacity-60">
             ({countFilesRecursive(node)})
+          </span>
+          <span className="ml-auto shrink-0 rounded bg-neon-violet/10 px-1.5 py-0.5 font-mono text-[10px] font-normal text-neon-violet">
+            {formatSize(sumSizeRecursive(node))}
           </span>
         </button>
         <button
@@ -528,6 +541,7 @@ export function ModalStorageTab() {
 
   const tree = useMemo(() => buildFolderTree(files), [files]);
   const topLevelFolders = useMemo(() => sortedSubfolders(tree), [tree]);
+  const totalBytes = useMemo(() => files.reduce((sum, f) => sum + (f.size_bytes || 0), 0), [files]);
 
   return (
     <div className="flex flex-col gap-8">
@@ -720,11 +734,21 @@ export function ModalStorageTab() {
 
         {filesOpen && (
           <div className="mt-4">
-            <div className="mb-4 flex items-center justify-end">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              {!filesLoading && files.length > 0 ? (
+                <div className="flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-1.5 text-xs">
+                  <HardDrive size={13} className="text-neon-violet" />
+                  <span className="text-muted">保存・使用容量</span>
+                  <span className="font-mono font-semibold text-foreground">{formatSize(totalBytes)}</span>
+                  <span className="text-muted opacity-70">/ {files.length} ファイル</span>
+                </div>
+              ) : (
+                <span />
+              )}
               <button
                 type="button"
                 onClick={loadFiles}
-                className="text-xs text-muted transition-colors hover:text-foreground"
+                className="shrink-0 text-xs text-muted transition-colors hover:text-foreground"
               >
                 再読み込み
               </button>

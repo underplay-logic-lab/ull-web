@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Eye, Loader2, Monitor, Save, Smartphone, Zap } from "lucide-react";
 import {
@@ -51,10 +51,10 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
     (async () => {
       setLoading(true);
       try {
-        const res = await fetch("/api/admin/custom-workflows");
+        const res = await fetch(`/api/admin/custom-workflows/${workflowId}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error ?? "取得に失敗しました。");
-        const row = (data.workflows as StudioCustomWorkflow[]).find((w) => w.id === workflowId);
+        const row = data.workflow as StudioCustomWorkflow | null;
         if (!row) throw new Error("指定されたワークフローが見つかりません。");
         setWorkflow(row);
         setFields(renumberOrder(row.input_schema ?? []));
@@ -86,25 +86,36 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
   }, [workflowId]);
 
   // Best-effort Volume file listing — feeds the model-size / VRAM estimate
-  // that drives the OOM ⚠️ badges on the GPU fallback chain. A failure just
-  // leaves the estimate at zero (no badges), never blocks the builder.
+  // behind the OOM ⚠️ badges on the GPU fallback chain. Deliberately lazy:
+  // the Modal storage endpoint can cold-start for 10-30s, so it's only
+  // fetched once the workflow actually has GPU config to annotate, never on
+  // the builder's critical load path, and it never blocks anything.
+  const volumeFetchedRef = useRef(false);
+  const gpuConfigPresent =
+    fields.some((f) => f.id === SYSTEM_FIELD_GPU_TIER) || gpuFallbackList.length > 0;
   useEffect(() => {
-    let cancelled = false;
+    if (!workflow || !gpuConfigPresent || volumeFetchedRef.current) return;
+    volumeFetchedRef.current = true;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20_000);
     (async () => {
       try {
-        const res = await fetch("/api/admin/modal/storage");
+        const res = await fetch("/api/admin/modal/storage", { signal: controller.signal });
         const data = await res.json().catch(() => null);
-        if (!cancelled && res.ok && Array.isArray(data?.files)) {
+        if (res.ok && Array.isArray(data?.files)) {
           setVolumeFiles(data.files as { path: string; size_bytes: number }[]);
         }
       } catch {
         // ignore — estimate degrades to "unknown"
+      } finally {
+        clearTimeout(timer);
       }
     })();
     return () => {
-      cancelled = true;
+      clearTimeout(timer);
+      controller.abort();
     };
-  }, []);
+  }, [workflow, gpuConfigPresent]);
 
   const nodes: WorkflowNodeInfo[] = useMemo(
     () => (workflow ? parseWorkflowNodes(JSON.stringify(workflow.workflow_json)) : []),
