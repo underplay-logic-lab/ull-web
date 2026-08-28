@@ -4,8 +4,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Loader2, Monitor, Save, Smartphone, Zap } from "lucide-react";
 import {
+  DEFAULT_WORKFLOW_GPU_TIER,
+  WORKFLOW_GPU_TIERS,
   workflowCreditsBreakdown,
   type StudioCustomWorkflow,
+  type WorkflowGpuTier,
   type WorkflowInputField,
   type WorkflowSection,
 } from "@/lib/customWorkflows";
@@ -22,6 +25,7 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
   const [sections, setSections] = useState<WorkflowSection[]>([]);
   const [isActive, setIsActive] = useState(true);
   const [creditsCost, setCreditsCost] = useState(0);
+  const [gpuTier, setGpuTier] = useState<WorkflowGpuTier>(DEFAULT_WORKFLOW_GPU_TIER);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState<"desktop" | "mobile">("desktop");
@@ -47,6 +51,7 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
         setSections(row.sections ?? []);
         setIsActive(row.is_active);
         setCreditsCost(row.credits_cost);
+        setGpuTier(row.default_gpu_tier ?? DEFAULT_WORKFLOW_GPU_TIER);
       } catch (err) {
         setError(err instanceof Error ? err.message : "取得に失敗しました。");
       } finally {
@@ -187,7 +192,13 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
       const res = await fetch(`/api/admin/custom-workflows/${workflow.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input_schema: fields, sections, is_active: isActive, credits_cost: creditsCost }),
+        body: JSON.stringify({
+          input_schema: fields,
+          sections,
+          is_active: isActive,
+          credits_cost: creditsCost,
+          default_gpu_tier: gpuTier,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? "保存に失敗しました。");
@@ -240,6 +251,24 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
         </div>
 
         <div className="flex shrink-0 items-center gap-3">
+          <label className="flex items-center gap-1.5 text-[11px] text-muted">
+            実行GPU
+            <select
+              value={gpuTier}
+              onChange={(e) => {
+                setGpuTier(e.target.value as WorkflowGpuTier);
+                touch();
+              }}
+              className="rounded-md border border-border bg-background px-2 py-1 text-xs outline-none focus:border-neon-violet/50"
+            >
+              {WORKFLOW_GPU_TIERS.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
           <label className="flex items-center gap-1.5 text-[11px] text-muted">
             基本
             <input

@@ -43,6 +43,26 @@ export type WorkflowFieldTier = "free" | "entry" | "standard" | "pro" | "master"
 
 export const WORKFLOW_FIELD_TIERS: WorkflowFieldTier[] = ["free", "entry", "standard", "pro", "master"];
 
+// Which Modal GPU a workflow runs on — an admin, per-workflow choice
+// (studio_custom_workflows.default_gpu_tier), independent of the user-facing
+// Standard/ULTRA selector. Passed through to the Modal request as `gpu_tier`.
+export type WorkflowGpuTier = "t4" | "l4" | "a100_40gb" | "a100_80gb" | "h100" | "b300";
+
+export const WORKFLOW_GPU_TIERS: { value: WorkflowGpuTier; label: string }[] = [
+  { value: "t4", label: "T4" },
+  { value: "l4", label: "L4" },
+  { value: "a100_40gb", label: "A100 40GB" },
+  { value: "a100_80gb", label: "A100 80GB" },
+  { value: "h100", label: "H100" },
+  { value: "b300", label: "B300 (Blackwell Ultra)" },
+];
+
+export const DEFAULT_WORKFLOW_GPU_TIER: WorkflowGpuTier = "l4";
+
+export function isValidWorkflowGpuTier(value: unknown): value is WorkflowGpuTier {
+  return typeof value === "string" && WORKFLOW_GPU_TIERS.some((t) => t.value === value);
+}
+
 // Named layout section on a workflow (studio_custom_workflows.sections) —
 // supersedes the two-way main/advanced split. Phase 1 only defines the
 // shape and validator; the renderer/builder wire it in Phase 2.
@@ -110,6 +130,9 @@ export type StudioCustomWorkflow = {
   // Named layout sections (studio_custom_workflows.sections). May be absent
   // on rows read before the 20260841000000 migration ran.
   sections?: WorkflowSection[];
+  // Modal GPU this workflow runs on. Absent on rows read before the
+  // 20260842000000 migration ran.
+  default_gpu_tier?: WorkflowGpuTier;
   credits_cost: number;
   priority: number;
   is_active: boolean;

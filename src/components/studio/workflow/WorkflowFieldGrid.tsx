@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { fieldAppliesCreditsAdd, type WorkflowInputField } from "@/lib/customWorkflows";
 import { colSpanMdClass, fieldColSpan } from "@/lib/workflowLayout";
 import { defaultValueFor, FieldRow, type FieldValue } from "./DynamicField";
@@ -8,6 +9,12 @@ import { defaultValueFor, FieldRow, type FieldValue } from "./DynamicField";
 // UI builder's live canvas. Each field takes `md:col-span-{3|4|6|12}` from
 // its `colSpan` (undefined → full width); below the `md` breakpoint every
 // field is full width via `grid-cols-1`.
+//
+// Perf: FieldRow / DynamicField are memoized, so the per-field onChange
+// handlers must be referentially stable — a change to one field must not
+// re-render (and re-initialise dropzone previews / sliders on) the rest.
+// Callers therefore pass a stable `onChange` (useCallback) and a stable
+// `fields` ref (useMemo).
 export function WorkflowFieldGrid({
   fields,
   values,
@@ -17,6 +24,14 @@ export function WorkflowFieldGrid({
   values: Record<string, FieldValue>;
   onChange: (fieldId: string, value: FieldValue) => void;
 }) {
+  const handlers = useMemo(() => {
+    const map = new Map<string, (v: FieldValue) => void>();
+    for (const f of fields) {
+      map.set(f.id, (v: FieldValue) => onChange(f.id, v));
+    }
+    return map;
+  }, [fields, onChange]);
+
   if (fields.length === 0) return null;
 
   return (
@@ -29,7 +44,7 @@ export function WorkflowFieldGrid({
               field={field}
               value={value}
               applied={fieldAppliesCreditsAdd(field, value)}
-              onChange={(next) => onChange(field.id, next)}
+              onChange={handlers.get(field.id)!}
             />
           </div>
         );

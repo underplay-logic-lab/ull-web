@@ -1,5 +1,6 @@
 import "server-only";
 import type { GpuTier } from "@/lib/gpuTier";
+import { DEFAULT_WORKFLOW_GPU_TIER, type WorkflowGpuTier } from "@/lib/customWorkflows";
 
 export type CustomWorkflowFile = { filename: string; base64: string };
 
@@ -31,6 +32,9 @@ export type RunCustomWorkflowParams = {
   // Node id in the graph to read the final output from — "" means
   // auto-detect (see run_custom_workflow in scripts/modal_wan_animate.py).
   outputNodeId: string;
+  // The Modal GPU the admin picked for this workflow (studio_custom_workflows
+  // .default_gpu_tier). Forwarded to Modal as `gpu_tier`.
+  defaultGpuTier?: WorkflowGpuTier;
 };
 
 // Same cold-start budget as generateWithModal (modalWanAnimate.ts) — a
@@ -71,6 +75,7 @@ export async function runCustomWorkflowOnModal(params: RunCustomWorkflowParams):
       exec_config: params.execConfig,
       save_to_volume: params.saveToVolume,
       output_node_id: params.outputNodeId,
+      gpu_tier: params.defaultGpuTier ?? DEFAULT_WORKFLOW_GPU_TIER,
     }),
     signal: AbortSignal.timeout(MODAL_TIMEOUT_MS),
   });

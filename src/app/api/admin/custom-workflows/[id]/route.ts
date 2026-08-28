@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/adminApiGuard";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { isValidInputSchema, isValidWorkflowJson, isValidWorkflowSections } from "@/lib/customWorkflows";
+import {
+  isValidInputSchema,
+  isValidWorkflowJson,
+  isValidWorkflowSections,
+  isValidWorkflowGpuTier,
+} from "@/lib/customWorkflows";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -61,6 +66,12 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: "sections の形式が不正です。" }, { status: 400 });
     }
     update.sections = body.sections;
+  }
+  if (body.default_gpu_tier !== undefined) {
+    if (!isValidWorkflowGpuTier(body.default_gpu_tier)) {
+      return NextResponse.json({ error: "default_gpu_tier の値が不正です。" }, { status: 400 });
+    }
+    update.default_gpu_tier = body.default_gpu_tier;
   }
   if (typeof body.credits_cost === "number") update.credits_cost = body.credits_cost;
   if (typeof body.priority === "number") update.priority = body.priority;

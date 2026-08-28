@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Film, ImagePlus, RefreshCw, Trash2, X } from "lucide-react";
 import type { WorkflowInputField } from "@/lib/customWorkflows";
 
@@ -234,7 +234,80 @@ function VideoDropzone({
   );
 }
 
-export function DynamicField({
+// Range input with local state + one-per-frame parent commit. A slider drag
+// fires dozens of onChange events; without this each one re-rendered the
+// whole Studio tab (credit recompute, every other field, dropzone previews),
+// which is what made the seconds slider feel laggy. Local state paints the
+// thumb/number instantly; the parent (and therefore the live credit total)
+// is updated at most once per animation frame.
+const SliderControl = memo(function SliderControl({
+  min,
+  max,
+  step,
+  value,
+  onCommit,
+}: {
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onCommit: (v: number) => void;
+}) {
+  const [local, setLocal] = useState(value);
+  const dragging = useRef(false);
+  const raf = useRef<number | null>(null);
+
+  // Adopt external changes only when we're not the one driving them.
+  useEffect(() => {
+    if (!dragging.current) setLocal(value);
+  }, [value]);
+
+  useEffect(
+    () => () => {
+      if (raf.current !== null) cancelAnimationFrame(raf.current);
+    },
+    [],
+  );
+
+  const scheduleCommit = (v: number) => {
+    if (raf.current !== null) cancelAnimationFrame(raf.current);
+    raf.current = requestAnimationFrame(() => {
+      raf.current = null;
+      onCommit(v);
+    });
+  };
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between text-[11px] text-muted">
+        <span>{min}</span>
+        <span className="font-mono text-foreground">{local}</span>
+        <span>{max}</span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={local}
+        onPointerDown={() => {
+          dragging.current = true;
+        }}
+        onPointerUp={() => {
+          dragging.current = false;
+        }}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          setLocal(v);
+          scheduleCommit(v);
+        }}
+        className="w-full accent-neon-pink"
+      />
+    </div>
+  );
+});
+
+export const DynamicField = memo(function DynamicField({
   field,
   value,
   onChange,
@@ -270,24 +343,7 @@ export function DynamicField({
     const max = field.max ?? 1;
     const step = field.step ?? 0.01;
     const numeric = typeof value === "number" ? value : min;
-    return (
-      <div>
-        <div className="mb-1 flex items-center justify-between text-[11px] text-muted">
-          <span>{min}</span>
-          <span className="font-mono text-foreground">{numeric}</span>
-          <span>{max}</span>
-        </div>
-        <input
-          type="range"
-          min={min}
-          max={max}
-          step={step}
-          value={numeric}
-          onChange={(e) => onChange(Number(e.target.value))}
-          className="w-full accent-neon-pink"
-        />
-      </div>
-    );
+    return <SliderControl min={min} max={max} step={step} value={numeric} onCommit={onChange} />;
   }
 
   if (field.type === "select") {
@@ -334,9 +390,9 @@ export function DynamicField({
       className="w-full resize-y rounded-lg border border-border bg-background px-4 py-3 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
     />
   );
-}
+});
 
-export function FieldRow({
+export const FieldRow = memo(function FieldRow({
   field,
   value,
   applied,
@@ -364,4 +420,4 @@ export function FieldRow({
       <DynamicField field={field} value={value} onChange={onChange} />
     </div>
   );
-}
+});

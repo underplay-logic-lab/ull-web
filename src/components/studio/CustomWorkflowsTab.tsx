@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft, ChevronDown, Download, Film, Layers, Loader2, LogIn, Settings2, Wand2, Zap } from "lucide-react";
 import {
   calculateTotalWorkflowCredits,
@@ -120,18 +120,27 @@ export function CustomWorkflowsTab() {
 
   // Auto-save text/slider/toggle inputs + GPU tier per workflow slug —
   // image/video File values are intentionally excluded (see
-  // PersistedCustomWorkflowForm).
+  // PersistedCustomWorkflowForm). Debounced so a slider drag doesn't write
+  // localStorage on every frame.
   useEffect(() => {
     if (!selectedSlug) return;
-    const serializableValues: Record<string, string | number | boolean> = {};
-    for (const [key, value] of Object.entries(values)) {
-      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-        serializableValues[key] = value;
+    const t = setTimeout(() => {
+      const serializableValues: Record<string, string | number | boolean> = {};
+      for (const [key, value] of Object.entries(values)) {
+        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+          serializableValues[key] = value;
+        }
       }
-    }
-    const state: PersistedCustomWorkflowForm = { values: serializableValues, gpuTier };
-    saveFormState(selectedSlug, state);
+      const state: PersistedCustomWorkflowForm = { values: serializableValues, gpuTier };
+      saveFormState(selectedSlug, state);
+    }, 400);
+    return () => clearTimeout(t);
   }, [selectedSlug, values, gpuTier]);
+
+  // Stable so the memoized field components don't all re-render on every edit.
+  const handleFieldChange = useCallback((fieldId: string, value: FieldValue) => {
+    setValues((prev) => ({ ...prev, [fieldId]: value }));
+  }, []);
 
   const mainFields = useMemo(
     () =>
@@ -303,7 +312,7 @@ export function CustomWorkflowsTab() {
         <WorkflowFieldGrid
           fields={mainFields}
           values={values}
-          onChange={(fieldId, value) => setValues((prev) => ({ ...prev, [fieldId]: value }))}
+          onChange={handleFieldChange}
         />
 
         {advancedFields.length > 0 && (
@@ -327,7 +336,7 @@ export function CustomWorkflowsTab() {
                 <WorkflowFieldGrid
                   fields={advancedFields}
                   values={values}
-                  onChange={(fieldId, value) => setValues((prev) => ({ ...prev, [fieldId]: value }))}
+                  onChange={handleFieldChange}
                 />
               </div>
             )}

@@ -2,7 +2,11 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
-import { calculateTotalWorkflowCredits, type WorkflowInputField } from "@/lib/customWorkflows";
+import {
+  calculateTotalWorkflowCredits,
+  type WorkflowGpuTier,
+  type WorkflowInputField,
+} from "@/lib/customWorkflows";
 import { patchCustomWorkflow, type CustomWorkflowFieldValue } from "@/lib/customWorkflowExecution";
 import { runCustomWorkflowOnModal } from "@/lib/modalCustomWorkflow";
 import { getGpuTierUltraAddon } from "@/lib/gpuTierPricing";
@@ -77,7 +81,7 @@ export async function POST(request: Request) {
   const { data: workflowRow, error: workflowError } = await supabaseAdmin
     .from("studio_custom_workflows")
     .select(
-      "id, slug, workflow_json, input_schema, credits_cost, disable_smart_memory, cpu_vae, gpu_only, use_pytorch_cross_attention, high_vram, extra_args, output_node_id",
+      "id, slug, workflow_json, input_schema, credits_cost, disable_smart_memory, cpu_vae, gpu_only, use_pytorch_cross_attention, high_vram, extra_args, output_node_id, default_gpu_tier",
     )
     .eq("slug", slug)
     .eq("is_active", true)
@@ -221,6 +225,7 @@ export async function POST(request: Request) {
       },
       saveToVolume: isAdmin,
       outputNodeId: (workflowRow.output_node_id as string | null) ?? "",
+      defaultGpuTier: (workflowRow.default_gpu_tier as WorkflowGpuTier | null) ?? undefined,
     });
     const executionTimeMs = Date.now() - startedAt;
 
