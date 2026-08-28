@@ -37,53 +37,45 @@ export async function POST(request: Request) {
       { status: 404 },
     );
 
-  // Primary path: checkouts set external_customer_id = the Supabase user id
-  // (see /api/checkout/polar), so a portal session can be minted straight
-  // from that — no Polar customer id stored on our side.
-  try {
-    const session = await polar.customerSessions.create({
-      externalCustomerId: user.id,
-      returnUrl: RETURN_URL,
-    });
-    return NextResponse.json({ url: session.customerPortalUrl });
-  } catch (err) {
-    console.warn(
-      `${LOG_PREFIX} no customer for external id ${user.id}; falling back to email lookup:`,
-      err instanceof Error ? err.message : err,
-    );
-  }
-
-  // Fallback: a customer created before external ids were set is only
-  // findable by email. Link it (best effort) so the primary path works next
-  // time, then mint the session by its Polar id.
   if (!user.email) return notFound();
 
   try {
-    let customerId: string | undefined;
-    const pages = await polar.customers.list({ email: user.email, limit: 1 });
-    for await (const page of pages) {
-      customerId = page.result.items[0]?.id;
+    // Resolve the Polar customer by email — this is the canonical lookup
+    // (Polar enforces one customer per email per organization), so the
+    // portal session it mints is guaranteed to show every order and
+    // subscription for this person. Doing this instead of an
+    // external_customer_id session avoids the case where an early checkout
+    // created the customer without an external id.
+    let customer: { id: string; externalId?: string | null } | undefined;
+    for await (const page of await polar.customers.list({ email: user.email, limit: 1 })) {
+      customer = page.result.items[0];
       break;
     }
 
-    if (!customerId) return notFound();
+    if (!customer) return notFound();
 
-    try {
-      await polar.customers.update({
-        id: customerId,
-        customerUpdate: { externalId: user.id },
-      });
-    } catch (linkErr) {
-      console.warn(
-        `${LOG_PREFIX} could not backfill external id on customer ${customerId}:`,
-        linkErr instanceof Error ? linkErr.message : linkErr,
-      );
+    // Persist the Supabase user id onto the Polar customer so future lookups
+    // (and webhook correlation) can use it directly. Best effort — a failure
+    // here must not block the portal.
+    if (!customer.externalId) {
+      try {
+        await polar.customers.update({
+          id: customer.id,
+          customerUpdate: { externalId: user.id },
+        });
+      } catch (linkErr) {
+        console.warn(
+          `${LOG_PREFIX} could not link external id onto customer ${customer.id}:`,
+          linkErr instanceof Error ? linkErr.message : linkErr,
+        );
+      }
     }
 
     const session = await polar.customerSessions.create({
-      customerId,
+      customerId: customer.id,
       returnUrl: RETURN_URL,
     });
+
     return NextResponse.json({ url: session.customerPortalUrl });
   } catch (err) {
     return apiErrorResponse(err, "create_customer_session", 502, LOG_PREFIX);

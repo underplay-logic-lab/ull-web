@@ -80,35 +80,50 @@ export async function POST(request: Request) {
       discountId = topupDiscountForTier(tier) ?? undefined;
       if (tier !== "free" && !discountId) {
         console.warn(
-          `${LOG_PREFIX} user ${user.id} is tier "${tier}" but POLAR_DISCOUNT_ID_TOPUP_${tier.toUpperCase()} ` +
-            `is not set — charging full price.`,
+          `${LOG_PREFIX} user ${user.id} is tier "${tier}" but no top-up discount is mapped for it ` +
+            `(see POLAR_TOPUP_DISCOUNT_BY_TIER) — charging full price.`,
         );
       }
     }
   }
 
   try {
-    const checkout = await polar.checkouts.create({
-      products: [productId],
-      successUrl: SUCCESS_URL,
-      returnUrl: RETURN_URL,
-      // Render the hosted Polar checkout in Japanese.
-      locale: "ja",
-      customerEmail: user.email ?? undefined,
-      // Links the Polar customer to the Supabase user id so /api/portal/polar
-      // can mint a customer-portal session straight from external_customer_id
-      // without us persisting a Polar customer id.
-      externalCustomerId: user.id,
-      ...(discountId ? { discountId } : {}),
-      // Copied by Polar onto the resulting order *and* (for subscription
-      // products) the subscription — this is how the webhook
-      // (src/app/api/webhooks/polar/route.ts) knows which Supabase user to
-      // credit, how many credits to grant, and which subscription_tier to
-      // set once payment completes. The webhook still re-derives credits/
-      // tier from the product id as the source of truth; these are a
-      // convenience mirror, not trusted input.
-      metadata: { userId: user.id, tier: config.tier, credits: config.credits },
-    });
+    const createCheckout = (withDiscount: boolean) =>
+      polar.checkouts.create({
+        products: [productId],
+        successUrl: SUCCESS_URL,
+        returnUrl: RETURN_URL,
+        // Render the hosted Polar checkout in Japanese.
+        locale: "ja",
+        customerEmail: user.email ?? undefined,
+        // Links the Polar customer to the Supabase user id so /api/portal/polar
+        // can mint a customer-portal session straight from external_customer_id
+        // without us persisting a Polar customer id.
+        externalCustomerId: user.id,
+        ...(withDiscount && discountId ? { discountId } : {}),
+        // Copied by Polar onto the resulting order *and* (for subscription
+        // products) the subscription — this is how the webhook
+        // (src/app/api/webhooks/polar/route.ts) knows which Supabase user to
+        // credit, how many credits to grant, and which subscription_tier to
+        // set once payment completes. The webhook still re-derives credits/
+        // tier from the product id as the source of truth; these are a
+        // convenience mirror, not trusted input.
+        metadata: { userId: user.id, tier: config.tier, credits: config.credits },
+      });
+
+    // A rejected discount id (stale env, wrong id, "Discount does not exist"
+    // 422, etc.) must never block a purchase — retry once at full price.
+    let checkout: Awaited<ReturnType<typeof createCheckout>>;
+    try {
+      checkout = await createCheckout(Boolean(discountId));
+    } catch (discountErr) {
+      if (!discountId) throw discountErr;
+      console.error(
+        `${LOG_PREFIX} checkout with discount ${discountId} failed — retrying at full price:`,
+        discountErr instanceof Error ? discountErr.message : discountErr,
+      );
+      checkout = await createCheckout(false);
+    }
 
     // Belt-and-suspenders on top of the `locale: "ja"` create param: force
     // ?locale=ja onto the hosted checkout URL so the page always renders in

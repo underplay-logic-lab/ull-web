@@ -65,24 +65,19 @@ export function tierForPolarProduct(productId: string | null | undefined): Polar
 // "once", restricted to the top-up product):
 //   entry 10% / standard 20% / pro 30% / master 50%  off the ¥500 top-up
 //   → ¥450 / ¥400 / ¥350 / ¥250
-// The checkout route reads profiles.subscription_tier and, for a top-up
-// bought by an active paid member, passes the matching discountId to
-// polar.checkouts.create() — Polar then applies it automatically and the
-// customer can't remove it. A missing env var just means "no discount"
-// (falls open to full price), never a broken checkout.
-export const POLAR_TOPUP_DISCOUNT_BY_TIER: Partial<Record<PolarTier, string>> = (() => {
-  const specs: [PolarTier, string | undefined][] = [
-    ["entry", process.env.POLAR_DISCOUNT_ID_TOPUP_ENTRY],
-    ["standard", process.env.POLAR_DISCOUNT_ID_TOPUP_STANDARD],
-    ["pro", process.env.POLAR_DISCOUNT_ID_TOPUP_PRO],
-    ["master", process.env.POLAR_DISCOUNT_ID_TOPUP_MASTER],
-  ];
-  const map: Partial<Record<PolarTier, string>> = {};
-  for (const [tier, id] of specs) {
-    if (id) map[tier] = id;
-  }
-  return map;
-})();
+//
+// Hardcoded (not env-driven) for the same reason as POLAR_PRODUCT_IDS: a
+// stale POLAR_DISCOUNT_ID_TOPUP_* on Vercel was passing a *product* id as a
+// discount id and 422-ing the whole checkout ("Discount does not exist").
+// Synced 2026-08-28 via `node scripts/list-polar-discounts.mjs`. The
+// checkout route also retries without the discount if Polar ever rejects it,
+// so a bad id can never block a purchase.
+export const POLAR_TOPUP_DISCOUNT_BY_TIER: Partial<Record<PolarTier, string>> = {
+  entry: "c5909070-dea3-4f4a-8eb9-b782c5e0a0cd",
+  standard: "05049632-034e-42c9-86ea-b121761150f8",
+  pro: "c72ee18a-10cc-403c-8efc-52b6dcee8ec9",
+  master: "9275be13-4a6b-4f2c-83d1-142a74eeb2c1",
+};
 
 export function topupDiscountForTier(tier: string | null | undefined): string | null {
   if (!tier) return null;
