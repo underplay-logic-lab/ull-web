@@ -47,6 +47,8 @@ export type LogsSummary = {
 export type VolumeFile = {
   path: string;
   size_bytes: number;
+  size: number;
+  formattedSize: string;
   modified_at: string;
 };
 

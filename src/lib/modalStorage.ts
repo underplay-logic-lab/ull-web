@@ -1,8 +1,14 @@
 import "server-only";
+import { formatBytes } from "@/lib/modelVram";
 
 export type VolumeFile = {
   path: string;
   size_bytes: number;
+  // Alias of size_bytes + a pre-formatted human string ("63.2 GB"),
+  // computed server-side so every consumer (model pickers, capacity
+  // checker) has them without re-deriving.
+  size: number;
+  formattedSize: string;
   modified_at: string;
 };
 
@@ -64,8 +70,15 @@ async function callModalStorage<T>(body: ModalStorageAction, timeoutMs = MODAL_S
 }
 
 export async function listVolumeFiles(): Promise<VolumeFile[]> {
-  const result = await callModalStorage<{ files: VolumeFile[] }>({ action: "list" });
-  return result.files;
+  const result = await callModalStorage<{ files: Array<Omit<VolumeFile, "size" | "formattedSize">> }>({
+    action: "list",
+  });
+  // Modal returns only size_bytes — normalise every row so `size` and
+  // `formattedSize` are always present downstream.
+  return (result.files ?? []).map((f) => {
+    const bytes = typeof f.size_bytes === "number" ? f.size_bytes : 0;
+    return { ...f, size_bytes: bytes, size: bytes, formattedSize: formatBytes(bytes) };
+  });
 }
 
 // Triggers the background download (see download_model_async in

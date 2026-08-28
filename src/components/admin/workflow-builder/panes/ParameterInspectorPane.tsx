@@ -16,6 +16,7 @@ import {
   type WorkflowSection,
 } from "@/lib/customWorkflows";
 import { COL_SPAN_OPTIONS } from "@/lib/workflowLayout";
+import { isOomForTier } from "@/lib/modelVram";
 
 const TYPE_LABEL: Record<WorkflowInputFieldType, string> = {
   text: "テキスト",
@@ -57,9 +58,12 @@ function numPatch(
 function GpuFallbackChainEditor({
   list,
   onChange,
+  requiredVramGb = 0,
 }: {
   list: WorkflowGpuTier[];
   onChange: (next: WorkflowGpuTier[]) => void;
+  // Estimated VRAM this workflow needs — GPUs below it get a ⚠️ (OOM risk).
+  requiredVramGb?: number;
 }) {
   const move = (i: number, dir: -1 | 1) => {
     const j = i + dir;
@@ -82,15 +86,27 @@ function GpuFallbackChainEditor({
         優先順位順（上ほど優先）。先頭の GPU が在庫切れ・混雑時に、次の GPU へ自動でフォールバックします。
         空の場合はワークフロー既定の GPU のみで実行します。
       </p>
+      {requiredVramGb > 0 && (
+        <p className="text-[8px] text-red-400">
+          ⚠️ 推定必要 VRAM {requiredVramGb} GB+ 。これを下回る GPU は OOM の可能性があり ⚠️ で警告します。
+        </p>
+      )}
       {list.length === 0 && (
         <p className="rounded bg-border/40 px-2 py-1.5 text-[9px] text-muted">未設定（フォールバックなし）</p>
       )}
       {list.map((tier, i) => {
         const spec = WORKFLOW_GPU_SPEC_BY_TIER[tier];
+        const oom = isOomForTier(tier, requiredVramGb);
         return (
-          <div key={tier} className="flex items-center gap-1.5 rounded-md border border-border bg-background p-1.5">
+          <div
+            key={tier}
+            className={`flex items-center gap-1.5 rounded-md border bg-background p-1.5 ${
+              oom ? "border-red-500/40" : "border-border"
+            }`}
+          >
             <span className="w-4 shrink-0 text-center font-mono text-[9px] text-neon-violet">{i + 1}</span>
             <span className="flex-1 truncate text-[10px] text-foreground">
+              {oom && <span title="推定必要VRAMに対しVRAM不足（OOM の可能性）">⚠️ </span>}
               {spec?.label ?? tier}
               <span className="ml-1 font-mono text-[8px] text-muted">
                 {spec ? `${spec.vram} / $${spec.hourlyUsd.toFixed(2)}/h` : ""}
@@ -136,6 +152,7 @@ function GpuFallbackChainEditor({
           <option value="">＋ GPU をチェーンに追加…</option>
           {remaining.map((t) => (
             <option key={t.value} value={t.value}>
+              {isOomForTier(t.value, requiredVramGb) ? "⚠️ " : ""}
               {t.label}（{t.vram} / ${t.hourlyUsd.toFixed(2)}/h）
             </option>
           ))}
@@ -150,6 +167,7 @@ export function ParameterInspectorPane({
   field,
   sections,
   gpuFallbackList = [],
+  requiredVramGb = 0,
   onChange,
   onGpuFallbackChange,
   onRemove,
@@ -157,6 +175,7 @@ export function ParameterInspectorPane({
   field: WorkflowInputField | null;
   sections: WorkflowSection[];
   gpuFallbackList?: WorkflowGpuTier[];
+  requiredVramGb?: number;
   onChange: (patch: Partial<WorkflowInputField>) => void;
   onGpuFallbackChange?: (next: WorkflowGpuTier[]) => void;
   onRemove: () => void;
@@ -172,7 +191,11 @@ export function ParameterInspectorPane({
             中央のキャンバスでフィールドを選択すると、ここで詳細を編集できます。
           </p>
           {onGpuFallbackChange && (
-            <GpuFallbackChainEditor list={gpuFallbackList} onChange={onGpuFallbackChange} />
+            <GpuFallbackChainEditor
+              list={gpuFallbackList}
+              onChange={onGpuFallbackChange}
+              requiredVramGb={requiredVramGb}
+            />
           )}
         </div>
       </div>
@@ -366,7 +389,11 @@ export function ParameterInspectorPane({
 
         {/* GPU fallback chain — workflow-level, shown alongside the GPU field editor */}
         {isGpuField && onGpuFallbackChange && (
-          <GpuFallbackChainEditor list={gpuFallbackList} onChange={onGpuFallbackChange} />
+          <GpuFallbackChainEditor
+            list={gpuFallbackList}
+            onChange={onGpuFallbackChange}
+            requiredVramGb={requiredVramGb}
+          />
         )}
 
         {/* Field height */}

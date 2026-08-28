@@ -17,6 +17,7 @@ import {
   type WorkflowSection,
 } from "@/lib/customWorkflows";
 import { parseWorkflowNodes, type WorkflowNodeInfo } from "@/lib/workflowGraph";
+import { buildModelSizeIndex, estimateWorkflowModelVram } from "@/lib/modelVram";
 import { defaultValueFor, type FieldValue } from "@/components/studio/workflow/DynamicField";
 import { fieldFromNodeInput, makeFieldId, renumberOrder } from "@/components/admin/workflow-builder/builder";
 import { NodeTreePane } from "@/components/admin/workflow-builder/panes/NodeTreePane";
@@ -37,6 +38,8 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
   const [previewMode, setPreviewMode] = useState<PreviewMode>("desktop");
   const [previewTier, setPreviewTier] = useState<string>("master");
   const [previewValues, setPreviewValues] = useState<Record<string, FieldValue>>({});
+
+  const [volumeFiles, setVolumeFiles] = useState<{ path: string; size_bytes: number }[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -73,10 +76,37 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
     })();
   }, [workflowId]);
 
+  // Best-effort Volume file listing — feeds the model-size / VRAM estimate
+  // that drives the OOM ⚠️ badges on the GPU fallback chain. A failure just
+  // leaves the estimate at zero (no badges), never blocks the builder.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/admin/modal/storage");
+        const data = await res.json().catch(() => null);
+        if (!cancelled && res.ok && Array.isArray(data?.files)) {
+          setVolumeFiles(data.files as { path: string; size_bytes: number }[]);
+        }
+      } catch {
+        // ignore — estimate degrades to "unknown"
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const nodes: WorkflowNodeInfo[] = useMemo(
     () => (workflow ? parseWorkflowNodes(JSON.stringify(workflow.workflow_json)) : []),
     [workflow],
   );
+
+  const requiredVramGb = useMemo(() => {
+    if (!workflow) return 0;
+    const index = buildModelSizeIndex(volumeFiles);
+    return estimateWorkflowModelVram(JSON.stringify(workflow.workflow_json), index).requiredVramGb;
+  }, [workflow, volumeFiles]);
 
   // previewValues holds only admin overrides; every read falls back to
   // defaultValueFor(field), so there's no seeding effect to keep in sync.
@@ -442,6 +472,7 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
           field={selectedField}
           sections={sections}
           gpuFallbackList={gpuFallbackList}
+          requiredVramGb={requiredVramGb}
           onChange={(patch) => selectedField && patchField(selectedField.id, patch)}
           onGpuFallbackChange={(next) => {
             setGpuFallbackList(next);

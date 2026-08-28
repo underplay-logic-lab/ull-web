@@ -30,6 +30,12 @@ import {
   MODEL_FILE_CATEGORIES,
   type ModelFileCategory,
 } from "@/lib/modelFileCategories";
+import {
+  buildModelSizeIndex,
+  estimateWorkflowModelVram,
+  formatBytes,
+  lookupModelSize,
+} from "@/lib/modelVram";
 import type { StudioCustomWorkflow, VolumeFile } from "./types";
 
 const FIELD_TYPE_LABEL: Record<WorkflowInputFieldType, string> = {
@@ -149,6 +155,7 @@ function ModelFileCombobox({
   allOptions,
   placeholder,
   className,
+  sizeIndex,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -156,7 +163,23 @@ function ModelFileCombobox({
   allOptions: string[];
   placeholder?: string;
   className: string;
+  // ComfyUI-name -> byte size, for the [63.2 GB] capacity badges.
+  sizeIndex?: Map<string, number>;
 }) {
+  const sizeLabelFor = (name: string): string | null => {
+    if (!sizeIndex || !name) return null;
+    const bytes = lookupModelSize(sizeIndex, name);
+    return typeof bytes === "number" ? formatBytes(bytes) : null;
+  };
+  const sizeBadge = (name: string) => {
+    const label = sizeLabelFor(name);
+    if (!label) return null;
+    return (
+      <span className="shrink-0 rounded bg-neon-violet/15 px-1.5 py-1 font-mono text-[10px] text-neon-violet">
+        {label}
+      </span>
+    );
+  };
   // No effect needed to keep this in sync with option availability: render
   // falls back to the manual input below whenever activeOptions is empty
   // regardless of this flag, and defaults to select-mode (false) so the
@@ -183,6 +206,7 @@ function ModelFileCombobox({
           placeholder={placeholder}
           className={className}
         />
+        {sizeBadge(safeValue)}
         {canPick && (
           <button
             type="button"
@@ -217,15 +241,19 @@ function ModelFileCombobox({
           <option value="" disabled>
             {`選択してください（${activeOptions.length}件）`}
           </option>
-          {activeOptions.map((opt) => (
-            <option key={opt} value={opt}>
-              {opt}
-            </option>
-          ))}
+          {activeOptions.map((opt) => {
+            const size = sizeLabelFor(opt);
+            return (
+              <option key={opt} value={opt}>
+                {size ? `${opt}  —  [${size}]` : opt}
+              </option>
+            );
+          })}
           {safeValue && !activeOptions.includes(safeValue) && (
             <option value={safeValue}>{`${safeValue}（未検出）`}</option>
           )}
         </select>
+        {sizeBadge(safeValue)}
         <button
           type="button"
           onClick={() => setManualMode(true)}
@@ -436,6 +464,14 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
   }, []);
   const fileCategories = useMemo(() => categorizeVolumeFiles(volumeFiles), [volumeFiles]);
   const allModelFiles = useMemo(() => listAllModelFiles(volumeFiles), [volumeFiles]);
+  const modelSizeIndex = useMemo(() => buildModelSizeIndex(volumeFiles), [volumeFiles]);
+  // Total size of the model files this workflow references + the VRAM that
+  // implies + which GPU tiers fit / would OOM. Recomputed as the admin
+  // edits workflow_json or swaps a model file.
+  const vramEstimate = useMemo(
+    () => estimateWorkflowModelVram(values.workflowJsonText, modelSizeIndex),
+    [values.workflowJsonText, modelSizeIndex],
+  );
 
   useEffect(() => {
     console.log("[Storage Model List] categorized:", {
@@ -813,6 +849,57 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
             </div>
 
             {modelInputRows.length > 0 && (
+              <div className="mt-3 space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 p-3">
+                <p className="text-[10px] font-semibold text-neon-violet">
+                  📦 モデル総容量 ＆ GPU 適合性チェッカー
+                </p>
+                <div className="grid gap-1.5 text-[11px] sm:grid-cols-2">
+                  <p>
+                    📦 選択モデル総容量:{" "}
+                    <span className="font-mono font-semibold text-foreground">
+                      {formatBytes(vramEstimate.totalBytes)}
+                    </span>
+                    {vramEstimate.unmatched.length > 0 && (
+                      <span className="text-muted">
+                        {`（うち ${vramEstimate.unmatched.length} 件は容量不明）`}
+                      </span>
+                    )}
+                  </p>
+                  <p>
+                    ⚡ 推定必要 VRAM:{" "}
+                    <span className="font-mono font-semibold text-foreground">
+                      {vramEstimate.requiredVramGb > 0 ? `${vramEstimate.requiredVramGb} GB+` : "—"}
+                    </span>
+                  </p>
+                </div>
+                {vramEstimate.requiredVramGb > 0 ? (
+                  <div className="space-y-1 text-[11px]">
+                    <p>
+                      <span className="text-green-400">🟢 適合 GPU:</span>{" "}
+                      <span className="font-mono">
+                        {vramEstimate.fitGpus.length > 0
+                          ? vramEstimate.fitGpus.map((g) => g.shortLabel).join(" / ")
+                          : "なし（全 GPU で VRAM 不足）"}
+                      </span>
+                    </p>
+                    {vramEstimate.oomGpus.length > 0 && (
+                      <p className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-red-400">
+                        🔴 OOM 警告（VRAM 不足・クラッシュ確定）:{" "}
+                        <span className="font-mono">
+                          {vramEstimate.oomGpus.map((g) => `${g.shortLabel}(${g.vramGb}GB)`).join(" / ")}
+                        </span>
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-[10px] text-muted">
+                    容量が判明しているモデルファイルが選択されると、必要 VRAM と適合 GPU を自動判定します。
+                  </p>
+                )}
+              </div>
+            )}
+
+            {modelInputRows.length > 0 && (
               <div className="mt-3 space-y-2 rounded-lg border border-border bg-background/60 p-3">
                 <p className="text-[10px] font-medium text-muted">
                   🗂️ モデル / VAE / CLIP / LoRA ファイル（Modal Volume: ull-wan-models）
@@ -833,6 +920,7 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
                       onChange={(val) => handleModelInputChange(row.nodeId, row.fieldName, val)}
                       options={fileCategories[row.category]}
                       allOptions={allModelFiles}
+                      sizeIndex={modelSizeIndex}
                       className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-mono outline-none focus:border-neon-violet/50"
                     />
                   </div>
@@ -1143,6 +1231,7 @@ export function CustomWorkflowModal({ workflow, onClose, onSaved }: CustomWorkfl
                               onChange={(val) => updateField(f.key, { defaultValue: val })}
                               options={defaultValueOptions}
                               allOptions={allModelFiles}
+                              sizeIndex={modelSizeIndex}
                               className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-mono outline-none focus:border-neon-violet/50"
                             />
                           ) : (

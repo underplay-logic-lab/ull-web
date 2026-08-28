@@ -99,24 +99,36 @@ export type WorkflowGpuSpec = {
   value: WorkflowGpuTier;
   // Physical model name — also the default user-facing display name.
   label: string;
+  // Compact name for dense UI (fit/OOM lists, chips).
+  shortLabel: string;
+  // Human string for the physical memory ("288GB HBM3e").
   vram: string;
+  // Numeric VRAM capacity in GB — used by the OOM / GPU-fit checker.
+  vramGb: number;
   hourlyUsd: number;
 };
 
 // The full GPU master, high → low. `hourlyUsd` is the raw Modal hourly cost;
 // `vram` the physical memory. Ordered so the select reads top-spec first.
 export const WORKFLOW_GPU_TIERS: WorkflowGpuSpec[] = [
-  { value: "b300", label: "NVIDIA B300", vram: "288GB HBM3e", hourlyUsd: 7.1 },
-  { value: "b200", label: "NVIDIA B200", vram: "192GB HBM3e", hourlyUsd: 6.25 },
-  { value: "h200", label: "NVIDIA H200 SXM", vram: "141GB HBM3e", hourlyUsd: 4.54 },
-  { value: "h100", label: "NVIDIA H100 SXM5", vram: "80GB HBM3", hourlyUsd: 3.95 },
-  { value: "rtx_pro_6000", label: "NVIDIA RTX PRO 6000", vram: "96GB GDDR7", hourlyUsd: 3.03 },
-  { value: "a100_80gb", label: "NVIDIA A100 80GB", vram: "80GB HBM2e", hourlyUsd: 2.5 },
-  { value: "a100_40gb", label: "NVIDIA A100 40GB", vram: "40GB HBM2", hourlyUsd: 2.1 },
-  { value: "l40s", label: "NVIDIA L40S", vram: "48GB GDDR6", hourlyUsd: 1.95 },
-  { value: "a10", label: "NVIDIA A10", vram: "24GB GDDR6", hourlyUsd: 1.1 },
-  { value: "l4", label: "NVIDIA L4", vram: "24GB GDDR6", hourlyUsd: 0.8 },
-  { value: "t4", label: "NVIDIA T4", vram: "16GB GDDR6", hourlyUsd: 0.59 },
+  { value: "b300", label: "NVIDIA B300", shortLabel: "B300", vram: "288GB HBM3e", vramGb: 288, hourlyUsd: 7.1 },
+  { value: "b200", label: "NVIDIA B200", shortLabel: "B200", vram: "192GB HBM3e", vramGb: 192, hourlyUsd: 6.25 },
+  { value: "h200", label: "NVIDIA H200 SXM", shortLabel: "H200", vram: "141GB HBM3e", vramGb: 141, hourlyUsd: 4.54 },
+  { value: "h100", label: "NVIDIA H100 SXM5", shortLabel: "H100", vram: "80GB HBM3", vramGb: 80, hourlyUsd: 3.95 },
+  {
+    value: "rtx_pro_6000",
+    label: "NVIDIA RTX PRO 6000",
+    shortLabel: "RTX PRO 6000",
+    vram: "96GB GDDR7",
+    vramGb: 96,
+    hourlyUsd: 3.03,
+  },
+  { value: "a100_80gb", label: "NVIDIA A100 80GB", shortLabel: "A100-80GB", vram: "80GB HBM2e", vramGb: 80, hourlyUsd: 2.5 },
+  { value: "a100_40gb", label: "NVIDIA A100 40GB", shortLabel: "A100-40GB", vram: "40GB HBM2", vramGb: 40, hourlyUsd: 2.1 },
+  { value: "l40s", label: "NVIDIA L40S", shortLabel: "L40S", vram: "48GB GDDR6", vramGb: 48, hourlyUsd: 1.95 },
+  { value: "a10", label: "NVIDIA A10", shortLabel: "A10", vram: "24GB GDDR6", vramGb: 24, hourlyUsd: 1.1 },
+  { value: "l4", label: "NVIDIA L4", shortLabel: "L4", vram: "24GB GDDR6", vramGb: 24, hourlyUsd: 0.8 },
+  { value: "t4", label: "NVIDIA T4", shortLabel: "T4", vram: "16GB GDDR6", vramGb: 16, hourlyUsd: 0.59 },
 ];
 
 export const WORKFLOW_GPU_SPEC_BY_TIER: Record<string, WorkflowGpuSpec> = Object.fromEntries(
