@@ -36,7 +36,9 @@ export async function GET(request: Request, { params }: RouteParams) {
   // this app's user-facing routes follow with supabaseAdmin.
   const { data: job, error } = await supabaseAdmin
     .from("generation_jobs")
-    .select("id, status, workflow_type, video_url, error_message, created_at, updated_at")
+    .select(
+      "id, status, workflow_type, video_url, error_message, created_at, updated_at, progress_percent, progress_message, result_path",
+    )
     .eq("id", id)
     .eq("user_id", userData.user.id)
     .maybeSingle();
@@ -79,6 +81,9 @@ export async function GET(request: Request, { params }: RouteParams) {
     errorMessage: job.error_message,
     createdAt: job.created_at,
     updatedAt: job.updated_at,
+    progressPercent: job.progress_percent ?? null,
+    progressMessage: job.progress_message ?? null,
+    resultPath: job.result_path ?? null,
     ...(queue
       ? {
           queuePosition: queue.queuePosition,
