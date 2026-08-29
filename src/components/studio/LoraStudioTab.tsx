@@ -480,10 +480,19 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                 queuedSinceRef.current = Date.now();
                 recoveringRef.current = false;
                 retryAttempt = r.retryCount ?? retryAttempt + 1;
+              } else {
+                // noop (job already moved on) or an unexpected shape —
+                // resume normal polling, retry can fire again if it stalls.
+                recoveringRef.current = false;
+                queuedSinceRef.current = Date.now();
+                setRerouting(null);
               }
             } catch (err) {
               console.error("[LoraStudioTab] recover failed:", err);
               recoveringRef.current = false;
+              // back off so a persistently-failing recover doesn't hammer
+              queuedSinceRef.current = Date.now();
+              setRerouting(null);
             }
           }
         }

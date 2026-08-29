@@ -34,14 +34,18 @@ export async function GET(request: Request, { params }: RouteParams) {
   // Scoped to the requesting user explicitly (not just relying on the
   // table's RLS policy) — same defense-in-depth convention the rest of
   // this app's user-facing routes follow with supabaseAdmin.
-  const { data: job, error } = await supabaseAdmin
+  // select("*") rather than a column list so a DB that's a migration or two
+  // behind (missing progress_*/retry_count/...) never 500s this poll and
+  // freezes the client's job tracker — every field is read defensively below.
+  const { data: job, error } = (await supabaseAdmin
     .from("generation_jobs")
-    .select(
-      "id, status, workflow_type, video_url, error_message, created_at, updated_at, progress_percent, progress_message, result_path, retry_count",
-    )
+    .select("*")
     .eq("id", id)
     .eq("user_id", userData.user.id)
-    .maybeSingle();
+    .maybeSingle()) as {
+    data: Record<string, unknown> | null;
+    error: { message: string } | null;
+  };
 
   if (error) {
     console.error("[jobs/[id]] fetch failed:", error.message);
@@ -55,11 +59,12 @@ export async function GET(request: Request, { params }: RouteParams) {
   // the client can show "何人待ち / あと約何分". One indexed RPC round-trip
   // (see generation_job_queue_stats) — skipped entirely once the job is
   // completed/failed.
+  const status = String(job.status ?? "queued");
   let queue: { queuePosition: number; avgExecutionSeconds: number; estimatedWaitSeconds: number } | null =
     null;
-  if (job.status === "queued" || job.status === "processing") {
+  if (status === "queued" || status === "processing") {
     const { data: stats, error: statsError } = await supabaseAdmin.rpc("generation_job_queue_stats", {
-      p_created_at: job.created_at,
+      p_created_at: job.created_at as string,
     });
     if (statsError) {
       console.error("[jobs/[id]] queue stats failed:", statsError.message);
@@ -75,22 +80,16 @@ export async function GET(request: Request, { params }: RouteParams) {
 
   return NextResponse.json({
     jobId: job.id,
-    status: job.status as
-      | "queued"
-      | "processing"
-      | "completed"
-      | "failed"
-      | "cancelled"
-      | "failed_timeout",
-    workflowType: job.workflow_type,
-    videoUrl: job.video_url,
-    errorMessage: job.error_message,
-    createdAt: job.created_at,
-    updatedAt: job.updated_at,
+    status,
+    workflowType: job.workflow_type ?? null,
+    videoUrl: job.video_url ?? null,
+    errorMessage: job.error_message ?? null,
+    createdAt: job.created_at ?? null,
+    updatedAt: job.updated_at ?? null,
     progressPercent: job.progress_percent ?? null,
     progressMessage: job.progress_message ?? null,
     resultPath: job.result_path ?? null,
-    retryCount: job.retry_count ?? 0,
+    retryCount: typeof job.retry_count === "number" ? job.retry_count : 0,
     ...(queue
       ? {
           queuePosition: queue.queuePosition,
