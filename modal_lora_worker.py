@@ -372,45 +372,78 @@ def _caption_missing(image_paths: list[pathlib.Path], captions: list[str], trigg
         print("[stage1] every image already has a caption — skipping the VLM")
         return filled[: len(image_paths)]
 
+    # Physically cut HuggingFace Hub network access — the checkpoint lives on
+    # the Volume, and any from_pretrained() Hub round-trip (metadata refresh,
+    # revision check) is what was hanging Stage 1 for 5+ minutes.
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
     import torch
     from PIL import Image
     from transformers import AutoProcessor
 
     instruction = CAPTION_INSTRUCTION.format(trigger=trigger)
-    print(f"[stage1] captioning {len(todo)}/{len(image_paths)} images with the VLM at {VLM_PATH}")
+    print(f"[stage1] captioning {len(todo)}/{len(image_paths)} images with the VLM at {VLM_PATH}", flush=True)
+
+    # Single-GPU direct load — device_map="auto" runs a memory-profiling pass
+    # that stalls badly when weights are streamed off a network volume.
+    _device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = None
     errors = []
     for loader in ("image-text-to-text", "qwen2_5_vl", "auto"):
         try:
+            print(f"[Qwen Load] Starting model load via {loader}...", flush=True)
+            _t0 = time.time()
             if loader == "image-text-to-text":
                 from transformers import AutoModelForImageTextToText
 
                 model = AutoModelForImageTextToText.from_pretrained(
-                    VLM_PATH, torch_dtype=torch.bfloat16, device_map="auto", attn_implementation="sdpa"
+                    VLM_PATH,
+                    torch_dtype=torch.bfloat16,
+                    device_map=_device,
+                    attn_implementation="sdpa",
+                    local_files_only=True,
                 )
             elif loader == "qwen2_5_vl":
                 from transformers import Qwen2_5_VLForConditionalGeneration
 
                 model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    VLM_PATH, torch_dtype=torch.bfloat16, device_map="auto", attn_implementation="sdpa"
+                    VLM_PATH,
+                    torch_dtype=torch.bfloat16,
+                    device_map=_device,
+                    attn_implementation="sdpa",
+                    local_files_only=True,
                 )
             else:
                 from transformers import AutoModelForCausalLM
 
                 model = AutoModelForCausalLM.from_pretrained(
-                    VLM_PATH, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True
+                    VLM_PATH,
+                    torch_dtype=torch.bfloat16,
+                    device_map=_device,
+                    trust_remote_code=True,
+                    local_files_only=True,
                 )
-            print(f"[stage1] loaded VLM via {loader}")
+            print(f"[Qwen Load] Model loaded successfully in {time.time() - _t0:.1f} seconds (via {loader})", flush=True)
             break
         except Exception as exc:  # noqa: BLE001 — try the next loader
+            print(f"[Qwen Load] {loader} failed after {time.time() - _t0:.1f}s: {exc}", flush=True)
             errors.append(f"{loader}: {exc}")
     if model is None:
         raise RuntimeError("could not load the VLM:\n" + "\n".join(errors))
 
-    processor = AutoProcessor.from_pretrained(VLM_PATH, trust_remote_code=True)
+    print("[Qwen Load] Starting processor/tokenizer load...", flush=True)
+    _tp = time.time()
+    processor = AutoProcessor.from_pretrained(VLM_PATH, trust_remote_code=True, local_files_only=True)
     if getattr(processor, "tokenizer", None) is not None:
         processor.tokenizer.padding_side = "left"
+    print(f"[Qwen Load] Processor loaded in {time.time() - _tp:.1f} seconds", flush=True)
+
+    # Offline mode was only needed for the Qwen load — clear it so Stage 2
+    # (ai-toolkit) can still resolve HF-hosted preset checkpoints.
+    os.environ.pop("HF_HUB_OFFLINE", None)
+    os.environ.pop("TRANSFORMERS_OFFLINE", None)
     try:
         from qwen_vl_utils import process_vision_info
     except Exception:  # noqa: BLE001
@@ -626,6 +659,9 @@ def _run_ai_toolkit_with_progress(config_path: pathlib.Path, job_id: str, total_
 
     mon = threading.Thread(target=_monitor, daemon=True)
     mon.start()
+    # Explicitly online for the trainer — it may pull HF-hosted preset
+    # checkpoints even if the caption step flipped the process offline.
+    child_env = {k: v for k, v in os.environ.items() if k not in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")}
     try:
         with open(log_path, "w", encoding="utf-8") as log_file:
             proc = subprocess.run(
@@ -634,6 +670,7 @@ def _run_ai_toolkit_with_progress(config_path: pathlib.Path, job_id: str, total_
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 check=False,
+                env=child_env,
             )
     finally:
         stop.set()
