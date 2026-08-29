@@ -65,8 +65,10 @@ export async function POST(request: Request): Promise<NextResponse> {
     console.error("[studio/lora/train] unhandled error:", message, stack);
     return NextResponse.json(
       {
-        error: `LoRA学習リクエストの処理中にエラーが発生しました: ${message}`,
-        details: { message, stack, name: err instanceof Error ? err.name : "Error" },
+        error: "ジョブの作成に失敗しました。",
+        reason: message,
+        details: String(err),
+        stack,
       },
       { status: 500 },
     );
@@ -207,38 +209,78 @@ async function handlePost(request: Request): Promise<NextResponse> {
   }
 
   // --- job row -----------------------------------------------------------
-  const { data: jobRow, error: jobInsertError } = await supabaseAdmin
-    .from("generation_jobs")
-    .insert({
-      user_id: user.id,
-      status: "queued",
-      workflow_type: "lora_training",
-      inputs: {
-        target_model: targetModel,
-        custom_model_id: targetModel === "custom" ? customModelId : undefined,
-        base_architecture: targetModel === "custom" ? baseArchitecture : undefined,
-        output_lora_name: outputLoraName,
-        num_images: storagePaths.length,
-        resolution,
-        trigger_word: triggerWord || null,
-        training_config: { ...trainingConfig, custom_yaml_override: hasOverride ? "(custom)" : undefined },
-      },
-      credits_cost: LORA_TRAINING_COST,
-      progress_percent: 0,
-      progress_message: "queued",
-    })
-    .select("id")
-    .single();
+  const jobInputs = {
+    target_model: targetModel,
+    custom_model_id: targetModel === "custom" ? customModelId : undefined,
+    base_architecture: targetModel === "custom" ? baseArchitecture : undefined,
+    output_lora_name: outputLoraName,
+    num_images: storagePaths.length,
+    resolution,
+    trigger_word: triggerWord || null,
+    training_config: { ...trainingConfig, custom_yaml_override: hasOverride ? "(custom)" : undefined },
+  };
+
+  const fullRow = {
+    user_id: user.id,
+    status: "queued",
+    workflow_type: "lora_training",
+    inputs: jobInputs,
+    credits_cost: LORA_TRAINING_COST,
+    progress_percent: 0,
+    progress_message: "queued",
+  };
+
+  let jobRow: { id: string } | null = null;
+  let jobInsertError: { message?: string; code?: string; details?: string; hint?: string } | null = null;
+
+  {
+    const res = await supabaseAdmin.from("generation_jobs").insert(fullRow).select("id").single();
+    jobRow = res.data as { id: string } | null;
+    jobInsertError = res.error;
+    // The progress_percent / progress_message columns arrive with migration
+    // 20260846000000 — if this deploy is ahead of the DB, retry without them
+    // so a training run still starts (progress just won't update until the
+    // migration lands).
+    if (jobInsertError && /progress_percent|progress_message|column .* does not exist|schema cache/i.test(
+      `${jobInsertError.message ?? ""} ${jobInsertError.details ?? ""}`,
+    )) {
+      console.error("[studio/lora/train] job insert retry without progress_* columns:", jobInsertError);
+      const retry = await supabaseAdmin
+        .from("generation_jobs")
+        .insert({
+          user_id: user.id,
+          status: "queued",
+          workflow_type: "lora_training",
+          inputs: jobInputs,
+          credits_cost: LORA_TRAINING_COST,
+        })
+        .select("id")
+        .single();
+      jobRow = retry.data as { id: string } | null;
+      jobInsertError = retry.error;
+    }
+  }
 
   if (jobInsertError || !jobRow) {
-    console.error("[studio/lora/train] failed to create job row:", jobInsertError?.message);
+    const reason = jobInsertError?.message ?? "unknown insert error";
+    console.error("[studio/lora/train] failed to create job row:", {
+      message: jobInsertError?.message,
+      code: jobInsertError?.code,
+      details: jobInsertError?.details,
+      hint: jobInsertError?.hint,
+    });
     await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
     return NextResponse.json(
-      { error: "ジョブの作成に失敗しました。", remainingCredits: currentCredits },
+      {
+        error: "ジョブの作成に失敗しました。",
+        reason,
+        details: JSON.stringify(jobInsertError),
+        remainingCredits: currentCredits,
+      },
       { status: 500 },
     );
   }
-  const jobId = jobRow.id as string;
+  const jobId = jobRow.id;
 
   // --- dispatch to Modal ------------------------------------------------
   try {
@@ -278,8 +320,10 @@ async function handlePost(request: Request): Promise<NextResponse> {
 
     return NextResponse.json(
       {
-        error: `LoRA学習の開始に失敗しました: ${message}`,
-        details: { message, stack, name: err instanceof Error ? err.name : "Error" },
+        error: "ジョブの作成に失敗しました。",
+        reason: message,
+        details: String(err),
+        stack,
         remainingCredits: currentCredits,
       },
       { status: 502 },

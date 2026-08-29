@@ -96,11 +96,16 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const detail =
-      data?.details && typeof data.details === "object" && typeof data.details.message === "string"
-        ? `（${data.details.message}）`
-        : "";
-    const error: LoraApiError = new Error(`${data?.error || "LoRA学習の開始に失敗しました。"}${detail}`);
+    const reason =
+      typeof data?.reason === "string"
+        ? data.reason
+        : data?.details && typeof data.details === "object" && typeof data.details.message === "string"
+          ? data.details.message
+          : typeof data?.details === "string"
+            ? data.details
+            : "";
+    const base = data?.error || "LoRA学習の開始に失敗しました。";
+    const error: LoraApiError = new Error(reason ? `${base}（${reason}）` : base);
     if (typeof data?.remainingCredits === "number") error.remainingCredits = data.remainingCredits;
     if (typeof data?.requiredCredits === "number") error.requiredCredits = data.requiredCredits;
     throw error;
