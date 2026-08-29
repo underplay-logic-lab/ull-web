@@ -71,7 +71,7 @@ export type StartLoraTrainingParams = {
 
 export type LoraApiError = Error & { remainingCredits?: number; requiredCredits?: number };
 
-export type LoraStartResult = { jobId: string; remainingCredits: number };
+export type LoraStartResult = { jobId: string; remainingCredits: number; modalCallId: string | null };
 
 export async function startLoraTraining(params: StartLoraTrainingParams): Promise<LoraStartResult> {
   const { data: sessionData } = await supabase.auth.getSession();
@@ -110,7 +110,11 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
     if (typeof data?.requiredCredits === "number") error.requiredCredits = data.requiredCredits;
     throw error;
   }
-  return { jobId: data.jobId as string, remainingCredits: data.remainingCredits as number };
+  return {
+    jobId: data.jobId as string,
+    remainingCredits: data.remainingCredits as number,
+    modalCallId: (data.modalCallId as string | null) ?? null,
+  };
 }
 
 export type LoraJobStatus = {

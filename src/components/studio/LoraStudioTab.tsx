@@ -435,17 +435,20 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       recoveringRef.current = false;
       activeJobIdRef.current = jobId;
       queuedSinceRef.current = Date.now();
+      console.log(`[lora] startPolling job=${jobId} attempt=${retryAttempt}`);
 
       const tick = async () => {
         if (pollCancelledRef.current) return;
         const pollingId = activeJobIdRef.current;
+        const elapsed = Math.round((Date.now() - (queuedSinceRef.current || Date.now())) / 1000);
         let next: LoraJobStatus | null = null;
         try {
           next = await pollLoraJob(pollingId);
+          console.log(`[lora] tick job=${pollingId} status=${next.status} elapsed=${elapsed}s retryCount=${next.retryCount}`);
           if (pollCancelledRef.current || pollingId !== activeJobIdRef.current) return;
           setJob(next);
         } catch (err) {
-          console.error("[LoraStudioTab] poll failed:", err);
+          console.error(`[lora] poll FAILED job=${pollingId} elapsed=${elapsed}s:`, err);
         }
 
         if (next) {
@@ -591,7 +594,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           : {};
 
       setUploadProgress({ done: images.length, total: images.length });
-      const { jobId, remainingCredits } = await startLoraTraining({
+      console.log(`[lora] dataset uploaded (${paths.length} files) — calling /api/studio/lora/train`);
+      const startRes = await startLoraTraining({
         storagePaths: paths,
         captions: captionList,
         targetModel,
@@ -602,6 +606,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         outputLoraName: loraName.trim(),
         triggerWord: triggerWord.trim(),
       });
+      const { jobId, remainingCredits } = startRes;
+      console.log("[lora] train ->", startRes);
       broadcastCreditsUpdate(user.id, remainingCredits);
       setJob({
         jobId,
