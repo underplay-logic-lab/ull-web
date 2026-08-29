@@ -24,8 +24,12 @@ Usage:
   base64'd and shipped to the Modal container, captioned, trained on, and
   the resulting <lora-name>.safetensors is committed back to the Volume.
 
+GPU: requests H100 first, falls back to A100-80GB when H100 capacity is
+tight (gpu=["H100", "A100-80GB"]). On H100 the whole run is ~10s captioning
++ ~10-12min training.
+
 Env overrides:
-  MINIMAX_LORA_GPU   GPU type to request (default: A100-80GB; try H100)
+  MINIMAX_LORA_GPU   pin a single GPU type instead of the H100->A100 list
   AI_TOOLKIT_REF     ai-toolkit git ref to pin (default: main)
 """
 
@@ -51,25 +55,36 @@ TEXT_ENCODER_PATH = f"{MODELS_DIR}/clip/qwen3vl_32b_minimax_h3_bf16.safetensors"
 VAE_PATH = f"{MODELS_DIR}/vae/minimax_h3_video_vae_fp16.safetensors"
 LORA_OUTPUT_DIR = f"{MODELS_DIR}/loras"
 
-# The Modal SDK doesn't validate GPU strings client-side (see parse_gpu_config
-# in modal/_utils/function_utils.py) — the repo's other scripts pass plain
-# strings like "L40S" / "B300" rather than the deprecated modal.gpu.* classes,
-# so this follows suit. A100-80GB is the floor for a 27B VLM in bf16 + an
-# ai-toolkit training pass; H100 is the faster option.
-GPU_TYPE = os.environ.get("MINIMAX_LORA_GPU", "A100-80GB")
+# H100 first for the fastest + cheapest run (best $/step of the two), with
+# A100-80GB as an automatic fallback when H100 capacity is tight. Modal
+# accepts an ordered list here and the SDK doesn't validate the strings
+# client-side (see parse_gpu_config in modal/_utils/function_utils.py). Set
+# MINIMAX_LORA_GPU to pin a single type.
+_GPU_ENV = os.environ.get("MINIMAX_LORA_GPU", "").strip()
+GPU_REQUEST = _GPU_ENV if _GPU_ENV else ["H100", "A100-80GB"]
 AI_TOOLKIT_REF = os.environ.get("AI_TOOLKIT_REF", "main")
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
-# Instruction the VLM is given for every dataset image. Produces
-# comma-separated tags led by the trigger word (substituted in at runtime).
+# Instruction the VLM gets for every dataset image. Framing/composition and
+# part-detail features are kept in *separate, non-overlapping* tag groups so
+# the LoRA learns "what the character looks like" independently of "how it's
+# cropped" — composition words never leak into the part descriptions and
+# vice versa. Output order: trigger, one framing tag, part tags, scene tags.
 CAPTION_INSTRUCTION = (
-    "Analyze this character image. Describe: 1) Camera framing/angle "
-    "(head close-up, upper body, lower body/boots, or full-body standing view), "
-    "2) Key character visual traits (hair, eyes, unique accessories like red "
-    "crescent ornaments, blue rose corsages, gold filigree), 3) Background and "
-    "lighting. Format as comma-separated tags starting with trigger word "
-    "'{trigger}'."
+    "You are tagging one training image of a single character. Produce a "
+    "single line of comma-separated lowercase tags with NO sentences.\n"
+    "Build the line in this exact order, keeping the groups strictly separate:\n"
+    "1) the literal trigger token '{trigger}'.\n"
+    "2) FRAMING (exactly one, composition only, no body/part details): one of "
+    "'head close-up', 'upper body', 'lower body and boots', 'full-body standing view'.\n"
+    "3) PART FEATURES (appearance only, never mention crop/zoom/framing): hair "
+    "colour and style, eye colour, and every distinctive accessory or costume "
+    "detail (e.g. red crescent ornaments, blue rose corsages, gold filigree, "
+    "lace, ribbons), each as its own short tag.\n"
+    "4) SCENE: background description and lighting, each as its own tag.\n"
+    "Do not repeat the framing idea inside the part or scene tags. Output only "
+    "the tag line."
 )
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
@@ -165,49 +180,62 @@ def _run_captioning(image_paths: list[pathlib.Path], trigger_word: str) -> list[
         raise RuntimeError("could not load the VLM with any known loader:\n" + "\n".join(load_errors))
 
     processor = AutoProcessor.from_pretrained(VLM_PATH, trust_remote_code=True)
+    # Left padding is required for correct batched decoder-only generation.
+    if getattr(processor, "tokenizer", None) is not None:
+        processor.tokenizer.padding_side = "left"
 
     try:
         from qwen_vl_utils import process_vision_info
     except Exception:  # noqa: BLE001
         process_vision_info = None
 
+    from PIL import Image
+
+    def _postprocess(raw: str) -> str:
+        # Keep the single tag line, normalise whitespace, guarantee the
+        # trigger token leads even if the model dropped/reworded it.
+        line = " ".join(raw.strip().splitlines()).strip().strip('"')
+        line = ", ".join(t.strip() for t in line.split(",") if t.strip())
+        if not line.lower().startswith(trigger_word.lower()):
+            line = f"{trigger_word}, {line}"
+        return line
+
+    # Batched generation — an 8-wide batch keeps a typical 20-40 image
+    # character set at roughly the ~10s target on an H100.
+    batch_size = int(os.environ.get("CAPTION_BATCH", "8"))
     captions: list[str] = []
-    for idx, img_path in enumerate(image_paths, start=1):
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": f"file://{img_path}"},
-                    {"type": "text", "text": instruction},
-                ],
-            }
-        ]
-        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    for start in range(0, len(image_paths), batch_size):
+        chunk = image_paths[start : start + batch_size]
+        batch_texts: list[str] = []
+        batch_images: list = []
+        for img_path in chunk:
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": f"file://{img_path}"},
+                        {"type": "text", "text": instruction},
+                    ],
+                }
+            ]
+            batch_texts.append(processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
+            if process_vision_info is not None:
+                imgs, _ = process_vision_info(messages)
+                batch_images.append(imgs[0] if imgs else Image.open(img_path).convert("RGB"))
+            else:
+                batch_images.append(Image.open(img_path).convert("RGB"))
 
-        if process_vision_info is not None:
-            image_inputs, video_inputs = process_vision_info(messages)
-            inputs = processor(
-                text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt"
-            )
-        else:
-            from PIL import Image
-
-            inputs = processor(text=[text], images=[Image.open(img_path).convert("RGB")], return_tensors="pt")
-
-        inputs = inputs.to(model.device)
+        inputs = processor(text=batch_texts, images=batch_images, padding=True, return_tensors="pt").to(model.device)
         with torch.inference_mode():
-            generated = model.generate(**inputs, max_new_tokens=256, do_sample=False)
+            generated = model.generate(**inputs, max_new_tokens=200, do_sample=False)
         trimmed = generated[:, inputs["input_ids"].shape[1] :]
-        caption = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0].strip()
+        decoded = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
 
-        # Guarantee the trigger word leads the tag list even if the model
-        # phrased it differently / dropped it.
-        if not caption.lower().startswith(trigger_word.lower()):
-            caption = f"{trigger_word}, {caption}"
-
-        (img_path.with_suffix(".txt")).write_text(caption, encoding="utf-8")
-        captions.append(caption)
-        print(f"[stage1] ({idx}/{len(image_paths)}) {img_path.name}: {caption[:120]}")
+        for offset, (img_path, raw) in enumerate(zip(chunk, decoded)):
+            caption = _postprocess(raw)
+            img_path.with_suffix(".txt").write_text(caption, encoding="utf-8")
+            captions.append(caption)
+            print(f"[stage1] ({start + offset + 1}/{len(image_paths)}) {img_path.name}: {caption[:120]}")
 
     # Free VRAM before ai-toolkit loads the diffusion model.
     del model
@@ -320,11 +348,11 @@ def _collect_final_lora(lora_name: str) -> pathlib.Path:
 
 @app.function(
     image=image,
-    gpu=GPU_TYPE,
+    gpu=GPU_REQUEST,
     volumes={MODELS_DIR: vol},
-    # 1500-2500 steps + latent caching + VLM captioning: give it a wide
-    # ceiling so a large dataset / slower GPU doesn't get cut off.
-    timeout=6 * 60 * 60,
+    # ~10s captioning + ~10-12min training on H100 for the default 2000
+    # steps; the wide ceiling only guards a large dataset / A100 fallback.
+    timeout=2 * 60 * 60,
 )
 def train(
     images_b64: dict,
@@ -427,7 +455,8 @@ def main(
     if total_bytes > 1_500_000_000:
         raise SystemExit(f"dataset is {total_bytes / 1024**2:.0f} MB — too large to ship as a single call; downscale it first")
 
-    print(f"[main] uploading {len(images_b64)} images ({total_bytes / 1024**2:.1f} MB) -> Modal ({GPU_TYPE})")
+    gpu_label = GPU_REQUEST if isinstance(GPU_REQUEST, str) else " -> ".join(GPU_REQUEST)
+    print(f"[main] uploading {len(images_b64)} images ({total_bytes / 1024**2:.1f} MB) -> Modal ({gpu_label})")
     print(f"[main] lora_name={lora_name} trigger={trigger_word} steps={steps} rank={rank}/{alpha} lr={lr}")
 
     result = train.remote(
