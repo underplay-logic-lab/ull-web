@@ -21,7 +21,7 @@ import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCre
 import {
   startLoraTraining,
   pollLoraJob,
-  fileToBase64,
+  uploadLoraDataset,
   type LoraJobStatus,
   type LoraApiError,
 } from "@/lib/loraApi";
@@ -288,6 +288,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const [pro, setPro] = useState<ProConfig>(DEFAULT_PRO);
 
   const [phase, setPhase] = useState<Phase>("form");
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [job, setJob] = useState<LoraJobStatus | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
@@ -381,10 +382,14 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     setPhase("starting");
     setErrorMessage(null);
     setJob(null);
+    setUploadProgress({ done: 0, total: images.length });
 
     try {
-      const encoded = await Promise.all(
-        images.map(async (img) => ({ filename: img.file.name, data: await fileToBase64(img.file) })),
+      // Upload straight to Supabase Storage — the /api/studio/lora/train
+      // request then carries only the object paths (a few KB), so Vercel's
+      // 4.5 MB body cap is never in play regardless of dataset size.
+      const { paths } = await uploadLoraDataset(user.id, images.map((i) => i.file), (done, total) =>
+        setUploadProgress({ done, total }),
       );
       const captionList =
         mode === "semi" ? images.map((img) => (captions[img.id] ?? "").trim()) : [];
@@ -402,7 +407,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           : {};
 
       const { jobId, remainingCredits } = await startLoraTraining({
-        images: encoded,
+        storagePaths: paths,
         captions: captionList,
         targetModel,
         customModelId: modelSource === "custom" ? customModelId.trim() : undefined,
@@ -427,6 +432,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       const e = err as LoraApiError;
       setErrorMessage(e.message || "LoRA学習の開始に失敗しました。");
       setPhase("form");
+      setUploadProgress(null);
       if (typeof e.remainingCredits === "number" && user) broadcastCreditsUpdate(user.id, e.remainingCredits);
     }
   };
@@ -437,6 +443,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     setPhase("form");
     setJob(null);
     setErrorMessage(null);
+    setUploadProgress(null);
   };
 
   const busy = phase !== "form";
@@ -738,9 +745,23 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       ) : (
         <div className="space-y-3">
           {phase === "starting" && (
-            <div className="flex items-center gap-2 text-sm text-muted">
-              <Loader2 size={15} className="animate-spin" />
-              画像をアップロードして学習ジョブを起動しています…
+            <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5 p-4">
+              <div className="flex items-center gap-2 text-sm text-neon-violet">
+                <Loader2 size={15} className="animate-spin" />
+                {uploadProgress && uploadProgress.done < uploadProgress.total
+                  ? `画像をアップロード中… ${uploadProgress.done}/${uploadProgress.total}`
+                  : "学習ジョブを起動しています…"}
+              </div>
+              {uploadProgress && (
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-background/70">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-neon-pink to-neon-violet transition-[width] duration-300"
+                    style={{
+                      width: `${Math.round((uploadProgress.done / Math.max(1, uploadProgress.total)) * 100)}%`,
+                    }}
+                  />
+                </div>
+              )}
             </div>
           )}
           <ProgressPanel job={job} onUseLora={onUseLora} />

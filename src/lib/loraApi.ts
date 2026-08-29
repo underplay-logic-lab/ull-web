@@ -13,8 +13,36 @@ export type LoraTrainingConfigInput = {
   custom_yaml_override?: string;
 };
 
+export const LORA_DATASET_BUCKET = "lora_datasets";
+
+// Uploads the raw image files straight to Supabase Storage (bypassing
+// Vercel's 4.5 MB request body cap) under "<userId>/<datasetId>/NNNN_name".
+// The zero-padded index keeps the server-side sort aligned with the caption
+// array order. Returns the object paths, in upload order.
+export async function uploadLoraDataset(
+  userId: string,
+  files: File[],
+  onProgress?: (done: number, total: number) => void,
+): Promise<{ datasetId: string; paths: string[] }> {
+  const datasetId = crypto.randomUUID();
+  const paths: string[] = [];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const safe = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "image";
+    const path = `${userId}/${datasetId}/${String(i).padStart(4, "0")}_${safe}`;
+    const { error } = await supabase.storage
+      .from(LORA_DATASET_BUCKET)
+      .upload(path, file, { upsert: true, contentType: file.type || "image/png" });
+    if (error) throw new Error(`画像のアップロードに失敗しました: ${error.message}`);
+    paths.push(path);
+    onProgress?.(i + 1, files.length);
+  }
+  return { datasetId, paths };
+}
+
 export type StartLoraTrainingParams = {
-  images: { filename: string; data: string }[];
+  // Supabase Storage object paths (from uploadLoraDataset), in caption order.
+  storagePaths: string[];
   captions: string[];
   targetModel: LoraTargetModel;
   // Universal loader — required when targetModel === "custom".
@@ -38,7 +66,7 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
     body: JSON.stringify({
-      images: params.images,
+      storage_paths: params.storagePaths,
       captions: params.captions,
       target_model: params.targetModel,
       custom_model_id: params.customModelId,
@@ -99,18 +127,4 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
           }
         : null,
   };
-}
-
-// Reads a file as a bare base64 string (no data: prefix) for the training payload.
-export function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error ?? new Error("file read failed"));
-    reader.onload = () => {
-      const result = String(reader.result);
-      const comma = result.indexOf(",");
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.readAsDataURL(file);
-  });
 }

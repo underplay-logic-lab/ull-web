@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
-import { spawnLoraTrainingJob, type LoraTrainingImage } from "@/lib/modalLoraTrain";
+import { spawnLoraTrainingJob } from "@/lib/modalLoraTrain";
 import {
   BLOCKED_LORA_MODEL_MESSAGE,
   LORA_BASE_ARCHITECTURES,
@@ -24,9 +24,7 @@ const LORA_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 // HF repo id ("owner/name") or an absolute/volume-relative path.
 const CUSTOM_MODEL_ID_RE = /^[A-Za-z0-9._\-/]{2,200}$/;
 const MAX_IMAGES = 200;
-// Base64 inflates ~4/3; keep the whole request body well under Modal's arg
-// limit and Vercel's body cap.
-const MAX_TOTAL_B64_BYTES = 180_000_000;
+const MIN_IMAGES = 1;
 
 function sanitizeTrainingConfig(raw: unknown): Record<string, unknown> {
   const src = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
@@ -121,36 +119,23 @@ export async function POST(request: Request) {
     );
   }
 
-  const rawImages = Array.isArray(body.images) ? body.images : [];
-  if (rawImages.length === 0) {
-    return NextResponse.json({ error: "学習用画像を1枚以上指定してください。" }, { status: 400 });
+  // The browser uploads the images straight to the lora_datasets bucket and
+  // sends only their object paths here — the request body stays a few KB.
+  const rawPaths = Array.isArray(body.storage_paths) ? (body.storage_paths as unknown[]) : [];
+  if (rawPaths.length < MIN_IMAGES) {
+    return NextResponse.json({ error: "学習用画像を1枚以上アップロードしてください。" }, { status: 400 });
   }
-  if (rawImages.length > MAX_IMAGES) {
+  if (rawPaths.length > MAX_IMAGES) {
     return NextResponse.json({ error: `学習用画像は最大${MAX_IMAGES}枚です。` }, { status: 400 });
   }
 
-  const images: LoraTrainingImage[] = [];
-  let totalB64 = 0;
-  for (const item of rawImages) {
-    if (item && typeof item === "object" && typeof (item as Record<string, unknown>).data === "string") {
-      const data = (item as Record<string, unknown>).data as string;
-      const filename =
-        typeof (item as Record<string, unknown>).filename === "string"
-          ? ((item as Record<string, unknown>).filename as string)
-          : `image_${images.length}.png`;
-      totalB64 += data.length;
-      images.push({ filename, data });
-    } else if (item && typeof item === "object" && typeof (item as Record<string, unknown>).path === "string") {
-      images.push({ path: (item as Record<string, unknown>).path as string });
-    } else {
-      return NextResponse.json({ error: "images の各要素は {data} または {path} を含む必要があります。" }, { status: 400 });
+  // Every path must be an image the requester owns: "<user.id>/<dataset>/<file>".
+  const storagePaths: string[] = [];
+  for (const p of rawPaths) {
+    if (typeof p !== "string" || !p.startsWith(`${user.id}/`) || p.includes("..") || !/\.(png|jpe?g|webp)$/i.test(p)) {
+      return NextResponse.json({ error: "アップロード済み画像パスが不正です。" }, { status: 400 });
     }
-  }
-  if (totalB64 > MAX_TOTAL_B64_BYTES) {
-    return NextResponse.json(
-      { error: "画像の合計サイズが大きすぎます。枚数を減らすか解像度を下げてください。" },
-      { status: 413 },
-    );
+    storagePaths.push(p);
   }
 
   const captions = Array.isArray(body.captions)
@@ -208,7 +193,7 @@ export async function POST(request: Request) {
         custom_model_id: targetModel === "custom" ? customModelId : undefined,
         base_architecture: targetModel === "custom" ? baseArchitecture : undefined,
         output_lora_name: outputLoraName,
-        num_images: images.length,
+        num_images: storagePaths.length,
         trigger_word: triggerWord || null,
         training_config: { ...trainingConfig, custom_yaml_override: hasOverride ? "(custom)" : undefined },
       },
@@ -235,7 +220,7 @@ export async function POST(request: Request) {
       jobId,
       userId: user.id,
       creditsCost: LORA_TRAINING_COST,
-      images,
+      storagePaths,
       captions,
       targetModel,
       customModelId: targetModel === "custom" ? customModelId : undefined,

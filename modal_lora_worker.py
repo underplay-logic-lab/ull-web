@@ -210,6 +210,27 @@ def _supabase_request(method: str, path: str, **kwargs):
     return requests.request(method, f"{supabase_url}{path}", headers=headers, timeout=10, **kwargs)
 
 
+def _download_storage_object(bucket: str, key: str) -> bytes:
+    """Fetches one object out of a (private) Supabase Storage bucket with the
+    service-role key — bypasses Storage RLS."""
+    import requests
+
+    supabase_url = os.environ.get("SUPABASE_URL")
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not supabase_url or not service_key:
+        raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not configured")
+    if ".." in key:
+        raise ValueError(f"illegal storage key: {key!r}")
+    res = requests.get(
+        f"{supabase_url}/storage/v1/object/{bucket}/{key.lstrip('/')}",
+        headers={"apikey": service_key, "Authorization": f"Bearer {service_key}"},
+        timeout=60,
+    )
+    if res.status_code != 200:
+        raise RuntimeError(f"storage download failed ({res.status_code}) for {bucket}/{key}: {res.text[:300]}")
+    return res.content
+
+
 def _patch_job(job_id: str, fields: dict) -> None:
     if not job_id:
         return
@@ -607,23 +628,37 @@ def train_lora_job(params: dict) -> dict:
         dataset.mkdir(parents=True)
 
         image_paths: list[pathlib.Path] = []
-        for i, item in enumerate(params.get("images") or []):
-            if isinstance(item, str):
-                item = {"path": item}
-            if item.get("path"):
-                src = pathlib.Path(item["path"])
-                if not src.is_absolute():
-                    src = pathlib.Path(MODELS_DIR) / item["path"]
-                if not src.exists():
-                    raise FileNotFoundError(f"image path not on Volume: {src}")
-                dest = dataset / src.name
-                shutil.copy2(src, dest)
-            else:
-                name = os.path.basename(item.get("filename") or f"img_{i:04d}.png")
-                dest = dataset / name
-                dest.write_bytes(base64.b64decode(item["data"]))
-            image_paths.append(dest)
-        image_paths.sort()
+        storage_paths = params.get("storage_paths") or []
+        if storage_paths:
+            # Primary path: the browser uploaded the images to Supabase
+            # Storage and only their object keys were forwarded here, so the
+            # Next.js request never hit Vercel's 4.5 MB body cap. Pull them
+            # back with the service-role key (bypasses Storage RLS).
+            bucket = str(params.get("storage_bucket") or "lora_datasets")
+            for i, key in enumerate(storage_paths):
+                data = _download_storage_object(bucket, str(key))
+                ext = os.path.splitext(str(key))[1] or ".png"
+                dest = dataset / f"{i:04d}{ext}"
+                dest.write_bytes(data)
+                image_paths.append(dest)
+        else:
+            for i, item in enumerate(params.get("images") or []):
+                if isinstance(item, str):
+                    item = {"path": item}
+                if item.get("path"):
+                    src = pathlib.Path(item["path"])
+                    if not src.is_absolute():
+                        src = pathlib.Path(MODELS_DIR) / item["path"]
+                    if not src.exists():
+                        raise FileNotFoundError(f"image path not on Volume: {src}")
+                    dest = dataset / f"{i:04d}_{src.name}"
+                    shutil.copy2(src, dest)
+                else:
+                    name = os.path.basename(item.get("filename") or "img.png")
+                    dest = dataset / f"{i:04d}_{name}"
+                    dest.write_bytes(base64.b64decode(item["data"]))
+                image_paths.append(dest)
+        image_paths.sort()  # the 4-digit prefix keeps this in caption order
         if not image_paths:
             raise ValueError("no images supplied")
         print(f"[train] staged {len(image_paths)} images for '{lora_name}' (target={target_model})")

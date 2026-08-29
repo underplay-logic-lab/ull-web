@@ -1,11 +1,7 @@
 import "server-only";
 import type { LoraBaseArchitecture } from "@/lib/loraModels";
 
-// One training image for the LoRA worker: either inline base64 bytes or a
-// path to a file already sitting on the Modal Volume (ull-wan-models).
-export type LoraTrainingImage =
-  | { filename: string; data: string }
-  | { path: string };
+export const LORA_DATASET_BUCKET = "lora_datasets";
 
 export type LoraTrainingConfig = {
   rank?: number;
@@ -21,7 +17,8 @@ export type SpawnLoraTrainingParams = {
   jobId: string;
   userId: string;
   creditsCost: number;
-  images: LoraTrainingImage[];
+  // Supabase Storage object paths in the lora_datasets bucket, caption order.
+  storagePaths: string[];
   captions: string[];
   targetModel: string;
   customModelId?: string;
@@ -61,7 +58,8 @@ export async function spawnLoraTrainingJob(params: SpawnLoraTrainingParams): Pro
       job_id: params.jobId,
       user_id: params.userId,
       credits_cost: params.creditsCost,
-      images: params.images,
+      storage_bucket: LORA_DATASET_BUCKET,
+      storage_paths: params.storagePaths,
       captions: params.captions,
       target_model: params.targetModel,
       custom_model_id: params.customModelId ?? "",
