@@ -405,6 +405,30 @@ def _patch_job(job_id: str, fields: dict) -> None:
         print(f"[lora-worker] failed to update job {job_id}: {exc}")
 
 
+def _claim_job(job_id: str, fields: dict) -> bool:
+    """Conditional 'queued' -> 'processing' claim. Returns True only if THIS
+    call flipped the row — i.e. the client's pending-failover hasn't already
+    cancelled / superseded it. A returned [] means 0 rows matched (row is no
+    longer 'queued'), so the worker must abort without touching the GPU."""
+    if not job_id:
+        return True
+    try:
+        res = _supabase_request(
+            "PATCH",
+            "/rest/v1/generation_jobs",
+            params={"id": f"eq.{job_id}", "status": "eq.queued"},
+            json={**fields, "updated_at": _now_iso()},
+            headers={"Prefer": "return=representation"},
+        )
+        if res is None:
+            return True  # Supabase not configured — local CLI path
+        rows = res.json()
+        return bool(rows)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[lora-worker] job claim check failed for {job_id} (continuing): {exc}")
+        return True
+
+
 def _refund_credits(user_id: str, amount: int) -> None:
     if not user_id or not amount or amount <= 0:
         return
@@ -847,8 +871,16 @@ def train_lora_job(params: dict) -> dict:
         except Exception as _fc_exc:  # noqa: BLE001 — best-effort
             print(f"[train] could not self-record call id: {_fc_exc}", flush=True)
 
-        _patch_job(job_id, {"status": "processing", "started_at": _now_iso(), "progress_percent": 1,
-                            "progress_message": "preparing dataset"})
+        # Atomically claim the job. If it's no longer 'queued' the client's
+        # pending-failover already cancelled / re-routed it — abort now so we
+        # never burn a GPU on a dead job or resurrect a terminal row.
+        if job_id and not _claim_job(
+            job_id,
+            {"status": "processing", "started_at": _now_iso(), "progress_percent": 1,
+             "progress_message": "preparing dataset"},
+        ):
+            print(f"[train] job {job_id} is no longer 'queued' (cancelled / superseded) — aborting", flush=True)
+            return {"aborted": True, "job_id": job_id}
 
         # --- materialise the dataset -------------------------------------
         dataset = pathlib.Path(DATASET_DIR)
