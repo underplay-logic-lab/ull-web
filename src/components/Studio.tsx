@@ -76,7 +76,7 @@ export function Studio() {
             ) : activeTab === "lora" ? (
               <EditableText
                 siteKey="studio_desc_lora"
-                fallback="キャラクター画像をアップロードするだけ。Qwen3.8-27B が自動キャプションし、H100 で専用 LoRA を焼き上げます。"
+                fallback="キャラクター画像をアップロードするだけ。独自の超高速パイプラインが自動でタグ付けし、深度最適化エンジンが専用 LoRA を焼き上げます。"
               />
             ) : (
               <EditableText

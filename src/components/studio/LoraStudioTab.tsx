@@ -203,7 +203,7 @@ function ProgressPanel({
       <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5 p-4">
         <div className="flex items-center gap-2 text-sm font-semibold text-neon-violet">
           <Loader2 size={15} className="animate-spin" />
-          H100 で学習中… {pct}%
+          深度最適化学習中… {pct}%
         </div>
         <div className="mt-2 h-2 overflow-hidden rounded-full bg-background/70">
           <div
@@ -225,10 +225,10 @@ function ProgressPanel({
           LoRA 学習が完了しました
         </div>
         <p className="mt-1.5 break-all font-mono text-[11px] text-muted">
-          {job.resultPath ?? "(Volume: ull-wan-models / loras/)"}
+          {filename || "(生成済みモデルライブラリに保存されました)"}
         </p>
         <p className="mt-1 text-[11px] text-muted">
-          この LoRA は Modal Volume（<span className="font-mono">/models/loras/</span>）に保存され、動画生成ワークフローから参照できます。
+          この LoRA はモデルライブラリに保存され、動画生成ワークフローからすぐに利用できます。
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
           <button
@@ -482,7 +482,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           {mode === "semi" && images.length > 0 && (
             <div className="space-y-2">
               <p className="text-[11px] text-muted">
-                各画像のキャプションを微調整できます。<span className="text-neon-violet">空欄の画像は Qwen3.8-27B が自動生成</span>します（構図タグと部位タグは分離されます）。
+                各画像のキャプションを微調整できます。<span className="text-neon-violet">空欄の画像は自動でタグ付け</span>されます（構図タグと部位タグは分離されます）。
               </p>
               <div className="grid max-h-80 gap-2 overflow-y-auto pr-1">
                 {images.map((img) => (
@@ -618,7 +618,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                   disabled={busy}
                   className="h-3.5 w-3.5 accent-neon-pink"
                 />
-                生 YAML を直接編集（ai-toolkit job 設定）
+                生 YAML を直接編集（学習ジョブ設定）
               </label>
 
               {pro.useRawYaml ? (
@@ -733,13 +733,14 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             ) : (
               <>
                 <Wand2 size={16} />
-                {`⚡ ${LORA_COST} クレジットで LoRA 学習を開始`}
+                {`🔥 高速 LoRA 学習を開始する (${LORA_COST} C)`}
               </>
             )}
           </button>
           <p className="flex items-start gap-2 text-[11px] leading-relaxed text-muted">
             <Sparkles size={13} className="mt-0.5 shrink-0 text-neon-violet" />
-            H100（混雑時は A100-80GB）で自動キャプション → ai-toolkit 学習。所要 約10〜15分。処理中にページを離れても学習は継続し、後で結果を確認できます。
+            独自の超高速パイプラインで自動キャプション →
+            深度最適化学習（所要 約10〜20分）。処理中にページを離れても学習はバックグラウンドで継続し、後からいつでも結果を確認できます。
           </p>
         </div>
       ) : (
