@@ -43,10 +43,12 @@ import {
 } from "@/lib/loraModels";
 
 const LORA_COST = 150;
-const JOB_POLL_INTERVAL_MS = 3000;
+// TEST: fast poll + 1s pending timeout to exercise the auto-failover path.
+const JOB_POLL_INTERVAL_MS = 1000;
 // If a job hasn't left 'queued' (no worker container) within this window,
-// the client auto-cancels + re-routes it to another node. Max 2 retries.
-const PENDING_TIMEOUT_MS = 10_000;
+// the client auto-cancels + re-enqueues it on the same GPU. Max 2 retries,
+// then cancel + 100% refund.
+const PENDING_TIMEOUT_MS = 1_000;
 const MAX_PENDING_RETRIES = 2;
 const MAX_IMAGES = 200;
 const MAX_TOTAL_BYTES = 120 * 1024 * 1024; // 120 MB of raw image bytes
