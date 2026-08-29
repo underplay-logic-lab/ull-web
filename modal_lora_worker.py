@@ -175,28 +175,43 @@ CAPTION_INSTRUCTION = (
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
 
-# Build-time patch: wrap the eager NVFP4-quant modules' bodies in a
-# try/except so a failed torch.library.custom_op registration never crashes
-# ai-toolkit's import (BF16 LoRA training doesn't use them). base64'd to keep
-# it out of shell-quoting range.
+# Build-time patch: wrap the eager FP4/NVFP4 quant modules' bodies in a
+# try/except so ANY import-time failure (torch.library.custom_op /
+# torchao _make_prim register_fake AttributeError / a missing torchao) is
+# swallowed and replaced with no-op placeholders. BF16 LoRA training never
+# touches these. base64'd to keep it out of shell-quoting range.
 _QUANT_PATCH = '''\
-import base64, pathlib, sys
+import pathlib, sys
+
 root = pathlib.Path(sys.argv[1])
-for rel in ("toolkit/util/convrot_quant.py", "toolkit/util/comfy_quant_import.py"):
+FILES = (
+    "toolkit/util/comfy_quant_import.py",
+    "toolkit/util/convrot_quant.py",
+    "toolkit/util/nvfp4_quant.py",
+)
+FALLBACK = (
+    "except Exception as _quant_exc:\\n"
+    "    import warnings as _w\\n"
+    "    _w.warn('ai-toolkit quant module disabled: ' + repr(_quant_exc))\\n"
+    "    def _quant_noop(*_a, **_k):\\n"
+    "        return None\\n"
+    "    def import_comfy_quantized_layers(*_a, **_k):\\n"
+    "        return None\\n"
+    "    def __getattr__(_name):\\n"
+    "        return _quant_noop\\n"
+)
+for rel in FILES:
     p = root / rel
     if not p.is_file():
+        print("[image] quant patch: not present:", rel)
         continue
     src = p.read_text()
     if src.lstrip().startswith("try:"):
+        print("[image] quant patch: already wrapped:", rel)
         continue
     body = "".join(("    " + ln) if ln.strip() else ln for ln in src.splitlines(keepends=True))
-    p.write_text(
-        "try:\\n" + body
-        + "\\nexcept Exception as _quant_exc:\\n"
-        + "    import warnings\\n"
-        + "    warnings.warn('ai-toolkit quant module " + rel + " disabled: ' + repr(_quant_exc))\\n"
-    )
-    print("[image] wrapped", rel)
+    p.write_text("try:\\n" + body + "\\n" + FALLBACK)
+    print("[image] quant patch: wrapped", rel)
 '''
 
 image = (
@@ -207,13 +222,16 @@ image = (
         "build-essential", "ninja-build",
     )
     .pip_install(
+        # The CUDA-12.4 torch trio, pinned and installed together so nothing
+        # downstream can drag in a mismatched build. torchaudio is required —
+        # ai-toolkit imports it unconditionally at startup.
         "torch==2.5.1",
         "torchvision==0.20.1",
-        # ai-toolkit imports torchaudio unconditionally at startup — must be
-        # the CUDA-12.4 build matched to torch 2.5.1 above.
         "torchaudio==2.5.1",
+        "triton==3.1.0",
         extra_index_url="https://download.pytorch.org/whl/cu124",
     )
+    .pip_install("ninja")
     .pip_install(
         "transformers>=4.49.0",
         "accelerate>=1.2.0",
@@ -225,8 +243,6 @@ image = (
         "requests",
         "scipy",
         "ftfy",
-        "triton",
-        "ninja",
         "diffusers>=0.32.0",
         "peft>=0.14.0",
         "bitsandbytes",
@@ -243,6 +259,13 @@ image = (
         f"git clone https://github.com/ostris/ai-toolkit.git {AI_TOOLKIT_DIR}",
         f"cd {AI_TOOLKIT_DIR} && git checkout {AI_TOOLKIT_REF} && git submodule update --init --recursive",
         f"cd {AI_TOOLKIT_DIR} && pip install -r requirements.txt || echo 'ai-toolkit requirements.txt partial install, continuing'",
+        # torchao's _make_prim/register_fake is incompatible with torch 2.5.1
+        # (AttributeError: 'function' object has no attribute 'register_fake')
+        # and BF16 LoRA training never needs FP4 quant — drop it outright.
+        "pip uninstall -y torchao || true",
+        # re-assert the torch trio in case ai-toolkit's requirements bumped one
+        "pip install --no-deps torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 "
+        "--extra-index-url https://download.pytorch.org/whl/cu124",
         # usercustomize shim (auto-imported by `site` in the run.py subprocess
         # because SHIM_DIR is on PYTHONPATH) — makes torch.library.custom_op &
         # friends non-fatal.
