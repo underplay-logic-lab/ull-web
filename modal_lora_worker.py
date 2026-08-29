@@ -834,6 +834,19 @@ def train_lora_job(params: dict) -> dict:
     started = time.time()
 
     try:
+        # Self-record our own FunctionCall id (fc-...) as a safety net — the
+        # dispatch endpoint already returns it to the Next.js side, but this
+        # guarantees generation_jobs.modal_call_id is populated the moment
+        # the container starts, so the pending-timeout path always has a real
+        # id to .cancel().
+        try:
+            _self_fc = getattr(modal, "current_function_call_id", lambda: None)()
+            if job_id and _self_fc:
+                _patch_job(job_id, {"modal_call_id": str(_self_fc)})
+                print(f"[train] self-recorded modal_call_id {_self_fc}", flush=True)
+        except Exception as _fc_exc:  # noqa: BLE001 — best-effort
+            print(f"[train] could not self-record call id: {_fc_exc}", flush=True)
+
         _patch_job(job_id, {"status": "processing", "started_at": _now_iso(), "progress_percent": 1,
                             "progress_message": "preparing dataset"})
 

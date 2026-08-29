@@ -85,11 +85,34 @@ async function refundCredits(userId: string, amount: number): Promise<void> {
   await supabaseAdmin.from("profiles").update({ credits: current + amount }).eq("id", userId);
 }
 
+// fc-... only — a Supabase UUID here would just whiff against Modal.
+function isModalCallId(v: string): boolean {
+  return /^fc-/.test(v) || (v.length > 8 && !/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(v));
+}
+
+// Physically cancels the Modal FunctionCall for this job, if we have one.
+// Returns { attempted, id, cancelled }.
+async function cancelModalForJob(
+  job: JobRow,
+): Promise<{ attempted: boolean; id: string; cancelled: boolean }> {
+  const id = callIdOf(job);
+  if (!id) {
+    console.error(`[recover] job ${job.id}: no modal_call_id on record — cannot physically cancel`);
+    return { attempted: false, id: "", cancelled: false };
+  }
+  if (!isModalCallId(id)) {
+    console.error(`[recover] job ${job.id}: modal_call_id looks like a UUID, not fc-... (${id}) — skipping`);
+    return { attempted: false, id, cancelled: false };
+  }
+  const cancelled = await cancelLoraTrainingCall(id);
+  console.log(`[recover] job ${job.id}: cancel_lora_job(${id}) -> ${cancelled}`);
+  return { attempted: true, id, cancelled };
+}
+
 // Cancels the stuck call, 100%-refunds the original cost once (guarded by
 // `refunded` when the column exists), and closes the job.
-async function closeWithRefund(job: JobRow): Promise<number> {
-  const modalCallId = callIdOf(job);
-  if (modalCallId) await cancelLoraTrainingCall(modalCallId);
+async function closeWithRefund(job: JobRow): Promise<{ refunded: number; modalCancelled: boolean }> {
+  const cancel = await cancelModalForJob(job);
 
   const parentId = typeof job.parent_job_id === "string" ? job.parent_job_id : job.id;
   const { data: original } = await supabaseAdmin
@@ -122,7 +145,7 @@ async function closeWithRefund(job: JobRow): Promise<number> {
       completed_at: new Date().toISOString(),
     });
   }
-  return refunded;
+  return { refunded, modalCancelled: cancel.cancelled };
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -167,19 +190,18 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     const retryCount = typeof job.retry_count === "number" ? job.retry_count : 0;
     const dispatch = job.inputs?.dispatch;
-    const modalCallId = callIdOf(job);
 
     // Explicit timeout, retry cap reached, or nothing to re-dispatch.
     if (action === "timeout" || retryCount >= MAX_RETRIES || !dispatch) {
-      const refunded = await closeWithRefund(job);
-      return NextResponse.json({ ok: true, status: "failed_timeout", refunded });
+      const { refunded, modalCancelled } = await closeWithRefund(job);
+      return NextResponse.json({ ok: true, status: "failed_timeout", refunded, modalCancelled });
     }
 
-    // --- retry: cancel the stuck call, supersede this job, re-dispatch ---
-    if (modalCallId) await cancelLoraTrainingCall(modalCallId);
+    // --- retry: physically cancel the stuck call, supersede this job, re-dispatch ---
+    const cancel = await cancelModalForJob(job);
     await updateJob(job.id, {
       status: "cancelled",
-      error_message: `auto-rerouted (pending timeout, retry ${retryCount + 1})`,
+      error_message: `auto-rerouted (pending timeout, retry ${retryCount + 1}, modal cancel ${cancel.cancelled})`,
       completed_at: new Date().toISOString(),
     });
 
@@ -219,8 +241,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       console.error("[recover] child job insert failed, trying leaner shape:", error?.message);
     }
     if (!newJobId) {
-      const refunded = await closeWithRefund(job);
-      return NextResponse.json({ ok: true, status: "failed_timeout", refunded });
+      const { refunded, modalCancelled } = await closeWithRefund(job);
+      return NextResponse.json({ ok: true, status: "failed_timeout", refunded, modalCancelled });
     }
 
     try {
@@ -234,17 +256,26 @@ export async function POST(request: Request): Promise<NextResponse> {
           modal_call_id: newCallId,
           inputs: { ...(job.inputs ?? {}), modal_call_id: newCallId },
         });
+        console.log(`[recover] child job ${newJobId} <- modal_call_id ${newCallId}`);
+      } else {
+        console.error(`[recover] child job ${newJobId}: re-dispatch returned no modal_call_id`);
       }
     } catch (err) {
       await updateJob(newJobId, {
         status: "failed",
         error_message: `re-dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
       });
-      const refunded = await closeWithRefund({ ...job, id: newJobId });
-      return NextResponse.json({ ok: true, status: "failed_timeout", refunded });
+      const { refunded, modalCancelled } = await closeWithRefund({ ...job, id: newJobId });
+      return NextResponse.json({ ok: true, status: "failed_timeout", refunded, modalCancelled });
     }
 
-    return NextResponse.json({ ok: true, status: "queued", jobId: newJobId, retryCount: retryCount + 1 });
+    return NextResponse.json({
+      ok: true,
+      status: "queued",
+      jobId: newJobId,
+      retryCount: retryCount + 1,
+      modalCancelled: cancel.cancelled,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[studio/lora/recover] unhandled:", message, err instanceof Error ? err.stack : undefined);

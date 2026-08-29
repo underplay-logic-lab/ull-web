@@ -310,23 +310,37 @@ async function handlePost(request: Request): Promise<NextResponse> {
   // --- dispatch to Modal ------------------------------------------------
   try {
     const { modalCallId } = await spawnLoraTrainingJob({ ...spawnParams, jobId });
-    if (modalCallId) {
-      // Persist the call id both in the column and inside inputs jsonb, so
-      // the pending-timeout path can physically cancel it even on a DB
-      // that's behind on the modal_call_id migration.
+
+    // The Modal FunctionCall id (fc-...) is what the pending-timeout path
+    // must physically .cancel(). Persist it immediately, in BOTH the column
+    // and inside inputs jsonb, and verify the write landed.
+    if (!modalCallId) {
+      console.error(`[studio/lora/train] job ${jobId}: Modal returned no modal_call_id — auto-failover cancel will not work`);
+    } else {
       const mergedInputs = { ...jobInputs, modal_call_id: modalCallId };
       const { error: upErr } = await supabaseAdmin
         .from("generation_jobs")
         .update({ modal_call_id: modalCallId, inputs: mergedInputs })
         .eq("id", jobId);
       if (upErr) {
-        await supabaseAdmin.from("generation_jobs").update({ inputs: mergedInputs }).eq("id", jobId);
+        console.warn(
+          `[studio/lora/train] job ${jobId}: modal_call_id column update failed (${upErr.message}); falling back to inputs jsonb`,
+        );
+        const { error: inputsErr } = await supabaseAdmin
+          .from("generation_jobs")
+          .update({ inputs: mergedInputs })
+          .eq("id", jobId);
+        if (inputsErr) {
+          console.error(`[studio/lora/train] job ${jobId}: failed to persist modal_call_id anywhere: ${inputsErr.message}`);
+        }
       }
+      console.log(`[studio/lora/train] job ${jobId} <- modal_call_id ${modalCallId}`);
     }
 
     return NextResponse.json({
       success: true,
       jobId,
+      modalCallId: modalCallId ?? null,
       remainingCredits: debitedCredits,
     });
   } catch (err) {
