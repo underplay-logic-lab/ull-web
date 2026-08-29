@@ -404,13 +404,34 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     setJob(null);
     setUploadProgress({ done: 0, total: images.length });
 
+    // Phase 1 — upload every image to Storage first. If even one fails we
+    // abort here and NEVER call /api/studio/lora/train (calling it with a
+    // partial / empty dataset is what produced the mystery 500s).
+    let paths: string[];
     try {
-      // Upload straight to Supabase Storage — the /api/studio/lora/train
-      // request then carries only the object paths (a few KB), so Vercel's
-      // 4.5 MB body cap is never in play regardless of dataset size.
-      const { paths } = await uploadLoraDataset(user.id, images.map((i) => i.file), (done, total) =>
+      const uploaded = await uploadLoraDataset(user.id, images.map((i) => i.file), (done, total) =>
         setUploadProgress({ done, total }),
       );
+      paths = uploaded.paths;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error("[LoraStudioTab] dataset upload failed:", err);
+      setErrorMessage(`画像のアップロードに失敗しました: ${detail}`);
+      setPhase("form");
+      setUploadProgress(null);
+      return;
+    }
+    if (paths.length !== images.length) {
+      setErrorMessage(
+        `画像のアップロードに失敗しました: ${images.length} 枚中 ${paths.length} 枚しか完了しませんでした。もう一度お試しください。`,
+      );
+      setPhase("form");
+      setUploadProgress(null);
+      return;
+    }
+
+    // Phase 2 — start the training job with only the storage paths.
+    try {
       const captionList =
         mode === "semi" ? images.map((img) => (captions[img.id] ?? "").trim()) : [];
 
@@ -426,6 +447,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             }
           : {};
 
+      setUploadProgress({ done: images.length, total: images.length });
       const { jobId, remainingCredits } = await startLoraTraining({
         storagePaths: paths,
         captions: captionList,

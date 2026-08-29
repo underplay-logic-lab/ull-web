@@ -53,7 +53,27 @@ function sanitizeTrainingConfig(raw: unknown): Record<string, unknown> {
   return out;
 }
 
-export async function POST(request: Request) {
+export async function POST(request: Request): Promise<NextResponse> {
+  try {
+    return await handlePost(request);
+  } catch (err) {
+    // Never let an unexpected exception surface as an opaque framework 500 —
+    // echo the message + stack so the client (and the console) can see what
+    // actually broke.
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    console.error("[studio/lora/train] unhandled error:", message, stack);
+    return NextResponse.json(
+      {
+        error: `LoRA学習リクエストの処理中にエラーが発生しました: ${message}`,
+        details: { message, stack, name: err instanceof Error ? err.name : "Error" },
+      },
+      { status: 500 },
+    );
+  }
+}
+
+async function handlePost(request: Request): Promise<NextResponse> {
   const authHeader = request.headers.get("authorization");
   const accessToken = authHeader?.replace(/^Bearer\s+/i, "");
   if (!accessToken) {
@@ -243,12 +263,14 @@ export async function POST(request: Request) {
       remainingCredits: debitedCredits,
     });
   } catch (err) {
-    console.error("[studio/lora/train] failed to dispatch job:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    console.error("[studio/lora/train] failed to dispatch job:", message, stack);
     await supabaseAdmin
       .from("generation_jobs")
       .update({
         status: "failed",
-        error_message: "学習ジョブの起動に失敗しました。",
+        error_message: `学習ジョブの起動に失敗しました: ${message}`.slice(0, 2000),
         updated_at: new Date().toISOString(),
       })
       .eq("id", jobId);
@@ -256,7 +278,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json(
       {
-        error: "LoRA学習の開始に失敗しました。しばらくしてから再度お試しください。",
+        error: `LoRA学習の開始に失敗しました: ${message}`,
+        details: { message, stack, name: err instanceof Error ? err.name : "Error" },
         remainingCredits: currentCredits,
       },
       { status: 502 },

@@ -24,16 +24,30 @@ export async function uploadLoraDataset(
   files: File[],
   onProgress?: (done: number, total: number) => void,
 ): Promise<{ datasetId: string; paths: string[] }> {
-  const datasetId = crypto.randomUUID();
+  const datasetId =
+    typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const paths: string[] = [];
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     const safe = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "image";
     const path = `${userId}/${datasetId}/${String(i).padStart(4, "0")}_${safe}`;
-    const { error } = await supabase.storage
-      .from(LORA_DATASET_BUCKET)
-      .upload(path, file, { upsert: true, contentType: file.type || "image/png" });
-    if (error) throw new Error(`画像のアップロードに失敗しました: ${error.message}`);
+    let uploadError: unknown = null;
+    try {
+      const { error } = await supabase.storage
+        .from(LORA_DATASET_BUCKET)
+        .upload(path, file, { upsert: true, contentType: file.type || "image/png" });
+      uploadError = error;
+    } catch (thrown) {
+      uploadError = thrown;
+    }
+    if (uploadError) {
+      const detail = uploadError instanceof Error ? uploadError.message : String(uploadError);
+      // Stop on the very first failure — the caller must not proceed to
+      // /api/studio/lora/train with a partial dataset.
+      throw new Error(`${file.name}（${i + 1}/${files.length} 枚目）: ${detail}`);
+    }
     paths.push(path);
     onProgress?.(i + 1, files.length);
   }
@@ -82,7 +96,11 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const error: LoraApiError = new Error(data?.error || "LoRA学習の開始に失敗しました。");
+    const detail =
+      data?.details && typeof data.details === "object" && typeof data.details.message === "string"
+        ? `（${data.details.message}）`
+        : "";
+    const error: LoraApiError = new Error(`${data?.error || "LoRA学習の開始に失敗しました。"}${detail}`);
     if (typeof data?.remainingCredits === "number") error.remainingCredits = data.remainingCredits;
     if (typeof data?.requiredCredits === "number") error.requiredCredits = data.requiredCredits;
     throw error;
