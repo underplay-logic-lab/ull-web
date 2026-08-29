@@ -1040,6 +1040,18 @@ def train_lora_job(params: dict) -> dict:
 dispatch_image = modal.Image.debian_slim(python_version="3.11").pip_install("fastapi[standard]")
 
 
+# TEST HARNESS: a GPU-less no-op that never touches generation_jobs, so the
+# DB row stays 'queued' forever — an artificial, storm-free way to verify
+# the client's pending-timeout auto-failover (cancel -> retry -> refund)
+# against real, cancellable Modal FunctionCalls. Triggered by _test_stub in
+# the dispatch payload (Next.js sets it when LORA_TRAIN_TEST_STUB=1).
+@app.function(image=dispatch_image, timeout=900)
+def _pending_stub(item: dict):
+    print(f"[test-stub] pretending to be a stuck pending job: {item.get('job_id')}", flush=True)
+    time.sleep(900)
+    return {"stub": True}
+
+
 @app.function(
     image=dispatch_image,
     timeout=60,
@@ -1051,6 +1063,9 @@ def train_lora_dispatch(item: dict, request: fastapi.Request):
     _authorize(request)
     if not item.get("output_lora_name"):
         raise fastapi.HTTPException(status_code=400, detail="output_lora_name is required")
+    if item.get("_test_stub"):
+        call = _pending_stub.spawn(item)
+        return {"ok": True, "spawned": True, "test_stub": True, "modal_call_id": call.object_id, "job_id": item.get("job_id")}
     call = train_lora_job.spawn(item)
     return {"ok": True, "spawned": True, "modal_call_id": call.object_id, "job_id": item.get("job_id")}
 

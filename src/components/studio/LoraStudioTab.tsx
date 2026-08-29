@@ -44,12 +44,14 @@ import {
 
 const LORA_COST = 150;
 // PRODUCTION: JOB_POLL_INTERVAL_MS = 3000, PENDING_TIMEOUT_MS = 10_000
-// TEST (current): 1s poll + 1s timeout to verify the auto-failover chain.
-const JOB_POLL_INTERVAL_MS = 1000;
+// TEST (current): 25s timeout, realistic pacing — pair with Vercel env
+// LORA_TRAIN_TEST_STUB=1 so the job is guaranteed to stay 'queued' and the
+// failover (cancel -> retry -> retry -> refund) runs one clean cycle each.
+const JOB_POLL_INTERVAL_MS = 3000;
 // If a job hasn't left 'queued' (no worker container) within this window,
 // the client physically cancels the Modal call + re-enqueues it on the same
 // GPU (H100). Max 2 retries, then cancel + 100% refund.
-const PENDING_TIMEOUT_MS = 1_000;
+const PENDING_TIMEOUT_MS = 25_000;
 const MAX_PENDING_RETRIES = 2;
 const MAX_IMAGES = 200;
 const MAX_TOTAL_BYTES = 120 * 1024 * 1024; // 120 MB of raw image bytes

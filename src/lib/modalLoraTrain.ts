@@ -3,6 +3,11 @@ import type { LoraBaseArchitecture } from "@/lib/loraModels";
 
 export const LORA_DATASET_BUCKET = "lora_datasets";
 
+// TEST ONLY: when Vercel env LORA_TRAIN_TEST_STUB=1, dispatch routes to a
+// GPU-less no-op on Modal that never leaves the row 'queued' — an
+// artificial, storm-free way to exercise the pending-timeout auto-failover.
+const TEST_STUB = process.env.LORA_TRAIN_TEST_STUB === "1";
+
 export type LoraTrainingConfig = {
   rank?: number;
   alpha?: number;
@@ -115,6 +120,7 @@ export async function spawnLoraTrainingJob(
     user_id: params.userId,
     credits_cost: params.creditsCost,
     ...buildLoraDispatchPayload(params),
+    ...(TEST_STUB ? { _test_stub: true } : {}),
   });
 
   let res: Response;
@@ -168,7 +174,13 @@ export async function redispatchLoraTrainingJob(args: {
       "x-modal-secret": authToken,
       Authorization: `Bearer ${authToken}`,
     },
-    body: JSON.stringify({ job_id: args.jobId, user_id: args.userId, credits_cost: 0, ...args.payload }),
+    body: JSON.stringify({
+      job_id: args.jobId,
+      user_id: args.userId,
+      credits_cost: 0,
+      ...args.payload,
+      ...(TEST_STUB ? { _test_stub: true } : {}),
+    }),
     signal: AbortSignal.timeout(SPAWN_TIMEOUT_MS),
   });
   const text = await res.text().catch(() => "");
