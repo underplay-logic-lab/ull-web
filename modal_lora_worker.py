@@ -74,17 +74,23 @@ TARGET_MODELS: dict[str, dict] = {
         "text_encoder": f"{MODELS_DIR}/clip/qwen3vl_32b_minimax_h3_bf16.safetensors",
         "vae": f"{MODELS_DIR}/vae/minimax_h3_video_vae_fp16.safetensors",
     },
-    "flux_dev": {
-        "arch": "flux",
-        "unet": f"{MODELS_DIR}/diffusion_models/flux1-dev.safetensors",
-        "text_encoder": None,
-        "vae": f"{MODELS_DIR}/vae/ae.safetensors",
-    },
     "wan2_1": {
         "arch": "wan21",
         "unet": f"{MODELS_DIR}/diffusion_models/wan2.1_t2v_14b_bf16.safetensors",
         "text_encoder": f"{MODELS_DIR}/text_encoders/umt5_xxl_fp16.safetensors",
         "vae": f"{MODELS_DIR}/vae/wan_2.1_vae.safetensors",
+    },
+    "flux_schnell": {
+        "arch": "flux",
+        "unet": f"{MODELS_DIR}/diffusion_models/flux1-schnell.safetensors",
+        "text_encoder": None,
+        "vae": f"{MODELS_DIR}/vae/ae.safetensors",
+    },
+    "sdxl": {
+        "arch": "sdxl",
+        "unet": f"{MODELS_DIR}/checkpoints/sdxl_base_1.0.safetensors",
+        "text_encoder": None,
+        "vae": None,
     },
 }
 

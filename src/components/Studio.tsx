@@ -6,11 +6,12 @@ import { CreditsBadge } from "@/components/CreditsBadge";
 import { WanAnimateTab } from "@/components/studio/WanAnimateTab";
 import { CinematicVideoTab } from "@/components/studio/CinematicVideoTab";
 import { CustomWorkflowsTab } from "@/components/studio/CustomWorkflowsTab";
+import { LoraStudioTab } from "@/components/studio/LoraStudioTab";
 import { GpuWarmBadge } from "@/components/studio/GpuWarmBadge";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { EditableText } from "@/components/EditableText";
 
-type StudioTab = "wan-animate" | "cinematic" | "image" | "custom";
+type StudioTab = "wan-animate" | "cinematic" | "image" | "custom" | "lora";
 
 const STUDIO_TABS: { id: StudioTab; label: string }[] = [
   { id: "wan-animate", label: "Wan Animate 2" },
@@ -19,6 +20,7 @@ const STUDIO_TABS: { id: StudioTab; label: string }[] = [
   // behind it is mid-swap and ImageGenMaintenancePlaceholder is the only
   // thing it currently renders. Re-add here once the new engine ships.
   { id: "custom", label: "特化ワークフロー" },
+  { id: "lora", label: "🎨 LoRA Studio" },
 ];
 
 function ImageGenMaintenancePlaceholder() {
@@ -71,6 +73,11 @@ export function Studio() {
                 siteKey="studio_desc_custom"
                 fallback="管理者が登録した専用ワークフローを選択し、必要な入力を指定するだけで実行できます。"
               />
+            ) : activeTab === "lora" ? (
+              <EditableText
+                siteKey="studio_desc_lora"
+                fallback="キャラクター画像をアップロードするだけ。Qwen3.8-27B が自動キャプションし、H100 で専用 LoRA を焼き上げます。"
+              />
             ) : (
               <EditableText
                 siteKey="studio_desc_maintenance"
@@ -110,6 +117,8 @@ export function Studio() {
           <CinematicVideoTab />
         ) : activeTab === "custom" ? (
           <CustomWorkflowsTab />
+        ) : activeTab === "lora" ? (
+          <LoraStudioTab onUseLora={() => setActiveTab("custom")} />
         ) : (
           <ImageGenMaintenancePlaceholder />
         )}

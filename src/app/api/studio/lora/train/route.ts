@@ -13,7 +13,7 @@ export const maxDuration = 30;
 // Flat price for one LoRA training run.
 const LORA_TRAINING_COST = 150;
 
-const KNOWN_TARGET_MODELS = ["minimax_h3", "flux_dev", "wan2_1"];
+const KNOWN_TARGET_MODELS = ["minimax_h3", "wan2_1", "flux_schnell", "sdxl"];
 const LORA_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const MAX_IMAGES = 200;
 // Base64 inflates ~4/3; keep the whole request body well under Modal's arg
