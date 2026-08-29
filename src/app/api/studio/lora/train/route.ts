@@ -15,9 +15,9 @@ import {
 
 // Only debits credits, inserts a generation_jobs row and fires a fast
 // dispatch at Modal (train_lora_dispatch) — the multi-minute training runs
-// entirely inside a spawned Modal container. maxDuration only needs to
-// cover that dispatch + a couple of quick DB writes.
-export const maxDuration = 30;
+// entirely inside a spawned Modal container. maxDuration covers the DB
+// writes + the dispatch (up to a ~55s cold start on the Modal side).
+export const maxDuration = 60;
 
 // Flat price for one LoRA training run.
 const LORA_TRAINING_COST = 150;

@@ -882,10 +882,20 @@ def train_lora_job(params: dict) -> dict:
 
 # ---------------------------------------------------------------------------
 # GPU-less dispatcher endpoint — the Next.js /api/studio/lora/train route
-# POSTs here; the whole body is an auth check + a .spawn() so it returns in
-# well under a second regardless of GPU availability.
+# POSTs here; the whole body is an auth check + a .spawn(), so it must be
+# fast even cold. It therefore runs on a TINY image (not the multi-GB
+# training image) and keeps one container warm so the browser's ~55s
+# dispatch timeout is never in play.
 # ---------------------------------------------------------------------------
-@app.function(image=image, timeout=30, secrets=[modal.Secret.from_name("wan-animate-auth")])
+dispatch_image = modal.Image.debian_slim(python_version="3.11").pip_install("fastapi[standard]")
+
+
+@app.function(
+    image=dispatch_image,
+    timeout=60,
+    min_containers=1,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
 @modal.fastapi_endpoint(method="POST")
 def train_lora_dispatch(item: dict, request: fastapi.Request):
     _authorize(request)

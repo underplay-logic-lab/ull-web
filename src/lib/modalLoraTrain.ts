@@ -31,10 +31,12 @@ export type SpawnLoraTrainingParams = {
   triggerWord?: string;
 };
 
-// How long to wait on the *dispatch* ack — train_lora_dispatch is a GPU-less
-// Modal function whose whole body is an auth check + a .spawn(), so it
-// resolves near-instantly; this only catches a hung/unreachable endpoint.
-const SPAWN_TIMEOUT_MS = 15_000;
+// How long to wait on the *dispatch* ack. train_lora_dispatch is a GPU-less
+// Modal function whose whole body is an auth check + a .spawn(); it runs on
+// a tiny image with a warm container, but a genuine cold start (right after
+// a deploy, or after a long idle) can still take ~20-40s, so allow 55s —
+// just under the route's maxDuration.
+const SPAWN_TIMEOUT_MS = 55_000;
 
 // Fire-and-forget: posts to modal_lora_worker.py's train_lora_dispatch,
 // which .spawn()s the GPU training job and returns immediately. The spawned
