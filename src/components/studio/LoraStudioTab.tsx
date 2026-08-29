@@ -230,8 +230,12 @@ function ProgressPanel({
 
   if (job.status === "queued" || job.status === "cancelled") {
     return (
-      <div className="flex justify-center">
+      <div className="flex flex-col items-center gap-1">
         <QueueStatusPanel phase="queued" queue={job.queue} />
+        <span className="font-mono text-[10px] text-muted">
+          status: {job.status}
+          {job.retryCount ? ` ・ retry ${job.retryCount}` : ""}
+        </span>
       </div>
     );
   }
@@ -240,8 +244,11 @@ function ProgressPanel({
     const pct = job.progressPercent ?? null;
     if (pct == null) {
       return (
-        <div className="flex justify-center">
+        <div className="flex flex-col items-center gap-1">
           <QueueStatusPanel phase="processing" queue={job.queue} />
+          <span className="font-mono text-[10px] text-muted">
+            status: processing{job.progressMessage ? ` ・ ${job.progressMessage}` : ""}
+          </span>
         </div>
       );
     }
@@ -341,6 +348,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
   const [rerouting, setRerouting] = useState<{ attempt: number } | null>(null);
+  // Surfaced diagnostics from the pending-timeout auto-failover so a silent
+  // failure is visible instead of an endless "queued".
+  const [failoverNote, setFailoverNote] = useState<string | null>(null);
+  const recoverFailStreakRef = useRef(0);
 
   const pollCancelledRef = useRef(false);
   const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -459,10 +470,18 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             setRerouting({ attempt: attemptNo });
             try {
               const action = retryAttempt >= MAX_PENDING_RETRIES ? "timeout" : "retry";
+              console.log(`[LoraStudioTab] pending ${Math.round((Date.now() - queuedSinceRef.current) / 1000)}s — recover(${action}) job=${pollingId}`);
               const r = await recoverLoraJob(pollingId, action);
+              recoverFailStreakRef.current = 0;
+              console.log("[LoraStudioTab] recover ->", r);
               if (pollCancelledRef.current) return;
               if (r.status === "failed_timeout") {
                 setRerouting(null);
+                setFailoverNote(
+                  r.modalCancelled === false
+                    ? "自動返金しました（Modal 側キャンセルは未確認）。"
+                    : null,
+                );
                 setJob((j) =>
                   j
                     ? { ...j, status: "failed_timeout", errorMessage: "cloud congestion — auto-refunded" }
@@ -479,6 +498,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                 queuedSinceRef.current = Date.now();
                 recoveringRef.current = false;
                 retryAttempt = r.retryCount ?? retryAttempt + 1;
+                setFailoverNote(
+                  r.modalCancelled === false ? "旧ノードのキャンセルは未確認ですが、別ノードで再起動しました。" : null,
+                );
               } else {
                 // noop (job already moved on) or an unexpected shape —
                 // resume normal polling, retry can fire again if it stalls.
@@ -487,11 +509,17 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                 setRerouting(null);
               }
             } catch (err) {
-              console.error("[LoraStudioTab] recover failed:", err);
+              const reason = err instanceof Error ? err.message : String(err);
+              console.error("[LoraStudioTab] recover failed:", reason);
+              recoverFailStreakRef.current += 1;
               recoveringRef.current = false;
-              // back off so a persistently-failing recover doesn't hammer
-              queuedSinceRef.current = Date.now();
+              queuedSinceRef.current = Date.now(); // back off before retrying recover
               setRerouting(null);
+              setFailoverNote(
+                recoverFailStreakRef.current >= 2
+                  ? `自動リカバリに失敗しています: ${reason}（下の「中止して返金」で手動返金できます）`
+                  : `自動リカバリを再試行します…（${reason}）`,
+              );
             }
           }
         }
@@ -586,6 +614,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         queue: null,
       });
       setRerouting(null);
+      setFailoverNote(null);
+      recoverFailStreakRef.current = 0;
       setPhase("tracking");
       startPolling(jobId, 0);
     } catch (err) {
@@ -601,11 +631,32 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     pollCancelledRef.current = true;
     if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
     recoveringRef.current = false;
+    recoverFailStreakRef.current = 0;
     setPhase("form");
     setJob(null);
     setErrorMessage(null);
     setUploadProgress(null);
     setRerouting(null);
+    setFailoverNote(null);
+  };
+
+  // Manual escape hatch when auto-recovery keeps failing — cancels + refunds.
+  const abortAndRefund = async () => {
+    const id = activeJobIdRef.current || job?.jobId;
+    if (!id) return;
+    pollCancelledRef.current = true;
+    if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+    setFailoverNote("中止して返金処理中…");
+    try {
+      const r = await recoverLoraJob(id, "timeout");
+      setJob((j) => (j ? { ...j, status: "failed_timeout", errorMessage: "cloud congestion — auto-refunded" } : j));
+      if (typeof r.refunded === "number" && r.refunded > 0 && user) {
+        broadcastCreditsUpdate(user.id, (credits ?? 0) + r.refunded);
+      }
+      setFailoverNote(null);
+    } catch (err) {
+      setFailoverNote(`返金処理に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   const busy = phase !== "form";
@@ -941,6 +992,22 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             attempt={rerouting?.attempt}
             onUseLora={onUseLora}
           />
+
+          {failoverNote && (
+            <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-400">
+              <span className="leading-relaxed">{failoverNote}</span>
+              {job && (job.status === "queued" || job.status === "cancelled") && (
+                <button
+                  type="button"
+                  onClick={abortAndRefund}
+                  className="shrink-0 rounded-md border border-amber-500/40 px-2 py-1 text-[10px] font-medium hover:bg-amber-500/20"
+                >
+                  中止して返金
+                </button>
+              )}
+            </div>
+          )}
+
           {job &&
             (job.status === "completed" || job.status === "failed" || job.status === "failed_timeout") && (
               <button

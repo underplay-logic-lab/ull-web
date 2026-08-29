@@ -163,6 +163,7 @@ export type LoraRecoverResult = {
   jobId?: string; // set when a retry produced a fresh job to poll
   retryCount?: number;
   refunded?: number; // credits returned when it escalated to failed_timeout
+  modalCancelled?: boolean; // whether Modal confirmed the physical .cancel()
   noop?: boolean;
 };
 
