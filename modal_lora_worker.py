@@ -29,7 +29,7 @@ Deploy / run:
     - local one-shot: ships a folder of images straight into train_lora_job.
 
 Env overrides:
-  LORA_WORKER_GPU   pin a single GPU instead of the H100 -> A100-80GB list
+  LORA_WORKER_GPU   pin a single GPU tier (default: H100, no fallback)
   AI_TOOLKIT_REF    ai-toolkit git ref (default: main)
 """
 
@@ -121,10 +121,12 @@ except Exception as _e:
 VLM_PATH = f"{MODELS_DIR}/LLM/Qwen3.8-27B-abliterated"
 LORA_OUTPUT_DIR = f"{MODELS_DIR}/loras"
 
-_GPU_ENV = os.environ.get("LORA_WORKER_GPU", "").strip()
-# Multi-GPU fallback so a single tier being out of capacity never wedges a
-# job — Modal walks this list left to right.
-GPU_REQUEST = _GPU_ENV if _GPU_ENV else ["H100", "A100-80GB", "L40S"]
+# Fixed to a single high-end GPU — NO cross-tier fallback. High-bandwidth /
+# large-VRAM is a hard requirement (27B VLM captioning + full-precision
+# training), so a job that can't get an H100 within the pending window is
+# retried on the SAME spec and, failing that, cancelled + fully refunded
+# rather than downgraded. `LORA_WORKER_GPU` may pin a different single tier.
+GPU_REQUEST = os.environ.get("LORA_WORKER_GPU", "").strip() or "H100"
 AI_TOOLKIT_REF = os.environ.get("AI_TOOLKIT_REF", "main")
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -1064,8 +1066,7 @@ def main(
     if total > 1_500_000_000:
         raise SystemExit(f"dataset is {total / 1024**2:.0f} MB — downscale it first")
 
-    gpu_label = GPU_REQUEST if isinstance(GPU_REQUEST, str) else " -> ".join(GPU_REQUEST)
-    print(f"[main] {len(images)} images ({total / 1024**2:.1f} MB) -> Modal ({gpu_label}), target={target_model}")
+    print(f"[main] {len(images)} images ({total / 1024**2:.1f} MB) -> Modal ({GPU_REQUEST}), target={target_model}")
 
     result = train_lora_job.remote(
         {
