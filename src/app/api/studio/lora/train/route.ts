@@ -3,6 +3,13 @@ import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { spawnLoraTrainingJob, type LoraTrainingImage } from "@/lib/modalLoraTrain";
+import {
+  BLOCKED_LORA_MODEL_MESSAGE,
+  LORA_BASE_ARCHITECTURES,
+  LORA_PRESET_IDS,
+  isBlockedLoraModel,
+  type LoraBaseArchitecture,
+} from "@/lib/loraModels";
 
 // Only debits credits, inserts a generation_jobs row and fires a fast
 // dispatch at Modal (train_lora_dispatch) — the multi-minute training runs
@@ -13,8 +20,9 @@ export const maxDuration = 30;
 // Flat price for one LoRA training run.
 const LORA_TRAINING_COST = 150;
 
-const KNOWN_TARGET_MODELS = ["minimax_h3", "wan2_1", "flux_schnell", "sdxl"];
 const LORA_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
+// HF repo id ("owner/name") or an absolute/volume-relative path.
+const CUSTOM_MODEL_ID_RE = /^[A-Za-z0-9._\-/]{2,200}$/;
 const MAX_IMAGES = 200;
 // Base64 inflates ~4/3; keep the whole request body well under Modal's arg
 // limit and Vercel's body cap.
@@ -82,9 +90,33 @@ export async function POST(request: Request) {
   const hasOverride = trainingConfig.custom_yaml_override !== undefined;
 
   const targetModel = typeof body.target_model === "string" ? body.target_model.trim() : "minimax_h3";
-  if (!hasOverride && !KNOWN_TARGET_MODELS.includes(targetModel)) {
+  const customModelId =
+    typeof body.custom_model_id === "string" ? body.custom_model_id.trim() : "";
+  const baseArchitecture =
+    typeof body.base_architecture === "string" ? body.base_architecture.trim() : "";
+
+  // FLUX.1 [dev] is blocked outright (non-commercial licence) — check both
+  // the preset id and any custom model id / path.
+  if (isBlockedLoraModel(targetModel) || isBlockedLoraModel(customModelId)) {
+    return NextResponse.json({ error: BLOCKED_LORA_MODEL_MESSAGE }, { status: 400 });
+  }
+
+  if (targetModel === "custom") {
+    if (!CUSTOM_MODEL_ID_RE.test(customModelId)) {
+      return NextResponse.json(
+        { error: "カスタムモデルID（HuggingFace Repo ID または Volume パス）が不正です。" },
+        { status: 400 },
+      );
+    }
+    if (!LORA_BASE_ARCHITECTURES.includes(baseArchitecture as LoraBaseArchitecture)) {
+      return NextResponse.json(
+        { error: `base_architecture は ${LORA_BASE_ARCHITECTURES.join(" / ")} のいずれかを指定してください。` },
+        { status: 400 },
+      );
+    }
+  } else if (!hasOverride && !LORA_PRESET_IDS.has(targetModel)) {
     return NextResponse.json(
-      { error: `target_model は ${KNOWN_TARGET_MODELS.join(" / ")} のいずれかを指定してください。` },
+      { error: "指定されたベースモデルは利用できません。プリセットまたはカスタム指定をご利用ください。" },
       { status: 400 },
     );
   }
@@ -173,6 +205,8 @@ export async function POST(request: Request) {
       workflow_type: "lora_training",
       inputs: {
         target_model: targetModel,
+        custom_model_id: targetModel === "custom" ? customModelId : undefined,
+        base_architecture: targetModel === "custom" ? baseArchitecture : undefined,
         output_lora_name: outputLoraName,
         num_images: images.length,
         trigger_word: triggerWord || null,
@@ -204,6 +238,8 @@ export async function POST(request: Request) {
       images,
       captions,
       targetModel,
+      customModelId: targetModel === "custom" ? customModelId : undefined,
+      baseArchitecture: targetModel === "custom" ? (baseArchitecture as LoraBaseArchitecture) : undefined,
       trainingConfig,
       outputLoraName,
       triggerWord: triggerWord || undefined,

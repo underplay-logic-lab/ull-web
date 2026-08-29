@@ -62,37 +62,53 @@ AI_TOOLKIT_REF = os.environ.get("AI_TOOLKIT_REF", "main")
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
-# target_model -> ai-toolkit arch + explicit single-file component paths on
-# the Volume. minimax_h3 is fully wired; flux_dev / wan2_1 use the
-# conventional ai-toolkit arch names and best-guess Volume paths — override
-# per run with training_config.custom_yaml_override if a checkpoint lives
-# somewhere else.
+# Preset target_model -> ai-toolkit arch + a name_or_path (a single-file
+# checkpoint on the Volume when we host it, otherwise a HuggingFace repo id
+# ai-toolkit resolves at load time). Anything not listed here can still be
+# trained via target_model="custom" + custom_model_id + base_architecture,
+# or via training_config.custom_yaml_override. Mirrors src/lib/loraModels.ts.
 TARGET_MODELS: dict[str, dict] = {
+    # --- video ---
     "minimax_h3": {
         "arch": "minimax_h3",
         "unet": f"{MODELS_DIR}/diffusion_models/minimax_h3_fl2va_bf16.safetensors",
         "text_encoder": f"{MODELS_DIR}/clip/qwen3vl_32b_minimax_h3_bf16.safetensors",
         "vae": f"{MODELS_DIR}/vae/minimax_h3_video_vae_fp16.safetensors",
     },
-    "wan2_1": {
+    "wan2_1_14b": {
         "arch": "wan21",
         "unet": f"{MODELS_DIR}/diffusion_models/wan2.1_t2v_14b_bf16.safetensors",
         "text_encoder": f"{MODELS_DIR}/text_encoders/umt5_xxl_fp16.safetensors",
         "vae": f"{MODELS_DIR}/vae/wan_2.1_vae.safetensors",
     },
+    "wan2_1_1_3b": {"arch": "wan21", "unet": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"},
+    "hunyuan_video": {"arch": "hunyuan", "unet": "hunyuanvideo-community/HunyuanVideo"},
+    "cogvideox_5b": {"arch": "cogvideox", "unet": "THUDM/CogVideoX-5b"},
+    "ltx_video": {"arch": "cogvideox", "unet": "Lightricks/LTX-Video"},
+    # --- photo / general ---
     "flux_schnell": {
         "arch": "flux",
         "unet": f"{MODELS_DIR}/diffusion_models/flux1-schnell.safetensors",
-        "text_encoder": None,
         "vae": f"{MODELS_DIR}/vae/ae.safetensors",
     },
-    "sdxl": {
-        "arch": "sdxl",
-        "unet": f"{MODELS_DIR}/checkpoints/sdxl_base_1.0.safetensors",
-        "text_encoder": None,
-        "vae": None,
-    },
+    "sdxl_10": {"arch": "sdxl", "unet": "stabilityai/stable-diffusion-xl-base-1.0"},
+    "sd35_large": {"arch": "sd3", "unet": "stabilityai/stable-diffusion-3.5-large"},
+    "sd35_medium": {"arch": "sd3", "unet": "stabilityai/stable-diffusion-3.5-medium"},
+    "pixart_sigma": {"arch": "sdxl", "unet": "PixArt-alpha/PixArt-Sigma-XL-2-1024-MS"},
+    # --- anime / illustration ---
+    "pony_v6_xl": {"arch": "sdxl", "unet": "LyliaEngine/Pony_Diffusion_V6_XL"},
+    "illustrious_xl": {"arch": "sdxl", "unet": "OnomaAIResearch/Illustrious-xl-early-release-v0"},
+    "animagine_xl_31": {"arch": "sdxl", "unet": "cagliostrolab/animagine-xl-3.1"},
+    "sd15": {"arch": "sd15", "unet": "stable-diffusion-v1-5/stable-diffusion-v1-5"},
 }
+
+# FLUX.1 [dev] is blocked outright (non-commercial licence). Matches
+# "flux dev", "flux-dev", "FLUX.1-dev", "black-forest-labs/FLUX.1-dev", ...
+_FLUX_DEV_RE = re.compile(r"flux[\s._-]*(?:1[\s._-]*)?dev\b", re.IGNORECASE)
+
+
+def _is_blocked_model(value: str) -> bool:
+    return bool(value) and (_FLUX_DEV_RE.search(value) is not None or value.strip().lower() == "flux_dev")
 
 DEFAULT_TRAINING_CONFIG = {
     "rank": 32,
@@ -335,10 +351,18 @@ def _caption_missing(image_paths: list[pathlib.Path], captions: list[str], trigg
 # Stage 2 — ai-toolkit config + run
 # ---------------------------------------------------------------------------
 def _build_config(
-    lora_name: str, trigger: str, target_model: str, tc: dict, override
+    lora_name: str,
+    trigger: str,
+    target_model: str,
+    tc: dict,
+    override,
+    custom_model_id: str = "",
+    base_architecture: str = "",
 ) -> pathlib.Path:
     """Manual override (raw YAML string or a dict) wins outright; otherwise
-    a standard job YAML is assembled from `tc` + the target model registry."""
+    a standard job YAML is assembled from `tc` + either the preset registry
+    or, for target_model=="custom", the caller's model id + architecture
+    (universal loader — any HF repo id or Volume path)."""
     import yaml
 
     config_path = pathlib.Path(AI_TOOLKIT_DIR) / f"config_{lora_name}.yaml"
@@ -351,12 +375,27 @@ def _build_config(
         print(f"[stage2] using caller-supplied custom_yaml_override -> {config_path}")
         return config_path
 
-    target = TARGET_MODELS.get(target_model)
-    if not target:
-        raise ValueError(
-            f"unknown target_model {target_model!r} and no custom_yaml_override — "
-            f"known: {', '.join(TARGET_MODELS)}"
-        )
+    if target_model == "custom":
+        if not custom_model_id or not base_architecture:
+            raise ValueError("target_model='custom' requires custom_model_id and base_architecture")
+        if _is_blocked_model(custom_model_id):
+            raise ValueError("FLUX.1 [dev] is blocked (non-commercial licence)")
+        path = custom_model_id
+        # A bare filename resolves against the Volume; an "owner/name" HF repo
+        # id, an absolute path, or a URL is passed through untouched.
+        if "/" not in path and not path.startswith("http"):
+            path = f"{MODELS_DIR}/{path}"
+        target = {"arch": base_architecture, "unet": path}
+        print(f"[stage2] universal loader: arch={base_architecture} model={path}")
+    else:
+        if _is_blocked_model(target_model):
+            raise ValueError("FLUX.1 [dev] is blocked (non-commercial licence)")
+        target = TARGET_MODELS.get(target_model)
+        if not target:
+            raise ValueError(
+                f"unknown target_model {target_model!r} and no custom_yaml_override — "
+                f"known: {', '.join(TARGET_MODELS)}, or use target_model='custom'"
+            )
 
     rank = int(tc.get("rank", DEFAULT_TRAINING_CONFIG["rank"]))
     alpha = int(tc.get("alpha", DEFAULT_TRAINING_CONFIG["alpha"]))
@@ -543,8 +582,13 @@ def train_lora_job(params: dict) -> dict:
     credits_cost = int(params.get("credits_cost") or 0)
     lora_name = str(params.get("output_lora_name") or "").strip()
     target_model = str(params.get("target_model") or "minimax_h3")
+    custom_model_id = str(params.get("custom_model_id") or "").strip()
+    base_architecture = str(params.get("base_architecture") or "").strip()
     tc = dict(params.get("training_config") or {})
     override = tc.get("custom_yaml_override")
+
+    if _is_blocked_model(target_model) or _is_blocked_model(custom_model_id):
+        raise ValueError("FLUX.1 [dev] is blocked in LoRA Studio (non-commercial licence)")
 
     if not lora_name or not re.match(r"^[A-Za-z0-9._-]+$", lora_name):
         raise ValueError(f"invalid output_lora_name: {lora_name!r}")
@@ -593,7 +637,9 @@ def train_lora_job(params: dict) -> dict:
 
         # --- Stage 2: ai-toolkit -----------------------------------------
         pathlib.Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
-        config_path = _build_config(lora_name, trigger, target_model, tc, override)
+        config_path = _build_config(
+            lora_name, trigger, target_model, tc, override, custom_model_id, base_architecture
+        )
         total_steps = int(tc.get("steps", DEFAULT_TRAINING_CONFIG["steps"])) if not override else 0
         _patch_job(job_id, {"progress_percent": 5, "progress_message": "starting training"})
         stage2 = time.time()
@@ -663,6 +709,8 @@ def main(
     data_dir: str,
     lora_name: str,
     target_model: str = "minimax_h3",
+    custom_model_id: str = "",
+    base_architecture: str = "",
     trigger_word: str = "",
     steps: int = 2000,
     rank: int = 32,
@@ -695,6 +743,8 @@ def main(
             "images": images,
             "captions": [],
             "target_model": target_model,
+            "custom_model_id": custom_model_id,
+            "base_architecture": base_architecture,
             "training_config": {
                 "rank": rank,
                 "alpha": alpha,

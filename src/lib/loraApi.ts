@@ -1,6 +1,8 @@
 import { supabase } from "@/lib/supabaseClient";
+import type { LoraBaseArchitecture } from "@/lib/loraModels";
 
-export type LoraTargetModel = "minimax_h3" | "wan2_1" | "flux_schnell" | "sdxl";
+// A preset id from LORA_PRESETS, or the literal "custom" (universal loader).
+export type LoraTargetModel = string;
 
 export type LoraTrainingConfigInput = {
   rank?: number;
@@ -15,6 +17,9 @@ export type StartLoraTrainingParams = {
   images: { filename: string; data: string }[];
   captions: string[];
   targetModel: LoraTargetModel;
+  // Universal loader — required when targetModel === "custom".
+  customModelId?: string;
+  baseArchitecture?: LoraBaseArchitecture;
   trainingConfig: LoraTrainingConfigInput;
   outputLoraName: string;
   triggerWord: string;
@@ -36,6 +41,8 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
       images: params.images,
       captions: params.captions,
       target_model: params.targetModel,
+      custom_model_id: params.customModelId,
+      base_architecture: params.baseArchitecture,
       training_config: params.trainingConfig,
       output_lora_name: params.outputLoraName,
       trigger_word: params.triggerWord,

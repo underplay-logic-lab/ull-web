@@ -23,9 +23,17 @@ import {
   pollLoraJob,
   fileToBase64,
   type LoraJobStatus,
-  type LoraTargetModel,
   type LoraApiError,
 } from "@/lib/loraApi";
+import {
+  LORA_PRESETS,
+  LORA_PRESET_GROUP_LABELS,
+  LORA_BASE_ARCHITECTURES,
+  BLOCKED_LORA_MODEL_MESSAGE,
+  isBlockedLoraModel,
+  type LoraBaseArchitecture,
+  type LoraPresetGroup,
+} from "@/lib/loraModels";
 
 const LORA_COST = 150;
 const JOB_POLL_INTERVAL_MS = 3000;
@@ -40,12 +48,7 @@ const MODES: { id: Mode; label: string; desc: string }[] = [
   { id: "pro", label: "🔬 エキスパート", desc: "Rank / LR / Steps や生 YAML を直接編集" },
 ];
 
-const MODELS: { id: LoraTargetModel; label: string; note: string }[] = [
-  { id: "minimax_h3", label: "MiniMax H3 (33B)", note: "動画 / BF16 フル精度" },
-  { id: "wan2_1", label: "Wan 2.1 (14B)", note: "動画 T2V" },
-  { id: "flux_schnell", label: "FLUX.1 [schnell]", note: "高速画像生成" },
-  { id: "sdxl", label: "SDXL", note: "汎用画像生成" },
-];
+const PRESET_GROUPS: LoraPresetGroup[] = ["video", "photo", "anime"];
 
 const OPTIMIZERS = ["adamw8bit", "adamw", "prodigy", "adafactor", "lion8bit"];
 const LORA_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
@@ -276,7 +279,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const [mode, setMode] = useState<Mode>("auto");
   const [images, setImages] = useState<DatasetImage[]>([]);
   const [captions, setCaptions] = useState<Record<string, string>>({});
-  const [targetModel, setTargetModel] = useState<LoraTargetModel>("minimax_h3");
+  const [modelSource, setModelSource] = useState<"preset" | "custom">("preset");
+  const [presetId, setPresetId] = useState<string>("minimax_h3");
+  const [customModelId, setCustomModelId] = useState("");
+  const [baseArchitecture, setBaseArchitecture] = useState<LoraBaseArchitecture>("sdxl");
   const [triggerWord, setTriggerWord] = useState("");
   const [loraName, setLoraName] = useState("");
   const [pro, setPro] = useState<ProConfig>(DEFAULT_PRO);
@@ -328,11 +334,20 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
   const nameValid = LORA_NAME_RE.test(loraName.trim());
   const yamlMode = mode === "pro" && pro.useRawYaml;
+
+  const customBlocked = modelSource === "custom" && isBlockedLoraModel(customModelId);
+  const customValid =
+    modelSource === "custom" && customModelId.trim().length >= 2 && !customBlocked;
+  const modelValid = modelSource === "preset" || customValid;
+
+  const targetModel = modelSource === "custom" ? "custom" : presetId;
+
   const canSubmit =
     phase === "form" &&
     images.length >= 1 &&
     totalBytes <= MAX_TOTAL_BYTES &&
     nameValid &&
+    modelValid &&
     (yamlMode ? pro.rawYaml.trim().length > 20 : true);
 
   const startPolling = useCallback((jobId: string) => {
@@ -390,6 +405,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         images: encoded,
         captions: captionList,
         targetModel,
+        customModelId: modelSource === "custom" ? customModelId.trim() : undefined,
+        baseArchitecture: modelSource === "custom" ? baseArchitecture : undefined,
         trainingConfig,
         outputLoraName: loraName.trim(),
         triggerWord: triggerWord.trim(),
@@ -512,20 +529,76 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             />
           </div>
 
-          <div>
-            <label className="mb-1 block text-[11px] font-medium text-muted">ベースモデル</label>
-            <select
-              value={targetModel}
-              onChange={(e) => setTargetModel(e.target.value as LoraTargetModel)}
-              disabled={busy}
-              className={fieldCls}
-            >
-              {MODELS.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label} — {m.note}
-                </option>
-              ))}
-            </select>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-[11px] font-medium text-muted">ベースモデル</label>
+              <div className="flex overflow-hidden rounded-md border border-border text-[10px]">
+                {(["preset", "custom"] as const).map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setModelSource(s)}
+                    className={`px-2 py-1 transition-colors ${
+                      modelSource === s ? "bg-neon-violet/20 text-neon-violet" : "text-muted"
+                    }`}
+                  >
+                    {s === "preset" ? "プリセット" : "カスタム（全開放）"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {modelSource === "preset" ? (
+              <select
+                value={presetId}
+                onChange={(e) => setPresetId(e.target.value)}
+                disabled={busy}
+                className={fieldCls}
+              >
+                {PRESET_GROUPS.map((g) => (
+                  <optgroup key={g} label={LORA_PRESET_GROUP_LABELS[g]}>
+                    {LORA_PRESETS.filter((p) => p.group === g).map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.label} — {p.note}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            ) : (
+              <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 p-2.5">
+                <input
+                  value={customModelId}
+                  onChange={(e) => setCustomModelId(e.target.value)}
+                  placeholder="HuggingFace Repo ID（owner/name）または Volume パス"
+                  disabled={busy}
+                  className={`${fieldCls} font-mono text-xs ${customBlocked ? "border-red-500/50" : ""}`}
+                />
+                <select
+                  value={baseArchitecture}
+                  onChange={(e) => setBaseArchitecture(e.target.value as LoraBaseArchitecture)}
+                  disabled={busy}
+                  className={fieldCls}
+                >
+                  {LORA_BASE_ARCHITECTURES.map((a) => (
+                    <option key={a} value={a}>
+                      arch: {a}
+                    </option>
+                  ))}
+                </select>
+                {customBlocked ? (
+                  <p className="flex items-start gap-1.5 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-[10px] leading-snug text-red-400">
+                    <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                    {BLOCKED_LORA_MODEL_MESSAGE}
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-muted">
+                    主要オープンモデルはもちろん、任意の HF リポジトリ / Volume 内チェックポイントを指定できます。
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {mode === "pro" && (

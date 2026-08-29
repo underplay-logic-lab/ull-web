@@ -1,4 +1,5 @@
 import "server-only";
+import type { LoraBaseArchitecture } from "@/lib/loraModels";
 
 // One training image for the LoRA worker: either inline base64 bytes or a
 // path to a file already sitting on the Modal Volume (ull-wan-models).
@@ -23,6 +24,8 @@ export type SpawnLoraTrainingParams = {
   images: LoraTrainingImage[];
   captions: string[];
   targetModel: string;
+  customModelId?: string;
+  baseArchitecture?: LoraBaseArchitecture;
   trainingConfig: LoraTrainingConfig;
   outputLoraName: string;
   triggerWord?: string;
@@ -61,6 +64,8 @@ export async function spawnLoraTrainingJob(params: SpawnLoraTrainingParams): Pro
       images: params.images,
       captions: params.captions,
       target_model: params.targetModel,
+      custom_model_id: params.customModelId ?? "",
+      base_architecture: params.baseArchitecture ?? "",
       training_config: params.trainingConfig,
       output_lora_name: params.outputLoraName,
       trigger_word: params.triggerWord ?? "",
