@@ -51,7 +51,45 @@ app = modal.App("ull-lora-worker")
 MODELS_DIR = "/models"
 DATASET_DIR = "/root/dataset"
 OUTPUT_DIR = "/root/output"
+# Captioned datasets are persisted here on the Volume, keyed by dataset_id,
+# so a re-run of the same set skips the VLM pass entirely (0s).
+PERSIST_ROOT = f"{MODELS_DIR}/datasets"
 AI_TOOLKIT_DIR = "/root/ai-toolkit"
+SHIM_DIR = "/root/aitk_shims"
+
+# Auto-imported by CPython's `site` at interpreter startup (including the
+# `python run.py` subprocess), because SHIM_DIR is on PYTHONPATH. Makes
+# torch.library.custom_op / register_fake non-fatal: ai-toolkit's
+# toolkit/util/convrot_quant.py registers an NVFP4 quant op at import time
+# and that can throw on some torch builds — BF16 LoRA training never needs
+# it, so a failed registration must not crash the whole process.
+_USERCUSTOMIZE = '''\
+try:
+    import torch, torch.library as _tl
+
+    def _wrap(orig):
+        def _outer(*a, **k):
+            try:
+                dec = orig(*a, **k)
+            except Exception as e:
+                print("[aitk-shim] torch.library." + orig.__name__ + " skipped: " + repr(e))
+                return lambda fn: fn
+            def _inner(fn):
+                try:
+                    return dec(fn)
+                except Exception as e:
+                    print("[aitk-shim] " + orig.__name__ + " decoration skipped: " + repr(e))
+                    return fn
+            return _inner
+        return _outer
+
+    for _name in ("custom_op", "register_fake", "register_kernel", "impl", "register_autograd"):
+        _fn = getattr(_tl, _name, None)
+        if callable(_fn):
+            setattr(_tl, _name, _wrap(_fn))
+except Exception as _e:
+    print("[aitk-shim] torch.library patch skipped: " + repr(_e))
+'''
 
 VLM_PATH = f"{MODELS_DIR}/LLM/Qwen3.8-27B-abliterated"
 LORA_OUTPUT_DIR = f"{MODELS_DIR}/loras"
@@ -137,9 +175,37 @@ CAPTION_INSTRUCTION = (
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
 
+# Build-time patch: wrap the eager NVFP4-quant modules' bodies in a
+# try/except so a failed torch.library.custom_op registration never crashes
+# ai-toolkit's import (BF16 LoRA training doesn't use them). base64'd to keep
+# it out of shell-quoting range.
+_QUANT_PATCH = '''\
+import base64, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+for rel in ("toolkit/util/convrot_quant.py", "toolkit/util/comfy_quant_import.py"):
+    p = root / rel
+    if not p.is_file():
+        continue
+    src = p.read_text()
+    if src.lstrip().startswith("try:"):
+        continue
+    body = "".join(("    " + ln) if ln.strip() else ln for ln in src.splitlines(keepends=True))
+    p.write_text(
+        "try:\\n" + body
+        + "\\nexcept Exception as _quant_exc:\\n"
+        + "    import warnings\\n"
+        + "    warnings.warn('ai-toolkit quant module " + rel + " disabled: ' + repr(_quant_exc))\\n"
+    )
+    print("[image] wrapped", rel)
+'''
+
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .apt_install("git", "ffmpeg", "libgl1-mesa-glx", "libglib2.0-0", "wget")
+    .apt_install(
+        "git", "ffmpeg", "libgl1-mesa-glx", "libglib2.0-0", "wget",
+        # A real C/C++ + ninja toolchain for any JIT/quant kernel build path.
+        "build-essential", "ninja-build",
+    )
     .pip_install(
         "torch==2.5.1",
         "torchvision==0.20.1",
@@ -159,6 +225,8 @@ image = (
         "requests",
         "scipy",
         "ftfy",
+        "triton",
+        "ninja",
         "diffusers>=0.32.0",
         "peft>=0.14.0",
         "bitsandbytes",
@@ -175,8 +243,26 @@ image = (
         f"git clone https://github.com/ostris/ai-toolkit.git {AI_TOOLKIT_DIR}",
         f"cd {AI_TOOLKIT_DIR} && git checkout {AI_TOOLKIT_REF} && git submodule update --init --recursive",
         f"cd {AI_TOOLKIT_DIR} && pip install -r requirements.txt || echo 'ai-toolkit requirements.txt partial install, continuing'",
+        # usercustomize shim (auto-imported by `site` in the run.py subprocess
+        # because SHIM_DIR is on PYTHONPATH) — makes torch.library.custom_op &
+        # friends non-fatal.
+        f"mkdir -p {SHIM_DIR}",
+        "python -c \"import base64,pathlib; "
+        f"pathlib.Path('{SHIM_DIR}/usercustomize.py')"
+        f".write_bytes(base64.b64decode('{base64.b64encode(_USERCUSTOMIZE.encode()).decode()}'))\"",
+        # belt-and-suspenders: also wrap the quant module bodies in try/except.
+        "python -c \"import base64,pathlib; "
+        f"pathlib.Path('/tmp/_quant_patch.py')"
+        f".write_bytes(base64.b64decode('{base64.b64encode(_QUANT_PATCH.encode()).decode()}'))\"",
+        f"python /tmp/_quant_patch.py {AI_TOOLKIT_DIR}",
     )
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1", "PYTHONUNBUFFERED": "1"})
+    .env(
+        {
+            "HF_HUB_ENABLE_HF_TRANSFER": "1",
+            "PYTHONUNBUFFERED": "1",
+            "PYTHONPATH": SHIM_DIR,
+        }
+    )
 )
 
 
@@ -579,6 +665,21 @@ def _derive_trigger(params: dict, lora_name: str) -> str:
     return m.group(0) if m else lora_name
 
 
+def _derive_dataset_id(params: dict) -> str:
+    """dataset_id keys the persisted-caption cache on the Volume. Prefer the
+    caller's value; otherwise take the 2nd segment of the first storage key
+    ("<user_id>/<dataset_id>/<file>"). Sanitised to a safe path segment."""
+    raw = str(params.get("dataset_id") or "").strip()
+    if not raw:
+        for key in params.get("storage_paths") or []:
+            parts = str(key).strip("/").split("/")
+            if len(parts) >= 2:
+                raw = parts[1]
+                break
+    raw = re.sub(r"[^A-Za-z0-9._-]", "", raw)
+    return raw[:64]
+
+
 # ---------------------------------------------------------------------------
 # The spawnable training job
 # ---------------------------------------------------------------------------
@@ -623,6 +724,8 @@ def train_lora_job(params: dict) -> dict:
         raise ValueError(f"invalid output_lora_name: {lora_name!r}")
 
     trigger = _derive_trigger(params, lora_name)
+    dataset_id = _derive_dataset_id(params)
+    persist_dir = pathlib.Path(PERSIST_ROOT) / dataset_id if dataset_id else None
     started = time.time()
 
     try:
@@ -672,10 +775,11 @@ def train_lora_job(params: dict) -> dict:
         print(f"[train] staged {len(image_paths)} images for '{lora_name}' (target={target_model})")
 
         # --- Stage 1: captions ----------------------------------------------
-        # Persist any caller-supplied captions to <image>.txt first, then see
-        # whether every image already has a non-empty .txt (supplied here, or
-        # left over from a previous run in this dataset dir). If so, skip the
-        # VLM entirely and go straight to training — that's ~9 min saved.
+        # 1) caller-supplied captions -> <image>.txt.
+        # 2) if this dataset_id was captioned before, restore the persisted
+        #    .txt from the Volume (/models/datasets/<id>/) by index.
+        # 3) if every image now has a non-empty .txt, skip the Qwen pass (0s)
+        #    and go straight to training.
         supplied = list(params.get("captions") or [])
         for idx, path in enumerate(image_paths):
             cap = (supplied[idx] if idx < len(supplied) else "") or ""
@@ -689,9 +793,21 @@ def train_lora_job(params: dict) -> dict:
             except OSError:
                 return False
 
+        reused_from_volume = False
+        if persist_dir and persist_dir.is_dir():
+            cached = [persist_dir / f"{i:04d}.txt" for i in range(len(image_paths))]
+            if all(c.is_file() and c.read_text(encoding="utf-8").strip() for c in cached):
+                for i, p in enumerate(image_paths):
+                    p.with_suffix(".txt").write_text(
+                        cached[i].read_text(encoding="utf-8").strip(), encoding="utf-8"
+                    )
+                reused_from_volume = True
+                print(f"[train] reused {len(cached)} persisted captions from {persist_dir} — Stage 1 skipped (0s)")
+
         if all(_has_caption(p) for p in image_paths):
-            print("[train] every image already has a caption — skipping Stage 1 (saved the VLM pass)")
-            _patch_job(job_id, {"progress_percent": 4, "progress_message": "captions ready (skipped auto-caption)"})
+            msg = "captions restored from cache (0s)" if reused_from_volume else "captions ready (skipped auto-caption)"
+            print(f"[train] every image has a caption — skipping the Qwen pass ({msg})")
+            _patch_job(job_id, {"progress_percent": 4, "progress_message": msg})
             captions = [p.with_suffix(".txt").read_text(encoding="utf-8").strip() for p in image_paths]
         else:
             _patch_job(job_id, {"progress_percent": 3, "progress_message": "captioning dataset"})
@@ -699,6 +815,19 @@ def train_lora_job(params: dict) -> dict:
             for path, cap in zip(image_paths, captions):
                 path.with_suffix(".txt").write_text(cap, encoding="utf-8")
         print(f"[train] stage 1 done in {time.time() - started:.0f}s")
+
+        # Persist images + captions to the Volume so the next run of this
+        # dataset_id skips Stage 1 entirely.
+        if persist_dir and not reused_from_volume:
+            try:
+                persist_dir.mkdir(parents=True, exist_ok=True)
+                for i, p in enumerate(image_paths):
+                    shutil.copy2(p, persist_dir / f"{i:04d}{p.suffix or '.png'}")
+                    shutil.copy2(p.with_suffix(".txt"), persist_dir / f"{i:04d}.txt")
+                vol.commit()
+                print(f"[train] persisted {len(image_paths)} image+caption pairs to {persist_dir}")
+            except Exception as exc:  # noqa: BLE001 — caching is best-effort
+                print(f"[train] caption persist skipped: {exc}")
 
         # --- Stage 2: ai-toolkit -----------------------------------------
         pathlib.Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)

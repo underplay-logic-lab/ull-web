@@ -161,6 +161,9 @@ async function handlePost(request: Request): Promise<NextResponse> {
     }
     storagePaths.push(p);
   }
+  // "<user.id>/<datasetId>/<file>" — the 2nd segment keys the worker's
+  // persisted-caption cache on the Volume.
+  const datasetId = storagePaths[0].split("/")[1] ?? "";
 
   const captions = Array.isArray(body.captions)
     ? (body.captions as unknown[]).map((c) => (typeof c === "string" ? c : "")).slice(0, MAX_IMAGES)
@@ -214,6 +217,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
     custom_model_id: targetModel === "custom" ? customModelId : undefined,
     base_architecture: targetModel === "custom" ? baseArchitecture : undefined,
     output_lora_name: outputLoraName,
+    dataset_id: datasetId,
     num_images: storagePaths.length,
     resolution,
     trigger_word: triggerWord || null,
@@ -289,6 +293,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
       userId: user.id,
       creditsCost: LORA_TRAINING_COST,
       storagePaths,
+      datasetId,
       captions,
       targetModel,
       customModelId: targetModel === "custom" ? customModelId : undefined,

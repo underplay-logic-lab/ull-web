@@ -19,6 +19,8 @@ export type SpawnLoraTrainingParams = {
   creditsCost: number;
   // Supabase Storage object paths in the lora_datasets bucket, caption order.
   storagePaths: string[];
+  // Keys the worker's persisted-caption cache on the Volume.
+  datasetId?: string;
   captions: string[];
   targetModel: string;
   customModelId?: string;
@@ -64,6 +66,7 @@ export async function spawnLoraTrainingJob(params: SpawnLoraTrainingParams): Pro
     credits_cost: params.creditsCost,
     storage_bucket: LORA_DATASET_BUCKET,
     storage_paths: params.storagePaths,
+    dataset_id: params.datasetId ?? "",
     captions: params.captions,
     target_model: params.targetModel,
     custom_model_id: params.customModelId ?? "",
