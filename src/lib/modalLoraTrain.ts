@@ -97,11 +97,10 @@ async function modalEnv(kind: "train" | "cancel"): Promise<{ url: string; authTo
   return { url, authToken, host };
 }
 
-// train_lora_dispatch and train_lora_cancel are deployed as sibling
-// endpoints on the same Modal app, so the cancel URL is the train URL with
-// "-train-lora-dispatch" swapped for "-train-lora-cancel".
+// cancel_lora_job is a sibling endpoint on the same Modal app, so its URL is
+// the train URL with "train-lora-dispatch" swapped for "cancel-lora-job".
 function deriveCancelUrl(trainUrl: string | undefined): string {
-  return (trainUrl ?? "").replace("train-lora-dispatch", "train-lora-cancel");
+  return (trainUrl ?? "").replace("train-lora-dispatch", "cancel-lora-job");
 }
 
 // Dispatches to train_lora_dispatch, which .spawn()s the GPU job and
@@ -184,7 +183,9 @@ export async function redispatchLoraTrainingJob(args: {
   }
 }
 
-// Best-effort cancel of a stuck spawned call — never throws.
+// Best-effort physical cancel of a stuck spawned FunctionCall (hits
+// modal_lora_worker.py::cancel_lora_job -> FunctionCall.from_id().cancel()).
+// Never throws. Returns true when Modal reports success:true.
 export async function cancelLoraTrainingCall(modalCallId: string): Promise<boolean> {
   if (!modalCallId) return false;
   try {
@@ -196,12 +197,18 @@ export async function cancelLoraTrainingCall(modalCallId: string): Promise<boole
         "x-modal-secret": authToken,
         Authorization: `Bearer ${authToken}`,
       },
-      body: JSON.stringify({ modal_call_id: modalCallId }),
+      body: JSON.stringify({ call_id: modalCallId, modal_call_id: modalCallId }),
       signal: AbortSignal.timeout(20_000),
     });
     const text = await res.text().catch(() => "");
     console.log(`[cancelLoraTrainingCall] ${host} -> ${res.status}: ${text.slice(0, 300)}`);
-    return res.ok;
+    if (!res.ok) return false;
+    try {
+      const j = JSON.parse(text) as { success?: boolean; cancelled?: boolean };
+      return Boolean(j.success ?? j.cancelled);
+    } catch {
+      return true;
+    }
   } catch (err) {
     console.error("[cancelLoraTrainingCall] failed:", err instanceof Error ? err.message : String(err));
     return false;

@@ -43,12 +43,11 @@ import {
 } from "@/lib/loraModels";
 
 const LORA_COST = 150;
-// TEST: fast poll + 1s pending timeout to exercise the auto-failover path.
-const JOB_POLL_INTERVAL_MS = 1000;
+const JOB_POLL_INTERVAL_MS = 3000;
 // If a job hasn't left 'queued' (no worker container) within this window,
-// the client auto-cancels + re-enqueues it on the same GPU. Max 2 retries,
-// then cancel + 100% refund.
-const PENDING_TIMEOUT_MS = 1_000;
+// the client physically cancels the Modal call + re-enqueues it on the same
+// GPU (H100). Max 2 retries, then cancel + 100% refund.
+const PENDING_TIMEOUT_MS = 10_000;
 const MAX_PENDING_RETRIES = 2;
 const MAX_IMAGES = 200;
 const MAX_TOTAL_BYTES = 120 * 1024 * 1024; // 120 MB of raw image bytes
@@ -206,7 +205,7 @@ function ProgressPanel({
       <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
         <div className="flex items-center gap-2 text-sm font-semibold text-amber-400">
           <Loader2 size={15} className="animate-spin" />
-          ノード待機タイムアウトを検知。別ノードへ即時再接続中… (試行 {n}/{MAX_PENDING_RETRIES})
+          クラウドノード待機タイムアウトを検知。別ノードへ即時再接続中… (試行 {n}/{MAX_PENDING_RETRIES})
         </div>
         <div className="mt-2 h-2 overflow-hidden rounded-full bg-background/70">
           <div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-neon-pink to-amber-400" />
@@ -223,7 +222,7 @@ function ProgressPanel({
           自動返金しました
         </div>
         <p className="mt-1.5 text-[11px] leading-relaxed text-amber-300/90">
-          クラウド混雑のため自動返金処理を行いました。時間をおいてお試しください。
+          クラウド混雑のため自動返金しました。時間をおいて再試行してください。
         </p>
       </div>
     );

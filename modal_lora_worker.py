@@ -1010,8 +1010,36 @@ def train_lora_dispatch(item: dict, request: fastapi.Request):
     return {"ok": True, "spawned": True, "modal_call_id": call.object_id, "job_id": item.get("job_id")}
 
 
-# Cancels a possibly-stuck spawned training call (see the client's pending
-# auto-failover). Best-effort — a call that's already done/gone just no-ops.
+# Physically cancels a spawned training FunctionCall so a pending-timeout
+# refund never leaves a zombie job on Modal's queue. Best-effort — a call
+# that's already done / gone / invalid just reports cancelled:false.
+# Accepts either {"call_id": ...} or {"modal_call_id": ...}. Warm + tiny
+# image so it answers instantly.
+def _cancel_function_call(call_id: str) -> dict:
+    call_id = str(call_id or "").strip()
+    if not call_id:
+        return {"success": False, "error": "No call_id provided"}
+    try:
+        fc = modal.FunctionCall.from_id(call_id)
+        fc.cancel(terminate_containers=True)
+        return {"success": True, "call_id": call_id}
+    except Exception as exc:  # noqa: BLE001 — already gone / invalid id is fine
+        return {"success": False, "call_id": call_id, "error": str(exc)}
+
+
+@app.function(
+    image=dispatch_image,
+    timeout=30,
+    min_containers=1,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="POST")
+def cancel_lora_job(data: dict, request: fastapi.Request):
+    _authorize(request)
+    return _cancel_function_call(data.get("call_id") or data.get("modal_call_id") or "")
+
+
+# Back-compat alias for the earlier endpoint name.
 @app.function(
     image=dispatch_image,
     timeout=30,
@@ -1021,14 +1049,8 @@ def train_lora_dispatch(item: dict, request: fastapi.Request):
 @modal.fastapi_endpoint(method="POST")
 def train_lora_cancel(item: dict, request: fastapi.Request):
     _authorize(request)
-    call_id = str(item.get("modal_call_id") or "").strip()
-    if not call_id:
-        raise fastapi.HTTPException(status_code=400, detail="modal_call_id is required")
-    try:
-        modal.FunctionCall.from_id(call_id).cancel(terminate_containers=True)
-        return {"ok": True, "cancelled": True, "modal_call_id": call_id}
-    except Exception as exc:  # noqa: BLE001 — already gone / invalid id is fine
-        return {"ok": True, "cancelled": False, "modal_call_id": call_id, "note": repr(exc)}
+    res = _cancel_function_call(item.get("modal_call_id") or item.get("call_id") or "")
+    return {"ok": True, "cancelled": bool(res.get("success")), **res}
 
 
 # ---------------------------------------------------------------------------

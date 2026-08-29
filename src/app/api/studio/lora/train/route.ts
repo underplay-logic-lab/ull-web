@@ -311,10 +311,17 @@ async function handlePost(request: Request): Promise<NextResponse> {
   try {
     const { modalCallId } = await spawnLoraTrainingJob({ ...spawnParams, jobId });
     if (modalCallId) {
-      await supabaseAdmin
+      // Persist the call id both in the column and inside inputs jsonb, so
+      // the pending-timeout path can physically cancel it even on a DB
+      // that's behind on the modal_call_id migration.
+      const mergedInputs = { ...jobInputs, modal_call_id: modalCallId };
+      const { error: upErr } = await supabaseAdmin
         .from("generation_jobs")
-        .update({ modal_call_id: modalCallId })
+        .update({ modal_call_id: modalCallId, inputs: mergedInputs })
         .eq("id", jobId);
+      if (upErr) {
+        await supabaseAdmin.from("generation_jobs").update({ inputs: mergedInputs }).eq("id", jobId);
+      }
     }
 
     return NextResponse.json({

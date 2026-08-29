@@ -18,8 +18,16 @@ type JobRow = Record<string, unknown> & {
   id: string;
   user_id: string;
   status: string;
-  inputs: { dispatch?: LoraDispatchPayload } | null;
+  inputs: { dispatch?: LoraDispatchPayload; modal_call_id?: string } | null;
 };
+
+// The Modal FunctionCall id — from the column, or from inputs jsonb when the
+// DB is behind on the modal_call_id migration.
+function callIdOf(job: JobRow): string {
+  if (typeof job.modal_call_id === "string" && job.modal_call_id) return job.modal_call_id;
+  const fromInputs = job.inputs?.modal_call_id;
+  return typeof fromInputs === "string" ? fromInputs : "";
+}
 
 // generation_jobs UPDATE that survives a DB that's behind on migrations:
 // downgrades 'cancelled'/'failed_timeout' -> 'failed' if the status CHECK
@@ -80,7 +88,7 @@ async function refundCredits(userId: string, amount: number): Promise<void> {
 // Cancels the stuck call, 100%-refunds the original cost once (guarded by
 // `refunded` when the column exists), and closes the job.
 async function closeWithRefund(job: JobRow): Promise<number> {
-  const modalCallId = typeof job.modal_call_id === "string" ? job.modal_call_id : "";
+  const modalCallId = callIdOf(job);
   if (modalCallId) await cancelLoraTrainingCall(modalCallId);
 
   const parentId = typeof job.parent_job_id === "string" ? job.parent_job_id : job.id;
@@ -159,7 +167,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     const retryCount = typeof job.retry_count === "number" ? job.retry_count : 0;
     const dispatch = job.inputs?.dispatch;
-    const modalCallId = typeof job.modal_call_id === "string" ? job.modal_call_id : "";
+    const modalCallId = callIdOf(job);
 
     // Explicit timeout, retry cap reached, or nothing to re-dispatch.
     if (action === "timeout" || retryCount >= MAX_RETRIES || !dispatch) {
@@ -221,7 +229,12 @@ export async function POST(request: Request): Promise<NextResponse> {
         userId: user.id,
         payload: dispatch,
       });
-      if (newCallId) await updateJob(newJobId, { modal_call_id: newCallId });
+      if (newCallId) {
+        await updateJob(newJobId, {
+          modal_call_id: newCallId,
+          inputs: { ...(job.inputs ?? {}), modal_call_id: newCallId },
+        });
+      }
     } catch (err) {
       await updateJob(newJobId, {
         status: "failed",
