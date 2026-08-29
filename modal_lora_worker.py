@@ -143,6 +143,9 @@ image = (
     .pip_install(
         "torch==2.5.1",
         "torchvision==0.20.1",
+        # ai-toolkit imports torchaudio unconditionally at startup — must be
+        # the CUDA-12.4 build matched to torch 2.5.1 above.
+        "torchaudio==2.5.1",
         extra_index_url="https://download.pytorch.org/whl/cu124",
     )
     .pip_install(
@@ -154,6 +157,8 @@ image = (
         "einops",
         "safetensors",
         "requests",
+        "scipy",
+        "ftfy",
         "diffusers>=0.32.0",
         "peft>=0.14.0",
         "bitsandbytes",
@@ -667,10 +672,32 @@ def train_lora_job(params: dict) -> dict:
         print(f"[train] staged {len(image_paths)} images for '{lora_name}' (target={target_model})")
 
         # --- Stage 1: captions ----------------------------------------------
-        _patch_job(job_id, {"progress_percent": 3, "progress_message": "captioning dataset"})
-        captions = _caption_missing(image_paths, list(params.get("captions") or []), trigger)
-        for path, cap in zip(image_paths, captions):
-            path.with_suffix(".txt").write_text(cap, encoding="utf-8")
+        # Persist any caller-supplied captions to <image>.txt first, then see
+        # whether every image already has a non-empty .txt (supplied here, or
+        # left over from a previous run in this dataset dir). If so, skip the
+        # VLM entirely and go straight to training — that's ~9 min saved.
+        supplied = list(params.get("captions") or [])
+        for idx, path in enumerate(image_paths):
+            cap = (supplied[idx] if idx < len(supplied) else "") or ""
+            if cap.strip():
+                path.with_suffix(".txt").write_text(cap.strip(), encoding="utf-8")
+
+        def _has_caption(p: pathlib.Path) -> bool:
+            txt = p.with_suffix(".txt")
+            try:
+                return txt.is_file() and txt.read_text(encoding="utf-8").strip() != ""
+            except OSError:
+                return False
+
+        if all(_has_caption(p) for p in image_paths):
+            print("[train] every image already has a caption — skipping Stage 1 (saved the VLM pass)")
+            _patch_job(job_id, {"progress_percent": 4, "progress_message": "captions ready (skipped auto-caption)"})
+            captions = [p.with_suffix(".txt").read_text(encoding="utf-8").strip() for p in image_paths]
+        else:
+            _patch_job(job_id, {"progress_percent": 3, "progress_message": "captioning dataset"})
+            captions = _caption_missing(image_paths, supplied, trigger)
+            for path, cap in zip(image_paths, captions):
+                path.with_suffix(".txt").write_text(cap, encoding="utf-8")
         print(f"[train] stage 1 done in {time.time() - started:.0f}s")
 
         # --- Stage 2: ai-toolkit -----------------------------------------
