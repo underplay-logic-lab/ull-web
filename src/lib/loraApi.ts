@@ -49,6 +49,8 @@ export type StartLoraTrainingParams = {
   customModelId?: string;
   baseArchitecture?: LoraBaseArchitecture;
   trainingConfig: LoraTrainingConfigInput;
+  // Training resolution (512 / 768 / 1024). Default 768.
+  resolution?: number;
   outputLoraName: string;
   triggerWord: string;
 };
@@ -72,6 +74,7 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
       custom_model_id: params.customModelId,
       base_architecture: params.baseArchitecture,
       training_config: params.trainingConfig,
+      resolution: params.resolution,
       output_lora_name: params.outputLoraName,
       trigger_word: params.triggerWord,
     }),

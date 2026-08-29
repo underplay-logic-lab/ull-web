@@ -24,6 +24,7 @@ export type SpawnLoraTrainingParams = {
   customModelId?: string;
   baseArchitecture?: LoraBaseArchitecture;
   trainingConfig: LoraTrainingConfig;
+  resolution?: number;
   outputLoraName: string;
   triggerWord?: string;
 };
@@ -65,6 +66,7 @@ export async function spawnLoraTrainingJob(params: SpawnLoraTrainingParams): Pro
       custom_model_id: params.customModelId ?? "",
       base_architecture: params.baseArchitecture ?? "",
       training_config: params.trainingConfig,
+      resolution: params.resolution ?? 768,
       output_lora_name: params.outputLoraName,
       trigger_word: params.triggerWord ?? "",
     }),

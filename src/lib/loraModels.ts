@@ -67,6 +67,24 @@ export function loraPresetById(id: string): LoraPreset | undefined {
   return LORA_PRESETS.find((p) => p.id === id);
 }
 
+export const LORA_RESOLUTIONS = [512, 768, 1024] as const;
+export type LoraResolution = (typeof LORA_RESOLUTIONS)[number];
+export const DEFAULT_LORA_RESOLUTION: LoraResolution = 768;
+
+export const LORA_RESOLUTION_LABELS: Record<LoraResolution, string> = {
+  512: "512 × 512 — 高速・軽量",
+  768: "768 × 768 — 標準・推奨 / 動画モデル",
+  1024: "1024 × 1024 — 超高精細 / FLUX・SDXL",
+};
+
+// Recommended training resolution for an architecture — FLUX/SDXL train at
+// 1024, SD 1.5 at 512, everything else (video + SD3) at 768.
+export function recommendedResolution(arch: LoraBaseArchitecture): LoraResolution {
+  if (arch === "flux" || arch === "sdxl") return 1024;
+  if (arch === "sd15") return 512;
+  return 768;
+}
+
 // FLUX.1 [dev] block — matches "flux dev", "flux-dev", "FLUX.1-dev",
 // "black-forest-labs/FLUX.1-dev", "flux1_dev", … but never "flux schnell"
 // or "flux .1 schnell".

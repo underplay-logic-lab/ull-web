@@ -379,6 +379,7 @@ def _build_config(
     override,
     custom_model_id: str = "",
     base_architecture: str = "",
+    resolution: int = 768,
 ) -> pathlib.Path:
     """Manual override (raw YAML string or a dict) wins outright; otherwise
     a standard job YAML is assembled from `tc` + either the preset registry
@@ -424,6 +425,7 @@ def _build_config(
     steps = int(tc.get("steps", DEFAULT_TRAINING_CONFIG["steps"]))
     optimizer = str(tc.get("optimizer", DEFAULT_TRAINING_CONFIG["optimizer"]))
     save_every = max(100, steps // 4)
+    res = resolution if resolution in (512, 768, 1024) else 768
 
     model_block = {"name_or_path": target["unet"], "arch": target["arch"], "quantize": False}
     if target.get("text_encoder"):
@@ -455,7 +457,7 @@ def _build_config(
                             "caption_dropout_rate": 0.05,
                             "shuffle_tokens": False,
                             "cache_latents_to_disk": True,
-                            "resolution": [512, 768, 1024],
+                            "resolution": [res],
                         }
                     ],
                     "train": {
@@ -474,8 +476,8 @@ def _build_config(
                     "sample": {
                         "sampler": "flowmatch",
                         "sample_every": save_every,
-                        "width": 768,
-                        "height": 768,
+                        "width": res,
+                        "height": res,
                         "prompts": [f"{trigger}, full-body standing view, studio lighting"],
                         "neg": "",
                         "seed": 42,
@@ -489,7 +491,7 @@ def _build_config(
         "meta": {"name": lora_name, "version": "1.0"},
     }
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    print(f"[stage2] wrote ai-toolkit config -> {config_path} ({steps} steps, rank {rank}/{alpha})")
+    print(f"[stage2] wrote ai-toolkit config -> {config_path} ({steps} steps, rank {rank}/{alpha}, {res}px)")
     return config_path
 
 
@@ -605,6 +607,7 @@ def train_lora_job(params: dict) -> dict:
     target_model = str(params.get("target_model") or "minimax_h3")
     custom_model_id = str(params.get("custom_model_id") or "").strip()
     base_architecture = str(params.get("base_architecture") or "").strip()
+    resolution = int(params.get("resolution") or 768)
     tc = dict(params.get("training_config") or {})
     override = tc.get("custom_yaml_override")
 
@@ -673,7 +676,7 @@ def train_lora_job(params: dict) -> dict:
         # --- Stage 2: ai-toolkit -----------------------------------------
         pathlib.Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
         config_path = _build_config(
-            lora_name, trigger, target_model, tc, override, custom_model_id, base_architecture
+            lora_name, trigger, target_model, tc, override, custom_model_id, base_architecture, resolution
         )
         total_steps = int(tc.get("steps", DEFAULT_TRAINING_CONFIG["steps"])) if not override else 0
         _patch_job(job_id, {"progress_percent": 5, "progress_message": "starting training"})
@@ -752,6 +755,7 @@ def main(
     alpha: int = 32,
     learning_rate: float = 1e-4,
     optimizer: str = "adamw8bit",
+    resolution: int = 768,
 ):
     """modal run modal_lora_worker.py --data-dir <dir> --lora-name <name>"""
     src = pathlib.Path(data_dir).expanduser()
@@ -780,6 +784,7 @@ def main(
             "target_model": target_model,
             "custom_model_id": custom_model_id,
             "base_architecture": base_architecture,
+            "resolution": resolution,
             "training_config": {
                 "rank": rank,
                 "alpha": alpha,

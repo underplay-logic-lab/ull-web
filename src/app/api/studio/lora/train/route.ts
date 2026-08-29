@@ -5,8 +5,10 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { spawnLoraTrainingJob } from "@/lib/modalLoraTrain";
 import {
   BLOCKED_LORA_MODEL_MESSAGE,
+  DEFAULT_LORA_RESOLUTION,
   LORA_BASE_ARCHITECTURES,
   LORA_PRESET_IDS,
+  LORA_RESOLUTIONS,
   isBlockedLoraModel,
   type LoraBaseArchitecture,
 } from "@/lib/loraModels";
@@ -142,6 +144,9 @@ export async function POST(request: Request) {
     ? (body.captions as unknown[]).map((c) => (typeof c === "string" ? c : "")).slice(0, MAX_IMAGES)
     : [];
   const triggerWord = typeof body.trigger_word === "string" ? body.trigger_word.trim().slice(0, 60) : "";
+  const resolution = (LORA_RESOLUTIONS as readonly number[]).includes(Number(body.resolution))
+    ? Number(body.resolution)
+    : DEFAULT_LORA_RESOLUTION;
 
   // --- credits ------------------------------------------------------------
   const { data: profile, error: profileError } = await getOrCreateProfile(
@@ -194,6 +199,7 @@ export async function POST(request: Request) {
         base_architecture: targetModel === "custom" ? baseArchitecture : undefined,
         output_lora_name: outputLoraName,
         num_images: storagePaths.length,
+        resolution,
         trigger_word: triggerWord || null,
         training_config: { ...trainingConfig, custom_yaml_override: hasOverride ? "(custom)" : undefined },
       },
@@ -226,6 +232,7 @@ export async function POST(request: Request) {
       customModelId: targetModel === "custom" ? customModelId : undefined,
       baseArchitecture: targetModel === "custom" ? (baseArchitecture as LoraBaseArchitecture) : undefined,
       trainingConfig,
+      resolution,
       outputLoraName,
       triggerWord: triggerWord || undefined,
     });
