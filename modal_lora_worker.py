@@ -91,6 +91,33 @@ except Exception as _e:
     print("[aitk-shim] torch.library patch skipped: " + repr(_e))
 '''
 
+# sitecustomize is imported by `site` even earlier than usercustomize, before
+# ai-toolkit's `import torchao` on config_modules.py line 11. If torchao is
+# missing or its quant_primitives can't load (register_fake incompatibility
+# with torch 2.5.1), swap in a MagicMock so BF16 training keeps going.
+_SITECUSTOMIZE = '''\
+try:
+    import sys
+    import torch
+    try:
+        import torchao  # noqa: F401
+        import torchao.quantization.quant_primitives  # noqa: F401
+    except Exception as _ao_exc:
+        print("[aitk-shim] torchao unavailable, installing MagicMock stub: " + repr(_ao_exc))
+        from unittest.mock import MagicMock
+        mock_ao = MagicMock()
+        mock_ao.quantization.quant_primitives._DTYPE_TO_BIT_WIDTH = {
+            torch.float32: 32, torch.float16: 16, torch.bfloat16: 16,
+            torch.int8: 8, torch.uint8: 8, torch.int16: 16,
+            torch.int32: 32, torch.int64: 64,
+        }
+        sys.modules["torchao"] = mock_ao
+        sys.modules["torchao.quantization"] = mock_ao.quantization
+        sys.modules["torchao.quantization.quant_primitives"] = mock_ao.quantization.quant_primitives
+except Exception as _e:
+    print("[aitk-shim] sitecustomize torchao stub skipped: " + repr(_e))
+'''
+
 VLM_PATH = f"{MODELS_DIR}/LLM/Qwen3.8-27B-abliterated"
 LORA_OUTPUT_DIR = f"{MODELS_DIR}/loras"
 
@@ -255,21 +282,30 @@ image = (
         "lycoris-lora",
         "toml",
     )
+    # torchao is a hard import in ai-toolkit (toolkit/config_modules.py). Pin
+    # the torch-2.5-era release and skip its deps so it can't pull a
+    # different torch. If it still can't import at runtime, the sitecustomize
+    # MagicMock stub below takes over.
+    .run_commands(
+        "pip install --no-deps torchao==0.7.0",
+    )
     .run_commands(
         f"git clone https://github.com/ostris/ai-toolkit.git {AI_TOOLKIT_DIR}",
         f"cd {AI_TOOLKIT_DIR} && git checkout {AI_TOOLKIT_REF} && git submodule update --init --recursive",
         f"cd {AI_TOOLKIT_DIR} && pip install -r requirements.txt || echo 'ai-toolkit requirements.txt partial install, continuing'",
-        # torchao's _make_prim/register_fake is incompatible with torch 2.5.1
-        # (AttributeError: 'function' object has no attribute 'register_fake')
-        # and BF16 LoRA training never needs FP4 quant — drop it outright.
-        "pip uninstall -y torchao || true",
-        # re-assert the torch trio in case ai-toolkit's requirements bumped one
+        # re-assert torch + torchao pins in case ai-toolkit's requirements
+        # bumped one (all --no-deps so none can drag the others).
         "pip install --no-deps torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 "
         "--extra-index-url https://download.pytorch.org/whl/cu124",
-        # usercustomize shim (auto-imported by `site` in the run.py subprocess
-        # because SHIM_DIR is on PYTHONPATH) — makes torch.library.custom_op &
-        # friends non-fatal.
+        "pip install --no-deps torchao==0.7.0",
+        # site/user-customize shims, auto-imported by `site` in the `python
+        # run.py` subprocess because SHIM_DIR is on PYTHONPATH:
+        #   sitecustomize.py — MagicMock torchao fallback (runs first)
+        #   usercustomize.py — torch.library.custom_op / register_fake no-op
         f"mkdir -p {SHIM_DIR}",
+        "python -c \"import base64,pathlib; "
+        f"pathlib.Path('{SHIM_DIR}/sitecustomize.py')"
+        f".write_bytes(base64.b64decode('{base64.b64encode(_SITECUSTOMIZE.encode()).decode()}'))\"",
         "python -c \"import base64,pathlib; "
         f"pathlib.Path('{SHIM_DIR}/usercustomize.py')"
         f".write_bytes(base64.b64decode('{base64.b64encode(_USERCUSTOMIZE.encode()).decode()}'))\"",
@@ -278,6 +314,11 @@ image = (
         f"pathlib.Path('/tmp/_quant_patch.py')"
         f".write_bytes(base64.b64decode('{base64.b64encode(_QUANT_PATCH.encode()).decode()}'))\"",
         f"python /tmp/_quant_patch.py {AI_TOOLKIT_DIR}",
+        # verify the stub chain resolves torchao.quantization.quant_primitives
+        f"PYTHONPATH={SHIM_DIR} python -c \""
+        "import torchao.quantization.quant_primitives as q; "
+        "print('[image] torchao.quantization.quant_primitives OK, _DTYPE_TO_BIT_WIDTH:', "
+        "hasattr(q, '_DTYPE_TO_BIT_WIDTH'))\"",
     )
     .env(
         {
