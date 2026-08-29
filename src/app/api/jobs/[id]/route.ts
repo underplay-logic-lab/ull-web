@@ -37,7 +37,7 @@ export async function GET(request: Request, { params }: RouteParams) {
   const { data: job, error } = await supabaseAdmin
     .from("generation_jobs")
     .select(
-      "id, status, workflow_type, video_url, error_message, created_at, updated_at, progress_percent, progress_message, result_path",
+      "id, status, workflow_type, video_url, error_message, created_at, updated_at, progress_percent, progress_message, result_path, retry_count",
     )
     .eq("id", id)
     .eq("user_id", userData.user.id)
@@ -75,7 +75,13 @@ export async function GET(request: Request, { params }: RouteParams) {
 
   return NextResponse.json({
     jobId: job.id,
-    status: job.status as "queued" | "processing" | "completed" | "failed",
+    status: job.status as
+      | "queued"
+      | "processing"
+      | "completed"
+      | "failed"
+      | "cancelled"
+      | "failed_timeout",
     workflowType: job.workflow_type,
     videoUrl: job.video_url,
     errorMessage: job.error_message,
@@ -84,6 +90,7 @@ export async function GET(request: Request, { params }: RouteParams) {
     progressPercent: job.progress_percent ?? null,
     progressMessage: job.progress_message ?? null,
     resultPath: job.result_path ?? null,
+    retryCount: job.retry_count ?? 0,
     ...(queue
       ? {
           queuePosition: queue.queuePosition,

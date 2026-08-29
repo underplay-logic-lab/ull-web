@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
-import { spawnLoraTrainingJob } from "@/lib/modalLoraTrain";
+import { spawnLoraTrainingJob, buildLoraDispatchPayload } from "@/lib/modalLoraTrain";
 import {
   BLOCKED_LORA_MODEL_MESSAGE,
   DEFAULT_LORA_RESOLUTION,
@@ -212,6 +212,25 @@ async function handlePost(request: Request): Promise<NextResponse> {
   }
 
   // --- job row -----------------------------------------------------------
+  const spawnParams = {
+    jobId: "", // filled after insert
+    userId: user.id,
+    creditsCost: LORA_TRAINING_COST,
+    storagePaths,
+    datasetId,
+    captions,
+    targetModel,
+    customModelId: targetModel === "custom" ? customModelId : undefined,
+    baseArchitecture: targetModel === "custom" ? (baseArchitecture as LoraBaseArchitecture) : undefined,
+    trainingConfig,
+    resolution,
+    outputLoraName,
+    triggerWord: triggerWord || undefined,
+  };
+  // The full Modal payload is stashed on the job so a pending-timeout retry
+  // can re-dispatch it verbatim (no re-debit).
+  const dispatchPayload = buildLoraDispatchPayload(spawnParams);
+
   const jobInputs = {
     target_model: targetModel,
     custom_model_id: targetModel === "custom" ? customModelId : undefined,
@@ -222,6 +241,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
     resolution,
     trigger_word: triggerWord || null,
     training_config: { ...trainingConfig, custom_yaml_override: hasOverride ? "(custom)" : undefined },
+    dispatch: dispatchPayload,
   };
 
   const fullRow = {
@@ -232,6 +252,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
     credits_cost: LORA_TRAINING_COST,
     progress_percent: 0,
     progress_message: "queued",
+    retry_count: 0,
   };
 
   let jobRow: { id: string } | null = null;
@@ -245,10 +266,10 @@ async function handlePost(request: Request): Promise<NextResponse> {
     // 20260846000000 — if this deploy is ahead of the DB, retry without them
     // so a training run still starts (progress just won't update until the
     // migration lands).
-    if (jobInsertError && /progress_percent|progress_message|column .* does not exist|schema cache/i.test(
+    if (jobInsertError && /progress_percent|progress_message|retry_count|column .* does not exist|schema cache/i.test(
       `${jobInsertError.message ?? ""} ${jobInsertError.details ?? ""}`,
     )) {
-      console.error("[studio/lora/train] job insert retry without progress_* columns:", jobInsertError);
+      console.error("[studio/lora/train] job insert retry without progress_*/retry_count columns:", jobInsertError);
       const retry = await supabaseAdmin
         .from("generation_jobs")
         .insert({
@@ -288,21 +309,13 @@ async function handlePost(request: Request): Promise<NextResponse> {
 
   // --- dispatch to Modal ------------------------------------------------
   try {
-    await spawnLoraTrainingJob({
-      jobId,
-      userId: user.id,
-      creditsCost: LORA_TRAINING_COST,
-      storagePaths,
-      datasetId,
-      captions,
-      targetModel,
-      customModelId: targetModel === "custom" ? customModelId : undefined,
-      baseArchitecture: targetModel === "custom" ? (baseArchitecture as LoraBaseArchitecture) : undefined,
-      trainingConfig,
-      resolution,
-      outputLoraName,
-      triggerWord: triggerWord || undefined,
-    });
+    const { modalCallId } = await spawnLoraTrainingJob({ ...spawnParams, jobId });
+    if (modalCallId) {
+      await supabaseAdmin
+        .from("generation_jobs")
+        .update({ modal_call_id: modalCallId })
+        .eq("id", jobId);
+    }
 
     return NextResponse.json({
       success: true,

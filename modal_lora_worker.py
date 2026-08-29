@@ -122,7 +122,9 @@ VLM_PATH = f"{MODELS_DIR}/LLM/Qwen3.8-27B-abliterated"
 LORA_OUTPUT_DIR = f"{MODELS_DIR}/loras"
 
 _GPU_ENV = os.environ.get("LORA_WORKER_GPU", "").strip()
-GPU_REQUEST = _GPU_ENV if _GPU_ENV else ["H100", "A100-80GB"]
+# Multi-GPU fallback so a single tier being out of capacity never wedges a
+# job — Modal walks this list left to right.
+GPU_REQUEST = _GPU_ENV if _GPU_ENV else ["H100", "A100-80GB", "L40S"]
 AI_TOOLKIT_REF = os.environ.get("AI_TOOLKIT_REF", "main")
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -1004,6 +1006,27 @@ def train_lora_dispatch(item: dict, request: fastapi.Request):
         raise fastapi.HTTPException(status_code=400, detail="output_lora_name is required")
     call = train_lora_job.spawn(item)
     return {"ok": True, "spawned": True, "modal_call_id": call.object_id, "job_id": item.get("job_id")}
+
+
+# Cancels a possibly-stuck spawned training call (see the client's pending
+# auto-failover). Best-effort — a call that's already done/gone just no-ops.
+@app.function(
+    image=dispatch_image,
+    timeout=30,
+    min_containers=1,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="POST")
+def train_lora_cancel(item: dict, request: fastapi.Request):
+    _authorize(request)
+    call_id = str(item.get("modal_call_id") or "").strip()
+    if not call_id:
+        raise fastapi.HTTPException(status_code=400, detail="modal_call_id is required")
+    try:
+        modal.FunctionCall.from_id(call_id).cancel(terminate_containers=True)
+        return {"ok": True, "cancelled": True, "modal_call_id": call_id}
+    except Exception as exc:  # noqa: BLE001 — already gone / invalid id is fine
+        return {"ok": True, "cancelled": False, "modal_call_id": call_id, "note": repr(exc)}
 
 
 # ---------------------------------------------------------------------------

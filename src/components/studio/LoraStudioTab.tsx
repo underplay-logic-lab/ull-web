@@ -21,6 +21,7 @@ import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCre
 import {
   startLoraTraining,
   pollLoraJob,
+  recoverLoraJob,
   uploadLoraDataset,
   type LoraJobStatus,
   type LoraApiError,
@@ -43,6 +44,10 @@ import {
 
 const LORA_COST = 150;
 const JOB_POLL_INTERVAL_MS = 3000;
+// If a job hasn't left 'queued' (no worker container) within this window,
+// the client auto-cancels + re-routes it to another node. Max 2 retries.
+const PENDING_TIMEOUT_MS = 10_000;
+const MAX_PENDING_RETRIES = 2;
 const MAX_IMAGES = 200;
 const MAX_TOTAL_BYTES = 120 * 1024 * 1024; // 120 MB of raw image bytes
 
@@ -181,14 +186,48 @@ function ImageDropzone({
 
 function ProgressPanel({
   job,
+  rerouting,
+  attempt,
   onUseLora,
 }: {
   job: LoraJobStatus | null;
+  // true while the client is auto-cancelling + re-routing a stuck job
+  rerouting?: boolean;
+  attempt?: number;
   onUseLora?: (loraFilename: string) => void;
 }) {
   if (!job) return null;
 
-  if (job.status === "queued") {
+  if (rerouting || (job.status === "queued" && (job.retryCount ?? 0) > 0)) {
+    const n = attempt ?? Math.min(MAX_PENDING_RETRIES, (job.retryCount ?? 0) + 1);
+    return (
+      <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
+        <div className="flex items-center gap-2 text-sm font-semibold text-amber-400">
+          <Loader2 size={15} className="animate-spin" />
+          ノード待機タイムアウトを検知。別ノードへ即時再接続中… (試行 {n}/{MAX_PENDING_RETRIES})
+        </div>
+        <div className="mt-2 h-2 overflow-hidden rounded-full bg-background/70">
+          <div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-neon-pink to-amber-400" />
+        </div>
+      </div>
+    );
+  }
+
+  if (job.status === "failed_timeout") {
+    return (
+      <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
+        <div className="flex items-center gap-2 text-sm font-semibold text-amber-400">
+          <AlertTriangle size={15} />
+          自動返金しました
+        </div>
+        <p className="mt-1.5 text-[11px] leading-relaxed text-amber-300/90">
+          クラウド混雑のため自動返金処理を行いました。時間をおいてお試しください。
+        </p>
+      </div>
+    );
+  }
+
+  if (job.status === "queued" || job.status === "cancelled") {
     return (
       <div className="flex justify-center">
         <QueueStatusPanel phase="queued" queue={job.queue} />
@@ -300,9 +339,16 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const [job, setJob] = useState<LoraJobStatus | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
+  const [rerouting, setRerouting] = useState<{ attempt: number } | null>(null);
 
   const pollCancelledRef = useRef(false);
   const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The job id currently being polled (mutable so a re-route can switch the
+  // poll target without restarting the loop), when it entered 'queued', and
+  // a guard against firing the recovery twice.
+  const activeJobIdRef = useRef<string>("");
+  const queuedSinceRef = useRef<number>(0);
+  const recoveringRef = useRef(false);
   useEffect(
     () => () => {
       pollCancelledRef.current = true;
@@ -371,22 +417,81 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     modelValid &&
     (yamlMode ? pro.rawYaml.trim().length > 20 : true);
 
-  const startPolling = useCallback((jobId: string) => {
-    pollCancelledRef.current = false;
-    const tick = async () => {
-      if (pollCancelledRef.current) return;
-      try {
-        const next = await pollLoraJob(jobId);
+  const startPolling = useCallback(
+    (jobId: string, retryAttempt = 0) => {
+      pollCancelledRef.current = false;
+      recoveringRef.current = false;
+      activeJobIdRef.current = jobId;
+      queuedSinceRef.current = Date.now();
+
+      const tick = async () => {
         if (pollCancelledRef.current) return;
-        setJob(next);
-        if (next.status === "completed" || next.status === "failed") return;
-      } catch (err) {
-        console.error("[LoraStudioTab] poll failed:", err);
-      }
-      if (!pollCancelledRef.current) pollTimeoutRef.current = setTimeout(tick, JOB_POLL_INTERVAL_MS);
-    };
-    pollTimeoutRef.current = setTimeout(tick, JOB_POLL_INTERVAL_MS);
-  }, []);
+        const pollingId = activeJobIdRef.current;
+        let next: LoraJobStatus | null = null;
+        try {
+          next = await pollLoraJob(pollingId);
+          if (pollCancelledRef.current || pollingId !== activeJobIdRef.current) return;
+          setJob(next);
+        } catch (err) {
+          console.error("[LoraStudioTab] poll failed:", err);
+        }
+
+        if (next) {
+          if (next.status === "completed" || next.status === "failed" || next.status === "failed_timeout") {
+            setRerouting(null);
+            return;
+          }
+          if (next.status === "processing") {
+            // worker container is up — the pending clock no longer applies
+            setRerouting(null);
+            queuedSinceRef.current = 0;
+          }
+          // --- Pending-stuck auto-failover -------------------------------
+          if (
+            next.status === "queued" &&
+            !recoveringRef.current &&
+            queuedSinceRef.current > 0 &&
+            Date.now() - queuedSinceRef.current > PENDING_TIMEOUT_MS
+          ) {
+            recoveringRef.current = true;
+            const attemptNo = Math.min(MAX_PENDING_RETRIES, retryAttempt + 1);
+            setRerouting({ attempt: attemptNo });
+            try {
+              const action = retryAttempt >= MAX_PENDING_RETRIES ? "timeout" : "retry";
+              const r = await recoverLoraJob(pollingId, action);
+              if (pollCancelledRef.current) return;
+              if (r.status === "failed_timeout") {
+                setRerouting(null);
+                setJob((j) =>
+                  j
+                    ? { ...j, status: "failed_timeout", errorMessage: "cloud congestion — auto-refunded" }
+                    : j,
+                );
+                if (typeof r.refunded === "number" && r.refunded > 0 && user) {
+                  broadcastCreditsUpdate(user.id, (credits ?? 0) + r.refunded);
+                }
+                return; // stop polling — terminal
+              }
+              if (r.jobId) {
+                // re-routed onto a fresh job — repoint the same loop
+                activeJobIdRef.current = r.jobId;
+                queuedSinceRef.current = Date.now();
+                recoveringRef.current = false;
+                retryAttempt = r.retryCount ?? retryAttempt + 1;
+              }
+            } catch (err) {
+              console.error("[LoraStudioTab] recover failed:", err);
+              recoveringRef.current = false;
+            }
+          }
+        }
+
+        if (!pollCancelledRef.current) pollTimeoutRef.current = setTimeout(tick, JOB_POLL_INTERVAL_MS);
+      };
+      pollTimeoutRef.current = setTimeout(tick, JOB_POLL_INTERVAL_MS);
+    },
+    [user, credits],
+  );
 
   const handleStart = async () => {
     if (!user) {
@@ -467,10 +572,12 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         resultPath: null,
         progressPercent: 0,
         progressMessage: "queued",
+        retryCount: 0,
         queue: null,
       });
+      setRerouting(null);
       setPhase("tracking");
-      startPolling(jobId);
+      startPolling(jobId, 0);
     } catch (err) {
       const e = err as LoraApiError;
       setErrorMessage(e.message || "LoRA学習の開始に失敗しました。");
@@ -483,10 +590,12 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const resetForm = () => {
     pollCancelledRef.current = true;
     if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+    recoveringRef.current = false;
     setPhase("form");
     setJob(null);
     setErrorMessage(null);
     setUploadProgress(null);
+    setRerouting(null);
   };
 
   const busy = phase !== "form";
@@ -816,16 +925,22 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               )}
             </div>
           )}
-          <ProgressPanel job={job} onUseLora={onUseLora} />
-          {job && (job.status === "completed" || job.status === "failed") && (
-            <button
-              type="button"
-              onClick={resetForm}
-              className="rounded-lg border border-border px-4 py-2 text-xs text-muted transition-colors hover:text-foreground"
-            >
-              新しい LoRA を学習する
-            </button>
-          )}
+          <ProgressPanel
+            job={job}
+            rerouting={Boolean(rerouting)}
+            attempt={rerouting?.attempt}
+            onUseLora={onUseLora}
+          />
+          {job &&
+            (job.status === "completed" || job.status === "failed" || job.status === "failed_timeout") && (
+              <button
+                type="button"
+                onClick={resetForm}
+                className="rounded-lg border border-border px-4 py-2 text-xs text-muted transition-colors hover:text-foreground"
+              >
+                新しい LoRA を学習する
+              </button>
+            )}
         </div>
       )}
 

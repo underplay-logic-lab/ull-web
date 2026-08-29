@@ -115,11 +115,12 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
 
 export type LoraJobStatus = {
   jobId: string;
-  status: "queued" | "processing" | "completed" | "failed";
+  status: "queued" | "processing" | "completed" | "failed" | "cancelled" | "failed_timeout";
   errorMessage: string | null;
   resultPath: string | null;
   progressPercent: number | null;
   progressMessage: string | null;
+  retryCount: number;
   queue:
     | { queuePosition: number; avgExecutionSeconds: number; estimatedWaitSeconds: number }
     | null;
@@ -144,6 +145,7 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
     resultPath: (data.resultPath as string | null) ?? null,
     progressPercent: (data.progressPercent as number | null) ?? null,
     progressMessage: (data.progressMessage as string | null) ?? null,
+    retryCount: (data.retryCount as number | undefined) ?? 0,
     queue:
       typeof data.queuePosition === "number"
         ? {
@@ -153,4 +155,35 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
           }
         : null,
   };
+}
+
+export type LoraRecoverResult = {
+  ok: boolean;
+  status?: string;
+  jobId?: string; // set when a retry produced a fresh job to poll
+  retryCount?: number;
+  refunded?: number; // credits returned when it escalated to failed_timeout
+  noop?: boolean;
+};
+
+// Pending-timeout auto-failover: cancels the stuck Modal call, then either
+// re-dispatches the same job onto another node (action "retry") or closes
+// it as failed_timeout with a 100% refund (action "timeout", or when the
+// retry cap is hit server-side).
+export async function recoverLoraJob(
+  jobId: string,
+  action: "retry" | "timeout",
+): Promise<LoraRecoverResult> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) throw new Error("ログインが必要です。");
+
+  const res = await fetch("/api/studio/lora/recover", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify({ jobId, action }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || data?.reason || "リカバリに失敗しました。");
+  return data as LoraRecoverResult;
 }
