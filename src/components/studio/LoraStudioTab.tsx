@@ -83,6 +83,48 @@ const MAX_TOTAL_BYTES = 120 * 1024 * 1024; // 120 MB of raw image bytes
 // what this exists to prevent.
 const ACTIVE_JOB_STORAGE_KEY = "lora_studio_active_job";
 
+// Auto-saved draft of the form's text inputs — so a browser crash / accidental
+// reload / dev-server restart never loses a hand-written trigger word, raw
+// YAML, or the Japanese "固定/変化させたい特徴" notes. Cleared only by the
+// explicit "フォームを初期化" button, never automatically.
+const FORM_DRAFT_STORAGE_KEY = "lora_studio_form_draft_v1";
+
+type LoraFormDraft = {
+  triggerWord: string;
+  loraName: string;
+  captionCategory: LoraCaptionCategory;
+  captionFixed: string;
+  captionVarying: string;
+  captionPromptOverride: string;
+  rawYaml: string;
+  useRawYaml: boolean;
+  curationEnabled: boolean;
+};
+
+const DEFAULT_FORM_DRAFT: LoraFormDraft = {
+  triggerWord: "",
+  loraName: "",
+  captionCategory: "person",
+  captionFixed: "",
+  captionVarying: "",
+  captionPromptOverride: "",
+  rawYaml: "",
+  useRawYaml: false,
+  curationEnabled: false,
+};
+
+function loadFormDraft(): Partial<LoraFormDraft> | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(FORM_DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" ? (parsed as Partial<LoraFormDraft>) : null;
+  } catch {
+    return null;
+  }
+}
+
 type Mode = "auto" | "semi" | "pro";
 
 const MODES: { id: Mode; label: string; desc: string }[] = [
@@ -797,6 +839,80 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     imagesRef.current = images;
   }, [images]);
 
+  // --- form-draft auto-persist -------------------------------------------
+  // Hydrated from localStorage once on mount (not via useState initialisers —
+  // that would desync SSR/CSR and warn on hydration). Applied in a microtask
+  // so it's out of the effect's synchronous body (matches the active-job
+  // restore effect below). The save effect is gated on draftHydratedRef so it
+  // never writes the defaults over a saved draft before this runs.
+  const draftHydratedRef = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      const d = loadFormDraft();
+      if (d) {
+        if (typeof d.triggerWord === "string") setTriggerWord(d.triggerWord);
+        if (typeof d.loraName === "string") setLoraName(d.loraName);
+        if (d.captionCategory && (LORA_CAPTION_CATEGORIES as readonly string[]).includes(d.captionCategory)) {
+          setCaptionCategory(d.captionCategory);
+        }
+        if (typeof d.captionFixed === "string") setCaptionFixed(d.captionFixed);
+        if (typeof d.captionVarying === "string") setCaptionVarying(d.captionVarying);
+        if (typeof d.captionPromptOverride === "string") setCaptionPromptOverride(d.captionPromptOverride);
+        if (typeof d.rawYaml === "string" || typeof d.useRawYaml === "boolean") {
+          setPro((p) => ({
+            ...p,
+            rawYaml: typeof d.rawYaml === "string" ? d.rawYaml : p.rawYaml,
+            useRawYaml: typeof d.useRawYaml === "boolean" ? d.useRawYaml : p.useRawYaml,
+          }));
+        }
+        if (typeof d.curationEnabled === "boolean") setCurationEnabled(d.curationEnabled);
+      }
+      draftHydratedRef.current = true;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !draftHydratedRef.current) return;
+    const draft: LoraFormDraft = {
+      triggerWord,
+      loraName,
+      captionCategory,
+      captionFixed,
+      captionVarying,
+      captionPromptOverride,
+      rawYaml: pro.rawYaml,
+      useRawYaml: pro.useRawYaml,
+      curationEnabled,
+    };
+    try {
+      const serialized = JSON.stringify(draft);
+      // Pristine form -> no key at all (so "フォームを初期化" genuinely clears
+      // it, and a first-time visitor never gets a stale entry).
+      if (serialized === JSON.stringify(DEFAULT_FORM_DRAFT)) {
+        window.localStorage.removeItem(FORM_DRAFT_STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(FORM_DRAFT_STORAGE_KEY, serialized);
+      }
+    } catch {
+      /* private mode / quota — persistence is best-effort */
+    }
+  }, [
+    triggerWord,
+    loraName,
+    captionCategory,
+    captionFixed,
+    captionVarying,
+    captionPromptOverride,
+    pro.rawYaml,
+    pro.useRawYaml,
+    curationEnabled,
+  ]);
+
   const addDatasetFiles = useCallback((entries: { file: File; caption?: string }[]) => {
     // Deterministic, filename-derived id (no random UUID) so it's a stable
     // React key across every re-render / curation round-trip; a numeric
@@ -1340,6 +1456,44 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     if (typeof window !== "undefined") localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
   };
 
+  // Wipes the saved draft and returns every form field to its default —
+  // the ONLY place FORM_DRAFT_STORAGE_KEY is cleared. Confirmation gated.
+  const resetFormDraft = () => {
+    if (typeof window !== "undefined") {
+      const ok = window.confirm(
+        "入力内容（トリガーワード・生YAML・こだわりテキスト・アップロード画像など）をすべて消去して、新規LoRA作成を最初から始めますか？\nこの操作は取り消せません。",
+      );
+      if (!ok) return;
+      try {
+        window.localStorage.removeItem(FORM_DRAFT_STORAGE_KEY);
+      } catch {
+        /* best-effort */
+      }
+    }
+    images.forEach((i) => URL.revokeObjectURL(i.url));
+    setImages([]);
+    setCaptions({});
+    setMode("auto");
+    setModelChoice("minimax_h3");
+    setCustomModelId("");
+    setBaseArchitecture("sdxl");
+    setResolution(DEFAULT_LORA_RESOLUTION);
+    setTriggerWord("");
+    setLoraName("");
+    setPro(DEFAULT_PRO);
+    setCaptionCategory("person");
+    setCaptionFixed("");
+    setCaptionVarying("");
+    setCaptionPromptOverride("");
+    setCaptionPromptOpen(false);
+    setCaptionGen({ state: "idle", prompt: "", fromGemini: false, error: null });
+    setCurationEnabled(false);
+    setCurationPairs([]);
+    setErrorMessage(null);
+    uploadedDatasetRef.current = null;
+    resolvedCaptionPromptRef.current = "";
+  };
+
   const busy = phase !== "form";
 
   if (phase === "curation") {
@@ -1366,6 +1520,24 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
   return (
     <div data-source-file="src/components/studio/LoraStudioTab.tsx" className="space-y-6">
+      {/* Draft persistence — inputs auto-save to localStorage; this button is
+          the only way to wipe them. */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="flex items-center gap-1.5 text-[11px] text-muted">
+          <Check size={12} className="text-green-400" />
+          入力内容は自動保存されます（リロードしても復元）
+        </p>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={resetFormDraft}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-[11px] text-muted transition-colors hover:border-red-400/50 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <RotateCcw size={12} />
+          フォームを初期化して新規LoRAを作成
+        </button>
+      </div>
+
       {/* Mode switch */}
       <div className="grid gap-2 sm:grid-cols-3">
         {MODES.map((m) => (
