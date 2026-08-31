@@ -717,9 +717,16 @@ def _supabase_request(method: str, path: str, **kwargs):
     return requests.request(method, f"{supabase_url}{path}", headers=headers, timeout=10, **kwargs)
 
 
-def _download_storage_object(bucket: str, key: str) -> bytes:
+class InfraError(RuntimeError):
+    """A transient infrastructure failure (network / Storage / GPU-side), as
+    opposed to a caller config error. Refunded even for raw-YAML jobs."""
+
+
+def _download_storage_object(bucket: str, key: str, attempts: int = 4) -> bytes:
     """Fetches one object out of a (private) Supabase Storage bucket with the
-    service-role key — bypasses Storage RLS."""
+    service-role key — bypasses Storage RLS. Retries transient network /
+    5xx failures with backoff: a single slow read must not sink a whole
+    (multi-thousand-credit) training job."""
     import requests
 
     supabase_url = os.environ.get("SUPABASE_URL")
@@ -728,14 +735,54 @@ def _download_storage_object(bucket: str, key: str) -> bytes:
         raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not configured")
     if ".." in key:
         raise ValueError(f"illegal storage key: {key!r}")
-    res = requests.get(
-        f"{supabase_url}/storage/v1/object/{bucket}/{key.lstrip('/')}",
-        headers={"apikey": service_key, "Authorization": f"Bearer {service_key}"},
-        timeout=60,
-    )
-    if res.status_code != 200:
-        raise RuntimeError(f"storage download failed ({res.status_code}) for {bucket}/{key}: {res.text[:300]}")
-    return res.content
+
+    url = f"{supabase_url}/storage/v1/object/{bucket}/{key.lstrip('/')}"
+    headers = {"apikey": service_key, "Authorization": f"Bearer {service_key}"}
+    last_exc: Exception | None = None
+    for i in range(attempts):
+        try:
+            res = requests.get(url, headers=headers, timeout=(10, 120))
+            if res.status_code == 200:
+                return res.content
+            # 5xx / 429 are worth retrying; a 4xx (missing object, bad key) is not.
+            if res.status_code < 500 and res.status_code != 429:
+                raise RuntimeError(
+                    f"storage download failed ({res.status_code}) for {bucket}/{key}: {res.text[:300]}"
+                )
+            last_exc = RuntimeError(f"storage {res.status_code} for {bucket}/{key}: {res.text[:200]}")
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+        if i < attempts - 1:
+            wait = min(2 ** i, 8)
+            print(f"[storage] {key} attempt {i + 1}/{attempts} failed ({last_exc}); retry in {wait}s", flush=True)
+            time.sleep(wait)
+    raise InfraError(f"storage download for {bucket}/{key} failed after {attempts} attempts: {last_exc}")
+
+
+# Signatures of a transient NETWORK / storage failure (ours) that aborts a
+# run early — as opposed to a config error or an over-scoped job that just
+# runs out of GPU time. Deliberately NARROW: OOM / CUDA faults / the 12h
+# container timeout are the caller's config responsibility, NOT refunded for
+# raw-YAML jobs (a full 12h GPU burn can't be given back for free).
+_INFRA_MSG_RE = re.compile(
+    r"(read timed out|connect timed out|connection (?:reset|aborted|error|refused)|"
+    r"connectionpool|max retries exceeded|failed to establish a new connection|"
+    r"temporarily unavailable|name or service not known|"
+    r"no space left on device|502 bad gateway|\b50[234]\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_infra_error(exc: BaseException) -> bool:
+    """True only for transient network/storage failures — see _INFRA_MSG_RE."""
+    if isinstance(exc, (InfraError, ConnectionError)):
+        return True
+    name = type(exc).__name__
+    if name in ("ConnectionError", "Timeout", "ReadTimeout", "ConnectTimeout", "ChunkedEncodingError"):
+        return True
+    if "requests.exceptions" in str(type(exc).__module__) and "timed out" in str(exc).lower():
+        return True
+    return bool(_INFRA_MSG_RE.search(str(exc)))
 
 
 def _patch_job(job_id: str, fields: dict) -> None:
@@ -2050,27 +2097,37 @@ def train_lora_job(params: dict) -> dict:
     except Exception as exc:  # report (+ conditional refund), then re-raise
         print(f"[train] FAILED: {exc}")
         # Platform-defence policy: a failure inside a caller-authored raw YAML
-        # (custom_yaml_override) is the user's own config error — bad params,
-        # incompatible options, logic mistakes — and still burns real GPU time
-        # (model download + setup can be 15-20 min before a param crash). Those
-        # runs are NOT refunded; only standard GUI-mode runs that hit a genuine
-        # system fault are.
+        # (custom_yaml_override) is the user's own responsibility — bad params,
+        # incompatible options, an over-scoped run that exhausts the 12h GPU
+        # budget — and is NOT refunded. The ONE exception is a transient
+        # network/storage failure that aborts the run early (see
+        # _is_infra_error — deliberately narrow, no OOM / timeout): that's on
+        # us, so refund it regardless of mode.
         is_custom_yaml = bool(override)
+        infra = _is_infra_error(exc)
+        should_refund = (not is_custom_yaml) or infra
         _patch_job(
             job_id,
             {
                 "status": "failed",
                 "error_message": (
-                    ("[Pro Custom YAML — 返金対象外] " if is_custom_yaml else "") + str(exc)
+                    ("[インフラ障害により全額返金] " if (is_custom_yaml and infra)
+                     else "[Pro Custom YAML — 返金対象外] " if is_custom_yaml
+                     else "") + str(exc)
                 )[:2000],
-                "metadata": {"refunded": (not is_custom_yaml), "custom_yaml": is_custom_yaml},
+                "metadata": {
+                    "refunded": should_refund,
+                    "custom_yaml": is_custom_yaml,
+                    "infra_error": infra,
+                },
                 "completed_at": _now_iso(),
             },
         )
-        if is_custom_yaml:
-            print(f"[train] custom_yaml job {job_id} failed — NO refund (user config, {credits_cost}C confirmed)")
-        else:
+        if should_refund:
             _refund_credits(user_id, credits_cost)
+            print(f"[train] job {job_id} failed ({'infra' if infra else 'system'}) — refunded {credits_cost}C")
+        else:
+            print(f"[train] custom_yaml job {job_id} failed — NO refund (user config, {credits_cost}C confirmed)")
         raise
 
 

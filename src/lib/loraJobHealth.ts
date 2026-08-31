@@ -126,9 +126,17 @@ export async function markLoraJobContainerDead(
   const existingMeta =
     job.metadata && typeof job.metadata === "object" ? (job.metadata as Record<string, unknown>) : {};
 
-  const reason =
-    "コンテナが結果を返さずに終了しました（実行時間の上限超過・リソース制限などの可能性）。" +
-    (detail ? ` [${detail}]` : "");
+  // Raw-YAML jobs get 12h of GPU time — a run that still hits that ceiling is
+  // an over-scoped config, not our fault: refunding a full 12h burn would be
+  // ruinous. So container timeout / SIGKILL is NOT refunded for raw-YAML
+  // (only genuine GUI-mode faults are). In-worker transient infra failures
+  // that abort early are handled separately (see _is_infra_error in the
+  // worker) and DO refund.
+  const reason = customYaml
+    ? "12時間の実行上限に達したか、リソース制限で終了しました。解像度・ステップ数・バッチサイズを下げて、12時間以内に完了する設定にしてください。" +
+      (detail ? ` [${detail}]` : "")
+    : "コンテナが結果を返さずに終了しました（実行時間の上限超過・リソース制限などの可能性）。" +
+      (detail ? ` [${detail}]` : "");
 
   let refunded = 0;
   if (!customYaml && !alreadyRefunded && cost > 0 && userId) {
