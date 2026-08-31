@@ -35,13 +35,14 @@ import {
 // ai-toolkit config with this default (see DEFAULT_TRAINING_CONFIG there).
 const DEFAULT_LORA_RANK = 32;
 
-// Only debits credits, inserts a generation_jobs row and fires a fast
-// dispatch at Modal (train_lora_dispatch, a warm min_containers=1 endpoint) —
-// the multi-minute training runs entirely inside the spawned container. The
-// response is returned the instant the spawn ack lands; the modal_call_id
-// persistence runs in `after()` so nothing slow sits between spawn and 200.
-// Any pre-spawn Gemini caption-prompt synthesis is hard-capped (see below).
-export const maxDuration = 90;
+// Only debits credits, inserts a generation_jobs row and fires the dispatch
+// at Modal (train_lora_dispatch). For a single-file / Volume base model the
+// spawn ack lands in seconds; for an uncached HF-repo model train_lora_dispatch
+// runs the CPU snapshot_download synchronously first, which can take a few
+// minutes. maxDuration matches SPAWN_TIMEOUT_MS (300_000ms) so Vercel never
+// 504s that wait; modal_call_id persistence still runs in `after()`, and any
+// pre-spawn Gemini caption-prompt synthesis is hard-capped (see below).
+export const maxDuration = 300;
 
 // Hard cap on the optional pre-spawn Gemini caption-prompt synthesis so it
 // can never push the request toward a Vercel function timeout — on timeout
