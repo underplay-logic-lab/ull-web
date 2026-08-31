@@ -66,6 +66,12 @@ PERSIST_OUTPUT_ROOT = f"{MODELS_DIR}/outputs"
 # Captioned datasets are persisted here on the Volume, keyed by dataset_id,
 # so a re-run of the same set skips the VLM pass entirely (0s).
 PERSIST_ROOT = f"{MODELS_DIR}/datasets"
+# Persistent HF / torch caches ON the Volume. ensure_model_cached_cpu()
+# pre-fills these on a cheap CPU container so a B300 ($0.31/s) never idles
+# on a HuggingFace download; train_lora_job points HF_HOME / TORCH_HOME here
+# and loads everything from local disk in 0s.
+HF_CACHE_DIR = f"{MODELS_DIR}/training/hf_cache"
+TORCH_CACHE_DIR = f"{MODELS_DIR}/training/torch_cache"
 AI_TOOLKIT_DIR = "/root/ai-toolkit"
 SHIM_DIR = "/root/aitk_shims"
 
@@ -680,6 +686,13 @@ image = (
     .env(
         {
             "HF_HUB_ENABLE_HF_TRANSFER": "1",
+            # Load the base model from the persistent Volume cache that
+            # ensure_model_cached_cpu() pre-filled — no HuggingFace round-trip
+            # on the GPU. (NOT forcing HF_HUB_OFFLINE, so a cache miss still
+            # falls back to an on-GPU download rather than a hard failure.)
+            "HF_HOME": HF_CACHE_DIR,
+            "HUGGINGFACE_HUB_CACHE": f"{HF_CACHE_DIR}/hub",
+            "TORCH_HOME": TORCH_CACHE_DIR,
             "PYTHONUNBUFFERED": "1",
             "PYTHONPATH": SHIM_DIR,
             # Deliberately NOT setting CUDA_FORCE_PTX_JIT / TORCH_CUDA_ARCH_LIST.
@@ -1996,6 +2009,18 @@ def train_lora_job(params: dict) -> dict:
       credits_cost:      int
       trigger_word:      str   (optional; derived from output_lora_name)
     """
+    # Load from the persistent Volume HF/torch cache (ensure_model_cached_cpu
+    # pre-filled it before this GPU was ever started). Belt-and-suspenders on
+    # top of the image .env — also mkdir the dirs in case this is the very
+    # first job and the CPU stage only committed a repo subtree.
+    os.environ["HF_HOME"] = HF_CACHE_DIR
+    os.environ["HUGGINGFACE_HUB_CACHE"] = f"{HF_CACHE_DIR}/hub"
+    os.environ["TORCH_HOME"] = TORCH_CACHE_DIR
+    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+    for _d in (f"{HF_CACHE_DIR}/hub", TORCH_CACHE_DIR):
+        pathlib.Path(_d).mkdir(parents=True, exist_ok=True)
+    print(f"[train] HF_HOME={HF_CACHE_DIR} (Volume-local model load)", flush=True)
+
     job_id = str(params.get("job_id") or "")
     user_id = str(params.get("user_id") or "")
     credits_cost = int(params.get("credits_cost") or 0)
@@ -2445,8 +2470,10 @@ def train_lora_job(params: dict) -> dict:
 # training image) and keeps one container warm so the browser's ~55s
 # dispatch timeout is never in play.
 # ---------------------------------------------------------------------------
-dispatch_image = modal.Image.debian_slim(python_version="3.11").pip_install(
-    "fastapi[standard]", "modal", "grpclib"
+dispatch_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .pip_install("fastapi[standard]", "modal", "grpclib", "huggingface_hub>=0.24", "hf_transfer")
+    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
 
@@ -2462,9 +2489,98 @@ def _pending_stub(item: dict):
     return {"stub": True}
 
 
+# ---------------------------------------------------------------------------
+# Two-stage pipeline — stage 1: CPU-only model pre-cache.
+# A B300 costs ~0.31 JPY/s the instant it boots. Downloading a multi-GB base
+# model from HuggingFace on that GPU is pure idle-money. Instead a tiny CPU
+# container (cpu=2 / 4GB) verifies + fetches every HF component into the
+# persistent Volume HF cache first; the GPU then loads from local disk in 0s.
+# ---------------------------------------------------------------------------
+def _hf_repos_for(target_model: str, custom_model_id: str = "") -> list[str]:
+    """The HF repo ids this job's base model needs pre-downloaded. Empty when
+    every component is already a single-file checkpoint on the Volume
+    (minimax_h3 / wan2_1_14b / flux_schnell) — nothing to fetch."""
+
+    def _is_repo(v) -> bool:
+        s = str(v or "")
+        return bool(s) and "/" in s and not s.startswith(("http://", "https://", "/", MODELS_DIR))
+
+    if target_model == "custom":
+        return [custom_model_id] if _is_repo(custom_model_id) else []
+
+    entry = TARGET_MODELS.get(target_model)
+    if entry is None:  # a bare arch string ("sdxl", "wan21", ...)
+        entry = next((t for t in TARGET_MODELS.values() if t.get("arch") == target_model), None)
+    if entry is None:
+        return []
+    repos = [entry[k] for k in ("unet", "text_encoder", "vae") if _is_repo(entry.get(k))]
+    return list(dict.fromkeys(repos))
+
+
 @app.function(
     image=dispatch_image,
-    timeout=60,
+    timeout=600,
+    cpu=2,
+    memory=4096,
+    volumes={MODELS_DIR: vol},
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
+    """Stage 1. Guarantee every HF component of the base model is on the
+    persistent Volume HF cache. Cache hit -> returns in ~0.1s. Cache miss ->
+    hf_transfer snapshot_download (parallel) then vol.commit(). A
+    single-file / Volume model (minimax_h3 etc.) is a no-op here."""
+    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+    os.environ["HF_HOME"] = HF_CACHE_DIR
+    os.environ["HUGGINGFACE_HUB_CACHE"] = f"{HF_CACHE_DIR}/hub"
+
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[cache] vol.reload skipped: {exc}", flush=True)
+    pathlib.Path(f"{HF_CACHE_DIR}/hub").mkdir(parents=True, exist_ok=True)
+    pathlib.Path(TORCH_CACHE_DIR).mkdir(parents=True, exist_ok=True)
+
+    repos = _hf_repos_for(str(model_arch or ""), str(custom_model_id or ""))
+    if not repos:
+        print(f"[cache] arch={model_arch!r}: single-file / Volume model — nothing to download", flush=True)
+        return {"ok": True, "cached": True, "repos": [], "downloaded": []}
+
+    from huggingface_hub import snapshot_download
+
+    downloaded: list[str] = []
+    for repo in repos:
+        try:
+            snapshot_download(repo_id=repo, local_files_only=True)
+            print(f"[cache] {repo}: already on Volume", flush=True)
+            continue
+        except Exception:  # noqa: BLE001 — not cached yet, fall through to fetch
+            pass
+        try:
+            t0 = time.time()
+            # convrot_quant / other arch-specific expansion is a train-time
+            # code patch (not model files) and stays on the GPU side; the
+            # snapshot here is the complete component tree that patch needs.
+            snapshot_download(repo_id=repo, max_workers=8)
+            downloaded.append(repo)
+            print(f"[cache] {repo}: fetched in {time.time() - t0:.0f}s", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[cache] {repo}: download FAILED — {exc}", flush=True)
+            return {"ok": False, "cached": False, "repo": repo, "error": str(exc)[:500]}
+
+    if downloaded:
+        try:
+            vol.commit()
+            print(f"[cache] vol.commit() — {len(downloaded)} repo(s) persisted to {HF_CACHE_DIR}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[cache] vol.commit skipped: {exc}", flush=True)
+
+    return {"ok": True, "cached": not downloaded, "repos": repos, "downloaded": downloaded}
+
+
+@app.function(
+    image=dispatch_image,
+    timeout=600,
     min_containers=1,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
@@ -2476,8 +2592,36 @@ def train_lora_dispatch(item: dict, request: fastapi.Request):
     if item.get("_test_stub"):
         call = _pending_stub.spawn(item)
         return {"ok": True, "spawned": True, "test_stub": True, "modal_call_id": call.object_id, "job_id": item.get("job_id")}
+
+    # Stage 1 (CPU): pre-stage the base model. Only touched when the model
+    # actually has HF components to fetch — a single-file Volume model
+    # (minimax_h3 etc.) skips this entirely so the common path stays instant.
+    cache_info: dict = {"downloaded": [], "cached": True}
+    if _hf_repos_for(item.get("target_model") or "", item.get("custom_model_id") or ""):
+        try:
+            cache_res = ensure_model_cached_cpu.remote(
+                item.get("target_model") or "", item.get("custom_model_id") or ""
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise fastapi.HTTPException(status_code=502, detail=f"model pre-cache errored: {exc}")
+        if not cache_res.get("ok"):
+            # Base model could not be downloaded — do NOT start a GPU. The
+            # Next.js route treats a non-2xx here as a dispatch failure and
+            # refunds the debit.
+            raise fastapi.HTTPException(
+                status_code=502,
+                detail=f"base model download failed ({cache_res.get('repo')}): {cache_res.get('error')}",
+            )
+        cache_info = {"downloaded": cache_res.get("downloaded", []), "cached": cache_res.get("cached")}
+
     call = train_lora_job.spawn(item)
-    return {"ok": True, "spawned": True, "modal_call_id": call.object_id, "job_id": item.get("job_id")}
+    return {
+        "ok": True,
+        "spawned": True,
+        "modal_call_id": call.object_id,
+        "job_id": item.get("job_id"),
+        "model_cache": cache_info,
+    }
 
 
 # Physically cancels a spawned training FunctionCall so a pending-timeout
