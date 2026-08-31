@@ -740,11 +740,13 @@ function ProgressPanel({
       <p className="mt-1.5 text-[11px] leading-relaxed text-red-400/90">
         {job.errorMessage || "不明なエラーが発生しました。"}
         <br />
-        {job.refunded === true
-          ? "消費したクレジットは全額返金されました。"
-          : job.refunded === false
-            ? "生YAML（カスタム設定）モードのため、消費したクレジットは返金されません。"
-            : "返金状況を確認中です。"}
+        {job.safetyStop
+          ? "設定負荷に対してクレジットが不足したため、原価割れを避けて安全停止し、全額返金されました。解像度・ステップ数・バッチを下げるか、投入クレジットを増やしてください。中断時点までの中間チェックポイントはダウンロードできます。"
+          : job.refunded === true
+            ? "消費したクレジットは全額返金されました。"
+            : job.refunded === false
+              ? "生YAML（カスタム設定）モードのため、消費したクレジットは返金されません。"
+              : "返金状況を確認中です。"}
       </p>
 
       {partialCkpts.length > 0 && (
@@ -1402,6 +1404,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         checkpoints: [],
         refunded: null,
         customYaml: yamlMode,
+        safetyStop: false,
+        safetyKind: null,
         queue: null,
       });
       setPhase("tracking");

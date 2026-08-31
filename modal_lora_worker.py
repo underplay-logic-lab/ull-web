@@ -307,14 +307,15 @@ LORA_OUTPUT_DIR = f"{MODELS_DIR}/loras"
 GPU_REQUEST = os.environ.get("LORA_WORKER_GPU", "").strip() or ["b300", "b200"]
 AI_TOOLKIT_REF = os.environ.get("AI_TOOLKIT_REF", "main")
 
-# --- GPU-cost defence (real-cost, not credits) -----------------------------
-# Measured reference: a 3000-step run is ~2.5-3h of actual training. The
-# container timeout is 12h, but we stop far earlier than that:
-#   PREP    — if ai-toolkit hasn't reached training Step 1 within this long
-#             (VAE latent-caching / model load), assume swap/deadlock, abort.
-#   SAFETY  — once real step speed is known, if projected TOTAL wall time
-#             (elapsed + remaining) would exceed this, gracefully stop and
-#             leave the partial checkpoints salvageable.
+# --- GPU-cost defence -----------------------------------------------------
+# The container timeout is 12h, but we stop far earlier:
+#   PREP  — if ai-toolkit hasn't reached training Step 1 within this long
+#           (VAE latent-caching / model load), assume swap/deadlock, abort.
+#   COST  — once real step speed is known, if the projected TOTAL wall time
+#           would cost more real GPU money than the paid credits cover at a
+#           30% margin (_credit_covered_seconds), gracefully stop + 100%
+#           refund + leave the partial checkpoints salvageable.
+# LORA_SAFETY_LIMIT_S is only a hard fallback ceiling when credits_cost is 0.
 LORA_PREP_TIMEOUT_S = int(os.environ.get("LORA_PREP_TIMEOUT_S", str(20 * 60)))
 LORA_SAFETY_LIMIT_S = int(os.environ.get("LORA_SAFETY_LIMIT_S", str(5 * 60 * 60)))
 
@@ -736,10 +737,34 @@ class InfraError(RuntimeError):
 
 
 class SafetyLimitError(RuntimeError):
-    """The run was deliberately stopped early to cap real GPU cost — the prep
-    phase deadlocked, or the projected total wall time blew past
-    LORA_SAFETY_LIMIT_S. Partial checkpoints are committed + salvageable.
-    NOT an infra error (it's an over-scoped config) → no raw-YAML refund."""
+    """The run was deliberately stopped early by the system to protect real
+    GPU cost — either the prep phase deadlocked ("prep"), or the measured
+    projected wall time would cost more than the paid credits cover at a 30%
+    margin ("cost"). Partial checkpoints are committed + salvageable, and the
+    credits are 100% refunded (it's the system's call, not a config crash)."""
+
+    def __init__(self, message: str, *, kind: str = "cost", refund: bool = True):
+        super().__init__(message)
+        self.kind = kind
+        self.refund = refund
+
+
+def _credit_covered_seconds(credits_cost: int) -> int:
+    """Max GPU seconds the paid credits cover at a >=30% gross margin.
+
+      revenue_jpy  = credits_cost * 1.66      (cheapest subscription unit price)
+      max_cost_jpy = revenue_jpy * 0.70       (keep 30% margin)
+      B300         = 1125 JPY/h -> 0.3125 JPY/s
+      -> seconds   = max_cost_jpy / 0.3125    (≈ credits_cost * 3.72)
+
+    Floored at 1800s (30 min) so a cheap job still gets a fair shot; capped
+    just under the 12h container timeout so we always stop gracefully first.
+    """
+    revenue_jpy = max(0, credits_cost) * 1.66
+    max_cost_jpy = revenue_jpy * 0.70
+    b300_jpy_per_sec = 1125 / 3600
+    secs = max_cost_jpy / b300_jpy_per_sec if b300_jpy_per_sec else 0.0
+    return int(max(1800, min(secs, 12 * 60 * 60 - 20 * 60)))
 
 
 def _download_storage_object(bucket: str, key: str, attempts: int = 4) -> bytes:
@@ -1576,6 +1601,7 @@ for _k, _v in list(globals().items()):
 
     job_start = job_started_ts or time.time()
     aborted: str | None = None
+    aborted_kind: str | None = None
 
     def _kill(p, grace: float = 25.0) -> None:
         """SIGTERM, wait, then SIGKILL — leaves the on-disk save_every
@@ -1675,27 +1701,30 @@ for _k, _v in list(globals().items()):
                             f"準備フェーズ（VAEラテントキャッシュ/モデルロード）が "
                             f"{int((now - sub_start) // 60)} 分続いても学習（Step 1）を開始しません"
                             f"（直近 {int(now - last_output)}s 出力なし）。"
-                            f"スワップ/デッドロックと判定し、GPUコスト保護のため中断しました。"
+                            f"スワップ/デッドロックと判定し、中断しました。"
                         )
+                        aborted_kind = "prep"
                         break
 
-                # (2) projected total wall time exceeds the safety limit.
+                # (2) projected wall time would cost more than the paid credits
+                #     cover (at a 30% margin) — original-cost defence.
                 if training_start is not None and (state["step"] - first_step) >= 20 and state["total"] > 0:
                     measured_spi = (now - training_start) / max(1, state["step"] - first_step)
                     remaining = max(0, state["total"] - state["step"])
                     projected_total = (now - job_start) + remaining * measured_spi
                     if projected_total > safety_limit_s:
                         aborted = (
-                            f"Estimated time exceeds {safety_limit_s // 3600}-hour safety limit. "
-                            f"Terminated to protect GPU cost. "
-                            f"(measured {measured_spi:.2f}s/it, ~{_fmt_duration(projected_total)} projected total, "
-                            f"stopped at Step {state['step']}/{state['total']})"
+                            f"Terminated to protect cost: Projected time "
+                            f"({projected_total / 3600:.1f}h) exceeds credit-covered limit "
+                            f"({safety_limit_s / 3600:.1f}h). Credits have been fully refunded. "
+                            f"(measured {measured_spi:.2f}s/it, stopped at Step {state['step']}/{state['total']})"
                         )
+                        aborted_kind = "cost"
                         break
 
             if aborted:
-                print(f"[stage2] SAFETY ABORT: {aborted}", flush=True)
-                _patch_job(job_id, {"progress_message": "GPUコスト保護のため早期停止中…"})
+                print(f"[stage2] SAFETY ABORT ({aborted_kind}): {aborted}", flush=True)
+                _patch_job(job_id, {"progress_message": "安全停止処理中（中間結果を保存しています）…"})
                 _kill(proc)
             else:
                 returncode = proc.wait()
@@ -1705,7 +1734,7 @@ for _k, _v in list(globals().items()):
         _maybe_commit(force=True)  # persist every save_every checkpoint written so far
 
     if aborted:
-        raise SafetyLimitError(aborted)
+        raise SafetyLimitError(aborted, kind=aborted_kind or "cost", refund=True)
 
     if returncode != 0:
         tail = ""
@@ -2156,8 +2185,17 @@ def train_lora_job(params: dict) -> dict:
             total_steps = int(tc.get("steps", DEFAULT_TRAINING_CONFIG["steps"]))
         _patch_job(job_id, {"progress_percent": 5, "progress_message": "starting training"})
         stage2 = time.time()
+        # Dynamic cost cap: the run may use as much GPU time as the paid
+        # credits cover at a >=30% margin, floored at 30min. Overrunning that
+        # = original-cost breach -> graceful stop + 100% refund.
+        cost_cap_s = _credit_covered_seconds(credits_cost) if credits_cost > 0 else LORA_SAFETY_LIMIT_S
+        print(
+            f"[stage2] cost cap: {credits_cost}C -> {cost_cap_s}s (~{cost_cap_s / 3600:.2f}h)",
+            flush=True,
+        )
         _run_ai_toolkit_with_progress(
-            config_path, job_id, total_steps or 2000, commit_vol=True, job_started_ts=started
+            config_path, job_id, total_steps or 2000, commit_vol=True, job_started_ts=started,
+            safety_limit_s=cost_cap_s,
         )
         print(f"[train] stage 2 done in {time.time() - stage2:.0f}s")
 
@@ -2255,23 +2293,25 @@ def train_lora_job(params: dict) -> dict:
         }
     except Exception as exc:  # report (+ conditional refund), then re-raise
         print(f"[train] FAILED: {exc}")
-        # Platform-defence policy: a failure inside a caller-authored raw YAML
-        # (custom_yaml_override) is the user's own responsibility — bad params,
-        # incompatible options, an over-scoped run that exhausts the 12h GPU
-        # budget — and is NOT refunded. The ONE exception is a transient
-        # network/storage failure that aborts the run early (see
-        # _is_infra_error — deliberately narrow, no OOM / timeout): that's on
-        # us, so refund it regardless of mode.
+        # Refund policy:
+        #  * GUI-mode faults        -> refund (unchanged).
+        #  * raw-YAML config errors -> NO refund (bad params / crash).
+        #  * transient infra errors -> refund even for raw-YAML (_is_infra_error,
+        #    narrow: network/storage only, no OOM/timeout).
+        #  * SAFETY STOP (system killed the run early: prep deadlock, or the
+        #    projected time would breach the credit-covered cost limit) ->
+        #    100% refund regardless of mode — the system made the call.
         is_custom_yaml = bool(override)
         is_safety_stop = isinstance(exc, SafetyLimitError)
+        safety_kind = getattr(exc, "kind", "cost") if is_safety_stop else ""
+        safety_refund = bool(getattr(exc, "refund", False)) if is_safety_stop else False
         infra = _is_infra_error(exc)
-        # A safety-stop is an over-scoped config (like a plain 12h timeout) —
-        # NOT refunded for raw-YAML. A narrow infra error still is.
-        should_refund = (not is_custom_yaml) or (infra and not is_safety_stop)
+        should_refund = safety_refund or (not is_safety_stop and ((not is_custom_yaml) or infra))
 
         meta: dict = {"refunded": should_refund, "custom_yaml": is_custom_yaml, "infra_error": infra}
         if is_safety_stop:
             meta["safety_stop"] = True
+            meta["safety_kind"] = safety_kind
             try:
                 partial = _publish_partial_checkpoints(lora_name, job_output_dir, user_id, job_id)
             except Exception as _pp_exc:  # noqa: BLE001
@@ -2282,7 +2322,8 @@ def train_lora_job(params: dict) -> dict:
                 print(f"[train] safety-stop: published {len(partial)} partial checkpoint(s)", flush=True)
 
         prefix = (
-            "[GPUコスト保護のため早期停止 — 中間チェックポイント取得可] " if is_safety_stop
+            "[原価割れ防止のため安全停止 — 全額返金] " if (is_safety_stop and safety_kind == "cost")
+            else "[準備フェーズのデッドロックにより中断 — 全額返金] " if is_safety_stop
             else "[インフラ障害により全額返金] " if (is_custom_yaml and infra)
             else "[Pro Custom YAML — 返金対象外] " if is_custom_yaml
             else ""
@@ -2298,10 +2339,10 @@ def train_lora_job(params: dict) -> dict:
         )
         if should_refund:
             _refund_credits(user_id, credits_cost)
-            print(f"[train] job {job_id} failed ({'infra' if infra else 'system'}) — refunded {credits_cost}C")
+            reason = "safety-stop" if is_safety_stop else ("infra" if infra else "system")
+            print(f"[train] job {job_id} failed ({reason}) — refunded {credits_cost}C")
         else:
-            tag = "safety-stop" if is_safety_stop else "user config"
-            print(f"[train] custom_yaml job {job_id} failed — NO refund ({tag}, {credits_cost}C confirmed)")
+            print(f"[train] custom_yaml job {job_id} failed — NO refund (user config, {credits_cost}C confirmed)")
         raise
 
 

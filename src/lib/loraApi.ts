@@ -166,6 +166,10 @@ export type LoraJobStatus = {
   // refunded (platform-defence policy), standard GUI-mode faults are.
   refunded: boolean | null;
   customYaml: boolean;
+  // The system stopped the run early to protect cost (prep deadlock, or the
+  // projected time would exceed what the paid credits cover). Always refunded.
+  safetyStop: boolean;
+  safetyKind: "cost" | "prep" | null;
   queue:
     | { queuePosition: number; avgExecutionSeconds: number; estimatedWaitSeconds: number }
     | null;
@@ -188,6 +192,8 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
     checkpoints?: unknown;
     refunded?: unknown;
     custom_yaml?: unknown;
+    safety_stop?: unknown;
+    safety_kind?: unknown;
     current_step?: unknown;
     total_steps?: unknown;
     eta_seconds?: unknown;
@@ -222,6 +228,9 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
     checkpoints,
     refunded: typeof meta.refunded === "boolean" ? meta.refunded : null,
     customYaml: meta.custom_yaml === true,
+    safetyStop: meta.safety_stop === true,
+    safetyKind:
+      meta.safety_kind === "cost" || meta.safety_kind === "prep" ? meta.safety_kind : null,
     queue:
       typeof data.queuePosition === "number"
         ? {
