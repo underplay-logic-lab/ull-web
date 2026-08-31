@@ -34,6 +34,12 @@ export type SpawnLoraTrainingParams = {
   resolution?: number;
   outputLoraName: string;
   triggerWord?: string;
+  // Present when the user brought their own captions — the worker skips the
+  // 27B caption VLM load entirely.
+  customCaptions?: string[];
+  skipCaptioning?: boolean;
+  // User's own auto-caption VLM instruction (category preset / free-text).
+  captionPrompt?: string;
 };
 
 // The exact Modal payload — stored on the job so a pending-timeout retry can
@@ -50,6 +56,9 @@ export type LoraDispatchPayload = {
   resolution: number;
   output_lora_name: string;
   trigger_word: string;
+  custom_captions?: string[];
+  skip_captioning?: boolean;
+  caption_prompt?: string;
 };
 
 export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraDispatchPayload {
@@ -65,6 +74,13 @@ export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraD
     resolution: params.resolution ?? 768,
     output_lora_name: params.outputLoraName,
     trigger_word: params.triggerWord ?? "",
+    ...(params.customCaptions && params.customCaptions.length
+      ? { custom_captions: params.customCaptions }
+      : {}),
+    ...(params.skipCaptioning ? { skip_captioning: true } : {}),
+    ...(params.captionPrompt && params.captionPrompt.trim()
+      ? { caption_prompt: params.captionPrompt.trim() }
+      : {}),
   };
 }
 
@@ -80,10 +96,25 @@ const SPAWN_TIMEOUT_MS = 55_000;
 // job PATCHes generation_jobs (status / progress_percent / progress_message
 // / result_path) directly via Supabase REST as it runs — this request is
 // long gone by then. Throws only if the dispatch itself failed.
-async function modalEnv(kind: "train" | "cancel"): Promise<{ url: string; authToken: string; host: string }> {
-  const url = kind === "cancel"
-    ? (process.env.MODAL_LORA_CANCEL_URL || deriveCancelUrl(process.env.MODAL_LORA_TRAIN_URL))
-    : process.env.MODAL_LORA_TRAIN_URL;
+async function modalEnv(
+  kind: "train" | "cancel" | "status" | "salvage",
+): Promise<{ url: string; authToken: string; host: string }> {
+  const trainUrl = process.env.MODAL_LORA_TRAIN_URL;
+  let url: string | undefined;
+  switch (kind) {
+    case "train":
+      url = trainUrl;
+      break;
+    case "cancel":
+      url = process.env.MODAL_LORA_CANCEL_URL || deriveSiblingUrl(trainUrl, "cancel-lora-job");
+      break;
+    case "status":
+      url = process.env.MODAL_LORA_STATUS_URL || deriveSiblingUrl(trainUrl, "check-call-status");
+      break;
+    case "salvage":
+      url = process.env.MODAL_LORA_SALVAGE_URL || deriveSiblingUrl(trainUrl, "salvage-lora-job");
+      break;
+  }
   const authToken = process.env.MODAL_AUTH_TOKEN;
   if (!url) {
     throw new Error(
@@ -102,10 +133,12 @@ async function modalEnv(kind: "train" | "cancel"): Promise<{ url: string; authTo
   return { url, authToken, host };
 }
 
-// cancel_lora_job is a sibling endpoint on the same Modal app, so its URL is
-// the train URL with "train-lora-dispatch" swapped for "cancel-lora-job".
-function deriveCancelUrl(trainUrl: string | undefined): string {
-  return (trainUrl ?? "").replace("train-lora-dispatch", "cancel-lora-job");
+// Every worker endpoint lives on the same Modal app, so a sibling's URL is
+// the train URL with "train-lora-dispatch" swapped for the dashed function
+// name (cancel-lora-job / check-call-status / salvage-lora-job). A dedicated
+// MODAL_LORA_*_URL env var overrides this when set.
+function deriveSiblingUrl(trainUrl: string | undefined, fnDashed: string): string {
+  return (trainUrl ?? "").replace("train-lora-dispatch", fnDashed);
 }
 
 // Dispatches to train_lora_dispatch, which .spawn()s the GPU job and
@@ -225,4 +258,104 @@ export async function cancelLoraTrainingCall(modalCallId: string): Promise<boole
     console.error("[cancelLoraTrainingCall] failed:", err instanceof Error ? err.message : String(err));
     return false;
   }
+}
+
+// Modal-native self-healing: asks modal_lora_worker.py::check_call_status
+// whether a spawned training FunctionCall is still alive. Authoritative even
+// when the container died by SIGKILL (train_lora_job's own except-block never
+// runs in that case). Never throws — an unreachable endpoint returns
+// "unknown" so the caller leaves the job alone.
+export type LoraCallStatus = {
+  status: "completed" | "running" | "failed" | "unknown";
+  error?: string;
+};
+
+export async function checkLoraCallStatus(modalCallId: string): Promise<LoraCallStatus> {
+  if (!modalCallId) return { status: "unknown", error: "no modal_call_id" };
+  try {
+    const { url, authToken, host } = await modalEnv("status");
+    const target = new URL(url);
+    target.searchParams.set("call_id", modalCallId);
+    const res = await fetch(target.toString(), {
+      method: "GET",
+      headers: { "x-modal-secret": authToken, Authorization: `Bearer ${authToken}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const text = await res.text().catch(() => "");
+    if (!res.ok) {
+      console.error(`[checkLoraCallStatus] ${host} -> ${res.status}: ${text.slice(0, 300)}`);
+      return { status: "unknown", error: `HTTP ${res.status}` };
+    }
+    const j = JSON.parse(text) as LoraCallStatus;
+    if (j && typeof j.status === "string") return j;
+    return { status: "unknown" };
+  } catch (err) {
+    console.error("[checkLoraCallStatus] failed:", err instanceof Error ? err.message : String(err));
+    return { status: "unknown", error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// One salvaged artifact, in the same snake_case shape train_lora_job writes
+// to generation_jobs.metadata.checkpoints.
+export type SalvagedCheckpoint = {
+  step: number;
+  filename: string;
+  size_bytes: number;
+  is_final?: boolean;
+  is_caption_archive?: boolean;
+  salvaged?: boolean;
+  path?: string;
+};
+
+// Scans the Volume for whatever a dead / cancelled run left behind (see
+// modal_lora_worker.py::salvage_lora_job) and returns the checkpoint list.
+// Throws only if the salvage call itself failed.
+export async function salvageLoraJobRemote(args: {
+  userId: string;
+  jobId: string;
+  modalCallId: string;
+  datasetId?: string;
+  outputLoraName?: string;
+}): Promise<{
+  ok: boolean;
+  checkpoints: SalvagedCheckpoint[];
+  salvaged: number;
+  captionFiles: number;
+  imageFiles: number;
+}> {
+  const { url, authToken, host } = await modalEnv("salvage");
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-modal-secret": authToken,
+      Authorization: `Bearer ${authToken}`,
+    },
+    body: JSON.stringify({
+      user_id: args.userId,
+      job_id: args.jobId,
+      call_id: args.modalCallId,
+      dataset_id: args.datasetId ?? "",
+      output_lora_name: args.outputLoraName ?? "",
+    }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  const text = await res.text().catch(() => "");
+  if (!res.ok) {
+    throw new Error(`Modal salvage failed — HTTP ${res.status} from ${host}: ${text.slice(0, 500)}`);
+  }
+  const j = JSON.parse(text) as {
+    ok?: boolean;
+    checkpoints?: SalvagedCheckpoint[];
+    salvaged?: number;
+    caption_files?: number;
+    image_files?: number;
+  };
+  return {
+    ok: Boolean(j.ok),
+    checkpoints: Array.isArray(j.checkpoints) ? j.checkpoints : [],
+    salvaged: typeof j.salvaged === "number" ? j.salvaged : 0,
+    captionFiles: typeof j.caption_files === "number" ? j.caption_files : 0,
+    imageFiles: typeof j.image_files === "number" ? j.image_files : 0,
+  };
 }

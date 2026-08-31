@@ -2,29 +2,41 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Activity,
   AlertTriangle,
+  Bot,
   Check,
+  ChevronDown,
   Clapperboard,
+  ClipboardCopy,
   Cpu,
+  Download,
   ImagePlus,
   Loader2,
   LogIn,
+  RotateCcw,
   Sparkles,
   Trash2,
   Wand2,
   Zap,
 } from "lucide-react";
 import { LoginModal } from "@/components/LoginModal";
+import { ToastStack, type ToastData } from "@/components/Toast";
 import { QueueStatusPanel } from "@/components/studio/QueueStatusPanel";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
+import { supabase } from "@/lib/supabaseClient";
 import {
   startLoraTraining,
   pollLoraJob,
-  recoverLoraJob,
   uploadLoraDataset,
+  downloadLoraCheckpoint,
+  getLoraCheckpointDownloadUrl,
+  salvageLoraJob,
+  fetchRecentLoraJob,
   type LoraJobStatus,
   type LoraApiError,
+  type LoraSalvageResult,
 } from "@/lib/loraApi";
 import {
   LORA_PRESETS,
@@ -41,20 +53,27 @@ import {
   type LoraPresetGroup,
   type LoraResolution,
 } from "@/lib/loraModels";
-
-const LORA_COST = 150;
-// PRODUCTION: JOB_POLL_INTERVAL_MS = 3000, PENDING_TIMEOUT_MS = 10_000
-// TEST (current): 25s timeout, realistic pacing — pair with Vercel env
-// LORA_TRAIN_TEST_STUB=1 so the job is guaranteed to stay 'queued' and the
-// failover (cancel -> retry -> retry -> refund) runs one clean cycle each.
+import { DEFAULT_LORA_STEPS, LORA_MAX_STEPS } from "@/lib/loraCredits";
+import {
+  guiLoraPricingConfig,
+  loraPriceBreakdown,
+  loraPriceMultiplierSummary,
+  LORA_CREDIT_WORST_CASE,
+} from "@/lib/loraPricing";
+import { validateLoraYaml, loraYamlIdentity } from "@/lib/loraYaml";
+import { DatasetCurationUI, type CurationPair } from "@/components/studio/DatasetCurationUI";
+import { parseDatasetZip, isZipFile } from "@/lib/datasetZip";
 const JOB_POLL_INTERVAL_MS = 3000;
-// If a job hasn't left 'queued' (no worker container) within this window,
-// the client physically cancels the Modal call + re-enqueues it on the same
-// GPU (H100). Max 2 retries, then cancel + 100% refund.
-const PENDING_TIMEOUT_MS = 25_000;
-const MAX_PENDING_RETRIES = 2;
 const MAX_IMAGES = 200;
 const MAX_TOTAL_BYTES = 120 * 1024 * 1024; // 120 MB of raw image bytes
+
+// Survives a page reload mid-job (dev server restart, browser refresh,
+// accidental navigation) — job/phase state otherwise lives only in this
+// component's useState and is gone the instant the page re-mounts, even
+// though the job itself keeps running (or already finished) server-side.
+// A finished job's checkpoint download buttons disappearing this way is
+// what this exists to prevent.
+const ACTIVE_JOB_STORAGE_KEY = "lora_studio_active_job";
 
 type Mode = "auto" | "semi" | "pro";
 
@@ -69,12 +88,66 @@ const PRESET_GROUPS: LoraPresetGroup[] = ["video", "photo", "anime"];
 const OPTIMIZERS = ["adamw8bit", "adamw", "prodigy", "adafactor", "lion8bit"];
 const LORA_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 
+// Safe, discrete hyperparameter choices — no free-form number entry (a
+// stray keystroke on Rank/LR used to silently wreck a paid run).
+const RANK_OPTIONS = [8, 16, 32, 64, 128] as const;
+const ALPHA_OPTIONS = [8, 16, 32, 64, 128] as const;
+const STEPS_MIN = 200;
+const STEPS_MAX = LORA_MAX_STEPS;
+const STEPS_STEP = 50;
+const STEPS_QUICK: { value: number; label: string }[] = [
+  { value: 500, label: "500 (軽量テスト)" },
+  { value: 1000, label: "1000 (標準)" },
+  { value: 2000, label: "2000 (高密度/受託推奨)" },
+];
+const LR_PRESETS: { value: number; label: string }[] = [
+  { value: 0.0001, label: "0.0001 (1e-4) ・ 推奨/標準" },
+  { value: 0.0002, label: "0.0002 (2e-4) ・ 強め" },
+  { value: 0.00005, label: "0.00005 (5e-5) ・ 微調整" },
+];
+
+// Category presets for the auto-caption instruction — shown to the user in
+// Japanese. Pick one, then optionally edit the text freely; whatever's in
+// the box is sent to the worker as `caption_prompt`, which wraps it in an
+// English-output template before handing it to Qwen. 人物・キャラ is default.
+export const CAPTION_PROMPT_PRESETS: { label: string; icon: string; prompt: string }[] = [
+  {
+    label: "人物・キャラ",
+    icon: "👤",
+    prompt:
+      "被写体の外見、髪型、表情、服装、ポーズ、カメラ構図（クローズアップ/上半身/全身）、ライティング、背景を詳細に描写せよ。被写体と背景の要素を明確に分離すること。",
+  },
+  {
+    label: "画風・スタイル",
+    icon: "🎨",
+    prompt:
+      "芸術的スタイル、画風、質感、レンダリング手法、色使い、筆致、線画の特徴を詳細に描写せよ。描かれている物体は簡潔にし、スタイルの特徴に焦点を当てること。",
+  },
+  {
+    label: "オブジェクト・物質",
+    icon: "📦",
+    prompt:
+      "被写体（オブジェクト・物質）の形状、構造、素材の質感（金属光沢、布、マット等）、細部のディテール、アングルを客観的に描写せよ。無関係な背景は無視すること。",
+  },
+  {
+    label: "風景・背景",
+    icon: "🏞️",
+    prompt:
+      "風景・環境の空間レイアウト、建築様式、時間帯、天候、ライティング、空気感、遠近感と奥行きを詳細に描写せよ。",
+  },
+];
+const DEFAULT_CAPTION_PROMPT = CAPTION_PROMPT_PRESETS[0].prompt;
+
 type DatasetImage = { id: string; file: File; url: string };
 
 type ProConfig = {
   rank: number;
   alpha: number;
+  // Alpha tracks Rank 1:1 until the user picks an Alpha value by hand.
+  alphaLinked: boolean;
   learningRate: number;
+  // true once the user switches the LR dropdown to "カスタム".
+  lrCustom: boolean;
   steps: number;
   optimizer: string;
   useRawYaml: boolean;
@@ -84,14 +157,16 @@ type ProConfig = {
 const DEFAULT_PRO: ProConfig = {
   rank: 32,
   alpha: 32,
+  alphaLinked: true,
   learningRate: 1e-4,
+  lrCustom: false,
   steps: 2000,
   optimizer: "adamw8bit",
   useRawYaml: false,
   rawYaml: "",
 };
 
-type Phase = "form" | "starting" | "tracking";
+type Phase = "form" | "curation" | "starting" | "tracking";
 
 const fieldCls =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-neon-violet/50";
@@ -132,12 +207,14 @@ function ImageDropzone({
         } ${disabled ? "pointer-events-none opacity-50" : ""}`}
       >
         <ImagePlus size={26} className="text-neon-violet" />
-        <p className="text-sm font-medium text-foreground">画像をドラッグ＆ドロップ / クリックで選択</p>
-        <p className="text-[11px] text-muted">PNG・JPG・WEBP、複数可（推奨 15〜40 枚）</p>
+        <p className="text-sm font-medium text-foreground">画像 / ZIP をドラッグ＆ドロップ / クリックで選択</p>
+        <p className="text-[11px] text-muted">
+          PNG・JPG・WEBP、複数可（推奨 15〜40 枚）。画像＋同名 .txt を含む ZIP も取り込めます。
+        </p>
         <input
           ref={inputRef}
           type="file"
-          accept="image/png,image/jpeg,image/webp"
+          accept="image/png,image/jpeg,image/webp,.zip,application/zip,application/x-zip-compressed"
           multiple
           className="hidden"
           onChange={(e) => {
@@ -189,34 +266,228 @@ function ImageDropzone({
 
 // ---------------------------------------------------------------------------
 
+// Spoiler-free live load indicator — deliberately no total, no %, no GPU
+// model. Just how much weight is currently resident.
+function VramBadge({ gb }: { gb: number | null | undefined }) {
+  if (gb == null) return null;
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-neon-violet/40 bg-neon-violet/10 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-neon-violet">
+      <Activity size={11} />
+      Active VRAM: {gb} GB
+    </span>
+  );
+}
+
+function formatMb(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// Rough "残り時間" for the training progress panel.
+function formatEta(seconds: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "—";
+  const s = Math.round(seconds);
+  if (s < 60) return `${s}秒`;
+  if (s < 3600) return `${Math.floor(s / 60)}分${String(s % 60).padStart(2, "0")}秒`;
+  return `${Math.floor(s / 3600)}時間${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}分`;
+}
+
+// Shown inside the failed / cancelled error panels. Scans the Volume for
+// whatever the run left behind (intermediate weights that survived the
+// SIGKILL + the persisted captions) and offers them for download through
+// the same signed-URL path a completed job uses.
+function SalvageSection({ jobId }: { jobId: string }) {
+  const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [result, setResult] = useState<LoraSalvageResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busyFile, setBusyFile] = useState<string | null>(null);
+
+  const runSalvage = async () => {
+    setState("loading");
+    setError(null);
+    try {
+      setResult(await salvageLoraJob(jobId));
+      setState("done");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "救出に失敗しました。");
+      setState("error");
+    }
+  };
+
+  const withBusy = async (filename: string, fn: () => Promise<void>) => {
+    setBusyFile(filename);
+    setError(null);
+    try {
+      await fn();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "処理に失敗しました。");
+    } finally {
+      setBusyFile(null);
+    }
+  };
+
+  const ckpts = result?.checkpoints ?? [];
+  const weights = ckpts.filter((c) => !c.isCaptionArchive).sort((a, b) => a.step - b.step);
+  const captionArchive = ckpts.find((c) => c.isCaptionArchive) ?? null;
+  const ordered = [...weights, ...(captionArchive ? [captionArchive] : [])];
+
+  return (
+    <div className="mt-3 border-t border-border/40 pt-3">
+      {state !== "done" && (
+        <>
+          <button
+            type="button"
+            onClick={runSalvage}
+            disabled={state === "loading"}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {state === "loading" ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Download size={13} />
+            )}
+            💾 救出された中間データ・キャプションをダウンロード (Salvage)
+          </button>
+          {state === "loading" && (
+            <p className="mt-1.5 text-[10px] text-muted">
+              クラウドストレージを走査しています… 最大1分ほどかかります。
+            </p>
+          )}
+          {state === "error" && error && (
+            <p className="mt-1.5 text-[10px] text-red-400">{error}</p>
+          )}
+        </>
+      )}
+
+      {state === "done" &&
+        (ordered.length === 0 ? (
+          <p className="text-[11px] leading-relaxed text-muted">
+            復旧できる中間データは見つかりませんでした（学習が初期段階で停止した可能性があります）。
+          </p>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-[11px] font-medium text-foreground">
+              {[
+                weights.length > 0 ? `中間チェックポイント ${weights.length} 件` : "",
+                captionArchive
+                  ? `データセット（画像 ${result?.imageFiles ?? 0} 枚 ＋ キャプション ${result?.captionFiles ?? 0} 件）`
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" ＋ ")}
+              を復旧しました
+            </p>
+            <div className="flex flex-col gap-1.5">
+              {ordered.map((c) => (
+                <div
+                  key={c.filename}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-background/40 px-3 py-1.5 text-xs"
+                >
+                  <span className="flex items-center gap-2 font-mono text-[11px] text-muted">
+                    <span className="text-foreground">
+                      {c.isCaptionArchive
+                        ? "データセット (画像＋キャプション ZIP)"
+                        : c.step > 0
+                          ? `Step ${c.step}`
+                          : "チェックポイント"}
+                    </span>
+                    <span className="opacity-60">{formatMb(c.sizeBytes)}</span>
+                  </span>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        withBusy(c.filename, () => downloadLoraCheckpoint(jobId, c.filename))
+                      }
+                      disabled={busyFile !== null}
+                      className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {busyFile === c.filename ? (
+                        <Loader2 size={11} className="animate-spin" />
+                      ) : (
+                        <Download size={11} />
+                      )}
+                      ⬇️ ダウンロード
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        withBusy(c.filename, async () => {
+                          const url = await getLoraCheckpointDownloadUrl(jobId, c.filename);
+                          await navigator.clipboard.writeText(url);
+                        })
+                      }
+                      disabled={busyFile !== null}
+                      className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {busyFile === c.filename ? (
+                        <Loader2 size={11} className="animate-spin" />
+                      ) : (
+                        <ClipboardCopy size={11} />
+                      )}
+                      📋 URLコピー
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="text-[10px] text-muted opacity-70">
+              直通リンクは約15分間有効です（Model Downloader 等での取り込み用）。
+            </p>
+            {error && <p className="text-[10px] text-red-400">{error}</p>}
+          </div>
+        ))}
+    </div>
+  );
+}
+
 function ProgressPanel({
   job,
-  rerouting,
-  attempt,
+  queuedElapsedSec,
   onUseLora,
 }: {
   job: LoraJobStatus | null;
-  // true while the client is auto-cancelling + re-routing a stuck job
-  rerouting?: boolean;
-  attempt?: number;
+  // seconds since this job entered 'queued' — drives the cold-start
+  // provisioning copy below (0-15s / 15s+), and stays 0 once the job
+  // leaves 'queued'.
+  queuedElapsedSec?: number;
   onUseLora?: (loraFilename: string) => void;
 }) {
+  const [downloadingCkpt, setDownloadingCkpt] = useState<string | null>(null);
+  const [copyingCkpt, setCopyingCkpt] = useState<string | null>(null);
+  const [ckptError, setCkptError] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<ToastData[]>([]);
+
+  const pushToast = (message: string) =>
+    setToasts((prev) => [...prev, { id: Date.now() + Math.random(), message }]);
+  const dismissToast = (id: number) => setToasts((prev) => prev.filter((t) => t.id !== id));
+
   if (!job) return null;
 
-  if (rerouting || (job.status === "queued" && (job.retryCount ?? 0) > 0)) {
-    const n = attempt ?? Math.min(MAX_PENDING_RETRIES, (job.retryCount ?? 0) + 1);
-    return (
-      <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
-        <div className="flex items-center gap-2 text-sm font-semibold text-amber-400">
-          <Loader2 size={15} className="animate-spin" />
-          クラウドノード待機タイムアウトを検知。別ノードへ即時再接続中… (試行 {n}/{MAX_PENDING_RETRIES})
-        </div>
-        <div className="mt-2 h-2 overflow-hidden rounded-full bg-background/70">
-          <div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-neon-pink to-amber-400" />
-        </div>
-      </div>
-    );
-  }
+  const handleCkptDownload = async (filename: string) => {
+    setDownloadingCkpt(filename);
+    setCkptError(null);
+    try {
+      await downloadLoraCheckpoint(job.jobId, filename);
+    } catch (err) {
+      setCkptError(err instanceof Error ? err.message : "ダウンロードに失敗しました。");
+    } finally {
+      setDownloadingCkpt(null);
+    }
+  };
+
+  const handleCkptCopyUrl = async (filename: string) => {
+    setCopyingCkpt(filename);
+    setCkptError(null);
+    try {
+      const url = await getLoraCheckpointDownloadUrl(job.jobId, filename);
+      await navigator.clipboard.writeText(url);
+      pushToast("Model Downloader用 URLをコピーしました");
+    } catch (err) {
+      setCkptError(err instanceof Error ? err.message : "URLのコピーに失敗しました。");
+    } finally {
+      setCopyingCkpt(null);
+    }
+  };
 
   if (job.status === "failed_timeout") {
     return (
@@ -232,35 +503,71 @@ function ProgressPanel({
     );
   }
 
-  if (job.status === "queued" || job.status === "cancelled") {
+  if (job.status === "cancelled") {
+    return (
+      <div className="rounded-xl border border-border bg-background/60 p-4">
+        <div className="flex items-center gap-2 text-sm font-semibold text-muted">
+          <AlertTriangle size={15} />
+          この学習ジョブは中止されました
+        </div>
+        <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
+          {job.errorMessage || "消費したクレジットは返金されています。"}
+        </p>
+        <SalvageSection jobId={job.jobId} />
+      </div>
+    );
+  }
+
+  if (job.status === "queued") {
+    const provisioningMessage =
+      (queuedElapsedSec ?? 0) < 15
+        ? "専用ハイエンドGPUノードをプロビジョニング中…"
+        : "コンテナ初期化 & モデル環境ロード中…";
     return (
       <div className="flex flex-col items-center gap-1">
         <QueueStatusPanel phase="queued" queue={job.queue} />
-        <span className="font-mono text-[10px] text-muted">
-          status: {job.status}
-          {job.retryCount ? ` ・ retry ${job.retryCount}` : ""}
-        </span>
+        <span className="text-[11px] text-neon-violet/80">{provisioningMessage}</span>
+        <span className="font-mono text-[10px] text-muted">status: {job.status}</span>
       </div>
     );
   }
 
   if (job.status === "processing") {
     const pct = job.progressPercent ?? null;
+    const hasSteps = job.currentStep != null && job.totalSteps != null && job.totalSteps > 0;
+
+    // Live training telemetry line — Step X / Y ・ 残り約 … ・ Loss …
+    const telemetry = hasSteps ? (
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-muted">
+        <span className="text-foreground">
+          Step {job.currentStep!.toLocaleString()} / {job.totalSteps!.toLocaleString()}
+        </span>
+        {job.etaSeconds != null && <span>残り 約 {formatEta(job.etaSeconds)}</span>}
+        {job.loss != null && <span>Loss: {job.loss.toFixed(4)}</span>}
+      </div>
+    ) : null;
+
     if (pct == null) {
       return (
         <div className="flex flex-col items-center gap-1">
           <QueueStatusPanel phase="processing" queue={job.queue} />
-          <span className="font-mono text-[10px] text-muted">
-            status: processing{job.progressMessage ? ` ・ ${job.progressMessage}` : ""}
-          </span>
+          <VramBadge gb={job.vramUsedGb} />
+          {telemetry ?? (
+            <span className="font-mono text-[10px] text-muted">
+              status: processing{job.progressMessage ? ` ・ ${job.progressMessage}` : ""}
+            </span>
+          )}
         </div>
       );
     }
     return (
       <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5 p-4">
-        <div className="flex items-center gap-2 text-sm font-semibold text-neon-violet">
-          <Loader2 size={15} className="animate-spin" />
-          深度最適化学習中… {pct}%
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-sm font-semibold text-neon-violet">
+            <Loader2 size={15} className="animate-spin" />
+            深度最適化学習中… {pct}%
+          </div>
+          <VramBadge gb={job.vramUsedGb} />
         </div>
         <div className="mt-2 h-2 overflow-hidden rounded-full bg-background/70">
           <div
@@ -268,13 +575,19 @@ function ProgressPanel({
             style={{ width: `${Math.min(100, Math.max(2, pct))}%` }}
           />
         </div>
-        <p className="mt-2 text-[11px] text-muted">{job.progressMessage ?? "処理中…"}</p>
+        {telemetry}
+        {!hasSteps && <p className="mt-2 text-[11px] text-muted">{job.progressMessage ?? "処理中…"}</p>}
       </div>
     );
   }
 
   if (job.status === "completed") {
     const filename = job.resultPath ? job.resultPath.split("/").pop() ?? "" : "";
+    const allCheckpoints = job.checkpoints ?? [];
+    const captionArchive = allCheckpoints.find((c) => c.isCaptionArchive) ?? null;
+    const checkpoints = allCheckpoints
+      .filter((c) => !c.isCaptionArchive)
+      .sort((a, b) => a.step - b.step);
     return (
       <div className="rounded-xl border border-green-500/30 bg-green-500/10 p-4">
         <div className="flex items-center gap-2 text-sm font-semibold text-green-400">
@@ -306,12 +619,91 @@ function ProgressPanel({
               🎬 動画生成でこの LoRA を使う
             </button>
           )}
+          {captionArchive && (
+            <button
+              type="button"
+              onClick={() => handleCkptDownload(captionArchive.filename)}
+              disabled={downloadingCkpt !== null || copyingCkpt !== null}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {downloadingCkpt === captionArchive.filename ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <Download size={13} />
+              )}
+              📝 生成キャプション一括DL (ZIP)
+            </button>
+          )}
         </div>
+        {ckptError && !checkpoints.length && (
+          <p className="mt-1.5 text-[10px] text-red-400">{ckptError}</p>
+        )}
+
+        {checkpoints.length > 0 && (
+          <div className="mt-4 border-t border-green-500/20 pt-3">
+            <p className="mb-1.5 text-[11px] font-medium text-foreground">
+              中間チェックポイント（過学習を避けて最適なステップを選択）
+            </p>
+            <div className="flex flex-col gap-1.5">
+              {checkpoints.map((c) => (
+                <div
+                  key={c.filename}
+                  className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-1.5 text-xs ${
+                    c.isFinal ? "border-neon-pink/40 bg-neon-pink/5" : "border-border bg-background/40"
+                  }`}
+                >
+                  <span className="flex items-center gap-2 font-mono text-[11px] text-muted">
+                    <span className={c.isFinal ? "font-semibold text-neon-pink" : "text-foreground"}>
+                      {c.isFinal ? "最終版" : `Step ${c.step}`}
+                    </span>
+                    <span className="opacity-60">{formatMb(c.sizeBytes)}</span>
+                  </span>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleCkptDownload(c.filename)}
+                      disabled={downloadingCkpt !== null || copyingCkpt !== null}
+                      className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {downloadingCkpt === c.filename ? (
+                        <Loader2 size={11} className="animate-spin" />
+                      ) : (
+                        <Download size={11} />
+                      )}
+                      ⬇️ ダウンロード
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleCkptCopyUrl(c.filename)}
+                      disabled={downloadingCkpt !== null || copyingCkpt !== null}
+                      className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {copyingCkpt === c.filename ? (
+                        <Loader2 size={11} className="animate-spin" />
+                      ) : (
+                        <ClipboardCopy size={11} />
+                      )}
+                      📋 URLコピー
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[10px] text-muted opacity-70">
+              「URLコピー」の直通リンクは約15分間有効です（Model Downloader 等での取り込み用）。
+            </p>
+            {ckptError && <p className="mt-1.5 text-[10px] text-red-400">{ckptError}</p>}
+          </div>
+        )}
+
+        <ToastStack toasts={toasts} onDismiss={dismissToast} />
       </div>
     );
   }
 
-  // failed
+  // failed — raw-YAML config errors are NOT refunded (platform-defence policy);
+  // standard GUI-mode faults are.
+  const noRefund = job.customYaml || job.refunded === false;
   return (
     <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4">
       <div className="flex items-center gap-2 text-sm font-semibold text-red-400">
@@ -321,8 +713,11 @@ function ProgressPanel({
       <p className="mt-1.5 text-[11px] leading-relaxed text-red-400/90">
         {job.errorMessage || "不明なエラーが発生しました。"}
         <br />
-        消費したクレジット（{LORA_COST}）は自動的に返金されました。
+        {noRefund
+          ? "生YAML（カスタム設定）モードのため、消費したクレジットは返金されません（設定不備は自己責任）。"
+          : "消費したクレジットは自動的に返金されました。"}
       </p>
+      <SalvageSection jobId={job.jobId} />
     </div>
   );
 }
@@ -345,26 +740,34 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const [triggerWord, setTriggerWord] = useState("");
   const [loraName, setLoraName] = useState("");
   const [pro, setPro] = useState<ProConfig>(DEFAULT_PRO);
+  // Auto-caption VLM instruction — a category preset the user can then edit.
+  const [captionPrompt, setCaptionPrompt] = useState<string>(DEFAULT_CAPTION_PROMPT);
+  const [captionPromptOpen, setCaptionPromptOpen] = useState(false);
 
   const [phase, setPhase] = useState<Phase>("form");
+  // Opt-in visual dataset curation: after upload, review/cull images and
+  // review/edit captions (with JP round-trip translation) before training.
+  const [curationEnabled, setCurationEnabled] = useState(false);
+  const [curationPairs, setCurationPairs] = useState<CurationPair[]>([]);
+  const [zipBusy, setZipBusy] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [job, setJob] = useState<LoraJobStatus | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
-  const [rerouting, setRerouting] = useState<{ attempt: number } | null>(null);
-  // Surfaced diagnostics from the pending-timeout auto-failover so a silent
-  // failure is visible instead of an endless "queued".
-  const [failoverNote, setFailoverNote] = useState<string | null>(null);
-  const recoverFailStreakRef = useRef(0);
+  // Seconds since the current job entered 'queued' — drives the cold-start
+  // provisioning copy in ProgressPanel. Only ever written from the interval
+  // callback below (never synchronously in the effect body).
+  const [queuedElapsedSec, setQueuedElapsedSec] = useState(0);
 
   const pollCancelledRef = useRef(false);
   const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // The job id currently being polled (mutable so a re-route can switch the
-  // poll target without restarting the loop), when it entered 'queued', and
-  // a guard against firing the recovery twice.
+  // The job id currently being polled and when it entered 'queued'.
   const activeJobIdRef = useRef<string>("");
   const queuedSinceRef = useRef<number>(0);
-  const recoveringRef = useRef(false);
+  // Caches a successful dataset upload against a fingerprint of the exact
+  // image set. Re-running with the same images (only params / YAML changed)
+  // reuses these Storage paths and skips the whole upload — 0s, no re-cost.
+  const uploadedDatasetRef = useRef<{ signature: string; paths: string[] } | null>(null);
   useEffect(
     () => () => {
       pollCancelledRef.current = true;
@@ -375,17 +778,83 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     [],
   );
 
-  const addImages = useCallback((incoming: FileList | File[]) => {
-    const list = Array.from(incoming).filter((f) => /^image\/(png|jpe?g|webp)$/.test(f.type));
-    setImages((prev) => {
-      const next = [...prev];
-      for (const file of list) {
-        if (next.length >= MAX_IMAGES) break;
-        next.push({ id: `${file.name}-${file.size}-${crypto.randomUUID()}`, file, url: URL.createObjectURL(file) });
-      }
-      return next;
-    });
+  // Ticks the queued-provisioning copy once a second while a job sits in
+  // 'queued'. ProgressPanel only reads queuedElapsedSec in its 'queued'
+  // branch, so a stale value after the job moves on is never shown.
+  useEffect(() => {
+    if (job?.status !== "queued") return;
+    const iv = setInterval(() => {
+      setQueuedElapsedSec(
+        queuedSinceRef.current > 0 ? Math.floor((Date.now() - queuedSinceRef.current) / 1000) : 0,
+      );
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [job?.status]);
+
+  // Mirrors `images` for synchronous MAX_IMAGES accounting inside the add
+  // helpers (which can't read the just-set state).
+  const imagesRef = useRef<DatasetImage[]>([]);
+  useEffect(() => {
+    imagesRef.current = images;
+  }, [images]);
+
+  const addDatasetFiles = useCallback((entries: { file: File; caption?: string }[]) => {
+    // Deterministic, filename-derived id (no random UUID) so it's a stable
+    // React key across every re-render / curation round-trip; a numeric
+    // suffix disambiguates genuinely identical files.
+    const used = new Set(imagesRef.current.map((i) => i.id));
+    let room = MAX_IMAGES - imagesRef.current.length;
+    const newImgs: DatasetImage[] = [];
+    const newCaps: Record<string, string> = {};
+    for (const { file, caption } of entries) {
+      if (room <= 0) break;
+      room--;
+      const base = `${file.name}::${file.size}::${file.lastModified}`;
+      let id = base;
+      for (let n = 2; used.has(id); n++) id = `${base}::${n}`;
+      used.add(id);
+      newImgs.push({ id, file, url: URL.createObjectURL(file) });
+      if ((caption ?? "").trim()) newCaps[id] = caption!.trim();
+    }
+    if (newImgs.length) setImages((prev) => [...prev, ...newImgs]);
+    if (Object.keys(newCaps).length) setCaptions((prev) => ({ ...prev, ...newCaps }));
   }, []);
+
+  const importZip = useCallback(
+    async (zip: File) => {
+      setZipBusy(true);
+      setErrorMessage(null);
+      try {
+        const entries = await parseDatasetZip(zip, { maxImages: MAX_IMAGES });
+        if (!entries.length) {
+          setErrorMessage(`ZIP に画像が見つかりませんでした（${zip.name}）。`);
+          return;
+        }
+        addDatasetFiles(entries.map((e) => ({ file: e.file, caption: e.caption })));
+        // The ZIP carried captions — switch out of fully-auto so the caption
+        // editors are visible even without curation.
+        if (entries.some((e) => e.caption.trim())) setMode((m) => (m === "auto" ? "semi" : m));
+      } catch (err) {
+        setErrorMessage(
+          `ZIP の展開に失敗しました: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      } finally {
+        setZipBusy(false);
+      }
+    },
+    [addDatasetFiles],
+  );
+
+  const addImages = useCallback(
+    (incoming: FileList | File[]) => {
+      const arr = Array.from(incoming);
+      const imgs = arr.filter((f) => /^image\/(png|jpe?g|webp)$/.test(f.type));
+      const zips = arr.filter((f) => isZipFile(f));
+      if (imgs.length) addDatasetFiles(imgs.map((file) => ({ file })));
+      zips.forEach((z) => void importZip(z));
+    },
+    [addDatasetFiles, importZip],
+  );
 
   const removeImage = useCallback((id: string) => {
     setImages((prev) => {
@@ -401,10 +870,34 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   }, []);
 
   const totalBytes = useMemo(() => images.reduce((s, i) => s + i.file.size, 0), [images]);
-  const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < LORA_COST;
 
   const nameValid = LORA_NAME_RE.test(loraName.trim());
   const yamlMode = mode === "pro" && pro.useRawYaml;
+  // Live YAML syntax check for the raw-YAML editor — drives the badge below
+  // the textarea and gates the submit button. Only meaningful in yamlMode.
+  const yamlCheck = useMemo(
+    () => (yamlMode ? validateLoraYaml(pro.rawYaml) : null),
+    [yamlMode, pro.rawYaml],
+  );
+  // In raw-YAML mode the YAML's config.name / process[0].trigger_word are
+  // authoritative — the form's LoRA-name / trigger fields are disabled and
+  // just mirror these values.
+  const yamlIdentity = useMemo(
+    () => (yamlMode && yamlCheck?.ok ? loraYamlIdentity(yamlCheck.data) : null),
+    [yamlMode, yamlCheck],
+  );
+  const effectiveLoraName = yamlMode ? (yamlIdentity?.name ?? "") : loraName.trim();
+  const effectiveTrigger = yamlMode ? (yamlIdentity?.triggerWord ?? "") : triggerWord.trim();
+  const yamlNameValid = !yamlMode || LORA_NAME_RE.test(effectiveLoraName);
+  // Mirrors the worker's _derive_trigger: explicit trigger, else the first
+  // alnum run of the LoRA name. Used to protect the token during translation.
+  const curationTrigger = effectiveTrigger || (effectiveLoraName.match(/[A-Za-z0-9]+/)?.[0] ?? "");
+  // Alpha follows Rank unless the user explicitly unlinks it. Nullish (a
+  // pre-existing `pro` object from before this flag existed, kept across a
+  // dev Fast Refresh) counts as linked so the default is genuinely ON.
+  const alphaLinked = pro.alphaLinked ?? true;
+  // When linked, Alpha is always exactly Rank regardless of what's stored.
+  const effectiveAlpha = alphaLinked ? pro.rank : pro.alpha;
 
   const isCustom = modelChoice === "__custom__";
   const customBlocked = isCustom && isBlockedLoraModel(customModelId);
@@ -412,6 +905,33 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const modelValid = !isCustom || customValid;
 
   const targetModel = isCustom ? "custom" : modelChoice;
+  const pricedArch = isCustom ? baseArchitecture : (loraPresetById(modelChoice)?.arch ?? "");
+
+  // Multi-dimensional dynamic price, live (src/lib/loraPricing.ts):
+  //   ceil(0.1 * modelMult * resMult * batchMult * rankMult * steps)
+  //  - エキスパート(生YAML): price the live-parsed ai-toolkit config; an
+  //    unparseable / step-less YAML shows the worst-case ceiling.
+  //  - エキスパート(スライダー) / オート / セミオート: synthesise the
+  //    equivalent config from the GUI knobs (batch is always 1 in GUI mode).
+  const priceBreakdown = useMemo(() => {
+    if (yamlMode) {
+      if (yamlCheck?.ok) return loraPriceBreakdown(yamlCheck.data, { archFallback: pricedArch });
+      return null; // worst-case shown below
+    }
+    return loraPriceBreakdown(
+      guiLoraPricingConfig({
+        arch: pricedArch,
+        resolution,
+        linearRank: mode === "pro" ? pro.rank : DEFAULT_PRO.rank,
+        steps: mode === "pro" ? pro.steps : DEFAULT_LORA_STEPS,
+      }),
+    );
+  }, [yamlMode, yamlCheck, pricedArch, resolution, mode, pro.rank, pro.steps]);
+  const requiredCredits =
+    priceBreakdown && priceBreakdown.credits > 0
+      ? Math.min(LORA_CREDIT_WORST_CASE, priceBreakdown.credits)
+      : LORA_CREDIT_WORST_CASE;
+  const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < requiredCredits;
 
   // Model dropdown change — also snap the training resolution to the pick's
   // recommended value (FLUX/SDXL → 1024, SD1.5 → 512, else 768).
@@ -429,17 +949,29 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     phase === "form" &&
     images.length >= 1 &&
     totalBytes <= MAX_TOTAL_BYTES &&
-    nameValid &&
+    (yamlMode ? yamlNameValid : nameValid) &&
     modelValid &&
-    (yamlMode ? pro.rawYaml.trim().length > 20 : true);
+    (yamlMode ? pro.rawYaml.trim().length > 20 && yamlCheck?.ok === true : true);
+
+  // Re-fetches the authoritative credits balance from `profiles` and
+  // broadcasts it — used right after a server-side refund (e.g. a normal
+  // training failure) where the client never learns the refunded amount
+  // from the poll response, so it can't just add it to the local balance
+  // the way the pending-timeout failover does.
+  const refreshCredits = useCallback(async () => {
+    if (!user) return;
+    const { data, error } = await supabase.from("profiles").select("credits").eq("id", user.id).single();
+    if (!error && typeof data?.credits === "number") {
+      broadcastCreditsUpdate(user.id, data.credits);
+    }
+  }, [user]);
 
   const startPolling = useCallback(
-    (jobId: string, retryAttempt = 0) => {
+    (jobId: string) => {
       pollCancelledRef.current = false;
-      recoveringRef.current = false;
       activeJobIdRef.current = jobId;
       queuedSinceRef.current = Date.now();
-      console.log(`[lora] startPolling job=${jobId} attempt=${retryAttempt}`);
+      console.log(`[lora] startPolling job=${jobId}`);
 
       const tick = async () => {
         if (pollCancelledRef.current) return;
@@ -456,78 +988,27 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         }
 
         if (next) {
-          if (next.status === "completed" || next.status === "failed" || next.status === "failed_timeout") {
-            setRerouting(null);
+          if (
+            next.status === "completed" ||
+            next.status === "failed" ||
+            next.status === "failed_timeout" ||
+            next.status === "cancelled"
+          ) {
+            // A plain 'failed' (training errored) or 'cancelled' (aborted +
+            // refunded internally) auto-refunds server-side, but this poll
+            // response carries no refunded amount, so re-fetch the balance.
+            if (next.status === "failed" || next.status === "cancelled") void refreshCredits();
+            // 'failed' / 'cancelled' keep the key like 'completed' does — the
+            // error panel carries the Salvage button, which must survive a
+            // page reload. Only 'failed_timeout' (never left the queue, no
+            // GPU, nothing on the Volume) is dropped.
+            if (next.status === "failed_timeout" && typeof window !== "undefined") {
+              localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+            }
             return;
           }
           if (next.status === "processing") {
-            // worker container is up — the pending clock no longer applies
-            setRerouting(null);
             queuedSinceRef.current = 0;
-          }
-          // --- Pending-stuck auto-failover -------------------------------
-          if (
-            next.status === "queued" &&
-            !recoveringRef.current &&
-            queuedSinceRef.current > 0 &&
-            Date.now() - queuedSinceRef.current > PENDING_TIMEOUT_MS
-          ) {
-            recoveringRef.current = true;
-            const attemptNo = Math.min(MAX_PENDING_RETRIES, retryAttempt + 1);
-            setRerouting({ attempt: attemptNo });
-            try {
-              const action = retryAttempt >= MAX_PENDING_RETRIES ? "timeout" : "retry";
-              console.log(`[LoraStudioTab] pending ${Math.round((Date.now() - queuedSinceRef.current) / 1000)}s — recover(${action}) job=${pollingId}`);
-              const r = await recoverLoraJob(pollingId, action);
-              recoverFailStreakRef.current = 0;
-              console.log("[LoraStudioTab] recover ->", r);
-              if (pollCancelledRef.current) return;
-              if (r.status === "failed_timeout") {
-                setRerouting(null);
-                setFailoverNote(
-                  r.modalCancelled === false
-                    ? "自動返金しました（Modal 側キャンセルは未確認）。"
-                    : null,
-                );
-                setJob((j) =>
-                  j
-                    ? { ...j, status: "failed_timeout", errorMessage: "cloud congestion — auto-refunded" }
-                    : j,
-                );
-                if (typeof r.refunded === "number" && r.refunded > 0 && user) {
-                  broadcastCreditsUpdate(user.id, (credits ?? 0) + r.refunded);
-                }
-                return; // stop polling — terminal
-              }
-              if (r.jobId) {
-                // re-routed onto a fresh job — repoint the same loop
-                activeJobIdRef.current = r.jobId;
-                queuedSinceRef.current = Date.now();
-                recoveringRef.current = false;
-                retryAttempt = r.retryCount ?? retryAttempt + 1;
-                setFailoverNote(
-                  r.modalCancelled === false ? "旧ノードのキャンセルは未確認ですが、別ノードで再起動しました。" : null,
-                );
-              } else {
-                // noop (job already moved on) or an unexpected shape —
-                // resume normal polling, retry can fire again if it stalls.
-                recoveringRef.current = false;
-                queuedSinceRef.current = Date.now();
-                setRerouting(null);
-              }
-            } catch (err) {
-              const reason = err instanceof Error ? err.message : String(err);
-              console.error("[LoraStudioTab] recover failed:", reason);
-              recoverFailStreakRef.current += 1;
-              recoveringRef.current = false;
-              queuedSinceRef.current = Date.now(); // back off before retrying recover
-              setRerouting(null);
-              setFailoverNote(
-                recoverFailStreakRef.current >= 2
-                  ? `自動リカバリに失敗しています: ${reason}（下の「中止して返金」で手動返金できます）`
-                  : `自動リカバリを再試行します…（${reason}）`,
-              );
-            }
           }
         }
 
@@ -535,69 +1016,157 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       };
       pollTimeoutRef.current = setTimeout(tick, JOB_POLL_INTERVAL_MS);
     },
-    [user, credits],
+    [refreshCredits],
   );
 
-  const handleStart = async () => {
-    if (!user) {
-      setLoginOpen(true);
-      return;
-    }
-    if (insufficientCredits) {
-      if (typeof window !== "undefined") window.location.hash = "pricing";
-      return;
-    }
-    if (!canSubmit) return;
+  // Restores an in-flight or just-finished job after the page re-mounts —
+  // the job survives server-side (generation_jobs) regardless; only this
+  // component's phase/job state was lost. If the saved job has since become
+  // unreachable (deleted, belongs to a different account) this just clears
+  // the stale key instead of getting stuck.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
+      let targetId =
+        typeof window !== "undefined" ? localStorage.getItem(ACTIVE_JOB_STORAGE_KEY) : null;
+      let fromRecent = false;
 
+      // No localStorage pointer — fall back to the user's most recent LoRA
+      // job so a reload after the key was cleared can still reach the Salvage
+      // panel (failed/cancelled) or re-attach to a still-running job.
+      if (!targetId) {
+        try {
+          const recent = await fetchRecentLoraJob();
+          if (cancelled) return;
+          if (recent) {
+            const inFlight = recent.status === "queued" || recent.status === "processing";
+            const terminal = ["failed", "cancelled", "completed"].includes(recent.status);
+            const ref = recent.updatedAt || recent.createdAt;
+            const ageMs = ref ? Date.now() - new Date(ref).getTime() : Infinity;
+            // Live jobs: always re-attach. Terminal jobs: only if recent
+            // (<12h) so an old run doesn't greet every visit.
+            if (inFlight || (terminal && ageMs < 12 * 60 * 60 * 1000)) {
+              targetId = recent.jobId;
+              fromRecent = true;
+            }
+          }
+        } catch {
+          /* recent lookup is best-effort */
+        }
+      }
+      if (!targetId || cancelled) return;
+
+      const persist = () => {
+        if (typeof window !== "undefined") localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, targetId!);
+      };
+      try {
+        const restored = await pollLoraJob(targetId);
+        if (cancelled) return;
+        if (restored.status === "queued" || restored.status === "processing") {
+          persist();
+          setJob(restored);
+          setPhase("tracking");
+          startPolling(targetId);
+        } else if (
+          restored.status === "completed" ||
+          restored.status === "failed" ||
+          restored.status === "cancelled"
+        ) {
+          // Keep it around — the download / Salvage buttons in the completed
+          // and failed/cancelled panels are the reason this restore exists.
+          persist();
+          setJob(restored);
+          setPhase("tracking");
+        } else if (!fromRecent && typeof window !== "undefined") {
+          // failed_timeout (never left the queue — nothing to salvage) or an
+          // unreachable job. Drop the stale key.
+          localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+        }
+      } catch {
+        if (!cancelled && !fromRecent && typeof window !== "undefined") {
+          localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  // Uploads `imgs` to Storage and starts the training job. `ownCaptions`, when
+  // given and non-empty, is a caption list aligned to `imgs` that the user
+  // authored (semi mode edits, a ZIP's .txt files, or curation) — sent as
+  // custom_captions + skip_captioning so the worker never loads the 27B VLM.
+  const runTraining = async (imgs: DatasetImage[], ownCaptions: string[] | null) => {
+    if (!user) return;
     setPhase("starting");
     setErrorMessage(null);
     setJob(null);
-    setUploadProgress({ done: 0, total: images.length });
+    setUploadProgress({ done: 0, total: imgs.length });
 
     // Phase 1 — upload every image to Storage first. If even one fails we
     // abort here and NEVER call /api/studio/lora/train (calling it with a
     // partial / empty dataset is what produced the mystery 500s).
+    //
+    // Skip entirely when the exact same image set was already uploaded this
+    // session — re-tuning params / YAML and hitting start again reuses the
+    // existing Storage objects (they aren't deleted between runs).
+    const datasetSignature =
+      `${imgs.length}::` +
+      imgs.map((i) => `${i.file.name}:${i.file.size}:${i.file.lastModified}`).join("|");
+
     let paths: string[];
-    try {
-      const uploaded = await uploadLoraDataset(user.id, images.map((i) => i.file), (done, total) =>
-        setUploadProgress({ done, total }),
-      );
-      paths = uploaded.paths;
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      console.error("[LoraStudioTab] dataset upload failed:", err);
-      setErrorMessage(`画像のアップロードに失敗しました: ${detail}`);
-      setPhase("form");
-      setUploadProgress(null);
-      return;
-    }
-    if (paths.length !== images.length) {
-      setErrorMessage(
-        `画像のアップロードに失敗しました: ${images.length} 枚中 ${paths.length} 枚しか完了しませんでした。もう一度お試しください。`,
-      );
-      setPhase("form");
-      setUploadProgress(null);
-      return;
+    const cached = uploadedDatasetRef.current;
+    if (cached && cached.signature === datasetSignature && cached.paths.length === imgs.length) {
+      paths = cached.paths;
+      setUploadProgress({ done: imgs.length, total: imgs.length });
+      console.log(`[lora] reusing ${paths.length} already-uploaded images — upload skipped (0s)`);
+    } else {
+      try {
+        const uploaded = await uploadLoraDataset(user.id, imgs.map((i) => i.file), (done, total) =>
+          setUploadProgress({ done, total }),
+        );
+        paths = uploaded.paths;
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        console.error("[LoraStudioTab] dataset upload failed:", err);
+        setErrorMessage(`画像のアップロードに失敗しました: ${detail}`);
+        setPhase("form");
+        setUploadProgress(null);
+        return;
+      }
+      if (paths.length !== imgs.length) {
+        setErrorMessage(
+          `画像のアップロードに失敗しました: ${imgs.length} 枚中 ${paths.length} 枚しか完了しませんでした。もう一度お試しください。`,
+        );
+        setPhase("form");
+        setUploadProgress(null);
+        return;
+      }
+      // Only cache a fully-successful upload.
+      uploadedDatasetRef.current = { signature: datasetSignature, paths };
     }
 
     // Phase 2 — start the training job with only the storage paths.
     try {
-      const captionList =
-        mode === "semi" ? images.map((img) => (captions[img.id] ?? "").trim()) : [];
+      const captionList = (ownCaptions ?? []).map((c) => (c ?? "").trim());
+      const hasOwnCaptions = captionList.some((c) => c.length > 0);
 
       const trainingConfig = yamlMode
         ? { custom_yaml_override: pro.rawYaml }
         : mode === "pro"
           ? {
               rank: pro.rank,
-              alpha: pro.alpha,
+              alpha: effectiveAlpha,
               learning_rate: pro.learningRate,
               steps: pro.steps,
               optimizer: pro.optimizer,
             }
           : {};
 
-      setUploadProgress({ done: images.length, total: images.length });
+      setUploadProgress({ done: imgs.length, total: imgs.length });
       console.log(`[lora] dataset uploaded (${paths.length} files) — calling /api/studio/lora/train`);
       const startRes = await startLoraTraining({
         storagePaths: paths,
@@ -607,8 +1176,13 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         baseArchitecture: isCustom ? baseArchitecture : undefined,
         trainingConfig,
         resolution,
-        outputLoraName: loraName.trim(),
-        triggerWord: triggerWord.trim(),
+        // Raw-YAML mode: send the YAML's own name / trigger (the form fields
+        // are disabled). The server re-derives these from the YAML too.
+        outputLoraName: effectiveLoraName,
+        triggerWord: effectiveTrigger,
+        customCaptions: hasOwnCaptions ? captionList : undefined,
+        skipCaptioning: hasOwnCaptions || undefined,
+        captionPrompt: captionPrompt.trim() || undefined,
       });
       const { jobId, remainingCredits } = startRes;
       console.log("[lora] train ->", startRes);
@@ -621,13 +1195,19 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         progressPercent: 0,
         progressMessage: "queued",
         retryCount: 0,
+        vramUsedGb: null,
+        currentStep: null,
+        totalSteps: null,
+        etaSeconds: null,
+        loss: null,
+        checkpoints: [],
+        refunded: null,
+        customYaml: yamlMode,
         queue: null,
       });
-      setRerouting(null);
-      setFailoverNote(null);
-      recoverFailStreakRef.current = 0;
       setPhase("tracking");
-      startPolling(jobId, 0);
+      if (typeof window !== "undefined") localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, jobId);
+      startPolling(jobId);
     } catch (err) {
       const e = err as LoraApiError;
       setErrorMessage(e.message || "LoRA学習の開始に失敗しました。");
@@ -637,39 +1217,96 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     }
   };
 
+  // Caption list the non-curation path sends: the semi-mode textareas, or
+  // whatever a ZIP populated into `captions`. null for fully-auto with no
+  // captions at all (the worker then auto-tags everything).
+  const semiCaptionList = (): string[] | null => {
+    if (mode !== "semi") return null;
+    const list = images.map((img) => (captions[img.id] ?? "").trim());
+    return list.some((c) => c.length > 0) ? list : null;
+  };
+
+  const handleStart = async () => {
+    if (!user) {
+      setLoginOpen(true);
+      return;
+    }
+    if (insufficientCredits) {
+      if (typeof window !== "undefined") window.location.hash = "pricing";
+      return;
+    }
+    if (!canSubmit) return;
+
+    if (curationEnabled) {
+      // Insert the visual curation step before any upload / debit.
+      setCurationPairs(
+        images.map((img) => ({
+          id: img.id,
+          file: img.file,
+          url: img.url,
+          name: img.file.name,
+          caption: captions[img.id] ?? "",
+          captionJa: "",
+          excluded: false,
+        })),
+      );
+      setErrorMessage(null);
+      setPhase("curation");
+      return;
+    }
+
+    await runTraining(images, semiCaptionList());
+  };
+
+  // From the curation screen — drop excluded pairs, sync the visible dataset
+  // to what's kept, and train on the rest.
+  const confirmCuration = async () => {
+    const kept = curationPairs.filter((p) => !p.excluded);
+    if (!kept.length) return;
+    const keptIds = new Set(kept.map((p) => p.id));
+    images.forEach((i) => {
+      if (!keptIds.has(i.id)) URL.revokeObjectURL(i.url);
+    });
+    const keptImages: DatasetImage[] = kept.map((p) => ({ id: p.id, file: p.file, url: p.url }));
+    setImages(keptImages);
+    setCaptions(Object.fromEntries(kept.map((p) => [p.id, p.caption])));
+    const caps = kept.map((p) => p.caption.trim());
+    await runTraining(keptImages, caps.some((c) => c.length > 0) ? caps : null);
+  };
+
   const resetForm = () => {
     pollCancelledRef.current = true;
     if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
-    recoveringRef.current = false;
-    recoverFailStreakRef.current = 0;
     setPhase("form");
     setJob(null);
     setErrorMessage(null);
     setUploadProgress(null);
-    setRerouting(null);
-    setFailoverNote(null);
-  };
-
-  // Manual escape hatch when auto-recovery keeps failing — cancels + refunds.
-  const abortAndRefund = async () => {
-    const id = activeJobIdRef.current || job?.jobId;
-    if (!id) return;
-    pollCancelledRef.current = true;
-    if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
-    setFailoverNote("中止して返金処理中…");
-    try {
-      const r = await recoverLoraJob(id, "timeout");
-      setJob((j) => (j ? { ...j, status: "failed_timeout", errorMessage: "cloud congestion — auto-refunded" } : j));
-      if (typeof r.refunded === "number" && r.refunded > 0 && user) {
-        broadcastCreditsUpdate(user.id, (credits ?? 0) + r.refunded);
-      }
-      setFailoverNote(null);
-    } catch (err) {
-      setFailoverNote(`返金処理に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    if (typeof window !== "undefined") localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
   };
 
   const busy = phase !== "form";
+
+  if (phase === "curation") {
+    return (
+      <div data-source-file="src/components/studio/LoraStudioTab.tsx" className="space-y-6">
+        <DatasetCurationUI
+          pairs={curationPairs}
+          onChange={setCurationPairs}
+          onConfirm={confirmCuration}
+          onCancel={() => setPhase("form")}
+          requiredCredits={requiredCredits}
+          triggerWord={curationTrigger}
+          maxImages={MAX_IMAGES}
+          maxTotalBytes={MAX_TOTAL_BYTES}
+        />
+        <LoginModal
+          open={loginOpen}
+          onClose={() => setLoginOpen(false)}
+          message="LoRA Studio でキャラクター学習を行うにはログインしてください。"
+        />
+      </div>
+    );
+  }
 
   return (
     <div data-source-file="src/components/studio/LoraStudioTab.tsx" className="space-y-6">
@@ -693,7 +1330,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         ))}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
+      <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr] lg:items-start">
         {/* Left column — dataset + captions */}
         <div className="space-y-4 rounded-2xl border-gradient bg-surface/40 p-5">
           <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
@@ -702,10 +1339,45 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           </h3>
           <ImageDropzone images={images} onAdd={addImages} onRemove={removeImage} disabled={busy} />
 
+          {zipBusy && (
+            <p className="flex items-center gap-1.5 text-[11px] text-neon-violet">
+              <Loader2 size={12} className="animate-spin" />
+              ZIP を展開しています…
+            </p>
+          )}
+          {totalBytes > MAX_TOTAL_BYTES && (
+            <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-400">
+              画像の合計サイズが上限（{(MAX_TOTAL_BYTES / 1024 / 1024).toFixed(0)} MB）を超えています。枚数を減らすか縮小してください。
+            </p>
+          )}
+
+          <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-background/40 px-3 py-2">
+            <input
+              type="checkbox"
+              checked={curationEnabled}
+              onChange={(e) => setCurationEnabled(e.target.checked)}
+              disabled={busy}
+              className="mt-0.5 accent-neon-pink"
+            />
+            <span className="text-[11px] leading-relaxed text-muted">
+              <span className="font-medium text-foreground">アップロード後にキュレーション画面で確認・編集する</span>
+              <br />
+              画像をブラウザ上でプレビューして不要なものを間引き、キャプションを日本語で確認・修正（Gemini 翻訳）してから学習を開始します。
+            </span>
+          </label>
+
           {mode === "semi" && images.length > 0 && (
             <div className="space-y-2">
               <p className="text-[11px] text-muted">
-                各画像のキャプションを微調整できます。<span className="text-neon-violet">空欄の画像は自動でタグ付け</span>されます（構図タグと部位タグは分離されます）。
+                {Object.values(captions).some((c) => c.trim().length > 0) ? (
+                  <>
+                    自前キャプション扱いで学習します。<span className="text-neon-violet">自動タグ付け（Qwen-27B）は実行されません</span>（空欄の画像はトリガーワードのみ）。
+                  </>
+                ) : (
+                  <>
+                    各画像のキャプションを微調整できます。すべて空欄のままなら<span className="text-neon-violet">全画像を自動でタグ付け</span>します（構図タグと部位タグは分離されます）。
+                  </>
+                )}
               </p>
               <div className="grid max-h-80 gap-2 overflow-y-auto pr-1">
                 {images.map((img) => (
@@ -737,26 +1409,55 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           <div>
             <label className="mb-1 block text-[11px] font-medium text-muted">LoRA 名</label>
             <input
-              value={loraName}
+              value={yamlMode ? (yamlIdentity?.name ?? "") : loraName}
               onChange={(e) => setLoraName(e.target.value)}
-              placeholder="yukipas_h3"
-              disabled={busy}
-              className={`${fieldCls} font-mono ${loraName && !nameValid ? "border-red-500/50" : ""}`}
+              placeholder={yamlMode ? "生YAML の config.name" : "yukipas_h3"}
+              disabled={busy || yamlMode}
+              className={`${fieldCls} font-mono ${
+                yamlMode
+                  ? "opacity-60"
+                  : loraName && !nameValid
+                    ? "border-red-500/50"
+                    : ""
+              }`}
             />
-            {loraName && !nameValid && (
-              <p className="mt-1 text-[10px] text-red-400">英数字・ハイフン・アンダースコア・ドットのみ（64文字以内）</p>
+            {yamlMode ? (
+              <p className="mt-1 text-[10px] text-muted">
+                生YAML モードでは YAML内の <code className="text-neon-violet">config.name</code> が LoRA 名になります。
+                {!yamlNameValid && (
+                  <span className="text-red-400">
+                    {" "}
+                    YAML に有効な <code>config.name</code> を記述してください。
+                  </span>
+                )}
+              </p>
+            ) : (
+              loraName &&
+              !nameValid && (
+                <p className="mt-1 text-[10px] text-red-400">
+                  英数字・ハイフン・アンダースコア・ドットのみ（64文字以内）
+                </p>
+              )
             )}
           </div>
 
           <div>
             <label className="mb-1 block text-[11px] font-medium text-muted">トリガーワード（任意）</label>
             <input
-              value={triggerWord}
+              value={yamlMode ? (yamlIdentity?.triggerWord ?? "") : triggerWord}
               onChange={(e) => setTriggerWord(e.target.value)}
-              placeholder="yukipas（空欄なら LoRA 名から自動）"
-              disabled={busy}
-              className={`${fieldCls} font-mono`}
+              placeholder={
+                yamlMode ? "生YAML の process[0].trigger_word" : "yukipas（空欄なら LoRA 名から自動）"
+              }
+              disabled={busy || yamlMode}
+              className={`${fieldCls} font-mono ${yamlMode ? "opacity-60" : ""}`}
             />
+            {yamlMode && (
+              <p className="mt-1 text-[10px] text-muted">
+                生YAML モードでは YAML内の{" "}
+                <code className="text-neon-violet">process[0].trigger_word</code> が使われます。
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -839,6 +1540,69 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             <p className="mt-1 text-[10px] text-muted">解像度が高いほど高精細ですが、学習時間と負荷が増えます。</p>
           </div>
 
+          {/* AI caption prompt — category presets + free-text edit */}
+          <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5">
+            <button
+              type="button"
+              onClick={() => setCaptionPromptOpen((v) => !v)}
+              className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left"
+            >
+              <span className="flex items-center gap-2 text-[11px] font-medium text-neon-violet">
+                <Bot size={13} />
+                🤖 AIキャプション生成プロンプト設定
+              </span>
+              <ChevronDown
+                size={14}
+                className={`shrink-0 text-muted transition-transform ${captionPromptOpen ? "rotate-180" : ""}`}
+              />
+            </button>
+
+            {captionPromptOpen && (
+              <div className="space-y-2 px-3 pb-3">
+                <p className="text-[10px] text-muted">
+                  自動キャプションAIへの指示文（日本語でOK）。対象カテゴリを選んでベースを入れ、必要に応じて自由に追記・書き換えできます。学習用キャプションは英語で自動生成されます。
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {CAPTION_PROMPT_PRESETS.map((preset) => {
+                    const active = captionPrompt.trim() === preset.prompt.trim();
+                    return (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        disabled={busy}
+                        onClick={() => setCaptionPrompt(preset.prompt)}
+                        className={`rounded-lg border px-2.5 py-1 text-[10px] font-medium transition-colors disabled:opacity-50 ${
+                          active
+                            ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
+                            : "border-border bg-background/60 text-muted hover:border-neon-violet/40"
+                        }`}
+                      >
+                        {preset.icon} {preset.label}
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setCaptionPrompt(DEFAULT_CAPTION_PROMPT)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-border bg-background/60 px-2 py-1 text-[10px] text-muted transition-colors hover:text-foreground disabled:opacity-50"
+                  >
+                    <RotateCcw size={10} />
+                    既定に戻す
+                  </button>
+                </div>
+                <textarea
+                  value={captionPrompt}
+                  onChange={(e) => setCaptionPrompt(e.target.value)}
+                  rows={5}
+                  disabled={busy}
+                  placeholder={DEFAULT_CAPTION_PROMPT}
+                  className={`${fieldCls} resize-y text-[11px] leading-relaxed`}
+                />
+              </div>
+            )}
+          </div>
+
           {mode === "pro" && (
             <div className="space-y-3 rounded-xl border border-neon-pink/30 bg-neon-pink/5 p-3">
               <label className="flex items-center gap-2 text-[11px] font-medium text-neon-pink">
@@ -853,49 +1617,214 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               </label>
 
               {pro.useRawYaml ? (
-                <textarea
-                  value={pro.rawYaml}
-                  onChange={(e) => setPro((p) => ({ ...p, rawYaml: e.target.value }))}
-                  rows={12}
-                  disabled={busy}
-                  placeholder={"job: extension\nconfig:\n  name: my_lora\n  process:\n    - type: sd_trainer\n      ..."}
-                  className={`${fieldCls} resize-y font-mono text-[11px]`}
-                />
+                <>
+                  <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[10px] leading-snug font-medium text-amber-400">
+                    ⚠️ [Pro Custom YAML] パラメータ不正や非互換オプションによる学習失敗時、消費されたクレジットは返金されません（自己責任）。
+                  </p>
+                  <textarea
+                    value={pro.rawYaml}
+                    onChange={(e) => setPro((p) => ({ ...p, rawYaml: e.target.value }))}
+                    rows={12}
+                    disabled={busy}
+                    placeholder={"job: extension\nconfig:\n  name: my_lora\n  process:\n    - type: sd_trainer\n      ..."}
+                    className={`${fieldCls} resize-y font-mono text-[11px]`}
+                  />
+                  {/* Live YAML syntax + schema validation */}
+                  {yamlCheck && !yamlCheck.ok ? (
+                    yamlCheck.errors && yamlCheck.errors.length > 0 ? (
+                      <div className="rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-[10px] font-medium text-red-400">
+                        {yamlCheck.errors.map((e, i) => (
+                          <p key={i}>{e}</p>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-[10px] font-medium text-red-400">
+                        ❌ YAMLエラー
+                        {yamlCheck.line != null
+                          ? ` [行 ${yamlCheck.line}${yamlCheck.column != null ? `, 列 ${yamlCheck.column}` : ""}]`
+                          : ""}
+                        : {yamlCheck.message}
+                      </p>
+                    )
+                  ) : yamlCheck && yamlCheck.ok ? (
+                    <>
+                      <p className="text-[10px] font-medium text-green-400">✅ YAML構文正常（有効な設定）</p>
+                      {yamlCheck.warnings.map((w, i) => (
+                        <p key={i} className="text-[10px] text-amber-400">
+                          ⚠️ {w}
+                        </p>
+                      ))}
+                    </>
+                  ) : null}
+                  <p className="text-[10px] leading-relaxed text-muted">
+                    {priceBreakdown && priceBreakdown.steps > 0
+                      ? `${loraPriceMultiplierSummary(priceBreakdown)} → 消費 ${requiredCredits} C`
+                      : `steps / パラメータを解析できません → 安全側で上限 ${requiredCredits} C を適用`}
+                  </p>
+                </>
               ) : (
-                <div className="grid grid-cols-2 gap-2">
-                  {(
-                    [
-                      ["rank", "Rank", 1, 256, 1],
-                      ["alpha", "Alpha", 1, 256, 1],
-                      ["steps", "Steps", 200, 6000, 50],
-                    ] as const
-                  ).map(([key, label, min, max, step]) => (
-                    <div key={key}>
-                      <label className="mb-1 block text-[10px] text-muted">{label}</label>
+                <div className="space-y-3">
+                  {/* Rank — discrete choices only */}
+                  <div>
+                    <label className="mb-1 block text-[10px] text-muted">Rank（LoRA の表現力）</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {RANK_OPTIONS.map((r) => (
+                        <button
+                          key={r}
+                          type="button"
+                          disabled={busy}
+                          onClick={() =>
+                            setPro((p) => ({
+                              ...p,
+                              rank: r,
+                              alpha: (p.alphaLinked ?? true) ? r : p.alpha,
+                            }))
+                          }
+                          className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+                            pro.rank === r
+                              ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
+                              : "border-border bg-background/60 text-muted hover:border-neon-violet/40"
+                          }`}
+                        >
+                          {r}
+                          {r === 32 ? " ・推奨" : ""}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Alpha — auto-linked to Rank by default */}
+                  <div>
+                    <div className="mb-1 flex items-center justify-between text-[10px] text-muted">
+                      <span>Alpha（学習の効き）</span>
+                      <label className="flex items-center gap-1">
+                        <input
+                          type="checkbox"
+                          checked={alphaLinked}
+                          onChange={(e) =>
+                            setPro((p) => ({
+                              ...p,
+                              alphaLinked: e.target.checked,
+                              alpha: e.target.checked ? p.rank : p.alpha,
+                            }))
+                          }
+                          disabled={busy}
+                          className="h-3 w-3 accent-neon-pink"
+                        />
+                        Rank に自動連動
+                      </label>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {ALPHA_OPTIONS.map((a) => (
+                        <button
+                          key={a}
+                          type="button"
+                          disabled={busy || alphaLinked}
+                          onClick={() => setPro((p) => ({ ...p, alpha: a, alphaLinked: false }))}
+                          className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-40 ${
+                            effectiveAlpha === a
+                              ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
+                              : "border-border bg-background/60 text-muted hover:border-neon-violet/40"
+                          }`}
+                        >
+                          {a}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Steps — slider + clamped number input + quick picks */}
+                  <div>
+                    <label className="mb-1 block text-[10px] text-muted">Steps（学習ステップ数）</label>
+                    <div className="flex w-full items-center gap-2">
+                      <input
+                        type="range"
+                        min={STEPS_MIN}
+                        max={STEPS_MAX}
+                        step={STEPS_STEP}
+                        value={pro.steps}
+                        onChange={(e) => setPro((p) => ({ ...p, steps: Number(e.target.value) }))}
+                        disabled={busy}
+                        className="h-1.5 min-w-0 flex-1 accent-neon-pink"
+                      />
                       <input
                         type="number"
-                        min={min}
-                        max={max}
-                        step={step}
-                        value={pro[key]}
-                        onChange={(e) => setPro((p) => ({ ...p, [key]: Number(e.target.value) || p[key] }))}
+                        min={STEPS_MIN}
+                        max={STEPS_MAX}
+                        step={STEPS_STEP}
+                        value={pro.steps}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          setPro((p) => ({
+                            ...p,
+                            steps: Number.isFinite(v)
+                              ? Math.min(STEPS_MAX, Math.max(STEPS_MIN, Math.round(v)))
+                              : p.steps,
+                          }));
+                        }}
                         disabled={busy}
-                        className={fieldCls}
+                        className="w-20 shrink-0 rounded-lg border border-border bg-background px-2 py-2 text-sm tabular-nums outline-none transition-colors focus:border-neon-violet/50"
                       />
                     </div>
-                  ))}
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {STEPS_QUICK.map((s) => (
+                        <button
+                          key={s.value}
+                          type="button"
+                          disabled={busy}
+                          onClick={() => setPro((p) => ({ ...p, steps: s.value }))}
+                          className={`rounded-lg border px-2.5 py-1 text-[10px] font-medium transition-colors disabled:opacity-50 ${
+                            pro.steps === s.value
+                              ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
+                              : "border-border bg-background/60 text-muted hover:border-neon-violet/40"
+                          }`}
+                        >
+                          {s.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Learning Rate — safe presets, free entry only on カスタム */}
                   <div>
                     <label className="mb-1 block text-[10px] text-muted">Learning Rate</label>
-                    <input
-                      type="number"
-                      step="0.00001"
-                      value={pro.learningRate}
-                      onChange={(e) => setPro((p) => ({ ...p, learningRate: Number(e.target.value) || p.learningRate }))}
+                    <select
+                      value={pro.lrCustom ? "custom" : String(pro.learningRate)}
+                      onChange={(e) => {
+                        if (e.target.value === "custom") {
+                          setPro((p) => ({ ...p, lrCustom: true }));
+                        } else {
+                          setPro((p) => ({ ...p, lrCustom: false, learningRate: Number(e.target.value) }));
+                        }
+                      }}
                       disabled={busy}
                       className={fieldCls}
-                    />
+                    >
+                      {LR_PRESETS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                      <option value="custom">カスタム（手動入力）</option>
+                    </select>
+                    {pro.lrCustom && (
+                      <input
+                        type="number"
+                        step="0.00001"
+                        min={0}
+                        value={pro.learningRate}
+                        onChange={(e) =>
+                          setPro((p) => ({ ...p, learningRate: Number(e.target.value) || p.learningRate }))
+                        }
+                        disabled={busy}
+                        placeholder="0.0001"
+                        className={`${fieldCls} mt-1.5`}
+                      />
+                    )}
                   </div>
-                  <div className="col-span-2">
+
+                  {/* Optimizer */}
+                  <div>
                     <label className="mb-1 block text-[10px] text-muted">Optimizer</label>
                     <select
                       value={pro.optimizer}
@@ -915,15 +1844,20 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             </div>
           )}
 
-          {/* Credits */}
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background/60 px-3 py-2 text-xs">
-            <span className="flex items-center gap-1.5 text-neon-pink">
-              <Zap size={13} />
-              {LORA_COST} Credits
-            </span>
-            <span className="text-muted">
-              保有: {creditsLoading ? "…" : (credits ?? 0)}
-            </span>
+          {/* Credits — parameter-linked dynamic price */}
+          <div className="rounded-lg border border-border bg-background/60 px-3 py-2 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1.5 text-neon-pink">
+                <Zap size={13} />
+                {requiredCredits} Credits
+              </span>
+              <span className="text-muted">保有: {creditsLoading ? "…" : (credits ?? 0)}</span>
+            </div>
+            {priceBreakdown && priceBreakdown.steps > 0 && (
+              <p className="mt-1 text-[10px] leading-relaxed text-muted">
+                {loraPriceMultiplierSummary(priceBreakdown)}
+              </p>
+            )}
           </div>
           {insufficientCredits && (
             <a
@@ -934,102 +1868,95 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               クレジットが不足しています — チャージする
             </a>
           )}
-        </div>
-      </div>
 
-      {/* Action / tracking */}
-      {phase === "form" ? (
-        <div className="space-y-3">
-          {errorMessage && (
-            <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
-              {errorMessage}
-            </p>
-          )}
-          <button
-            type="button"
-            onClick={handleStart}
-            disabled={Boolean(user) && !insufficientCredits && !canSubmit}
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {!user ? (
-              <>
-                <LogIn size={16} />
-                ログインして学習を開始
-              </>
-            ) : insufficientCredits ? (
-              <>
-                <Zap size={16} />
-                クレジットをチャージ
-              </>
-            ) : (
-              <>
-                <Wand2 size={16} />
-                {`🔥 高速 LoRA 学習を開始する (${LORA_COST} C)`}
-              </>
-            )}
-          </button>
-          <p className="flex items-start gap-2 text-[11px] leading-relaxed text-muted">
-            <Sparkles size={13} className="mt-0.5 shrink-0 text-neon-violet" />
-            独自の超高速パイプラインで自動キャプション →
-            深度最適化学習（所要 約10〜20分）。処理中にページを離れても学習はバックグラウンドで継続し、後からいつでも結果を確認できます。
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {phase === "starting" && (
-            <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5 p-4">
-              <div className="flex items-center gap-2 text-sm text-neon-violet">
-                <Loader2 size={15} className="animate-spin" />
-                {uploadProgress && uploadProgress.done < uploadProgress.total
-                  ? `画像をアップロード中… ${uploadProgress.done}/${uploadProgress.total}`
-                  : "学習ジョブを起動しています…"}
-              </div>
-              {uploadProgress && (
-                <div className="mt-2 h-2 overflow-hidden rounded-full bg-background/70">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-neon-pink to-neon-violet transition-[width] duration-300"
-                    style={{
-                      width: `${Math.round((uploadProgress.done / Math.max(1, uploadProgress.total)) * 100)}%`,
-                    }}
-                  />
-                </div>
+          {/* Action / tracking — kept inside the settings panel so a large
+              image grid never pushes the start button below the fold */}
+          {phase === "form" ? (
+            <div className="space-y-3">
+              {errorMessage && (
+                <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+                  {errorMessage}
+                </p>
               )}
-            </div>
-          )}
-          <ProgressPanel
-            job={job}
-            rerouting={Boolean(rerouting)}
-            attempt={rerouting?.attempt}
-            onUseLora={onUseLora}
-          />
-
-          {failoverNote && (
-            <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-400">
-              <span className="leading-relaxed">{failoverNote}</span>
-              {job && (job.status === "queued" || job.status === "cancelled") && (
-                <button
-                  type="button"
-                  onClick={abortAndRefund}
-                  className="shrink-0 rounded-md border border-amber-500/40 px-2 py-1 text-[10px] font-medium hover:bg-amber-500/20"
-                >
-                  中止して返金
-                </button>
-              )}
-            </div>
-          )}
-
-          {job &&
-            (job.status === "completed" || job.status === "failed" || job.status === "failed_timeout") && (
               <button
                 type="button"
-                onClick={resetForm}
-                className="rounded-lg border border-border px-4 py-2 text-xs text-muted transition-colors hover:text-foreground"
+                onClick={handleStart}
+                disabled={Boolean(user) && !insufficientCredits && !canSubmit}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                新しい LoRA を学習する
+                {!user ? (
+                  <>
+                    <LogIn size={16} />
+                    ログインして学習を開始
+                  </>
+                ) : insufficientCredits ? (
+                  <>
+                    <Zap size={16} />
+                    クレジットをチャージ
+                  </>
+                ) : curationEnabled ? (
+                  <>
+                    <Wand2 size={16} />
+                    次へ：データセットを確認・編集する
+                  </>
+                ) : (
+                  <>
+                    <Wand2 size={16} />
+                    {`🔥 高速 LoRA 学習を開始する (${requiredCredits} C)`}
+                  </>
+                )}
               </button>
-            )}
+              <p className="flex items-start gap-2 text-[11px] leading-relaxed text-muted">
+                <Sparkles size={13} className="mt-0.5 shrink-0 text-neon-violet" />
+                独自の高精度パイプラインで自動キャプション ➔
+                深度最適化学習を完全自動で実行。完了したLoRAは即座にダウンロードしてご利用いただけます。
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {phase === "starting" && (
+                <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5 p-4">
+                  <div className="flex items-center gap-2 text-sm text-neon-violet">
+                    <Loader2 size={15} className="animate-spin" />
+                    {uploadProgress && uploadProgress.done < uploadProgress.total
+                      ? `画像をアップロード中… ${uploadProgress.done}/${uploadProgress.total}`
+                      : "学習ジョブを起動しています…"}
+                  </div>
+                  {uploadProgress && (
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-background/70">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-neon-pink to-neon-violet transition-[width] duration-300"
+                        style={{
+                          width: `${Math.round((uploadProgress.done / Math.max(1, uploadProgress.total)) * 100)}%`,
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+              <ProgressPanel
+                job={job}
+                queuedElapsedSec={queuedElapsedSec}
+                onUseLora={onUseLora}
+              />
+
+              {job &&
+                (job.status === "completed" ||
+                  job.status === "failed" ||
+                  job.status === "failed_timeout" ||
+                  job.status === "cancelled") && (
+                  <button
+                    type="button"
+                    onClick={resetForm}
+                    className="rounded-lg border border-border px-4 py-2 text-xs text-muted transition-colors hover:text-foreground"
+                  >
+                    新しい LoRA を学習する
+                  </button>
+                )}
+            </div>
+          )}
         </div>
-      )}
+      </div>
 
       <LoginModal
         open={loginOpen}

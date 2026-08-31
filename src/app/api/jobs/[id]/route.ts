@@ -1,8 +1,16 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { checkLoraCallStatus } from "@/lib/modalLoraTrain";
+import { loraCallIdOf, markLoraJobContainerDead } from "@/lib/loraJobHealth";
 
 type RouteParams = { params: Promise<{ id: string }> };
+
+// A LoRA training container that dies by SIGKILL never runs its own failure
+// handler, so the row is stuck 'processing'. Once it's been silent this long
+// (normal runs PATCH progress every ~5s), ask Modal directly whether the
+// FunctionCall is still alive — see check_call_status in modal_lora_worker.py.
+const LORA_STUCK_PROBE_AFTER_MS = 180_000;
 
 // Polled by the frontend (every couple seconds while a job is queued/
 // processing — see CinematicVideoTab.tsx) instead of the old design where
@@ -55,16 +63,52 @@ export async function GET(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: "ジョブが見つかりません。" }, { status: 404 });
   }
 
+  let effJob: Record<string, unknown> = job;
+  let status = String(job.status ?? "queued");
+
+  // Self-healing: a 'processing' LoRA job whose Modal container died by
+  // SIGKILL (12h timeout / OOM / eviction) never ran train_lora_job's own
+  // except-block, so it's stuck here forever and the Studio UI spins. Once
+  // it's gone quiet, ask Modal whether the FunctionCall is actually alive —
+  // a "failed" verdict is authoritative regardless of how it died, and we
+  // close + refund the job. "running" (even a long silent model-download
+  // phase) and any transient/unknown answer leave it untouched.
+  if (
+    status === "processing" &&
+    job.workflow_type === "lora_training" &&
+    Date.now() - new Date(String(job.updated_at ?? job.created_at ?? 0)).getTime() >
+      LORA_STUCK_PROBE_AFTER_MS
+  ) {
+    const callId = loraCallIdOf(job);
+    if (/^fc-/.test(callId)) {
+      const probe = await checkLoraCallStatus(callId);
+      if (probe.status === "failed") {
+        console.error(`[jobs/[id]] job ${id}: Modal reports FunctionCall dead — closing. ${probe.error ?? ""}`);
+        await markLoraJobContainerDead(job, probe.error ?? "");
+        const { data: fresh } = await supabaseAdmin
+          .from("generation_jobs")
+          .select("*")
+          .eq("id", id)
+          .maybeSingle();
+        if (fresh) {
+          effJob = fresh as Record<string, unknown>;
+          status = String((fresh as Record<string, unknown>).status ?? "failed");
+        } else {
+          status = "failed";
+        }
+      }
+    }
+  }
+
   // While the job is still waiting/running, attach live queue telemetry so
   // the client can show "何人待ち / あと約何分". One indexed RPC round-trip
   // (see generation_job_queue_stats) — skipped entirely once the job is
   // completed/failed.
-  const status = String(job.status ?? "queued");
   let queue: { queuePosition: number; avgExecutionSeconds: number; estimatedWaitSeconds: number } | null =
     null;
   if (status === "queued" || status === "processing") {
     const { data: stats, error: statsError } = await supabaseAdmin.rpc("generation_job_queue_stats", {
-      p_created_at: job.created_at as string,
+      p_created_at: effJob.created_at as string,
     });
     if (statsError) {
       console.error("[jobs/[id]] queue stats failed:", statsError.message);
@@ -79,17 +123,18 @@ export async function GET(request: Request, { params }: RouteParams) {
   }
 
   return NextResponse.json({
-    jobId: job.id,
+    jobId: effJob.id,
     status,
-    workflowType: job.workflow_type ?? null,
-    videoUrl: job.video_url ?? null,
-    errorMessage: job.error_message ?? null,
-    createdAt: job.created_at ?? null,
-    updatedAt: job.updated_at ?? null,
-    progressPercent: job.progress_percent ?? null,
-    progressMessage: job.progress_message ?? null,
-    resultPath: job.result_path ?? null,
-    retryCount: typeof job.retry_count === "number" ? job.retry_count : 0,
+    workflowType: effJob.workflow_type ?? null,
+    videoUrl: effJob.video_url ?? null,
+    errorMessage: effJob.error_message ?? null,
+    createdAt: effJob.created_at ?? null,
+    updatedAt: effJob.updated_at ?? null,
+    progressPercent: effJob.progress_percent ?? null,
+    progressMessage: effJob.progress_message ?? null,
+    resultPath: effJob.result_path ?? null,
+    metadata: effJob.metadata ?? null,
+    retryCount: typeof effJob.retry_count === "number" ? effJob.retry_count : 0,
     ...(queue
       ? {
           queuePosition: queue.queuePosition,

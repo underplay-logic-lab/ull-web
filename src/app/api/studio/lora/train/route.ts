@@ -3,6 +3,13 @@ import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { spawnLoraTrainingJob, buildLoraDispatchPayload } from "@/lib/modalLoraTrain";
+import { DEFAULT_LORA_STEPS } from "@/lib/loraCredits";
+import {
+  guiLoraPricingConfig,
+  loraPriceBreakdown,
+  LORA_CREDIT_WORST_CASE,
+} from "@/lib/loraPricing";
+import { validateLoraYaml, loraYamlIdentity } from "@/lib/loraYaml";
 import {
   BLOCKED_LORA_MODEL_MESSAGE,
   DEFAULT_LORA_RESOLUTION,
@@ -10,8 +17,13 @@ import {
   LORA_PRESET_IDS,
   LORA_RESOLUTIONS,
   isBlockedLoraModel,
+  loraPresetById,
   type LoraBaseArchitecture,
 } from "@/lib/loraModels";
+
+// Auto / semi modes don't expose a Rank control — the worker builds the
+// ai-toolkit config with this default (see DEFAULT_TRAINING_CONFIG there).
+const DEFAULT_LORA_RANK = 32;
 
 // Only debits credits, inserts a generation_jobs row and fires a fast
 // dispatch at Modal (train_lora_dispatch) — the multi-minute training runs
@@ -19,8 +31,9 @@ import {
 // writes + the dispatch (up to a ~55s cold start on the Modal side).
 export const maxDuration = 60;
 
-// Flat price for one LoRA training run.
-const LORA_TRAINING_COST = 150;
+// Price is multi-dimensional (model / resolution / batch / rank / steps) —
+// see src/lib/loraPricing.ts. Always recomputed server-side from the real
+// parameters, never trusted from the client.
 
 const LORA_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 // HF repo id ("owner/name") or an absolute/volume-relative path.
@@ -100,16 +113,54 @@ async function handlePost(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: "リクエストの形式が正しくありません。" }, { status: 400 });
   }
 
-  const outputLoraName = typeof body.output_lora_name === "string" ? body.output_lora_name.trim() : "";
-  if (!LORA_NAME_RE.test(outputLoraName)) {
-    return NextResponse.json(
-      { error: "LoRA名は英数字・ハイフン・アンダースコア・ドットのみ（64文字以内）で入力してください。" },
-      { status: 400 },
-    );
-  }
+  const bodyLoraName = typeof body.output_lora_name === "string" ? body.output_lora_name.trim() : "";
 
   const trainingConfig = sanitizeTrainingConfig(body.training_config);
   const hasOverride = trainingConfig.custom_yaml_override !== undefined;
+
+  // Second line of defence (the UI already blocks submit on syntax + schema
+  // errors): reject a bad raw YAML here BEFORE debiting any credit or spinning
+  // up a Modal container. Keep the parsed object — the price is computed from
+  // it below.
+  let parsedOverride: unknown = null;
+  if (hasOverride && typeof trainingConfig.custom_yaml_override === "string") {
+    const check = validateLoraYaml(trainingConfig.custom_yaml_override);
+    if (!check.ok) {
+      const isSchema = Array.isArray(check.errors) && check.errors.length > 0;
+      const where =
+        check.line != null
+          ? `（行 ${check.line}${check.column != null ? `, 列 ${check.column}` : ""}）`
+          : "";
+      return NextResponse.json(
+        {
+          error: isSchema
+            ? `custom_yaml の設定エラー: ${check.message}`
+            : `custom_yaml の構文エラー${where}: ${check.message}`,
+          yamlError: { message: check.message, line: check.line, column: check.column, errors: check.errors },
+        },
+        { status: 400 },
+      );
+    }
+    parsedOverride = check.data;
+  } else if (hasOverride && trainingConfig.custom_yaml_override && typeof trainingConfig.custom_yaml_override === "object") {
+    parsedOverride = trainingConfig.custom_yaml_override;
+  }
+
+  // Raw-YAML mode: the YAML's own config.name / process[0].trigger_word are
+  // authoritative (the UI disables the form fields, and the worker adopts the
+  // same values). For a GUI-mode job the form's LoRA name / trigger stand.
+  const yamlId = hasOverride && parsedOverride ? loraYamlIdentity(parsedOverride) : null;
+  const outputLoraName = yamlId?.name || bodyLoraName;
+  if (!LORA_NAME_RE.test(outputLoraName)) {
+    return NextResponse.json(
+      {
+        error: hasOverride
+          ? "生YAML の config.name は英数字・ハイフン・アンダースコア・ドットのみ（64文字以内）で指定してください。"
+          : "LoRA名は英数字・ハイフン・アンダースコア・ドットのみ（64文字以内）で入力してください。",
+      },
+      { status: 400 },
+    );
+  }
 
   const targetModel = typeof body.target_model === "string" ? body.target_model.trim() : "minimax_h3";
   const customModelId =
@@ -168,10 +219,55 @@ async function handlePost(request: Request): Promise<NextResponse> {
   const captions = Array.isArray(body.captions)
     ? (body.captions as unknown[]).map((c) => (typeof c === "string" ? c : "")).slice(0, MAX_IMAGES)
     : [];
-  const triggerWord = typeof body.trigger_word === "string" ? body.trigger_word.trim().slice(0, 60) : "";
+  // User brought their own captions (semi-auto edits or a .txt set) — the
+  // worker then skips loading the 27B caption VLM entirely.
+  const customCaptions = Array.isArray(body.custom_captions)
+    ? (body.custom_captions as unknown[]).map((c) => (typeof c === "string" ? c : "")).slice(0, MAX_IMAGES)
+    : undefined;
+  const skipCaptioning =
+    body.skip_captioning === true || (customCaptions?.some((c) => c.trim().length > 0) ?? false);
+  // The user's own auto-caption VLM instruction (a category preset or
+  // free-text edit). Bounded so a huge paste can't bloat the job payload.
+  const captionPrompt =
+    typeof body.caption_prompt === "string" ? body.caption_prompt.trim().slice(0, 4000) : "";
+  // Raw-YAML mode: the YAML's process[0].trigger_word wins over the (disabled)
+  // form field.
+  const triggerWord =
+    (yamlId?.triggerWord || (typeof body.trigger_word === "string" ? body.trigger_word.trim() : "")).slice(0, 60);
   const resolution = (LORA_RESOLUTIONS as readonly number[]).includes(Number(body.resolution))
     ? Number(body.resolution)
     : DEFAULT_LORA_RESOLUTION;
+
+  // --- authoritative price -----------------------------------------------
+  // Multi-dimensional: ceil(0.1 * modelMult * resMult * batchMult * rankMult
+  // * steps) — computed server-side from the request's real parameters so a
+  // tampered client body can't under-pay (see src/lib/loraPricing.ts).
+  //  - raw-YAML expert: price the parsed ai-toolkit config directly.
+  //  - GUI expert (slider) / auto / semi: synthesise the equivalent config.
+  //  - a YAML that somehow reached here unparseable: the worst-case ceiling.
+  const pricedArch =
+    targetModel === "custom"
+      ? baseArchitecture
+      : (loraPresetById(targetModel)?.arch ?? "");
+  const pricedConfig: unknown = hasOverride
+    ? parsedOverride
+    : guiLoraPricingConfig({
+        arch: pricedArch,
+        resolution,
+        linearRank:
+          typeof trainingConfig.rank === "number" ? trainingConfig.rank : DEFAULT_LORA_RANK,
+        steps: typeof trainingConfig.steps === "number" ? trainingConfig.steps : DEFAULT_LORA_STEPS,
+      });
+  const priceBreakdown = pricedConfig
+    ? loraPriceBreakdown(pricedConfig, { archFallback: pricedArch })
+    : null;
+  // A raw YAML that reached here unparseable (UI blocks it, so defence only),
+  // or one with no positive step count -> the worst-case ceiling.
+  let requiredCredits =
+    priceBreakdown && priceBreakdown.credits > 0
+      ? priceBreakdown.credits
+      : LORA_CREDIT_WORST_CASE;
+  requiredCredits = Math.max(1, Math.min(LORA_CREDIT_WORST_CASE, Math.ceil(requiredCredits)));
 
   // --- credits ------------------------------------------------------------
   const { data: profile, error: profileError } = await getOrCreateProfile(
@@ -188,20 +284,20 @@ async function handlePost(request: Request): Promise<NextResponse> {
   const isExpired = creditsExpireAt ? new Date(creditsExpireAt).getTime() < Date.now() : false;
   const currentCredits = isExpired ? 0 : (rawCredits ?? 0);
 
-  if (currentCredits < LORA_TRAINING_COST) {
+  if (currentCredits < requiredCredits) {
     return NextResponse.json(
       {
         error: isExpired
           ? "クレジットの有効期限が切れています。チャージしてから再度お試しください。"
           : "クレジットが不足しています。チャージしてから再度お試しください。",
         remainingCredits: currentCredits,
-        requiredCredits: LORA_TRAINING_COST,
+        requiredCredits,
       },
       { status: 402 },
     );
   }
 
-  const debitedCredits = currentCredits - LORA_TRAINING_COST;
+  const debitedCredits = currentCredits - requiredCredits;
   const { error: debitError } = await supabaseAdmin
     .from("profiles")
     .update({ credits: debitedCredits })
@@ -215,10 +311,13 @@ async function handlePost(request: Request): Promise<NextResponse> {
   const spawnParams = {
     jobId: "", // filled after insert
     userId: user.id,
-    creditsCost: LORA_TRAINING_COST,
+    creditsCost: requiredCredits,
     storagePaths,
     datasetId,
     captions,
+    customCaptions,
+    skipCaptioning,
+    captionPrompt: captionPrompt || undefined,
     targetModel,
     customModelId: targetModel === "custom" ? customModelId : undefined,
     baseArchitecture: targetModel === "custom" ? (baseArchitecture as LoraBaseArchitecture) : undefined,
@@ -240,7 +339,14 @@ async function handlePost(request: Request): Promise<NextResponse> {
     num_images: storagePaths.length,
     resolution,
     trigger_word: triggerWord || null,
-    training_config: { ...trainingConfig, custom_yaml_override: hasOverride ? "(custom)" : undefined },
+    training_config: {
+      ...trainingConfig,
+      custom_yaml_override: hasOverride ? "(custom)" : undefined,
+      // the exact parameters + multipliers the charge was computed from —
+      // recorded so a disputed debit is auditable.
+      priced_steps: priceBreakdown?.steps ?? null,
+      price_breakdown: priceBreakdown,
+    },
     dispatch: dispatchPayload,
   };
 
@@ -249,7 +355,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
     status: "queued",
     workflow_type: "lora_training",
     inputs: jobInputs,
-    credits_cost: LORA_TRAINING_COST,
+    credits_cost: requiredCredits,
     progress_percent: 0,
     progress_message: "queued",
     retry_count: 0,
@@ -277,7 +383,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
           status: "queued",
           workflow_type: "lora_training",
           inputs: jobInputs,
-          credits_cost: LORA_TRAINING_COST,
+          credits_cost: requiredCredits,
         })
         .select("id")
         .single();

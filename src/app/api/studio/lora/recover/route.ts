@@ -1,25 +1,34 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import {
-  cancelLoraTrainingCall,
-  redispatchLoraTrainingJob,
-  type LoraDispatchPayload,
-} from "@/lib/modalLoraTrain";
+import { cancelLoraTrainingCall, type LoraDispatchPayload } from "@/lib/modalLoraTrain";
 
-// Covers the re-dispatch (Modal cold start is possible though the dispatcher
-// keeps a warm container).
+// Cancelling a running call + terminating its container can take a moment.
 export const maxDuration = 60;
 
-const MAX_RETRIES = 2;
 const LORA_TRAINING_COST = 150;
 
 type JobRow = Record<string, unknown> & {
   id: string;
   user_id: string;
   status: string;
-  inputs: { dispatch?: LoraDispatchPayload; modal_call_id?: string } | null;
+  inputs: {
+    dispatch?: LoraDispatchPayload;
+    modal_call_id?: string;
+    training_config?: { custom_yaml_override?: unknown };
+  } | null;
 };
+
+// Platform-defence: a job whose config came from the raw-YAML expert editor
+// is the user's own responsibility — its failure / abort does NOT refund.
+function isCustomYamlJob(job: JobRow): boolean {
+  const inputs = job.inputs;
+  if (inputs?.training_config?.custom_yaml_override != null) return true;
+  const d = inputs?.dispatch as
+    | { custom_yaml_override?: unknown; training_config?: { custom_yaml_override?: unknown } }
+    | undefined;
+  return Boolean(d?.custom_yaml_override || d?.training_config?.custom_yaml_override);
+}
 
 // The Modal FunctionCall id — from the column, or from inputs jsonb when the
 // DB is behind on the modal_call_id migration.
@@ -109,9 +118,16 @@ async function cancelModalForJob(
   return { attempted: true, id, cancelled };
 }
 
-// Cancels the stuck call, 100%-refunds the original cost once (guarded by
-// `refunded` when the column exists), and closes the job.
-async function closeWithRefund(job: JobRow): Promise<{ refunded: number; modalCancelled: boolean }> {
+// Cancels the running / queued call (terminating its container), 100%-refunds
+// the original cost once (guarded by `refunded` when the column exists), and
+// closes the job. NEVER re-dispatches — a stuck job always ends here.
+async function closeWithRefund(
+  job: JobRow,
+  opts: { status?: string; message?: string; refund?: boolean } = {},
+): Promise<{ refunded: number; modalCancelled: boolean }> {
+  const status = opts.status ?? "failed_timeout";
+  const message = opts.message ?? "cloud congestion — auto-refunded";
+  const doRefund = opts.refund ?? true;
   const cancel = await cancelModalForJob(job);
 
   const parentId = typeof job.parent_job_id === "string" ? job.parent_job_id : job.id;
@@ -128,20 +144,33 @@ async function closeWithRefund(job: JobRow): Promise<{ refunded: number; modalCa
       : LORA_TRAINING_COST);
 
   let refunded = 0;
-  if (!alreadyRefunded && amount > 0) {
+  if (!doRefund) {
+    // Raw-YAML job — close it, mark the cost confirmed, no credit back.
+    await updateJob(parentId, {
+      refunded: false,
+      metadata: { refunded: false, custom_yaml: true },
+      status,
+      error_message: message,
+      completed_at: new Date().toISOString(),
+    });
+  } else if (!alreadyRefunded && amount > 0) {
     await refundCredits(job.user_id, amount);
     refunded = amount;
     await updateJob(parentId, {
       refunded: true,
-      status: "failed_timeout",
-      error_message: "cloud congestion — auto-refunded",
+      status,
+      error_message: message,
       completed_at: new Date().toISOString(),
     });
+  } else {
+    // Already refunded once (or nothing to refund) — still make sure the row
+    // isn't left stuck in 'processing'/'queued'.
+    await updateJob(parentId, { status, error_message: message, completed_at: new Date().toISOString() });
   }
   if (parentId !== job.id) {
     await updateJob(job.id, {
-      status: "failed_timeout",
-      error_message: "cloud congestion — auto-refunded",
+      status,
+      error_message: message,
       completed_at: new Date().toISOString(),
     });
   }
@@ -168,7 +197,12 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     const body = await request.json().catch(() => null);
     const jobId = typeof body?.jobId === "string" ? body.jobId : "";
-    const action = body?.action === "timeout" ? "timeout" : "retry";
+    // "abort"  — user pressed the stop button (queued OR processing).
+    // "timeout"/"retry"/anything else — pending-stuck auto-failover.
+    // Re-dispatch was removed entirely (it could loop and spawn GPU
+    // containers without bound when the DB was behind on retry_count):
+    // every path now just cancels + refunds + closes the job.
+    const action: "abort" | "timeout" = body?.action === "abort" ? "abort" : "timeout";
     if (!jobId) return NextResponse.json({ error: "jobId が必要です。" }, { status: 400 });
 
     const { data: jobData, error: jobErr } = await supabaseAdmin
@@ -183,99 +217,31 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (!jobData) return NextResponse.json({ error: "ジョブが見つかりません。" }, { status: 404 });
     const job = jobData as JobRow;
 
-    // Worker already picked it up (or it's terminal) — nothing to recover.
-    if (job.status !== "queued") {
+    const abortable = job.status === "queued" || job.status === "processing";
+    // Auto-failover only ever applies to a still-queued job; an explicit
+    // abort also reaches a job the worker has already picked up.
+    const acceptable = action === "abort" ? abortable : job.status === "queued";
+    if (!acceptable) {
       return NextResponse.json({ ok: true, noop: true, status: job.status });
     }
 
-    const retryCount = typeof job.retry_count === "number" ? job.retry_count : 0;
-    const dispatch = job.inputs?.dispatch;
+    const yamlJob = isCustomYamlJob(job);
 
-    // Explicit timeout, retry cap reached, or nothing to re-dispatch.
-    if (action === "timeout" || retryCount >= MAX_RETRIES || !dispatch) {
-      const { refunded, modalCancelled } = await closeWithRefund(job);
-      return NextResponse.json({ ok: true, status: "failed_timeout", refunded, modalCancelled });
-    }
-
-    // --- retry: physically cancel the stuck call, supersede this job, re-dispatch ---
-    const cancel = await cancelModalForJob(job);
-    await updateJob(job.id, {
-      status: "cancelled",
-      error_message: `auto-rerouted (pending timeout, retry ${retryCount + 1}, modal cancel ${cancel.cancelled})`,
-      completed_at: new Date().toISOString(),
-    });
-
-    // Insert the fresh (already-priced) child job — strip retry columns if
-    // the DB doesn't have them yet.
-    let newJobId = "";
-    const childShapes: Record<string, unknown>[] = [
-      {
-        user_id: user.id,
-        status: "queued",
-        workflow_type: "lora_training",
-        inputs: job.inputs,
-        credits_cost: 0,
-        retry_count: retryCount + 1,
-        parent_job_id: typeof job.parent_job_id === "string" ? job.parent_job_id : job.id,
-        progress_percent: 0,
-        progress_message: "rerouting",
-      },
-      {
-        user_id: user.id,
-        status: "queued",
-        workflow_type: "lora_training",
-        inputs: job.inputs,
-        credits_cost: 0,
-      },
-    ];
-    for (const shape of childShapes) {
-      const { data, error } = await supabaseAdmin
-        .from("generation_jobs")
-        .insert(shape)
-        .select("id")
-        .single();
-      if (!error && data) {
-        newJobId = data.id as string;
-        break;
-      }
-      console.error("[recover] child job insert failed, trying leaner shape:", error?.message);
-    }
-    if (!newJobId) {
-      const { refunded, modalCancelled } = await closeWithRefund(job);
-      return NextResponse.json({ ok: true, status: "failed_timeout", refunded, modalCancelled });
-    }
-
-    try {
-      const { modalCallId: newCallId } = await redispatchLoraTrainingJob({
-        jobId: newJobId,
-        userId: user.id,
-        payload: dispatch,
+    if (action === "abort") {
+      const { refunded, modalCancelled } = await closeWithRefund(job, {
+        status: "cancelled",
+        message: yamlJob
+          ? "ユーザーによる中止（生YAMLモード — 返金対象外）"
+          : "ユーザーによる中止 — 全額返金",
+        refund: !yamlJob,
       });
-      if (newCallId) {
-        await updateJob(newJobId, {
-          modal_call_id: newCallId,
-          inputs: { ...(job.inputs ?? {}), modal_call_id: newCallId },
-        });
-        console.log(`[recover] child job ${newJobId} <- modal_call_id ${newCallId}`);
-      } else {
-        console.error(`[recover] child job ${newJobId}: re-dispatch returned no modal_call_id`);
-      }
-    } catch (err) {
-      await updateJob(newJobId, {
-        status: "failed",
-        error_message: `re-dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
-      });
-      const { refunded, modalCancelled } = await closeWithRefund({ ...job, id: newJobId });
-      return NextResponse.json({ ok: true, status: "failed_timeout", refunded, modalCancelled });
+      return NextResponse.json({ ok: true, status: "cancelled", refunded, modalCancelled, customYaml: yamlJob });
     }
 
-    return NextResponse.json({
-      ok: true,
-      status: "queued",
-      jobId: newJobId,
-      retryCount: retryCount + 1,
-      modalCancelled: cancel.cancelled,
-    });
+    // "timeout" — pending-stuck failover. The job never left the queue, so no
+    // GPU was billed: always refund, YAML or not.
+    const { refunded, modalCancelled } = await closeWithRefund(job);
+    return NextResponse.json({ ok: true, status: "failed_timeout", refunded, modalCancelled });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[studio/lora/recover] unhandled:", message, err instanceof Error ? err.stack : undefined);

@@ -67,6 +67,13 @@ export type StartLoraTrainingParams = {
   resolution?: number;
   outputLoraName: string;
   triggerWord: string;
+  // Set when the user supplied their own captions (semi-auto edits, or a
+  // .txt set): the worker then skips loading the 27B caption VLM entirely.
+  customCaptions?: string[];
+  skipCaptioning?: boolean;
+  // The user's own instruction for the auto-caption VLM (category preset or
+  // free-text). Empty / omitted -> the worker's default character prompt.
+  captionPrompt?: string;
 };
 
 export type LoraApiError = Error & { remainingCredits?: number; requiredCredits?: number };
@@ -91,6 +98,9 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
       resolution: params.resolution,
       output_lora_name: params.outputLoraName,
       trigger_word: params.triggerWord,
+      custom_captions: params.customCaptions,
+      skip_captioning: params.skipCaptioning,
+      caption_prompt: params.captionPrompt,
     }),
   });
 
@@ -117,6 +127,16 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
   };
 }
 
+export type LoraCheckpoint = {
+  step: number;
+  filename: string;
+  sizeBytes: number;
+  isFinal: boolean;
+  // true for the captions.zip bundle (all generated .txt captions) — shown
+  // as its own download button, not in the intermediate-checkpoint list.
+  isCaptionArchive: boolean;
+};
+
 export type LoraJobStatus = {
   jobId: string;
   status: "queued" | "processing" | "completed" | "failed" | "cancelled" | "failed_timeout";
@@ -125,6 +145,21 @@ export type LoraJobStatus = {
   progressPercent: number | null;
   progressMessage: string | null;
   retryCount: number;
+  // Live effective VRAM load (GB) — spoiler-free, no total / GPU model.
+  vramUsedGb: number | null;
+  // Live Stage-2 (ai-toolkit) training telemetry, parsed from tqdm output.
+  // null until the trainer's progress bar starts emitting.
+  currentStep: number | null;
+  totalSteps: number | null;
+  etaSeconds: number | null;
+  loss: number | null;
+  // Intermediate + final LoRA checkpoints, available once completed.
+  checkpoints: LoraCheckpoint[];
+  // On a 'failed' job: whether the consumed credits were refunded. null when
+  // unknown (older jobs / column absent). Raw-YAML config errors are NOT
+  // refunded (platform-defence policy), standard GUI-mode faults are.
+  refunded: boolean | null;
+  customYaml: boolean;
   queue:
     | { queuePosition: number; avgExecutionSeconds: number; estimatedWaitSeconds: number }
     | null;
@@ -142,6 +177,29 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || "ジョブ状態の取得に失敗しました。");
 
+  const meta = (data.metadata ?? {}) as {
+    vram_used_gb?: unknown;
+    checkpoints?: unknown;
+    refunded?: unknown;
+    custom_yaml?: unknown;
+    current_step?: unknown;
+    total_steps?: unknown;
+    eta_seconds?: unknown;
+    loss?: unknown;
+  };
+  const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const checkpoints: LoraCheckpoint[] = Array.isArray(meta.checkpoints)
+    ? (meta.checkpoints as Record<string, unknown>[])
+        .map((c) => ({
+          step: typeof c.step === "number" ? c.step : 0,
+          filename: typeof c.filename === "string" ? c.filename : "",
+          sizeBytes: typeof c.size_bytes === "number" ? c.size_bytes : 0,
+          isFinal: c.is_final === true,
+          isCaptionArchive: c.is_caption_archive === true,
+        }))
+        .filter((c) => c.filename)
+    : [];
+
   return {
     jobId: data.jobId as string,
     status: data.status as LoraJobStatus["status"],
@@ -150,6 +208,14 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
     progressPercent: (data.progressPercent as number | null) ?? null,
     progressMessage: (data.progressMessage as string | null) ?? null,
     retryCount: (data.retryCount as number | undefined) ?? 0,
+    vramUsedGb: num(meta.vram_used_gb),
+    currentStep: num(meta.current_step),
+    totalSteps: num(meta.total_steps),
+    etaSeconds: num(meta.eta_seconds),
+    loss: num(meta.loss),
+    checkpoints,
+    refunded: typeof meta.refunded === "boolean" ? meta.refunded : null,
+    customYaml: meta.custom_yaml === true,
     queue:
       typeof data.queuePosition === "number"
         ? {
@@ -161,6 +227,44 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
   };
 }
 
+// Asks /api/studio/lora/checkpoint (bearer-auth'd) for a short-lived signed
+// Modal URL, then navigates the browser straight to it — the actual bytes
+// flow browser<->Modal directly (Content-Disposition: attachment on
+// Modal's FileResponse makes the cross-origin nav download rather than
+// navigate), not through this app's server. A prior version fetched the
+// file here and re-served it as a blob: fine for small assets, but a
+// 600MB+ checkpoint doubles every byte's hop count and was timing out
+// (NGHTTP2_INTERNAL_ERROR) partway through the transfer.
+// Asks /api/studio/lora/checkpoint (bearer-auth'd) for the short-lived
+// signed Modal URL and returns it — used by both the direct-download button
+// and the "copy URL for the Model Downloader" button. The link is valid for
+// ~15 minutes and the bytes flow browser<->Modal directly (one hop).
+export async function getLoraCheckpointDownloadUrl(jobId: string, filename: string): Promise<string> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) throw new Error("ログインが必要です。");
+
+  const res = await fetch(
+    `/api/studio/lora/checkpoint?jobId=${encodeURIComponent(jobId)}&file=${encodeURIComponent(filename)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || typeof data?.downloadUrl !== "string") {
+    throw new Error(data?.error || "ダウンロードURLの取得に失敗しました。");
+  }
+  return data.downloadUrl as string;
+}
+
+export async function downloadLoraCheckpoint(jobId: string, filename: string): Promise<void> {
+  const downloadUrl = await getLoraCheckpointDownloadUrl(jobId, filename);
+  const a = document.createElement("a");
+  a.href = downloadUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 export type LoraRecoverResult = {
   ok: boolean;
   status?: string;
@@ -168,16 +272,20 @@ export type LoraRecoverResult = {
   retryCount?: number;
   refunded?: number; // credits returned when it escalated to failed_timeout
   modalCancelled?: boolean; // whether Modal confirmed the physical .cancel()
+  customYaml?: boolean; // true -> raw-YAML job, credits NOT refunded
   noop?: boolean;
 };
 
-// Pending-timeout auto-failover: cancels the stuck Modal call, then either
-// re-dispatches the same job onto another node (action "retry") or closes
-// it as failed_timeout with a 100% refund (action "timeout", or when the
-// retry cap is hit server-side).
+// Ends a stuck / unwanted job: physically cancels the Modal call (terminating
+// its GPU container) and 100%-refunds the cost. "abort" also reaches a job
+// that's already 'processing' (-> 'cancelled'); "timeout" -> 'failed_timeout'.
+//
+// NOT wired to any user-facing UI — the LoRA Studio screen is monitor-only.
+// Kept for admin / internal / manual recovery use (call the /api/studio/lora
+// /recover route directly, or from a future admin panel).
 export async function recoverLoraJob(
   jobId: string,
-  action: "retry" | "timeout",
+  action: "timeout" | "abort",
 ): Promise<LoraRecoverResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -191,4 +299,78 @@ export async function recoverLoraJob(
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || data?.reason || "リカバリに失敗しました。");
   return data as LoraRecoverResult;
+}
+
+export type RecentLoraJob = {
+  jobId: string;
+  status: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+// The user's most recent LoRA Studio job — used to re-attach after the
+// localStorage pointer was lost. Returns null when they've never run one.
+export async function fetchRecentLoraJob(): Promise<RecentLoraJob | null> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) return null;
+
+  const res = await fetch("/api/studio/lora/recent", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    cache: "no-store",
+  });
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => ({}));
+  const job = data?.job;
+  return job && typeof job.jobId === "string" ? (job as RecentLoraJob) : null;
+}
+
+export type LoraSalvageResult = {
+  ok: boolean;
+  // Number of .safetensors recovered (excludes the dataset archive).
+  salvaged: number;
+  // Files bundled into dataset_salvaged.zip.
+  captionFiles: number;
+  imageFiles: number;
+  // Recovered artifacts — download via downloadLoraCheckpoint / the signed
+  // URL, exactly like a completed job's checkpoints.
+  checkpoints: LoraCheckpoint[];
+};
+
+// Asks the salvage API to scan the Volume for whatever a failed / cancelled
+// job left behind (intermediate weights + persisted captions) and register
+// them for download. Safe to call more than once — it's idempotent.
+export async function salvageLoraJob(jobId: string): Promise<LoraSalvageResult> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) throw new Error("ログインが必要です。");
+
+  const res = await fetch("/api/studio/lora/salvage", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify({ jobId }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || data?.reason || "救出処理に失敗しました。");
+
+  const rawCkpts = Array.isArray(data.checkpoints)
+    ? (data.checkpoints as Record<string, unknown>[])
+    : [];
+  const checkpoints: LoraCheckpoint[] = rawCkpts
+    .map((c) => ({
+      step: typeof c.step === "number" ? c.step : 0,
+      filename: typeof c.filename === "string" ? c.filename : "",
+      sizeBytes: typeof c.size_bytes === "number" ? c.size_bytes : 0,
+      isFinal: c.is_final === true,
+      isCaptionArchive: c.is_caption_archive === true,
+    }))
+    .filter((c) => c.filename);
+
+  return {
+    ok: data.ok === true,
+    salvaged: typeof data.salvaged === "number" ? data.salvaged : 0,
+    captionFiles: typeof data.captionFiles === "number" ? data.captionFiles : 0,
+    imageFiles: typeof data.imageFiles === "number" ? data.imageFiles : 0,
+    checkpoints,
+  };
 }
