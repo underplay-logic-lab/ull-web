@@ -10,6 +10,7 @@ import {
   LORA_CREDIT_WORST_CASE,
 } from "@/lib/loraPricing";
 import { validateLoraYaml, loraYamlIdentity } from "@/lib/loraYaml";
+import { getAdminEmails } from "@/lib/adminAuth";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { geminiApiKey, runGeminiText } from "@/lib/geminiText";
 import {
@@ -133,6 +134,24 @@ async function handlePost(request: Request): Promise<NextResponse> {
 
   const trainingConfig = sanitizeTrainingConfig(body.training_config);
   const hasOverride = trainingConfig.custom_yaml_override !== undefined;
+
+  // Raw-YAML (full-custom job spec) is an admin / bespoke-contract feature —
+  // the Studio UI only exposes it to admins (see YamlVipLockCard). Enforce it
+  // here too so a hand-rolled request from a normal account can't smuggle a
+  // custom_yaml_override in. Checked before any credit debit or Modal spawn.
+  if (hasOverride) {
+    const email = user.email?.toLowerCase() ?? "";
+    if (!email || !getAdminEmails().includes(email)) {
+      console.warn(`[studio/lora/train] non-admin ${user.id} attempted custom_yaml_override — rejected`);
+      return NextResponse.json(
+        {
+          error:
+            "生YAML（フルカスタム学習ジョブ設定）は特注受託向けの機能です。個別相談からお問い合わせください。",
+        },
+        { status: 403 },
+      );
+    }
+  }
 
   // Second line of defence (the UI already blocks submit on syntax + schema
   // errors): reject a bad raw YAML here BEFORE debiting any credit or spinning

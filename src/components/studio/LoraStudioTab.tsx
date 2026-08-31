@@ -13,7 +13,9 @@ import {
   Download,
   ImagePlus,
   Loader2,
+  Lock,
   LogIn,
+  MessageCircle,
   RotateCcw,
   Sparkles,
   Trash2,
@@ -24,6 +26,7 @@ import { LoginModal } from "@/components/LoginModal";
 import { ToastStack, type ToastData } from "@/components/Toast";
 import { QueueStatusPanel } from "@/components/studio/QueueStatusPanel";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
+import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { supabase } from "@/lib/supabaseClient";
 import {
@@ -125,12 +128,16 @@ function loadFormDraft(): Partial<LoraFormDraft> | null {
   }
 }
 
-type Mode = "auto" | "semi" | "pro";
+// Two modes only. Caption handling is no longer a mode — it's auto-detected
+// from what's dropped in (images only -> Qwen auto-captions; image+.txt / a
+// .txt-bearing ZIP -> the user's captions, Qwen skipped). The old standalone
+// "セミオート" per-image caption form is folded into the optional curation
+// screen (which does the same editing, plus JP round-trip translation).
+type Mode = "auto" | "pro";
 
 const MODES: { id: Mode; label: string; desc: string }[] = [
-  { id: "auto", label: "⚡ 完全オート", desc: "画像・トリガー・モデルだけで一撃開始" },
-  { id: "semi", label: "🛠️ セミオート", desc: "キャプションを確認・微調整してから学習" },
-  { id: "pro", label: "🔬 エキスパート", desc: "Rank / LR / Steps や生 YAML を直接編集" },
+  { id: "auto", label: "⚡ オート (Auto)", desc: "画像を入れるだけ。キャプションは自動検知（同名 .txt があれば優先）" },
+  { id: "pro", label: "🔬 エキスパート (Pro)", desc: "Rank / LR / Steps スライダーや生 YAML を直接編集" },
 ];
 
 const PRESET_GROUPS: LoraPresetGroup[] = ["video", "photo", "anime"];
@@ -233,12 +240,12 @@ function ImageDropzone({
         <ImagePlus size={26} className="text-neon-violet" />
         <p className="text-sm font-medium text-foreground">画像 / ZIP をドラッグ＆ドロップ / クリックで選択</p>
         <p className="text-[11px] text-muted">
-          PNG・JPG・WEBP、複数可（推奨 15〜40 枚）。画像＋同名 .txt を含む ZIP も取り込めます。
+          PNG・JPG・WEBP、複数可（推奨 15〜40 枚）。画像＋同名 .txt（ZIP でも、まとめて選択・D&D でも可）を入れると自前キャプション扱いになります。
         </p>
         <input
           ref={inputRef}
           type="file"
-          accept="image/png,image/jpeg,image/webp,.zip,application/zip,application/x-zip-compressed"
+          accept="image/png,image/jpeg,image/webp,.zip,application/zip,application/x-zip-compressed,text/plain,.txt"
           multiple
           className="hidden"
           onChange={(e) => {
@@ -268,13 +275,13 @@ function ImageDropzone({
             {images.map((img) => (
               <div
                 key={img.id}
-                className="group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border border-border bg-black/30"
+                className="group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border border-border bg-neutral-900"
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={img.url}
                   alt={img.file.name}
-                  className="h-full w-full max-h-full max-w-full object-contain"
+                  className="h-full w-full object-contain"
                 />
                 {!disabled && (
                   <button
@@ -296,6 +303,57 @@ function ImageDropzone({
 }
 
 // ---------------------------------------------------------------------------
+
+// Shown to non-admins in place of the raw-YAML editor. The editor itself is a
+// support / bespoke-contract feature — an unchecked YAML paste is the fastest
+// way for a normal user to burn credits on a crashing run — so it's gated to
+// admins and everyone else gets this consultation prompt. (No physical GPU
+// model / vendor names here — CLAUDE.md §2.)
+function YamlVipLockCard() {
+  return (
+    <div className="rounded-lg border border-neon-violet/40 bg-neon-violet/[0.07] p-3">
+      <p className="flex items-center gap-1.5 text-[11px] font-bold text-neon-violet">
+        <Lock size={13} className="shrink-0" />
+        🔒 VIP / 特注受託専用機能（生YAMLフルカスタム）
+      </p>
+      <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
+        最上位クラスの専用GPUを用いた特注アーキテクチャ指定、Rank 64
+        超の極限LoRA、および業務受託モデルの構築は個別相談にて承っております。
+      </p>
+      <a
+        href="#contact"
+        className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-white transition-all hover:opacity-90"
+      >
+        <MessageCircle size={13} />
+        💬 特注LoRA・カスタム学習のご相談
+      </a>
+
+      {/* Smoke-glass preview of the locked editor. pointer-events-none +
+          select-none so it's purely decorative. */}
+      <div className="relative mt-2.5 overflow-hidden rounded-md border border-border">
+        <pre className="pointer-events-none select-none whitespace-pre-wrap p-2.5 font-mono text-[10px] leading-relaxed text-muted/40 blur-[1.5px]">
+          {`job: extension
+config:
+  name: bespoke_lora
+  process:
+    - type: sd_trainer
+      network:
+        type: lora
+        linear: 128
+      train:
+        batch_size: 4
+        steps: 4000`}
+        </pre>
+        <div className="absolute inset-0 flex items-center justify-center bg-background/30 backdrop-blur-[2px]">
+          <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background/85 px-2.5 py-1 text-[10px] font-medium text-muted">
+            <Lock size={11} />
+            ロック中
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // Spoiler-free live load indicator — deliberately no total, no %, no GPU
 // model. Just how much weight is currently resident.
@@ -655,6 +713,7 @@ function ProgressPanel({
               type="button"
               onClick={() => handleCkptDownload(captionArchive.filename)}
               disabled={downloadingCkpt !== null || copyingCkpt !== null}
+              title="学習に使用した画像とキャプション(.txt)を1つのZIPにまとめたものです。そのまま再学習に使えます。"
               className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             >
               {downloadingCkpt === captionArchive.filename ? (
@@ -662,7 +721,7 @@ function ProgressPanel({
               ) : (
                 <Download size={13} />
               )}
-              📝 生成キャプション一括DL (ZIP)
+              📦 キャプション付きデータセットDL (ZIP)
             </button>
           )}
         </div>
@@ -817,6 +876,10 @@ function ProgressPanel({
 export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string) => void }) {
   const { user } = useSupabaseUser();
   const { credits, loading: creditsLoading } = useProfileCredits(user);
+  // Gates the raw-YAML editor (a bespoke-contract / support feature). Non-
+  // admins get the consultation card and can never reach yamlMode, so the
+  // train payload from a normal account can't carry custom_yaml_override.
+  const { isAdmin, loading: adminLoading } = useIsAdmin(user);
 
   const [mode, setMode] = useState<Mode>("auto");
   const [images, setImages] = useState<DatasetImage[]>([]);
@@ -1012,9 +1075,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           return;
         }
         addDatasetFiles(entries.map((e) => ({ file: e.file, caption: e.caption })));
-        // The ZIP carried captions — switch out of fully-auto so the caption
-        // editors are visible even without curation.
-        if (entries.some((e) => e.caption.trim())) setMode((m) => (m === "auto" ? "semi" : m));
+        // Captions carried by the ZIP land in `captions` — the dropzone badge
+        // and runTraining pick them up automatically (Qwen is then skipped);
+        // no mode switch needed.
       } catch (err) {
         setErrorMessage(
           `ZIP の展開に失敗しました: ${err instanceof Error ? err.message : String(err)}`,
@@ -1031,7 +1094,30 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       const arr = Array.from(incoming);
       const imgs = arr.filter((f) => /^image\/(png|jpe?g|webp)$/.test(f.type));
       const zips = arr.filter((f) => isZipFile(f));
-      if (imgs.length) addDatasetFiles(imgs.map((file) => ({ file })));
+      // Loose <name>.txt dropped alongside <name>.<img> — pair them by base
+      // name so a plain "images + .txt" drop routes the same as a ZIP.
+      const txts = arr.filter((f) => /\.txt$/i.test(f.name) && !isZipFile(f));
+      const stem = (n: string) => n.replace(/\.[^.]+$/, "");
+
+      if (imgs.length) {
+        if (txts.length) {
+          void (async () => {
+            const byStem = new Map<string, string>();
+            await Promise.all(
+              txts.map(async (t) => {
+                try {
+                  byStem.set(stem(t.name), (await t.text()).trim());
+                } catch {
+                  /* unreadable .txt — image just gets auto-captioned */
+                }
+              }),
+            );
+            addDatasetFiles(imgs.map((file) => ({ file, caption: byStem.get(stem(file.name)) })));
+          })();
+        } else {
+          addDatasetFiles(imgs.map((file) => ({ file })));
+        }
+      }
       zips.forEach((z) => void importZip(z));
     },
     [addDatasetFiles, importZip],
@@ -1053,7 +1139,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const totalBytes = useMemo(() => images.reduce((s, i) => s + i.file.size, 0), [images]);
 
   const nameValid = LORA_NAME_RE.test(loraName.trim());
-  const yamlMode = mode === "pro" && pro.useRawYaml;
+  // Admin-only: a non-admin toggling pro.useRawYaml (persisted draft, React
+  // devtools, …) still resolves to yamlMode === false, so every downstream
+  // consumer — canSubmit, trainingConfig, price, effective name/trigger —
+  // takes the GUI-slider path and custom_yaml_override is never sent.
+  const yamlMode = mode === "pro" && pro.useRawYaml && isAdmin;
   // Live YAML syntax check for the raw-YAML editor — drives the badge below
   // the textarea and gates the submit button. Only meaningful in yamlMode.
   const yamlCheck = useMemo(
@@ -1427,14 +1517,19 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     }
   };
 
-  // Caption list the non-curation path sends: the semi-mode textareas, or
-  // whatever a ZIP populated into `captions`. null for fully-auto with no
-  // captions at all (the worker then auto-tags everything).
-  const semiCaptionList = (): string[] | null => {
-    if (mode !== "semi") return null;
+  // Auto-detected caption list for the non-curation path: whatever a
+  // .txt-bearing ZIP (or image+.txt drop) populated into `captions`, aligned
+  // to image order. null when nothing supplied a caption -> the worker runs
+  // the Qwen-27B auto-caption pass over every image.
+  const detectedCaptionList = (): string[] | null => {
     const list = images.map((img) => (captions[img.id] ?? "").trim());
     return list.some((c) => c.length > 0) ? list : null;
   };
+  // How many images arrived with their own caption (drives the dropzone badge).
+  const detectedCaptionCount = useMemo(
+    () => images.filter((img) => (captions[img.id] ?? "").trim().length > 0).length,
+    [images, captions],
+  );
 
   // Runs on "次へ" / "学習を開始" — turns the selected LoRA type + JP feature
   // notes into the English Qwen instruction (Gemini, with a deterministic
@@ -1506,7 +1601,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       return;
     }
 
-    const ownCaptions = semiCaptionList();
+    const ownCaptions = detectedCaptionList();
     await resolveCaptionPrompt(ownCaptions !== null);
     await runTraining(images, ownCaptions);
   };
@@ -1620,7 +1715,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       </div>
 
       {/* Mode switch */}
-      <div className="grid gap-2 sm:grid-cols-3">
+      <div className="grid gap-2 sm:grid-cols-2">
         {MODES.map((m) => (
           <button
             key={m.id}
@@ -1660,6 +1755,31 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             </p>
           )}
 
+          {/* Auto-routing badge: reflects the customCaptions / skipCaptioning
+              the payload will carry, decided purely by what was dropped in. */}
+          {images.length > 0 &&
+            (detectedCaptionCount > 0 ? (
+              <p className="flex items-start gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-[11px] leading-relaxed text-green-400">
+                <span className="shrink-0">📄</span>
+                <span>
+                  自前キャプション（{detectedCaptionCount} 件）を検知：
+                  <span className="font-medium">Qwen をスキップして高速学習</span>します
+                  {detectedCaptionCount < images.length &&
+                    `（キャプション無し ${images.length - detectedCaptionCount} 枚はトリガーワードのみ）`}
+                  。
+                </span>
+              </p>
+            ) : (
+              <p className="flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
+                <span className="shrink-0">🏷️</span>
+                <span>
+                  <span className="font-medium">Qwen 27B が自動キャプションを付与します</span>
+                  （画像＋同名 .txt の ZIP を入れると自前キャプション扱いになります
+                  {curationEnabled ? "。キュレーション画面で入力したキャプションも優先されます" : ""}）。
+                </span>
+              </p>
+            ))}
+
           <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-background/40 px-3 py-2">
             <input
               type="checkbox"
@@ -1675,42 +1795,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             </span>
           </label>
 
-          {mode === "semi" && images.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-[11px] text-muted">
-                {Object.values(captions).some((c) => c.trim().length > 0) ? (
-                  <>
-                    自前キャプション扱いで学習します。<span className="text-neon-violet">自動タグ付け（Qwen-27B）は実行されません</span>（空欄の画像はトリガーワードのみ）。
-                  </>
-                ) : (
-                  <>
-                    各画像のキャプションを微調整できます。すべて空欄のままなら<span className="text-neon-violet">全画像を自動でタグ付け</span>します（構図タグと部位タグは分離されます）。
-                  </>
-                )}
-              </p>
-              <div className="grid max-h-80 gap-2 overflow-y-auto pr-1">
-                {images.map((img) => (
-                  <div key={img.id} className="flex gap-2">
-                    <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-black/30">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={img.url}
-                        alt=""
-                        className="h-full w-full max-h-full max-w-full object-contain"
-                      />
-                    </div>
-                    <textarea
-                      value={captions[img.id] ?? ""}
-                      onChange={(e) => setCaptions((prev) => ({ ...prev, [img.id]: e.target.value }))}
-                      placeholder="(空欄 = 自動キャプション)"
-                      rows={2}
-                      disabled={busy}
-                      className={`${fieldCls} resize-none font-mono text-xs`}
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
+          {detectedCaptionCount > 0 && !curationEnabled && (
+            <p className="text-[10px] leading-relaxed text-muted">
+              取り込んだキャプションを個別に確認・編集したい場合は、上の「キュレーション画面で確認・編集する」を有効にしてください。
+            </p>
           )}
         </div>
 
@@ -1997,18 +2085,30 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
           {mode === "pro" && (
             <div className="space-y-3 rounded-xl border border-neon-pink/30 bg-neon-pink/5 p-3">
-              <label className="flex items-center gap-2 text-[11px] font-medium text-neon-pink">
-                <input
-                  type="checkbox"
-                  checked={pro.useRawYaml}
-                  onChange={(e) => setPro((p) => ({ ...p, useRawYaml: e.target.checked }))}
-                  disabled={busy}
-                  className="h-3.5 w-3.5 accent-neon-pink"
-                />
-                生 YAML を直接編集（学習ジョブ設定）
-              </label>
+              {isAdmin ? (
+                <label className="flex items-center gap-2 text-[11px] font-medium text-neon-pink">
+                  <input
+                    type="checkbox"
+                    checked={pro.useRawYaml}
+                    onChange={(e) => setPro((p) => ({ ...p, useRawYaml: e.target.checked }))}
+                    disabled={busy}
+                    className="h-3.5 w-3.5 accent-neon-pink"
+                  />
+                  生 YAML を直接編集（学習ジョブ設定）
+                  <span className="rounded bg-neon-pink/15 px-1 py-0.5 text-[9px] font-semibold text-neon-pink">
+                    ADMIN
+                  </span>
+                </label>
+              ) : adminLoading ? (
+                <p className="flex items-center gap-1.5 text-[10px] text-muted">
+                  <Loader2 size={11} className="animate-spin" />
+                  権限を確認中…
+                </p>
+              ) : (
+                <YamlVipLockCard />
+              )}
 
-              {pro.useRawYaml ? (
+              {yamlMode ? (
                 <>
                   <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[10px] leading-snug font-medium text-amber-400">
                     ⚠️ [Pro Custom YAML] パラメータ不正や非互換オプションによる学習失敗時、消費されたクレジットは返金されません（自己責任）。
