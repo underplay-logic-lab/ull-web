@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
@@ -35,10 +35,17 @@ import {
 const DEFAULT_LORA_RANK = 32;
 
 // Only debits credits, inserts a generation_jobs row and fires a fast
-// dispatch at Modal (train_lora_dispatch) — the multi-minute training runs
-// entirely inside a spawned Modal container. maxDuration covers the DB
-// writes + the dispatch (up to a ~55s cold start on the Modal side).
-export const maxDuration = 60;
+// dispatch at Modal (train_lora_dispatch, a warm min_containers=1 endpoint) —
+// the multi-minute training runs entirely inside the spawned container. The
+// response is returned the instant the spawn ack lands; the modal_call_id
+// persistence runs in `after()` so nothing slow sits between spawn and 200.
+// Any pre-spawn Gemini caption-prompt synthesis is hard-capped (see below).
+export const maxDuration = 90;
+
+// Hard cap on the optional pre-spawn Gemini caption-prompt synthesis so it
+// can never push the request toward a Vercel function timeout — on timeout
+// the deterministic fallback prompt is used instead.
+const CAPTION_SYNTH_TIMEOUT_MS = 5000;
 
 // Price is multi-dimensional (model / resolution / batch / rank / steps) —
 // see src/lib/loraPricing.ts. Always recomputed server-side from the real
@@ -262,11 +269,19 @@ async function handlePost(request: Request): Promise<NextResponse> {
     if (key) {
       try {
         const genAI = new GoogleGenerativeAI(key);
-        const raw = await runGeminiText(genAI, buildCaptionMetaPrompt(captionSpec, triggerWord), false);
+        const raw = await Promise.race([
+          runGeminiText(genAI, buildCaptionMetaPrompt(captionSpec, triggerWord), false),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("caption-prompt synth timeout")), CAPTION_SYNTH_TIMEOUT_MS),
+          ),
+        ]);
         captionPrompt = tidyCaptionPrompt(raw).slice(0, 4000);
         if (captionPrompt) captionPromptSource = "gemini";
       } catch (err) {
-        console.warn("[studio/lora/train] caption-prompt Gemini synthesis failed:", err);
+        console.warn(
+          "[studio/lora/train] caption-prompt Gemini synthesis skipped:",
+          err instanceof Error ? err.message : err,
+        );
       }
     }
     if (!captionPrompt) {
@@ -463,41 +478,12 @@ async function handlePost(request: Request): Promise<NextResponse> {
   const jobId = jobRow.id;
 
   // --- dispatch to Modal ------------------------------------------------
+  // Spawn is a warm, sub-second call (train_lora_dispatch keeps a container
+  // hot). We await ONLY the spawn ack, then return 200 immediately — the
+  // modal_call_id persistence runs in after() so nothing blocks the response.
+  let modalCallId: string | null = null;
   try {
-    const { modalCallId } = await spawnLoraTrainingJob({ ...spawnParams, jobId });
-
-    // The Modal FunctionCall id (fc-...) is what the pending-timeout path
-    // must physically .cancel(). Persist it immediately, in BOTH the column
-    // and inside inputs jsonb, and verify the write landed.
-    if (!modalCallId) {
-      console.error(`[studio/lora/train] job ${jobId}: Modal returned no modal_call_id — auto-failover cancel will not work`);
-    } else {
-      const mergedInputs = { ...jobInputs, modal_call_id: modalCallId };
-      const { error: upErr } = await supabaseAdmin
-        .from("generation_jobs")
-        .update({ modal_call_id: modalCallId, inputs: mergedInputs })
-        .eq("id", jobId);
-      if (upErr) {
-        console.warn(
-          `[studio/lora/train] job ${jobId}: modal_call_id column update failed (${upErr.message}); falling back to inputs jsonb`,
-        );
-        const { error: inputsErr } = await supabaseAdmin
-          .from("generation_jobs")
-          .update({ inputs: mergedInputs })
-          .eq("id", jobId);
-        if (inputsErr) {
-          console.error(`[studio/lora/train] job ${jobId}: failed to persist modal_call_id anywhere: ${inputsErr.message}`);
-        }
-      }
-      console.log(`[studio/lora/train] job ${jobId} <- modal_call_id ${modalCallId}`);
-    }
-
-    return NextResponse.json({
-      success: true,
-      jobId,
-      modalCallId: modalCallId ?? null,
-      remainingCredits: debitedCredits,
-    });
+    ({ modalCallId } = await spawnLoraTrainingJob({ ...spawnParams, jobId }));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const stack = err instanceof Error ? err.stack : undefined;
@@ -511,7 +497,6 @@ async function handlePost(request: Request): Promise<NextResponse> {
       })
       .eq("id", jobId);
     await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
-
     return NextResponse.json(
       {
         error: "ジョブの作成に失敗しました。",
@@ -523,4 +508,31 @@ async function handlePost(request: Request): Promise<NextResponse> {
       { status: 502 },
     );
   }
+
+  // Persist the Modal FunctionCall id (fc-...) — needed only later, by the
+  // pending-timeout auto-failover, so it happens after the response. If
+  // after() is cut short before this lands, the failover simply can't
+  // physically cancel (it still refunds + closes a stuck job).
+  after(async () => {
+    if (!modalCallId) {
+      console.error(`[studio/lora/train] job ${jobId}: Modal returned no modal_call_id`);
+      return;
+    }
+    const mergedInputs = { ...jobInputs, modal_call_id: modalCallId };
+    const { error: upErr } = await supabaseAdmin
+      .from("generation_jobs")
+      .update({ modal_call_id: modalCallId, inputs: mergedInputs })
+      .eq("id", jobId);
+    if (upErr) {
+      await supabaseAdmin.from("generation_jobs").update({ inputs: mergedInputs }).eq("id", jobId);
+    }
+    console.log(`[studio/lora/train] job ${jobId} <- modal_call_id ${modalCallId}`);
+  });
+
+  return NextResponse.json({
+    success: true,
+    jobId,
+    modalCallId: modalCallId ?? null,
+    remainingCredits: debitedCredits,
+  });
 }

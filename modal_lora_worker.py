@@ -34,6 +34,7 @@ Env overrides:
 """
 
 import base64
+import collections
 import copy
 import hashlib
 import hmac
@@ -307,17 +308,28 @@ LORA_OUTPUT_DIR = f"{MODELS_DIR}/loras"
 GPU_REQUEST = os.environ.get("LORA_WORKER_GPU", "").strip() or ["b300", "b200"]
 AI_TOOLKIT_REF = os.environ.get("AI_TOOLKIT_REF", "main")
 
-# --- GPU-cost defence -----------------------------------------------------
-# The container timeout is 12h, but we stop far earlier:
-#   PREP  — if ai-toolkit hasn't reached training Step 1 within this long
-#           (VAE latent-caching / model load), assume swap/deadlock, abort.
-#   COST  — once real step speed is known, if the projected TOTAL wall time
-#           would cost more real GPU money than the paid credits cover at a
-#           30% margin (_credit_covered_seconds), gracefully stop + 100%
-#           refund + leave the partial checkpoints salvageable.
-# LORA_SAFETY_LIMIT_S is only a hard fallback ceiling when credits_cost is 0.
-LORA_PREP_TIMEOUT_S = int(os.environ.get("LORA_PREP_TIMEOUT_S", str(20 * 60)))
+# --- GPU-cost defence / watchdogs ----------------------------------------
+# The container timeout is 12h, but we stop far earlier. Every watchdog is
+# milestone-linked so a normal (slow-but-progressing) run is never misfired:
+#   PREP-LOAD  — subprocess start -> "Model Loaded" : hard limit 15m.
+#   PREP-CACHE — "Model Loaded" -> training Step 1   : hard limit 25m
+#                (timer RESETS at the Model-Loaded milestone).
+#   COST       — after LORA_COST_MIN_STEP real steps, a trimmed moving
+#                average of s/it projects total wall time; if it would cost
+#                more real GPU money than the paid credits cover at a 30%
+#                margin (_credit_covered_seconds), graceful stop + 100%
+#                refund + salvageable partial checkpoints.
+# Checkpoint I/O (`Saving at step` / `Saved checkpoint`) grants a grace
+# window so a long disk sync never looks like a stall.
+# LORA_SAFETY_LIMIT_S is only a fallback ceiling for credits_cost == 0.
+LORA_PREP_LOAD_S = int(os.environ.get("LORA_PREP_LOAD_S", str(15 * 60)))
+LORA_PREP_CACHE_S = int(os.environ.get("LORA_PREP_CACHE_S", str(25 * 60)))
+LORA_COST_MIN_STEP = int(os.environ.get("LORA_COST_MIN_STEP", "50"))
+LORA_CKPT_IO_GRACE_S = int(os.environ.get("LORA_CKPT_IO_GRACE_S", str(5 * 60)))
 LORA_SAFETY_LIMIT_S = int(os.environ.get("LORA_SAFETY_LIMIT_S", str(5 * 60 * 60)))
+# Stage 1 (Qwen caption) dynamic budget: 30s/image, min 10 min.
+LORA_CAPTION_S_PER_IMG = int(os.environ.get("LORA_CAPTION_S_PER_IMG", "30"))
+LORA_CAPTION_MIN_S = int(os.environ.get("LORA_CAPTION_MIN_S", str(10 * 60)))
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
@@ -913,6 +925,7 @@ def _caption_missing(
     captions: list[str],
     trigger: str,
     caption_prompt: str = "",
+    budget_s: float | None = None,
 ) -> list[str]:
     """Returns a full caption list aligned to image_paths — supplied entries
     are kept verbatim, blanks/missing entries are filled by the VLM.
@@ -920,7 +933,12 @@ def _caption_missing(
     caption_prompt: the user's own instruction for the VLM (from the LoRA
     Studio "AIキャプション生成プロンプト" presets / free-text box). Applied
     to the Qwen chat messages verbatim. Empty -> the default character prompt.
+
+    budget_s: soft wall-clock budget for the whole Stage 1 (model load +
+    every batch). When it's blown, the remaining images get the trigger word
+    alone and training proceeds — never fail the job over a slow VLM.
     """
+    _stage1_start = time.time()
     filled = list(captions) + [""] * max(0, len(image_paths) - len(captions))
     todo = [i for i, cap in enumerate(filled[: len(image_paths)]) if not (cap or "").strip()]
     if not todo:
@@ -1017,6 +1035,17 @@ Follow the user's instructions (provided in Japanese or English) and generate a 
 
     batch_size = int(os.environ.get("CAPTION_BATCH", "8"))
     for start in range(0, len(todo), batch_size):
+        if budget_s is not None and (time.time() - _stage1_start) > budget_s:
+            leftover = todo[start:]
+            for i in leftover:
+                filled[i] = trigger
+            print(
+                f"[stage1] caption budget {budget_s:.0f}s exceeded after "
+                f"{time.time() - _stage1_start:.0f}s — {len(leftover)} image(s) get the "
+                f"trigger word only, continuing to training",
+                flush=True,
+            )
+            break
         idx_chunk = todo[start : start + batch_size]
         texts, images = [], []
         for i in idx_chunk:
@@ -1389,6 +1418,41 @@ def _build_config(
 _TQDM_STEP_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s*\[[^\]]*?([\d.]+)\s*(s/it|it/s)")
 _TQDM_LOSS_RE = re.compile(r"loss[:=]\s*([\d.]+(?:[eE][+-]?\d+)?)")
 
+# Prep-phase milestone markers (broadly matched — ai-toolkit wording varies).
+_MODEL_LOADED_RE = re.compile(
+    r"model\s*loaded|loaded\s+(?:the\s+)?model|weights?\s+loaded|finished\s+loading|"
+    r"load(?:ing|ed).{0,20}complete|pipeline\s+ready",
+    re.IGNORECASE,
+)
+_CACHE_RE = re.compile(r"cach\w*\s+latents?|latent\s+cache|bucket|preprocess", re.IGNORECASE)
+_CKPT_SAVE_RE = re.compile(
+    r"saving\s+at\s+step|saved\s+checkpoint|saving\s+checkpoint|saving\s+model|"
+    r"writing\s+safetensors",
+    re.IGNORECASE,
+)
+
+
+def _trimmed_spi(hist) -> float | None:
+    """Trimmed-mean seconds/iteration over the recent ~30-step window — drops
+    the fastest & slowest 15% of per-interval samples so an initial JIT stall
+    (or a burst of cached-latent fast steps) doesn't skew the projection."""
+    xs = list(hist)
+    if len(xs) < 5:
+        return None
+    last_step = xs[-1][1]
+    xs = [p for p in xs if last_step - p[1] <= 30] or xs
+    ivs: list[float] = []
+    for (t0, s0), (t1, s1) in zip(xs, xs[1:]):
+        ds = s1 - s0
+        if ds > 0:
+            ivs.append((t1 - t0) / ds)
+    if len(ivs) < 3:
+        return None
+    ivs.sort()
+    k = max(1, int(len(ivs) * 0.15))
+    core = ivs[k:-k] if len(ivs) > 2 * k else ivs
+    return (sum(core) / len(core)) if core else None
+
 
 def _fmt_duration(seconds: float | None) -> str:
     if not seconds or seconds < 0:
@@ -1408,7 +1472,6 @@ def _run_ai_toolkit_with_progress(
     commit_vol: bool = False,
     job_started_ts: float | None = None,
     safety_limit_s: int = LORA_SAFETY_LIMIT_S,
-    prep_timeout_s: int = LORA_PREP_TIMEOUT_S,
 ) -> None:
     """Runs `python -u run.py <config>`, streaming its merged stdout/stderr
     line-by-line to this container's stdout (-> Modal's live log) while
@@ -1417,12 +1480,16 @@ def _run_ai_toolkit_with_progress(
     total_steps / eta_seconds / loss in metadata) at most every 5s or 10
     steps.
 
-    GPU-cost defence (see LORA_PREP_TIMEOUT_S / LORA_SAFETY_LIMIT_S):
-      * if training Step 1 isn't reached within `prep_timeout_s`, kill the
-        subprocess (swap/deadlock) and raise SafetyLimitError;
-      * once the real step rate is known, if the projected TOTAL wall time
-        (`job_started_ts` -> predicted finish) would exceed `safety_limit_s`,
-        gracefully stop, commit the partial checkpoints, raise SafetyLimitError.
+    Watchdogs (all milestone-linked — see the LORA_PREP_* / LORA_COST_MIN_STEP
+    / LORA_CKPT_IO_GRACE_S constants):
+      * PREP-LOAD  : subprocess start -> "Model Loaded", hard limit 15m.
+      * PREP-CACHE : "Model Loaded" -> training Step 1, hard limit 25m (the
+                     timer resets at the Model-Loaded milestone).
+      * COST       : after LORA_COST_MIN_STEP steps, trimmed-mean s/it projects
+                     total wall time; over `safety_limit_s` -> graceful stop +
+                     SafetyLimitError(kind="cost", refund=True).
+      * checkpoint I/O (`Saving at step` / `Saved checkpoint`) grants a grace
+        window so a long disk sync is never read as a stall.
 
     commit_vol: when the trainer writes into the mounted Volume (a per-job
     PERSIST_OUTPUT_ROOT dir), vol.commit() every ~2 min so the intermediate
@@ -1650,6 +1717,10 @@ for _k, _v in list(globals().items()):
             training_start: float | None = None
             first_step = 0
             last_output = time.time()
+            prep_phase = "load"          # "load" -> "cache" -> (training)
+            phase_start = sub_start      # RESET at the Model-Loaded milestone
+            io_grace_until = 0.0         # extended while a checkpoint is syncing
+            rate_hist = collections.deque(maxlen=40)  # (wall_ts, step) samples
 
             while True:
                 try:
@@ -1666,6 +1737,27 @@ for _k, _v in list(globals().items()):
                     log_file.flush()
 
                     m = _TQDM_STEP_RE.search(line)
+
+                    # milestone: prep-load -> prep-cache. Any of "Model Loaded",
+                    # a latent-cache line, or a tqdm bar proves the model is
+                    # past loading — reset the phase timer for the cache phase.
+                    if training_start is None and prep_phase == "load" and (
+                        _MODEL_LOADED_RE.search(line) or _CACHE_RE.search(line) or m
+                    ):
+                        prep_phase = "cache"
+                        phase_start = time.time()
+                        print(
+                            f"[stage2] milestone: model loaded at {phase_start - sub_start:.0f}s "
+                            f"— VAE cache phase (limit {LORA_PREP_CACHE_S // 60}m)",
+                            flush=True,
+                        )
+
+                    # checkpoint disk sync — grant an I/O grace window so the
+                    # ensuing silence never reads as a stall.
+                    if _CKPT_SAVE_RE.search(line):
+                        io_grace_until = time.time() + LORA_CKPT_IO_GRACE_S
+                        print(f"[stage2] checkpoint I/O — monitor grace {LORA_CKPT_IO_GRACE_S // 60}m", flush=True)
+
                     # Training runs are >=200 steps (UI floor); ai-toolkit's
                     # sample-generation tqdm loops are ~20-50 — ignore those.
                     if m and int(m.group(2)) >= 100:
@@ -1680,6 +1772,7 @@ for _k, _v in list(globals().items()):
                                 state["loss"] = round(float(lm.group(1)), 4)
                             except ValueError:
                                 pass
+                        rate_hist.append((time.time(), state["step"]))
                         if training_start is None:
                             training_start = time.time()
                             first_step = state["step"]
@@ -1693,34 +1786,35 @@ for _k, _v in list(globals().items()):
 
                 now = time.time()
 
-                # (1) prep deadlock: past prep_timeout_s with no training step,
-                #     AND either silent for >2 min or 2x over the budget.
-                if training_start is None and (now - sub_start) > prep_timeout_s:
-                    if (now - last_output) > 120 or (now - sub_start) > prep_timeout_s * 2:
+                # (1) prep-phase milestone timers — a hard limit per phase, so
+                #     a slow-but-progressing prep is never misfired.
+                if training_start is None:
+                    limit = LORA_PREP_LOAD_S if prep_phase == "load" else LORA_PREP_CACHE_S
+                    phase_name = "モデル展開" if prep_phase == "load" else "VAEラテントキャッシュ"
+                    if (now - phase_start) > limit and now > io_grace_until:
                         aborted = (
-                            f"準備フェーズ（VAEラテントキャッシュ/モデルロード）が "
-                            f"{int((now - sub_start) // 60)} 分続いても学習（Step 1）を開始しません"
-                            f"（直近 {int(now - last_output)}s 出力なし）。"
+                            f"準備フェーズ（{phase_name}）が上限 {limit // 60} 分を超えました。"
                             f"スワップ/デッドロックと判定し、中断しました。"
                         )
                         aborted_kind = "prep"
                         break
 
-                # (2) projected wall time would cost more than the paid credits
-                #     cover (at a 30% margin) — original-cost defence.
-                if training_start is not None and (state["step"] - first_step) >= 20 and state["total"] > 0:
-                    measured_spi = (now - training_start) / max(1, state["step"] - first_step)
-                    remaining = max(0, state["total"] - state["step"])
-                    projected_total = (now - job_start) + remaining * measured_spi
-                    if projected_total > safety_limit_s:
-                        aborted = (
-                            f"Terminated to protect cost: Projected time "
-                            f"({projected_total / 3600:.1f}h) exceeds credit-covered limit "
-                            f"({safety_limit_s / 3600:.1f}h). Credits have been fully refunded. "
-                            f"(measured {measured_spi:.2f}s/it, stopped at Step {state['step']}/{state['total']})"
-                        )
-                        aborted_kind = "cost"
-                        break
+                # (2) cost defence — only after LORA_COST_MIN_STEP real training
+                #     steps (past the JIT-warmup phase), on a trimmed s/it MA.
+                elif (state["step"] - first_step) >= LORA_COST_MIN_STEP and state["total"] > 0:
+                    spi = _trimmed_spi(rate_hist)
+                    if spi and spi > 0:
+                        remaining = max(0, state["total"] - state["step"])
+                        projected_total = (now - job_start) + remaining * spi
+                        if projected_total > safety_limit_s:
+                            aborted = (
+                                f"Terminated to protect cost: Projected time "
+                                f"({projected_total / 3600:.1f}h) exceeds credit-covered limit "
+                                f"({safety_limit_s / 3600:.1f}h). Credits have been fully refunded. "
+                                f"(measured {spi:.2f}s/it, stopped at Step {state['step']}/{state['total']})"
+                            )
+                            aborted_kind = "cost"
+                            break
 
             if aborted:
                 print(f"[stage2] SAFETY ABORT ({aborted_kind}): {aborted}", flush=True)
@@ -2111,7 +2205,10 @@ def train_lora_job(params: dict) -> dict:
             captions = [p.with_suffix(".txt").read_text(encoding="utf-8").strip() for p in image_paths]
         else:
             _patch_job(job_id, {"progress_percent": 3, "progress_message": "captioning dataset"})
-            captions = _caption_missing(image_paths, supplied, trigger, caption_prompt)
+            _cap_budget = max(LORA_CAPTION_MIN_S, LORA_CAPTION_S_PER_IMG * len(image_paths))
+            captions = _caption_missing(
+                image_paths, supplied, trigger, caption_prompt, budget_s=_cap_budget
+            )
             # Defence-in-depth: every VLM-produced caption goes through the
             # CoT/preamble sanitiser again right before it hits disk.
             captions = [_sanitize_caption(cap, trigger) for cap in captions]
