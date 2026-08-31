@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabaseClient";
 import type { LoraBaseArchitecture } from "@/lib/loraModels";
+import type { LoraCaptionSpec } from "@/lib/loraCaptionSpec";
 
 // A preset id from LORA_PRESETS, or the literal "custom" (universal loader).
 export type LoraTargetModel = string;
@@ -74,6 +75,10 @@ export type StartLoraTrainingParams = {
   // The user's own instruction for the auto-caption VLM (category preset or
   // free-text). Empty / omitted -> the worker's default character prompt.
   captionPrompt?: string;
+  // The structured LoRA-type spec (人物 / 画風 / 物質 / 風景 ＋ 固定/変化させ
+  // たい特徴の日本語). The server rebuilds captionPrompt from this when the
+  // browser didn't send a generated one.
+  captionSpec?: LoraCaptionSpec;
 };
 
 export type LoraApiError = Error & { remainingCredits?: number; requiredCredits?: number };
@@ -101,6 +106,7 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
       custom_captions: params.customCaptions,
       skip_captioning: params.skipCaptioning,
       caption_prompt: params.captionPrompt,
+      caption_spec: params.captionSpec,
     }),
   });
 

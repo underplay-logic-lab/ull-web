@@ -10,6 +10,15 @@ import {
   LORA_CREDIT_WORST_CASE,
 } from "@/lib/loraPricing";
 import { validateLoraYaml, loraYamlIdentity } from "@/lib/loraYaml";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { geminiApiKey, runGeminiText } from "@/lib/geminiText";
+import {
+  buildCaptionFallbackPrompt,
+  buildCaptionMetaPrompt,
+  captionSpecHasInput,
+  normalizeCaptionSpec,
+  tidyCaptionPrompt,
+} from "@/lib/loraCaptionSpec";
 import {
   BLOCKED_LORA_MODEL_MESSAGE,
   DEFAULT_LORA_RESOLUTION,
@@ -226,14 +235,45 @@ async function handlePost(request: Request): Promise<NextResponse> {
     : undefined;
   const skipCaptioning =
     body.skip_captioning === true || (customCaptions?.some((c) => c.trim().length > 0) ?? false);
-  // The user's own auto-caption VLM instruction (a category preset or
-  // free-text edit). Bounded so a huge paste can't bloat the job payload.
-  const captionPrompt =
+  // The user's own auto-caption VLM instruction. Normally the browser has
+  // already run the category-aware Gemini synthesis (see below) and sends the
+  // finished English instruction here; free-text edits also land here.
+  // Bounded so a huge paste can't bloat the job payload.
+  let captionPrompt =
     typeof body.caption_prompt === "string" ? body.caption_prompt.trim().slice(0, 4000) : "";
+  // The structured category spec (人物 / 画風 / 物質 / 風景 ＋ 固定/変化させたい
+  // 特徴の日本語). Used to (re)build caption_prompt server-side when the client
+  // didn't send a generated one — the authoritative fallback for the request.
+  const captionSpec = normalizeCaptionSpec(body.caption_spec);
   // Raw-YAML mode: the YAML's process[0].trigger_word wins over the (disabled)
   // form field.
   const triggerWord =
     (yamlId?.triggerWord || (typeof body.trigger_word === "string" ? body.trigger_word.trim() : "")).slice(0, 60);
+
+  // LoRA-type-aware caption prompt: if the browser sent a spec but no
+  // generated instruction (Gemini was down there, or the request was
+  // hand-crafted), synthesise it here — Gemini first, deterministic fallback
+  // if that also fails. skip entirely when the user brought their own
+  // captions (the VLM never runs) or already sent an instruction.
+  let captionPromptSource: "client" | "gemini" | "fallback" | "none" =
+    captionPrompt ? "client" : "none";
+  if (!captionPrompt && !skipCaptioning && captionSpec && captionSpecHasInput(captionSpec)) {
+    const key = geminiApiKey();
+    if (key) {
+      try {
+        const genAI = new GoogleGenerativeAI(key);
+        const raw = await runGeminiText(genAI, buildCaptionMetaPrompt(captionSpec, triggerWord), false);
+        captionPrompt = tidyCaptionPrompt(raw).slice(0, 4000);
+        if (captionPrompt) captionPromptSource = "gemini";
+      } catch (err) {
+        console.warn("[studio/lora/train] caption-prompt Gemini synthesis failed:", err);
+      }
+    }
+    if (!captionPrompt) {
+      captionPrompt = buildCaptionFallbackPrompt(captionSpec, triggerWord).slice(0, 4000);
+      captionPromptSource = "fallback";
+    }
+  }
   const resolution = (LORA_RESOLUTIONS as readonly number[]).includes(Number(body.resolution))
     ? Number(body.resolution)
     : DEFAULT_LORA_RESOLUTION;
@@ -347,6 +387,15 @@ async function handlePost(request: Request): Promise<NextResponse> {
       priced_steps: priceBreakdown?.steps ?? null,
       price_breakdown: priceBreakdown,
     },
+    // How the auto-caption instruction was produced, for support / auditing.
+    caption_prompt_meta: captionSpec
+      ? {
+          category: captionSpec.category,
+          source: captionPromptSource,
+          has_fixed: captionSpec.fixed.length > 0,
+          has_varying: captionSpec.varying.length > 0,
+        }
+      : { source: captionPromptSource },
     dispatch: dispatchPayload,
   };
 

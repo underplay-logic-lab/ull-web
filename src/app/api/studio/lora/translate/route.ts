@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { GoogleGenerativeAI, SchemaType, type GenerationConfig } from "@google/generative-ai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import {
+  geminiApiKey,
+  geminiErrorResponse,
+  geminiNotConfiguredResponse,
+  runGeminiText,
+} from "@/lib/geminiText";
 
 // Caption translation for the LoRA Studio dataset-curation UI. Uses Google
-// AI Studio (Gemini) — the free tier needs no card / billing ($0). Set
-// GEMINI_API_KEY (and optionally GEMINI_MODEL) in the env.
+// AI Studio (Gemini) — the free tier needs no card / billing ($0). The
+// finicky model-id gating + retry logic lives in src/lib/geminiText.ts.
 //
 //   action "to_ja": English tag list / prose -> natural Japanese
 //   action "to_en": the user's edited Japanese -> a Danbooru-style
@@ -22,52 +28,12 @@ const MAX_BATCH = 40;
 const MAX_BATCH_CHARS = 24000;
 type Action = "to_ja" | "to_en";
 
-// Model notes (2026-08):
-//  - gemini-1.5-flash / gemini-2.0-flash: retired, 404.
-//  - gemini-2.5-flash / -lite: 404 "no longer available to new users" for
-//    recently-created API keys.
-//  - gemini-flash-latest: allowed, but frequently 503 "high demand".
-//  - gemini-3.6-flash: reliable for new keys → default head.
-// GEMINI_MODEL overrides the head of the list (recommended: pin one).
-function modelCandidates(): string[] {
-  const configured = process.env.GEMINI_MODEL?.trim();
-  return [
-    ...new Set(
-      [configured, "gemini-3.6-flash", "gemini-flash-latest", "gemini-2.5-flash"].filter(Boolean),
-    ),
-  ] as string[];
-}
-
-const QUOTA_RE = /quota|rate limit|resource has been exhausted|\b429\b/i;
-const BUSY_RE = /overloaded|high demand|unavailable|temporarily|\b503\b/i;
-const MISSING_RE = /not found|not supported|unsupported|no longer available|\b404\b|does not exist/i;
-const THINKING_RE = /thinking|thinkingbudget|thinkingconfig/i;
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-// gemini-2.x "think" by default and burn the output budget on hidden
-// reasoning — thinkingBudget:0 turns it off. That knob is 2.x-only: 3.x
-// rejects it (400, uses thinkingLevel instead), so only send it for a 2.x
-// id or the flash-latest/-lite aliases (which currently point at 2.5).
-// thinkingConfig isn't in this SDK version's types; the field is forwarded
-// to v1beta verbatim. `dropThinking` is set on a 400-retry (see runGemini).
-function genConfig(model: string, jsonArray: boolean, dropThinking: boolean): GenerationConfig {
-  const cfg: Record<string, unknown> = { temperature: 0.2, maxOutputTokens: 8192 };
-  if (!dropThinking) {
-    if (/^gemini-3\./.test(model)) {
-      // 3.x rejects thinkingBudget:0 (400); thinkingLevel LOW keeps latency
-      // sane (a batch otherwise "thinks" for 20-30s).
-      cfg.thinkingConfig = { thinkingLevel: "LOW" };
-    } else if (/^gemini-2\.|^gemini-flash(-lite)?-latest$/.test(model)) {
-      cfg.thinkingConfig = { thinkingBudget: 0 };
-    }
-  }
-  if (jsonArray) {
-    cfg.responseMimeType = "application/json";
-    cfg.responseSchema = { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } };
-  }
-  return cfg as unknown as GenerationConfig;
-}
+const TRANSLATE_ERR_MESSAGES = {
+  tag: "studio/lora/translate",
+  quota: "翻訳の無料利用枠を超過しました。少し時間をおいて再試行してください。",
+  busy: "翻訳サービスが一時的に混雑しています。少し待って再試行してください。",
+  failed: "翻訳に失敗しました。",
+} as const;
 
 function taskLine(action: Action): string {
   return action === "to_ja"
@@ -112,86 +78,6 @@ function tidy(action: Action, raw: string): string {
   return out;
 }
 
-type GemErr = { kind: "quota" | "busy" | "failed"; message: string };
-const isGemErr = (e: unknown): e is GemErr =>
-  typeof e === "object" && e !== null && "kind" in e && "message" in e;
-
-// Runs the prompt against the model-candidate list with a 503 retry. Returns
-// the raw response text; throws a GemErr on quota / persistent busy / failure.
-async function runGemini(genAI: GoogleGenerativeAI, prompt: string, jsonArray: boolean): Promise<string> {
-  let lastErr = "";
-  let sawBusy = false;
-  for (const modelId of modelCandidates()) {
-    let dropThinking = false;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const model = genAI.getGenerativeModel({
-          model: modelId,
-          generationConfig: genConfig(modelId, jsonArray, dropThinking),
-        });
-        const result = await model.generateContent(prompt);
-        const resp = result.response;
-        const cand = resp.candidates?.[0];
-        let out = "";
-        try {
-          out = resp.text() ?? "";
-        } catch {
-          out =
-            cand?.content?.parts
-              ?.map((p) => (typeof (p as { text?: unknown }).text === "string" ? (p as { text: string }).text : ""))
-              .join("") ?? "";
-        }
-        if (out.trim()) return out;
-        lastErr = `empty response (${resp.promptFeedback?.blockReason ?? cand?.finishReason ?? "empty"})`;
-        if (attempt === 0 && cand?.finishReason === "MAX_TOKENS") continue;
-        break; // -> next candidate
-      } catch (err) {
-        lastErr = err instanceof Error ? err.message : String(err);
-        if (QUOTA_RE.test(lastErr)) throw { kind: "quota", message: lastErr } satisfies GemErr;
-        if (BUSY_RE.test(lastErr)) {
-          sawBusy = true;
-          if (attempt === 0) {
-            await sleep(1500);
-            continue;
-          }
-          console.warn(`[studio/lora/translate] ${modelId} overloaded, trying next`);
-          break;
-        }
-        if (MISSING_RE.test(lastErr)) {
-          console.warn(`[studio/lora/translate] ${modelId} unavailable, trying next: ${lastErr}`);
-          break;
-        }
-        // A 3.x model rejecting thinkingBudget (or a repointed alias) — retry
-        // the same model once with thinkingConfig dropped.
-        if (!dropThinking && THINKING_RE.test(lastErr)) {
-          dropThinking = true;
-          console.warn(`[studio/lora/translate] ${modelId}: retrying without thinkingConfig`);
-          continue;
-        }
-        throw { kind: "failed", message: lastErr } satisfies GemErr;
-      }
-    }
-  }
-  throw { kind: sawBusy ? "busy" : "failed", message: lastErr } satisfies GemErr;
-}
-
-function errorResponse(e: unknown): NextResponse {
-  if (isGemErr(e)) {
-    const status = e.kind === "quota" ? 429 : e.kind === "busy" ? 503 : 502;
-    const error =
-      e.kind === "quota"
-        ? "翻訳の無料利用枠を超過しました。少し時間をおいて再試行してください。"
-        : e.kind === "busy"
-          ? "翻訳サービスが一時的に混雑しています。少し待って再試行してください。"
-          : "翻訳に失敗しました。";
-    console.error("[studio/lora/translate] Gemini failed:", e.message);
-    return NextResponse.json({ error, reason: e.message }, { status });
-  }
-  const message = e instanceof Error ? e.message : String(e);
-  console.error("[studio/lora/translate] unhandled:", message);
-  return NextResponse.json({ error: "翻訳に失敗しました。", reason: message }, { status: 500 });
-}
-
 export async function POST(request: Request): Promise<NextResponse> {
   try {
     const authHeader = request.headers.get("authorization");
@@ -209,13 +95,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       return NextResponse.json({ error: "認証に失敗しました。" }, { status: 401 });
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: "翻訳機能が未設定です。管理者に GEMINI_API_KEY の設定を依頼してください。" },
-        { status: 501 },
-      );
-    }
+    const apiKey = geminiApiKey();
+    if (!apiKey) return geminiNotConfiguredResponse();
 
     const body = await request.json().catch(() => null);
     const action = (body?.action === "to_en" ? "to_en" : body?.action === "to_ja" ? "to_ja" : null) as Action | null;
@@ -240,9 +121,9 @@ export async function POST(request: Request): Promise<NextResponse> {
 
       let raw: string;
       try {
-        raw = await runGemini(genAI, buildBatchPrompt(action, items), true);
+        raw = await runGeminiText(genAI, buildBatchPrompt(action, items), true);
       } catch (e) {
-        return errorResponse(e);
+        return geminiErrorResponse(e, TRANSLATE_ERR_MESSAGES);
       }
       let arr: unknown;
       try {
@@ -275,12 +156,12 @@ export async function POST(request: Request): Promise<NextResponse> {
     }
     let raw: string;
     try {
-      raw = await runGemini(genAI, buildSinglePrompt(action, text), false);
+      raw = await runGeminiText(genAI, buildSinglePrompt(action, text), false);
     } catch (e) {
-      return errorResponse(e);
+      return geminiErrorResponse(e, TRANSLATE_ERR_MESSAGES);
     }
     return NextResponse.json({ translation: tidy(action, raw), action });
   } catch (err) {
-    return errorResponse(err);
+    return geminiErrorResponse(err, TRANSLATE_ERR_MESSAGES);
   }
 }

@@ -63,6 +63,14 @@ import {
 import { validateLoraYaml, loraYamlIdentity } from "@/lib/loraYaml";
 import { DatasetCurationUI, type CurationPair } from "@/components/studio/DatasetCurationUI";
 import { parseDatasetZip, isZipFile } from "@/lib/datasetZip";
+import {
+  LORA_CAPTION_CATEGORIES,
+  LORA_CAPTION_CATEGORY_META,
+  captionSpecHasInput,
+  type LoraCaptionCategory,
+  type LoraCaptionSpec,
+} from "@/lib/loraCaptionSpec";
+import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
 const JOB_POLL_INTERVAL_MS = 3000;
 const MAX_IMAGES = 200;
 const MAX_TOTAL_BYTES = 120 * 1024 * 1024; // 120 MB of raw image bytes
@@ -106,37 +114,11 @@ const LR_PRESETS: { value: number; label: string }[] = [
   { value: 0.00005, label: "0.00005 (5e-5) ・ 微調整" },
 ];
 
-// Category presets for the auto-caption instruction — shown to the user in
-// Japanese. Pick one, then optionally edit the text freely; whatever's in
-// the box is sent to the worker as `caption_prompt`, which wraps it in an
-// English-output template before handing it to Qwen. 人物・キャラ is default.
-export const CAPTION_PROMPT_PRESETS: { label: string; icon: string; prompt: string }[] = [
-  {
-    label: "人物・キャラ",
-    icon: "👤",
-    prompt:
-      "被写体の外見、髪型、表情、服装、ポーズ、カメラ構図（クローズアップ/上半身/全身）、ライティング、背景を詳細に描写せよ。被写体と背景の要素を明確に分離すること。",
-  },
-  {
-    label: "画風・スタイル",
-    icon: "🎨",
-    prompt:
-      "芸術的スタイル、画風、質感、レンダリング手法、色使い、筆致、線画の特徴を詳細に描写せよ。描かれている物体は簡潔にし、スタイルの特徴に焦点を当てること。",
-  },
-  {
-    label: "オブジェクト・物質",
-    icon: "📦",
-    prompt:
-      "被写体（オブジェクト・物質）の形状、構造、素材の質感（金属光沢、布、マット等）、細部のディテール、アングルを客観的に描写せよ。無関係な背景は無視すること。",
-  },
-  {
-    label: "風景・背景",
-    icon: "🏞️",
-    prompt:
-      "風景・環境の空間レイアウト、建築様式、時間帯、天候、ライティング、空気感、遠近感と奥行きを詳細に描写せよ。",
-  },
-];
-const DEFAULT_CAPTION_PROMPT = CAPTION_PROMPT_PRESETS[0].prompt;
+// Auto-caption prompt is now built from the selected LoRA type (人物 / 画風 /
+// 物質 / 風景) plus the user's Japanese notes on which features to lock in vs.
+// let vary — see src/lib/loraCaptionSpec.ts. On "次へ" the browser calls
+// /api/studio/lora/caption-prompt (Gemini) to synthesise the English
+// instruction handed to the worker's Qwen captioner as `caption_prompt`.
 
 type DatasetImage = { id: string; file: File; url: string };
 
@@ -740,9 +722,26 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const [triggerWord, setTriggerWord] = useState("");
   const [loraName, setLoraName] = useState("");
   const [pro, setPro] = useState<ProConfig>(DEFAULT_PRO);
-  // Auto-caption VLM instruction — a category preset the user can then edit.
-  const [captionPrompt, setCaptionPrompt] = useState<string>(DEFAULT_CAPTION_PROMPT);
+  // LoRA-type-aware auto-caption spec: the training TYPE + the user's JP notes
+  // on which features to lock into the trigger (blacklisted from captions) vs.
+  // let vary (described). Gemini turns this into the English Qwen instruction.
+  const [captionCategory, setCaptionCategory] = useState<LoraCaptionCategory>("person");
+  const [captionFixed, setCaptionFixed] = useState("");
+  const [captionVarying, setCaptionVarying] = useState("");
+  // User-edited final English instruction — empty = use whatever Gemini builds
+  // on "次へ". Non-empty overrides generation.
+  const [captionPromptOverride, setCaptionPromptOverride] = useState("");
   const [captionPromptOpen, setCaptionPromptOpen] = useState(false);
+  // Last synthesised English instruction + how it was produced, for display.
+  const [captionGen, setCaptionGen] = useState<{
+    state: "idle" | "generating" | "done" | "error";
+    prompt: string;
+    fromGemini: boolean;
+    error: string | null;
+  }>({ state: "idle", prompt: "", fromGemini: false, error: null });
+  // The instruction actually sent with the current run — set in handleStart so
+  // both the direct and post-curation training paths pick it up.
+  const resolvedCaptionPromptRef = useRef<string>("");
 
   const [phase, setPhase] = useState<Phase>("form");
   // Opt-in visual dataset curation: after upload, review/cull images and
@@ -892,6 +891,17 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // Mirrors the worker's _derive_trigger: explicit trigger, else the first
   // alnum run of the LoRA name. Used to protect the token during translation.
   const curationTrigger = effectiveTrigger || (effectiveLoraName.match(/[A-Za-z0-9]+/)?.[0] ?? "");
+
+  const captionSpec: LoraCaptionSpec = useMemo(
+    () => ({
+      category: captionCategory,
+      fixed: captionFixed.trim(),
+      varying: captionVarying.trim(),
+    }),
+    [captionCategory, captionFixed, captionVarying],
+  );
+  const captionSpecFilled = captionSpecHasInput(captionSpec);
+  const captionCategoryMeta = LORA_CAPTION_CATEGORY_META[captionCategory];
   // Alpha follows Rank unless the user explicitly unlinks it. Nullish (a
   // pre-existing `pro` object from before this flag existed, kept across a
   // dev Fast Refresh) counts as linked so the default is genuinely ON.
@@ -1182,7 +1192,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         triggerWord: effectiveTrigger,
         customCaptions: hasOwnCaptions ? captionList : undefined,
         skipCaptioning: hasOwnCaptions || undefined,
-        captionPrompt: captionPrompt.trim() || undefined,
+        captionPrompt: resolvedCaptionPromptRef.current.trim() || undefined,
+        // The structured LoRA-type spec — the server rebuilds caption_prompt
+        // from this if the browser couldn't (Gemini down here).
+        captionSpec: captionSpecFilled ? captionSpec : undefined,
       });
       const { jobId, remainingCredits } = startRes;
       console.log("[lora] train ->", startRes);
@@ -1226,6 +1239,45 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     return list.some((c) => c.length > 0) ? list : null;
   };
 
+  // Runs on "次へ" / "学習を開始" — turns the selected LoRA type + JP feature
+  // notes into the English Qwen instruction (Gemini, with a deterministic
+  // fallback) and stashes it in resolvedCaptionPromptRef for runTraining.
+  // A manual edit in the textarea wins outright; an empty spec leaves the
+  // worker on its built-in default caption instruction.
+  const resolveCaptionPrompt = async (ownCaptionsKnown: boolean) => {
+    const manual = captionPromptOverride.trim();
+    if (manual) {
+      resolvedCaptionPromptRef.current = manual;
+      setCaptionGen({ state: "done", prompt: manual, fromGemini: false, error: null });
+      return;
+    }
+    if (ownCaptionsKnown || !captionSpecFilled) {
+      resolvedCaptionPromptRef.current = "";
+      setCaptionGen({ state: "idle", prompt: "", fromGemini: false, error: null });
+      return;
+    }
+    setCaptionGen({ state: "generating", prompt: "", fromGemini: false, error: null });
+    try {
+      const result = await generateCaptionPrompt(captionSpec, curationTrigger);
+      const prompt = result?.captionPrompt ?? "";
+      resolvedCaptionPromptRef.current = prompt;
+      setCaptionGen({
+        state: prompt ? "done" : "error",
+        prompt,
+        fromGemini: result?.fromGemini ?? false,
+        error: prompt ? null : "プロンプトを生成できませんでした。",
+      });
+    } catch {
+      resolvedCaptionPromptRef.current = "";
+      setCaptionGen({
+        state: "error",
+        prompt: "",
+        fromGemini: false,
+        error: "プロンプト自動生成に失敗しました（既定の指示で続行します）。",
+      });
+    }
+  };
+
   const handleStart = async () => {
     if (!user) {
       setLoginOpen(true);
@@ -1238,6 +1290,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     if (!canSubmit) return;
 
     if (curationEnabled) {
+      // Kick off caption-prompt synthesis while the user curates.
+      await resolveCaptionPrompt(false);
       // Insert the visual curation step before any upload / debit.
       setCurationPairs(
         images.map((img) => ({
@@ -1255,7 +1309,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       return;
     }
 
-    await runTraining(images, semiCaptionList());
+    const ownCaptions = semiCaptionList();
+    await resolveCaptionPrompt(ownCaptions !== null);
+    await runTraining(images, ownCaptions);
   };
 
   // From the curation screen — drop excluded pairs, sync the visible dataset
@@ -1540,7 +1596,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             <p className="mt-1 text-[10px] text-muted">解像度が高いほど高精細ですが、学習時間と負荷が増えます。</p>
           </div>
 
-          {/* AI caption prompt — category presets + free-text edit */}
+          {/* LoRA-type-aware auto-caption spec — category + JP fixed/varying */}
           <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5">
             <button
               type="button"
@@ -1549,7 +1605,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             >
               <span className="flex items-center gap-2 text-[11px] font-medium text-neon-violet">
                 <Bot size={13} />
-                🤖 AIキャプション生成プロンプト設定
+                🤖 学習タイプ別 キャプション自動最適化
+                <span className="rounded bg-neon-violet/15 px-1.5 py-0.5 text-[9px] font-semibold text-neon-violet">
+                  {captionCategoryMeta.icon} {captionCategoryMeta.label}
+                </span>
               </span>
               <ChevronDown
                 size={14}
@@ -1558,47 +1617,121 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             </button>
 
             {captionPromptOpen && (
-              <div className="space-y-2 px-3 pb-3">
-                <p className="text-[10px] text-muted">
-                  自動キャプションAIへの指示文（日本語でOK）。対象カテゴリを選んでベースを入れ、必要に応じて自由に追記・書き換えできます。学習用キャプションは英語で自動生成されます。
+              <div className="space-y-3 px-3 pb-3">
+                <p className="text-[10px] leading-relaxed text-muted">
+                  学習タイプを選び、日本語で「固定したい特徴」と「変化させたい特徴」を入力してください。
+                  「次へ」を押すと Gemini が内容を解析し、Qwen-27B 用の英語キャプション指示を自動生成します
+                  （固定したい特徴はキャプションから除外＝トリガーワードに焼き込み、変化させたい特徴のみ描写）。
                 </p>
+
                 <div className="flex flex-wrap gap-1.5">
-                  {CAPTION_PROMPT_PRESETS.map((preset) => {
-                    const active = captionPrompt.trim() === preset.prompt.trim();
+                  {LORA_CAPTION_CATEGORIES.map((c) => {
+                    const m = LORA_CAPTION_CATEGORY_META[c];
+                    const active = captionCategory === c;
                     return (
                       <button
-                        key={preset.label}
+                        key={c}
                         type="button"
                         disabled={busy}
-                        onClick={() => setCaptionPrompt(preset.prompt)}
+                        onClick={() => setCaptionCategory(c)}
+                        title={m.hint}
                         className={`rounded-lg border px-2.5 py-1 text-[10px] font-medium transition-colors disabled:opacity-50 ${
                           active
                             ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
                             : "border-border bg-background/60 text-muted hover:border-neon-violet/40"
                         }`}
                       >
-                        {preset.icon} {preset.label}
+                        {m.icon} {m.label}
                       </button>
                     );
                   })}
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => setCaptionPrompt(DEFAULT_CAPTION_PROMPT)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-border bg-background/60 px-2 py-1 text-[10px] text-muted transition-colors hover:text-foreground disabled:opacity-50"
-                  >
-                    <RotateCcw size={10} />
-                    既定に戻す
-                  </button>
                 </div>
-                <textarea
-                  value={captionPrompt}
-                  onChange={(e) => setCaptionPrompt(e.target.value)}
-                  rows={5}
-                  disabled={busy}
-                  placeholder={DEFAULT_CAPTION_PROMPT}
-                  className={`${fieldCls} resize-y text-[11px] leading-relaxed`}
-                />
+                <p className="text-[10px] text-muted">{captionCategoryMeta.hint}</p>
+
+                <div>
+                  <label className="mb-1 block text-[10px] font-medium text-foreground">
+                    🔒 固定したい特徴（学習させる／キャプションに書かない）
+                  </label>
+                  <textarea
+                    value={captionFixed}
+                    onChange={(e) => setCaptionFixed(e.target.value)}
+                    rows={3}
+                    disabled={busy}
+                    placeholder={captionCategoryMeta.fixedPlaceholder}
+                    className={`${fieldCls} resize-y text-[11px] leading-relaxed`}
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-[10px] font-medium text-foreground">
+                    🔄 変化させたい特徴（キャプションで描写する）
+                  </label>
+                  <textarea
+                    value={captionVarying}
+                    onChange={(e) => setCaptionVarying(e.target.value)}
+                    rows={3}
+                    disabled={busy}
+                    placeholder={captionCategoryMeta.varyingPlaceholder}
+                    className={`${fieldCls} resize-y text-[11px] leading-relaxed`}
+                  />
+                </div>
+
+                {!captionSpecFilled && !captionPromptOverride.trim() && (
+                  <p className="text-[10px] text-muted opacity-80">
+                    未入力の場合はワーカー標準のキャプション指示で学習します。
+                  </p>
+                )}
+
+                {captionGen.state === "generating" && (
+                  <p className="flex items-center gap-1.5 text-[10px] text-neon-violet">
+                    <Loader2 size={11} className="animate-spin" />
+                    英語プロンプトを生成中…
+                  </p>
+                )}
+                {captionGen.state === "done" && captionGen.prompt && (
+                  <div className="space-y-1 rounded-lg border border-border bg-background/50 p-2">
+                    <p className="flex items-center gap-1.5 text-[10px] font-medium text-foreground">
+                      <Check size={11} className="text-green-400" />
+                      生成済み
+                      <span className="rounded bg-neon-violet/15 px-1 py-0.5 text-[9px] text-neon-violet">
+                        {captionGen.fromGemini ? "Gemini 生成" : "簡易生成（Gemini 不使用）"}
+                      </span>
+                    </p>
+                    <p className="max-h-24 overflow-y-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-muted">
+                      {captionGen.prompt}
+                    </p>
+                  </div>
+                )}
+                {captionGen.state === "error" && captionGen.error && (
+                  <p className="text-[10px] text-amber-400">⚠️ {captionGen.error}</p>
+                )}
+
+                <details className="group">
+                  <summary className="cursor-pointer text-[10px] text-muted transition-colors hover:text-foreground">
+                    詳細: 英語キャプション指示を直接指定する（上級者向け）
+                  </summary>
+                  <div className="mt-1.5 space-y-1">
+                    <textarea
+                      value={captionPromptOverride}
+                      onChange={(e) => setCaptionPromptOverride(e.target.value)}
+                      rows={4}
+                      disabled={busy}
+                      placeholder="空欄 = 上記から自動生成。ここに英語で書くと自動生成を上書きします。"
+                      className={`${fieldCls} resize-y font-mono text-[10px] leading-relaxed`}
+                    />
+                    {captionPromptOverride.trim() && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => setCaptionPromptOverride("")}
+                        className="inline-flex items-center gap-1 rounded-lg border border-border bg-background/60 px-2 py-1 text-[10px] text-muted transition-colors hover:text-foreground disabled:opacity-50"
+                      >
+                        <RotateCcw size={10} />
+                        自動生成に戻す
+                      </button>
+                    )}
+                  </div>
+                </details>
               </div>
             )}
           </div>
@@ -1881,7 +2014,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               <button
                 type="button"
                 onClick={handleStart}
-                disabled={Boolean(user) && !insufficientCredits && !canSubmit}
+                disabled={
+                  (Boolean(user) && !insufficientCredits && !canSubmit) ||
+                  captionGen.state === "generating"
+                }
                 className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {!user ? (
@@ -1893,6 +2029,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                   <>
                     <Zap size={16} />
                     クレジットをチャージ
+                  </>
+                ) : captionGen.state === "generating" ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    キャプションプロンプトを生成中…
                   </>
                 ) : curationEnabled ? (
                   <>
