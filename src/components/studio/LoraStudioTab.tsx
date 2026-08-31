@@ -74,6 +74,7 @@ import {
   type LoraCaptionSpec,
 } from "@/lib/loraCaptionSpec";
 import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
+import { generateDatasetCaptions } from "@/lib/loraCaption";
 const JOB_POLL_INTERVAL_MS = 3000;
 const MAX_IMAGES = 200;
 const MAX_TOTAL_BYTES = 120 * 1024 * 1024; // 120 MB of raw image bytes
@@ -128,11 +129,12 @@ function loadFormDraft(): Partial<LoraFormDraft> | null {
   }
 }
 
-// Two modes only. Caption handling is no longer a mode — it's auto-detected
-// from what's dropped in (images only -> Qwen auto-captions; image+.txt / a
-// .txt-bearing ZIP -> the user's captions, Qwen skipped). The old standalone
-// "セミオート" per-image caption form is folded into the optional curation
-// screen (which does the same editing, plus JP round-trip translation).
+// Two modes only. Caption handling is no longer a mode: on drop the browser
+// AI-captions the images via the cloud vision API (/api/studio/lora/caption);
+// an image+.txt / .txt-bearing ZIP instead uses the user's captions verbatim
+// and skips the AI pass. The old standalone "セミオート" per-image caption
+// form is folded into the optional curation screen (same editing, plus JP
+// round-trip translation). The Modal worker's local VLM is a fallback only.
 type Mode = "auto" | "pro";
 
 const MODES: { id: Mode; label: string; desc: string }[] = [
@@ -415,8 +417,11 @@ function SalvageSection({ jobId }: { jobId: string }) {
   };
 
   const ckpts = result?.checkpoints ?? [];
-  const weights = ckpts.filter((c) => !c.isCaptionArchive).sort((a, b) => a.step - b.step);
+  const weights = ckpts
+    .filter((c) => !c.isCaptionArchive && !c.isBundle)
+    .sort((a, b) => a.step - b.step);
   const captionArchive = ckpts.find((c) => c.isCaptionArchive) ?? null;
+  const bundleArchive = ckpts.find((c) => c.isBundle) ?? null;
   const ordered = [...weights, ...(captionArchive ? [captionArchive] : [])];
 
   return (
@@ -465,6 +470,25 @@ function SalvageSection({ jobId }: { jobId: string }) {
                 .join(" ＋ ")}
               を復旧しました
             </p>
+            {bundleArchive && (
+              <button
+                type="button"
+                onClick={() =>
+                  withBusy(bundleArchive.filename, () =>
+                    downloadLoraCheckpoint(jobId, bundleArchive.filename),
+                  )
+                }
+                disabled={busyFile !== null}
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2 text-xs font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {busyFile === bundleArchive.filename ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <Download size={13} />
+                )}
+                📦 全チェックポイント一括DL (ZIP) ・ {formatMb(bundleArchive.sizeBytes)}
+              </button>
+            )}
             <div className="flex flex-col gap-1.5">
               {ordered.map((c) => (
                 <div
@@ -674,8 +698,9 @@ function ProgressPanel({
     const filename = job.resultPath ? job.resultPath.split("/").pop() ?? "" : "";
     const allCheckpoints = job.checkpoints ?? [];
     const captionArchive = allCheckpoints.find((c) => c.isCaptionArchive) ?? null;
+    const bundleArchive = allCheckpoints.find((c) => c.isBundle) ?? null;
     const checkpoints = allCheckpoints
-      .filter((c) => !c.isCaptionArchive)
+      .filter((c) => !c.isCaptionArchive && !c.isBundle)
       .sort((a, b) => a.step - b.step);
     return (
       <div className="rounded-xl border border-green-500/30 bg-green-500/10 p-4">
@@ -689,6 +714,24 @@ function ProgressPanel({
         <p className="mt-1 text-[11px] text-muted">
           この LoRA はモデルライブラリに保存され、動画生成ワークフローからすぐに利用できます。
         </p>
+
+        {bundleArchive && (
+          <button
+            type="button"
+            onClick={() => handleCkptDownload(bundleArchive.filename)}
+            disabled={downloadingCkpt !== null || copyingCkpt !== null}
+            title="中間チェックポイントを含む全 .safetensors を1つの ZIP にまとめたものです。"
+            className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {downloadingCkpt === bundleArchive.filename ? (
+              <Loader2 size={15} className="animate-spin" />
+            ) : (
+              <Download size={15} />
+            )}
+            📦 全チェックポイント一括DL (ZIP) ・ {formatMb(bundleArchive.sizeBytes)}
+          </button>
+        )}
+
         <div className="mt-3 flex flex-wrap gap-2">
           <button
             type="button"
@@ -795,7 +838,7 @@ function ProgressPanel({
   // GUI-mode faults refund; a raw-YAML config error or an over-scoped run
   // that was safety-stopped does not).
   const partialCkpts = (job.checkpoints ?? [])
-    .filter((c) => !c.isCaptionArchive)
+    .filter((c) => !c.isCaptionArchive && !c.isBundle)
     .sort((a, b) => a.step - b.step);
   return (
     <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4">
@@ -883,7 +926,30 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
   const [mode, setMode] = useState<Mode>("auto");
   const [images, setImages] = useState<DatasetImage[]>([]);
+  // English caption per image id. Filled by the AI-vision auto-caption pass on
+  // drop, or straight from a .txt / ZIP the user brought.
   const [captions, setCaptions] = useState<Record<string, string>>({});
+  // Japanese working copy per image id (for the curation UI's review pane).
+  const [captionsJa, setCaptionsJa] = useState<Record<string, string>>({});
+  // AI-vision auto-caption progress for the current pass.
+  const [autoCap, setAutoCap] = useState<{
+    running: boolean;
+    done: number;
+    total: number;
+    error: string | null;
+    everRan: boolean;
+  }>({ running: false, done: 0, total: 0, error: null, everRan: false });
+  // Image ids we've already sent to the vision captioner (so a re-render / new
+  // drop doesn't re-caption them). Cleared per-id on remove / on "再解析".
+  const captionAttemptedRef = useRef<Set<string>>(new Set());
+  // Image ids whose caption came from a user .txt / ZIP (NOT the AI) — a
+  // blank one of these is intentional, so the worker must not VLM-fill it.
+  // State (not a ref) because the routing badge derives from it in render.
+  const [userCaptionIds, setUserCaptionIds] = useState<Set<string>>(() => new Set());
+  const autoCaptionAbortRef = useRef<AbortController | null>(null);
+  // The caption_prompt the AI captions were last generated with — so
+  // handleStart only re-captions when the synthesised instruction changed.
+  const recaptionPromptRef = useRef<string>("");
   // "__custom__" is the last option in the single model dropdown; anything
   // else is a preset id.
   const [modelChoice, setModelChoice] = useState<string>("minimax_h3");
@@ -942,6 +1008,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     () => () => {
       pollCancelledRef.current = true;
       if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+      autoCaptionAbortRef.current?.abort();
       images.forEach((i) => URL.revokeObjectURL(i.url));
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1050,6 +1117,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     let room = MAX_IMAGES - imagesRef.current.length;
     const newImgs: DatasetImage[] = [];
     const newCaps: Record<string, string> = {};
+    const newUserCaptionIds: string[] = [];
     for (const { file, caption } of entries) {
       if (room <= 0) break;
       room--;
@@ -1058,10 +1126,22 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       for (let n = 2; used.has(id); n++) id = `${base}::${n}`;
       used.add(id);
       newImgs.push({ id, file, url: URL.createObjectURL(file) });
-      if ((caption ?? "").trim()) newCaps[id] = caption!.trim();
+      if ((caption ?? "").trim()) {
+        newCaps[id] = caption!.trim();
+        // Brought by the user (.txt / ZIP) — not AI-generated.
+        newUserCaptionIds.push(id);
+        captionAttemptedRef.current.add(id);
+      }
     }
     if (newImgs.length) setImages((prev) => [...prev, ...newImgs]);
     if (Object.keys(newCaps).length) setCaptions((prev) => ({ ...prev, ...newCaps }));
+    if (newUserCaptionIds.length) {
+      setUserCaptionIds((prev) => {
+        const next = new Set(prev);
+        newUserCaptionIds.forEach((id) => next.add(id));
+        return next;
+      });
+    }
   }, []);
 
   const importZip = useCallback(
@@ -1132,6 +1212,18 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     setCaptions((prev) => {
       const next = { ...prev };
       delete next[id];
+      return next;
+    });
+    setCaptionsJa((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    captionAttemptedRef.current.delete(id);
+    setUserCaptionIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
       return next;
     });
   }, []);
@@ -1394,7 +1486,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // given and non-empty, is a caption list aligned to `imgs` that the user
   // authored (semi mode edits, a ZIP's .txt files, or curation) — sent as
   // custom_captions + skip_captioning so the worker never loads the 27B VLM.
-  const runTraining = async (imgs: DatasetImage[], ownCaptions: string[] | null) => {
+  const runTraining = async (
+    imgs: DatasetImage[],
+    ownCaptions: string[] | null,
+    captionsFromUser: boolean,
+  ) => {
     if (!user) return;
     setPhase("starting");
     setErrorMessage(null);
@@ -1447,7 +1543,15 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     // Phase 2 — start the training job with only the storage paths.
     try {
       const captionList = (ownCaptions ?? []).map((c) => (c ?? "").trim());
-      const hasOwnCaptions = captionList.some((c) => c.length > 0);
+      const anyCaption = captionList.some((c) => c.length > 0);
+      const allCaptions =
+        captionList.length === imgs.length && captionList.every((c) => c.length > 0);
+      // "Bring your own" (worker never loads the VLM, blanks become the
+      // trigger word) when the user authored the captions (.txt / ZIP /
+      // curation edits) — a blank there is intentional. AI captions instead
+      // flow as `captions` (not custom_captions) unless every image is
+      // covered, so the worker's fallback VLM fills only the gaps.
+      const bringOwn = captionsFromUser ? anyCaption : allCaptions;
 
       const trainingConfig = yamlMode
         ? { custom_yaml_override: pro.rawYaml }
@@ -1475,8 +1579,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         // are disabled). The server re-derives these from the YAML too.
         outputLoraName: effectiveLoraName,
         triggerWord: effectiveTrigger,
-        customCaptions: hasOwnCaptions ? captionList : undefined,
-        skipCaptioning: hasOwnCaptions || undefined,
+        customCaptions: bringOwn ? captionList : undefined,
+        skipCaptioning: bringOwn || undefined,
         captionPrompt: resolvedCaptionPromptRef.current.trim() || undefined,
         // The structured LoRA-type spec — the server rebuilds caption_prompt
         // from this if the browser couldn't (Gemini down here).
@@ -1517,19 +1621,112 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     }
   };
 
-  // Auto-detected caption list for the non-curation path: whatever a
-  // .txt-bearing ZIP (or image+.txt drop) populated into `captions`, aligned
-  // to image order. null when nothing supplied a caption -> the worker runs
-  // the Qwen-27B auto-caption pass over every image.
-  const detectedCaptionList = (): string[] | null => {
-    const list = images.map((img) => (captions[img.id] ?? "").trim());
-    return list.some((c) => c.length > 0) ? list : null;
-  };
-  // How many images arrived with their own caption (drives the dropzone badge).
-  const detectedCaptionCount = useMemo(
-    () => images.filter((img) => (captions[img.id] ?? "").trim().length > 0).length,
-    [images, captions],
+  const userCaptionCount = useMemo(
+    () =>
+      images.filter(
+        (img) => userCaptionIds.has(img.id) && (captions[img.id] ?? "").trim().length > 0,
+      ).length,
+    [images, captions, userCaptionIds],
   );
+  const aiCaptionedCount = useMemo(
+    () =>
+      images.filter(
+        (img) => !userCaptionIds.has(img.id) && (captions[img.id] ?? "").trim().length > 0,
+      ).length,
+    [images, captions, userCaptionIds],
+  );
+  const hasUserCaptions = userCaptionCount > 0;
+  // Any image still waiting on the AI vision pass.
+  const pendingCaptionCount = useMemo(
+    () =>
+      images.filter((img) => !userCaptionIds.has(img.id) && !(captions[img.id] ?? "").trim()).length,
+    [images, captions, userCaptionIds],
+  );
+
+  // --- AI-vision auto-captioning ----------------------------------------
+  // Fires on drop: downscales each new image in the browser and calls
+  // /api/studio/lora/caption in batches (see src/lib/loraCaption.ts). The
+  // ".txt-bearing ZIP -> use as-is, skip AI" route is preserved (those ids
+  // are pre-marked in captionAttemptedRef / userCaptionIdsRef).
+  const runVisionCaptions = useCallback(
+    async (
+      targets: DatasetImage[],
+      trigger: string,
+      captionPrompt: string,
+    ): Promise<{ cap: Record<string, string>; ja: Record<string, string> } | null> => {
+      if (targets.length === 0) return null;
+      autoCaptionAbortRef.current?.abort();
+      const ac = new AbortController();
+      autoCaptionAbortRef.current = ac;
+      recaptionPromptRef.current = captionPrompt;
+      setAutoCap({ running: true, done: 0, total: targets.length, error: null, everRan: true });
+      let res: Awaited<ReturnType<typeof generateDatasetCaptions>>;
+      try {
+        res = await generateDatasetCaptions(
+          targets.map((t) => t.file),
+          {
+            triggerWord: trigger,
+            captionPrompt: captionPrompt || undefined,
+            signal: ac.signal,
+            onProgress: (done, total) => setAutoCap((s) => ({ ...s, done, total })),
+          },
+        );
+      } catch {
+        setAutoCap((s) => ({ ...s, running: false, error: "自動解析に失敗しました。" }));
+        return null;
+      }
+      if (ac.signal.aborted) return null;
+
+      const cap: Record<string, string> = {};
+      const ja: Record<string, string> = {};
+      targets.forEach((t, k) => {
+        if (res.captions[k]?.trim()) cap[t.id] = res.captions[k].trim();
+        if (res.captionsJa[k]?.trim()) ja[t.id] = res.captionsJa[k].trim();
+      });
+      setCaptions((prev) => ({ ...prev, ...cap }));
+      setCaptionsJa((prev) => ({ ...prev, ...ja }));
+
+      const missed = targets.length - res.captionedCount;
+      setAutoCap((s) => ({
+        ...s,
+        running: false,
+        done: s.total,
+        error: missed > 0 ? `${missed} 枚は自動解析できませんでした（学習時に自動補完されます）。` : null,
+      }));
+      return { cap, ja };
+    },
+    [],
+  );
+
+  // Kick the vision pass for images that have no caption yet and haven't been
+  // tried. Debounced so a 30-file drop is one pass, and serialised (waits for
+  // a running pass) so a second drop mid-run doesn't abort the first.
+  useEffect(() => {
+    if (!user || phase !== "form" || autoCap.running) return;
+    const pending = images.filter(
+      (img) =>
+        !captionAttemptedRef.current.has(img.id) &&
+        !userCaptionIds.has(img.id) &&
+        !(captions[img.id] ?? "").trim(),
+    );
+    if (pending.length === 0) return;
+    const t = setTimeout(() => {
+      pending.forEach((img) => captionAttemptedRef.current.add(img.id));
+      void runVisionCaptions(pending, curationTrigger, resolvedCaptionPromptRef.current);
+    }, 500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [images, captions, userCaptionIds, user, phase, autoCap.running]);
+
+  // Re-run the vision pass over every AI-captioned image with the current
+  // trigger word + synthesised instruction (the "🔄 AI再解析" button, and
+  // handleStart when the category instruction changed).
+  const recaptionAll = useCallback(async () => {
+    const targets = images.filter((img) => !userCaptionIds.has(img.id));
+    if (targets.length === 0) return null;
+    targets.forEach((img) => captionAttemptedRef.current.add(img.id));
+    return runVisionCaptions(targets, curationTrigger, resolvedCaptionPromptRef.current);
+  }, [images, userCaptionIds, curationTrigger, runVisionCaptions]);
 
   // Runs on "次へ" / "学習を開始" — turns the selected LoRA type + JP feature
   // notes into the English Qwen instruction (Gemini, with a deterministic
@@ -1581,29 +1778,74 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     }
     if (!canSubmit) return;
 
+    // Let any in-flight AI-vision pass finish so curation / training see the
+    // completed captions.
+    if (autoCap.running) {
+      setErrorMessage("AI 画像解析の完了をお待ちください…（数秒で終わります）");
+      return;
+    }
+    setErrorMessage(null);
+
+    let cap: Record<string, string> = captions;
+    let capJa: Record<string, string> = captionsJa;
+
+    // (1) Images that never went through the vision pass — e.g. the user
+    //     clicked before the on-drop debounce fired. Caption them now.
+    const neverTried = images.filter(
+      (img) =>
+        !userCaptionIds.has(img.id) &&
+        !(cap[img.id] ?? "").trim() &&
+        !captionAttemptedRef.current.has(img.id),
+    );
+    if (neverTried.length > 0) {
+      neverTried.forEach((img) => captionAttemptedRef.current.add(img.id));
+      const d = await runVisionCaptions(
+        neverTried,
+        curationTrigger,
+        resolvedCaptionPromptRef.current,
+      );
+      if (d) {
+        cap = { ...cap, ...d.cap };
+        capJa = { ...capJa, ...d.ja };
+      }
+    }
+
+    // (2) Synthesise the LoRA-type instruction (skipped for a .txt/ZIP set).
+    await resolveCaptionPrompt(hasUserCaptions);
+
+    // (3) The user filled the category spec (or edited the instruction) AFTER
+    //     the initial auto-caption — re-run the vision pass so it's reflected.
+    const wantPrompt = resolvedCaptionPromptRef.current.trim();
+    const aiCount = images.filter(
+      (img) => !userCaptionIds.has(img.id) && (cap[img.id] ?? "").trim(),
+    ).length;
+    if (!hasUserCaptions && aiCount > 0 && wantPrompt && wantPrompt !== recaptionPromptRef.current) {
+      const delta = await recaptionAll();
+      if (delta) {
+        cap = { ...cap, ...delta.cap };
+        capJa = { ...capJa, ...delta.ja };
+      }
+    }
+
     if (curationEnabled) {
-      // Kick off caption-prompt synthesis while the user curates.
-      await resolveCaptionPrompt(false);
-      // Insert the visual curation step before any upload / debit.
       setCurationPairs(
         images.map((img) => ({
           id: img.id,
           file: img.file,
           url: img.url,
           name: img.file.name,
-          caption: captions[img.id] ?? "",
-          captionJa: "",
+          caption: cap[img.id] ?? "",
+          captionJa: capJa[img.id] ?? "",
           excluded: false,
         })),
       );
-      setErrorMessage(null);
       setPhase("curation");
       return;
     }
 
-    const ownCaptions = detectedCaptionList();
-    await resolveCaptionPrompt(ownCaptions !== null);
-    await runTraining(images, ownCaptions);
+    const list = images.map((img) => (cap[img.id] ?? "").trim());
+    const ownCaptions = list.some((c) => c.length > 0) ? list : null;
+    await runTraining(images, ownCaptions, hasUserCaptions);
   };
 
   // From the curation screen — drop excluded pairs, sync the visible dataset
@@ -1618,8 +1860,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     const keptImages: DatasetImage[] = kept.map((p) => ({ id: p.id, file: p.file, url: p.url }));
     setImages(keptImages);
     setCaptions(Object.fromEntries(kept.map((p) => [p.id, p.caption])));
+    setCaptionsJa(Object.fromEntries(kept.map((p) => [p.id, p.captionJa])));
     const caps = kept.map((p) => p.caption.trim());
-    await runTraining(keptImages, caps.some((c) => c.length > 0) ? caps : null);
+    // A .txt/ZIP dataset stays "bring your own" (blank = intentional). An
+    // AI-captioned one keeps its VLM gap-fill even after culling images.
+    await runTraining(keptImages, caps.some((c) => c.length > 0) ? caps : null, hasUserCaptions);
   };
 
   const resetForm = () => {
@@ -1646,9 +1891,15 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         /* best-effort */
       }
     }
+    autoCaptionAbortRef.current?.abort();
+    captionAttemptedRef.current = new Set();
+    recaptionPromptRef.current = "";
+    setUserCaptionIds(new Set());
+    setAutoCap({ running: false, done: 0, total: 0, error: null, everRan: false });
     images.forEach((i) => URL.revokeObjectURL(i.url));
     setImages([]);
     setCaptions({});
+    setCaptionsJa({});
     setMode("auto");
     setModelChoice("minimax_h3");
     setCustomModelId("");
@@ -1756,29 +2007,64 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           )}
 
           {/* Auto-routing badge: reflects the customCaptions / skipCaptioning
-              the payload will carry, decided purely by what was dropped in. */}
+              the payload will carry, decided by what was dropped in + the AI
+              vision pass result. No vendor names (CLAUDE.md §2). */}
           {images.length > 0 &&
-            (detectedCaptionCount > 0 ? (
+            (autoCap.running ? (
+              <p className="flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
+                <Loader2 size={13} className="shrink-0 animate-spin" />
+                <span>
+                  <span className="font-medium">高速AIビジョンが全画像を自動解析中…</span>（
+                  {autoCap.done}/{autoCap.total}）
+                </span>
+              </p>
+            ) : hasUserCaptions ? (
               <p className="flex items-start gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-[11px] leading-relaxed text-green-400">
                 <span className="shrink-0">📄</span>
                 <span>
-                  自前キャプション（{detectedCaptionCount} 件）を検知：
-                  <span className="font-medium">Qwen をスキップして高速学習</span>します
-                  {detectedCaptionCount < images.length &&
-                    `（キャプション無し ${images.length - detectedCaptionCount} 枚はトリガーワードのみ）`}
+                  自前キャプション（{userCaptionCount} 件）を検知：
+                  <span className="font-medium">AI解析をスキップして高速学習</span>します
+                  {userCaptionCount < images.length &&
+                    `（キャプション無し ${images.length - userCaptionCount} 枚はトリガーワードのみ）`}
                   。
                 </span>
               </p>
+            ) : aiCaptionedCount > 0 ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-[11px] leading-relaxed text-green-400">
+                <span className="flex items-start gap-2">
+                  <span className="shrink-0">✨</span>
+                  <span>
+                    <span className="font-medium">
+                      高速AIビジョンが全画像を自動解析しました（最適タグを即時付与）
+                    </span>
+                    {pendingCaptionCount > 0 &&
+                      `。${pendingCaptionCount} 枚は解析できず、学習時に自動補完されます`}
+                    。
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  disabled={busy || autoCap.running}
+                  onClick={() => void recaptionAll()}
+                  title="現在のトリガーワード・こだわり設定で全画像を解析し直します"
+                  className="inline-flex items-center gap-1 rounded-md border border-green-500/40 px-2 py-1 text-[10px] font-medium text-green-400 transition-colors hover:bg-green-500/10 disabled:opacity-50"
+                >
+                  <RotateCcw size={10} />
+                  AI再解析
+                </button>
+              </div>
             ) : (
               <p className="flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
-                <span className="shrink-0">🏷️</span>
+                <span className="shrink-0">✨</span>
                 <span>
-                  <span className="font-medium">Qwen 27B が自動キャプションを付与します</span>
-                  （画像＋同名 .txt の ZIP を入れると自前キャプション扱いになります
-                  {curationEnabled ? "。キュレーション画面で入力したキャプションも優先されます" : ""}）。
+                  <span className="font-medium">高速AIビジョンが全画像を自動解析</span>
+                  し、最適なタグを即時付与します（画像＋同名 .txt の ZIP を入れると自前キャプション扱い）。
                 </span>
               </p>
             ))}
+          {autoCap.error && !autoCap.running && (
+            <p className="text-[10px] text-amber-400">⚠️ {autoCap.error}</p>
+          )}
 
           <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-background/40 px-3 py-2">
             <input
@@ -1791,13 +2077,13 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             <span className="text-[11px] leading-relaxed text-muted">
               <span className="font-medium text-foreground">アップロード後にキュレーション画面で確認・編集する</span>
               <br />
-              画像をブラウザ上でプレビューして不要なものを間引き、キャプションを日本語で確認・修正（Gemini 翻訳）してから学習を開始します。
+              画像をブラウザ上でプレビューして不要なものを間引き、自動生成されたキャプションを日本語で確認・修正してから学習を開始します。
             </span>
           </label>
 
-          {detectedCaptionCount > 0 && !curationEnabled && (
+          {(aiCaptionedCount > 0 || userCaptionCount > 0) && !curationEnabled && (
             <p className="text-[10px] leading-relaxed text-muted">
-              取り込んだキャプションを個別に確認・編集したい場合は、上の「キュレーション画面で確認・編集する」を有効にしてください。
+              キャプションを1枚ずつ確認・編集したい場合は、上の「キュレーション画面で確認・編集する」を有効にしてください。
             </p>
           )}
         </div>
@@ -1967,7 +2253,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               <div className="space-y-3 px-3 pb-3">
                 <p className="text-[10px] leading-relaxed text-muted">
                   学習タイプを選び、日本語で「固定したい特徴」と「変化させたい特徴」を入力してください。
-                  「次へ」を押すと Gemini が内容を解析し、Qwen-27B 用の英語キャプション指示を自動生成します
+                  「次へ」を押すと入力内容をAIが解析し、画像解析エンジン向けの最適な英語キャプション指示を自動生成・反映します
                   （固定したい特徴はキャプションから除外＝トリガーワードに焼き込み、変化させたい特徴のみ描写）。
                 </p>
 
@@ -2041,7 +2327,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                       <Check size={11} className="text-green-400" />
                       生成済み
                       <span className="rounded bg-neon-violet/15 px-1 py-0.5 text-[9px] text-neon-violet">
-                        {captionGen.fromGemini ? "Gemini 生成" : "簡易生成（Gemini 不使用）"}
+                        {captionGen.fromGemini ? "AI 生成" : "簡易生成（オフライン）"}
                       </span>
                     </p>
                     <p className="max-h-24 overflow-y-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-muted">

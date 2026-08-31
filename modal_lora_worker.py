@@ -2292,14 +2292,20 @@ def train_lora_job(params: dict) -> dict:
         print(f"[train] staged {len(image_paths)} images for '{lora_name}' (target={target_model})")
 
         # --- Stage 1: captions ----------------------------------------------
-        # Any one of these means "the user brought their own captions" and the
-        # 27B Qwen VLM is NEVER loaded (0s, no VRAM):
-        #   1) params["custom_captions"]  — list aligned to image order, or a
-        #      {index | filename | stem: text} dict.
-        #   2) params["skip_captioning"] is true.
-        #   3) every staged image already has a non-empty <name>.txt (either
-        #      forwarded via params["captions"] or restored from the Volume).
-        # Otherwise the Qwen pass fills whatever is still blank.
+        # Captioning now happens in the browser via the cloud AI-vision API
+        # (/api/studio/lora/caption) BEFORE the job is dispatched, so the
+        # normal path always arrives with confirmed captions and the heavy
+        # local 27B VLM is NEVER loaded (0s, no 52GB VRAM). It survives only
+        # as a FALLBACK for the images the cloud pass couldn't caption
+        # (quota / safety refusal): those arrive blank in params["captions"]
+        # with skip_captioning unset, and _caption_missing() fills just them.
+        #
+        # "Bring your own" (VLM never loads, blanks -> trigger word) when:
+        #   1) params["custom_captions"] is present (list or {idx|stem: text}),
+        #   2) params["skip_captioning"] is true, or
+        #   3) every staged image already has a non-empty <name>.txt.
+        # LORA_VLM_FALLBACK=0 disables the fallback entirely (blanks always
+        # become the trigger word — no VLM under any circumstance).
         supplied = list(params.get("captions") or [])
         custom_captions = params.get("custom_captions")
         skip_captioning = bool(params.get("skip_captioning"))
@@ -2362,27 +2368,48 @@ def train_lora_job(params: dict) -> dict:
                     reused_from_volume = True
                     print(f"[train] reused {len(cached)} persisted captions from {persist_dir} — Stage 1 skipped (0s)")
 
-        if bring_your_own or all(_has_caption(p) for p in image_paths):
-            # Honour an explicit skip even if a few entries arrived blank —
-            # write the trigger token alone for those; never load the VLM.
-            blanks = [p for p in image_paths if not _has_caption(p)]
-            for p in blanks:
+        vlm_fallback_enabled = os.environ.get("LORA_VLM_FALLBACK", "1").strip() != "0"
+        blank_paths = [p for p in image_paths if not _has_caption(p)]
+
+        if (
+            bring_your_own
+            or not blank_paths
+            or not vlm_fallback_enabled
+        ):
+            # Every image is captioned, OR the user explicitly brought their
+            # own (a blank is intentional), OR the fallback VLM is disabled —
+            # write the trigger token alone for any blank, never load a model.
+            for p in blank_paths:
                 p.with_suffix(".txt").write_text(trigger, encoding="utf-8")
-            if blanks:
-                print(f"[train] {len(blanks)} blank caption(s) filled with trigger '{trigger}' (Qwen NOT loaded)")
+            if blank_paths:
+                why = "fallback disabled" if (not bring_your_own and not vlm_fallback_enabled) else "own captions"
+                print(
+                    f"[train] {len(blank_paths)} blank caption(s) -> trigger '{trigger}' ({why}, no VLM)",
+                    flush=True,
+                )
             msg = (
                 "captions restored from cache (0s)"
                 if reused_from_volume
                 else "own captions accepted — auto-caption skipped"
                 if bring_your_own
-                else "captions ready (skipped auto-caption)"
+                else "captions ready (cloud AI vision)"
             )
-            print(f"[train] skipping the Qwen pass — {msg}")
+            print(f"[train] Stage 1 — {msg} (local VLM not loaded)")
             _patch_job(job_id, {"progress_percent": 4, "progress_message": msg})
             captions = [p.with_suffix(".txt").read_text(encoding="utf-8").strip() for p in image_paths]
         else:
-            _patch_job(job_id, {"progress_percent": 3, "progress_message": "captioning dataset"})
-            _cap_budget = max(LORA_CAPTION_MIN_S, LORA_CAPTION_S_PER_IMG * len(image_paths))
+            # FALLBACK ONLY: the cloud AI-vision pass couldn't caption some
+            # images — load the local VLM for just those gaps.
+            print(
+                f"[train] Stage 1 FALLBACK: cloud AI vision left {len(blank_paths)}/{len(image_paths)} "
+                f"image(s) uncaptioned — loading the local VLM to fill the gap(s)",
+                flush=True,
+            )
+            _patch_job(
+                job_id,
+                {"progress_percent": 3, "progress_message": f"captioning {len(blank_paths)} remaining image(s)"},
+            )
+            _cap_budget = max(LORA_CAPTION_MIN_S, LORA_CAPTION_S_PER_IMG * len(blank_paths))
             captions = _caption_missing(
                 image_paths, supplied, trigger, caption_prompt, budget_s=_cap_budget
             )
@@ -2550,6 +2577,38 @@ def train_lora_job(params: dict) -> dict:
                 entry["path"] = f"loras/{user_id}/{job_id}/{fname}"
             checkpoints.append(entry)
         checkpoints.sort(key=lambda c: c["step"])
+
+        # 2b) checkpoints_all.zip — every .safetensors (intermediate + final)
+        #     in ONE archive so the completed screen can offer a single
+        #     "download all checkpoints" button. Only built when 2+ exist
+        #     (a final-only run has nothing to bundle). ZIP_STORED: LoRA
+        #     safetensors barely compress, so skip the CPU cost.
+        weight_entries = [c for c in checkpoints if c["filename"].endswith(".safetensors")]
+        if job_ckpt_dir is not None and len(weight_entries) >= 2:
+            bundle_path = job_ckpt_dir / "checkpoints_all.zip"
+            try:
+                with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_STORED) as zf:
+                    for c in weight_entries:
+                        f = job_ckpt_dir / c["filename"]
+                        if f.is_file():
+                            zf.write(f, arcname=c["filename"])
+                checkpoints.append(
+                    {
+                        "step": 0,
+                        "filename": "checkpoints_all.zip",
+                        "size_bytes": bundle_path.stat().st_size,
+                        "is_final": False,
+                        "is_bundle": True,
+                        "path": f"loras/{user_id}/{job_id}/checkpoints_all.zip",
+                    }
+                )
+                print(
+                    f"[train] wrote checkpoints_all.zip ({len(weight_entries)} checkpoint(s), "
+                    f"{bundle_path.stat().st_size / 1024**2:.1f} MB)",
+                    flush=True,
+                )
+            except Exception as exc:  # noqa: BLE001 — the bundle is a convenience
+                print(f"[train] checkpoints_all.zip build skipped: {exc}", flush=True)
 
         # 3) dataset.zip (images + captions) -> loras/<user_id>/<job_id>/
         #    dataset.zip, registered alongside the weights so the completed
@@ -3064,6 +3123,32 @@ def salvage_lora_job(data: dict, request: fastapi.Request):
                 }
             )
 
+    # checkpoints_all.zip — every salvaged .safetensors in one archive, same
+    # signed-URL download path as a completed job's bundle. Only when 2+.
+    weight_ckpts = [c for c in checkpoints if c["filename"].endswith(".safetensors")]
+    if len(weight_ckpts) >= 2:
+        bundle_dest = dest_dir / "checkpoints_all.zip"
+        try:
+            with zipfile.ZipFile(bundle_dest, "w", zipfile.ZIP_STORED) as zf:
+                for c in weight_ckpts:
+                    f = dest_dir / c["filename"]
+                    if f.is_file():
+                        zf.write(f, arcname=c["filename"])
+            checkpoints.append(
+                {
+                    "step": 0,
+                    "filename": "checkpoints_all.zip",
+                    "size_bytes": bundle_dest.stat().st_size,
+                    "is_final": False,
+                    "is_bundle": True,
+                    "salvaged": True,
+                    "path": f"loras/{user_id}/{job_id}/checkpoints_all.zip",
+                }
+            )
+            print(f"[salvage] checkpoints_all.zip: {len(weight_ckpts)} checkpoint(s)", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[salvage] checkpoints_all.zip failed: {exc}", flush=True)
+
     # Persisted dataset -> dataset_salvaged.zip. Bundle the renamed images
     # (0000.png, 0001.jpg, ...) TOGETHER WITH their caption .txt so, once the
     # user unzips it, every "0001.txt" sits next to the "0001.<ext>" it
@@ -3107,7 +3192,12 @@ def salvage_lora_job(data: dict, request: fastapi.Request):
                 except Exception as exc:  # noqa: BLE001
                     print(f"[salvage] dataset zip failed: {exc}", flush=True)
 
-    checkpoints.sort(key=lambda c: (bool(c.get("is_caption_archive")), c["step"]))
+    checkpoints.sort(
+        key=lambda c: (
+            2 if c.get("is_caption_archive") else 1 if c.get("is_bundle") else 0,
+            c["step"],
+        )
+    )
 
     if checkpoints:
         try:
@@ -3115,7 +3205,9 @@ def salvage_lora_job(data: dict, request: fastapi.Request):
         except Exception as exc:  # noqa: BLE001
             print(f"[salvage] vol.commit() skipped: {exc}", flush=True)
 
-    n_weights = len([c for c in checkpoints if not c.get("is_caption_archive")])
+    n_weights = len(
+        [c for c in checkpoints if not c.get("is_caption_archive") and not c.get("is_bundle")]
+    )
     print(
         f"[salvage] job {job_id}: {n_weights} checkpoint(s), {image_count} image(s) + "
         f"{caption_count} caption(s) "

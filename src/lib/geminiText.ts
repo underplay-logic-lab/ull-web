@@ -1,5 +1,13 @@
 import { NextResponse } from "next/server";
-import { GoogleGenerativeAI, SchemaType, type GenerationConfig } from "@google/generative-ai";
+import {
+  GoogleGenerativeAI,
+  HarmBlockThreshold,
+  HarmCategory,
+  SchemaType,
+  type GenerationConfig,
+  type Part,
+  type SafetySetting,
+} from "@google/generative-ai";
 
 // Shared Google AI Studio (Gemini) text runner. The free tier needs no card
 // / billing ($0) — this is the ONLY LLM client in the project (the Modal-side
@@ -57,6 +65,17 @@ function genConfig(model: string, jsonArray: boolean, dropThinking: boolean): Ge
   return cfg as unknown as GenerationConfig;
 }
 
+// Dataset captioning / translation describes what's already in an image the
+// user brought — the default MEDIUM thresholds spuriously block a lot of
+// ordinary character / portrait training images. BLOCK_ONLY_HIGH keeps the
+// genuine guardrails without wrecking the batch over one borderline frame.
+const RELAXED_SAFETY: SafetySetting[] = [
+  HarmCategory.HARM_CATEGORY_HARASSMENT,
+  HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+  HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+  HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+].map((category) => ({ category, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH }));
+
 export type GemErr = { kind: "quota" | "busy" | "failed"; message: string };
 export const isGemErr = (e: unknown): e is GemErr =>
   typeof e === "object" && e !== null && "kind" in e && "message" in e;
@@ -74,12 +93,14 @@ export function geminiNotConfiguredResponse(): NextResponse {
   );
 }
 
-// Runs `prompt` against the model-candidate list with a 503 retry. Returns
-// the raw response text; throws a GemErr on quota / persistent busy / failure.
-export async function runGeminiText(
+// Runs `contents` (a plain prompt string, or an array of text + inlineData
+// image parts for a multimodal call) against the model-candidate list with a
+// 503 retry. Returns the raw response text; throws a GemErr on quota /
+// persistent busy / failure.
+async function runGeminiGenerate(
   genAI: GoogleGenerativeAI,
-  prompt: string,
-  jsonArray = false,
+  contents: string | Array<string | Part>,
+  jsonArray: boolean,
 ): Promise<string> {
   let lastErr = "";
   let sawBusy = false;
@@ -90,8 +111,9 @@ export async function runGeminiText(
         const model = genAI.getGenerativeModel({
           model: modelId,
           generationConfig: genConfig(modelId, jsonArray, dropThinking),
+          safetySettings: RELAXED_SAFETY,
         });
-        const result = await model.generateContent(prompt);
+        const result = await model.generateContent(contents);
         const resp = result.response;
         const cand = resp.candidates?.[0];
         let out = "";
@@ -135,6 +157,30 @@ export async function runGeminiText(
     }
   }
   throw { kind: sawBusy ? "busy" : "failed", message: lastErr } satisfies GemErr;
+}
+
+// Text-only call (unchanged public signature).
+export async function runGeminiText(
+  genAI: GoogleGenerativeAI,
+  prompt: string,
+  jsonArray = false,
+): Promise<string> {
+  return runGeminiGenerate(genAI, prompt, jsonArray);
+}
+
+// Multimodal call: a prompt plus up to ~15 inline images (base64, no data:
+// prefix). Same retry / model-gating / error contract as runGeminiText.
+export async function runGeminiVision(
+  genAI: GoogleGenerativeAI,
+  prompt: string,
+  images: { mimeType: string; data: string }[],
+  jsonArray = false,
+): Promise<string> {
+  const parts: Array<string | Part> = [
+    prompt,
+    ...images.map((im) => ({ inlineData: { mimeType: im.mimeType, data: im.data } })),
+  ];
+  return runGeminiGenerate(genAI, parts, jsonArray);
 }
 
 // Maps a thrown GemErr (or any error) to a JSON NextResponse. `messages`
