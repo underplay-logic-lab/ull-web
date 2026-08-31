@@ -2236,20 +2236,29 @@ def train_lora_job(params: dict) -> dict:
                 path.with_suffix(".txt").write_text(cap, encoding="utf-8")
         print(f"[train] stage 1 done in {time.time() - started:.0f}s")
 
-        # Bundle every generated/edited .txt caption into captions.zip so the
-        # completed screen can offer a 1-hop "download all captions" button.
-        # Persisted to the Volume next to the checkpoints in the publish step
-        # below and registered in metadata.checkpoints as is_caption_archive.
-        captions_zip_path = pathlib.Path("/root/captions.zip")
+        # Bundle the FULL training dataset — every staged image TOGETHER WITH
+        # its .txt caption (Qwen-generated or user-supplied) — into dataset.zip
+        # so the completed screen can offer a 1-hop "download the captioned
+        # dataset" button. Persisted to the Volume next to the checkpoints in
+        # the publish step below and registered in metadata.checkpoints as
+        # is_caption_archive. Images + captions sit side by side once unzipped
+        # (0000.png / 0000.txt), so the set is directly re-trainable.
+        dataset_zip_path = pathlib.Path("/root/dataset.zip")
         try:
-            txt_files = sorted(dataset.glob("*.txt"))
-            with zipfile.ZipFile(captions_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for txt in txt_files:
-                    zf.write(txt, arcname=txt.name)
-            print(f"[train] wrote {captions_zip_path} ({len(txt_files)} caption files)")
+            members = sorted(
+                p
+                for p in dataset.iterdir()
+                if p.is_file() and (p.suffix.lower() == ".txt" or p.suffix.lower() in IMAGE_EXTS)
+            )
+            n_txt = sum(1 for p in members if p.suffix.lower() == ".txt")
+            n_img = len(members) - n_txt
+            with zipfile.ZipFile(dataset_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for m in members:
+                    zf.write(m, arcname=m.name)
+            print(f"[train] wrote {dataset_zip_path} ({n_img} image(s) + {n_txt} caption file(s))")
         except Exception as exc:  # noqa: BLE001 — the archive is a nice-to-have
-            print(f"[train] captions.zip build skipped: {exc}")
-            captions_zip_path = None
+            print(f"[train] dataset.zip build skipped: {exc}")
+            dataset_zip_path = None
 
         # Persist images + captions to the Volume so the next run of this
         # dataset_id skips Stage 1 entirely.
@@ -2351,22 +2360,23 @@ def train_lora_job(params: dict) -> dict:
             checkpoints.append(entry)
         checkpoints.sort(key=lambda c: c["step"])
 
-        # 3) captions.zip -> loras/<user_id>/<job_id>/captions.zip, registered
-        #    alongside the weights so the completed screen's "生成キャプション
-        #    一括DL (ZIP)" button can pull it through the same signed-URL path.
-        if captions_zip_path and captions_zip_path.is_file() and job_ckpt_dir is not None:
-            shutil.copy2(captions_zip_path, job_ckpt_dir / "captions.zip")
+        # 3) dataset.zip (images + captions) -> loras/<user_id>/<job_id>/
+        #    dataset.zip, registered alongside the weights so the completed
+        #    screen's "キャプション付きデータセットDL (ZIP)" button can pull it
+        #    through the same signed-URL path.
+        if dataset_zip_path and dataset_zip_path.is_file() and job_ckpt_dir is not None:
+            shutil.copy2(dataset_zip_path, job_ckpt_dir / "dataset.zip")
             checkpoints.append(
                 {
                     "step": 0,
-                    "filename": "captions.zip",
-                    "size_bytes": (job_ckpt_dir / "captions.zip").stat().st_size,
+                    "filename": "dataset.zip",
+                    "size_bytes": (job_ckpt_dir / "dataset.zip").stat().st_size,
                     "is_final": False,
                     "is_caption_archive": True,
-                    "path": f"loras/{user_id}/{job_id}/captions.zip",
+                    "path": f"loras/{user_id}/{job_id}/dataset.zip",
                 }
             )
-            print(f"[train] persisted captions.zip -> {job_ckpt_dir / 'captions.zip'}")
+            print(f"[train] persisted dataset.zip -> {job_ckpt_dir / 'dataset.zip'}")
 
         # The canonical copies now live under loras/ — drop the raw per-job
         # ai-toolkit output tree so it doesn't accumulate on the Volume. (On a

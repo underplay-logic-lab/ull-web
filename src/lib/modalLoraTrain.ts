@@ -85,11 +85,13 @@ export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraD
 }
 
 // How long to wait on the *dispatch* ack. train_lora_dispatch is a GPU-less
-// Modal function whose whole body is an auth check + a .spawn(); it runs on
-// a tiny image with a warm container, but a genuine cold start (right after
-// a deploy, or after a long idle) can still take ~20-40s, so allow 55s —
-// just under the route's maxDuration.
-const SPAWN_TIMEOUT_MS = 55_000;
+// Modal function that auth-checks, then (only for HF-repo base models) runs
+// the CPU model pre-cache synchronously — a first-time snapshot_download of a
+// multi-GB model can take a few minutes — before .spawn()ing the GPU job.
+// A single-file / Volume model (the common path) still returns in ~1-5s.
+// 5 min covers the worst case without a spurious client-side timeout; the
+// route's own maxDuration must be raised alongside this to actually wait it out.
+const SPAWN_TIMEOUT_MS = 300_000;
 
 // Fire-and-forget: posts to modal_lora_worker.py's train_lora_dispatch,
 // which .spawn()s the GPU training job and returns immediately. The spawned

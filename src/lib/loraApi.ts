@@ -138,8 +138,9 @@ export type LoraCheckpoint = {
   filename: string;
   sizeBytes: number;
   isFinal: boolean;
-  // true for the captions.zip bundle (all generated .txt captions) — shown
-  // as its own download button, not in the intermediate-checkpoint list.
+  // true for the dataset bundle (training images + their .txt captions;
+  // older jobs: captions-only captions.zip) — shown as its own download
+  // button, not in the intermediate-checkpoint list.
   isCaptionArchive: boolean;
 };
 
