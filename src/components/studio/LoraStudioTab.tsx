@@ -266,9 +266,16 @@ function ImageDropzone({
           </div>
           <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-5">
             {images.map((img) => (
-              <div key={img.id} className="group relative aspect-square overflow-hidden rounded-lg border border-border">
+              <div
+                key={img.id}
+                className="group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border border-border bg-black/30"
+              >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={img.url} alt={img.file.name} className="h-full w-full object-cover" />
+                <img
+                  src={img.url}
+                  alt={img.file.name}
+                  className="h-full w-full max-h-full max-w-full object-contain"
+                />
                 {!disabled && (
                   <button
                     type="button"
@@ -1684,8 +1691,14 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               <div className="grid max-h-80 gap-2 overflow-y-auto pr-1">
                 {images.map((img) => (
                   <div key={img.id} className="flex gap-2">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={img.url} alt="" className="h-14 w-14 shrink-0 rounded-md border border-border object-cover" />
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-black/30">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={img.url}
+                        alt=""
+                        className="h-full w-full max-h-full max-w-full object-contain"
+                      />
+                    </div>
                     <textarea
                       value={captions[img.id] ?? ""}
                       onChange={(e) => setCaptions((prev) => ({ ...prev, [img.id]: e.target.value }))}

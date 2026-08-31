@@ -251,14 +251,18 @@ export function DatasetCurationUI({
               }`}
             >
               <div className="flex w-24 shrink-0 flex-col items-center gap-1.5">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={p.url}
-                  alt={p.name}
-                  className={`aspect-square w-24 rounded-lg border border-border object-cover ${
+                <div
+                  className={`flex aspect-square w-24 items-center justify-center overflow-hidden rounded-lg border border-border bg-black/30 ${
                     p.excluded ? "grayscale" : ""
                   }`}
-                />
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={p.url}
+                    alt={p.name}
+                    className="h-full w-full max-h-full max-w-full object-contain"
+                  />
+                </div>
                 <span className="w-full truncate text-center font-mono text-[9px] text-muted" title={p.name}>
                   {p.name}
                 </span>
