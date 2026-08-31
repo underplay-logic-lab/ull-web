@@ -309,21 +309,22 @@ GPU_REQUEST = os.environ.get("LORA_WORKER_GPU", "").strip() or ["b300", "b200"]
 AI_TOOLKIT_REF = os.environ.get("AI_TOOLKIT_REF", "main")
 
 # --- GPU-cost defence / watchdogs ----------------------------------------
-# The container timeout is 12h, but we stop far earlier. Every watchdog is
-# milestone-linked so a normal (slow-but-progressing) run is never misfired:
-#   PREP-LOAD  — subprocess start -> "Model Loaded" : hard limit 15m.
-#   PREP-CACHE — "Model Loaded" -> training Step 1   : hard limit 25m
-#                (timer RESETS at the Model-Loaded milestone).
-#   COST       — after LORA_COST_MIN_STEP real steps, a trimmed moving
-#                average of s/it projects total wall time; if it would cost
-#                more real GPU money than the paid credits cover at a 30%
-#                margin (_credit_covered_seconds), graceful stop + 100%
-#                refund + salvageable partial checkpoints.
+# The container timeout is 12h; the only earlier stops are:
+#   PREP  — a TRUE deadlock: no stdout/stderr/tqdm output AT ALL for
+#           LORA_PREP_SILENCE_S. Multi-resolution latent caching
+#           (512/768/1024/1280) legitimately runs well past 25m while
+#           emitting progress the whole time, so there is NO cumulative
+#           prep limit — only the silence watchdog. Any output line resets
+#           it (see last_output in _run_ai_toolkit_with_progress).
+#   COST  — after LORA_COST_MIN_STEP real steps, a trimmed moving average of
+#           s/it projects total wall time; if it would cost more real GPU
+#           money than the paid credits cover at a 30% margin
+#           (_credit_covered_seconds), graceful stop + 100% refund +
+#           salvageable partial checkpoints.
 # Checkpoint I/O (`Saving at step` / `Saved checkpoint`) grants a grace
 # window so a long disk sync never looks like a stall.
 # LORA_SAFETY_LIMIT_S is only a fallback ceiling for credits_cost == 0.
-LORA_PREP_LOAD_S = int(os.environ.get("LORA_PREP_LOAD_S", str(15 * 60)))
-LORA_PREP_CACHE_S = int(os.environ.get("LORA_PREP_CACHE_S", str(25 * 60)))
+LORA_PREP_SILENCE_S = int(os.environ.get("LORA_PREP_SILENCE_S", str(20 * 60)))
 LORA_COST_MIN_STEP = int(os.environ.get("LORA_COST_MIN_STEP", "50"))
 LORA_CKPT_IO_GRACE_S = int(os.environ.get("LORA_CKPT_IO_GRACE_S", str(5 * 60)))
 LORA_SAFETY_LIMIT_S = int(os.environ.get("LORA_SAFETY_LIMIT_S", str(5 * 60 * 60)))
@@ -1480,14 +1481,14 @@ def _run_ai_toolkit_with_progress(
     total_steps / eta_seconds / loss in metadata) at most every 5s or 10
     steps.
 
-    Watchdogs (all milestone-linked — see the LORA_PREP_* / LORA_COST_MIN_STEP
-    / LORA_CKPT_IO_GRACE_S constants):
-      * PREP-LOAD  : subprocess start -> "Model Loaded", hard limit 15m.
-      * PREP-CACHE : "Model Loaded" -> training Step 1, hard limit 25m (the
-                     timer resets at the Model-Loaded milestone).
-      * COST       : after LORA_COST_MIN_STEP steps, trimmed-mean s/it projects
-                     total wall time; over `safety_limit_s` -> graceful stop +
-                     SafetyLimitError(kind="cost", refund=True).
+    Watchdogs (see LORA_PREP_SILENCE_S / LORA_COST_MIN_STEP / LORA_CKPT_IO_GRACE_S):
+      * PREP : before training Step 1, abort ONLY if there has been NO output
+               of any kind for LORA_PREP_SILENCE_S (a true deadlock). There
+               is no cumulative prep limit — legit multi-resolution latent
+               caching runs far past 25m while emitting progress.
+      * COST : after LORA_COST_MIN_STEP steps, trimmed-mean s/it projects
+               total wall time; over `safety_limit_s` -> graceful stop +
+               SafetyLimitError(kind="cost", refund=True).
       * checkpoint I/O (`Saving at step` / `Saved checkpoint`) grants a grace
         window so a long disk sync is never read as a stall.
 
@@ -1716,10 +1717,11 @@ for _k, _v in list(globals().items()):
             sub_start = time.time()
             training_start: float | None = None
             first_step = 0
+            # Reset on EVERY output line (any of stdout/stderr/tqdm). The prep
+            # watchdog only fires on true silence — see check (1) below.
             last_output = time.time()
-            prep_phase = "load"          # "load" -> "cache" -> (training)
-            phase_start = sub_start      # RESET at the Model-Loaded milestone
             io_grace_until = 0.0         # extended while a checkpoint is syncing
+            model_loaded_logged = False
             rate_hist = collections.deque(maxlen=40)  # (wall_ts, step) samples
 
             while True:
@@ -1731,26 +1733,18 @@ for _k, _v in list(globals().items()):
                     break  # subprocess stdout closed
 
                 if line:
-                    last_output = time.time()
+                    last_output = time.time()  # any output = alive
                     print(line, end="", flush=True)
                     log_file.write(line)
                     log_file.flush()
 
                     m = _TQDM_STEP_RE.search(line)
 
-                    # milestone: prep-load -> prep-cache. Any of "Model Loaded",
-                    # a latent-cache line, or a tqdm bar proves the model is
-                    # past loading — reset the phase timer for the cache phase.
-                    if training_start is None and prep_phase == "load" and (
+                    if not model_loaded_logged and training_start is None and (
                         _MODEL_LOADED_RE.search(line) or _CACHE_RE.search(line) or m
                     ):
-                        prep_phase = "cache"
-                        phase_start = time.time()
-                        print(
-                            f"[stage2] milestone: model loaded at {phase_start - sub_start:.0f}s "
-                            f"— VAE cache phase (limit {LORA_PREP_CACHE_S // 60}m)",
-                            flush=True,
-                        )
+                        model_loaded_logged = True
+                        print(f"[stage2] model loaded / caching started at {time.time() - sub_start:.0f}s", flush=True)
 
                     # checkpoint disk sync — grant an I/O grace window so the
                     # ensuing silence never reads as a stall.
@@ -1786,15 +1780,16 @@ for _k, _v in list(globals().items()):
 
                 now = time.time()
 
-                # (1) prep-phase milestone timers — a hard limit per phase, so
-                #     a slow-but-progressing prep is never misfired.
+                # (1) prep watchdog — TRUE deadlock only: no output of any kind
+                #     for LORA_PREP_SILENCE_S. There is NO cumulative prep
+                #     limit (multi-res latent caching legitimately runs past
+                #     25m while emitting progress). Overall ceiling is the 12h
+                #     container timeout.
                 if training_start is None:
-                    limit = LORA_PREP_LOAD_S if prep_phase == "load" else LORA_PREP_CACHE_S
-                    phase_name = "モデル展開" if prep_phase == "load" else "VAEラテントキャッシュ"
-                    if (now - phase_start) > limit and now > io_grace_until:
+                    if (now - last_output) > LORA_PREP_SILENCE_S and now > io_grace_until:
                         aborted = (
-                            f"準備フェーズ（{phase_name}）が上限 {limit // 60} 分を超えました。"
-                            f"スワップ/デッドロックと判定し、中断しました。"
+                            f"準備フェーズで {int((now - last_output) // 60)} 分間まったく出力がありません"
+                            f"（真のデッドロック/スワップ）。中断しました。"
                         )
                         aborted_kind = "prep"
                         break
