@@ -725,9 +725,12 @@ function ProgressPanel({
     );
   }
 
-  // failed — raw-YAML config errors are NOT refunded (platform-defence policy);
-  // standard GUI-mode faults are.
-  const noRefund = job.customYaml || job.refunded === false;
+  // failed — refund state comes straight from the worker (infra failures and
+  // GUI-mode faults refund; a raw-YAML config error or an over-scoped run
+  // that was safety-stopped does not).
+  const partialCkpts = (job.checkpoints ?? [])
+    .filter((c) => !c.isCaptionArchive)
+    .sort((a, b) => a.step - b.step);
   return (
     <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4">
       <div className="flex items-center gap-2 text-sm font-semibold text-red-400">
@@ -737,11 +740,65 @@ function ProgressPanel({
       <p className="mt-1.5 text-[11px] leading-relaxed text-red-400/90">
         {job.errorMessage || "不明なエラーが発生しました。"}
         <br />
-        {noRefund
-          ? "生YAML（カスタム設定）モードのため、消費したクレジットは返金されません（設定不備は自己責任）。"
-          : "消費したクレジットは自動的に返金されました。"}
+        {job.refunded === true
+          ? "消費したクレジットは全額返金されました。"
+          : job.refunded === false
+            ? "生YAML（カスタム設定）モードのため、消費したクレジットは返金されません。"
+            : "返金状況を確認中です。"}
       </p>
+
+      {partialCkpts.length > 0 && (
+        <div className="mt-3 border-t border-red-500/20 pt-3">
+          <p className="mb-1.5 text-[11px] font-medium text-foreground">
+            中断時点までの中間チェックポイント（ダウンロード可）
+          </p>
+          <div className="flex flex-col gap-1.5">
+            {partialCkpts.map((c) => (
+              <div
+                key={c.filename}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-background/40 px-3 py-1.5 text-xs"
+              >
+                <span className="flex items-center gap-2 font-mono text-[11px] text-muted">
+                  <span className="text-foreground">{c.step > 0 ? `Step ${c.step}` : "checkpoint"}</span>
+                  <span className="opacity-60">{formatMb(c.sizeBytes)}</span>
+                </span>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handleCkptDownload(c.filename)}
+                    disabled={downloadingCkpt !== null || copyingCkpt !== null}
+                    className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {downloadingCkpt === c.filename ? (
+                      <Loader2 size={11} className="animate-spin" />
+                    ) : (
+                      <Download size={11} />
+                    )}
+                    ⬇️ ダウンロード
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCkptCopyUrl(c.filename)}
+                    disabled={downloadingCkpt !== null || copyingCkpt !== null}
+                    className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {copyingCkpt === c.filename ? (
+                      <Loader2 size={11} className="animate-spin" />
+                    ) : (
+                      <ClipboardCopy size={11} />
+                    )}
+                    📋 URLコピー
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          {ckptError && <p className="mt-1.5 text-[10px] text-red-400">{ckptError}</p>}
+        </div>
+      )}
+
       <SalvageSection jobId={job.jobId} />
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }
@@ -1007,6 +1064,19 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // Mirrors the worker's _derive_trigger: explicit trigger, else the first
   // alnum run of the LoRA name. Used to protect the token during translation.
   const curationTrigger = effectiveTrigger || (effectiveLoraName.match(/[A-Za-z0-9]+/)?.[0] ?? "");
+
+  // Heavy-config warning: 1280px + 100+ images → the 3D-VAE latent-cache
+  // phase alone can blow past the worker's early-safety-stop.
+  const resolutionHas1280 = useMemo(() => {
+    if (yamlMode && yamlCheck?.ok) {
+      const p0 = (yamlCheck.data as { config?: { process?: Array<{ datasets?: Array<{ resolution?: unknown }> }> } })
+        ?.config?.process?.[0];
+      const rs = p0?.datasets?.[0]?.resolution;
+      return Array.isArray(rs) && rs.some((r) => Number(r) >= 1280);
+    }
+    return Number(resolution) >= 1280;
+  }, [yamlMode, yamlCheck, resolution]);
+  const heavyConfigWarn = resolutionHas1280 && images.length > 100;
 
   const captionSpec: LoraCaptionSpec = useMemo(
     () => ({
@@ -2172,6 +2242,13 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               <Zap size={13} />
               クレジットが不足しています — チャージする
             </a>
+          )}
+
+          {heavyConfigWarn && phase === "form" && (
+            <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-400">
+              ⚠️ [警告]
+              1280px高解像度かつ100枚超の設定は、準備処理（3D VAEエンコード）に莫大な時間を要し、コンテナが途中で早期安全停止される可能性が極めて高いです。解像度を最大1024pxに下げるか、画像枚数を減らすことを強く推奨します。
+            </p>
           )}
 
           {/* Action / tracking — kept inside the settings panel so a large

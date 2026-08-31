@@ -39,9 +39,11 @@ import hashlib
 import hmac
 import os
 import pathlib
+import queue
 import re
 import shutil
 import subprocess
+import threading
 import time
 import zipfile
 
@@ -304,6 +306,17 @@ LORA_OUTPUT_DIR = f"{MODELS_DIR}/loras"
 # still pins a single tier when set.
 GPU_REQUEST = os.environ.get("LORA_WORKER_GPU", "").strip() or ["b300", "b200"]
 AI_TOOLKIT_REF = os.environ.get("AI_TOOLKIT_REF", "main")
+
+# --- GPU-cost defence (real-cost, not credits) -----------------------------
+# Measured reference: a 3000-step run is ~2.5-3h of actual training. The
+# container timeout is 12h, but we stop far earlier than that:
+#   PREP    — if ai-toolkit hasn't reached training Step 1 within this long
+#             (VAE latent-caching / model load), assume swap/deadlock, abort.
+#   SAFETY  — once real step speed is known, if projected TOTAL wall time
+#             (elapsed + remaining) would exceed this, gracefully stop and
+#             leave the partial checkpoints salvageable.
+LORA_PREP_TIMEOUT_S = int(os.environ.get("LORA_PREP_TIMEOUT_S", str(20 * 60)))
+LORA_SAFETY_LIMIT_S = int(os.environ.get("LORA_SAFETY_LIMIT_S", str(5 * 60 * 60)))
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
@@ -720,6 +733,13 @@ def _supabase_request(method: str, path: str, **kwargs):
 class InfraError(RuntimeError):
     """A transient infrastructure failure (network / Storage / GPU-side), as
     opposed to a caller config error. Refunded even for raw-YAML jobs."""
+
+
+class SafetyLimitError(RuntimeError):
+    """The run was deliberately stopped early to cap real GPU cost — the prep
+    phase deadlocked, or the projected total wall time blew past
+    LORA_SAFETY_LIMIT_S. Partial checkpoints are committed + salvageable.
+    NOT an infra error (it's an over-scoped config) → no raw-YAML refund."""
 
 
 def _download_storage_object(bucket: str, key: str, attempts: int = 4) -> bytes:
@@ -1357,7 +1377,13 @@ def _fmt_duration(seconds: float | None) -> str:
 
 
 def _run_ai_toolkit_with_progress(
-    config_path: pathlib.Path, job_id: str, total_steps: int, commit_vol: bool = False
+    config_path: pathlib.Path,
+    job_id: str,
+    total_steps: int,
+    commit_vol: bool = False,
+    job_started_ts: float | None = None,
+    safety_limit_s: int = LORA_SAFETY_LIMIT_S,
+    prep_timeout_s: int = LORA_PREP_TIMEOUT_S,
 ) -> None:
     """Runs `python -u run.py <config>`, streaming its merged stdout/stderr
     line-by-line to this container's stdout (-> Modal's live log) while
@@ -1365,6 +1391,13 @@ def _run_ai_toolkit_with_progress(
     and PATCHing generation_jobs (progress_percent 15-95 + current_step /
     total_steps / eta_seconds / loss in metadata) at most every 5s or 10
     steps.
+
+    GPU-cost defence (see LORA_PREP_TIMEOUT_S / LORA_SAFETY_LIMIT_S):
+      * if training Step 1 isn't reached within `prep_timeout_s`, kill the
+        subprocess (swap/deadlock) and raise SafetyLimitError;
+      * once the real step rate is known, if the projected TOTAL wall time
+        (`job_started_ts` -> predicted finish) would exceed `safety_limit_s`,
+        gracefully stop, commit the partial checkpoints, raise SafetyLimitError.
 
     commit_vol: when the trainer writes into the mounted Volume (a per-job
     PERSIST_OUTPUT_ROOT dir), vol.commit() every ~2 min so the intermediate
@@ -1541,15 +1574,27 @@ for _k, _v in list(globals().items()):
             fields["metadata"] = meta
         _patch_job(job_id, fields)
 
+    job_start = job_started_ts or time.time()
+    aborted: str | None = None
+
+    def _kill(p, grace: float = 25.0) -> None:
+        """SIGTERM, wait, then SIGKILL — leaves the on-disk save_every
+        checkpoints intact for the vol.commit() in `finally`."""
+        try:
+            p.terminate()
+            try:
+                p.wait(timeout=grace)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+            p.kill()
+            p.wait(timeout=10)
+        except Exception as _ke:  # noqa: BLE001
+            print(f"[stage2] subprocess kill: {_ke}", flush=True)
+
     try:
         with open(log_path, "w", encoding="utf-8") as log_file:
-            # `-u` + PYTHONUNBUFFERED (above) + line-buffered text pipe: read
-            # the trainer's merged stdout/stderr one line at a time, echo it
-            # straight to this container's stdout (-> Modal's live log stream),
-            # tee it into log_path, and parse tqdm step/eta/loss out of it.
-            # text=True uses universal-newline mode, so tqdm's \r-separated
-            # progress updates each arrive here as their own line (not held
-            # back until a trailing \n) and are never dropped.
+            # `-u` + PYTHONUNBUFFERED (above) + line-buffered text pipe.
             proc = subprocess.Popen(
                 ["python", "-u", "run.py", str(config_path)],
                 cwd=AI_TOOLKIT_DIR,
@@ -1560,35 +1605,107 @@ for _k, _v in list(globals().items()):
                 env=child_env,
             )
             assert proc.stdout is not None
-            for line in proc.stdout:
-                print(line, end="", flush=True)
-                log_file.write(line)
-                log_file.flush()
 
-                m = _TQDM_STEP_RE.search(line)
-                # Training runs are >=200 steps (UI floor); ai-toolkit's
-                # sample-generation tqdm loops are ~20-50 — ignore those so a
-                # sampling bar can't hijack the step counter / total.
-                if m and int(m.group(2)) >= 100:
-                    state["step"] = int(m.group(1))
-                    state["total"] = int(m.group(2))
-                    rate = float(m.group(3))
-                    s_per_it = rate if m.group(4) == "s/it" else (1.0 / rate if rate else 0.0)
+            # Reader thread -> queue: the main loop must still be able to act
+            # on wall-clock conditions when the trainer emits nothing (a VAE
+            # cache deadlock / swap thrash produces long silences).
+            lq = queue.Queue()
+
+            def _reader(pipe):
+                try:
+                    for ln in pipe:
+                        lq.put(ln)
+                finally:
+                    lq.put(None)  # EOF sentinel
+
+            threading.Thread(target=_reader, args=(proc.stdout,), daemon=True).start()
+
+            sub_start = time.time()
+            training_start: float | None = None
+            first_step = 0
+            last_output = time.time()
+
+            while True:
+                try:
+                    line = lq.get(timeout=5)
+                except queue.Empty:
+                    line = ""  # no output for 5s — fall through to the checks
+                if line is None:
+                    break  # subprocess stdout closed
+
+                if line:
+                    last_output = time.time()
+                    print(line, end="", flush=True)
+                    log_file.write(line)
+                    log_file.flush()
+
+                    m = _TQDM_STEP_RE.search(line)
+                    # Training runs are >=200 steps (UI floor); ai-toolkit's
+                    # sample-generation tqdm loops are ~20-50 — ignore those.
+                    if m and int(m.group(2)) >= 100:
+                        state["step"] = int(m.group(1))
+                        state["total"] = int(m.group(2))
+                        rate = float(m.group(3))
+                        s_per_it = rate if m.group(4) == "s/it" else (1.0 / rate if rate else 0.0)
+                        state["eta"] = max(0, state["total"] - state["step"]) * s_per_it
+                        lm = _TQDM_LOSS_RE.search(line)
+                        if lm:
+                            try:
+                                state["loss"] = round(float(lm.group(1)), 4)
+                            except ValueError:
+                                pass
+                        if training_start is None:
+                            training_start = time.time()
+                            first_step = state["step"]
+                            print(
+                                f"[stage2] training reached Step {first_step} "
+                                f"(prep took {training_start - sub_start:.0f}s)",
+                                flush=True,
+                            )
+                    _push()
+                    _maybe_commit()
+
+                now = time.time()
+
+                # (1) prep deadlock: past prep_timeout_s with no training step,
+                #     AND either silent for >2 min or 2x over the budget.
+                if training_start is None and (now - sub_start) > prep_timeout_s:
+                    if (now - last_output) > 120 or (now - sub_start) > prep_timeout_s * 2:
+                        aborted = (
+                            f"準備フェーズ（VAEラテントキャッシュ/モデルロード）が "
+                            f"{int((now - sub_start) // 60)} 分続いても学習（Step 1）を開始しません"
+                            f"（直近 {int(now - last_output)}s 出力なし）。"
+                            f"スワップ/デッドロックと判定し、GPUコスト保護のため中断しました。"
+                        )
+                        break
+
+                # (2) projected total wall time exceeds the safety limit.
+                if training_start is not None and (state["step"] - first_step) >= 20 and state["total"] > 0:
+                    measured_spi = (now - training_start) / max(1, state["step"] - first_step)
                     remaining = max(0, state["total"] - state["step"])
-                    state["eta"] = remaining * s_per_it
-                    lm = _TQDM_LOSS_RE.search(line)
-                    if lm:
-                        try:
-                            state["loss"] = round(float(lm.group(1)), 4)
-                        except ValueError:
-                            pass
-                _push()
-                _maybe_commit()
-            returncode = proc.wait()
+                    projected_total = (now - job_start) + remaining * measured_spi
+                    if projected_total > safety_limit_s:
+                        aborted = (
+                            f"Estimated time exceeds {safety_limit_s // 3600}-hour safety limit. "
+                            f"Terminated to protect GPU cost. "
+                            f"(measured {measured_spi:.2f}s/it, ~{_fmt_duration(projected_total)} projected total, "
+                            f"stopped at Step {state['step']}/{state['total']})"
+                        )
+                        break
+
+            if aborted:
+                print(f"[stage2] SAFETY ABORT: {aborted}", flush=True)
+                _patch_job(job_id, {"progress_message": "GPUコスト保護のため早期停止中…"})
+                _kill(proc)
+            else:
+                returncode = proc.wait()
     finally:
         if state["step"] > 0:
             _push(force=True)
-        _maybe_commit(force=True)
+        _maybe_commit(force=True)  # persist every save_every checkpoint written so far
+
+    if aborted:
+        raise SafetyLimitError(aborted)
 
     if returncode != 0:
         tail = ""
@@ -1631,6 +1748,46 @@ def _collect_all_checkpoints(
         m = _CKPT_STEP_RE.search(p.name)
         out.append((p, int(m.group(1)) if m else 0))
     out.sort(key=lambda t: (t[1] == 0, t[1], t[0].stat().st_mtime))
+    return out
+
+
+def _publish_partial_checkpoints(lora_name: str, output_dir: str, user_id: str, job_id: str) -> list[dict]:
+    """On a safety-abort: copy whatever intermediate .safetensors ai-toolkit
+    got written into loras/<user_id>/<job_id>/ and return a
+    metadata.checkpoints list, so the partial results are downloadable from
+    the failed panel (and still salvageable from the Volume)."""
+    out: list[dict] = []
+    if not (user_id and job_id):
+        return out
+    try:
+        found = _collect_all_checkpoints(lora_name, output_dir)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[train] partial checkpoint scan failed: {exc}", flush=True)
+        return out
+    dest_dir = pathlib.Path(LORA_OUTPUT_DIR) / user_id / job_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for path, step in found:
+        try:
+            base = f"{lora_name}_step{step:07d}.safetensors" if step else f"{lora_name}_partial.safetensors"
+            fname = re.sub(r"[^A-Za-z0-9._-]", "_", base)
+            shutil.copy2(path, dest_dir / fname)
+            out.append(
+                {
+                    "step": step,
+                    "filename": fname,
+                    "size_bytes": (dest_dir / fname).stat().st_size,
+                    "is_final": False,
+                    "partial": True,
+                    "path": f"loras/{user_id}/{job_id}/{fname}",
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[train] partial checkpoint copy failed for {path}: {exc}", flush=True)
+    out.sort(key=lambda c: c["step"])
+    try:
+        vol.commit()
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 
@@ -1999,7 +2156,9 @@ def train_lora_job(params: dict) -> dict:
             total_steps = int(tc.get("steps", DEFAULT_TRAINING_CONFIG["steps"]))
         _patch_job(job_id, {"progress_percent": 5, "progress_message": "starting training"})
         stage2 = time.time()
-        _run_ai_toolkit_with_progress(config_path, job_id, total_steps or 2000, commit_vol=True)
+        _run_ai_toolkit_with_progress(
+            config_path, job_id, total_steps or 2000, commit_vol=True, job_started_ts=started
+        )
         print(f"[train] stage 2 done in {time.time() - stage2:.0f}s")
 
         # --- publish ---------------------------------------------------------
@@ -2104,22 +2263,36 @@ def train_lora_job(params: dict) -> dict:
         # _is_infra_error — deliberately narrow, no OOM / timeout): that's on
         # us, so refund it regardless of mode.
         is_custom_yaml = bool(override)
+        is_safety_stop = isinstance(exc, SafetyLimitError)
         infra = _is_infra_error(exc)
-        should_refund = (not is_custom_yaml) or infra
+        # A safety-stop is an over-scoped config (like a plain 12h timeout) —
+        # NOT refunded for raw-YAML. A narrow infra error still is.
+        should_refund = (not is_custom_yaml) or (infra and not is_safety_stop)
+
+        meta: dict = {"refunded": should_refund, "custom_yaml": is_custom_yaml, "infra_error": infra}
+        if is_safety_stop:
+            meta["safety_stop"] = True
+            try:
+                partial = _publish_partial_checkpoints(lora_name, job_output_dir, user_id, job_id)
+            except Exception as _pp_exc:  # noqa: BLE001
+                partial = []
+                print(f"[train] partial publish failed: {_pp_exc}", flush=True)
+            if partial:
+                meta["checkpoints"] = partial
+                print(f"[train] safety-stop: published {len(partial)} partial checkpoint(s)", flush=True)
+
+        prefix = (
+            "[GPUコスト保護のため早期停止 — 中間チェックポイント取得可] " if is_safety_stop
+            else "[インフラ障害により全額返金] " if (is_custom_yaml and infra)
+            else "[Pro Custom YAML — 返金対象外] " if is_custom_yaml
+            else ""
+        )
         _patch_job(
             job_id,
             {
                 "status": "failed",
-                "error_message": (
-                    ("[インフラ障害により全額返金] " if (is_custom_yaml and infra)
-                     else "[Pro Custom YAML — 返金対象外] " if is_custom_yaml
-                     else "") + str(exc)
-                )[:2000],
-                "metadata": {
-                    "refunded": should_refund,
-                    "custom_yaml": is_custom_yaml,
-                    "infra_error": infra,
-                },
+                "error_message": (prefix + str(exc))[:2000],
+                "metadata": meta,
                 "completed_at": _now_iso(),
             },
         )
@@ -2127,7 +2300,8 @@ def train_lora_job(params: dict) -> dict:
             _refund_credits(user_id, credits_cost)
             print(f"[train] job {job_id} failed ({'infra' if infra else 'system'}) — refunded {credits_cost}C")
         else:
-            print(f"[train] custom_yaml job {job_id} failed — NO refund (user config, {credits_cost}C confirmed)")
+            tag = "safety-stop" if is_safety_stop else "user config"
+            print(f"[train] custom_yaml job {job_id} failed — NO refund ({tag}, {credits_cost}C confirmed)")
         raise
 
 
