@@ -1736,6 +1736,13 @@ for _k, _v in list(globals().items()):
             io_grace_until = 0.0         # extended while a checkpoint is syncing
             model_loaded_logged = False
             rate_hist = collections.deque(maxlen=40)  # (wall_ts, step) samples
+            # --- prep-phase instrumentation (案B) ---------------------------
+            # Isolate where the (historically 20-25min) prep time actually
+            # goes: model load vs VAE latent caching vs first-step JIT/compile.
+            perf_model_loaded_at: float | None = None
+            perf_cache_first_at: float | None = None
+            perf_cache_last_at: float | None = None
+            perf_breakdown_logged = False
 
             while True:
                 try:
@@ -1758,6 +1765,26 @@ for _k, _v in list(globals().items()):
                     ):
                         model_loaded_logged = True
                         print(f"[stage2] model loaded / caching started at {time.time() - sub_start:.0f}s", flush=True)
+
+                    # --- prep instrumentation (案B): per-milestone timestamps
+                    if training_start is None:
+                        _t = time.time()
+                        if perf_model_loaded_at is None and _MODEL_LOADED_RE.search(line):
+                            perf_model_loaded_at = _t
+                            print(
+                                f"[perf] Model loading finished: {_t - sub_start:.1f}s "
+                                f"(epoch {_t:.1f})",
+                                flush=True,
+                            )
+                        if _CACHE_RE.search(line):
+                            if perf_cache_first_at is None:
+                                perf_cache_first_at = _t
+                                print(
+                                    f"[perf] Latent caching started: {_t - sub_start:.1f}s "
+                                    f"(epoch {_t:.1f})",
+                                    flush=True,
+                                )
+                            perf_cache_last_at = _t
 
                     # checkpoint disk sync — grant an I/O grace window so the
                     # ensuing silence never reads as a stall.
@@ -1788,6 +1815,52 @@ for _k, _v in list(globals().items()):
                                 f"(prep took {training_start - sub_start:.0f}s)",
                                 flush=True,
                             )
+                            # --- prep instrumentation (案B): close out the
+                            #     caching + first-step milestones and print a
+                            #     one-line load/cache/jit breakdown.
+                            if not perf_breakdown_logged:
+                                perf_breakdown_logged = True
+                                _cache_end = perf_cache_last_at or training_start
+                                if perf_cache_first_at is not None:
+                                    print(
+                                        f"[perf] Latent caching finished: "
+                                        f"{_cache_end - sub_start:.1f}s (epoch {_cache_end:.1f})",
+                                        flush=True,
+                                    )
+                                else:
+                                    print(
+                                        f"[perf] Latent caching finished (or skipped): "
+                                        f"{training_start - sub_start:.1f}s (epoch {training_start:.1f}) "
+                                        f"— no VAE-cache output seen (restored cache / already cached)",
+                                        flush=True,
+                                    )
+                                print(
+                                    f"[perf] First step reached (Step 1): "
+                                    f"{training_start - sub_start:.1f}s (epoch {training_start:.1f})",
+                                    flush=True,
+                                )
+                                _load_s = (
+                                    (perf_model_loaded_at - sub_start)
+                                    if perf_model_loaded_at is not None
+                                    else None
+                                )
+                                _anchor = perf_model_loaded_at or sub_start
+                                _cache_s = (
+                                    (_cache_end - _anchor)
+                                    if perf_cache_first_at is not None
+                                    else 0.0
+                                )
+                                _jit_s = training_start - (
+                                    perf_cache_last_at or perf_model_loaded_at or sub_start
+                                )
+                                print(
+                                    "[perf] prep breakdown — "
+                                    f"model load: {('%.1fs' % _load_s) if _load_s is not None else 'n/a'}, "
+                                    f"latent cache: {_cache_s:.1f}s, "
+                                    f"first-step JIT/compile: {_jit_s:.1f}s "
+                                    f"(total prep {training_start - sub_start:.1f}s)",
+                                    flush=True,
+                                )
                     _push()
                     _maybe_commit()
 
@@ -1966,6 +2039,90 @@ def _derive_dataset_id(params: dict) -> str:
                 break
     raw = re.sub(r"[^A-Za-z0-9._-]", "", raw)
     return raw[:64]
+
+
+# ---------------------------------------------------------------------------
+# Persisted VAE latent cache (案A) — dataset-scoped reuse of ai-toolkit's
+# _latent_cache/ so a 2nd+ run of the same dataset at the same model +
+# resolution skips VAE encoding entirely.
+#
+# ai-toolkit writes latents to "<dataset folder>/_latent_cache/<img>_<md5>.
+# safetensors" (path + hash are hardcoded — see toolkit/dataloader_mixins.py).
+# We can't redirect it, but we CAN pre-populate that folder with a copy we
+# stashed on the Volume last time: the filename carries ai-toolkit's own
+# hash, so a stale / mismatched key simply isn't found and ai-toolkit
+# re-encodes normally. A corrupt file is the only real risk — mitigated by
+# only ever persisting from the SUCCESS path (ai-toolkit has exited, every
+# file is fully flushed).
+# ---------------------------------------------------------------------------
+AITK_LATENT_CACHE_DIR = f"{DATASET_DIR}/_latent_cache"
+
+
+def _latent_cache_key(target_model: str, custom_model_id: str, resolution: int) -> str:
+    """Path segment '<model>_<res>' for PERSIST_ROOT/<dataset_id>/latents/.
+    Mirrors _build_config's resolution clamp so the key matches the config
+    that actually produced the latents. Different custom models never share
+    (their VAE / latent-space version differs)."""
+    res = resolution if resolution in (512, 768, 1024) else 768
+    base = (target_model or "").strip() or "unknown"
+    if base == "custom" and custom_model_id:
+        import hashlib
+
+        base = "custom_" + hashlib.md5(custom_model_id.strip().encode()).hexdigest()[:10]
+    base = re.sub(r"[^A-Za-z0-9._-]+", "-", base)[:64]
+    return f"{base}_{res}"
+
+
+def _restore_latent_cache(dataset_id: str, key: str) -> int:
+    """Copy a previously-persisted _latent_cache/ for this (dataset, model,
+    resolution) into DATASET_DIR so Stage 2's VAE encode is a no-op. Returns
+    the number of latent tensors restored. Best-effort — any failure just
+    means ai-toolkit re-encodes."""
+    if not dataset_id:
+        return 0
+    src = pathlib.Path(PERSIST_ROOT) / dataset_id / "latents" / key
+    if not src.is_dir():
+        return 0
+    dst = pathlib.Path(AITK_LATENT_CACHE_DIR)
+    n = 0
+    try:
+        dst.mkdir(parents=True, exist_ok=True)
+        for f in sorted(src.glob("*.safetensors")):
+            try:
+                shutil.copy2(f, dst / f.name)
+                n += 1
+            except Exception as exc:  # noqa: BLE001
+                print(f"[latents] restore skipped {f.name}: {exc}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[latents] restore skipped: {exc}", flush=True)
+    return n
+
+
+def _persist_latent_cache(dataset_id: str, key: str) -> int:
+    """Sync the _latent_cache/ ai-toolkit generated this run to the Volume,
+    then vol.commit(). Only new filenames are copied — the hash is in the
+    name, so an existing name is already the identical latent. Never raises
+    into the caller. The dir is TTL-managed by cleanup_old_latent_caches()."""
+    if not dataset_id:
+        return 0
+    src = pathlib.Path(AITK_LATENT_CACHE_DIR)
+    if not src.is_dir():
+        return 0
+    dst = pathlib.Path(PERSIST_ROOT) / dataset_id / "latents" / key
+    n = 0
+    try:
+        dst.mkdir(parents=True, exist_ok=True)
+        for f in sorted(src.glob("*.safetensors")):
+            d = dst / f.name
+            if not d.exists():
+                shutil.copy2(f, d)
+            n += 1
+        if n:
+            vol.commit()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[latents] persist skipped: {exc}", flush=True)
+        return 0
+    return n
 
 
 # ---------------------------------------------------------------------------
@@ -2310,6 +2467,25 @@ def train_lora_job(params: dict) -> dict:
         else:
             total_steps = int(tc.get("steps", DEFAULT_TRAINING_CONFIG["steps"]))
         _patch_job(job_id, {"progress_percent": 5, "progress_message": "starting training"})
+
+        # --- latent cache restore (案A) ---------------------------------
+        # A prior run of THIS dataset at THIS model+resolution already paid
+        # for VAE encoding — copy those _latent_cache/*.safetensors back so
+        # ai-toolkit's cache phase is a no-op. GUI jobs only: a raw-YAML
+        # job's datasets block is free-form, so its cache key isn't stable.
+        latent_key = _latent_cache_key(target_model, custom_model_id, resolution)
+        restored_latents = 0 if override else _restore_latent_cache(dataset_id, latent_key)
+        if restored_latents:
+            print(
+                f"[latents] restored {restored_latents} cached latent tensor(s) from "
+                f"{PERSIST_ROOT}/{dataset_id}/latents/{latent_key} — Stage 2 VAE encode should skip",
+                flush=True,
+            )
+            _patch_job(
+                job_id,
+                {"progress_message": f"latent cache hit ({restored_latents}) — VAEエンコードをスキップ"},
+            )
+
         stage2 = time.time()
         # Dynamic cost cap: the run may use as much GPU time as the paid
         # credits cover at a >=30% margin, floored at 30min. Overrunning that
@@ -2324,6 +2500,21 @@ def train_lora_job(params: dict) -> dict:
             safety_limit_s=cost_cap_s,
         )
         print(f"[train] stage 2 done in {time.time() - stage2:.0f}s")
+
+        # --- latent cache persist (案A) --------------------------------
+        # Only from the success path: ai-toolkit has exited, so every
+        # _latent_cache/*.safetensors is fully flushed. A cost/prep abort
+        # deliberately does NOT persist (a half-written file would poison the
+        # next run's cache).
+        if not override:
+            saved_latents = _persist_latent_cache(dataset_id, latent_key)
+            if saved_latents:
+                print(
+                    f"[latents] persisted {saved_latents} latent tensor(s) -> "
+                    f"{PERSIST_ROOT}/{dataset_id}/latents/{latent_key} "
+                    f"(re-runs of this dataset skip VAE encode; 14d TTL)",
+                    flush=True,
+                )
 
         # --- publish ---------------------------------------------------------
         os.makedirs(LORA_OUTPUT_DIR, exist_ok=True)
@@ -2939,6 +3130,80 @@ def salvage_lora_job(data: dict, request: fastapi.Request):
         "image_files": image_count,
         "checkpoints": checkpoints,
     }
+
+
+# ---------------------------------------------------------------------------
+# TTL cleanup — persisted VAE latent caches (案A)
+# ---------------------------------------------------------------------------
+# Data-retention policy (CLAUDE.md §3): generated artefacts are kept a flat
+# 14 days, then purged. The persisted _latent_cache/ copies under
+# PERSIST_ROOT/<dataset_id>/latents/ are derived-from-dataset artefacts, so
+# they get the same treatment. Flat 14d from creation (mtime is NOT bumped
+# on reuse — a heavily re-run dataset just re-encodes + re-persists after
+# the purge). Scoped to latents/ only; the caption cache and the LoRA
+# library have their own lifecycle.
+LATENT_CACHE_RETENTION_DAYS = int(os.environ.get("LORA_LATENT_TTL_DAYS", "14"))
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol},
+    schedule=modal.Period(days=1),
+    timeout=600,
+)
+def cleanup_old_latent_caches() -> dict:
+    """Daily: delete PERSIST_ROOT/*/latents/**/*.safetensors older than
+    LATENT_CACHE_RETENTION_DAYS, then drop the now-empty dirs. Best-effort."""
+    root = pathlib.Path(PERSIST_ROOT)
+    if not root.is_dir():
+        print("[latents-ttl] no dataset cache root yet — nothing to do", flush=True)
+        return {"ok": True, "removed": 0}
+
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[latents-ttl] vol.reload skipped: {exc}", flush=True)
+
+    cutoff = time.time() - LATENT_CACHE_RETENTION_DAYS * 24 * 60 * 60
+    removed = 0
+    freed = 0
+    latent_dirs = list(root.glob("*/latents"))
+    for ldir in latent_dirs:
+        if not ldir.is_dir():
+            continue
+        for f in ldir.glob("**/*.safetensors"):
+            try:
+                if f.is_file() and f.stat().st_mtime < cutoff:
+                    freed += f.stat().st_size
+                    f.unlink()
+                    removed += 1
+            except Exception as exc:  # noqa: BLE001
+                print(f"[latents-ttl] unlink skipped {f}: {exc}", flush=True)
+        # prune empty key dirs, then the latents/ dir itself
+        for sub in sorted(ldir.glob("*"), reverse=True):
+            try:
+                if sub.is_dir() and not any(sub.iterdir()):
+                    sub.rmdir()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            if not any(ldir.iterdir()):
+                ldir.rmdir()
+        except Exception:  # noqa: BLE001
+            pass
+
+    if removed:
+        try:
+            vol.commit()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[latents-ttl] vol.commit skipped: {exc}", flush=True)
+    print(
+        f"[latents-ttl] removed {removed} latent file(s) "
+        f"(~{freed / 1024**2:.1f} MB) older than {LATENT_CACHE_RETENTION_DAYS}d "
+        f"across {len(latent_dirs)} dataset(s)",
+        flush=True,
+    )
+    return {"ok": True, "removed": removed, "freed_bytes": freed}
 
 
 # ---------------------------------------------------------------------------
