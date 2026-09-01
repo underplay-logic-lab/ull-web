@@ -5,6 +5,7 @@ import {
   geminiApiKey,
   geminiErrorResponse,
   geminiNotConfiguredResponse,
+  isGemErr,
   runGeminiVision,
 } from "@/lib/geminiText";
 
@@ -22,7 +23,12 @@ import {
 // The Modal worker's local VLM stays as a fallback for images this can't
 // caption (quota / safety refusal) — the client sends the partial list and
 // the worker fills the gaps.
-export const maxDuration = 60;
+export const maxDuration = 120;
+
+// Gemini "empty response" reasons that mean the safety filter refused the
+// content (a real NSFW/policy block) — distinct from a 429 rate limit. The
+// client isolates these to a single image and hands only those to the VLM.
+const SAFETY_REASON_RE = /safe|block|prohibited|recitation|spii|sexual|harm/i;
 
 const MAX_IMAGES = 16;
 // base64 is ~4/3 of the binary size — a 768px JPEG is well under this. The
@@ -192,6 +198,21 @@ export async function POST(request: Request): Promise<NextResponse> {
         "enja",
       );
     } catch (e) {
+      // Safety-filter refusal → 200 with empty captions + safety:true so the
+      // client can pin it to one image and route it to the VLM (NOT retry it
+      // as a rate limit). Everything else keeps its 429 / 503 / 502 status so
+      // the client's exponential backoff kicks in.
+      if (isGemErr(e) && e.kind === "failed" && SAFETY_REASON_RE.test(e.message)) {
+        return NextResponse.json(
+          {
+            captions: images.map(() => ""),
+            captionsJa: images.map(() => ""),
+            safety: true,
+            reason: e.message.slice(0, 200),
+          },
+          { status: 200 },
+        );
+      }
       return geminiErrorResponse(e, ERR_MESSAGES);
     }
     const parsed = parseEnJaArray(raw, images.length);
@@ -206,7 +227,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       captions[i].trim() ? (p.ja ?? "").trim().replace(/\s*\n+\s*/g, "、") : "",
     );
 
-    return NextResponse.json({ captions, captionsJa });
+    return NextResponse.json({ captions, captionsJa, safety: false });
   } catch (err) {
     return geminiErrorResponse(err, ERR_MESSAGES);
   }

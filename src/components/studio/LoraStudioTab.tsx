@@ -937,8 +937,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     done: number;
     total: number;
     error: string | null;
+    // Transient hint shown while a batch is backing off a rate limit.
+    note: string | null;
     everRan: boolean;
-  }>({ running: false, done: 0, total: 0, error: null, everRan: false });
+  }>({ running: false, done: 0, total: 0, error: null, note: null, everRan: false });
   // Image ids we've already sent to the vision captioner (so a re-render / new
   // drop doesn't re-caption them). Cleared per-id on remove / on "再解析".
   const captionAttemptedRef = useRef<Set<string>>(new Set());
@@ -1687,7 +1689,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       const ac = new AbortController();
       autoCaptionAbortRef.current = ac;
       recaptionPromptRef.current = captionPrompt;
-      setAutoCap({ running: true, done: 0, total: targets.length, error: null, everRan: true });
+      setAutoCap({ running: true, done: 0, total: targets.length, error: null, note: null, everRan: true });
 
       // Merge each batch as it lands, dropping any target the user has
       // removed since the pass started (its id is gone from imageIdsRef).
@@ -1717,12 +1719,17 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             triggerWord: trigger,
             captionPrompt: captionPrompt || undefined,
             signal: ac.signal,
-            onProgress: (done, total) => setAutoCap((s) => ({ ...s, done, total })),
+            onProgress: (done, total) => setAutoCap((s) => ({ ...s, done, total, note: null })),
             onBatch: (entries) => {
               const m = mergeLive(entries);
               Object.assign(merged.cap, m.cap);
               Object.assign(merged.ja, m.ja);
             },
+            onRetry: () =>
+              setAutoCap((s) => ({
+                ...s,
+                note: "混雑のため少し待ってから自動で再試行しています…",
+              })),
             isStale: (i) => {
               const id = targets[i]?.id;
               return !id || !imageIdsRef.current.has(id);
@@ -1747,11 +1754,24 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       const missed = targets.filter(
         (t) => live.has(t.id) && !(merged.cap[t.id] ?? "").trim(),
       ).length;
+      // Of those, how many the safety filter genuinely refused (vs. gave up on).
+      const safetyMissed = res.safetyRejected
+        .map((i) => targets[i]?.id)
+        .filter((id): id is string => Boolean(id) && live.has(id)).length;
+
       setAutoCap((s) => ({
         ...s,
         running: false,
         done: s.total,
-        error: missed > 0 ? `${missed} 枚は自動解析できませんでした（学習時に自動補完されます）。` : null,
+        note: null,
+        error:
+          missed === 0
+            ? null
+            : safetyMissed >= missed
+              ? `${missed} 枚はコンテンツポリシーにより自動解析の対象外です（学習時に自動補完されます）。`
+              : safetyMissed > 0
+                ? `${missed} 枚は自動解析できませんでした（うち ${safetyMissed} 枚はコンテンツポリシー対象、学習時に自動補完されます）。`
+                : `${missed} 枚は自動解析できませんでした（学習時に自動補完されます）。`,
       }));
       return { cap: merged.cap, ja: merged.ja };
     },
@@ -1841,7 +1861,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     // Let any in-flight AI-vision pass finish so curation / training see the
     // completed captions.
     if (autoCap.running) {
-      setErrorMessage("AI 画像解析の完了をお待ちください…（数秒で終わります）");
+      setErrorMessage("AI キャプション解析の完了をお待ちください…");
       return;
     }
     setErrorMessage(null);
@@ -1965,7 +1985,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     captionAttemptedRef.current = new Set();
     recaptionPromptRef.current = "";
     setUserCaptionIds(new Set());
-    setAutoCap({ running: false, done: 0, total: 0, error: null, everRan: false });
+    setAutoCap({ running: false, done: 0, total: 0, error: null, note: null, everRan: false });
     images.forEach((i) => URL.revokeObjectURL(i.url));
     setImages([]);
     setCaptions({});
@@ -2086,6 +2106,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                 <span>
                   <span className="font-medium">高速AIビジョンが全画像を自動解析中…</span>（
                   {Math.min(aiCaptionedCount, aiTargetCount)}/{aiTargetCount}）
+                  {autoCap.note && (
+                    <span className="ml-1 text-neon-violet/70">— {autoCap.note}</span>
+                  )}
                 </span>
               </p>
             ) : hasUserCaptions ? (
@@ -2738,7 +2761,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                 onClick={handleStart}
                 disabled={
                   (Boolean(user) && !insufficientCredits && !canSubmit) ||
-                  captionGen.state === "generating"
+                  captionGen.state === "generating" ||
+                  (Boolean(user) && autoCap.running)
                 }
                 className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -2751,6 +2775,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                   <>
                     <Zap size={16} />
                     クレジットをチャージ
+                  </>
+                ) : autoCap.running ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    AIキャプションを解析中…（完了までお待ちください）
                   </>
                 ) : captionGen.state === "generating" ? (
                   <>
