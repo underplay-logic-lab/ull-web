@@ -643,6 +643,38 @@ function ProgressPanel({
     }
   };
 
+  // One-click bundle / dataset download for a COMPLETED job. If the target
+  // filename isn't in the job's metadata yet, run salvage first (CPU-only,
+  // 0 GPU cost) to build + register it, then download.
+  const handleBundleDownload = async (want: "dataset" | "bundle") => {
+    setDownloadingCkpt(want);
+    setCkptError(null);
+    try {
+      const list = job.checkpoints ?? [];
+      let target =
+        want === "dataset"
+          ? list.find((c) => c.isCaptionArchive)?.filename
+          : list.find((c) => c.isBundle)?.filename;
+      if (!target) {
+        const res = await salvageLoraJob(job.jobId);
+        target =
+          want === "dataset"
+            ? res.checkpoints.find((c) => c.isCaptionArchive)?.filename
+            : res.checkpoints.find((c) => c.isBundle)?.filename;
+      }
+      if (!target) {
+        setCkptError("対象ファイルを準備できませんでした（チェックポイントが1件のみの可能性があります）。");
+        return;
+      }
+      await downloadLoraCheckpoint(job.jobId, target);
+      pushToast("ダウンロードを開始しました");
+    } catch (err) {
+      setCkptError(err instanceof Error ? err.message : "ダウンロードに失敗しました。");
+    } finally {
+      setDownloadingCkpt(null);
+    }
+  };
+
   if (job.status === "failed_timeout") {
     return (
       <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
@@ -775,22 +807,50 @@ function ProgressPanel({
           この LoRA はモデルライブラリに保存され、動画生成ワークフローからすぐに利用できます。
         </p>
 
-        {bundleArchive && (
-          <button
-            type="button"
-            onClick={() => handleCkptDownload(bundleArchive.filename)}
-            disabled={downloadingCkpt !== null || copyingCkpt !== null}
-            title="中間チェックポイントを含む全 .safetensors を1つの ZIP にまとめたものです。"
-            className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {downloadingCkpt === bundleArchive.filename ? (
-              <Loader2 size={15} className="animate-spin" />
-            ) : (
-              <Download size={15} />
-            )}
-            📦 全チェックポイント一括DL (ZIP) ・ {formatMb(bundleArchive.sizeBytes)}
-          </button>
-        )}
+        {/* Prominent, always-visible download block. */}
+        <div className="mt-3 space-y-2 rounded-lg border border-green-500/25 bg-background/40 p-3">
+          <p className="text-[11px] font-semibold text-foreground">ダウンロード</p>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <button
+              type="button"
+              onClick={() =>
+                captionArchive
+                  ? handleCkptDownload(captionArchive.filename)
+                  : handleBundleDownload("dataset")
+              }
+              disabled={downloadingCkpt !== null || copyingCkpt !== null}
+              title="学習に使用した画像とキャプション(.txt)を1つのZIPにまとめたものです。"
+              className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-4 py-2.5 text-xs font-semibold text-neon-violet transition-all hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {downloadingCkpt === (captionArchive?.filename ?? "dataset") ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Download size={14} />
+              )}
+              📦 キャプション付きデータセットDL (ZIP)
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                bundleArchive
+                  ? handleCkptDownload(bundleArchive.filename)
+                  : handleBundleDownload("bundle")
+              }
+              disabled={downloadingCkpt !== null || copyingCkpt !== null}
+              title="このジョブの全 .safetensors（中間＋最終）を1つの ZIP にまとめてダウンロードします。"
+              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2.5 text-xs font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {downloadingCkpt === (bundleArchive?.filename ?? "bundle") ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Download size={14} />
+              )}
+              📦 全チェックポイント一括DL (ZIP)
+              {bundleArchive ? ` ・ ${formatMb(bundleArchive.sizeBytes)}` : ""}
+            </button>
+          </div>
+          {ckptError && <p className="text-[10px] text-red-400">{ckptError}</p>}
+        </div>
 
         <div className="mt-3 flex flex-wrap gap-2">
           <button
@@ -809,22 +869,6 @@ function ProgressPanel({
             >
               <Clapperboard size={13} />
               🎬 動画生成でこの LoRA を使う
-            </button>
-          )}
-          {captionArchive && (
-            <button
-              type="button"
-              onClick={() => handleCkptDownload(captionArchive.filename)}
-              disabled={downloadingCkpt !== null || copyingCkpt !== null}
-              title="学習に使用した画像とキャプション(.txt)を1つのZIPにまとめたものです。そのまま再学習に使えます。"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {downloadingCkpt === captionArchive.filename ? (
-                <Loader2 size={13} className="animate-spin" />
-              ) : (
-                <Download size={13} />
-              )}
-              📦 キャプション付きデータセットDL (ZIP)
             </button>
           )}
         </div>
@@ -889,9 +933,12 @@ function ProgressPanel({
           </div>
         )}
 
-        {/* On-demand: bundle every .safetensors in this job's folder into one
-            ZIP (built on a CPU container, 0 GPU cost) + the captioned dataset. */}
-        <SalvageSection jobId={job.jobId} label="📦 全チェックポイント＋データセットを一括DL" />
+        {checkpoints.length === 0 && (
+          <p className="mt-3 text-[10px] leading-relaxed text-muted">
+            中間チェックポイントが個別に表示されていない場合は、上の「📦
+            全チェックポイント一括DL」で復元・取得できます。
+          </p>
+        )}
 
         <ToastStack toasts={toasts} onDismiss={dismissToast} />
       </div>

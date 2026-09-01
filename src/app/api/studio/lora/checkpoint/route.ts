@@ -68,24 +68,47 @@ export async function GET(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: "認証に失敗しました。" }, { status: 401 });
   }
   const userId = userData.user.id;
+  const adminEmails = (process.env.ADMIN_EMAILS ?? "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  const isAdmin = Boolean(userData.user.email && adminEmails.includes(userData.user.email.toLowerCase()));
 
+  // Look the job up by id only, then authorise: owner OR admin. The signed
+  // download token must carry the JOB OWNER's id — the worker resolves the
+  // file at loras/<owner_id>/<job_id>/, so signing with the (possibly admin)
+  // requester's id would 404.
   const { data: job, error } = (await supabaseAdmin
     .from("generation_jobs")
-    .select("metadata")
+    .select("metadata, user_id")
     .eq("id", jobId)
-    .eq("user_id", userId)
-    .maybeSingle()) as { data: { metadata: unknown } | null; error: { message: string } | null };
+    .maybeSingle()) as {
+    data: { metadata: unknown; user_id: string } | null;
+    error: { message: string } | null;
+  };
 
   if (error) {
     console.error("[studio/lora/checkpoint] job lookup failed:", error.message);
     return NextResponse.json({ error: "ジョブの取得に失敗しました。" }, { status: 500 });
   }
-  const checkpoints = (job?.metadata as { checkpoints?: unknown })?.checkpoints;
+  if (!job) return NextResponse.json({ error: "ジョブが見つかりません。" }, { status: 404 });
+  if (job.user_id !== userId && !isAdmin) {
+    return NextResponse.json({ error: "このジョブのダウンロード権限がありません。" }, { status: 403 });
+  }
+  const ownerId = job.user_id;
+
+  const checkpoints = (job.metadata as { checkpoints?: unknown })?.checkpoints;
   const known =
     Array.isArray(checkpoints) &&
     checkpoints.some((c) => (c as { filename?: unknown })?.filename === file);
-  if (!known) {
-    return NextResponse.json({ error: "チェックポイントが見つかりません。" }, { status: 404 });
+  // dataset.zip / bundle names are always valid targets for an owned job even
+  // if a stale metadata row hasn't listed them yet (salvage merges them in).
+  const wellKnown = /^(dataset(_salvaged)?|checkpoints_all)\.zip$/.test(file);
+  if (!known && !wellKnown) {
+    return NextResponse.json(
+      { error: "このファイルはまだ準備されていません。「一括DL」で復元してください。" },
+      { status: 404 },
+    );
   }
 
   const modalUrl = process.env.MODAL_LORA_CHECKPOINT_DOWNLOAD_URL;
@@ -95,10 +118,10 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   const expiresAt = Math.floor(Date.now() / 1000) + DOWNLOAD_TOKEN_TTL_SECONDS;
-  const sig = signDownloadToken(userId, jobId, file, expiresAt, modalAuthToken);
+  const sig = signDownloadToken(ownerId, jobId, file, expiresAt, modalAuthToken);
 
   const target = new URL(modalUrl);
-  target.searchParams.set("user_id", userId);
+  target.searchParams.set("user_id", ownerId);
   target.searchParams.set("job_id", jobId);
   target.searchParams.set("filename", file);
   target.searchParams.set("expires", String(expiresAt));

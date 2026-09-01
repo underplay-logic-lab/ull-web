@@ -269,29 +269,48 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
 // and the "copy URL for the Model Downloader" button. The link is valid for
 // ~15 minutes and the bytes flow browser<->Modal directly (one hop).
 export async function getLoraCheckpointDownloadUrl(jobId: string, filename: string): Promise<string> {
-  const { data: sessionData } = await supabase.auth.getSession();
-  const accessToken = sessionData.session?.access_token;
-  if (!accessToken) throw new Error("ログインが必要です。");
+  // Force a refresh so an access_token that expired while the completed
+  // screen sat open doesn't 401 the download route.
+  let accessToken: string | undefined;
+  try {
+    const { data } = await supabase.auth.getSession();
+    accessToken = data.session?.access_token;
+    const exp = data.session?.expires_at ?? 0;
+    if (!accessToken || exp * 1000 < Date.now() + 60_000) {
+      const { data: refreshed } = await supabase.auth.refreshSession();
+      accessToken = refreshed.session?.access_token ?? accessToken;
+    }
+  } catch {
+    /* fall through to the null check */
+  }
+  if (!accessToken) throw new Error("セッションの有効期限が切れました。ページを再読み込みしてログインし直してください。");
 
   const res = await fetch(
     `/api/studio/lora/checkpoint?jobId=${encodeURIComponent(jobId)}&file=${encodeURIComponent(filename)}`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
+    { headers: { Authorization: `Bearer ${accessToken}` }, cache: "no-store" },
   );
   const data = await res.json().catch(() => ({}));
   if (!res.ok || typeof data?.downloadUrl !== "string") {
-    throw new Error(data?.error || "ダウンロードURLの取得に失敗しました。");
+    if (res.status === 401) throw new Error("認証の有効期限が切れました。再読み込みしてお試しください。");
+    if (res.status === 404) throw new Error(data?.error || "このファイルはまだ準備されていません（一括DLボタンで復元できます）。");
+    throw new Error(data?.error || `ダウンロードURLの取得に失敗しました (${res.status})。`);
   }
   return data.downloadUrl as string;
 }
 
+// Triggers a browser download of a signed Modal checkpoint URL. Uses a hidden
+// iframe — the bytes are cross-origin so `<a download>` is ignored, and a
+// post-`await` synthetic click on `<a>` / `window.open` gets swallowed by the
+// popup blocker (the user gesture is already spent). Modal's FileResponse
+// sends `Content-Disposition: attachment`, so the iframe navigation downloads
+// the file without touching the top page.
 export async function downloadLoraCheckpoint(jobId: string, filename: string): Promise<void> {
   const downloadUrl = await getLoraCheckpointDownloadUrl(jobId, filename);
-  const a = document.createElement("a");
-  a.href = downloadUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  const iframe = document.createElement("iframe");
+  iframe.style.display = "none";
+  iframe.src = downloadUrl;
+  document.body.appendChild(iframe);
+  setTimeout(() => iframe.remove(), 120_000);
 }
 
 export type LoraRecoverResult = {
