@@ -442,7 +442,11 @@ TARGET_MODELS: dict[str, dict] = {
         "text_encoder": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
         "vae": "ai-toolkit/flux2_vae",
     },
-    "qwen_image": {"arch": "qwen_image", "unet": "Qwen/Qwen-Image"},
+    # `extras` -> YAML model.extras_name_or_path: ai-toolkit's qwen_image loader
+    # reads the tokenizer("tokenizer" subfolder) / text_encoder / vae / scheduler
+    # + configs from this Diffusers repo. ensure_model_cached_cpu() pre-caches it
+    # (transformer shards excluded — the Comfy single file covers those).
+    "qwen_image": {"arch": "qwen_image", "unet": "Qwen/Qwen-Image", "extras": "Qwen/Qwen-Image"},
     "krea2": {"arch": "krea2", "unet": "krea/Krea-2-Raw"},
     "zimage": {"arch": "zimage", "unet": "Tongyi-MAI/Z-Image-Turbo"},
     # --- anime / illustration ---
@@ -1456,6 +1460,17 @@ def _build_config(
         model_block["text_encoder_path"] = target["text_encoder"]
     if target.get("vae"):
         model_block["vae_path"] = target["vae"]
+    # `extras_name_or_path` is where ai-toolkit's qwen_image loader reads the
+    # tokenizer / text-encoder / VAE / scheduler + every config.json from
+    # (toolkit/models/v2/_mixin.py load_tokenizer: AutoTokenizer.from_pretrained
+    # (<extras>, subfolder="tokenizer") — the "tokenizer" subfolder is the class
+    # default, no YAML key for it). It DEFAULTS to name_or_path in
+    # config_modules.py, but the Comfy single-file transformer swap can leave
+    # name_or_path pointing at a *.safetensors — so pin it explicitly to the
+    # Diffusers repo id here. ensure_model_cached_cpu() snapshot_download's this
+    # exact repo (transformer weight shards excluded) so it resolves offline.
+    if target.get("extras"):
+        model_block["extras_name_or_path"] = target["extras"]
 
     config = {
         "job": "extension",
@@ -3056,7 +3071,7 @@ def _hf_repos_for(target_model: str, custom_model_id: str = "") -> list[str]:
         entry = next((t for t in TARGET_MODELS.values() if t.get("arch") == target_model), None)
     if entry is None:
         return []
-    repos = [entry[k] for k in ("unet", "text_encoder", "vae") if _is_repo(entry.get(k))]
+    repos = [entry[k] for k in ("unet", "text_encoder", "vae", "extras") if _is_repo(entry.get(k))]
     return list(dict.fromkeys(repos))
 
 
