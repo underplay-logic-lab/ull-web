@@ -10,9 +10,17 @@ import { supabase } from "@/lib/supabaseClient";
 
 const CAPTION_MAX_EDGE = 768;
 const CAPTION_JPEG_QUALITY = 0.72;
-// Small batches: fewer images lost to Qwen if one response is safety-blocked,
-// still well within the 15 RPM free tier for a 40-image dataset.
+// 10 images per Gemini call — the route now answers each batch with EN + JA
+// in ONE multimodal response (no translation round trip).
 const CAPTION_BATCH = 10;
+// Batches run through a worker pool instead of one-at-a-time. A 145-img
+// dataset was ~15 serial calls at 1-3 min each (~30 min wall time); 4 in
+// flight + the single-call route brings a 100-img set to well under 10s.
+// On a 429 the pool stops early and the rest fall to the worker's VLM.
+const CAPTION_CONCURRENCY = 4;
+// A single batch that runs longer than this is abandoned (its images fall to
+// the worker's VLM at training time) so one stuck call can't wedge a lane.
+const BATCH_TIMEOUT_MS = 45_000;
 
 export type DatasetCaptionResult = {
   /** English caption per image, "" where captioning failed. */
@@ -71,13 +79,22 @@ export async function generateDatasetCaptions(
   const token = await accessToken();
   if (!token) return { captions, captionsJa, captionedCount: 0 };
 
-  let done = 0;
+  // Index ranges, one per batch.
+  const batches: number[][] = [];
   for (let start = 0; start < total; start += CAPTION_BATCH) {
-    if (opts.signal?.aborted) break;
-    const idxs = Array.from(
-      { length: Math.min(CAPTION_BATCH, total - start) },
-      (_, k) => start + k,
+    batches.push(
+      Array.from({ length: Math.min(CAPTION_BATCH, total - start) }, (_, k) => start + k),
     );
+  }
+
+  let done = 0;
+  let nextBatch = 0;
+  // Set once a 429 comes back — lanes then stop pulling new work rather than
+  // hammering an exhausted quota. Remaining images stay blank (VLM fills them).
+  let quotaHit = false;
+
+  const runBatch = async (idxs: number[]): Promise<void> => {
+    if (opts.signal?.aborted || quotaHit) return;
 
     const encoded = await Promise.all(idxs.map((i) => downscaleToBase64(files[i])));
     const sendPairs = idxs
@@ -85,6 +102,11 @@ export async function generateDatasetCaptions(
       .filter((p): p is { i: number; img: { data: string; mimeType: string } } => p.img != null);
 
     if (sendPairs.length) {
+      // Local timeout, also tripped by the caller's abort signal.
+      const to = new AbortController();
+      const timer = setTimeout(() => to.abort(), BATCH_TIMEOUT_MS);
+      const onAbort = () => to.abort();
+      opts.signal?.addEventListener("abort", onAbort);
       try {
         const res = await fetch("/api/studio/lora/caption", {
           method: "POST",
@@ -94,8 +116,9 @@ export async function generateDatasetCaptions(
             trigger_word: opts.triggerWord || undefined,
             caption_prompt: opts.captionPrompt || undefined,
           }),
-          signal: opts.signal,
+          signal: to.signal,
         });
+        if (res.status === 429) quotaHit = true;
         const data = await res.json().catch(() => ({}));
         if (res.ok && Array.isArray(data?.captions)) {
           const en = data.captions as unknown[];
@@ -108,14 +131,29 @@ export async function generateDatasetCaptions(
           console.warn("[loraCaption] batch failed:", data?.error || res.status);
         }
       } catch (err) {
-        if ((err as Error)?.name === "AbortError") break;
+        if ((err as Error)?.name === "AbortError" && opts.signal?.aborted) return;
         console.warn("[loraCaption] batch errored:", err);
+      } finally {
+        clearTimeout(timer);
+        opts.signal?.removeEventListener("abort", onAbort);
       }
     }
 
     done += idxs.length;
-    opts.onProgress?.(done, total);
-  }
+    opts.onProgress?.(Math.min(done, total), total);
+  };
+
+  const lane = async (): Promise<void> => {
+    while (!opts.signal?.aborted && !quotaHit) {
+      const my = nextBatch++;
+      if (my >= batches.length) return;
+      await runBatch(batches[my]);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(CAPTION_CONCURRENCY, batches.length) }, () => lane()),
+  );
 
   return {
     captions,

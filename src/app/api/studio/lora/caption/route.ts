@@ -5,16 +5,16 @@ import {
   geminiApiKey,
   geminiErrorResponse,
   geminiNotConfiguredResponse,
-  runGeminiText,
   runGeminiVision,
 } from "@/lib/geminiText";
 
 // Fast AI-vision auto-captioning for the LoRA Studio dataset.
 //
 // The browser downscales each training image to a small JPEG and POSTs a
-// batch here (see src/lib/loraCaption.ts). Gemini's multimodal free tier
-// captions the whole batch in one call (~5-8s for 12 images), then a second
-// text call renders the Japanese working copies the curation UI shows.
+// batch here (see src/lib/loraCaption.ts). ONE Gemini multimodal call
+// captions the whole batch AND emits the Japanese working copy in the same
+// response (structured { en, ja } objects) — no second translation round
+// trip. The client fires 3-4 of these batches concurrently.
 //
 //   { images: [{ data(b64), mimeType }], trigger_word?, caption_prompt? }
 //     -> { captions: string[], captionsJa: string[] }   (aligned to images)
@@ -71,7 +71,9 @@ function buildVisionPrompt(count: number, trigger: string, captionPrompt: string
   }
   lines.push(
     "",
-    `Return a JSON array of exactly ${count} strings, in the same order as the images. Captions only.`,
+    `Return a JSON array of exactly ${count} objects, in the same order as the images.`,
+    'Each object is { "en": <the English caption>, "ja": <the SAME caption in natural Japanese, keeping the comma-separated structure; no romaji, no notes> }.',
+    "Output only the JSON array.",
   );
   return lines.join("\n");
 }
@@ -96,7 +98,9 @@ function tidyCaption(raw: string, trigger: string): string {
   return out;
 }
 
-function parseJsonArray(raw: string, count: number): string[] | null {
+// Tolerant parse of the model's `[{ en, ja }, …]` response. Accepts a bare
+// string entry (older/degraded output) as an en-only caption.
+function parseEnJaArray(raw: string, count: number): { en: string; ja: string }[] | null {
   let arr: unknown;
   try {
     arr = JSON.parse(raw);
@@ -109,7 +113,18 @@ function parseJsonArray(raw: string, count: number): string[] | null {
     }
   }
   if (!Array.isArray(arr)) return null;
-  return Array.from({ length: count }, (_, i) => (typeof arr[i] === "string" ? (arr[i] as string) : ""));
+  return Array.from({ length: count }, (_, i) => {
+    const it = arr[i];
+    if (typeof it === "string") return { en: it, ja: "" };
+    if (it && typeof it === "object") {
+      const o = it as Record<string, unknown>;
+      return {
+        en: typeof o.en === "string" ? o.en : typeof o.caption === "string" ? o.caption : "",
+        ja: typeof o.ja === "string" ? o.ja : "",
+      };
+    }
+    return { en: "", ja: "" };
+  });
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -165,54 +180,31 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (!apiKey) return geminiNotConfiguredResponse();
     const genAI = new GoogleGenerativeAI(apiKey);
 
-    // --- vision pass: English captions --------------------------------------
-    let rawEn: string;
+    // --- single multimodal pass: English caption + Japanese copy ----------
+    // One call per batch returns [{ en, ja }, …] — no separate translation
+    // round trip. The client fires several of these concurrently.
+    let raw: string;
     try {
-      rawEn = await runGeminiVision(
+      raw = await runGeminiVision(
         genAI,
         buildVisionPrompt(images.length, triggerWord, captionPrompt),
         images,
-        true,
+        "enja",
       );
     } catch (e) {
       return geminiErrorResponse(e, ERR_MESSAGES);
     }
-    const parsedEn = parseJsonArray(rawEn, images.length);
-    if (!parsedEn) {
+    const parsed = parseEnJaArray(raw, images.length);
+    if (!parsed) {
       return NextResponse.json(
-        { error: "解析結果を解釈できませんでした。", reason: rawEn.slice(0, 300) },
+        { error: "解析結果を解釈できませんでした。", reason: raw.slice(0, 300) },
         { status: 502 },
       );
     }
-    const captions = parsedEn.map((c) => tidyCaption(c, triggerWord));
-
-    // --- text pass: Japanese working copies -------------------------------
-    // Non-fatal: the JA copies are only for the curation UI's confirmation
-    // view. On failure we return blanks and the UI's own translate buttons
-    // still work.
-    const captionsJa: string[] = captions.map(() => "");
-    const nonEmpty = captions.map((c, i) => ({ c, i })).filter((x) => x.c.trim());
-    if (nonEmpty.length) {
-      try {
-        const jaPrompt = [
-          "Translate each English AI-image training caption into natural Japanese.",
-          "Keep the comma-separated structure. No romaji, no notes, no markdown.",
-          `Return a JSON array of exactly ${nonEmpty.length} strings, same order.`,
-          "",
-          "Input:",
-          JSON.stringify(nonEmpty.map((x) => x.c)),
-        ].join("\n");
-        const rawJa = await runGeminiText(genAI, jaPrompt, true);
-        const parsedJa = parseJsonArray(rawJa, nonEmpty.length);
-        if (parsedJa) {
-          nonEmpty.forEach((x, k) => {
-            captionsJa[x.i] = (parsedJa[k] ?? "").trim();
-          });
-        }
-      } catch (e) {
-        console.warn("[studio/lora/caption] JA translation failed (non-fatal):", e);
-      }
-    }
+    const captions = parsed.map((p) => tidyCaption(p.en, triggerWord));
+    const captionsJa = parsed.map((p, i) =>
+      captions[i].trim() ? (p.ja ?? "").trim().replace(/\s*\n+\s*/g, "、") : "",
+    );
 
     return NextResponse.json({ captions, captionsJa });
   } catch (err) {

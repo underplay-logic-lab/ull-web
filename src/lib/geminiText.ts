@@ -47,8 +47,15 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // id or the flash-latest/-lite aliases (which currently point at 2.5).
 // thinkingConfig isn't in this SDK version's types; the field is forwarded
 // to v1beta verbatim. `dropThinking` is set on a 400-retry (see runGeminiText).
-function genConfig(model: string, jsonArray: boolean, dropThinking: boolean): GenerationConfig {
-  const cfg: Record<string, unknown> = { temperature: 0.2, maxOutputTokens: 8192 };
+// `jsonArray`: false = free-form text; true = JSON array of strings;
+// "enja" = JSON array of { en, ja } objects (one multimodal call that both
+// captions and translates — see /api/studio/lora/caption).
+type JsonMode = boolean | "enja";
+
+function genConfig(model: string, jsonArray: JsonMode, dropThinking: boolean): GenerationConfig {
+  // Generous cap: a truncated response trips a full-call MAX_TOKENS retry
+  // (a big chunk of the old caption latency). The EN+JA batch needs headroom.
+  const cfg: Record<string, unknown> = { temperature: 0.2, maxOutputTokens: 16384 };
   if (!dropThinking) {
     if (/^gemini-3\./.test(model)) {
       // 3.x rejects thinkingBudget:0 (400); thinkingLevel LOW keeps latency
@@ -58,7 +65,17 @@ function genConfig(model: string, jsonArray: boolean, dropThinking: boolean): Ge
       cfg.thinkingConfig = { thinkingBudget: 0 };
     }
   }
-  if (jsonArray) {
+  if (jsonArray === "enja") {
+    cfg.responseMimeType = "application/json";
+    cfg.responseSchema = {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: { en: { type: SchemaType.STRING }, ja: { type: SchemaType.STRING } },
+        required: ["en", "ja"],
+      },
+    };
+  } else if (jsonArray) {
     cfg.responseMimeType = "application/json";
     cfg.responseSchema = { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } };
   }
@@ -100,7 +117,7 @@ export function geminiNotConfiguredResponse(): NextResponse {
 async function runGeminiGenerate(
   genAI: GoogleGenerativeAI,
   contents: string | Array<string | Part>,
-  jsonArray: boolean,
+  jsonArray: JsonMode,
 ): Promise<string> {
   let lastErr = "";
   let sawBusy = false;
@@ -174,7 +191,7 @@ export async function runGeminiVision(
   genAI: GoogleGenerativeAI,
   prompt: string,
   images: { mimeType: string; data: string }[],
-  jsonArray = false,
+  jsonArray: JsonMode = false,
 ): Promise<string> {
   const parts: Array<string | Part> = [
     prompt,
