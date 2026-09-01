@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { polar } from "@/lib/polar";
+import { getPolarClient } from "@/lib/polar";
 import { apiErrorResponse } from "@/lib/apiError";
 
 const LOG_PREFIX = "[portal/polar]";
@@ -40,6 +40,7 @@ export async function POST(request: Request) {
   if (!user.email) return notFound();
 
   try {
+    const polar = getPolarClient();
     // Resolve the Polar customer by email — this is the canonical lookup
     // (Polar enforces one customer per email per organization), so the
     // portal session it mints is guaranteed to show every order and

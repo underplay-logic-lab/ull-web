@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { polar, polarProductConfig, topupDiscountForTier } from "@/lib/polar";
+import { getPolarClient, polarProductConfig, topupDiscountForTier } from "@/lib/polar";
 import { POLAR_PRODUCT_IDS } from "@/lib/polarProducts";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { apiErrorResponse } from "@/lib/apiError";
@@ -88,6 +88,7 @@ export async function POST(request: Request) {
   }
 
   try {
+    const polar = getPolarClient();
     const createCheckout = (withDiscount: boolean) =>
       polar.checkouts.create({
         products: [productId],

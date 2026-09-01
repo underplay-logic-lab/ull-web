@@ -2,17 +2,26 @@ import "server-only";
 import { Polar } from "@polar-sh/sdk";
 import { POLAR_PRODUCT_IDS } from "@/lib/polarProducts";
 
-const accessToken = process.env.POLAR_ACCESS_TOKEN;
-
-if (!accessToken) {
-  throw new Error("Missing POLAR_ACCESS_TOKEN environment variable.");
-}
-
 // "production" unless explicitly overridden — POLAR_SERVER is only meant
 // for pointing this at Polar's sandbox during local/staging testing.
 const server = (process.env.POLAR_SERVER as "production" | "sandbox" | undefined) ?? "production";
 
-export const polar = new Polar({ accessToken, server });
+let client: Polar | null = null;
+
+// Lazy init: `next build` imports this module during route/page-data
+// collection with no runtime env, so the token must NOT be required at module
+// evaluation (a top-level throw crashed `next build` with "Failed to collect
+// configuration for /api/checkout/polar"). It's only actually needed when a
+// checkout / portal request calls Polar — check it there.
+export function getPolarClient(): Polar {
+  if (client) return client;
+  const accessToken = process.env.POLAR_ACCESS_TOKEN;
+  if (!accessToken) {
+    throw new Error("Missing POLAR_ACCESS_TOKEN environment variable.");
+  }
+  client = new Polar({ accessToken, server });
+  return client;
+}
 
 // Plan ids "entry"/"standard"/"pro"/"master" double as the value written to
 // profiles.subscription_tier on payment (see the webhook) — same convention
