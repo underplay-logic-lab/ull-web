@@ -3170,6 +3170,90 @@ _REPO_SNAPSHOT_IGNORE: dict[str, list[str]] = {
     ],
 }
 
+# The exact files ai-toolkit's qwen_image loader physically opens from the
+# Qwen/Qwen-Image Diffusers snapshot (tokenizer + Qwen2.5-VL text encoder +
+# VAE + scheduler + the diffusers configs). snapshot_download's own
+# local_files_only check trusts the cached repo *listing* — an interrupted
+# pull can leave that listing intact while the blobs behind the snapshot
+# symlinks are missing / 0-byte. So the completeness gate below resolves each
+# of these through its symlink and stat()s the real file. A single miss ==
+# incomplete remnant -> re-download (and, if it persists, purge + clean pull).
+_QWEN_REPO_CRITICAL_FILES: list[str] = [
+    "model_index.json",
+    "scheduler/scheduler_config.json",
+    "tokenizer/tokenizer_config.json",
+    "tokenizer/vocab.json",
+    "tokenizer/merges.txt",
+    "tokenizer/special_tokens_map.json",
+    "text_encoder/config.json",
+    "text_encoder/model.safetensors.index.json",
+    "text_encoder/model-00001-of-00004.safetensors",
+    "text_encoder/model-00002-of-00004.safetensors",
+    "text_encoder/model-00003-of-00004.safetensors",
+    "text_encoder/model-00004-of-00004.safetensors",
+    "vae/config.json",
+    "vae/diffusion_pytorch_model.safetensors",
+    "transformer/config.json",
+]
+
+
+def _qwen_repo_cache_dir() -> pathlib.Path:
+    slug = "models--" + _QWEN_IMAGE_HF_REPO.replace("/", "--")
+    return pathlib.Path(HF_HUB_CACHE_DIR) / slug
+
+
+def _qwen_snapshot_dir() -> "pathlib.Path | None":
+    """Local snapshot revision dir for Qwen/Qwen-Image that snapshot_download
+    would resolve to — the commit in refs/main, else the newest dir, else None."""
+    root = _qwen_repo_cache_dir()
+    snap_root = root / "snapshots"
+    if not snap_root.is_dir():
+        return None
+    ref = root / "refs" / "main"
+    try:
+        if ref.is_file():
+            rev = (snap_root / ref.read_text().strip())
+            if rev.is_dir():
+                return rev
+    except OSError:
+        pass
+    revs = [r for r in snap_root.iterdir() if r.is_dir()]
+    if not revs:
+        return None
+    return max(revs, key=lambda r: r.stat().st_mtime)
+
+
+def _qwen_missing_critical_files() -> list[str]:
+    """Repo-relative critical files NOT physically present (blob symlink
+    followed) + non-zero on disk in the local Qwen/Qwen-Image snapshot.
+    Non-empty == incomplete remnant."""
+    snap = _qwen_snapshot_dir()
+    if snap is None:
+        return list(_QWEN_REPO_CRITICAL_FILES)
+    missing: list[str] = []
+    for rel in _QWEN_REPO_CRITICAL_FILES:
+        p = snap / rel
+        try:
+            real = p.resolve()
+            if not (os.path.exists(real) and os.path.isfile(real) and os.path.getsize(real) > 0):
+                missing.append(rel)
+        except OSError:
+            missing.append(rel)
+    return missing
+
+
+def _qwen_repo_complete() -> bool:
+    return not _qwen_missing_critical_files()
+
+
+def _purge_qwen_snapshot() -> None:
+    """Delete the whole Qwen/Qwen-Image hub-cache tree so the next
+    snapshot_download starts from a clean slate (blobs, refs, snapshots)."""
+    d = _qwen_repo_cache_dir()
+    if d.exists():
+        shutil.rmtree(d, ignore_errors=True)
+        print(f"[cache][qwen] purged incomplete snapshot remnant -> {d}", flush=True)
+
 
 def _is_qwen_image(target_model: str) -> bool:
     return (
@@ -3302,6 +3386,13 @@ def _missing_base_artifacts(target_model: str, custom_model_id: str = "") -> lis
 
     for repo in _hf_repos_for(target_model, custom_model_id):
         ignore = _REPO_SNAPSHOT_IGNORE.get(repo)
+        if repo == _QWEN_IMAGE_HF_REPO:
+            # Qwen-Image: NEVER the lenient listing check (it is what mistook an
+            # incomplete remnant for a hit). Every critical tokenizer / TE / VAE
+            # / scheduler / config file must be physically on disk.
+            for rel in _qwen_missing_critical_files():
+                missing.append(f"qwen-repo-file:{rel}")
+            continue
         # "missing" only when BOTH the strict completeness check and the lenient
         # on-disk check fail — the CPU stage already verified strictly before
         # returning ok, so a lone strict-check quirk must not fail the job here.
@@ -3400,7 +3491,20 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
         _q_tok = _hf_token()
         _q_ok = False
         _q_err = ""
-        for _qs in range(3):
+        # 4 passes. Passes 1-2 are resumable top-ups (only the missing/short
+        # files re-pull). If pass 2 still leaves a critical file missing the
+        # snapshot tree itself is corrupt (bad refs / dangling symlinks that
+        # snapshot_download won't self-heal), so pass 3 hard-purges the whole
+        # Qwen/Qwen-Image cache dir and pass 3-4 do a clean pull. Success is
+        # gated ONLY on every critical file being physically on disk — never on
+        # snapshot_download's own listing-based check, which is exactly what
+        # mistook the incomplete remnant for a hit.
+        _q_missing = _qwen_missing_critical_files()
+        if _q_missing:
+            print(f"[cache][qwen] diffusers snapshot: {len(_q_missing)} critical file(s) missing -> fetching {_q_missing[:6]}", flush=True)
+        for _qs in range(4):
+            if _qs == 2 and not _q_ok and _qwen_missing_critical_files():
+                _purge_qwen_snapshot()
             try:
                 _t0 = time.time()
                 _qwen_snap(
@@ -3408,26 +3512,39 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
                     ignore_patterns=_q_ignore,
                     max_workers=_q_workers,
                     token=_q_tok,
+                    # only the pass right after the purge forces a from-scratch
+                    # pull; the rest are resumable top-ups of the missing files.
+                    force_download=(_qs == 2),
                 )
-                if _repo_cache_complete(_QWEN_IMAGE_HF_REPO, _q_ignore) or _repo_snapshot_present(_QWEN_IMAGE_HF_REPO):
-                    _q_ok = True
-                    print(
-                        f"[cache][qwen] TE/tokenizer/VAE/scheduler snapshot ready in {time.time() - _t0:.0f}s "
-                        "(transformer shards ignored)",
-                        flush=True,
-                    )
-                    break
-                print(f"[cache][qwen] diffusers snapshot post-fetch verify miss (attempt {_qs + 1}/3)", flush=True)
             except Exception as exc:  # noqa: BLE001
                 _q_err = str(exc)[:400]
-                print(f"[cache][qwen] diffusers snapshot attempt {_qs + 1}/3 FAILED — {_q_err}", flush=True)
+                print(f"[cache][qwen] diffusers snapshot attempt {_qs + 1}/4 FAILED — {_q_err}", flush=True)
+                time.sleep(3)
+                continue
+            _q_missing = _qwen_missing_critical_files()
+            if not _q_missing:
+                _q_ok = True
+                print(
+                    f"[cache][qwen] TE/tokenizer/VAE/scheduler snapshot verified on disk "
+                    f"({len(_QWEN_REPO_CRITICAL_FILES)} critical files) in {time.time() - _t0:.0f}s",
+                    flush=True,
+                )
+                break
+            print(
+                f"[cache][qwen] post-fetch verify: still missing {_q_missing[:6]} "
+                f"(attempt {_qs + 1}/4)",
+                flush=True,
+            )
             time.sleep(3)
         if not _q_ok:
             return {
                 "ok": False,
                 "cached": False,
                 "repo": _QWEN_IMAGE_HF_REPO,
-                "error": f"{_QWEN_IMAGE_HF_REPO}: TE/tokenizer snapshot not cached after 3 passes ({_q_err})",
+                "error": (
+                    f"{_QWEN_IMAGE_HF_REPO}: critical files still missing after 4 passes "
+                    f"(incl. purge+clean): {_qwen_missing_critical_files()[:8]} ({_q_err})"
+                ),
             }
 
         # Persist BOTH halves (comfy transformer file + diffusers TE/tokenizer/
@@ -3476,8 +3593,13 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
         # (Qwen-Image transformer) are pulled config/other-components-only.
         ignore = _REPO_SNAPSHOT_IGNORE.get(repo)
         ig_kw = {"ignore_patterns": ignore} if ignore else {}
+        # Qwen/Qwen-Image was already fully fetched + PHYSICALLY verified in the
+        # dedicated block above; here it only gets the strict on-disk check
+        # (never the lenient listing one that mistook the remnant for a hit).
+        is_qwen_repo = repo == _QWEN_IMAGE_HF_REPO
+        repo_complete = (lambda: not _qwen_missing_critical_files()) if is_qwen_repo else (lambda: _repo_cache_complete(repo, ignore))
 
-        if _repo_cache_complete(repo, ignore):
+        if repo_complete():
             print(f"[cache] {repo}: already complete on Volume", flush=True)
             continue
 
@@ -3494,7 +3616,7 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
                 print(f"[cache] {repo}: download attempt {attempt + 1}/3 FAILED — {last_err}", flush=True)
                 time.sleep(3)
                 continue
-            if _repo_cache_complete(repo, ignore):
+            if repo_complete():
                 downloaded.append(repo)
                 fetched_ok = True
                 print(
@@ -3507,7 +3629,7 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
             # gap — loop (idempotent). On the final pass accept the lenient
             # check so an HF completeness quirk can't fail a real download.
             print(f"[cache] {repo}: post-fetch strict verify miss (attempt {attempt + 1}/3)", flush=True)
-            if attempt == 2 and _repo_snapshot_present(repo):
+            if attempt == 2 and not is_qwen_repo and _repo_snapshot_present(repo):
                 downloaded.append(repo)
                 fetched_ok = True
                 print(f"[cache] {repo}: accepted on lenient check after 3 passes", flush=True)
@@ -3541,13 +3663,17 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
     # raised no exception, a commit that silently no-op'd, …). Strict listing
     # check, lenient fallback. This is the "fully placed on /models" guarantee
     # the lazy-GPU sequence rests on.
-    unverified = [
-        r
-        for r in repos
-        if not (_repo_cache_complete(r, _REPO_SNAPSHOT_IGNORE.get(r)) or _repo_snapshot_present(r))
-    ]
+    def _post_commit_ok(r: str) -> bool:
+        if r == _QWEN_IMAGE_HF_REPO:
+            # strict physical check only — the whole point of this fix
+            return not _qwen_missing_critical_files()
+        return _repo_cache_complete(r, _REPO_SNAPSHOT_IGNORE.get(r)) or _repo_snapshot_present(r)
+
+    unverified = [r for r in repos if not _post_commit_ok(r)]
     if unverified:
         print(f"[cache] POST-COMMIT VERIFY FAILED — snapshot missing for {unverified}", flush=True)
+        if _QWEN_IMAGE_HF_REPO in unverified:
+            print(f"[cache][qwen] missing after commit: {_qwen_missing_critical_files()[:8]}", flush=True)
         return {"ok": False, "cached": False, "repo": unverified[0], "error": "snapshot missing after download+commit"}
 
     if wan_key:
