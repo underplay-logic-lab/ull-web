@@ -2657,6 +2657,11 @@ def train_lora_job(params: dict) -> dict:
         if user_id and job_id:
             job_ckpt_dir = pathlib.Path(LORA_OUTPUT_DIR) / user_id / job_id
             job_ckpt_dir.mkdir(parents=True, exist_ok=True)
+        # B300-idle defence: PERSIST_OUTPUT_ROOT and LORA_OUTPUT_DIR are the
+        # same Modal Volume, so `shutil.move` is a metadata-only rename — the
+        # 14GB of intermediate .safetensors never gets copied byte-for-byte
+        # (the old `shutil.copy2` per checkpoint, plus a `checkpoints_all.zip`
+        # of the same bytes, stalled the GPU 30+ min after Step 3000).
         for path, step in all_ckpts:
             is_final = path.samefile(final_lora) if path.exists() else False
             fname = f"{lora_name}_final.safetensors" if is_final else f"{lora_name}_step{step:07d}.safetensors"
@@ -2667,42 +2672,23 @@ def train_lora_job(params: dict) -> dict:
                 "is_final": is_final,
             }
             if job_ckpt_dir is not None:
-                shutil.copy2(path, job_ckpt_dir / fname)
-                entry["path"] = f"loras/{user_id}/{job_id}/{fname}"
+                dst = job_ckpt_dir / fname
+                try:
+                    if is_final:
+                        # keep the source for the model-library copy already made
+                        shutil.copy2(path, dst)
+                    else:
+                        shutil.move(str(path), str(dst))  # rename on the same Volume
+                    entry["path"] = f"loras/{user_id}/{job_id}/{fname}"
+                except Exception as exc:  # noqa: BLE001 — one bad file must not block completion
+                    print(f"[train] checkpoint relocate skipped ({fname}): {exc}", flush=True)
             checkpoints.append(entry)
         checkpoints.sort(key=lambda c: c["step"])
 
-        # 2b) checkpoints_all.zip — every .safetensors (intermediate + final)
-        #     in ONE archive so the completed screen can offer a single
-        #     "download all checkpoints" button. Only built when 2+ exist
-        #     (a final-only run has nothing to bundle). ZIP_STORED: LoRA
-        #     safetensors barely compress, so skip the CPU cost.
-        weight_entries = [c for c in checkpoints if c["filename"].endswith(".safetensors")]
-        if job_ckpt_dir is not None and len(weight_entries) >= 2:
-            bundle_path = job_ckpt_dir / "checkpoints_all.zip"
-            try:
-                with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_STORED) as zf:
-                    for c in weight_entries:
-                        f = job_ckpt_dir / c["filename"]
-                        if f.is_file():
-                            zf.write(f, arcname=c["filename"])
-                checkpoints.append(
-                    {
-                        "step": 0,
-                        "filename": "checkpoints_all.zip",
-                        "size_bytes": bundle_path.stat().st_size,
-                        "is_final": False,
-                        "is_bundle": True,
-                        "path": f"loras/{user_id}/{job_id}/checkpoints_all.zip",
-                    }
-                )
-                print(
-                    f"[train] wrote checkpoints_all.zip ({len(weight_entries)} checkpoint(s), "
-                    f"{bundle_path.stat().st_size / 1024**2:.1f} MB)",
-                    flush=True,
-                )
-            except Exception as exc:  # noqa: BLE001 — the bundle is a convenience
-                print(f"[train] checkpoints_all.zip build skipped: {exc}", flush=True)
+        # NOTE: no more synchronous `checkpoints_all.zip` here. A 14GB
+        # ZIP_STORED write on B300 was pure GPU idle. Users download the
+        # intermediates individually (each has its own `path`); a bundle ZIP
+        # is still produced on-demand by the CPU-only salvage path.
 
         # 3) dataset.zip (images + captions) -> loras/<user_id>/<job_id>/
         #    dataset.zip, registered alongside the weights so the completed
