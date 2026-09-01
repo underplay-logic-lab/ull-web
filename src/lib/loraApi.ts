@@ -345,6 +345,26 @@ export async function downloadLoraJobBundle(
   iframeDownload(data.downloadUrl as string);
 }
 
+// Lightweight "does this artefact actually exist?" check. Hits the same
+// smart-resolve endpoint as downloadLoraJobBundle (recursive Volume probe,
+// salvaged_ names, on-demand zip candidates) but NEVER fires the iframe —
+// it just reports whether the file is there. Used to gate the 完成版 /
+// 全チェックポイント download buttons on a failed job so we don't show a
+// download for something a Step-0 init crash never produced.
+export async function probeLoraJobArtifact(
+  jobId: string,
+  want: "final" | "bundle" | "dataset",
+): Promise<boolean> {
+  const accessToken = await freshAccessToken();
+  const res = await fetch(
+    `/api/studio/lora/checkpoint/bundle?jobId=${encodeURIComponent(jobId)}&want=${want}`,
+    { headers: { Authorization: `Bearer ${accessToken}` }, cache: "no-store" },
+  );
+  if (res.status === 404) return false;
+  const data = await res.json().catch(() => ({}));
+  return res.ok && typeof data?.downloadUrl === "string";
+}
+
 export type LoraRecoverResult = {
   ok: boolean;
   status?: string;

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
+  ArrowLeft,
   Bot,
   Check,
   ChevronDown,
@@ -89,6 +90,10 @@ const MAX_TOTAL_BYTES = 120 * 1024 * 1024; // 120 MB of raw image bytes
 // A finished job's checkpoint download buttons disappearing this way is
 // what this exists to prevent.
 const ACTIVE_JOB_STORAGE_KEY = "lora_studio_active_job";
+// Legacy / alternative keys other builds may have written — cleared on reset
+// too so a stale pointer from any of them can't strand the user.
+const LEGACY_ACTIVE_JOB_KEYS = ["active_lora_job_id", "ull_active_job", "lora_studio_active_job_id"];
+const DISMISSED_JOBS_STORAGE_KEY = "lora_studio_dismissed_jobs";
 
 // Auto-saved draft of the whole form — text inputs (trigger word, raw YAML,
 // the Japanese "固定/変化させたい特徴" notes) AND the expert / model settings
@@ -1306,8 +1311,46 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // callback below (never synchronously in the effect body).
   const [queuedElapsedSec, setQueuedElapsedSec] = useState(0);
 
+  // Wraps the progress / completion / error panel — the viewport is pulled
+  // here the moment a job is dispatched and again on every terminal flip, so
+  // the user never loses the running job (or its download / error card) below
+  // the fold.
+  const progressRef = useRef<HTMLDivElement>(null);
+  // The scroll target we last honoured ("panel" on first appearance, then the
+  // terminal status). Stops the routine queued -> processing step from yanking
+  // a user who scrolled down to read the live log.
+  const scrolledForRef = useRef<string>("");
+
   const pollCancelledRef = useRef(false);
   const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Job ids the user has explicitly dismissed via "新しい LoRA を学習する" /
+  // フォームに戻る — the mount-restore effect must never resurrect them (the
+  // fetchRecentLoraJob fallback would otherwise bounce the user straight back
+  // to a failed panel they just left). Mirrored to sessionStorage so a reload
+  // right after dismissing still stays on the form.
+  const dismissedJobIdsRef = useRef<Set<string>>(
+    new Set(
+      (() => {
+        try {
+          return JSON.parse(sessionStorage.getItem(DISMISSED_JOBS_STORAGE_KEY) || "[]") as string[];
+        } catch {
+          return [];
+        }
+      })(),
+    ),
+  );
+  const dismissJob = (jobId: string | null | undefined) => {
+    if (!jobId) return;
+    dismissedJobIdsRef.current.add(jobId);
+    try {
+      sessionStorage.setItem(
+        DISMISSED_JOBS_STORAGE_KEY,
+        JSON.stringify([...dismissedJobIdsRef.current].slice(-20)),
+      );
+    } catch {
+      /* private mode / disabled storage — the ref alone still guards this session */
+    }
+  };
   // The job id currently being polled and when it entered 'queued'.
   const activeJobIdRef = useRef<string>("");
   const queuedSinceRef = useRef<number>(0);
@@ -1338,6 +1381,33 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     }, 1000);
     return () => clearInterval(iv);
   }, [job?.status]);
+
+  // Smooth-scroll the progress panel into view: once when it first appears
+  // (job dispatched), and again each time the job reaches a terminal state
+  // (completed / failed / cancelled) so the download buttons and the
+  // success / error card land in the viewport. The intermediate queued ->
+  // processing progression is intentionally NOT scrolled.
+  useEffect(() => {
+    if (phase !== "starting" && phase !== "tracking") {
+      scrolledForRef.current = "";
+      return;
+    }
+    const status = job?.status ?? null;
+    const terminal =
+      status === "completed" ||
+      status === "failed" ||
+      status === "failed_timeout" ||
+      status === "cancelled";
+    const key = terminal ? `done:${status}` : "panel";
+    if (scrolledForRef.current === key) return;
+    scrolledForRef.current = key;
+    const el = progressRef.current;
+    if (!el) return;
+    const raf = requestAnimationFrame(() => {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [phase, job?.status]);
 
   // Mirrors `images` for synchronous MAX_IMAGES accounting inside the add
   // helpers (which can't read the just-set state).
@@ -1854,28 +1924,47 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     if (!user) return;
     let cancelled = false;
     (async () => {
+      const clearKey = () => {
+        if (typeof window === "undefined") return;
+        try {
+          localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+          for (const k of LEGACY_ACTIVE_JOB_KEYS) localStorage.removeItem(k);
+        } catch {
+          /* storage disabled */
+        }
+      };
+
       let targetId =
         typeof window !== "undefined" ? localStorage.getItem(ACTIVE_JOB_STORAGE_KEY) : null;
+      // A job the user explicitly dismissed this session — never re-attach.
+      if (targetId && dismissedJobIdsRef.current.has(targetId)) {
+        clearKey();
+        targetId = null;
+      }
       let fromRecent = false;
 
-      // No localStorage pointer — fall back to the user's most recent LoRA
-      // job so a reload after the key was cleared can still reach the Salvage
-      // panel (failed/cancelled) or re-attach to a still-running job.
+      // No explicit pointer — fall back to the user's most recent LoRA job to
+      // re-attach a still-running one, or to surface a recently-COMPLETED
+      // one's download panel. A recent FAILED / cancelled job must NOT hijack
+      // the form on every visit — that's the trap this fixes.
       if (!targetId) {
         try {
           const recent = await fetchRecentLoraJob();
           if (cancelled) return;
-          if (recent) {
-            const inFlight = recent.status === "queued" || recent.status === "processing";
-            const terminal = ["failed", "cancelled", "completed"].includes(recent.status);
-            const ref = recent.updatedAt || recent.createdAt;
-            const ageMs = ref ? Date.now() - new Date(ref).getTime() : Infinity;
-            // Live jobs: always re-attach. Terminal jobs: only if recent
-            // (<12h) so an old run doesn't greet every visit.
-            if (inFlight || (terminal && ageMs < 12 * 60 * 60 * 1000)) {
-              targetId = recent.jobId;
-              fromRecent = true;
-            }
+          const reattachable =
+            recent &&
+            !dismissedJobIdsRef.current.has(recent.jobId) &&
+            (recent.status === "queued" ||
+              recent.status === "processing" ||
+              (recent.status === "completed" &&
+                (() => {
+                  const ref = recent.updatedAt || recent.createdAt;
+                  const ageMs = ref ? Date.now() - new Date(ref).getTime() : Infinity;
+                  return ageMs < 12 * 60 * 60 * 1000;
+                })()));
+          if (reattachable) {
+            targetId = recent.jobId;
+            fromRecent = true;
           }
         } catch {
           /* recent lookup is best-effort */
@@ -1884,7 +1973,13 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       if (!targetId || cancelled) return;
 
       const persist = () => {
-        if (typeof window !== "undefined") localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, targetId!);
+        if (typeof window !== "undefined") {
+          try {
+            localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, targetId!);
+          } catch {
+            /* storage disabled */
+          }
+        }
       };
       try {
         const restored = await pollLoraJob(targetId);
@@ -1894,25 +1989,32 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           setJob(restored);
           setPhase("tracking");
           startPolling(targetId);
-        } else if (
-          restored.status === "completed" ||
-          restored.status === "failed" ||
-          restored.status === "cancelled"
-        ) {
-          // Keep it around — the download / Salvage buttons in the completed
-          // and failed/cancelled panels are the reason this restore exists.
+        } else if (restored.status === "completed") {
+          // Positive + escapable — always show its download panel.
           persist();
           setJob(restored);
           setPhase("tracking");
-        } else if (!fromRecent && typeof window !== "undefined") {
-          // failed_timeout (never left the queue — nothing to salvage) or an
-          // unreachable job. Drop the stale key.
-          localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+        } else if (restored.status === "failed" || restored.status === "cancelled") {
+          // Show the Salvage / download panel ONLY when an explicit pointer
+          // (a job the user was actually watching) brought us here — never
+          // from the recent-job fallback, which would trap the user on an
+          // error screen every visit. resetForm() drops the key + dismisses.
+          if (fromRecent) {
+            clearKey();
+          } else {
+            persist();
+            setJob(restored);
+            setPhase("tracking");
+          }
+        } else {
+          // failed_timeout / unknown / unreachable — drop the pointer, stay
+          // on the form (nothing to salvage).
+          clearKey();
         }
       } catch {
-        if (!cancelled && !fromRecent && typeof window !== "undefined") {
-          localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
-        }
+        // 404 (deleted / wrong account) or a transient fetch error — do NOT
+        // trap the user; clear the pointer and leave them on the form.
+        if (!cancelled) clearKey();
       }
     })();
     return () => {
@@ -2495,15 +2597,31 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     await runTraining(keptImages, caps.some((c) => c.length > 0) ? caps : null, hasUserCaptions);
   };
 
+  // The one place the progress panel hands control back to the form. Must be
+  // total: stop polling, drop the active-job pointer (every known key),
+  // remember this job so the mount-restore effect can't re-attach to it, and
+  // flip to "form" — WITHOUT touching the saved settings draft.
   const resetForm = () => {
     pollCancelledRef.current = true;
-    if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+    if (pollTimeoutRef.current) {
+      clearTimeout(pollTimeoutRef.current);
+      pollTimeoutRef.current = null;
+    }
+    dismissJob(job?.jobId ?? activeJobIdRef.current);
+    activeJobIdRef.current = "";
     setPhase("form");
     setSubmitting(false);
     setJob(null);
     setErrorMessage(null);
     setUploadProgress(null);
-    if (typeof window !== "undefined") localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+        for (const k of LEGACY_ACTIVE_JOB_KEYS) localStorage.removeItem(k);
+      } catch {
+        /* storage disabled — state reset above still returns the user to the form */
+      }
+    }
   };
 
   // Wipes the saved draft and returns every form field to its default —
@@ -2564,12 +2682,36 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // a paid job is running (requirement: phase="tracking" full isolation).
   if (phase === "starting" || phase === "tracking") {
     return (
-      <div data-source-file="src/components/studio/LoraStudioTab.tsx" className="space-y-6">
+      <div
+        ref={progressRef}
+        data-source-file="src/components/studio/LoraStudioTab.tsx"
+        className="scroll-mt-20 space-y-6"
+      >
         <div className="rounded-2xl border-gradient bg-surface/40 p-5">
-          <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
-            <Sparkles size={15} className="text-neon-violet" />
-            {phase === "starting" ? "学習ジョブを起動中…" : "学習の進行状況"}
-          </h3>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
+              <Sparkles size={15} className="text-neon-violet" />
+              {phase === "starting" ? "学習ジョブを起動中…" : "学習の進行状況"}
+            </h3>
+            {/* Escape hatch — ALWAYS available. A running job keeps going in
+                the background (soft return); anything else is a full reset. */}
+            <button
+              type="button"
+              onClick={() => {
+                if (job && (job.status === "queued" || job.status === "processing")) {
+                  setPhase("form");
+                } else {
+                  resetForm();
+                }
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-[11px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+            >
+              <ArrowLeft size={12} />
+              {job && (job.status === "queued" || job.status === "processing")
+                ? "フォームに戻る（学習は継続）"
+                : "フォームに戻る / リセット"}
+            </button>
+          </div>
           <div className="mt-4 space-y-3">
             {phase === "starting" && (
               <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5 p-4">
