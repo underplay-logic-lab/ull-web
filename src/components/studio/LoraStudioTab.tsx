@@ -1061,6 +1061,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   }, []);
 
   const [phase, setPhase] = useState<Phase>("form");
+  // Locked the instant "学習を開始" is pressed — before phase flips to
+  // "starting" there's an async window (caption passes, prompt synthesis) in
+  // which the button must be inert and no form re-render can slip a stale
+  // "クレジット不足" card back onto the screen.
+  const [submitting, setSubmitting] = useState(false);
   // Opt-in visual dataset curation: after upload, review/cull images and
   // review/edit captions (with JP round-trip translation) before training.
   const [curationEnabled, setCurationEnabled] = useState(false);
@@ -1637,6 +1642,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     captionsFromUser: boolean,
   ) => {
     if (!user) return;
+    // Immediate, synchronous lock + phase flip in the same render pass — the
+    // form (price card, credit warning) is gone before the next paint.
+    setSubmitting(true);
     setPhase("starting");
     setErrorMessage(null);
     setJob(null);
@@ -1670,6 +1678,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         console.error("[LoraStudioTab] dataset upload failed:", err);
         setErrorMessage(`画像のアップロードに失敗しました: ${detail}`);
         setPhase("form");
+        setSubmitting(false);
         setUploadProgress(null);
         return;
       }
@@ -1678,6 +1687,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           `画像のアップロードに失敗しました: ${imgs.length} 枚中 ${paths.length} 枚しか完了しませんでした。もう一度お試しください。`,
         );
         setPhase("form");
+        setSubmitting(false);
         setUploadProgress(null);
         return;
       }
@@ -1776,6 +1786,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       const e = err as LoraApiError;
       setErrorMessage(e.message || "LoRA学習の開始に失敗しました。");
       setPhase("form");
+      setSubmitting(false);
       setUploadProgress(null);
       if (typeof e.remainingCredits === "number" && user) broadcastCreditsUpdate(user.id, e.remainingCredits);
     }
@@ -2046,6 +2057,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   };
 
   const handleStart = async () => {
+    if (submitting || phase !== "form") return; // already in flight — ignore re-clicks
     if (!user) {
       setLoginOpen(true);
       return;
@@ -2063,6 +2075,20 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       return;
     }
     setErrorMessage(null);
+    // Lock NOW — every path below is async; the button and the price/credit
+    // cards must not be interactive again until phase leaves "form".
+    setSubmitting(true);
+    try {
+      await runHandleStart();
+    } finally {
+      // If we're still on the form (an early guard tripped, or curation was
+      // cancelled), release the lock; once phase is starting/tracking/curation
+      // the early-return render owns the screen and this is a no-op.
+      setSubmitting(false);
+    }
+  };
+
+  const runHandleStart = async () => {
 
     let cap: Record<string, string> = captions;
     let capJa: Record<string, string> = captionsJa;
@@ -2163,6 +2189,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     pollCancelledRef.current = true;
     if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
     setPhase("form");
+    setSubmitting(false);
     setJob(null);
     setErrorMessage(null);
     setUploadProgress(null);
@@ -2216,7 +2243,67 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     resolvedCaptionPromptRef.current = "";
   };
 
-  const busy = phase !== "form";
+  // `submitting` folds in so every form control locks the instant "開始" is
+  // pressed, through the async prep window before phase flips to "starting".
+  const busy = phase !== "form" || submitting;
+
+  // Job in flight — the form (dataset grid, all settings, price card, the
+  // "クレジット不足" card) is torn down completely and only the progress
+  // panel renders. No form re-render can flash a stale credit warning while
+  // a paid job is running (requirement: phase="tracking" full isolation).
+  if (phase === "starting" || phase === "tracking") {
+    return (
+      <div data-source-file="src/components/studio/LoraStudioTab.tsx" className="space-y-6">
+        <div className="rounded-2xl border-gradient bg-surface/40 p-5">
+          <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
+            <Sparkles size={15} className="text-neon-violet" />
+            {phase === "starting" ? "学習ジョブを起動中…" : "学習の進行状況"}
+          </h3>
+          <div className="mt-4 space-y-3">
+            {phase === "starting" && (
+              <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5 p-4">
+                <div className="flex items-center gap-2 text-sm text-neon-violet">
+                  <Loader2 size={15} className="animate-spin" />
+                  {uploadProgress && uploadProgress.done < uploadProgress.total
+                    ? `画像をアップロード中… ${uploadProgress.done}/${uploadProgress.total}`
+                    : "🚀 学習ジョブを起動しています…"}
+                </div>
+                {uploadProgress && (
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-background/70">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-neon-pink to-neon-violet transition-[width] duration-300"
+                      style={{
+                        width: `${Math.round((uploadProgress.done / Math.max(1, uploadProgress.total)) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+            <ProgressPanel job={job} queuedElapsedSec={queuedElapsedSec} onUseLora={onUseLora} />
+            {job &&
+              (job.status === "completed" ||
+                job.status === "failed" ||
+                job.status === "failed_timeout" ||
+                job.status === "cancelled") && (
+                <button
+                  type="button"
+                  onClick={resetForm}
+                  className="rounded-lg border border-border px-4 py-2 text-xs text-muted transition-colors hover:text-foreground"
+                >
+                  新しい LoRA を学習する
+                </button>
+              )}
+          </div>
+        </div>
+        <LoginModal
+          open={loginOpen}
+          onClose={() => setLoginOpen(false)}
+          message="LoRA Studio でキャラクター学習を行うにはログインしてください。"
+        />
+      </div>
+    );
+  }
 
   if (phase === "curation") {
     return (
@@ -2941,22 +3028,26 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             </div>
           )}
 
-          {/* Credits — parameter-linked dynamic price */}
-          <div className="rounded-lg border border-border bg-background/60 px-3 py-2 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 text-neon-pink">
-                <Zap size={13} />
-                {requiredCredits} Credits
-              </span>
-              <span className="text-muted">保有: {creditsLoading ? "…" : (credits ?? 0)}</span>
+          {/* Credits — parameter-linked dynamic price. Hidden the instant a
+              job is being submitted so a post-charge re-render can't flash a
+              stale "insufficient" state over the launching job. */}
+          {!submitting && (
+            <div className="rounded-lg border border-border bg-background/60 px-3 py-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-neon-pink">
+                  <Zap size={13} />
+                  {requiredCredits} Credits
+                </span>
+                <span className="text-muted">保有: {creditsLoading ? "…" : (credits ?? 0)}</span>
+              </div>
+              {priceBreakdown && priceBreakdown.steps > 0 && (
+                <p className="mt-1 text-[10px] leading-relaxed text-muted">
+                  {loraPriceMultiplierSummary(priceBreakdown)}
+                </p>
+              )}
             </div>
-            {priceBreakdown && priceBreakdown.steps > 0 && (
-              <p className="mt-1 text-[10px] leading-relaxed text-muted">
-                {loraPriceMultiplierSummary(priceBreakdown)}
-              </p>
-            )}
-          </div>
-          {insufficientCredits && (
+          )}
+          {insufficientCredits && !submitting && (
             <a
               href="#pricing"
               className="flex items-center justify-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-400"
@@ -2966,113 +3057,75 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             </a>
           )}
 
-          {heavyConfigWarn && phase === "form" && (
+          {heavyConfigWarn && phase === "form" && !submitting && (
             <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-400">
               ⚠️ [警告]
               1280px高解像度かつ100枚超の設定は、準備処理（3D VAEエンコード）に莫大な時間を要し、コンテナが途中で早期安全停止される可能性が極めて高いです。解像度を最大1024pxに下げるか、画像枚数を減らすことを強く推奨します。
             </p>
           )}
 
-          {/* Action / tracking — kept inside the settings panel so a large
-              image grid never pushes the start button below the fold */}
-          {phase === "form" ? (
-            <div className="space-y-3">
-              {errorMessage && (
-                <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
-                  {errorMessage}
-                </p>
-              )}
-              <button
-                type="button"
-                onClick={handleStart}
-                disabled={
-                  (Boolean(user) && !insufficientCredits && !canSubmit) ||
-                  captionGen.state === "generating" ||
-                  (Boolean(user) && autoCap.running)
-                }
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {!user ? (
-                  <>
-                    <LogIn size={16} />
-                    ログインして学習を開始
-                  </>
-                ) : insufficientCredits ? (
-                  <>
-                    <Zap size={16} />
-                    クレジットをチャージ
-                  </>
-                ) : autoCap.running ? (
-                  <>
-                    <Loader2 size={16} className="animate-spin" />
-                    AIキャプションを解析中…（完了までお待ちください）
-                  </>
-                ) : captionGen.state === "generating" ? (
-                  <>
-                    <Loader2 size={16} className="animate-spin" />
-                    キャプションプロンプトを生成中…
-                  </>
-                ) : curationEnabled ? (
-                  <>
-                    <Wand2 size={16} />
-                    次へ：データセットを確認・編集する
-                  </>
-                ) : (
-                  <>
-                    <Wand2 size={16} />
-                    {`🔥 高速 LoRA 学習を開始する (${requiredCredits} C)`}
-                  </>
-                )}
-              </button>
-              <p className="flex items-start gap-2 text-[11px] leading-relaxed text-muted">
-                <Sparkles size={13} className="mt-0.5 shrink-0 text-neon-violet" />
-                独自の高精度パイプラインで自動キャプション ➔
-                深度最適化学習を完全自動で実行。完了したLoRAは即座にダウンロードしてご利用いただけます。
+          {/* Action — this render only runs for phase === "form" (starting /
+              tracking / curation all early-return above). */}
+          <div className="space-y-3">
+            {errorMessage && (
+              <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+                {errorMessage}
               </p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {phase === "starting" && (
-                <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5 p-4">
-                  <div className="flex items-center gap-2 text-sm text-neon-violet">
-                    <Loader2 size={15} className="animate-spin" />
-                    {uploadProgress && uploadProgress.done < uploadProgress.total
-                      ? `画像をアップロード中… ${uploadProgress.done}/${uploadProgress.total}`
-                      : "学習ジョブを起動しています…"}
-                  </div>
-                  {uploadProgress && (
-                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-background/70">
-                      <div
-                        className="h-full rounded-full bg-gradient-to-r from-neon-pink to-neon-violet transition-[width] duration-300"
-                        style={{
-                          width: `${Math.round((uploadProgress.done / Math.max(1, uploadProgress.total)) * 100)}%`,
-                        }}
-                      />
-                    </div>
-                  )}
-                </div>
+            )}
+            <button
+              type="button"
+              onClick={handleStart}
+              disabled={
+                submitting ||
+                (Boolean(user) && !insufficientCredits && !canSubmit) ||
+                captionGen.state === "generating" ||
+                (Boolean(user) && autoCap.running)
+              }
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {submitting ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" />
+                  🚀 学習ジョブを起動中…
+                </>
+              ) : !user ? (
+                <>
+                  <LogIn size={16} />
+                  ログインして学習を開始
+                </>
+              ) : insufficientCredits ? (
+                <>
+                  <Zap size={16} />
+                  クレジットをチャージ
+                </>
+              ) : autoCap.running ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" />
+                  AIキャプションを解析中…（完了までお待ちください）
+                </>
+              ) : captionGen.state === "generating" ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" />
+                  キャプションプロンプトを生成中…
+                </>
+              ) : curationEnabled ? (
+                <>
+                  <Wand2 size={16} />
+                  次へ：データセットを確認・編集する
+                </>
+              ) : (
+                <>
+                  <Wand2 size={16} />
+                  {`🔥 高速 LoRA 学習を開始する (${requiredCredits} C)`}
+                </>
               )}
-              <ProgressPanel
-                job={job}
-                queuedElapsedSec={queuedElapsedSec}
-                onUseLora={onUseLora}
-              />
-
-              {job &&
-                (job.status === "completed" ||
-                  job.status === "failed" ||
-                  job.status === "failed_timeout" ||
-                  job.status === "cancelled") && (
-                  <button
-                    type="button"
-                    onClick={resetForm}
-                    className="rounded-lg border border-border px-4 py-2 text-xs text-muted transition-colors hover:text-foreground"
-                  >
-                    新しい LoRA を学習する
-                  </button>
-                )}
-            </div>
-          )}
+            </button>
+            <p className="flex items-start gap-2 text-[11px] leading-relaxed text-muted">
+              <Sparkles size={13} className="mt-0.5 shrink-0 text-neon-violet" />
+              独自の高精度パイプラインで自動キャプション ➔
+              深度最適化学習を完全自動で実行。完了したLoRAは即座にダウンロードしてご利用いただけます。
+            </p>
+          </div>
         </div>
       </div>
 
