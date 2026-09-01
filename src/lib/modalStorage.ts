@@ -171,3 +171,33 @@ export function signAdminVolumeUrl(scope: "file" | "zip", relPath: string): stri
   u.searchParams.set("sig", sig);
   return u.toString();
 }
+
+// Signed URL for admin_download_job_artifact — resolves the ACTUAL file for a
+// job (final weights / all-checkpoint zip / dataset zip) wherever it landed
+// (loras/<user>/<job_id>/ or /<call_id>/, salvaged_ prefixes, …). `probe`
+// returns JSON {found, filename, size_bytes} instead of streaming.
+export function signJobArtifactUrl(
+  want: "final" | "bundle" | "dataset",
+  userId: string,
+  jobId: string,
+  opts: { callId?: string; probe?: boolean } = {},
+): string {
+  const secret = process.env.MODAL_AUTH_TOKEN;
+  if (!secret) throw new Error("Modal is not configured (missing MODAL_AUTH_TOKEN).");
+  const base = process.env.MODAL_LORA_CHECKPOINT_DOWNLOAD_URL;
+  if (!base) throw new Error("Modal is not configured (missing MODAL_LORA_CHECKPOINT_DOWNLOAD_URL).");
+  const expires = Math.floor(Date.now() / 1000) + ADMIN_DL_TOKEN_TTL_S;
+  const sig = crypto
+    .createHmac("sha256", secret)
+    .update(`admin:artifact:${want}:${userId}:${jobId}:${expires}`)
+    .digest("hex");
+  const u = new URL(base.replace("download-lora-checkpoint", "admin-download-job-artifact"));
+  u.searchParams.set("user_id", userId);
+  u.searchParams.set("job_id", jobId);
+  u.searchParams.set("want", want);
+  u.searchParams.set("expires", String(expires));
+  u.searchParams.set("sig", sig);
+  if (opts.callId) u.searchParams.set("call_id", opts.callId);
+  if (opts.probe) u.searchParams.set("probe", "1");
+  return u.toString();
+}

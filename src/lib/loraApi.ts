@@ -323,13 +323,14 @@ export async function downloadLoraCheckpoint(jobId: string, filename: string): P
   iframeDownload(await getLoraCheckpointDownloadUrl(jobId, filename));
 }
 
-// One-shot bulk artefact download. Resolves server-side (no flaky salvage):
-// an existing checkpoints_all.zip / dataset.zip streams via a signed direct
-// URL immediately; otherwise the CPU-only admin_zip_volume_folder endpoint
-// zips loras/<owner>/<job>/ on demand and streams that.
+// One-shot smart artefact download. The API probes the Volume server-side
+// (recursive search across loras/<user>/<job_id|call_id>/, salvaged_ names,
+// on-demand zip) and returns a signed streaming URL only when the file
+// genuinely exists — a real miss is a 404 here, surfaced as a toast, not a
+// silent iframe failure.
 export async function downloadLoraJobBundle(
   jobId: string,
-  want: "bundle" | "dataset" = "bundle",
+  want: "final" | "bundle" | "dataset" = "bundle",
 ): Promise<void> {
   const accessToken = await freshAccessToken();
   const res = await fetch(
@@ -337,7 +338,10 @@ export async function downloadLoraJobBundle(
     { headers: { Authorization: `Bearer ${accessToken}` }, cache: "no-store" },
   );
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || typeof data?.downloadUrl !== "string") throw mapDownloadError(res.status, data?.error);
+  if (!res.ok || typeof data?.downloadUrl !== "string") {
+    if (res.status === 404) throw new Error(data?.error || "ダウンロード対象が見つかりません。");
+    throw mapDownloadError(res.status, data?.error);
+  }
   iframeDownload(data.downloadUrl as string);
 }
 

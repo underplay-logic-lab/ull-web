@@ -644,35 +644,15 @@ function ProgressPanel({
     }
   };
 
-  // The "🏆 完成版LoRA" target: the true _final.safetensors, else the
-  // highest-step checkpoint a stopped run left behind.
-  const finalCkptName = (): string | undefined => {
-    const list = job.checkpoints ?? [];
-    const fin = list.find((c) => c.isFinal)?.filename;
-    if (fin) return fin;
-    return [...list]
-      .filter((c) => !c.isBundle && !c.isCaptionArchive && c.filename.endsWith(".safetensors"))
-      .sort((a, b) => b.step - a.step)[0]?.filename;
-  };
-
-  // One-click download for ANY finished job (completed / failed / cancelled).
-  // No salvage round-trip: `bundle` / `dataset` resolve server-side to a
-  // signed direct URL (an existing zip) or an on-demand CPU folder-zip;
-  // `final` streams the single checkpoint via the signed checkpoint route.
+  // All three primary buttons resolve the ACTUAL file server-side (recursive
+  // Volume search, on-demand zip) and only fire the iframe once the API has
+  // confirmed the file exists — a genuine miss becomes a visible toast, never
+  // a silent iframe 404. No salvage round-trip.
   const handleBundleDownload = async (want: "dataset" | "bundle" | "final") => {
     setDownloadingCkpt(want);
     setCkptError(null);
     try {
-      if (want === "final") {
-        const target = finalCkptName();
-        if (!target) {
-          setCkptError("完成版・中間チェックポイントが見つかりませんでした（学習が初期段階で停止した可能性があります）。");
-          return;
-        }
-        await downloadLoraCheckpoint(job.jobId, target);
-      } else {
-        await downloadLoraJobBundle(job.jobId, want);
-      }
+      await downloadLoraJobBundle(job.jobId, want);
       pushToast("ダウンロードを開始しました");
     } catch (err) {
       setCkptError(err instanceof Error ? err.message : "ダウンロードに失敗しました。");

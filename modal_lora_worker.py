@@ -3077,9 +3077,26 @@ def download_lora_checkpoint(
         print(f"[download] vol.reload() skipped: {exc}", flush=True)
     file_path = pathlib.Path(MODELS_DIR) / "loras" / user_id / job_id / filename
     if not file_path.is_file():
-        raise fastapi.HTTPException(status_code=404, detail="checkpoint not found")
+        # The canonical path missed — the file may sit in a sibling folder
+        # keyed by call-id, or carry a salvaged_ prefix. Search this user's
+        # loras/ tree by exact name, then by stem match.
+        user_root = pathlib.Path(MODELS_DIR) / "loras" / user_id
+        stem = filename.rsplit(".", 1)[0].removeprefix("salvaged_")
+        hit = None
+        if user_root.is_dir():
+            cands = list(user_root.glob(f"**/{filename}"))
+            if not cands:
+                cands = [
+                    p
+                    for p in user_root.glob("**/*")
+                    if p.is_file() and p.suffix == pathlib.Path(filename).suffix and stem in p.name
+                ]
+            hit = min(cands, key=lambda p: len(str(p)), default=None)
+        if hit is None:
+            raise fastapi.HTTPException(status_code=404, detail="checkpoint not found")
+        file_path = hit
     return fastapi.responses.FileResponse(
-        str(file_path), media_type="application/octet-stream", filename=filename
+        str(file_path), media_type="application/octet-stream", filename=file_path.name
     )
 
 
@@ -3175,6 +3192,120 @@ def admin_zip_volume_folder(path: str, expires: str, sig: str, request: fastapi.
         filename=zip_name,
         background=BackgroundTask(lambda: tmp.unlink(missing_ok=True)),
     )
+
+
+# ---------------------------------------------------------------------------
+# LoRA Studio bulk / smart artifact download — resolves the ACTUAL file for a
+# job (final weights / all-checkpoint zip / dataset zip) wherever it landed:
+# loras/<user>/<job_id>/, loras/<user>/<call_id>/, salvaged_ prefixes, etc.
+# The Next.js /api/studio/lora/checkpoint/bundle route mints the token after
+# its owner-or-admin check. ?probe=1 -> JSON {found, filename, size_bytes}.
+_STEP_NUM_RE = re.compile(r"(\d{3,})")
+
+
+def _resolve_job_artifact(user_id: str, job_id: str, call_id: str, want: str):
+    """(file_path | None, on_demand_zip_root | None) — searches every plausible
+    per-job folder recursively for the artifact the caller asked for."""
+    base = pathlib.Path(MODELS_DIR) / "loras" / user_id
+    roots = [r for r in (base / job_id, base / call_id) if str(r) != str(base) and r.is_dir()]
+    if not roots:
+        return None, None
+
+    def files(pat: str):
+        out: list = []
+        for r in roots:
+            out.extend(p for p in r.glob(pat) if p.is_file())
+        return out
+
+    def _step(p: pathlib.Path) -> int:
+        m = _STEP_NUM_RE.search(p.stem)
+        return int(m.group(1)) if m else 0
+
+    if want == "final":
+        for got in (files("**/*final*.safetensors"),):
+            if got:
+                return min(got, key=lambda p: len(p.name)), None
+        st = [p for p in files("**/*.safetensors") if "step" in p.name.lower()]
+        if st:
+            return max(st, key=_step), None
+        any_st = files("**/*.safetensors")
+        return (max(any_st, key=_step) if any_st else None), None
+
+    if want == "bundle":
+        for pat in ("**/checkpoints_all.zip", "**/*checkpoint*.zip"):
+            got = files(pat)
+            if got:
+                return min(got, key=lambda p: len(str(p))), None
+        return None, roots[0]  # nothing pre-built -> zip on demand
+
+    for pat in ("**/dataset*.zip", "**/caption*.zip"):  # want == "dataset"
+        got = files(pat)
+        if got:
+            return min(got, key=lambda p: len(str(p))), None
+    return None, None
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol},
+    timeout=3600,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="GET")
+def admin_download_job_artifact(
+    user_id: str,
+    job_id: str,
+    want: str,
+    expires: str,
+    sig: str,
+    request: fastapi.Request,
+    call_id: str = "",
+    probe: str = "",
+):
+    if want not in ("final", "bundle", "dataset"):
+        raise fastapi.HTTPException(status_code=400, detail="bad want")
+    if not _verify_admin_token(f"artifact:{want}", f"{user_id}:{job_id}", expires, sig):
+        raise fastapi.HTTPException(status_code=403, detail="invalid or expired link")
+    if not (_CKPT_DL_ID_RE.match(user_id) and _CKPT_DL_ID_RE.match(job_id)):
+        raise fastapi.HTTPException(status_code=400, detail="invalid ids")
+    if call_id and not _CKPT_DL_ID_RE.match(call_id):
+        call_id = ""
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[artifact] vol.reload() skipped: {exc}", flush=True)
+
+    hit, zip_root = _resolve_job_artifact(user_id, job_id, call_id, want)
+
+    if hit is None and zip_root is not None:
+        # on-demand ZIP of every file under the job folder
+        tmp = pathlib.Path("/tmp") / f"jobzip_{int(time.time())}_{job_id[:8]}.zip"
+        files = [f for f in sorted(zip_root.rglob("*")) if f.is_file()]
+        if not files:
+            raise fastapi.HTTPException(status_code=404, detail="no files for this job")
+        if probe:
+            return {"found": True, "filename": "checkpoints_all.zip", "size_bytes": sum(f.stat().st_size for f in files)}
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+            for f in files:
+                zf.write(f, arcname=str(f.relative_to(zip_root)))
+        from starlette.background import BackgroundTask
+
+        return fastapi.responses.FileResponse(
+            str(tmp),
+            media_type="application/zip",
+            filename="checkpoints_all.zip",
+            background=BackgroundTask(lambda: tmp.unlink(missing_ok=True)),
+        )
+
+    if hit is None:
+        if probe:
+            return {"found": False, "filename": None, "size_bytes": 0}
+        raise fastapi.HTTPException(status_code=404, detail="artifact not found")
+
+    if probe:
+        return {"found": True, "filename": hit.name, "size_bytes": hit.stat().st_size}
+    media = "application/zip" if hit.suffix == ".zip" else "application/octet-stream"
+    return fastapi.responses.FileResponse(str(hit), media_type=media, filename=hit.name)
 
 
 # ---------------------------------------------------------------------------
