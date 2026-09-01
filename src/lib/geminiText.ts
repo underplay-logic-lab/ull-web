@@ -18,18 +18,26 @@ import {
 // go through runGeminiText() so the finicky model-id gating below lives in
 // exactly one place.
 
-// Model notes (2026-08):
+// Model notes (2026-09):
 //  - gemini-1.5-flash / gemini-2.0-flash: retired, 404.
 //  - gemini-2.5-flash / -lite: 404 "no longer available to new users" for
 //    recently-created API keys (this project's key is one).
-//  - gemini-flash-latest: allowed, but frequently 503 "high demand".
-//  - gemini-3.6-flash: reliable for new keys → default head.
-// GEMINI_MODEL overrides the head of the list (recommended: pin one).
+//  - gemini-3.6-flash: works, but free-tier-only — 20 requests/day even on a
+//    billed key. Unusable for batch captioning. Kept only as a last resort.
+//  - gemini-flash-latest: GA alias, honours billed Tier-1 limits → default head.
+//  - gemini-3.7-flash / -3.5-flash: work on this key, higher limits than 3.6.
+// GEMINI_MODEL overrides the head of the list (pin one; .env.local does).
 export function geminiModelCandidates(): string[] {
   const configured = process.env.GEMINI_MODEL?.trim();
   return [
     ...new Set(
-      [configured, "gemini-3.6-flash", "gemini-flash-latest", "gemini-2.5-flash"].filter(Boolean),
+      [
+        configured,
+        "gemini-flash-latest",
+        "gemini-3.7-flash",
+        "gemini-3.5-flash",
+        "gemini-3.6-flash",
+      ].filter(Boolean),
     ),
   ] as string[];
 }
@@ -121,6 +129,7 @@ async function runGeminiGenerate(
 ): Promise<string> {
   let lastErr = "";
   let sawBusy = false;
+  let sawQuota = false;
   for (const modelId of geminiModelCandidates()) {
     let dropThinking = false;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -148,7 +157,13 @@ async function runGeminiGenerate(
         break; // -> next candidate
       } catch (err) {
         lastErr = err instanceof Error ? err.message : String(err);
-        if (QUOTA_RE.test(lastErr)) throw { kind: "quota", message: lastErr } satisfies GemErr;
+        // A per-model quota (3.6-flash's free tier is only 20/day) — fall
+        // through to the next candidate, which has its own separate bucket.
+        if (QUOTA_RE.test(lastErr)) {
+          sawQuota = true;
+          console.warn(`[geminiText] ${modelId} quota exhausted, trying next`);
+          break;
+        }
         if (BUSY_RE.test(lastErr)) {
           sawBusy = true;
           if (attempt === 0) {
@@ -173,7 +188,10 @@ async function runGeminiGenerate(
       }
     }
   }
-  throw { kind: sawBusy ? "busy" : "failed", message: lastErr } satisfies GemErr;
+  throw {
+    kind: sawBusy ? "busy" : sawQuota ? "quota" : "failed",
+    message: lastErr,
+  } satisfies GemErr;
 }
 
 // Text-only call (unchanged public signature).
