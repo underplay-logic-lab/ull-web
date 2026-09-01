@@ -50,6 +50,7 @@ import zipfile
 
 import fastapi
 import modal
+import yaml  # pyyaml — in BOTH images (see `image` + `dispatch_image` below)
 
 app = modal.App("ull-lora-worker")
 
@@ -2818,7 +2819,12 @@ def train_lora_job(params: dict) -> dict:
 # ---------------------------------------------------------------------------
 dispatch_image = (
     modal.Image.debian_slim(python_version="3.11")
-    .pip_install("fastapi[standard]", "modal", "grpclib", "huggingface_hub>=0.24", "hf_transfer")
+    # pyyaml: the module now `import yaml` at top level (used by _build_config);
+    # every dispatch_image endpoint imports this module, so it must resolve here
+    # too, not just in the training `image`.
+    .pip_install(
+        "fastapi[standard]", "modal", "grpclib", "huggingface_hub>=0.24", "hf_transfer", "pyyaml"
+    )
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
