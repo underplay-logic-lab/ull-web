@@ -643,27 +643,39 @@ function ProgressPanel({
     }
   };
 
-  // One-click bundle / dataset download for a COMPLETED job. If the target
-  // filename isn't in the job's metadata yet, run salvage first (CPU-only,
-  // 0 GPU cost) to build + register it, then download.
-  const handleBundleDownload = async (want: "dataset" | "bundle") => {
+  // One-click download of a primary artifact, for ANY finished job
+  // (completed / failed / cancelled). If the file isn't in metadata yet, run
+  // salvage first (CPU-only, 0 GPU cost) to build + register it, then
+  // download. "final" falls back to the highest-step checkpoint when a run
+  // never produced a true _final.safetensors.
+  const pickTarget = (
+    want: "dataset" | "bundle" | "final",
+    list: { filename: string; step: number; isFinal: boolean; isBundle: boolean; isCaptionArchive: boolean }[],
+  ): string | undefined => {
+    if (want === "dataset") return list.find((c) => c.isCaptionArchive)?.filename;
+    if (want === "bundle") return list.find((c) => c.isBundle)?.filename;
+    const fin = list.find((c) => c.isFinal)?.filename;
+    if (fin) return fin;
+    return [...list]
+      .filter((c) => !c.isBundle && !c.isCaptionArchive && c.filename.endsWith(".safetensors"))
+      .sort((a, b) => b.step - a.step)[0]?.filename;
+  };
+
+  const handleBundleDownload = async (want: "dataset" | "bundle" | "final") => {
     setDownloadingCkpt(want);
     setCkptError(null);
     try {
-      const list = job.checkpoints ?? [];
-      let target =
-        want === "dataset"
-          ? list.find((c) => c.isCaptionArchive)?.filename
-          : list.find((c) => c.isBundle)?.filename;
+      let target = pickTarget(want, job.checkpoints ?? []);
       if (!target) {
         const res = await salvageLoraJob(job.jobId);
-        target =
-          want === "dataset"
-            ? res.checkpoints.find((c) => c.isCaptionArchive)?.filename
-            : res.checkpoints.find((c) => c.isBundle)?.filename;
+        target = pickTarget(want, res.checkpoints);
       }
       if (!target) {
-        setCkptError("対象ファイルを準備できませんでした（チェックポイントが1件のみの可能性があります）。");
+        setCkptError(
+          want === "final"
+            ? "完成版・中間チェックポイントが見つかりませんでした（学習が初期段階で停止した可能性があります）。"
+            : "対象ファイルを準備できませんでした。",
+        );
         return;
       }
       await downloadLoraCheckpoint(job.jobId, target);
@@ -675,16 +687,66 @@ function ProgressPanel({
     }
   };
 
+  // The three primary downloads — rendered UNCONDITIONALLY at the top of every
+  // finished-job panel (completed / failed / cancelled / failed_timeout), so a
+  // cancelled or errored run can still hand back the LoRA + dataset.
+  const dlBusy = downloadingCkpt !== null || copyingCkpt !== null;
+  const artifactDownloads = (
+    <div className="space-y-2 rounded-lg border border-neon-violet/40 bg-background/50 p-3">
+      <p className="text-[11px] font-semibold text-foreground">📥 成果物ダウンロード</p>
+      <div className="grid gap-2 sm:grid-cols-3">
+        <button
+          type="button"
+          onClick={() => handleBundleDownload("final")}
+          disabled={dlBusy}
+          title="完成版（無ければ最新の中間チェックポイント）を .safetensors で取得します。"
+          className="flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-2.5 text-xs font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {downloadingCkpt === "final" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+          🏆 完成版LoRA DL (.safetensors)
+        </button>
+        <button
+          type="button"
+          onClick={() => handleBundleDownload("dataset")}
+          disabled={dlBusy}
+          title="学習に使用した画像とキャプション(.txt)を1つのZIPにまとめて取得します。"
+          className="flex items-center justify-center gap-2 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-3 py-2.5 text-xs font-semibold text-neon-violet transition-all hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {downloadingCkpt === "dataset" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+          📦 キャプション付きデータセットDL (ZIP)
+        </button>
+        <button
+          type="button"
+          onClick={() => handleBundleDownload("bundle")}
+          disabled={dlBusy}
+          title="このジョブの全 .safetensors（中間＋最終）を1つの ZIP にまとめて取得します。"
+          className="flex items-center justify-center gap-2 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-3 py-2.5 text-xs font-semibold text-neon-violet transition-all hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {downloadingCkpt === "bundle" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+          📦 全チェックポイント一括DL (ZIP)
+        </button>
+      </div>
+      {ckptError && <p className="text-[10px] text-red-400">{ckptError}</p>}
+      <p className="text-[10px] leading-relaxed text-muted opacity-70">
+        未生成の ZIP はクリック時にクラウド上で復元してから取得します（GPU課金なし）。
+      </p>
+    </div>
+  );
+
   if (job.status === "failed_timeout") {
     return (
-      <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
-        <div className="flex items-center gap-2 text-sm font-semibold text-amber-400">
-          <AlertTriangle size={15} />
-          自動返金しました
+      <div className="space-y-3">
+        {artifactDownloads}
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-amber-400">
+            <AlertTriangle size={15} />
+            自動返金しました
+          </div>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-amber-300/90">
+            クラウド混雑のため自動返金しました。時間をおいて再試行してください。
+          </p>
         </div>
-        <p className="mt-1.5 text-[11px] leading-relaxed text-amber-300/90">
-          クラウド混雑のため自動返金しました。時間をおいて再試行してください。
-        </p>
+        <ToastStack toasts={toasts} onDismiss={dismissToast} />
       </div>
     );
   }
@@ -789,8 +851,6 @@ function ProgressPanel({
   if (job.status === "completed") {
     const filename = job.resultPath ? job.resultPath.split("/").pop() ?? "" : "";
     const allCheckpoints = job.checkpoints ?? [];
-    const captionArchive = allCheckpoints.find((c) => c.isCaptionArchive) ?? null;
-    const bundleArchive = allCheckpoints.find((c) => c.isBundle) ?? null;
     const checkpoints = allCheckpoints
       .filter((c) => !c.isCaptionArchive && !c.isBundle)
       .sort((a, b) => a.step - b.step);
@@ -807,50 +867,7 @@ function ProgressPanel({
           この LoRA はモデルライブラリに保存され、動画生成ワークフローからすぐに利用できます。
         </p>
 
-        {/* Prominent, always-visible download block. */}
-        <div className="mt-3 space-y-2 rounded-lg border border-green-500/25 bg-background/40 p-3">
-          <p className="text-[11px] font-semibold text-foreground">ダウンロード</p>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <button
-              type="button"
-              onClick={() =>
-                captionArchive
-                  ? handleCkptDownload(captionArchive.filename)
-                  : handleBundleDownload("dataset")
-              }
-              disabled={downloadingCkpt !== null || copyingCkpt !== null}
-              title="学習に使用した画像とキャプション(.txt)を1つのZIPにまとめたものです。"
-              className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-4 py-2.5 text-xs font-semibold text-neon-violet transition-all hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {downloadingCkpt === (captionArchive?.filename ?? "dataset") ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <Download size={14} />
-              )}
-              📦 キャプション付きデータセットDL (ZIP)
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                bundleArchive
-                  ? handleCkptDownload(bundleArchive.filename)
-                  : handleBundleDownload("bundle")
-              }
-              disabled={downloadingCkpt !== null || copyingCkpt !== null}
-              title="このジョブの全 .safetensors（中間＋最終）を1つの ZIP にまとめてダウンロードします。"
-              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2.5 text-xs font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {downloadingCkpt === (bundleArchive?.filename ?? "bundle") ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <Download size={14} />
-              )}
-              📦 全チェックポイント一括DL (ZIP)
-              {bundleArchive ? ` ・ ${formatMb(bundleArchive.sizeBytes)}` : ""}
-            </button>
-          </div>
-          {ckptError && <p className="text-[10px] text-red-400">{ckptError}</p>}
-        </div>
+        <div className="mt-3">{artifactDownloads}</div>
 
         <div className="mt-3 flex flex-wrap gap-2">
           <button
@@ -968,6 +985,8 @@ function ProgressPanel({
               ? "生YAML（カスタム設定）モードのため、消費したクレジットは返金されません。"
               : "返金状況を確認中です。"}
       </p>
+
+      <div className="mt-3">{artifactDownloads}</div>
 
       {partialCkpts.length > 0 && (
         <div className="mt-3 border-t border-red-500/20 pt-3">
