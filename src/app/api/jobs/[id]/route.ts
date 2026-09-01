@@ -66,15 +66,17 @@ export async function GET(request: Request, { params }: RouteParams) {
   let effJob: Record<string, unknown> = job;
   let status = String(job.status ?? "queued");
 
-  // Self-healing: a 'processing' LoRA job whose Modal container died by
-  // SIGKILL (12h timeout / OOM / eviction) never ran train_lora_job's own
-  // except-block, so it's stuck here forever and the Studio UI spins. Once
-  // it's gone quiet, ask Modal whether the FunctionCall is actually alive —
-  // a "failed" verdict is authoritative regardless of how it died, and we
-  // close + refund the job. "running" (even a long silent model-download
-  // phase) and any transient/unknown answer leave it untouched.
+  // Self-healing: a LoRA job whose Modal function died by SIGKILL (12h
+  // timeout / OOM / eviction / a crashed CPU pre-cache orchestrator) never
+  // ran its own except-block, so it's stuck here forever and the Studio UI
+  // spins. Covers both 'processing' AND 'queued' (the dispatcher now returns
+  // instantly and the CPU pre-cache + GPU spawn run async — a queued job
+  // carries the orchestrator's fc-id until train_lora_job self-records its
+  // own). Once it's gone quiet, ask Modal whether the FunctionCall is alive:
+  // a "failed" verdict is authoritative; "running" (a long silent
+  // model-download / latent-cache phase) and unknown are left untouched.
   if (
-    status === "processing" &&
+    (status === "processing" || status === "queued") &&
     job.workflow_type === "lora_training" &&
     Date.now() - new Date(String(job.updated_at ?? job.created_at ?? 0)).getTime() >
       LORA_STUCK_PROBE_AFTER_MS

@@ -35,6 +35,7 @@ import {
   uploadLoraDataset,
   downloadLoraCheckpoint,
   downloadLoraJobBundle,
+  probeLoraJobArtifact,
   getLoraCheckpointDownloadUrl,
   salvageLoraJob,
   fetchRecentLoraJob,
@@ -89,9 +90,12 @@ const MAX_TOTAL_BYTES = 120 * 1024 * 1024; // 120 MB of raw image bytes
 // what this exists to prevent.
 const ACTIVE_JOB_STORAGE_KEY = "lora_studio_active_job";
 
-// Auto-saved draft of the form's text inputs — so a browser crash / accidental
-// reload / dev-server restart never loses a hand-written trigger word, raw
-// YAML, or the Japanese "固定/変化させたい特徴" notes. Cleared only by the
+// Auto-saved draft of the whole form — text inputs (trigger word, raw YAML,
+// the Japanese "固定/変化させたい特徴" notes) AND the expert / model settings
+// (base model, resolution, Rank, Alpha, Steps, LR, optimizer, mode). Written
+// on every change, restored on mount / re-mount / reload, so a browser crash,
+// an accidental reload, a dev-server restart, or switching back to the form
+// after a failed run never drops a hand-tuned config. Cleared only by the
 // explicit "フォームを初期化" button, never automatically.
 const FORM_DRAFT_STORAGE_KEY = "lora_studio_form_draft_v1";
 
@@ -102,30 +106,82 @@ type LoraFormDraft = {
   captionFixed: string;
   captionVarying: string;
   captionPromptOverride: string;
-  rawYaml: string;
-  useRawYaml: boolean;
   curationEnabled: boolean;
+  // Expert / model settings — persisted so a reload, a component re-mount, or
+  // a switch back to the form after a failed run never drops a hand-tuned
+  // Rank / Steps / LR / resolution / base model.
+  mode: Mode;
+  modelChoice: string;
+  customModelId: string;
+  baseArchitecture: LoraBaseArchitecture;
+  resolution: LoraResolution;
+  // true once the user picks a resolution by hand — after that a base-model
+  // change stops snapping it to the model's recommended value.
+  resolutionTouched: boolean;
+  pro: ProConfig;
 };
 
-const DEFAULT_FORM_DRAFT: LoraFormDraft = {
-  triggerWord: "",
-  loraName: "",
-  captionCategory: "person",
-  captionFixed: "",
-  captionVarying: "",
-  captionPromptOverride: "",
-  rawYaml: "",
-  useRawYaml: false,
-  curationEnabled: false,
-};
+// Single constructor so the persisted object, the default, and the pristine-
+// check comparison always share an identical key order (the "is this the
+// untouched form?" test below is a JSON string compare).
+function buildFormDraft(v: {
+  triggerWord: string;
+  loraName: string;
+  captionCategory: LoraCaptionCategory;
+  captionFixed: string;
+  captionVarying: string;
+  captionPromptOverride: string;
+  curationEnabled: boolean;
+  mode: Mode;
+  modelChoice: string;
+  customModelId: string;
+  baseArchitecture: LoraBaseArchitecture;
+  resolution: LoraResolution;
+  resolutionTouched: boolean;
+  pro: ProConfig;
+}): LoraFormDraft {
+  return {
+    triggerWord: v.triggerWord,
+    loraName: v.loraName,
+    captionCategory: v.captionCategory,
+    captionFixed: v.captionFixed,
+    captionVarying: v.captionVarying,
+    captionPromptOverride: v.captionPromptOverride,
+    curationEnabled: v.curationEnabled,
+    mode: v.mode,
+    modelChoice: v.modelChoice,
+    customModelId: v.customModelId,
+    baseArchitecture: v.baseArchitecture,
+    resolution: v.resolution,
+    resolutionTouched: v.resolutionTouched,
+    pro: {
+      rank: v.pro.rank,
+      alpha: v.pro.alpha,
+      alphaLinked: v.pro.alphaLinked,
+      learningRate: v.pro.learningRate,
+      lrCustom: v.pro.lrCustom,
+      steps: v.pro.steps,
+      optimizer: v.pro.optimizer,
+      useRawYaml: v.pro.useRawYaml,
+      rawYaml: v.pro.rawYaml,
+    },
+  };
+}
 
-function loadFormDraft(): Partial<LoraFormDraft> | null {
+// `DEFAULT_FORM_DRAFT` is defined further down, right after `DEFAULT_PRO`
+// (it needs that value), near the `Phase` type.
+
+// Older stored drafts (pre-expert-settings) kept rawYaml / useRawYaml at the
+// top level instead of nested under `pro` — still honoured on read.
+type LegacyFormDraft = Partial<LoraFormDraft> & { rawYaml?: unknown; useRawYaml?: unknown };
+
+function loadFormDraft(): LegacyFormDraft | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(FORM_DRAFT_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === "object" ? (parsed as Partial<LoraFormDraft>) : null;
+    return parsed && typeof parsed === "object" ? (parsed as LegacyFormDraft) : null;
   } catch {
     return null;
   }
@@ -200,6 +256,23 @@ const DEFAULT_PRO: ProConfig = {
   useRawYaml: false,
   rawYaml: "",
 };
+
+const DEFAULT_FORM_DRAFT: LoraFormDraft = buildFormDraft({
+  triggerWord: "",
+  loraName: "",
+  captionCategory: "person",
+  captionFixed: "",
+  captionVarying: "",
+  captionPromptOverride: "",
+  curationEnabled: false,
+  mode: "auto",
+  modelChoice: "minimax_h3",
+  customModelId: "",
+  baseArchitecture: "sdxl",
+  resolution: DEFAULT_LORA_RESOLUTION,
+  resolutionTouched: false,
+  pro: DEFAULT_PRO,
+});
 
 type Phase = "form" | "curation" | "starting" | "tracking";
 
@@ -611,12 +684,50 @@ function ProgressPanel({
   const [copyingCkpt, setCopyingCkpt] = useState<string | null>(null);
   const [ckptError, setCkptError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastData[]>([]);
+  // Server-confirmed existence of each artefact — only consulted for a job
+  // that ended in error (`failed` / `failed_timeout`). Tagged with the jobId
+  // it belongs to; a null field = not yet checked, so the button stays hidden
+  // until the probe actually comes back.
+  const [artifactProbe, setArtifactProbe] = useState<{
+    jobId: string | null;
+    final: boolean | null;
+    bundle: boolean | null;
+    dataset: boolean | null;
+  }>({ jobId: null, final: null, bundle: null, dataset: null });
 
   const pushToast = (message: string) =>
     setToasts((prev) => [...prev, { id: Date.now() + Math.random(), message }]);
   const dismissToast = (id: number) => setToasts((prev) => prev.filter((t) => t.id !== id));
 
+  const probeJobId = job?.jobId ?? null;
+  const probeStatus = job?.status ?? null;
+  useEffect(() => {
+    // A `completed` job shows its downloads unconditionally; only the error
+    // states need a real filesystem check before offering anything.
+    if (!probeJobId || (probeStatus !== "failed" && probeStatus !== "failed_timeout")) {
+      return;
+    }
+    let alive = true;
+    void (async () => {
+      const [final, bundle, dataset] = await Promise.all([
+        probeLoraJobArtifact(probeJobId, "final").catch(() => false),
+        probeLoraJobArtifact(probeJobId, "bundle").catch(() => false),
+        probeLoraJobArtifact(probeJobId, "dataset").catch(() => false),
+      ]);
+      if (alive) setArtifactProbe({ jobId: probeJobId, final, bundle, dataset });
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [probeJobId, probeStatus]);
+
   if (!job) return null;
+
+  // Probe results only apply to the job they were fetched for.
+  const probe =
+    artifactProbe.jobId === job.jobId
+      ? artifactProbe
+      : { final: null, bundle: null, dataset: null };
 
   const handleCkptDownload = async (filename: string) => {
     setDownloadingCkpt(filename);
@@ -661,56 +772,75 @@ function ProgressPanel({
     }
   };
 
-  // The three primary downloads — rendered UNCONDITIONALLY at the top of every
-  // finished-job panel (completed / failed / cancelled / failed_timeout), so a
-  // cancelled or errored run can still hand back the LoRA + dataset.
+  // The primary downloads block. Each button is gated independently:
+  //  - completed          → all three exist, show everything.
+  //  - failed / _timeout  → only what the server-side probe actually found
+  //                         (a Step-0 init crash produces nothing, so the
+  //                         whole block collapses to null).
   const dlBusy = downloadingCkpt !== null || copyingCkpt !== null;
-  const artifactDownloads = (
-    <div className="space-y-2 rounded-lg border border-neon-violet/40 bg-background/50 p-3">
-      <p className="text-[11px] font-semibold text-foreground">📥 成果物ダウンロード</p>
-      <div className="grid gap-2 sm:grid-cols-3">
-        <button
-          type="button"
-          onClick={() => handleBundleDownload("final")}
-          disabled={dlBusy}
-          title="完成版（無ければ最新の中間チェックポイント）を .safetensors で取得します。"
-          className="flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-2.5 text-xs font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {downloadingCkpt === "final" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-          🏆 完成版LoRA DL (.safetensors)
-        </button>
-        <button
-          type="button"
-          onClick={() => handleBundleDownload("dataset")}
-          disabled={dlBusy}
-          title="学習に使用した画像とキャプション(.txt)を1つのZIPにまとめて取得します。"
-          className="flex items-center justify-center gap-2 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-3 py-2.5 text-xs font-semibold text-neon-violet transition-all hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {downloadingCkpt === "dataset" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-          📦 キャプション付きデータセットDL (ZIP)
-        </button>
-        <button
-          type="button"
-          onClick={() => handleBundleDownload("bundle")}
-          disabled={dlBusy}
-          title="このジョブの全 .safetensors（中間＋最終）を1つの ZIP にまとめて取得します。"
-          className="flex items-center justify-center gap-2 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-3 py-2.5 text-xs font-semibold text-neon-violet transition-all hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {downloadingCkpt === "bundle" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-          📦 全チェックポイント一括DL (ZIP)
-        </button>
+  const renderArtifactDownloads = (show: {
+    final: boolean;
+    dataset: boolean;
+    bundle: boolean;
+  }) => {
+    if (!show.final && !show.dataset && !show.bundle) return null;
+    return (
+      <div className="space-y-2 rounded-lg border border-neon-violet/40 bg-background/50 p-3">
+        <p className="text-[11px] font-semibold text-foreground">📥 成果物ダウンロード</p>
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+          {show.final && (
+            <button
+              type="button"
+              onClick={() => handleBundleDownload("final")}
+              disabled={dlBusy}
+              title="完成版（無ければ最新の中間チェックポイント）を .safetensors で取得します。"
+              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-2.5 text-xs font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {downloadingCkpt === "final" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+              🏆 完成版LoRA DL (.safetensors)
+            </button>
+          )}
+          {show.dataset && (
+            <button
+              type="button"
+              onClick={() => handleBundleDownload("dataset")}
+              disabled={dlBusy}
+              title="学習に使用した画像とキャプション(.txt)を1つのZIPにまとめて取得します。"
+              className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-3 py-2.5 text-xs font-semibold text-neon-violet transition-all hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {downloadingCkpt === "dataset" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+              📦 キャプション付きデータセットDL (ZIP)
+            </button>
+          )}
+          {show.bundle && (
+            <button
+              type="button"
+              onClick={() => handleBundleDownload("bundle")}
+              disabled={dlBusy}
+              title="このジョブの全 .safetensors（中間＋最終）を1つの ZIP にまとめて取得します。"
+              className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-3 py-2.5 text-xs font-semibold text-neon-violet transition-all hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {downloadingCkpt === "bundle" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+              📦 全チェックポイント一括DL (ZIP)
+            </button>
+          )}
+        </div>
+        {ckptError && <p className="text-[10px] text-red-400">{ckptError}</p>}
+        <p className="text-[10px] leading-relaxed text-muted opacity-70">
+          未生成の ZIP はクリック時にクラウド上で復元してから取得します（GPU課金なし）。
+        </p>
       </div>
-      {ckptError && <p className="text-[10px] text-red-400">{ckptError}</p>}
-      <p className="text-[10px] leading-relaxed text-muted opacity-70">
-        未生成の ZIP はクリック時にクラウド上で復元してから取得します（GPU課金なし）。
-      </p>
-    </div>
-  );
+    );
+  };
 
   if (job.status === "failed_timeout") {
     return (
       <div className="space-y-3">
-        {artifactDownloads}
+        {renderArtifactDownloads({
+          final: probe.final === true,
+          dataset: probe.dataset === true,
+          bundle: probe.bundle === true,
+        })}
         <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-amber-400">
             <AlertTriangle size={15} />
@@ -741,14 +871,25 @@ function ProgressPanel({
   }
 
   if (job.status === "queued") {
+    // The dispatcher fires the CPU pre-cache + GPU spawn asynchronously and
+    // returns instantly; while a big base model (WAN 2.1 14B, …) downloads
+    // the job sits in "queued" with a 🧊 progress_message. Surface it, and
+    // stop the generic copy from reading as "stuck" after a minute.
+    const elapsed = queuedElapsedSec ?? 0;
+    const serverMsg = job.progressMessage && job.progressMessage !== "queued" ? job.progressMessage : null;
     const provisioningMessage =
-      (queuedElapsedSec ?? 0) < 15
+      serverMsg ??
+      (elapsed < 15
         ? "専用ハイエンドGPUノードをプロビジョニング中…"
-        : "コンテナ初期化 & モデル環境ロード中…";
+        : elapsed < 90
+          ? "コンテナ初期化 & モデル環境ロード中…"
+          : "ベースモデルを準備しています…（初回は数分かかります・このままお待ちください）");
     return (
       <div className="flex flex-col items-center gap-1">
         <QueueStatusPanel phase="queued" queue={job.queue} />
-        <span className="text-[11px] text-neon-violet/80">{provisioningMessage}</span>
+        <span className="max-w-[26rem] text-center text-[11px] leading-relaxed text-neon-violet/80">
+          {provisioningMessage}
+        </span>
         <span className="font-mono text-[10px] text-muted">status: {job.status}</span>
       </div>
     );
@@ -841,7 +982,13 @@ function ProgressPanel({
           この LoRA はモデルライブラリに保存され、動画生成ワークフローからすぐに利用できます。
         </p>
 
-        <div className="mt-3">{artifactDownloads}</div>
+        <div className="mt-3">
+          {renderArtifactDownloads({
+            final: true,
+            dataset: true,
+            bundle: allCheckpoints.length > 0,
+          })}
+        </div>
 
         <div className="mt-3 flex flex-wrap gap-2">
           <button
@@ -942,6 +1089,17 @@ function ProgressPanel({
   const partialCkpts = (job.checkpoints ?? [])
     .filter((c) => !c.isCaptionArchive && !c.isBundle)
     .sort((a, b) => a.step - b.step);
+  const hasCaptionArchive = (job.checkpoints ?? []).some((c) => c.isCaptionArchive);
+  // A Step-0 init crash leaves nothing behind — offer 完成版 / 全チェックポイント
+  // ONLY when the file is really there (client-side signal or server probe),
+  // and the dataset ZIP only when captions actually got parsed & persisted.
+  const artifactShow = {
+    final: probe.final === true,
+    bundle: partialCkpts.length > 0 || probe.bundle === true,
+    dataset: hasCaptionArchive || probe.dataset === true,
+  };
+  const probingArtifacts =
+    probe.final === null && probe.bundle === null && probe.dataset === null;
   return (
     <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4">
       <div className="flex items-center gap-2 text-sm font-semibold text-red-400">
@@ -952,7 +1110,9 @@ function ProgressPanel({
         {job.errorMessage || "不明なエラーが発生しました。"}
         <br />
         {job.safetyStop
-          ? "設定負荷に対してクレジットが不足したため、原価割れを避けて安全停止し、全額返金されました。解像度・ステップ数・バッチを下げるか、投入クレジットを増やしてください。中断時点までの中間チェックポイントはダウンロードできます。"
+          ? `設定負荷に対してクレジットが不足したため、原価割れを避けて安全停止し、全額返金されました。解像度・ステップ数・バッチを下げるか、投入クレジットを増やしてください。${
+              artifactShow.bundle ? "中断時点までの中間チェックポイントはダウンロードできます。" : ""
+            }`
           : job.refunded === true
             ? "消費したクレジットは全額返金されました。"
             : job.refunded === false
@@ -960,7 +1120,19 @@ function ProgressPanel({
               : "返金状況を確認中です。"}
       </p>
 
-      <div className="mt-3">{artifactDownloads}</div>
+      {(() => {
+        const block = renderArtifactDownloads(artifactShow);
+        if (block) return <div className="mt-3">{block}</div>;
+        if (probingArtifacts) {
+          return (
+            <p className="mt-3 flex items-center gap-1.5 text-[10px] text-muted">
+              <Loader2 size={11} className="animate-spin" />
+              復旧可能な成果物を確認中…
+            </p>
+          );
+        }
+        return null;
+      })()}
 
       {partialCkpts.length > 0 && (
         <div className="mt-3 border-t border-red-500/20 pt-3">
@@ -1070,6 +1242,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const [customModelId, setCustomModelId] = useState("");
   const [baseArchitecture, setBaseArchitecture] = useState<LoraBaseArchitecture>("sdxl");
   const [resolution, setResolution] = useState<LoraResolution>(DEFAULT_LORA_RESOLUTION);
+  // Set once the user picks a resolution by hand — a later base-model change
+  // then leaves it alone instead of snapping to the model's recommended value.
+  const [resolutionTouched, setResolutionTouched] = useState(false);
   const [triggerWord, setTriggerWord] = useState("");
   const [loraName, setLoraName] = useState("");
   const [pro, setPro] = useState<ProConfig>(DEFAULT_PRO);
@@ -1192,14 +1367,64 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         if (typeof d.captionFixed === "string") setCaptionFixed(d.captionFixed);
         if (typeof d.captionVarying === "string") setCaptionVarying(d.captionVarying);
         if (typeof d.captionPromptOverride === "string") setCaptionPromptOverride(d.captionPromptOverride);
-        if (typeof d.rawYaml === "string" || typeof d.useRawYaml === "boolean") {
-          setPro((p) => ({
-            ...p,
-            rawYaml: typeof d.rawYaml === "string" ? d.rawYaml : p.rawYaml,
-            useRawYaml: typeof d.useRawYaml === "boolean" ? d.useRawYaml : p.useRawYaml,
-          }));
-        }
         if (typeof d.curationEnabled === "boolean") setCurationEnabled(d.curationEnabled);
+
+        // --- expert / model settings ---------------------------------------
+        if (d.mode === "auto" || d.mode === "pro") setMode(d.mode);
+        if (
+          typeof d.modelChoice === "string" &&
+          (d.modelChoice === "__custom__" || loraPresetById(d.modelChoice))
+        ) {
+          setModelChoice(d.modelChoice);
+        }
+        if (typeof d.customModelId === "string") setCustomModelId(d.customModelId);
+        if (
+          typeof d.baseArchitecture === "string" &&
+          (LORA_BASE_ARCHITECTURES as string[]).includes(d.baseArchitecture)
+        ) {
+          setBaseArchitecture(d.baseArchitecture as LoraBaseArchitecture);
+        }
+        if (
+          typeof d.resolution === "number" &&
+          (LORA_RESOLUTIONS as readonly number[]).includes(d.resolution)
+        ) {
+          setResolution(d.resolution as LoraResolution);
+        }
+        if (typeof d.resolutionTouched === "boolean") setResolutionTouched(d.resolutionTouched);
+
+        // Nested `pro` (current shape) with a fallback to the legacy top-level
+        // rawYaml / useRawYaml that pre-expert-settings drafts stored.
+        const rp =
+          d.pro && typeof d.pro === "object" ? (d.pro as Partial<Record<keyof ProConfig, unknown>>) : {};
+        const legacyRawYaml =
+          typeof rp.rawYaml === "string"
+            ? (rp.rawYaml as string)
+            : typeof d.rawYaml === "string"
+              ? (d.rawYaml as string)
+              : undefined;
+        const legacyUseRawYaml =
+          typeof rp.useRawYaml === "boolean"
+            ? (rp.useRawYaml as boolean)
+            : typeof d.useRawYaml === "boolean"
+              ? (d.useRawYaml as boolean)
+              : undefined;
+        setPro((p) => {
+          const next = { ...p };
+          if ((RANK_OPTIONS as readonly number[]).includes(rp.rank as number)) next.rank = rp.rank as number;
+          if ((ALPHA_OPTIONS as readonly number[]).includes(rp.alpha as number))
+            next.alpha = rp.alpha as number;
+          if (typeof rp.alphaLinked === "boolean") next.alphaLinked = rp.alphaLinked;
+          if (typeof rp.learningRate === "number" && rp.learningRate > 0)
+            next.learningRate = rp.learningRate;
+          if (typeof rp.lrCustom === "boolean") next.lrCustom = rp.lrCustom;
+          if (typeof rp.steps === "number" && rp.steps >= STEPS_MIN && rp.steps <= STEPS_MAX)
+            next.steps = rp.steps;
+          if (typeof rp.optimizer === "string" && OPTIMIZERS.includes(rp.optimizer))
+            next.optimizer = rp.optimizer;
+          if (legacyRawYaml !== undefined) next.rawYaml = legacyRawYaml;
+          if (legacyUseRawYaml !== undefined) next.useRawYaml = legacyUseRawYaml;
+          return next;
+        });
       }
       draftHydratedRef.current = true;
     });
@@ -1210,17 +1435,22 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
   useEffect(() => {
     if (typeof window === "undefined" || !draftHydratedRef.current) return;
-    const draft: LoraFormDraft = {
+    const draft = buildFormDraft({
       triggerWord,
       loraName,
       captionCategory,
       captionFixed,
       captionVarying,
       captionPromptOverride,
-      rawYaml: pro.rawYaml,
-      useRawYaml: pro.useRawYaml,
       curationEnabled,
-    };
+      mode,
+      modelChoice,
+      customModelId,
+      baseArchitecture,
+      resolution,
+      resolutionTouched,
+      pro,
+    });
     try {
       const serialized = JSON.stringify(draft);
       // Pristine form -> no key at all (so "フォームを初期化" genuinely clears
@@ -1240,9 +1470,14 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     captionFixed,
     captionVarying,
     captionPromptOverride,
-    pro.rawYaml,
-    pro.useRawYaml,
     curationEnabled,
+    mode,
+    modelChoice,
+    customModelId,
+    baseArchitecture,
+    resolution,
+    resolutionTouched,
+    pro,
   ]);
 
   const addDatasetFiles = useCallback((entries: { file: File; caption?: string }[]) => {
@@ -1521,10 +1756,13 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       : LORA_CREDIT_WORST_CASE;
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < requiredCredits;
 
-  // Model dropdown change — also snap the training resolution to the pick's
-  // recommended value (FLUX/SDXL → 1024, SD1.5 → 512, else 768).
+  // Model dropdown change — a *partial* update: only the model-specific field
+  // (the recommended training resolution) is snapped, and only while the user
+  // hasn't set the resolution by hand. Rank / Steps / LR / optimizer are left
+  // exactly as the user tuned them.
   const handleModelChange = (value: string) => {
     setModelChoice(value);
+    if (resolutionTouched) return;
     if (value === "__custom__") {
       setResolution(recommendedResolution(baseArchitecture));
     } else {
@@ -2299,6 +2537,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     setCustomModelId("");
     setBaseArchitecture("sdxl");
     setResolution(DEFAULT_LORA_RESOLUTION);
+    setResolutionTouched(false);
     setTriggerWord("");
     setLoraName("");
     setPro(DEFAULT_PRO);
@@ -2720,7 +2959,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             <label className="mb-1 block text-[11px] font-medium text-muted">学習解像度</label>
             <select
               value={resolution}
-              onChange={(e) => setResolution(Number(e.target.value) as LoraResolution)}
+              onChange={(e) => {
+                setResolution(Number(e.target.value) as LoraResolution);
+                setResolutionTouched(true);
+              }}
               disabled={busy}
               className={fieldCls}
             >

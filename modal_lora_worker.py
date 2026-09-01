@@ -3000,7 +3000,76 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
 
 @app.function(
     image=dispatch_image,
-    timeout=600,
+    # Long: it may block on a multi-GB ensure_model_cached_cpu.remote() before
+    # spawning the GPU. Fired async by train_lora_dispatch — nothing HTTP is
+    # waiting on it.
+    timeout=3 * 60 * 60,
+    cpu=1,
+    memory=2048,
+    volumes={MODELS_DIR: vol},
+    secrets=[
+        modal.Secret.from_name("supabase-model-downloads"),
+        modal.Secret.from_name("wan-animate-auth"),
+    ],
+)
+def _prepare_and_spawn_training(item: dict) -> dict:
+    """CPU orchestrator: pre-cache the base model on the persistent Volume,
+    THEN spawn the GPU job. Runs in the background so train_lora_dispatch can
+    ACK in <1s regardless of download size (a 55GB Wan-14B pull no longer
+    blows the 300s HTTP timeout)."""
+    job_id = str(item.get("job_id") or "")
+    user_id = str(item.get("user_id") or "")
+    credits_cost = int(item.get("credits_cost") or 0)
+
+    def _fail(msg: str):
+        _patch_job(
+            job_id,
+            {
+                "status": "failed",
+                "progress_message": "failed",
+                "error_message": msg[:2000],
+                "completed_at": _now_iso(),
+                "metadata": {"refunded": True},
+            },
+        )
+        if user_id and credits_cost > 0:
+            _refund_credits(user_id, credits_cost)
+        return {"ok": False, "error": msg}
+
+    try:
+        if _hf_repos_for(item.get("target_model") or "", item.get("custom_model_id") or ""):
+            _patch_job(
+                job_id,
+                {
+                    "progress_percent": 1,
+                    "progress_message": "🧊 ベースモデルを準備しています…（初回のみ・数分かかります）",
+                },
+            )
+            try:
+                cache_res = ensure_model_cached_cpu.remote(
+                    item.get("target_model") or "", item.get("custom_model_id") or ""
+                )
+            except Exception as exc:  # noqa: BLE001
+                return _fail(f"ベースモデルの事前キャッシュに失敗しました: {exc}")
+            if not cache_res.get("ok"):
+                return _fail(
+                    f"ベースモデルのダウンロードに失敗しました "
+                    f"({cache_res.get('repo')}): {str(cache_res.get('error'))[:400]}"
+                )
+
+        call = train_lora_job.spawn(item)
+        _patch_job(
+            job_id,
+            {"modal_call_id": call.object_id, "progress_message": "starting training"},
+        )
+        return {"ok": True, "modal_call_id": call.object_id, "job_id": job_id}
+    except Exception as exc:  # noqa: BLE001
+        return _fail(f"ジョブ準備中に予期しないエラー: {exc}")
+
+
+@app.function(
+    image=dispatch_image,
+    timeout=60,
     min_containers=1,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
@@ -3013,34 +3082,17 @@ def train_lora_dispatch(item: dict, request: fastapi.Request):
         call = _pending_stub.spawn(item)
         return {"ok": True, "spawned": True, "test_stub": True, "modal_call_id": call.object_id, "job_id": item.get("job_id")}
 
-    # Stage 1 (CPU): pre-stage the base model. Only touched when the model
-    # actually has HF components to fetch — a single-file Volume model
-    # (minimax_h3 etc.) skips this entirely so the common path stays instant.
-    cache_info: dict = {"downloaded": [], "cached": True}
-    if _hf_repos_for(item.get("target_model") or "", item.get("custom_model_id") or ""):
-        try:
-            cache_res = ensure_model_cached_cpu.remote(
-                item.get("target_model") or "", item.get("custom_model_id") or ""
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise fastapi.HTTPException(status_code=502, detail=f"model pre-cache errored: {exc}")
-        if not cache_res.get("ok"):
-            # Base model could not be downloaded — do NOT start a GPU. The
-            # Next.js route treats a non-2xx here as a dispatch failure and
-            # refunds the debit.
-            raise fastapi.HTTPException(
-                status_code=502,
-                detail=f"base model download failed ({cache_res.get('repo')}): {cache_res.get('error')}",
-            )
-        cache_info = {"downloaded": cache_res.get("downloaded", []), "cached": cache_res.get("cached")}
-
-    call = train_lora_job.spawn(item)
+    # Fully async: fire the CPU orchestrator (pre-cache -> GPU spawn) and ACK
+    # immediately. Its call id stands in as modal_call_id for cancel /
+    # self-heal until train_lora_job self-records its own fc-id.
+    call = _prepare_and_spawn_training.spawn(item)
     return {
         "ok": True,
         "spawned": True,
+        "async": True,
         "modal_call_id": call.object_id,
         "job_id": item.get("job_id"),
-        "model_cache": cache_info,
+        "status": "queued",
     }
 
 
