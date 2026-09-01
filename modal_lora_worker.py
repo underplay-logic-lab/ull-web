@@ -735,6 +735,26 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+# Placeholder written by `modal secret create huggingface-secret ...` so a
+# deploy doesn't fail before a real token is set — treated as "no token".
+_HF_TOKEN_PLACEHOLDERS = {"", "REPLACE_WITH_REAL_HF_TOKEN", "REPLACE_ME", "changeme", "your_token_here"}
+
+
+def _hf_token() -> str | None:
+    """The Hugging Face access token (from the `huggingface-secret` Modal
+    secret), or None. Passing an authenticated token to snapshot_download /
+    hf_hub_download lifts the anonymous per-IP bandwidth throttle — a big
+    repo that crawls at anon speed downloads in minutes with a token."""
+    for k in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_TOKEN", "HF_API_TOKEN"):
+        v = (os.environ.get(k) or "").strip()
+        if v and v not in _HF_TOKEN_PLACEHOLDERS:
+            # Normalise so huggingface_hub's own env lookups also see it.
+            os.environ.setdefault("HF_TOKEN", v)
+            os.environ.setdefault("HUGGING_FACE_HUB_TOKEN", v)
+            return v
+    return None
+
+
 def _current_effective_vram_gb():
     """Device-global effective VRAM in use, in GB — just the one number, no
     total / denominator and no GPU model name (the client renders it as a
@@ -2250,7 +2270,11 @@ def _persist_latent_cache(dataset_id: str, key: str) -> int:
     timeout=12 * 60 * 60,
     # 30s Keep-Warm 規格（CLAUDE.md §1）— 全 GPU ワーカー一律。
     scaledown_window=30,
-    secrets=[modal.Secret.from_name("supabase-model-downloads"), modal.Secret.from_name("wan-animate-auth")],
+    secrets=[
+        modal.Secret.from_name("supabase-model-downloads"),
+        modal.Secret.from_name("wan-animate-auth"),
+        modal.Secret.from_name("huggingface-secret"),
+    ],
 )
 def train_lora_job(params: dict) -> dict:
     """Generic LoRA training entrypoint — see module docstring for how the
@@ -2286,6 +2310,11 @@ def train_lora_job(params: dict) -> dict:
     os.environ["TORCH_HOME"] = TORCH_CACHE_DIR
     os.environ["MODELS_PATH"] = MODELS_DIR  # ai-toolkit comfy-layout resolver root
     os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+    # Normalise the HF token (or scrub the deploy placeholder so ai-toolkit's
+    # own hf_hub_download for the tokenizer never auths with a bogus value).
+    if not _hf_token():
+        for _k in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_TOKEN", "HF_API_TOKEN"):
+            os.environ.pop(_k, None)
     for _d in (f"{HF_CACHE_DIR}/hub", TORCH_CACHE_DIR):
         pathlib.Path(_d).mkdir(parents=True, exist_ok=True)
     print(f"[train] HF_HOME={HF_CACHE_DIR} (Volume-local model load)", flush=True)
@@ -2998,7 +3027,10 @@ def _ensure_wan_comfy_layout(target_model: str) -> dict:
         try:
             t0 = time.time()
             p = hf_hub_download(
-                repo_id=_WAN_COMFY_REPO, filename=f"split_files/{rel}", local_dir=str(MODELS_DIR)
+                repo_id=_WAN_COMFY_REPO,
+                filename=f"split_files/{rel}",
+                local_dir=str(MODELS_DIR),
+                token=_hf_token(),
             )
             if os.path.abspath(p) != os.path.abspath(str(dst)):
                 os.replace(p, dst)
@@ -3027,13 +3059,19 @@ def _repo_snapshot_present(repo_id: str) -> bool:
 
 @app.function(
     image=dispatch_image,
-    # Wan 2.1 14B Diffusers is ~55GB — hf_transfer parallel pull still needs a
-    # generous budget on a cold Volume.
-    timeout=2400,
+    # Big bases (LTX-Video / Wan 2.1 14B Diffusers ~55GB / FLUX) on a COLD
+    # Volume can take well over half an hour even with the hf_transfer parallel
+    # pull. Pin the ceiling at a full hour so a slow-but-progressing download is
+    # never killed mid-flight by the container timeout (a partial snapshot then
+    # forces the $/min GPU to re-fetch).
+    timeout=3600,
     cpu=4,
     memory=8192,
     volumes={MODELS_DIR: vol},
-    secrets=[modal.Secret.from_name("wan-animate-auth")],
+    secrets=[
+        modal.Secret.from_name("wan-animate-auth"),
+        modal.Secret.from_name("huggingface-secret"),
+    ],
 )
 def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
     """Stage 1. Guarantee every HF component of the base model is on the
@@ -3073,10 +3111,21 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
 
     from huggingface_hub import snapshot_download
 
+    # Parallel file downloads. hf_transfer (env flag above) already parallelises
+    # the CHUNKS of a single large shard; max_workers fans out across the many
+    # shards of a big repo (LTX-Video / Wan / FLUX are 10s of files). 8 is a
+    # safe fit for this container's cpu=4 (network-bound, not CPU-bound); a
+    # bigger box can raise it via HF_SNAPSHOT_WORKERS.
+    dl_workers = max(4, int(os.environ.get("HF_SNAPSHOT_WORKERS", "8") or "8"))
+    # Authenticated pull — lifts the anonymous per-IP bandwidth throttle that
+    # was making a big repo crawl for 50+ min.
+    hf_tok = _hf_token()
+    print(f"[cache] HF auth: {'token present' if hf_tok else 'ANONYMOUS (throttled — set huggingface-secret HF_TOKEN)'}", flush=True)
+
     downloaded: list[str] = []
     for repo in repos:
         try:
-            snapshot_download(repo_id=repo, local_files_only=True)
+            snapshot_download(repo_id=repo, local_files_only=True, token=hf_tok)
             print(f"[cache] {repo}: already on Volume", flush=True)
             continue
         except Exception:  # noqa: BLE001 — not cached yet, fall through to fetch
@@ -3086,9 +3135,13 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
             # convrot_quant / other arch-specific expansion is a train-time
             # code patch (not model files) and stays on the GPU side; the
             # snapshot here is the complete component tree that patch needs.
-            snapshot_download(repo_id=repo, max_workers=8)
+            snapshot_download(repo_id=repo, max_workers=dl_workers, token=hf_tok)
             downloaded.append(repo)
-            print(f"[cache] {repo}: fetched in {time.time() - t0:.0f}s", flush=True)
+            print(
+                f"[cache] {repo}: fetched in {time.time() - t0:.0f}s "
+                f"(max_workers={dl_workers})",
+                flush=True,
+            )
         except Exception as exc:  # noqa: BLE001
             print(f"[cache] {repo}: download FAILED — {exc}", flush=True)
             return {"ok": False, "cached": False, "repo": repo, "error": str(exc)[:500]}
@@ -3130,6 +3183,7 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
     secrets=[
         modal.Secret.from_name("supabase-model-downloads"),
         modal.Secret.from_name("wan-animate-auth"),
+        modal.Secret.from_name("huggingface-secret"),
     ],
 )
 def _prepare_and_spawn_training(item: dict) -> dict:
