@@ -343,57 +343,52 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 # Preset target_model -> ai-toolkit arch + a name_or_path (a single-file
 # checkpoint on the Volume when we host it, otherwise a HuggingFace repo id
-# ai-toolkit resolves at load time). Anything not listed here can still be
-# trained via target_model="custom" + custom_model_id + base_architecture,
-# or via training_config.custom_yaml_override. Mirrors src/lib/loraModels.ts.
+# ai-toolkit resolves at load time). This is the FULL, sealed, 14-model
+# commercial lineup — the general UI's model dropdown (LoraStudioTab.tsx) no
+# longer exposes free-text "custom HuggingFace repo id" entry, so this dict
+# (mirrored in src/lib/loraModels.ts) is the only way an ordinary user's job
+# reaches a base model. target_model="custom" + custom_model_id +
+# base_architecture / training_config.custom_yaml_override still work
+# server-side for internal/admin use, just aren't reachable from the UI.
 TARGET_MODELS: dict[str, dict] = {
     # --- video ---
+    # Wan 2.1: ai-toolkit loads it with WanTransformer3DModel.from_pretrained,
+    # which needs a Diffusers repo/dir (transformer + T5 text encoder + VAE +
+    # scheduler, each with its own config.json) — NOT a single .safetensors
+    # (that 404s config.json and then gets misread as an HF repo id ->
+    # "Repo id must use alphanumeric chars ...: '/models'"). name_or_path
+    # points at the Diffusers repo id purely as ai-toolkit's lookup key into
+    # its own comfy-weight map though — see _WAN_COMFY_LAYOUT below, which is
+    # what actually places the multi-GB weights on the Volume.
+    "wan21_14b": {"arch": "wan21", "unet": "Wan-AI/Wan2.1-T2V-14B-Diffusers"},
+    "wan21_1.3b": {"arch": "wan21", "unet": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"},
+    # Wan 2.2 (MoE 14B): same Diffusers-repo story as Wan 2.1 below —
+    # ensure_model_cached_cpu() snapshot_download's the full component tree to
+    # the Volume HF cache. It is NOT wired through the Wan 2.1 ComfyUI
+    # single-file layout (_ensure_wan_comfy_layout), so no _WAN_COMFY_LAYOUT key.
+    "wan22_14b": {"arch": "wan22_14b", "unet": "ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16"},
+    # LTX: ai-toolkit's "ltx2" arch is built for LTX-2. Handing it the old
+    # Lightricks/LTX-Video (0.9.x) checkpoint crashes with a Meta Tensor error
+    # (the state-dict keys don't line up), so point name_or_path at LTX-2.
+    "ltx_video": {"arch": "ltx2", "unet": "Lightricks/LTX-2"},
     "minimax_h3": {
         "arch": "minimax_h3",
         "unet": f"{MODELS_DIR}/diffusion_models/minimax_h3_fl2va_bf16.safetensors",
         "text_encoder": f"{MODELS_DIR}/clip/qwen3vl_32b_minimax_h3_bf16.safetensors",
         "vae": f"{MODELS_DIR}/vae/minimax_h3_video_vae_fp16.safetensors",
     },
-    # Wan 2.1: ai-toolkit loads it with WanTransformer3DModel.from_pretrained,
-    # which needs a Diffusers repo/dir (transformer + T5 text encoder + VAE +
-    # scheduler, each with its own config.json) — NOT a single .safetensors
-    # (that 404s config.json and then gets misread as an HF repo id ->
-    # "Repo id must use alphanumeric chars ...: '/models'"). So point
-    # name_or_path at the Diffusers repo and let ensure_model_cached_cpu()
-    # snapshot it to the Volume HF cache; no separate text_encoder/vae keys.
-    "wan2_1_14b": {"arch": "wan21", "unet": "Wan-AI/Wan2.1-T2V-14B-Diffusers"},
-    "wan2_1_1_3b": {"arch": "wan21", "unet": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"},
-    # Wan 2.2 (MoE 14B): same Diffusers-repo story as Wan 2.1 above —
-    # ensure_model_cached_cpu() snapshot_download's the full component tree to
-    # the Volume HF cache. It is NOT wired through the Wan 2.1 ComfyUI
-    # single-file layout (_ensure_wan_comfy_layout), so no _WAN_COMFY_LAYOUT key.
-    "wan22_14b": {"arch": "wan22_14b", "unet": "ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16"},
-    "hunyuan_video": {"arch": "hunyuan", "unet": "hunyuanvideo-community/HunyuanVideo"},
-    "cogvideox_5b": {"arch": "cogvideox", "unet": "THUDM/CogVideoX-5b"},
-    # LTX: ai-toolkit's "ltx2" arch is built for LTX-2. Handing it the old
-    # Lightricks/LTX-Video (0.9.x) checkpoint crashes with a Meta Tensor error
-    # (the state-dict keys don't line up), so point name_or_path at LTX-2.
-    "ltx_video": {"arch": "ltx2", "unet": "Lightricks/LTX-2"},
-    # --- photo / general ---
-    "flux_schnell": {
-        "arch": "flux",
-        "unet": f"{MODELS_DIR}/diffusion_models/flux1-schnell.safetensors",
-        "vae": f"{MODELS_DIR}/vae/ae.safetensors",
-    },
-    # Qwen-Image / FLUX.2 Klein 4B — Diffusers repos, snapshot_download'd by
-    # ensure_model_cached_cpu() like the other HF-hosted bases.
-    "qwen_image": {"arch": "qwen_image", "unet": "Qwen/Qwen-Image"},
+    # --- photo / general — Diffusers repos, snapshot_download'd to the
+    # Volume HF cache by ensure_model_cached_cpu() like Wan/Qwen above. ---
     "flux2_klein_4b": {"arch": "flux2_klein_4b", "unet": "black-forest-labs/FLUX.2-klein-base-4B"},
-    "sdxl_10": {"arch": "sdxl", "unet": "stabilityai/stable-diffusion-xl-base-1.0"},
-    "sd35_large": {"arch": "sd3", "unet": "stabilityai/stable-diffusion-3.5-large"},
-    "sd35_medium": {"arch": "sd3", "unet": "stabilityai/stable-diffusion-3.5-medium"},
-    "pixart_sigma": {"arch": "sdxl", "unet": "PixArt-alpha/PixArt-Sigma-XL-2-1024-MS"},
+    "flux2_klein_9b": {"arch": "flux2_klein_9b", "unet": "black-forest-labs/FLUX.2-klein-base-9B"},
+    "flux2": {"arch": "flux2", "unet": "black-forest-labs/FLUX.2-dev"},
+    "qwen_image": {"arch": "qwen_image", "unet": "Qwen/Qwen-Image"},
+    "krea2": {"arch": "krea2", "unet": "krea/Krea-2-Raw"},
+    "zimage": {"arch": "zimage", "unet": "Tongyi-MAI/Z-Image-Turbo"},
     # --- anime / illustration ---
     "anima": {"arch": "anima", "unet": "circlestone-labs/Anima-Base-v1.0-Diffusers"},
-    "pony_v6_xl": {"arch": "sdxl", "unet": "LyliaEngine/Pony_Diffusion_V6_XL"},
     "illustrious_xl": {"arch": "sdxl", "unet": "OnomaAIResearch/Illustrious-xl-early-release-v0"},
-    "animagine_xl_31": {"arch": "sdxl", "unet": "cagliostrolab/animagine-xl-3.1"},
-    "sd15": {"arch": "sd15", "unet": "stable-diffusion-v1-5/stable-diffusion-v1-5"},
+    "pony_v6": {"arch": "sdxl", "unet": "AstraliteHeart/pony-diffusion-v6-xl"},
 }
 
 # FLUX.1 [dev] is blocked outright (non-commercial licence). Matches
@@ -2940,12 +2935,12 @@ def _pending_stub(item: dict):
 # (hardlink from an existing case-variant, else a single-file pull from
 # Comfy-Org — never the 55GB Diffusers repo).
 _WAN_COMFY_LAYOUT: dict[str, list[tuple[str, list[str]]]] = {
-    "wan2_1_14b": [
+    "wan21_14b": [
         ("diffusion_models/wan2.1_t2v_14B_bf16.safetensors", ["diffusion_models/wan2.1_t2v_14b_bf16.safetensors"]),
         ("text_encoders/umt5_xxl_fp16.safetensors", []),
         ("vae/wan_2.1_vae.safetensors", []),
     ],
-    "wan2_1_1_3b": [
+    "wan21_1.3b": [
         ("diffusion_models/wan2.1_t2v_1.3B_bf16.safetensors", ["diffusion_models/wan2.1_t2v_1.3b_bf16.safetensors"]),
         ("text_encoders/umt5_xxl_fp16.safetensors", []),
         ("vae/wan_2.1_vae.safetensors", []),
@@ -2962,15 +2957,15 @@ def _wan_target(target_model: str) -> str | None:
     if target_model in _WAN_COMFY_LAYOUT:
         return target_model
     if target_model == "wan21" or TARGET_MODELS.get(target_model, {}).get("arch") == "wan21":
-        return "wan2_1_14b"
+        return "wan21_14b"
     return None
 
 
 def _hf_repos_for(target_model: str, custom_model_id: str = "") -> list[str]:
     """The HF repo ids this job's base model needs pre-downloaded (empty for a
-    single-file Volume model like minimax_h3 / flux_schnell). Wan 2.1 only
-    needs the tiny tokenizer repo here — its multi-GB weights are placed as
-    ComfyUI-layout single files by _ensure_wan_comfy_layout()."""
+    single-file Volume model like minimax_h3). Wan 2.1 only needs the tiny
+    tokenizer repo here — its multi-GB weights are placed as ComfyUI-layout
+    single files by _ensure_wan_comfy_layout()."""
 
     def _is_repo(v) -> bool:
         s = str(v or "")

@@ -65,7 +65,7 @@ function pickProcess(yamlObj: unknown): Record<string, unknown> {
 
 export function loraPriceBreakdown(
   yamlObj: unknown,
-  opts: { archFallback?: string } = {},
+  opts: { archFallback?: string; modelMultOverride?: number } = {},
 ): LoraPriceBreakdown {
   const proc = pickProcess(yamlObj);
   const model = asObject(proc.model);
@@ -79,8 +79,14 @@ export function loraPriceBreakdown(
   // model coefficient — the YAML's own arch, else the caller's fallback
   // (the dropdown pick — the worker resolves arch from it when the YAML's
   // model block omits it, so pricing must too or heavy runs under-pay).
+  // `modelMultOverride` (from the selected preset's `pricingModelMult`) wins
+  // outright — it exists for a preset that shares its real ai-toolkit
+  // `arch` (the loader class, which must stay correct for training) with a
+  // materially cheaper sibling, e.g. WAN 2.1 1.3B sharing arch:"wan21" with
+  // the 3x-priced 14B.
   const arch = (String(model.arch ?? "").trim() || (opts.archFallback ?? "")).toLowerCase();
-  const modelMult = HEAVY_LORA_ARCHES.has(arch) ? 3.0 : 1.0;
+  const modelMult =
+    typeof opts.modelMultOverride === "number" ? opts.modelMultOverride : HEAVY_LORA_ARCHES.has(arch) ? 3.0 : 1.0;
 
   // resolution coefficient — the largest edge requested across every dataset
   // (resolution is usually a list like [512, 768, 1024], sometimes a scalar).
@@ -127,7 +133,7 @@ export function loraPriceBreakdown(
 // The one number both the UI and the debit use.
 export function calculateLoraCredits(
   yamlObj: unknown,
-  opts?: { archFallback?: string },
+  opts?: { archFallback?: string; modelMultOverride?: number },
 ): number {
   return loraPriceBreakdown(yamlObj, opts).credits;
 }

@@ -320,10 +320,8 @@ async function handlePost(request: Request): Promise<NextResponse> {
   //  - raw-YAML expert: price the parsed ai-toolkit config directly.
   //  - GUI expert (slider) / auto / semi: synthesise the equivalent config.
   //  - a YAML that somehow reached here unparseable: the worst-case ceiling.
-  const pricedArch =
-    targetModel === "custom"
-      ? baseArchitecture
-      : (loraPresetById(targetModel)?.arch ?? "");
+  const pricedPreset = targetModel === "custom" ? undefined : loraPresetById(targetModel);
+  const pricedArch = targetModel === "custom" ? baseArchitecture : (pricedPreset?.arch ?? "");
   const pricedConfig: unknown = hasOverride
     ? parsedOverride
     : guiLoraPricingConfig({
@@ -334,7 +332,12 @@ async function handlePost(request: Request): Promise<NextResponse> {
         steps: typeof trainingConfig.steps === "number" ? trainingConfig.steps : DEFAULT_LORA_STEPS,
       });
   const priceBreakdown = pricedConfig
-    ? loraPriceBreakdown(pricedConfig, { archFallback: pricedArch })
+    ? loraPriceBreakdown(pricedConfig, {
+        archFallback: pricedArch,
+        // Raw-YAML (hasOverride) prices purely off the YAML's own arch — a
+        // preset's per-model override only applies to the GUI-synthesised path.
+        modelMultOverride: hasOverride ? undefined : pricedPreset?.pricingModelMult,
+      })
     : null;
   // A raw YAML that reached here unparseable (UI blocks it, so defence only),
   // or one with no positive step count -> the worst-case ceiling.

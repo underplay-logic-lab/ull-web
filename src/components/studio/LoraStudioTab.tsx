@@ -51,7 +51,6 @@ import {
   LORA_RESOLUTIONS,
   LORA_RESOLUTION_LABELS,
   DEFAULT_LORA_RESOLUTION,
-  BLOCKED_LORA_MODEL_MESSAGE,
   isBlockedLoraModel,
   loraPresetById,
   recommendedResolution,
@@ -1304,6 +1303,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const [zipBusy, setZipBusy] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [job, setJob] = useState<LoraJobStatus | null>(null);
+  // Human label of the model `job` is training — captured at dispatch time so
+  // the "学習が進行中です" return-to-progress banner can name it even after a
+  // soft return to the form (the job payload itself carries no model name).
+  const [activeJobModelLabel, setActiveJobModelLabel] = useState<string | null>(null);
   // A previous FAILED / cancelled job found at mount. Never auto-opens its
   // panel (that async-driven yank is the whole bug) — it surfaces a small,
   // dismissible banner on the form and the user chooses to open it.
@@ -1462,10 +1465,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
         // --- expert / model settings ---------------------------------------
         if (d.mode === "auto" || d.mode === "pro") setMode(d.mode);
-        if (
-          typeof d.modelChoice === "string" &&
-          (d.modelChoice === "__custom__" || loraPresetById(d.modelChoice))
-        ) {
+        // "__custom__" is intentionally excluded — that entry point is sealed
+        // out of the UI (see the model <select> below), so an old draft that
+        // saved it degrades to the default preset instead of selecting a
+        // dropdown option that no longer exists.
+        if (typeof d.modelChoice === "string" && loraPresetById(d.modelChoice)) {
           setModelChoice(d.modelChoice);
         }
         if (typeof d.customModelId === "string") setCustomModelId(d.customModelId);
@@ -1819,7 +1823,26 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const modelValid = !isCustom || customValid;
 
   const targetModel = isCustom ? "custom" : modelChoice;
-  const pricedArch = isCustom ? baseArchitecture : (loraPresetById(modelChoice)?.arch ?? "");
+  const selectedPreset = isCustom ? undefined : loraPresetById(modelChoice);
+  const pricedArch = isCustom ? baseArchitecture : (selectedPreset?.arch ?? "");
+
+  // A job dispatched this session that is still running server-side.
+  // Non-null independent of `phase` — it stays true after the tracking
+  // panel's soft "フォームに戻る（学習は継続）", which leaves `job` /
+  // polling alone and only flips phase back to "form". Drives the form's
+  // "戻る" banner and the multi-submit guard below.
+  const inFlightJob =
+    job && (job.status === "queued" || job.status === "processing") ? job : null;
+  // Short progress descriptor for the in-flight banner / disabled submit
+  // button — "起動準備中" while queued, else the live % (or a plain
+  // "学習中" fallback before the first progress tick arrives).
+  const inFlightProgressLabel = inFlightJob
+    ? inFlightJob.status === "queued"
+      ? "起動準備中"
+      : inFlightJob.progressPercent != null
+        ? `${inFlightJob.progressPercent}%`
+        : "学習中"
+    : "";
 
   // Multi-dimensional dynamic price, live (src/lib/loraPricing.ts):
   //   ceil(0.1 * modelMult * resMult * batchMult * rankMult * steps)
@@ -1839,8 +1862,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         linearRank: mode === "pro" ? pro.rank : DEFAULT_PRO.rank,
         steps: mode === "pro" ? pro.steps : DEFAULT_LORA_STEPS,
       }),
+      { modelMultOverride: selectedPreset?.pricingModelMult },
     );
-  }, [yamlMode, yamlCheck, pricedArch, resolution, mode, pro.rank, pro.steps]);
+  }, [yamlMode, yamlCheck, pricedArch, resolution, mode, pro.rank, pro.steps, selectedPreset]);
   const requiredCredits =
     priceBreakdown && priceBreakdown.credits > 0
       ? Math.min(LORA_CREDIT_WORST_CASE, priceBreakdown.credits)
@@ -2203,6 +2227,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       const { jobId, remainingCredits } = startRes;
       console.log("[lora] train ->", startRes);
       broadcastCreditsUpdate(user.id, remainingCredits);
+      setActiveJobModelLabel(
+        isCustom ? customModelId.trim() || "カスタムモデル" : (loraPresetById(targetModel)?.label ?? targetModel),
+      );
       setJob({
         jobId,
         status: "queued",
@@ -2524,6 +2551,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
   const handleStart = async () => {
     if (submitting || phase !== "form") return; // already in flight — ignore re-clicks
+    // Physical double-submit guard — a job dispatched this session is still
+    // queued/processing (the button is disabled for this too, but Enter-key
+    // submits or a stale render must not slip through).
+    if (inFlightJob) return;
     if (!user) {
       setLoginOpen(true);
       return;
@@ -2668,6 +2699,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     setPhase("form");
     setSubmitting(false);
     setJob(null);
+    setActiveJobModelLabel(null);
     setRecoveredJob(null);
     setErrorMessage(null);
     setUploadProgress(null);
@@ -2851,6 +2883,28 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
   return (
     <div data-source-file="src/components/studio/LoraStudioTab.tsx" className="space-y-6">
+      {/* Return-to-progress banner — always on top while a job dispatched
+          this session is still queued/processing and the user has soft-
+          returned to the form ("フォームに戻る（学習は継続）"). Also backs
+          the multi-submit guard on the button at the bottom of this form. */}
+      {inFlightJob && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-neon-violet/50 bg-neon-violet/10 p-3">
+          <p className="flex items-center gap-2 text-[12px] font-semibold text-neon-violet">
+            <Loader2 size={14} className="animate-spin" />
+            ⚡ 学習が進行中です
+            {activeJobModelLabel && ` (${activeJobModelLabel} / ${inFlightProgressLabel})`}
+          </p>
+          <button
+            type="button"
+            onClick={() => setPhase("tracking")}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-white transition-all hover:opacity-90"
+          >
+            進行状況パネルへ戻る
+            <ArrowLeft size={12} className="rotate-180" />
+          </button>
+        </div>
+      )}
+
       {/* A previous failed / cancelled job was found at mount. It NEVER
           auto-opens (that async yank is the bug) — the user opts in here, or
           dismisses it for good. */}
@@ -3154,50 +3208,15 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                   ))}
                 </optgroup>
               ))}
-              <optgroup label="⚙️ 上級者向け">
-                <option value="__custom__">⚙️ 任意の HuggingFace Repo ID を手動指定...</option>
-              </optgroup>
+              {/* "任意の HuggingFace Repo ID を手動指定" is sealed out of the
+                  general UI — the 12-model commercial lineup above is the
+                  only base-model entry point. isCustom / customModelId /
+                  baseArchitecture stay wired underneath (handleModelChange,
+                  runTraining, pricing) as inert dead code so a still-saved
+                  old form draft with modelChoice="__custom__" degrades to
+                  "no matching preset" rather than a crash — nothing in this
+                  UI can set modelChoice to "__custom__" any more. */}
             </select>
-
-            {isCustom && (
-              <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 p-2.5">
-                <div>
-                  <label className="mb-1 block text-[10px] text-muted">HuggingFace Model ID</label>
-                  <input
-                    value={customModelId}
-                    onChange={(e) => setCustomModelId(e.target.value)}
-                    placeholder="owner/name（または Volume 内パス）"
-                    disabled={busy}
-                    className={`${fieldCls} font-mono text-xs ${customBlocked ? "border-red-500/50" : ""}`}
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-[10px] text-muted">ベース系統</label>
-                  <select
-                    value={baseArchitecture}
-                    onChange={(e) => setBaseArchitecture(e.target.value as LoraBaseArchitecture)}
-                    disabled={busy}
-                    className={fieldCls}
-                  >
-                    {LORA_BASE_ARCHITECTURES.map((a) => (
-                      <option key={a} value={a}>
-                        {a}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                {customBlocked ? (
-                  <p className="flex items-start gap-1.5 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-[10px] leading-snug text-red-400">
-                    <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-                    {BLOCKED_LORA_MODEL_MESSAGE}
-                  </p>
-                ) : (
-                  <p className="text-[10px] text-muted">
-                    任意のオープンモデル（HF リポジトリ / Volume 内チェックポイント）を指定できます。
-                  </p>
-                )}
-              </div>
-            )}
           </div>
 
           <div>
@@ -3662,6 +3681,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               onClick={handleStart}
               disabled={
                 submitting ||
+                Boolean(inFlightJob) ||
                 (Boolean(user) && !insufficientCredits && !canSubmit) ||
                 captionGen.state === "generating" ||
                 (Boolean(user) && autoCap.running)
@@ -3672,6 +3692,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                 <>
                   <Loader2 size={16} className="animate-spin" />
                   🚀 学習ジョブを起動中…
+                </>
+              ) : inFlightJob ? (
+                <>
+                  <AlertTriangle size={16} />
+                  ⚠️ 別の学習が進行中です
                 </>
               ) : !user ? (
                 <>
@@ -3705,11 +3730,23 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                 </>
               )}
             </button>
-            <p className="flex items-start gap-2 text-[11px] leading-relaxed text-muted">
-              <Sparkles size={13} className="mt-0.5 shrink-0 text-neon-violet" />
-              独自の高精度パイプラインで自動キャプション ➔
-              深度最適化学習を完全自動で実行。完了したLoRAは即座にダウンロードしてご利用いただけます。
-            </p>
+            {inFlightJob ? (
+              // Two physical barriers against a double submit: the button
+              // above is disabled, and this is the only live action here.
+              <button
+                type="button"
+                onClick={() => setPhase("tracking")}
+                className="flex w-full items-center justify-center gap-1.5 text-[11px] font-medium text-neon-violet hover:underline"
+              >
+                進行状況を確認する →
+              </button>
+            ) : (
+              <p className="flex items-start gap-2 text-[11px] leading-relaxed text-muted">
+                <Sparkles size={13} className="mt-0.5 shrink-0 text-neon-violet" />
+                独自の高精度パイプラインで自動キャプション ➔
+                深度最適化学習を完全自動で実行。完了したLoRAは即座にダウンロードしてご利用いただけます。
+              </p>
+            )}
           </div>
         </div>
       </div>
