@@ -19,17 +19,22 @@ import { supabase } from "@/lib/supabaseClient";
 
 const CAPTION_MAX_EDGE = 768;
 const CAPTION_JPEG_QUALITY = 0.72;
+// 4 lanes overlaps the ~8s/batch latency well (benchmarks: 150 imgs in ~22s).
+// The retry ceilings below keep a transient 429 from snowballing.
 const CAPTION_CONCURRENCY = 4;
-// Minimum gap between two batch requests starting — client-side pacing so
-// four lanes still don't exceed the free-tier rate limit.
-const DISPATCH_GAP_MS = 400;
-// Per-batch retry on 429 / 503 / 5xx / network error: 1.5s, 3s, 6s, 12s.
-const MAX_BATCH_RETRIES = 4;
-const BACKOFF_BASE_MS = 1500;
+// Minimum gap between two batch requests starting — client-side pacing.
+const DISPATCH_GAP_MS = 350;
+// Per-batch retry on 429 / 503 / 5xx / network error. Kept low: the server
+// hands us Google's own retryAfterMs, so a couple of well-timed retries beat
+// many blind ones.
+const MAX_BATCH_RETRIES = 3;
+const BACKOFF_BASE_MS = 2000;
+// Cap on how long we'll honour a server "retry in Xs" hint for one attempt.
+const MAX_RETRY_WAIT_MS = 20_000;
 // Whole-dataset re-sweeps. Batch size shrinks each round so a persistent
 // safety block ends up isolated to one image.
-const ROUND_BATCH_SIZES = [10, 4, 1, 1, 1];
-const BATCH_TIMEOUT_MS = 90_000;
+const ROUND_BATCH_SIZES = [10, 4, 1];
+const BATCH_TIMEOUT_MS = 60_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // ±25% jitter so retrying lanes don't resynchronise into a new burst.
@@ -170,6 +175,7 @@ export async function generateDatasetCaptions(
         captionsJa?: unknown;
         safety?: unknown;
         error?: unknown;
+        retryAfterMs?: unknown;
       } = {};
       try {
         const res = await fetch("/api/studio/lora/caption", {
@@ -217,7 +223,12 @@ export async function generateDatasetCaptions(
       const retryable =
         status === 0 || status === 429 || status === 503 || status === 500 || status === 502 || status === 504;
       if (retryable && attempt < MAX_BATCH_RETRIES) {
-        const waitMs = backoffFor(attempt);
+        // Prefer Google's own "retry in Xs" hint; fall back to exponential.
+        const hinted =
+          typeof data.retryAfterMs === "number" && data.retryAfterMs > 0
+            ? Math.min(data.retryAfterMs + 250, MAX_RETRY_WAIT_MS)
+            : 0;
+        const waitMs = hinted || backoffFor(attempt);
         opts.onRetry?.({ status, waitMs });
         await sleep(waitMs);
         continue;

@@ -22,23 +22,16 @@ import {
 //  - gemini-1.5-flash / gemini-2.0-flash: retired, 404.
 //  - gemini-2.5-flash / -lite: 404 "no longer available to new users" for
 //    recently-created API keys (this project's key is one).
-//  - gemini-3.6-flash: works, but free-tier-only — 20 requests/day even on a
-//    billed key. Unusable for batch captioning. Kept only as a last resort.
+//  - gemini-3.6-flash: free-tier-only — HARD 20 requests/day even on a billed
+//    key (GenerateRequestsPerDayPerProjectPerModel-FreeTier). Never list it;
+//    once hit it 429s for the rest of the day and poisons every fallthrough.
 //  - gemini-flash-latest: GA alias, honours billed Tier-1 limits → default head.
-//  - gemini-3.7-flash / -3.5-flash: work on this key, higher limits than 3.6.
+//  - gemini-3.7-flash: single fallback if the alias is down.
 // GEMINI_MODEL overrides the head of the list (pin one; .env.local does).
 export function geminiModelCandidates(): string[] {
   const configured = process.env.GEMINI_MODEL?.trim();
   return [
-    ...new Set(
-      [
-        configured,
-        "gemini-flash-latest",
-        "gemini-3.7-flash",
-        "gemini-3.5-flash",
-        "gemini-3.6-flash",
-      ].filter(Boolean),
-    ),
+    ...new Set([configured, "gemini-flash-latest", "gemini-3.7-flash"].filter(Boolean)),
   ] as string[];
 }
 
@@ -129,7 +122,6 @@ async function runGeminiGenerate(
 ): Promise<string> {
   let lastErr = "";
   let sawBusy = false;
-  let sawQuota = false;
   for (const modelId of geminiModelCandidates()) {
     let dropThinking = false;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -157,13 +149,10 @@ async function runGeminiGenerate(
         break; // -> next candidate
       } catch (err) {
         lastErr = err instanceof Error ? err.message : String(err);
-        // A per-model quota (3.6-flash's free tier is only 20/day) — fall
-        // through to the next candidate, which has its own separate bucket.
-        if (QUOTA_RE.test(lastErr)) {
-          sawQuota = true;
-          console.warn(`[geminiText] ${modelId} quota exhausted, trying next`);
-          break;
-        }
+        // Rate limited. Don't fall through — the candidates share the project's
+        // RPM/TPM bucket, so the next model 429s too and just burns time. Let
+        // the caller back off (it honours the retryAfterMs we pass through).
+        if (QUOTA_RE.test(lastErr)) throw { kind: "quota", message: lastErr } satisfies GemErr;
         if (BUSY_RE.test(lastErr)) {
           sawBusy = true;
           if (attempt === 0) {
@@ -188,10 +177,7 @@ async function runGeminiGenerate(
       }
     }
   }
-  throw {
-    kind: sawBusy ? "busy" : sawQuota ? "quota" : "failed",
-    message: lastErr,
-  } satisfies GemErr;
+  throw { kind: sawBusy ? "busy" : "failed", message: lastErr } satisfies GemErr;
 }
 
 // Text-only call (unchanged public signature).
@@ -234,7 +220,11 @@ export function geminiErrorResponse(
           ? messages?.busy ?? "AI サービスが一時的に混雑しています。少し待って再試行してください。"
           : messages?.failed ?? "AI 処理に失敗しました。";
     console.error(`[${tag}] Gemini failed:`, e.message);
-    return NextResponse.json({ error, reason: e.message }, { status });
+    // Surface Google's own "retry in Xs" hint so the caller can pace its
+    // backoff instead of guessing (RetryInfo / "Please retry in 6.9s").
+    const m = e.message.match(/retry(?:Delay)?["\s:]+(?:in\s+)?["]?([\d.]+)s/i);
+    const retryAfterMs = m ? Math.round(parseFloat(m[1]) * 1000) : undefined;
+    return NextResponse.json({ error, reason: e.message, retryAfterMs }, { status });
   }
   const message = e instanceof Error ? e.message : String(e);
   console.error(`[${tag}] unhandled:`, message);
