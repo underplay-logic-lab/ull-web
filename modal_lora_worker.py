@@ -363,23 +363,33 @@ TARGET_MODELS: dict[str, dict] = {
     # snapshot it to the Volume HF cache; no separate text_encoder/vae keys.
     "wan2_1_14b": {"arch": "wan21", "unet": "Wan-AI/Wan2.1-T2V-14B-Diffusers"},
     "wan2_1_1_3b": {"arch": "wan21", "unet": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"},
+    # Wan 2.2 (MoE 14B): same Diffusers-repo story as Wan 2.1 above —
+    # ensure_model_cached_cpu() snapshot_download's the full component tree to
+    # the Volume HF cache. It is NOT wired through the Wan 2.1 ComfyUI
+    # single-file layout (_ensure_wan_comfy_layout), so no _WAN_COMFY_LAYOUT key.
+    "wan22_14b": {"arch": "wan22_14b", "unet": "ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16"},
     "hunyuan_video": {"arch": "hunyuan", "unet": "hunyuanvideo-community/HunyuanVideo"},
     "cogvideox_5b": {"arch": "cogvideox", "unet": "THUDM/CogVideoX-5b"},
-    # LTX-Video: ai-toolkit's known arch for the Lightricks LTX family is
-    # "ltx2" — NOT "cogvideox" (that string isn't in ai-toolkit's arch
-    # registry and fails validation with "Unknown model arch 'cogvideox'").
-    "ltx_video": {"arch": "ltx2", "unet": "Lightricks/LTX-Video"},
+    # LTX: ai-toolkit's "ltx2" arch is built for LTX-2. Handing it the old
+    # Lightricks/LTX-Video (0.9.x) checkpoint crashes with a Meta Tensor error
+    # (the state-dict keys don't line up), so point name_or_path at LTX-2.
+    "ltx_video": {"arch": "ltx2", "unet": "Lightricks/LTX-2"},
     # --- photo / general ---
     "flux_schnell": {
         "arch": "flux",
         "unet": f"{MODELS_DIR}/diffusion_models/flux1-schnell.safetensors",
         "vae": f"{MODELS_DIR}/vae/ae.safetensors",
     },
+    # Qwen-Image / FLUX.2 Klein 4B — Diffusers repos, snapshot_download'd by
+    # ensure_model_cached_cpu() like the other HF-hosted bases.
+    "qwen_image": {"arch": "qwen_image", "unet": "Qwen/Qwen-Image"},
+    "flux2_klein_4b": {"arch": "flux2_klein_4b", "unet": "black-forest-labs/FLUX.2-klein-base-4B"},
     "sdxl_10": {"arch": "sdxl", "unet": "stabilityai/stable-diffusion-xl-base-1.0"},
     "sd35_large": {"arch": "sd3", "unet": "stabilityai/stable-diffusion-3.5-large"},
     "sd35_medium": {"arch": "sd3", "unet": "stabilityai/stable-diffusion-3.5-medium"},
     "pixart_sigma": {"arch": "sdxl", "unet": "PixArt-alpha/PixArt-Sigma-XL-2-1024-MS"},
     # --- anime / illustration ---
+    "anima": {"arch": "anima", "unet": "circlestone-labs/Anima-Base-v1.0-Diffusers"},
     "pony_v6_xl": {"arch": "sdxl", "unet": "LyliaEngine/Pony_Diffusion_V6_XL"},
     "illustrious_xl": {"arch": "sdxl", "unet": "OnomaAIResearch/Illustrious-xl-early-release-v0"},
     "animagine_xl_31": {"arch": "sdxl", "unet": "cagliostrolab/animagine-xl-3.1"},

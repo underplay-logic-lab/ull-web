@@ -22,6 +22,7 @@ export const HEAVY_LORA_ARCHES: ReadonlySet<string> = new Set([
   "wan21",
   "wan2_1",
   "wan22",
+  "wan22_14b",
   "hunyuan",
   "hunyuan_video",
   "cogvideox",
