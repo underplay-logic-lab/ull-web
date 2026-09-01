@@ -65,3 +65,32 @@ export async function parseDatasetZip(
   }
   return out;
 }
+
+// Pack an in-memory dataset (image File + its caption text) into a ZIP the
+// worker can re-ingest verbatim: every image becomes "0001.<ext>" and its
+// caption "0001.txt" right beside it. Returns the ZIP as a Blob.
+export async function buildDatasetZip(
+  entries: { file: File; caption: string }[],
+): Promise<Blob> {
+  const { default: JSZip } = await import("jszip");
+  const zip = new JSZip();
+  entries.forEach((e, i) => {
+    const ext = (e.file.name.match(/\.(png|jpe?g|webp)$/i)?.[1] ?? "png").toLowerCase();
+    const stem = String(i + 1).padStart(4, "0");
+    zip.file(`${stem}.${ext === "jpeg" ? "jpg" : ext}`, e.file);
+    zip.file(`${stem}.txt`, e.caption ?? "");
+  });
+  return zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
+}
+
+// Trigger a browser download of a Blob under `filename`.
+export function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}

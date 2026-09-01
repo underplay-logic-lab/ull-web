@@ -2638,17 +2638,23 @@ def train_lora_job(params: dict) -> dict:
                 )
 
         # --- publish ---------------------------------------------------------
+        # Directory contract: EVERY per-job artifact (all .safetensors,
+        # dataset.zip, on-demand bundles) is isolated under
+        #   loras/<user_id>/<job_id>/
+        # The ONLY file written to loras/ root is the named library entry
+        # `loras/<lora_name>.safetensors` — a deliberate, ComfyUI-resolvable
+        # alias for the finished model ("この LoRA を使う" / workflow LoraLoader
+        # references it by that clean name). It is not job clutter.
         os.makedirs(LORA_OUTPUT_DIR, exist_ok=True)
 
-        # 1) The final LoRA -> model library (loras/<name>.safetensors), so
-        #    "この LoRA を使う" in the UI resolves it immediately.
+        # 1) The final LoRA -> named model-library alias (see contract above).
         final_lora = _collect_final_lora(lora_name, job_output_dir)
         dest_path = pathlib.Path(LORA_OUTPUT_DIR) / f"{lora_name}.safetensors"
         shutil.copy2(final_lora, dest_path)
         size_mb = dest_path.stat().st_size / 1024**2
         print(f"[train] committed LoRA -> {dest_path} ({size_mb:.1f} MB)")
 
-        # 2) Every checkpoint (periodic snapshots + final) -> a per-job folder
+        # 2) Every checkpoint (periodic snapshots + final) -> the per-job folder
         #    loras/<user_id>/<job_id>/ so the user can download an earlier
         #    step to dodge over-fitting. Recorded in metadata.checkpoints.
         checkpoints: list[dict] = []
@@ -3180,25 +3186,37 @@ def salvage_lora_job(data: dict, request: fastapi.Request):
         for p in sorted(root.glob("**/*.safetensors"), key=lambda x: x.stat().st_mtime):
             m = _CKPT_STEP_RE.search(p.name)
             step = int(m.group(1)) if m else 0
-            safe_base = re.sub(r"[^A-Za-z0-9._-]", "_", p.name)
-            fname = safe_base if safe_base.startswith("salvaged_") else f"salvaged_{safe_base}"
+            # A file already living directly in the canonical per-job dir is a
+            # completed run's published artifact — list it under its own name,
+            # don't make a salvaged_ duplicate or re-copy 14GB.
+            already_canonical = (
+                p.parent == dest_dir
+                and not p.name.startswith("salvaged_")
+                and p.name != "checkpoints_all.zip"
+            )
+            if already_canonical:
+                fname, dest = p.name, p
+            else:
+                safe_base = re.sub(r"[^A-Za-z0-9._-]", "_", p.name)
+                fname = safe_base if safe_base.startswith("salvaged_") else f"salvaged_{safe_base}"
+                dest = dest_dir / fname
             if not _CKPT_DL_FILENAME_RE.match(fname) or fname in seen:
                 continue
-            dest = dest_dir / fname
-            try:
-                if not dest.exists() or dest.stat().st_size != p.stat().st_size:
-                    shutil.copy2(p, dest)
-            except Exception as exc:  # noqa: BLE001
-                print(f"[salvage] copy failed for {p}: {exc}", flush=True)
-                continue
+            if not already_canonical:
+                try:
+                    if not dest.exists() or dest.stat().st_size != p.stat().st_size:
+                        shutil.copy2(p, dest)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[salvage] copy failed for {p}: {exc}", flush=True)
+                    continue
             seen.add(fname)
             checkpoints.append(
                 {
                     "step": step,
                     "filename": fname,
                     "size_bytes": dest.stat().st_size,
-                    "is_final": False,
-                    "salvaged": True,
+                    "is_final": fname.endswith("_final.safetensors"),
+                    "salvaged": not already_canonical,
                     "path": f"loras/{user_id}/{job_id}/{fname}",
                 }
             )

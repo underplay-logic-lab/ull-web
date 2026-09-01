@@ -65,7 +65,7 @@ import {
 } from "@/lib/loraPricing";
 import { validateLoraYaml, loraYamlIdentity } from "@/lib/loraYaml";
 import { DatasetCurationUI, type CurationPair } from "@/components/studio/DatasetCurationUI";
-import { parseDatasetZip, isZipFile } from "@/lib/datasetZip";
+import { parseDatasetZip, isZipFile, buildDatasetZip, downloadBlob } from "@/lib/datasetZip";
 import {
   LORA_CAPTION_CATEGORIES,
   LORA_CAPTION_CATEGORY_META,
@@ -387,7 +387,13 @@ function formatEta(seconds: number | null): string {
 // whatever the run left behind (intermediate weights that survived the
 // SIGKILL + the persisted captions) and offers them for download through
 // the same signed-URL path a completed job uses.
-function SalvageSection({ jobId }: { jobId: string }) {
+function SalvageSection({
+  jobId,
+  label = "💾 救出された中間データ・キャプションをダウンロード (Salvage)",
+}: {
+  jobId: string;
+  label?: string;
+}) {
   const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [result, setResult] = useState<LoraSalvageResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -440,7 +446,7 @@ function SalvageSection({ jobId }: { jobId: string }) {
             ) : (
               <Download size={13} />
             )}
-            💾 救出された中間データ・キャプションをダウンロード (Salvage)
+            {label}
           </button>
           {state === "loading" && (
             <p className="mt-1.5 text-[10px] text-muted">
@@ -883,6 +889,10 @@ function ProgressPanel({
           </div>
         )}
 
+        {/* On-demand: bundle every .safetensors in this job's folder into one
+            ZIP (built on a CPU container, 0 GPU cost) + the captioned dataset. */}
+        <SalvageSection jobId={job.jobId} label="📦 全チェックポイント＋データセットを一括DL" />
+
         <ToastStack toasts={toasts} onDismiss={dismissToast} />
       </div>
     );
@@ -1066,6 +1076,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // which the button must be inert and no form re-render can slip a stale
   // "クレジット不足" card back onto the screen.
   const [submitting, setSubmitting] = useState(false);
+  const [datasetZipBusy, setDatasetZipBusy] = useState(false);
   // Opt-in visual dataset curation: after upload, review/cull images and
   // review/edit captions (with JP round-trip translation) before training.
   const [curationEnabled, setCurationEnabled] = useState(false);
@@ -2056,6 +2067,27 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     }
   };
 
+  // Client-side dataset ZIP (image + its caption .txt) — available on every
+  // screen that still holds the images in memory (curation is handled inside
+  // DatasetCurationUI; this covers the form / launching / in-progress views).
+  const downloadDatasetZipLocal = async () => {
+    if (datasetZipBusy || images.length === 0) return;
+    setDatasetZipBusy(true);
+    setErrorMessage(null);
+    try {
+      const entries = images.map((img) => ({
+        file: img.file,
+        caption: (captions[img.id] || captionsJa[img.id] || curationTrigger).trim(),
+      }));
+      const blob = await buildDatasetZip(entries);
+      downloadBlob(blob, `dataset_${images.length}img.zip`);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "データセット ZIP の作成に失敗しました。");
+    } finally {
+      setDatasetZipBusy(false);
+    }
+  };
+
   const handleStart = async () => {
     if (submitting || phase !== "form") return; // already in flight — ignore re-clicks
     if (!user) {
@@ -2281,6 +2313,18 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               </div>
             )}
             <ProgressPanel job={job} queuedElapsedSec={queuedElapsedSec} onUseLora={onUseLora} />
+            {images.length > 0 && job?.status === "processing" && (
+              <button
+                type="button"
+                onClick={downloadDatasetZipLocal}
+                disabled={datasetZipBusy}
+                title="学習に使用中の画像とキャプション(.txt)を1つのZIPにまとめて保存します。"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {datasetZipBusy ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                📦 データセットDL (画像+txt) ・ {images.length} 枚
+              </button>
+            )}
             {job &&
               (job.status === "completed" ||
                 job.status === "failed" ||
@@ -2370,10 +2414,24 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr] lg:items-start">
         {/* Left column — dataset + captions */}
         <div className="space-y-4 rounded-2xl border-gradient bg-surface/40 p-5">
-          <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
-            <ImagePlus size={15} className="text-neon-violet" />
-            学習データセット
-          </h3>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
+              <ImagePlus size={15} className="text-neon-violet" />
+              学習データセット
+            </h3>
+            {images.length > 0 && (
+              <button
+                type="button"
+                onClick={downloadDatasetZipLocal}
+                disabled={busy || datasetZipBusy}
+                title="現在の画像とキャプション(.txt)を1つのZIPにまとめて保存します。"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-[11px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {datasetZipBusy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                📦 データセットDL
+              </button>
+            )}
+          </div>
           <ImageDropzone images={images} onAdd={addImages} onRemove={removeImage} disabled={busy} />
 
           {zipBusy && (

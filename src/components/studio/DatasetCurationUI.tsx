@@ -4,6 +4,7 @@ import { type Dispatch, type SetStateAction, useMemo, useState } from "react";
 import {
   ArrowLeft,
   Check,
+  Download,
   Flame,
   Languages,
   Loader2,
@@ -11,6 +12,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { translateCaption, translateCaptionsBatch } from "@/lib/loraTranslate";
+import { buildDatasetZip, downloadBlob } from "@/lib/datasetZip";
 
 export type CurationPair = {
   id: string;
@@ -63,6 +65,23 @@ export function DatasetCurationUI({
   const [busyId, setBusyId] = useState<Record<string, "ja" | "en" | undefined>>({});
   const [bulk, setBulk] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [zipping, setZipping] = useState(false);
+
+  const downloadDataset = async () => {
+    setZipping(true);
+    setError(null);
+    try {
+      const list = pairs.filter((p) => !p.excluded);
+      const blob = await buildDatasetZip(
+        list.map((p) => ({ file: p.file, caption: (p.caption || p.captionJa || "").trim() })),
+      );
+      downloadBlob(blob, `dataset_${list.length}img.zip`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ZIP の作成に失敗しました。");
+    } finally {
+      setZipping(false);
+    }
+  };
 
   const kept = useMemo(() => pairs.filter((p) => !p.excluded), [pairs]);
   const keptBytes = useMemo(() => kept.reduce((s, p) => s + p.file.size, 0), [kept]);
@@ -227,6 +246,16 @@ export function DatasetCurationUI({
             <Languages size={13} />
             🇬🇧 日本語を英語へ一括反映
           </button>
+          <button
+            type="button"
+            onClick={downloadDataset}
+            disabled={disabled || zipping || Boolean(bulk) || kept.length === 0}
+            title="現在残っている画像とキャプション(.txt)を1つのZIPにまとめて保存します。"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {zipping ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+            📦 データセットDL (画像+txt)
+          </button>
         </div>
       </div>
 
@@ -252,7 +281,7 @@ export function DatasetCurationUI({
             >
               <div className="flex w-24 shrink-0 flex-col items-center gap-1.5">
                 <div
-                  className={`flex aspect-square w-24 items-center justify-center overflow-hidden rounded-lg border border-border bg-black/30 ${
+                  className={`flex aspect-square w-24 items-center justify-center overflow-hidden rounded-lg border border-border bg-neutral-900 ${
                     p.excluded ? "grayscale" : ""
                   }`}
                 >
@@ -260,7 +289,7 @@ export function DatasetCurationUI({
                   <img
                     src={p.url}
                     alt={p.name}
-                    className="h-full w-full max-h-full max-w-full object-contain"
+                    className="h-full w-full object-contain"
                   />
                 </div>
                 <span className="w-full truncate text-center font-mono text-[9px] text-muted" title={p.name}>
