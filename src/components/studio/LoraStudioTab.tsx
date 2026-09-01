@@ -70,6 +70,7 @@ import {
   LORA_CAPTION_CATEGORIES,
   LORA_CAPTION_CATEGORY_META,
   captionSpecHasInput,
+  buildCaptionFallbackPrompt,
   type LoraCaptionCategory,
   type LoraCaptionSpec,
 } from "@/lib/loraCaptionSpec";
@@ -989,6 +990,22 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // The instruction actually sent with the current run — set in handleStart so
   // both the direct and post-curation training paths pick it up.
   const resolvedCaptionPromptRef = useRef<string>("");
+  // Previous trigger word — so a change can be swapped into existing captions
+  // client-side (no re-analysis). Seeded lazily on the first change.
+  const prevTriggerRef = useRef<string | null>(null);
+  // Mirror of `hasUserCaptions` (defined later) for use in callbacks declared
+  // before it.
+  const hasUserCaptionsRef = useRef(false);
+  // Identity of the caption spec the current captions reflect. handleStart
+  // only re-analyses when the live spec differs from this (a bare trigger-word
+  // edit is swapped in client-side and updates this without a re-run). Mirrored
+  // to state so the "反映済み / 変更あり" badge can react.
+  const lastCaptionSpecKeyRef = useRef<string>("");
+  const [reflectedSpecKey, setReflectedSpecKey] = useState<string>("");
+  const markCaptionsReflect = useCallback((key: string) => {
+    lastCaptionSpecKeyRef.current = key;
+    setReflectedSpecKey(key);
+  }, []);
 
   const [phase, setPhase] = useState<Phase>("form");
   // Opt-in visual dataset curation: after upload, review/cull images and
@@ -1289,6 +1306,71 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   );
   const captionSpecFilled = captionSpecHasInput(captionSpec);
   const captionCategoryMeta = LORA_CAPTION_CATEGORY_META[captionCategory];
+
+  // A stable identity for "what the captions currently reflect": trigger +
+  // spec + any manual override. Re-analysis is only needed when this changes.
+  const captionSpecKey = useMemo(
+    () =>
+      JSON.stringify([
+        curationTrigger,
+        captionPromptOverride.trim(),
+        captionSpecFilled ? [captionSpec.category, captionSpec.fixed, captionSpec.varying] : null,
+      ]),
+    [curationTrigger, captionPromptOverride, captionSpecFilled, captionSpec],
+  );
+  const captionSpecKeyRef = useRef(captionSpecKey);
+  useEffect(() => {
+    captionSpecKeyRef.current = captionSpecKey;
+  }, [captionSpecKey]);
+
+  // The English instruction to hand the vision API *right now*, with zero
+  // network round-trip: a manual override wins, else the deterministic
+  // fallback built from the JP fixed/varying spec, else "" (worker default).
+  const currentCaptionPrompt = useCallback((): string => {
+    const manual = captionPromptOverride.trim();
+    if (manual) return manual;
+    if (hasUserCaptionsRef.current || !captionSpecFilled) return "";
+    return (
+      resolvedCaptionPromptRef.current.trim() ||
+      buildCaptionFallbackPrompt(captionSpec, curationTrigger)
+    );
+  }, [captionPromptOverride, captionSpecFilled, captionSpec, curationTrigger]);
+
+  // Escape a user string for use inside a RegExp.
+  const reEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  // Swap the leading trigger token of one caption from `from` to `to`. Leaves
+  // a caption that doesn't start with `from` untouched (so a user caption with
+  // no trigger isn't force-prefixed) unless `force` (AI captions always get
+  // the current trigger).
+  const swapLeadingTrigger = useCallback(
+    (text: string, from: string, to: string, force: boolean): string => {
+      const t = text.trim();
+      if (!t) return text;
+      let body = t;
+      let had = false;
+      // Leading token must BE the trigger — not merely start with it
+      // ("cat" must not match "catgirl, …").
+      const leadRe = (tok: string) =>
+        new RegExp(`^\\s*${reEscape(tok)}(?=$|[\\s,、])\\s*[,、]?\\s*`, "i");
+      if (from) {
+        const re = leadRe(from);
+        if (re.test(body)) {
+          body = body.replace(re, "").trim();
+          had = true;
+        }
+      }
+      // Already carries the new trigger (e.g. route set it) — normalise spacing.
+      if (to) {
+        const hasNew = leadRe(to);
+        if (hasNew.test(body)) return body.replace(hasNew, `${to}, `).trim();
+      }
+      if (!to) return had ? body : text;
+      if (had) return body ? `${to}, ${body}` : to;
+      return force ? `${to}, ${body}` : text;
+    },
+    [],
+  );
   // Alpha follows Rank unless the user explicitly unlinks it. Nullish (a
   // pre-existing `pro` object from before this flag existed, kept across a
   // dev Fast Refresh) counts as linked so the default is genuinely ON.
@@ -1660,6 +1742,59 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     [images, captions, userCaptionIds],
   );
   const hasUserCaptions = userCaptionCount > 0;
+  useEffect(() => {
+    hasUserCaptionsRef.current = hasUserCaptions;
+  }, [hasUserCaptions]);
+
+  // --- Real-time trigger-word sync (no re-analysis) --------------------------
+  // When the trigger word changes, rewrite the leading token of every existing
+  // caption (EN + JA, and any curation pairs) on the spot. Debounced lightly
+  // so holding a key doesn't thrash, but effectively instant.
+  useEffect(() => {
+    if (prevTriggerRef.current === null) {
+      prevTriggerRef.current = curationTrigger;
+      return;
+    }
+    const from = prevTriggerRef.current;
+    const to = curationTrigger;
+    if (from === to) return;
+    const handle = setTimeout(() => {
+      prevTriggerRef.current = to;
+      const remap = (
+        map: Record<string, string>,
+        isUser: (id: string) => boolean,
+      ): Record<string, string> => {
+        let changed = false;
+        const out: Record<string, string> = {};
+        for (const [id, v] of Object.entries(map)) {
+          const nv = swapLeadingTrigger(v, from, to, !isUser(id));
+          out[id] = nv;
+          if (nv !== v) changed = true;
+        }
+        return changed ? out : map;
+      };
+      setCaptions((m) => remap(m, (id) => userCaptionIds.has(id)));
+      setCaptionsJa((m) => remap(m, (id) => userCaptionIds.has(id)));
+      setCurationPairs((prev) => {
+        if (!prev.length) return prev;
+        let changed = false;
+        const next = prev.map((p) => {
+          const isUser = userCaptionIds.has(p.id);
+          const caption = swapLeadingTrigger(p.caption, from, to, !isUser);
+          const captionJa = swapLeadingTrigger(p.captionJa, from, to, !isUser);
+          if (caption !== p.caption || captionJa !== p.captionJa) changed = true;
+          return { ...p, caption, captionJa };
+        });
+        return changed ? next : prev;
+      });
+      // The stored captions now reflect the new trigger — advance the
+      // re-analysis guard so "次へ" doesn't re-run the vision pass just for this.
+      markCaptionsReflect(captionSpecKeyRef.current);
+    }, 200);
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [curationTrigger]);
+
   // Images that are the AI pass's responsibility (everything the user didn't
   // caption themselves) — the live denominator for the progress badge.
   const aiTargetCount = useMemo(
@@ -1689,6 +1824,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       const ac = new AbortController();
       autoCaptionAbortRef.current = ac;
       recaptionPromptRef.current = captionPrompt;
+      // The captions produced here reflect the current trigger + spec.
+      markCaptionsReflect(captionSpecKeyRef.current);
       setAutoCap({ running: true, done: 0, total: targets.length, error: null, note: null, everRan: true });
 
       // Merge each batch as it lands, dropping any target the user has
@@ -1775,7 +1912,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       }));
       return { cap: merged.cap, ja: merged.ja };
     },
-    [],
+    [markCaptionsReflect],
   );
 
   // Kick the vision pass for images that have no caption yet and haven't been
@@ -1792,7 +1929,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     if (pending.length === 0) return;
     const t = setTimeout(() => {
       pending.forEach((img) => captionAttemptedRef.current.add(img.id));
-      void runVisionCaptions(pending, curationTrigger, resolvedCaptionPromptRef.current);
+      // Feed the already-entered fixed/varying spec straight into the first
+      // pass (deterministic prompt — no extra round-trip) so the captions
+      // respect the blacklist from the start.
+      void runVisionCaptions(pending, curationTrigger, currentCaptionPrompt());
     }, 500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1805,8 +1945,12 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     const targets = images.filter((img) => !userCaptionIds.has(img.id));
     if (targets.length === 0) return null;
     targets.forEach((img) => captionAttemptedRef.current.add(img.id));
-    return runVisionCaptions(targets, curationTrigger, resolvedCaptionPromptRef.current);
-  }, [images, userCaptionIds, curationTrigger, runVisionCaptions]);
+    return runVisionCaptions(
+      targets,
+      curationTrigger,
+      resolvedCaptionPromptRef.current.trim() || currentCaptionPrompt(),
+    );
+  }, [images, userCaptionIds, curationTrigger, runVisionCaptions, currentCaptionPrompt]);
 
   // Runs on "次へ" / "学習を開始" — turns the selected LoRA type + JP feature
   // notes into the English Qwen instruction (Gemini, with a deterministic
@@ -1879,27 +2023,31 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     );
     if (neverTried.length > 0) {
       neverTried.forEach((img) => captionAttemptedRef.current.add(img.id));
-      const d = await runVisionCaptions(
-        neverTried,
-        curationTrigger,
-        resolvedCaptionPromptRef.current,
-      );
+      const d = await runVisionCaptions(neverTried, curationTrigger, currentCaptionPrompt());
       if (d) {
         cap = { ...cap, ...d.cap };
         capJa = { ...capJa, ...d.ja };
       }
     }
 
-    // (2) Synthesise the LoRA-type instruction (skipped for a .txt/ZIP set).
-    await resolveCaptionPrompt(hasUserCaptions);
+    // (2) Did the fixed/varying spec (or manual override) actually change since
+    //     the captions were last generated? A bare trigger-word edit does NOT
+    //     count — that was already swapped in client-side.
+    const specChanged = captionSpecKey !== reflectedSpecKey;
 
-    // (3) The user filled the category spec (or edited the instruction) AFTER
-    //     the initial auto-caption — re-run the vision pass so it's reflected.
-    const wantPrompt = resolvedCaptionPromptRef.current.trim();
+    // (3) Synthesise the LoRA-type instruction for the worker's VLM gap-fill,
+    //     and — only when the spec changed — re-run the vision pass so the new
+    //     blacklist / detail instructions are reflected in the captions.
+    if (specChanged) {
+      await resolveCaptionPrompt(hasUserCaptions);
+    } else if (!resolvedCaptionPromptRef.current.trim()) {
+      // Nothing changed — use the deterministic instruction, no round-trip.
+      resolvedCaptionPromptRef.current = currentCaptionPrompt();
+    }
     const aiCount = images.filter(
       (img) => !userCaptionIds.has(img.id) && (cap[img.id] ?? "").trim(),
     ).length;
-    if (!hasUserCaptions && aiCount > 0 && wantPrompt && wantPrompt !== recaptionPromptRef.current) {
+    if (!hasUserCaptions && aiCount > 0 && specChanged) {
       const delta = await recaptionAll();
       if (delta) {
         cap = { ...cap, ...delta.cap };
@@ -1984,6 +2132,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     autoCaptionAbortRef.current?.abort();
     captionAttemptedRef.current = new Set();
     recaptionPromptRef.current = "";
+    prevTriggerRef.current = null;
+    lastCaptionSpecKeyRef.current = "";
+    setReflectedSpecKey("");
     setUserCaptionIds(new Set());
     setAutoCap({ running: false, done: 0, total: 0, error: null, note: null, everRan: false });
     images.forEach((i) => URL.revokeObjectURL(i.url));
@@ -2157,6 +2308,27 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             ))}
           {autoCap.error && !autoCap.running && (
             <p className="text-[10px] text-amber-400">⚠️ {autoCap.error}</p>
+          )}
+
+          {/* Live confirmation that the trigger word + fixed/varying spec are
+              reflected in the current captions (client-side sync, no re-run). */}
+          {!autoCap.running && aiCaptionedCount > 0 && curationTrigger && (
+            <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-green-400">
+              <span className="inline-flex items-center gap-1">
+                <Check size={10} />
+                全キャプション（{aiCaptionedCount} 件）の先頭に「
+                <span className="font-mono font-medium">{curationTrigger}</span>
+                」を反映済み
+              </span>
+              {captionSpecFilled && (
+                <span className="text-muted">
+                  ・固定/変化の特徴指示も反映
+                  {captionSpecKey !== reflectedSpecKey && (
+                    <span className="text-amber-400">（変更あり — 「次へ」で更新）</span>
+                  )}
+                </span>
+              )}
+            </p>
           )}
 
           <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-background/40 px-3 py-2">
