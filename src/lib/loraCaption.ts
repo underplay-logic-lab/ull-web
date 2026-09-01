@@ -8,24 +8,25 @@ import { supabase } from "@/lib/supabaseClient";
 // call. Strategy — built for a billed Tier-1 key (1000 RPM) with the safety
 // filter fully off:
 //
-//   - tiny batches (2 images) so one bad frame can't take out its neighbours;
-//   - fired wide (CAPTION_CONCURRENCY lanes) so 145 images finish in seconds;
-//   - one in-place retry on a transient error, then one final straggler pass
-//     at batch size 1 — no exponential backoff, no shrinking-round machinery.
+//   - small batches (5 images) so one bad frame can't take out the whole run;
+//   - at most 6 requests in flight — under Google's ~15 req/s burst ceiling;
+//   - one in-place retry (1.5s wait for the token bucket) on a transient
+//     error, then one final straggler pass at batch size 1. No exponential
+//     backoff, no shrinking-round machinery.
 
 const CAPTION_MAX_EDGE = 768;
 const CAPTION_JPEG_QUALITY = 0.72;
-// 2 per call: a refusal / junk response can only cost these two.
-const CAPTION_BATCH = 2;
-// Fired wide against the Tier-1 quota (1000 RPM) — ~32 in flight clears 145
-// images in ~5s on Vercel (HTTP/2). Browsers cap same-origin HTTP/1.1 at ~6
-// sockets, so `next dev` on localhost is effectively 6 and will be slower.
-const CAPTION_CONCURRENCY = 32;
-// One retry, short wait — with BLOCK_NONE there are no safety refusals and a
-// 2-image batch is too small to cascade, so one more go clears any blip.
+// 5 per call → 145 images become ~29 requests. Small enough that a bad frame
+// only risks its 4 neighbours, few enough to stay off Google's burst limit.
+const CAPTION_BATCH = 5;
+// 6 in flight max: Google's short-window burst ceiling is ~15 requests/sec, so
+// 6 concurrent (each ~2-3s) never comes close. Browsers also cap same-origin
+// HTTP/1.1 at ~6 sockets, so `next dev` and Vercel behave the same here.
+const CAPTION_CONCURRENCY = 6;
+// One retry. On a 429/503 wait 1.5s first (let Google's token bucket refill)
+// rather than retrying straight into the same burst wall.
 const MAX_BATCH_RETRIES = 1;
-const RETRY_WAIT_MS = 1200;
-const MAX_RETRY_WAIT_MS = 8000;
+const RETRY_WAIT_MS = 1500;
 const BATCH_TIMEOUT_MS = 45_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -204,10 +205,10 @@ export async function generateDatasetCaptions(
       const retryable =
         status === 0 || status === 429 || status === 503 || status >= 500;
       if (retryable && attempt < MAX_BATCH_RETRIES) {
-        const waitMs =
-          typeof data.retryAfterMs === "number" && data.retryAfterMs > 0
-            ? Math.min(data.retryAfterMs + 200, MAX_RETRY_WAIT_MS)
-            : RETRY_WAIT_MS;
+        // Honour Google's own "retry in Xs" hint if it's longer than our
+        // default; otherwise wait the flat 1.5s for the token bucket to refill.
+        const hinted = typeof data.retryAfterMs === "number" ? data.retryAfterMs + 200 : 0;
+        const waitMs = Math.max(RETRY_WAIT_MS, hinted);
         opts.onRetry?.({ status, waitMs });
         await sleep(waitMs);
         continue;
