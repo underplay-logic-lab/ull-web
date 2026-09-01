@@ -1843,6 +1843,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         ? `${inFlightJob.progressPercent}%`
         : "学習中"
     : "";
+  // A finished job whose artefact-download panel must stay reachable until the
+  // user explicitly starts a new run. Like `inFlightJob`, it survives a soft
+  // "フォームに戻る" — only resetForm() / a fresh dispatch drops it.
+  const completedJob = job && job.status === "completed" ? job : null;
 
   // Multi-dimensional dynamic price, live (src/lib/loraPricing.ts):
   //   ceil(0.1 * modelMult * resMult * batchMult * rankMult * steps)
@@ -2117,6 +2121,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     setPhase("starting");
     setErrorMessage(null);
     setJob(null);
+    // Baton pass — the previous (completed / running) job is now fully
+    // detached; its label must not linger onto the new run's banner.
+    setActiveJobModelLabel(null);
     setUploadProgress({ done: 0, total: imgs.length });
 
     // Phase 1 — upload every image to Storage first. If even one fails we
@@ -2713,6 +2720,25 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     }
   };
 
+  // The "フォームに戻る" affordance on the progress / result panel. A job that
+  // is still running OR has just completed does a SOFT return — `job`,
+  // polling, and the active-job pointer are left intact so the progress /
+  // artefact-download panel stays one click away (a form-top banner links
+  // back). Only a failed / cancelled / timed-out job (nothing left to keep
+  // reachable this way — the mount-restore banner re-surfaces those) does the
+  // full resetForm(). A fresh dispatch is the only other thing that drops a
+  // kept job (see runTraining's hard-detach).
+  const returnToForm = () => {
+    if (
+      job &&
+      (job.status === "queued" || job.status === "processing" || job.status === "completed")
+    ) {
+      setPhase("form");
+    } else {
+      resetForm();
+    }
+  };
+
   // Wipes the saved draft and returns every form field to its default —
   // the ONLY place FORM_DRAFT_STORAGE_KEY is cleared. Confirmation gated.
   const resetFormDraft = () => {
@@ -2782,23 +2808,21 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               <Sparkles size={15} className="text-neon-violet" />
               {phase === "starting" ? "学習ジョブを起動中…" : "学習の進行状況"}
             </h3>
-            {/* Escape hatch — ALWAYS available. A running job keeps going in
-                the background (soft return); anything else is a full reset. */}
+            {/* Escape hatch — ALWAYS available. A running OR just-completed job
+                is kept (soft return: polling / artefact panel stay reachable
+                via the form-top banner); a failed / cancelled one is a full
+                reset. */}
             <button
               type="button"
-              onClick={() => {
-                if (job && (job.status === "queued" || job.status === "processing")) {
-                  setPhase("form");
-                } else {
-                  resetForm();
-                }
-              }}
+              onClick={returnToForm}
               className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-[11px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
             >
               <ArrowLeft size={12} />
               {job && (job.status === "queued" || job.status === "processing")
                 ? "フォームに戻る（学習は継続）"
-                : "フォームに戻る / リセット"}
+                : job && job.status === "completed"
+                  ? "フォームに戻る（成果物は保持されます）"
+                  : "フォームに戻る / リセット"}
             </button>
           </div>
           <div className="mt-4 space-y-3">
@@ -2842,10 +2866,12 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                 job.status === "cancelled") && (
                 <button
                   type="button"
-                  onClick={resetForm}
+                  onClick={returnToForm}
                   className="rounded-lg border border-border px-4 py-2 text-xs text-muted transition-colors hover:text-foreground"
                 >
-                  新しい LoRA を学習する
+                  {job.status === "completed"
+                    ? "フォームに戻って次の LoRA を作る"
+                    : "新しい LoRA を学習する"}
                 </button>
               )}
           </div>
@@ -2900,6 +2926,26 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-white transition-all hover:opacity-90"
           >
             進行状況パネルへ戻る
+            <ArrowLeft size={12} className="rotate-180" />
+          </button>
+        </div>
+      )}
+
+      {/* Just-completed job — its artefact-download panel stays one click
+          away until the user starts a new run (soft return keeps `job`). */}
+      {completedJob && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-green-500/40 bg-green-500/10 p-3">
+          <p className="flex items-center gap-2 text-[12px] font-semibold text-green-400">
+            <Check size={14} />
+            🏆 直前の学習が完了しています
+            {activeJobModelLabel && ` (${activeJobModelLabel})`}
+          </p>
+          <button
+            type="button"
+            onClick={() => setPhase("tracking")}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-white transition-all hover:opacity-90"
+          >
+            成果物をダウンロードする
             <ArrowLeft size={12} className="rotate-180" />
           </button>
         </div>

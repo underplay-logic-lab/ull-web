@@ -73,8 +73,46 @@ PERSIST_ROOT = f"{MODELS_DIR}/datasets"
 # and loads everything from local disk in 0s.
 HF_CACHE_DIR = f"{MODELS_DIR}/training/hf_cache"
 TORCH_CACHE_DIR = f"{MODELS_DIR}/training/torch_cache"
+# The ONE HuggingFace hub cache directory. `snapshot_download` (in the CPU
+# pre-cache stage) and every from_pretrained() on the GPU must resolve to
+# EXACTLY this path, or a repo the CPU stage placed here is a cache MISS on the
+# GPU and the B300 silently re-downloads it (idle-fee bleed). `_hf_cache_env()`
+# is the single source of truth applied in all three places (image .env, the
+# CPU function, the GPU function).
+HF_HUB_CACHE_DIR = f"{HF_CACHE_DIR}/hub"
 AI_TOOLKIT_DIR = "/root/ai-toolkit"
 SHIM_DIR = "/root/aitk_shims"
+
+
+def _hf_cache_env() -> dict:
+    """Canonical model + HF/torch cache environment — byte-for-byte identical
+    across EVERY container (image .env, the CPU pre-cache function, the GPU
+    trainer, and the ai-toolkit subprocess it launches). A single mismatched
+    var here = the GPU misses the CPU-staged cache and re-downloads 30GB+ at
+    B300 rates. Covers every var current huggingface_hub / transformers / torch
+    releases consult so nothing can fall back to ~/.cache.
+
+    NOTE: the offline pins (HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE) are NOT here
+    — the CPU pre-cache function must be free to download. train_lora_job adds
+    them itself so only the GPU is network-sealed."""
+    return {
+        "HF_HOME": HF_CACHE_DIR,                    # -> "/models/training/hf_cache"
+        "HF_HUB_CACHE": HF_HUB_CACHE_DIR,           # huggingface_hub (current)
+        "HUGGINGFACE_HUB_CACHE": HF_HUB_CACHE_DIR,  # huggingface_hub (legacy)
+        "TRANSFORMERS_CACHE": HF_HUB_CACHE_DIR,     # transformers (legacy alias)
+        "TORCH_HOME": TORCH_CACHE_DIR,
+        # ai-toolkit's ComfyUI-layout resolver (toolkit/paths.py) reads this —
+        # "/models", so Wan/comfy models resolve diffusion_models/ text_encoders/
+        # vae/ IN PLACE instead of falling through to a Hub download.
+        "MODELS_PATH": MODELS_DIR,
+        "HF_HUB_ENABLE_HF_TRANSFER": "1",
+    }
+
+
+def _apply_hf_cache_env() -> None:
+    """Force the canonical model/cache env into os.environ for the current
+    process (and thus every subprocess that inherits it)."""
+    os.environ.update(_hf_cache_env())
 
 # Auto-imported by CPython's `site` at interpreter startup (including the
 # `python run.py` subprocess), because SHIM_DIR is on PYTHONPATH. Makes
@@ -696,21 +734,14 @@ image = (
     )
     .env(
         {
-            "HF_HUB_ENABLE_HF_TRANSFER": "1",
             # Load the base model from the persistent Volume cache that
             # ensure_model_cached_cpu() (the CPU dispatcher, before this GPU
-            # was ever spawned) pre-filled. train_lora_job fails fast if a
-            # required repo is missing, and the ai-toolkit subprocess is
-            # pinned HF_HUB_OFFLINE for every pre-cacheable model — the GPU
-            # never runs a multi-GB download at GPU rates (cost defence).
-            "HF_HOME": HF_CACHE_DIR,
-            "HUGGINGFACE_HUB_CACHE": f"{HF_CACHE_DIR}/hub",
-            # ai-toolkit's ComfyUI-layout resolver (toolkit/paths.py) reads
-            # MODELS_PATH — point it at the Volume so Wan 2.1 (and any comfy
-            # model) resolves diffusion_models/ text_encoders/ vae/ IN PLACE
-            # instead of falling through to a Hub download.
-            "MODELS_PATH": MODELS_DIR,
-            "TORCH_HOME": TORCH_CACHE_DIR,
+            # was ever spawned) pre-filled. train_lora_job additionally pins
+            # HF_HUB_OFFLINE and self-aborts if a weight is missing — the GPU
+            # NEVER runs a download. `_hf_cache_env()` (HF_HOME, MODELS_PATH,
+            # …) is the SAME dict every container applies, so a CPU-cached
+            # snapshot is always a GPU-local hit.
+            **_hf_cache_env(),
             "PYTHONUNBUFFERED": "1",
             "PYTHONPATH": SHIM_DIR,
             # Deliberately NOT setting CUDA_FORCE_PTX_JIT / TORCH_CUDA_ARCH_LIST.
@@ -1067,10 +1098,12 @@ Follow the user's instructions (provided in Japanese or English) and generate a 
         processor.tokenizer.padding_side = "left"
     print(f"[Qwen Load] Processor loaded in {time.time() - _tp:.1f} seconds", flush=True)
 
-    # Offline mode was only needed for the Qwen load — clear it so Stage 2
-    # (ai-toolkit) can still resolve HF-hosted preset checkpoints.
-    os.environ.pop("HF_HUB_OFFLINE", None)
-    os.environ.pop("TRANSFORMERS_OFFLINE", None)
+    # Offline mode stays ON for Stage 2 too — the ai-toolkit base model is
+    # 100% pre-staged on the Volume by ensure_model_cached_cpu, and the GPU is
+    # network-sealed (train_lora_job pins HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE
+    # at container start; this section just re-asserts them).
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
     try:
         from qwen_vl_utils import process_vision_info
     except Exception:  # noqa: BLE001
@@ -1563,15 +1596,19 @@ def _run_ai_toolkit_with_progress(
     .safetensors survive a mid-training SIGKILL."""
     log_path = pathlib.Path("/root/ai_toolkit_run.log")
 
-    # The GPU MUST NOT be pinned HF_HUB_OFFLINE: ai-toolkit's Wan 2.1 loader
-    # pulls a few small tokenizer / arch-config files from the Hub even when
-    # every weight file is already local under MODELS_PATH — offline mode
-    # turns that into a hard crash ("offline mode is enabled. please unset
-    # HF_HUB_OFFLINE"). The multi-GB weights are guarded instead by the CPU
-    # pre-cache + train_lora_job's fail-fast presence check, so a stray big
-    # download can't happen regardless. (`offline` kept for signature compat.)
+    # NETWORK-SEALED: the ai-toolkit subprocess INHERITS train_lora_job's
+    # HF_HUB_OFFLINE=1 / TRANSFORMERS_OFFLINE=1 pins (no longer stripped). The
+    # full component tree — including the small Wan tokenizer / arch-config
+    # repo (ai-toolkit/umt5_xxl_encoder) — is pre-staged on the Volume by
+    # ensure_model_cached_cpu, so every load resolves from local disk. If the
+    # trainer somehow reaches for an un-cached repo, offline mode turns that
+    # into an immediate crash (correct: a strictly-blocked download, not an
+    # idle-GPU bleed) rather than a silent multi-GB pull at B300 rates.
     _ = offline
-    child_env = {k: v for k, v in os.environ.items() if k not in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")}
+    child_env = dict(os.environ)
+    child_env["HF_HUB_OFFLINE"] = "1"
+    child_env["TRANSFORMERS_OFFLINE"] = "1"
+    child_env["HF_DATASETS_OFFLINE"] = "1"
 
     # Runtime quant_api shim (no image rebuild): written fresh on every run
     # so a fix here lands on the next deploy without rebuilding the (slow)
@@ -2309,23 +2346,44 @@ def train_lora_job(params: dict) -> dict:
       credits_cost:      int
       trigger_word:      str   (optional; derived from output_lora_name)
     """
-    # Load from the persistent Volume HF/torch cache (ensure_model_cached_cpu
-    # pre-filled it before this GPU was ever started). Belt-and-suspenders on
-    # top of the image .env — also mkdir the dirs in case this is the very
-    # first job and the CPU stage only committed a repo subtree.
-    os.environ["HF_HOME"] = HF_CACHE_DIR
-    os.environ["HUGGINGFACE_HUB_CACHE"] = f"{HF_CACHE_DIR}/hub"
-    os.environ["TORCH_HOME"] = TORCH_CACHE_DIR
-    os.environ["MODELS_PATH"] = MODELS_DIR  # ai-toolkit comfy-layout resolver root
-    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+    # ---- FIRST THING: sync the Volume + seal the network ------------------
+    # 1) Pull the CPU pre-cache stage's just-committed snapshot into this
+    #    container's Volume view. MUST be the very first call — every model
+    #    load below reads from disk and the CPU commit is only visible after
+    #    an explicit reload.
+    try:
+        vol.reload()
+        print("[train] vol.reload() — synced CPU pre-cache snapshot", flush=True)
+    except Exception as _re:  # noqa: BLE001
+        print(f"[train] vol.reload() skipped: {_re}", flush=True)
+
+    # 2) EXACT same cache env dict the CPU stage snapshot_download'd into
+    #    (HF_HOME=/models/training/hf_cache, MODELS_PATH=/models, …) — a
+    #    mismatch here is a silent GPU-side re-download.
+    _apply_hf_cache_env()
+
+    # 3) PHYSICALLY seal this GPU container off from the HuggingFace Hub. The
+    #    base model is 100% pre-staged on the Volume by ensure_model_cached_cpu;
+    #    any from_pretrained() / hf_hub_download() the trainer attempts must
+    #    resolve from local disk or hard-fail — it must NEVER pull 30GB+ at
+    #    B300 rates. Inherited by the ai-toolkit subprocess (child_env no
+    #    longer strips these).
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_DATASETS_OFFLINE"] = "1"
+
     # Normalise the HF token (or scrub the deploy placeholder so ai-toolkit's
     # own hf_hub_download for the tokenizer never auths with a bogus value).
     if not _hf_token():
         for _k in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_TOKEN", "HF_API_TOKEN"):
             os.environ.pop(_k, None)
-    for _d in (f"{HF_CACHE_DIR}/hub", TORCH_CACHE_DIR):
+    for _d in (HF_HUB_CACHE_DIR, TORCH_CACHE_DIR):
         pathlib.Path(_d).mkdir(parents=True, exist_ok=True)
-    print(f"[train] HF_HOME={HF_CACHE_DIR} (Volume-local model load)", flush=True)
+    print(
+        f"[train] HF_HOME={HF_CACHE_DIR} MODELS_PATH={MODELS_DIR} "
+        "HF_HUB_OFFLINE=1 (Volume-local, network-sealed)",
+        flush=True,
+    )
 
     job_id = str(params.get("job_id") or "")
     user_id = str(params.get("user_id") or "")
@@ -2340,32 +2398,6 @@ def train_lora_job(params: dict) -> dict:
 
     if _is_blocked_model(target_model) or _is_blocked_model(custom_model_id):
         raise ValueError("FLUX.1 [dev] is blocked in LoRA Studio (non-commercial licence)")
-
-    # LAZY-GPU INVARIANT (see module docstring): the CPU dispatcher runs
-    # ensure_model_cached_cpu.remote() to completion BEFORE this GPU is ever
-    # spawned. This container must therefore never download the base model —
-    # if a required HF repo isn't already on the Volume, fail in the first
-    # seconds so the B300 scales straight back down (scaledown_window=30)
-    # instead of sitting through a multi-GB fetch at GPU rates.
-    _required_repos = [] if override else _hf_repos_for(target_model, custom_model_id)
-    _wan_key = None if override else _wan_target(target_model)
-    if _required_repos or _wan_key:
-        try:
-            vol.reload()  # pull the CPU stage's just-committed cache
-        except Exception as _re:  # noqa: BLE001
-            print(f"[train] vol.reload() before cache check skipped: {_re}", flush=True)
-    _missing = [r for r in _required_repos if not _repo_snapshot_present(r)]
-    _missing += _wan_comfy_missing(target_model) if _wan_key else []
-    if _missing:
-        # InfraError -> _is_infra_error -> full refund (it's the system's
-        # orchestration failing, not the user's config).
-        raise InfraError(
-            "base model not pre-staged on the Volume: "
-            + ", ".join(_missing)
-            + " — the CPU pre-cache stage (ensure_model_cached_cpu) must complete "
-            "before the GPU is spawned. Not downloading on the GPU (cost defence). "
-            "Re-run the job; the pre-cache will have finished by then."
-        )
 
     # Raw-YAML mode: the YAML's own config.name / process[0].trigger_word are
     # authoritative (the UI disables the form fields). Adopt them here so the
@@ -2395,6 +2427,22 @@ def train_lora_job(params: dict) -> dict:
     started = time.time()
 
     try:
+        # ---- FAIL-FAST: model must already be on the Volume -----------------
+        # The CPU dispatcher ran ensure_model_cached_cpu to completion AND
+        # verified the result before spawning this GPU; combined with the
+        # HF_HUB_OFFLINE seal above, this container CANNOT download the base
+        # model. If any weight / config artefact is missing, self-abort in the
+        # first seconds (scaledown_window=30) — 0s of wasted B300 time. Inside
+        # `try` so the handler below refunds it 100% (GUI mode). Raw-YAML jobs
+        # point name_or_path somewhere unparseable and are exempt.
+        if not override:
+            _missing = _missing_base_artifacts(target_model, custom_model_id)
+            if _missing:
+                print(f"[train] ABORT — model not on Volume: {_missing}", flush=True)
+                raise RuntimeError(
+                    "CRITICAL: Model not found in /models. GPU download is strictly blocked."
+                )
+
         # Self-record our own FunctionCall id (fc-...) as a safety net — the
         # dispatch endpoint already returns it to the Next.js side, but this
         # guarantees generation_jobs.modal_call_id is populated the moment
@@ -2905,7 +2953,9 @@ dispatch_image = (
     .pip_install(
         "fastapi[standard]", "modal", "grpclib", "huggingface_hub>=0.24", "hf_transfer", "pyyaml"
     )
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+    # Same canonical HF cache env as the training image — ensure_model_cached_cpu
+    # snapshot_download's into exactly the path the GPU later reads from.
+    .env(_hf_cache_env())
 )
 
 
@@ -3052,17 +3102,63 @@ def _ensure_wan_comfy_layout(target_model: str) -> dict:
 
 def _repo_snapshot_present(repo_id: str) -> bool:
     """Local-only (no network) check that a HF repo's snapshot is on the
-    Volume cache. Used by train_lora_job to fail FAST if the CPU pre-cache
-    stage somehow didn't complete — so a $/min B300 never sits through a
-    multi-GB download."""
+    Volume cache, at the EXACT path `_hf_cache_env()` points every stage to.
+    Used by train_lora_job to fail FAST if the CPU pre-cache stage somehow
+    didn't complete — so a $/min B300 never sits through a multi-GB download.
+    Requires the snapshot revision to hold at least one real file AND a
+    config/metadata json (a bare dir or a half-written tree does not count)."""
     slug = "models--" + repo_id.replace("/", "--")
-    snap_root = pathlib.Path(HF_CACHE_DIR) / "hub" / slug / "snapshots"
+    snap_root = pathlib.Path(HF_HUB_CACHE_DIR) / slug / "snapshots"
     if not snap_root.is_dir():
         return False
     for rev in snap_root.iterdir():
-        if rev.is_dir() and any(rev.rglob("*")):
+        if not rev.is_dir():
+            continue
+        files = [p for p in rev.rglob("*") if p.is_file() or p.is_symlink()]
+        if not files:
+            continue
+        has_json = any(p.name.endswith(".json") for p in files)
+        has_payload = any(
+            p.name.endswith((".safetensors", ".bin", ".gguf", ".pt", ".ckpt", ".model", ".pth", ".onnx", ".txt"))
+            for p in files
+        )
+        if has_json or has_payload:
             return True
     return False
+
+
+def _missing_base_artifacts(target_model: str, custom_model_id: str = "") -> list[str]:
+    """Everything this job's base model needs that is NOT on the Volume yet:
+
+      * HF repo snapshots absent from the local hub cache
+        (Diffusers repos — FLUX.2 Klein / Qwen-Image / SDXL / … — and the
+        few-MB Wan UMT5 tokenizer repo)
+      * Wan 2.1 ComfyUI-layout single files missing from their exact path
+      * hosted single-file checkpoints (minimax_h3 / flux_schnell) not on disk
+
+    An empty list is the hard precondition for spawning the GPU: it means
+    train_lora_job + the ai-toolkit subprocess can load every byte from local
+    disk and will never call snapshot_download at B300 rates. Shared by the
+    dispatcher's strict CPU-gate and the GPU's fail-fast self-abort so the two
+    agree exactly."""
+    missing: list[str] = []
+
+    for repo in _hf_repos_for(target_model, custom_model_id):
+        if not _repo_snapshot_present(repo):
+            missing.append(f"hf-repo:{repo}")
+
+    missing += [f"wan-file:{f}" for f in _wan_comfy_missing(target_model)]
+
+    entry = TARGET_MODELS.get(target_model)
+    if entry is None:
+        entry = next((t for t in TARGET_MODELS.values() if t.get("arch") == target_model), None)
+    if entry:
+        for k in ("unet", "text_encoder", "vae"):
+            v = str(entry.get(k) or "")
+            if v.startswith(MODELS_DIR) and not pathlib.Path(v).is_file():
+                missing.append(f"weight-file:{v}")
+
+    return list(dict.fromkeys(missing))
 
 
 @app.function(
@@ -3086,15 +3182,16 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
     persistent Volume HF cache. Cache hit -> returns in ~0.1s. Cache miss ->
     hf_transfer snapshot_download (parallel) then vol.commit(). A
     single-file / Volume model (minimax_h3 etc.) is a no-op here."""
-    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
-    os.environ["HF_HOME"] = HF_CACHE_DIR
-    os.environ["HUGGINGFACE_HUB_CACHE"] = f"{HF_CACHE_DIR}/hub"
+    # Byte-identical to the GPU's cache env (train_lora_job) — the whole point
+    # of this stage is that what we snapshot_download here is a guaranteed
+    # local hit there.
+    _apply_hf_cache_env()
 
     try:
         vol.reload()
     except Exception as exc:  # noqa: BLE001
         print(f"[cache] vol.reload skipped: {exc}", flush=True)
-    pathlib.Path(f"{HF_CACHE_DIR}/hub").mkdir(parents=True, exist_ok=True)
+    pathlib.Path(HF_HUB_CACHE_DIR).mkdir(parents=True, exist_ok=True)
     pathlib.Path(TORCH_CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
     # Wan 2.1: place the ComfyUI-layout single files at their exact paths
@@ -3114,6 +3211,13 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
 
     repos = _hf_repos_for(str(model_arch or ""), str(custom_model_id or ""))
     if not repos:
+        # Single-file / Volume-hosted model (minimax_h3, flux_schnell). Nothing
+        # to download here, but STILL verify the hosted weights are actually on
+        # the Volume — `ok:True` must always mean "the GPU can load from disk".
+        miss = _missing_base_artifacts(str(model_arch or ""), str(custom_model_id or ""))
+        if miss:
+            print(f"[cache] arch={model_arch!r}: hosted weights missing from Volume: {miss}", flush=True)
+            return {"ok": False, "cached": False, "repo": miss[0], "error": "hosted weight file not on Volume: " + ", ".join(miss)}
         print(f"[cache] arch={model_arch!r}: single-file / Volume model — nothing to download", flush=True)
         return {"ok": True, "cached": True, "repos": [], "downloaded": []}
 
@@ -3154,12 +3258,21 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
             print(f"[cache] {repo}: download FAILED — {exc}", flush=True)
             return {"ok": False, "cached": False, "repo": repo, "error": str(exc)[:500]}
 
-    if downloaded:
+    # ALWAYS commit right after the download loop — the GPU only sees Volume
+    # state that was explicitly committed here, so this is the single line that
+    # makes a fetched 30GB snapshot survive into train_lora_job. A no-op when
+    # nothing changed; retried once because a dropped commit = GPU re-download.
+    for _attempt in range(2):
         try:
             vol.commit()
-            print(f"[cache] vol.commit() — {len(downloaded)} repo(s) persisted to {HF_CACHE_DIR}", flush=True)
+            print(
+                f"[cache] vol.commit() — {len(downloaded)} repo(s) persisted to {HF_HUB_CACHE_DIR}",
+                flush=True,
+            )
+            break
         except Exception as exc:  # noqa: BLE001
-            print(f"[cache] vol.commit skipped: {exc}", flush=True)
+            print(f"[cache] vol.commit() attempt {_attempt + 1}/2 failed: {exc}", flush=True)
+            time.sleep(2)
 
     # Post-commit verification — the GPU is only spawned on {"ok": True}, so
     # confirm every repo's snapshot is actually on-disk (a partial download
@@ -3175,6 +3288,14 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
         if wan_missing:
             print(f"[cache][wan] POST-COMMIT VERIFY FAILED — {wan_missing}", flush=True)
             return {"ok": False, "cached": False, "repo": wan_missing[0], "error": "wan comfy file missing after placement"}
+
+    # Final consolidated gate — repos + Wan files + any hosted single-file
+    # weights. `ok:True` returned to the dispatcher is the hard promise that
+    # train_lora_job will never need the network.
+    leftover = _missing_base_artifacts(str(model_arch or ""), str(custom_model_id or ""))
+    if leftover:
+        print(f"[cache] FINAL VERIFY FAILED — still missing: {leftover}", flush=True)
+        return {"ok": False, "cached": False, "repo": leftover[0], "error": "still missing after cache stage: " + ", ".join(leftover)}
 
     return {"ok": True, "cached": not downloaded, "repos": repos, "downloaded": downloaded}
 
@@ -3218,8 +3339,22 @@ def _prepare_and_spawn_training(item: dict) -> dict:
             _refund_credits(user_id, credits_cost)
         return {"ok": False, "error": msg}
 
+    # Same defaulting as train_lora_job so the gate and the GPU agree on which
+    # model's artefacts to verify.
+    target_model = str(item.get("target_model") or "minimax_h3")
+    custom_model_id = str(item.get("custom_model_id") or "").strip()
+    override = bool(dict(item.get("training_config") or {}).get("custom_yaml_override"))
+
     try:
-        if _hf_repos_for(item.get("target_model") or "", item.get("custom_model_id") or ""):
+        # ---- STRICT CPU-GATE ------------------------------------------------
+        # A raw-YAML job points name_or_path anywhere we can't parse — it's the
+        # user's responsibility and skips the gate (mirrors train_lora_job).
+        # For every managed model we ALWAYS run the CPU pre-cache to completion
+        # and BLOCK the GPU spawn until it returns ok — ensure_model_cached_cpu
+        # is a ~0.1s no-op for single-file models, so running it unconditionally
+        # costs nothing and removes the "skipped when _hf_repos_for() came back
+        # empty" hole that let a B300 do the download.
+        if not override:
             _patch_job(
                 job_id,
                 {
@@ -3228,15 +3363,18 @@ def _prepare_and_spawn_training(item: dict) -> dict:
                 },
             )
             try:
-                cache_res = ensure_model_cached_cpu.remote(
-                    item.get("target_model") or "", item.get("custom_model_id") or ""
-                )
+                cache_res = ensure_model_cached_cpu.remote(target_model, custom_model_id)
             except Exception as exc:  # noqa: BLE001
                 return _fail(f"ベースモデルの事前キャッシュに失敗しました: {exc}")
-            if not cache_res.get("ok"):
+            # ensure_model_cached_cpu only returns ok AFTER its own post-commit
+            # presence check (repos + Wan files + hosted single-file weights)
+            # passes — so `ok` here is the hard guarantee that the GPU can load
+            # 100% from local disk. Anything else -> fail + refund, no spawn.
+            if not isinstance(cache_res, dict) or not cache_res.get("ok"):
                 return _fail(
-                    f"ベースモデルのダウンロードに失敗しました "
-                    f"({cache_res.get('repo')}): {str(cache_res.get('error'))[:400]}"
+                    "ベースモデルの事前キャッシュに失敗しました（GPU は起動しません／コスト防衛）: "
+                    f"{(cache_res or {}).get('repo')} — "
+                    f"{str((cache_res or {}).get('error'))[:400]}"
                 )
 
         call = train_lora_job.spawn(item)
