@@ -554,6 +554,40 @@ function SalvageSection({ jobId }: { jobId: string }) {
   );
 }
 
+// Collapsible "Live Terminal" — streams the worker's recent stdout/stderr
+// (synced through generation_jobs.metadata.logs, ~40-line ring buffer). Purely
+// presentational; auto-scrolls to the newest line while open.
+function LiveTerminal({ logs }: { logs: string[] }) {
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (open && boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
+  }, [logs, open]);
+  return (
+    <div className="mt-3">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-black/40 px-2.5 py-1.5 font-mono text-[11px] text-emerald-400/90 transition-colors hover:text-emerald-300"
+      >
+        💻 リアルタイム稼働ログを{open ? "隠す" : "表示"} {open ? "▲" : "▼"}
+      </button>
+      {open && (
+        <div
+          ref={boxRef}
+          className="mt-2 h-48 overflow-y-auto rounded-lg border border-neutral-800 bg-black/90 p-3 font-mono text-xs leading-relaxed text-emerald-400"
+        >
+          {logs.map((l, i) => (
+            <div key={i} className="whitespace-pre-wrap break-all">
+              {l}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProgressPanel({
   job,
   queuedElapsedSec,
@@ -648,7 +682,21 @@ function ProgressPanel({
 
   if (job.status === "processing") {
     const pct = job.progressPercent ?? null;
-    const hasSteps = job.currentStep != null && job.totalSteps != null && job.totalSteps > 0;
+    // Prep-phase sends current_step: 0 — that is NOT a training step, so the
+    // "Step X / Y" telemetry only shows once real steps start (> 0).
+    const hasSteps =
+      job.currentStep != null &&
+      job.currentStep > 0 &&
+      job.totalSteps != null &&
+      job.totalSteps > 0;
+    // Phase heading follows the worker's own emoji-tagged message (🎯 prep /
+    // 🔥 training); falls back to a generic label.
+    const msg = job.progressMessage ?? "";
+    const heading = msg.startsWith("🎯")
+      ? "多層Latentキャッシュ生成"
+      : msg.startsWith("🔥") || hasSteps
+        ? "深度最適化学習中…"
+        : "準備処理中…";
 
     // Live training telemetry line — Step X / Y ・ 残り約 … ・ Loss …
     const telemetry = hasSteps ? (
@@ -671,6 +719,7 @@ function ProgressPanel({
               status: processing{job.progressMessage ? ` ・ ${job.progressMessage}` : ""}
             </span>
           )}
+          {job.logs && job.logs.length > 0 && <LiveTerminal logs={job.logs} />}
         </div>
       );
     }
@@ -679,7 +728,7 @@ function ProgressPanel({
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-semibold text-neon-violet">
             <Loader2 size={15} className="animate-spin" />
-            深度最適化学習中… {pct}%
+            {heading} {pct}%
           </div>
           <VramBadge gb={job.vramUsedGb} />
         </div>
@@ -690,7 +739,11 @@ function ProgressPanel({
           />
         </div>
         {telemetry}
-        {!hasSteps && <p className="mt-2 text-[11px] text-muted">{job.progressMessage ?? "処理中…"}</p>}
+        {/* Latest one-liner — always visible directly under the bar. */}
+        {job.progressMessage && (
+          <p className="mt-2 text-[11px] leading-relaxed text-muted">{job.progressMessage}</p>
+        )}
+        {job.logs && job.logs.length > 0 && <LiveTerminal logs={job.logs} />}
       </div>
     );
   }
@@ -1708,6 +1761,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         totalSteps: null,
         etaSeconds: null,
         loss: null,
+        logs: null,
         checkpoints: [],
         refunded: null,
         customYaml: yamlMode,

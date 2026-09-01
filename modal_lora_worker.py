@@ -1432,6 +1432,19 @@ def _build_config(
 _TQDM_STEP_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s*\[[^\]]*?([\d.]+)\s*(s/it|it/s)")
 _TQDM_LOSS_RE = re.compile(r"loss[:=]\s*([\d.]+(?:[eE][+-]?\d+)?)")
 
+# ai-toolkit's latent-cache tqdm bar (its OWN phase — must NOT be read as a
+# training step, or "120/120" caching reads as "Step 120/120" and the bar
+# jumps to 95%):
+#   "Caching latents to disk:  45%|████▌     | 54/120 [00:12<00:14,  4.35it/s]"
+#   "Caching latents:  45%|...| 54/120 ..."
+_CACHE_BAR_RE = re.compile(
+    r"[Cc]aching\s+latents?(?:\s+to\s+disk)?\s*:?\s*\d+\s*%\s*\|[^|]*\|\s*(\d+)\s*/\s*(\d+)"
+)
+# Resolution hint around the caching phase — the config echo or a bucket dim:
+#   "  resolution: [768]"   "Resolution: 1024"   "Bucket ... (768, 512): 40"
+_RES_HINT_RE = re.compile(r"resolution['\"]?\s*[:=]\s*\[?\s*(\d{3,4})", re.IGNORECASE)
+_BUCKET_DIM_RE = re.compile(r"\(\s*(\d{3,4})\s*,\s*(\d{3,4})\s*\)\s*:")
+
 # Prep-phase milestone markers (broadly matched — ai-toolkit wording varies).
 _MODEL_LOADED_RE = re.compile(
     r"model\s*loaded|loaded\s+(?:the\s+)?model|weights?\s+loaded|finished\s+loading|"
@@ -1486,6 +1499,7 @@ def _run_ai_toolkit_with_progress(
     commit_vol: bool = False,
     job_started_ts: float | None = None,
     safety_limit_s: int = LORA_SAFETY_LIMIT_S,
+    resolution: int = 0,
 ) -> None:
     """Runs `python -u run.py <config>`, streaming its merged stdout/stderr
     line-by-line to this container's stdout (-> Modal's live log) while
@@ -1627,7 +1641,30 @@ for _k, _v in list(globals().items()):
 
     returncode = -1
     state = {"step": 0, "total": total_steps, "loss": None, "eta": None}
-    last = {"t": 0.0, "step": -999}
+    # Latent-cache (prep) sub-phase: current resolution bucket + N/Total. While
+    # `active`, `state["step"]` stays 0 and the bar lives in the 2-14% band.
+    cache_state = {"res": int(resolution or 0), "n": 0, "total": 0, "active": False}
+    # Ring buffer of recent worker output for the UI's Live Terminal.
+    log_ring: collections.deque = collections.deque(maxlen=40)
+    _last_logged = [""]
+
+    def _is_bar(s: str) -> bool:
+        return "%|" in s or "s/it" in s or "it/s" in s
+
+    def _log_line(raw: str) -> None:
+        s = raw.rstrip("\n").strip()
+        if not s or s == _last_logged[0]:
+            return
+        _last_logged[0] = s
+        entry = f"{time.strftime('%H:%M:%S')}  {s[:240]}"
+        # Collapse a running tqdm bar to a single self-updating line so the
+        # terminal stays readable (discrete events still each get their line).
+        if _is_bar(s) and log_ring and _is_bar(log_ring[-1]):
+            log_ring[-1] = entry
+        else:
+            log_ring.append(entry)
+
+    last = {"t": 0.0, "step": -999, "cache_n": -999}
     last_commit = [time.time()]
 
     def _maybe_commit(force: bool = False) -> None:
@@ -1649,21 +1686,28 @@ for _k, _v in list(globals().items()):
             not force
             and (now - last["t"]) < 5
             and (state["step"] - last["step"]) < 10
+            and abs(cache_state["n"] - last["cache_n"]) < 8
         ):
             return
         last["t"] = now
         last["step"] = state["step"]
+        last["cache_n"] = cache_state["n"]
 
         meta: dict = {}
         vram = _current_effective_vram_gb()
         if vram is not None:
             meta["vram_used_gb"] = vram
+        if log_ring:
+            meta["logs"] = list(log_ring)
 
         fields: dict = {}
-        total = state["total"] or total_steps or 2000
+        # total_steps (the config's step count, e.g. 3000) is authoritative and
+        # DEFENDED — a stray tqdm bar can never redefine the denominator.
+        total = total_steps or state["total"] or 2000
         if state["step"] > 0 and total > 0:
-            pct = 15 + int((state["step"] / total) * 80)
-            fields["progress_percent"] = max(15, min(95, pct))
+            # --- TRAINING PHASE: map Step 1..total -> 15%..100% -------------
+            pct = 15 + int((state["step"] / total) * 85)
+            fields["progress_percent"] = max(15, min(99, pct))
             meta["current_step"] = state["step"]
             meta["total_steps"] = total
             if state["eta"] is not None:
@@ -1672,9 +1716,22 @@ for _k, _v in list(globals().items()):
                 meta["loss"] = state["loss"]
             eta_txt = f" ・ 残り約 {_fmt_duration(state['eta'])}" if state["eta"] else ""
             loss_txt = f" ・ loss {state['loss']}" if state["loss"] is not None else ""
-            fields["progress_message"] = f"Step {state['step']}/{total}{eta_txt}{loss_txt}"
+            fields["progress_message"] = (
+                f"🔥 深度最適化学習中… Step {state['step']}/{total}{eta_txt}{loss_txt}"
+            )
+        elif cache_state["active"] and cache_state["total"] > 0:
+            # --- PREP PHASE: latent caching -> 2%..14% (never jumps to 95) --
+            frac = cache_state["n"] / cache_state["total"]
+            fields["progress_percent"] = max(2, min(14, 2 + int(frac * 12)))
+            meta["current_step"] = 0
+            meta["total_steps"] = total
+            res_txt = f"{cache_state['res']}px" if cache_state["res"] else "多層"
+            fields["progress_message"] = (
+                f"🎯 多層Latentキャッシュ生成中 ({res_txt}): "
+                f"{cache_state['n']}/{cache_state['total']}"
+            )
         else:
-            fields["progress_message"] = "モデルを初期化しています…"
+            fields["progress_message"] = "🎯 モデルを初期化しています…"
 
         if meta:
             fields["metadata"] = meta
@@ -1757,8 +1814,21 @@ for _k, _v in list(globals().items()):
                     print(line, end="", flush=True)
                     log_file.write(line)
                     log_file.flush()
+                    _log_line(line)
 
                     m = _TQDM_STEP_RE.search(line)
+                    cache_m = _CACHE_BAR_RE.search(line)
+
+                    # Resolution hint (config echo / bucket dim) — only useful
+                    # before training starts.
+                    if training_start is None:
+                        _rh = _RES_HINT_RE.search(line)
+                        if _rh:
+                            cache_state["res"] = int(_rh.group(1))
+                        elif not cache_state["res"]:
+                            _bd = _BUCKET_DIM_RE.search(line)
+                            if _bd:
+                                cache_state["res"] = max(int(_bd.group(1)), int(_bd.group(2)))
 
                     if not model_loaded_logged and training_start is None and (
                         _MODEL_LOADED_RE.search(line) or _CACHE_RE.search(line) or m
@@ -1792,11 +1862,35 @@ for _k, _v in list(globals().items()):
                         io_grace_until = time.time() + LORA_CKPT_IO_GRACE_S
                         print(f"[stage2] checkpoint I/O — monitor grace {LORA_CKPT_IO_GRACE_S // 60}m", flush=True)
 
-                    # Training runs are >=200 steps (UI floor); ai-toolkit's
-                    # sample-generation tqdm loops are ~20-50 — ignore those.
-                    if m and int(m.group(2)) >= 100:
+                    # --- LATENT-CACHE (prep) bar — its OWN phase. Keep step 0,
+                    #     surface "(res)px: N/Total", stay in the 2-14% band.
+                    if cache_m and training_start is None:
+                        cn, ct = int(cache_m.group(1)), int(cache_m.group(2))
+                        if ct > 0:
+                            cache_state.update(active=True, n=cn, total=ct)
+                            if not cache_state["res"]:
+                                cache_state["res"] = int(resolution or 0)
+
+                    # --- TRAINING STEP — strictly the training loop's own bar.
+                    #     A real LoRA step is seconds/iteration; the it/s cache &
+                    #     sample-gen bars are excluded unless the total is an
+                    #     exact match to the configured step count or the line
+                    #     carries a loss/lr field. total_steps stays authoritative.
+                    _is_train = (
+                        m
+                        and not cache_m
+                        and int(m.group(2)) >= 100
+                        and (
+                            m.group(4) == "s/it"
+                            or (total_steps and int(m.group(2)) == total_steps)
+                            or bool(_TQDM_LOSS_RE.search(line))
+                            or "lr:" in line
+                        )
+                    )
+                    if _is_train:
+                        cache_state["active"] = False
                         state["step"] = int(m.group(1))
-                        state["total"] = int(m.group(2))
+                        state["total"] = total_steps or int(m.group(2))
                         rate = float(m.group(3))
                         s_per_it = rate if m.group(4) == "s/it" else (1.0 / rate if rate else 0.0)
                         state["eta"] = max(0, state["total"] - state["step"]) * s_per_it
@@ -1904,7 +1998,7 @@ for _k, _v in list(globals().items()):
             else:
                 returncode = proc.wait()
     finally:
-        if state["step"] > 0:
+        if state["step"] > 0 or cache_state["active"] or log_ring:
             _push(force=True)
         _maybe_commit(force=True)  # persist every save_every checkpoint written so far
 
@@ -2524,7 +2618,7 @@ def train_lora_job(params: dict) -> dict:
         )
         _run_ai_toolkit_with_progress(
             config_path, job_id, total_steps or 2000, commit_vol=True, job_started_ts=started,
-            safety_limit_s=cost_cap_s,
+            safety_limit_s=cost_cap_s, resolution=resolution,
         )
         print(f"[train] stage 2 done in {time.time() - stage2:.0f}s")
 

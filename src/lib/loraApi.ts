@@ -163,6 +163,10 @@ export type LoraJobStatus = {
   totalSteps: number | null;
   etaSeconds: number | null;
   loss: number | null;
+  // Ring buffer of the ~40 most recent worker stdout/stderr lines (each
+  // "HH:MM:SS  message"), for the collapsible Live Terminal. null on older
+  // jobs / before the trainer starts emitting.
+  logs: string[] | null;
   // Intermediate + final LoRA checkpoints, available once completed.
   checkpoints: LoraCheckpoint[];
   // On a 'failed' job: whether the consumed credits were refunded. null when
@@ -202,8 +206,12 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
     total_steps?: unknown;
     eta_seconds?: unknown;
     loss?: unknown;
+    logs?: unknown;
   };
   const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const logs: string[] | null = Array.isArray(meta.logs)
+    ? (meta.logs as unknown[]).filter((l): l is string => typeof l === "string").slice(-60)
+    : null;
   const checkpoints: LoraCheckpoint[] = Array.isArray(meta.checkpoints)
     ? (meta.checkpoints as Record<string, unknown>[])
         .map((c) => ({
@@ -230,6 +238,7 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
     totalSteps: num(meta.total_steps),
     etaSeconds: num(meta.eta_seconds),
     loss: num(meta.loss),
+    logs,
     checkpoints,
     refunded: typeof meta.refunded === "boolean" ? meta.refunded : null,
     customYaml: meta.custom_yaml === true,
