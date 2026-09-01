@@ -2,32 +2,34 @@ import { supabase } from "@/lib/supabaseClient";
 
 // Client-side AI-vision auto-captioning for the LoRA Studio dataset.
 //
-// Each image is downscaled to a small JPEG in the browser (so the request
-// stays well under Vercel's 4.5 MB body cap) and sent to
-// /api/studio/lora/caption, which answers with EN + JA in one multimodal
-// call. Strategy — built for a billed Tier-1 key (1000 RPM) with the safety
-// filter fully off:
-//
-//   - small batches (5 images) so one bad frame can't take out the whole run;
-//   - at most 6 requests in flight — under Google's ~15 req/s burst ceiling;
-//   - one in-place retry (1.5s wait for the token bucket) on a transient
-//     error, then one final straggler pass at batch size 1. No exponential
-//     backoff, no shrinking-round machinery.
+// A size-independent queue + rate-limiter: works the same for 10 or 500+
+// images. Every image is chunked into CAPTION_BATCH_SIZE tasks on a queue;
+// CAPTION_CONCURRENCY workers pull tasks and POST them to
+// /api/studio/lora/caption (which internally rotates gemini-flash-lite-latest
+// -> 3.5-flash -> flash-latest -> 3.6-flash on a 429). A rate-limited or
+// transient task is NEVER dropped — it goes back to the FRONT of the queue
+// after a 1.5-2.0s backoff and is retried until it lands. The run finishes
+// only when every valid image has a caption (or the wall-clock safety cap
+// trips), and reports `complete: true` in that case.
 
 const CAPTION_MAX_EDGE = 768;
 const CAPTION_JPEG_QUALITY = 0.72;
-// 5 per call → 145 images become ~29 requests. Small enough that a bad frame
-// only risks its 4 neighbours, few enough to stay off Google's burst limit.
-const CAPTION_BATCH = 5;
-// 6 in flight max: Google's short-window burst ceiling is ~15 requests/sec, so
-// 6 concurrent (each ~2-3s) never comes close. Browsers also cap same-origin
-// HTTP/1.1 at ~6 sockets, so `next dev` and Vercel behave the same here.
-const CAPTION_CONCURRENCY = 6;
-// One retry. On a 429/503 wait 1.5s first (let Google's token bucket refill)
-// rather than retrying straight into the same burst wall.
-const MAX_BATCH_RETRIES = 1;
-const RETRY_WAIT_MS = 1500;
-const BATCH_TIMEOUT_MS = 45_000;
+// Efficiency-max batch — few requests per dataset, well under the route's
+// MAX_IMAGES (16).
+const CAPTION_BATCH_SIZE = 12;
+// Workers pulling the queue. 4 * (one ~6s request) ≈ 0.7 req/s — nowhere near
+// Google's ~15 req/s burst ceiling even at the start of a run.
+const CAPTION_CONCURRENCY = 4;
+// Backoff before a rate-limited task is retried (jittered 1.5-2.0s) — long
+// enough for Google's token bucket to refill.
+const backoffMs = () => 1500 + Math.floor(Math.random() * 500);
+const BATCH_TIMEOUT_MS = 60_000;
+// Safety valves so a permanently-broken image / total API outage can't hang
+// the tab forever. Generous — a healthy run never approaches these.
+const MAX_TASK_ATTEMPTS = 30;
+const MAX_TOTAL_MS = 20 * 60_000;
+// Idle spin while the queue is momentarily empty but peers may re-enqueue.
+const IDLE_POLL_MS = 150;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -40,7 +42,7 @@ export type DatasetCaptionResult = {
   captionedCount: number;
   /** File indices Google's safety filter refused — the worker VLM fills these. */
   safetyRejected: number[];
-  /** true when every still-wanted image ended up with an English caption. */
+  /** true when every valid (present, decodable) image ended up with a caption. */
   complete: boolean;
 };
 
@@ -85,10 +87,10 @@ export async function generateDatasetCaptions(
     // into `files`). Lets the caller merge results incrementally and drop
     // any that belong to an image the user has since removed.
     onBatch?: (entries: { index: number; en: string; ja: string }[]) => void;
-    // Fires when a batch hits a transient error and is about to retry.
+    // Fires when a task is re-queued after a rate limit / transient error.
     onRetry?: (info: { status: number; waitMs: number }) => void;
     // Return true for a file index the caller no longer cares about (image
-    // removed mid-pass) — it's skipped, not encoded or sent.
+    // removed mid-pass) — it's dropped from its task, not sent.
     isStale?: (index: number) => boolean;
     signal?: AbortSignal;
   } = {},
@@ -97,22 +99,29 @@ export async function generateDatasetCaptions(
   const captions = new Array<string>(total).fill("");
   const captionsJa = new Array<string>(total).fill("");
   const safety = new Set<number>();
+  const undecodable = new Set<number>();
 
   const stale = (i: number) => opts.isStale?.(i) ?? false;
   const captioned = (i: number) => captions[i].trim().length > 0;
-  // An image still worth sending: present, uncaptioned, not safety-blocked.
-  const wanted = (i: number) => !stale(i) && !captioned(i) && !safety.has(i);
+  // Still needs work: present, decodable, uncaptioned, not safety-blocked.
+  const wanted = (i: number) =>
+    !stale(i) && !captioned(i) && !safety.has(i) && !undecodable.has(i);
   const aborted = () => opts.signal?.aborted === true;
 
   const result = (): DatasetCaptionResult => {
-    let remaining = 0;
-    for (let i = 0; i < total; i++) if (wanted(i)) remaining++;
+    let complete = true;
+    for (let i = 0; i < total; i++) {
+      if (!stale(i) && !undecodable.has(i) && !captioned(i)) {
+        complete = false;
+        break;
+      }
+    }
     return {
       captions,
       captionsJa,
       captionedCount: captions.filter((c) => c.trim().length > 0).length,
       safetyRejected: [...safety].sort((a, b) => a - b),
-      complete: total === 0 || remaining === 0,
+      complete: total === 0 || complete,
     };
   };
   if (total === 0) return result();
@@ -120,139 +129,159 @@ export async function generateDatasetCaptions(
   const token = await accessToken();
   if (!token) return result();
 
-  let progressed = 0;
-  const bump = (n: number) => {
-    progressed = Math.min(total, progressed + n);
-    opts.onProgress?.(progressed, total);
+  // Live N/Total: images that have reached a terminal state.
+  const reportProgress = () => {
+    let done = 0;
+    for (let i = 0; i < total; i++) if (!wanted(i)) done++;
+    opts.onProgress?.(Math.min(done, total), total);
   };
 
-  // POST one group of file indices, merging captions in place. One retry on a
-  // transient error, then give up (the straggler pass / worker VLM covers it).
-  const postGroup = async (idxs: number[]): Promise<void> => {
-    if (aborted()) return;
-    const group = idxs.filter(wanted);
-    if (!group.length) {
-      bump(idxs.length);
-      return;
-    }
-
-    const encoded = await Promise.all(group.map((i) => downscaleToBase64(files[i])));
-    const pairs = group
-      .map((i, k) => ({ i, img: encoded[k] }))
-      .filter((p): p is { i: number; img: { data: string; mimeType: string } } => p.img != null);
-    if (!pairs.length) {
-      bump(idxs.length);
-      return;
-    }
-
-    for (let attempt = 0; attempt <= MAX_BATCH_RETRIES; attempt++) {
-      if (aborted()) return;
-
-      const to = new AbortController();
-      const timer = setTimeout(() => to.abort(), BATCH_TIMEOUT_MS);
-      const onAbort = () => to.abort();
-      opts.signal?.addEventListener("abort", onAbort);
-
-      let status = 0;
-      let data: {
-        captions?: unknown;
-        captionsJa?: unknown;
-        safety?: unknown;
-        retryAfterMs?: unknown;
-      } = {};
-      try {
-        const res = await fetch("/api/studio/lora/caption", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            images: pairs.map((p) => p.img),
-            trigger_word: opts.triggerWord || undefined,
-            caption_prompt: opts.captionPrompt || undefined,
-          }),
-          signal: to.signal,
-        });
-        status = res.status;
-        data = await res.json().catch(() => ({}));
-      } catch {
-        status = 0; // network error / timeout
-      } finally {
-        clearTimeout(timer);
-        opts.signal?.removeEventListener("abort", onAbort);
-      }
-      if (aborted()) return;
-
-      if (status === 200 && Array.isArray(data.captions)) {
-        const en = data.captions as unknown[];
-        const ja = Array.isArray(data.captionsJa) ? (data.captionsJa as unknown[]) : [];
-        const landed: { index: number; en: string; ja: string }[] = [];
-        pairs.forEach((p, k) => {
-          const e = typeof en[k] === "string" ? (en[k] as string).trim() : "";
-          const j = typeof ja[k] === "string" ? (ja[k] as string).trim() : "";
-          if (e) captions[p.i] = e;
-          if (j) captionsJa[p.i] = j;
-          if (e || j) landed.push({ index: p.i, en: e, ja: j });
-        });
-        if (landed.length) opts.onBatch?.(landed);
-        // Should never happen with BLOCK_NONE, but if the server still reports
-        // a safety refusal, mark the (tiny) batch so the worker VLM fills it.
-        if (data.safety === true && landed.length === 0) {
-          pairs.forEach((p) => safety.add(p.i));
-        }
-        bump(idxs.length);
-        return;
-      }
-
-      const retryable =
-        status === 0 || status === 429 || status === 503 || status >= 500;
-      if (retryable && attempt < MAX_BATCH_RETRIES) {
-        // Honour Google's own "retry in Xs" hint if it's longer than our
-        // default; otherwise wait the flat 1.5s for the token bucket to refill.
-        const hinted = typeof data.retryAfterMs === "number" ? data.retryAfterMs + 200 : 0;
-        const waitMs = Math.max(RETRY_WAIT_MS, hinted);
-        opts.onRetry?.({ status, waitMs });
-        await sleep(waitMs);
-        continue;
-      }
-      bump(idxs.length);
-      return;
-    }
-  };
-
-  // Run `groups` through a CAPTION_CONCURRENCY-wide lane pool.
-  const runPool = async (groups: number[][]): Promise<void> => {
-    let next = 0;
-    const lane = async (): Promise<void> => {
-      while (!aborted()) {
-        const my = next++;
-        if (my >= groups.length) return;
-        await postGroup(groups[my]);
-      }
-    };
-    await Promise.all(
-      Array.from({ length: Math.min(CAPTION_CONCURRENCY, groups.length) }, () => lane()),
-    );
-  };
-
-  const chunk = (idxs: number[], size: number): number[][] => {
-    const out: number[][] = [];
-    for (let s = 0; s < idxs.length; s += size) out.push(idxs.slice(s, s + size));
-    return out;
-  };
-
-  // Main pass: every image, batched by 2.
-  const first: number[] = [];
-  for (let i = 0; i < total; i++) if (wanted(i)) first.push(i);
-  await runPool(chunk(first, CAPTION_BATCH));
-
-  // One straggler pass at batch size 1 for anything a transient blip missed.
-  if (!aborted()) {
-    const stragglers: number[] = [];
-    for (let i = 0; i < total; i++) if (wanted(i)) stragglers.push(i);
-    if (stragglers.length) {
-      progressed = total - stragglers.length;
-      await runPool(chunk(stragglers, 1));
-    }
+  type Task = { ids: number[]; attempts: number };
+  const queue: Task[] = [];
+  for (let s = 0; s < total; s += CAPTION_BATCH_SIZE) {
+    queue.push({
+      ids: Array.from({ length: Math.min(CAPTION_BATCH_SIZE, total - s) }, (_, k) => s + k),
+      attempts: 0,
+    });
   }
 
+  const deadline = Date.now() + MAX_TOTAL_MS;
+  let inFlight = 0;
+
+  type SendResult = {
+    // "transient": the whole request must be retried (rate limit / 5xx / net).
+    // "resolved": the request completed; `leftover` are ids still uncaptioned
+    // (model returned an empty slot, or a hard non-retryable 4xx).
+    kind: "transient" | "resolved";
+    leftover: number[];
+    status: number;
+    retryAfterMs?: number;
+  };
+
+  // POST one group of file indices, merging captions in place.
+  const send = async (ids: number[]): Promise<SendResult> => {
+    const encoded = await Promise.all(ids.map((i) => downscaleToBase64(files[i])));
+    // Anything the browser couldn't decode is not a "valid" image — drop it.
+    ids.forEach((i, k) => {
+      if (encoded[k] == null) undecodable.add(i);
+    });
+    const pairs = ids
+      .map((i, k) => ({ i, img: encoded[k] }))
+      .filter((p): p is { i: number; img: { data: string; mimeType: string } } => p.img != null);
+    if (!pairs.length) return { kind: "resolved", leftover: [], status: 200 };
+
+    const to = new AbortController();
+    const timer = setTimeout(() => to.abort(), BATCH_TIMEOUT_MS);
+    const onAbort = () => to.abort();
+    opts.signal?.addEventListener("abort", onAbort);
+
+    let status = 0;
+    let data: { captions?: unknown; captionsJa?: unknown; safety?: unknown; retryAfterMs?: unknown } = {};
+    try {
+      const res = await fetch("/api/studio/lora/caption", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          images: pairs.map((p) => p.img),
+          trigger_word: opts.triggerWord || undefined,
+          caption_prompt: opts.captionPrompt || undefined,
+        }),
+        signal: to.signal,
+      });
+      status = res.status;
+      data = await res.json().catch(() => ({}));
+    } catch {
+      status = 0; // network error / timeout
+    } finally {
+      clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
+    }
+    const retryAfterMs = typeof data.retryAfterMs === "number" ? data.retryAfterMs : undefined;
+    if (aborted()) return { kind: "resolved", leftover: [], status };
+
+    if (status === 200 && Array.isArray(data.captions)) {
+      const en = data.captions as unknown[];
+      const ja = Array.isArray(data.captionsJa) ? (data.captionsJa as unknown[]) : [];
+      const landed: { index: number; en: string; ja: string }[] = [];
+      pairs.forEach((p, k) => {
+        const e = typeof en[k] === "string" ? (en[k] as string).trim() : "";
+        const j = typeof ja[k] === "string" ? (ja[k] as string).trim() : "";
+        if (e) captions[p.i] = e;
+        if (j) captionsJa[p.i] = j;
+        if (e || j) landed.push({ index: p.i, en: e, ja: j });
+      });
+      if (landed.length) opts.onBatch?.(landed);
+      if (data.safety === true && landed.length === 0) {
+        pairs.forEach((p) => safety.add(p.i));
+        return { kind: "resolved", leftover: [], status };
+      }
+      return { kind: "resolved", leftover: pairs.map((p) => p.i).filter(wanted), status };
+    }
+
+    // 429 / 503 / 5xx / network → retry the whole task. Hard 4xx → resolved
+    // with leftover; the per-task attempt cap decides when to stop.
+    const transient = status === 0 || status === 429 || status === 503 || status >= 500;
+    return {
+      kind: transient ? "transient" : "resolved",
+      leftover: pairs.map((p) => p.i).filter(wanted),
+      status,
+      retryAfterMs,
+    };
+  };
+
+  const worker = async (): Promise<void> => {
+    while (!aborted() && Date.now() < deadline) {
+      const task = queue.shift();
+      if (!task) {
+        if (inFlight === 0) return; // queue drained and nobody can refill it
+        await sleep(IDLE_POLL_MS);
+        continue;
+      }
+
+      const live = task.ids.filter(wanted);
+      if (!live.length) {
+        reportProgress();
+        continue;
+      }
+
+      inFlight++;
+      let out: SendResult;
+      try {
+        out = await send(live);
+      } finally {
+        inFlight--;
+      }
+      if (aborted()) return;
+
+      if (out.kind === "transient") {
+        // Never drop it — back to the FRONT of the queue after a backoff.
+        const wait = Math.max(backoffMs(), (out.retryAfterMs ?? 0) + 200);
+        opts.onRetry?.({ status: out.status || 429, waitMs: wait });
+        queue.unshift({ ids: live, attempts: task.attempts + 1 });
+        await sleep(wait);
+        continue;
+      }
+
+      reportProgress();
+
+      const leftover = out.leftover.filter(wanted);
+      if (leftover.length) {
+        // A hard 4xx (bad image data, etc.) won't fix itself — cap it low. An
+        // empty slot from an otherwise-200 response gets the full budget.
+        const hardFail = out.status !== 200 && out.status !== 0;
+        const cap = hardFail ? 3 : MAX_TASK_ATTEMPTS;
+        if (task.attempts + 1 < cap) {
+          if (hardFail) await sleep(400);
+          // Requeue split to single images so one stubborn frame can't hold
+          // up the rest.
+          for (const id of leftover) queue.push({ ids: [id], attempts: task.attempts + 1 });
+        }
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: CAPTION_CONCURRENCY }, () => worker()));
+
+  reportProgress();
   return result();
 }
