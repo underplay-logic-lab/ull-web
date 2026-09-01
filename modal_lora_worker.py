@@ -690,9 +690,11 @@ image = (
         {
             "HF_HUB_ENABLE_HF_TRANSFER": "1",
             # Load the base model from the persistent Volume cache that
-            # ensure_model_cached_cpu() pre-filled — no HuggingFace round-trip
-            # on the GPU. (NOT forcing HF_HUB_OFFLINE, so a cache miss still
-            # falls back to an on-GPU download rather than a hard failure.)
+            # ensure_model_cached_cpu() (the CPU dispatcher, before this GPU
+            # was ever spawned) pre-filled. train_lora_job fails fast if a
+            # required repo is missing, and the ai-toolkit subprocess is
+            # pinned HF_HUB_OFFLINE for every pre-cacheable model — the GPU
+            # never runs a multi-GB download at GPU rates (cost defence).
             "HF_HOME": HF_CACHE_DIR,
             "HUGGINGFACE_HUB_CACHE": f"{HF_CACHE_DIR}/hub",
             "TORCH_HOME": TORCH_CACHE_DIR,
@@ -1503,6 +1505,7 @@ def _run_ai_toolkit_with_progress(
     job_started_ts: float | None = None,
     safety_limit_s: int = LORA_SAFETY_LIMIT_S,
     resolution: int = 0,
+    offline: bool = False,
 ) -> None:
     """Runs `python -u run.py <config>`, streaming its merged stdout/stderr
     line-by-line to this container's stdout (-> Modal's live log) while
@@ -1527,9 +1530,15 @@ def _run_ai_toolkit_with_progress(
     .safetensors survive a mid-training SIGKILL."""
     log_path = pathlib.Path("/root/ai_toolkit_run.log")
 
-    # Explicitly online for the trainer — it may pull HF-hosted preset
-    # checkpoints even if the caption step flipped the process offline.
+    # `offline=True` (a preset / pre-cacheable HF-repo model): the CPU
+    # dispatcher already snapshotted every component to the Volume, so pin the
+    # trainer OFFLINE — a stray from_pretrained() must fail fast, never fetch
+    # multi-GB on the GPU (cost defence). `offline=False` only for a
+    # custom_model_id that's a raw URL / an unlisted repo we can't pre-stage.
     child_env = {k: v for k, v in os.environ.items() if k not in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")}
+    if offline:
+        child_env["HF_HUB_OFFLINE"] = "1"
+        child_env["TRANSFORMERS_OFFLINE"] = "1"
 
     # Runtime quant_api shim (no image rebuild): written fresh on every run
     # so a fix here lands on the next deploy without rebuilding the (slow)
@@ -2289,6 +2298,30 @@ def train_lora_job(params: dict) -> dict:
     if _is_blocked_model(target_model) or _is_blocked_model(custom_model_id):
         raise ValueError("FLUX.1 [dev] is blocked in LoRA Studio (non-commercial licence)")
 
+    # LAZY-GPU INVARIANT (see module docstring): the CPU dispatcher runs
+    # ensure_model_cached_cpu.remote() to completion BEFORE this GPU is ever
+    # spawned. This container must therefore never download the base model —
+    # if a required HF repo isn't already on the Volume, fail in the first
+    # seconds so the B300 scales straight back down (scaledown_window=30)
+    # instead of sitting through a multi-GB fetch at GPU rates.
+    _required_repos = [] if override else _hf_repos_for(target_model, custom_model_id)
+    if _required_repos:
+        try:
+            vol.reload()  # pull the CPU stage's just-committed cache
+        except Exception as _re:  # noqa: BLE001
+            print(f"[train] vol.reload() before cache check skipped: {_re}", flush=True)
+    _missing = [r for r in _required_repos if not _repo_snapshot_present(r)]
+    if _missing:
+        # InfraError -> _is_infra_error -> full refund (it's the system's
+        # orchestration failing, not the user's config).
+        raise InfraError(
+            "base model not pre-cached on the Volume: "
+            + ", ".join(_missing)
+            + " — the CPU pre-cache stage (ensure_model_cached_cpu) must complete "
+            "before the GPU is spawned. Not downloading on the GPU (cost defence). "
+            "Re-run the job; the pre-cache will have finished by then."
+        )
+
     # Raw-YAML mode: the YAML's own config.name / process[0].trigger_word are
     # authoritative (the UI disables the form fields). Adopt them here so the
     # per-job output dir, the checkpoint collectors, the published filename and
@@ -2619,9 +2652,15 @@ def train_lora_job(params: dict) -> dict:
             f"[stage2] cost cap: {credits_cost}C -> {cost_cap_s}s (~{cost_cap_s / 3600:.2f}h)",
             flush=True,
         )
+        # Pin the trainer OFFLINE for every path where we can pre-stage the
+        # model on CPU (all presets + listed custom repos). Only a raw URL
+        # custom model or a raw-YAML override is allowed to reach the network.
+        _needs_online = bool(override) or (
+            target_model == "custom" and custom_model_id.startswith(("http://", "https://"))
+        )
         _run_ai_toolkit_with_progress(
             config_path, job_id, total_steps or 2000, commit_vol=True, job_started_ts=started,
-            safety_limit_s=cost_cap_s, resolution=resolution,
+            safety_limit_s=cost_cap_s, resolution=resolution, offline=not _needs_online,
         )
         print(f"[train] stage 2 done in {time.time() - stage2:.0f}s")
 
@@ -2872,6 +2911,21 @@ def _hf_repos_for(target_model: str, custom_model_id: str = "") -> list[str]:
     return list(dict.fromkeys(repos))
 
 
+def _repo_snapshot_present(repo_id: str) -> bool:
+    """Local-only (no network) check that a HF repo's snapshot is on the
+    Volume cache. Used by train_lora_job to fail FAST if the CPU pre-cache
+    stage somehow didn't complete — so a $/min B300 never sits through a
+    multi-GB download."""
+    slug = "models--" + repo_id.replace("/", "--")
+    snap_root = pathlib.Path(HF_CACHE_DIR) / "hub" / slug / "snapshots"
+    if not snap_root.is_dir():
+        return False
+    for rev in snap_root.iterdir():
+        if rev.is_dir() and any(rev.rglob("*")):
+            return True
+    return False
+
+
 @app.function(
     image=dispatch_image,
     # Wan 2.1 14B Diffusers is ~55GB — hf_transfer parallel pull still needs a
@@ -2931,6 +2985,15 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
             print(f"[cache] vol.commit() — {len(downloaded)} repo(s) persisted to {HF_CACHE_DIR}", flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[cache] vol.commit skipped: {exc}", flush=True)
+
+    # Post-commit verification — the GPU is only spawned on {"ok": True}, so
+    # confirm every repo's snapshot is actually on-disk (a partial download
+    # that raised no exception, a commit that silently no-op'd, …). This is
+    # the "fully placed on /models" guarantee the lazy-GPU sequence rests on.
+    unverified = [r for r in repos if not _repo_snapshot_present(r)]
+    if unverified:
+        print(f"[cache] POST-COMMIT VERIFY FAILED — snapshot missing for {unverified}", flush=True)
+        return {"ok": False, "cached": False, "repo": unverified[0], "error": "snapshot missing after download+commit"}
 
     return {"ok": True, "cached": not downloaded, "repos": repos, "downloaded": downloaded}
 
