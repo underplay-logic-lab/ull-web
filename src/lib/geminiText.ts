@@ -92,16 +92,17 @@ function genConfig(model: string, jsonArray: JsonMode, dropThinking: boolean): G
   return cfg as unknown as GenerationConfig;
 }
 
-// Dataset captioning / translation describes what's already in an image the
-// user brought — the default MEDIUM thresholds spuriously block a lot of
-// ordinary character / portrait training images. BLOCK_ONLY_HIGH keeps the
-// genuine guardrails without wrecking the batch over one borderline frame.
+// Dataset captioning / translation only ever describes an image the user
+// already owns and is about to train on — there is nothing to "protect" a
+// downstream reader from. Any block here is a false positive that drops a
+// training image. On a billed Tier-1 key BLOCK_NONE is permitted, so turn the
+// filter fully off across every category.
 const RELAXED_SAFETY: SafetySetting[] = [
   HarmCategory.HARM_CATEGORY_HARASSMENT,
   HarmCategory.HARM_CATEGORY_HATE_SPEECH,
   HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
   HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-].map((category) => ({ category, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH }));
+].map((category) => ({ category, threshold: HarmBlockThreshold.BLOCK_NONE }));
 
 export type GemErr = { kind: "quota" | "busy" | "failed"; message: string };
 export const isGemErr = (e: unknown): e is GemErr =>

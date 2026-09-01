@@ -3,43 +3,31 @@ import { supabase } from "@/lib/supabaseClient";
 // Client-side AI-vision auto-captioning for the LoRA Studio dataset.
 //
 // Each image is downscaled to a small JPEG in the browser (so the request
-// stays well under Vercel's 4.5 MB body cap — no upload needed) and sent to
-// /api/studio/lora/caption. The route answers each batch with EN + JA in one
-// multimodal call. This module drives that endpoint to 100% completion:
+// stays well under Vercel's 4.5 MB body cap) and sent to
+// /api/studio/lora/caption, which answers with EN + JA in one multimodal
+// call. Strategy — built for a billed Tier-1 key (1000 RPM) with the safety
+// filter fully off:
 //
-//   - up to CAPTION_CONCURRENCY batches in flight, paced DISPATCH_GAP_MS apart
-//     so we stay under the ~15 RPM free tier;
-//   - a 429 / 503 / network failure on a batch is retried in place with
-//     exponential backoff + jitter (never abandoned);
-//   - whatever is still missing after a full sweep is re-queued for another
-//     round with a smaller batch size, so a genuine safety refusal can be
-//     pinned to the single offending image;
-//   - only images the server marks as safety-filtered are surfaced as
-//     `safetyRejected` (the Modal worker's VLM fills exactly those gaps).
+//   - tiny batches (2 images) so one bad frame can't take out its neighbours;
+//   - fired wide (CAPTION_CONCURRENCY lanes) so 145 images finish in seconds;
+//   - one in-place retry on a transient error, then one final straggler pass
+//     at batch size 1 — no exponential backoff, no shrinking-round machinery.
 
 const CAPTION_MAX_EDGE = 768;
 const CAPTION_JPEG_QUALITY = 0.72;
-// 4 lanes overlaps the ~8s/batch latency well (benchmarks: 150 imgs in ~22s).
-// The retry ceilings below keep a transient 429 from snowballing.
-const CAPTION_CONCURRENCY = 4;
-// Minimum gap between two batch requests starting — client-side pacing.
-const DISPATCH_GAP_MS = 350;
-// Per-batch retry on 429 / 503 / 5xx / network error. Kept low: the server
-// hands us Google's own retryAfterMs, so a couple of well-timed retries beat
-// many blind ones.
-const MAX_BATCH_RETRIES = 3;
-const BACKOFF_BASE_MS = 2000;
-// Cap on how long we'll honour a server "retry in Xs" hint for one attempt.
-const MAX_RETRY_WAIT_MS = 20_000;
-// Whole-dataset re-sweeps. Batch size shrinks each round so a persistent
-// safety block ends up isolated to one image.
-const ROUND_BATCH_SIZES = [10, 4, 1];
-const BATCH_TIMEOUT_MS = 60_000;
+// 2 per call: a refusal / junk response can only cost these two.
+const CAPTION_BATCH = 2;
+// Fired wide against the Tier-1 quota. Browsers cap same-origin HTTP/1.1 at
+// ~6 sockets, so locally this is effectively 6; on Vercel (HTTP/2) it's 16.
+const CAPTION_CONCURRENCY = 16;
+// One retry, short wait — with BLOCK_NONE there are no safety refusals and a
+// 2-image batch is too small to cascade, so one more go clears any blip.
+const MAX_BATCH_RETRIES = 1;
+const RETRY_WAIT_MS = 1200;
+const MAX_RETRY_WAIT_MS = 8000;
+const BATCH_TIMEOUT_MS = 45_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-// ±25% jitter so retrying lanes don't resynchronise into a new burst.
-const jitter = (ms: number) => Math.round(ms * (0.75 + Math.random() * 0.5));
-const backoffFor = (attempt: number) => jitter(BACKOFF_BASE_MS * 2 ** attempt);
 
 export type DatasetCaptionResult = {
   /** English caption per image, "" where captioning failed. */
@@ -95,8 +83,7 @@ export async function generateDatasetCaptions(
     // into `files`). Lets the caller merge results incrementally and drop
     // any that belong to an image the user has since removed.
     onBatch?: (entries: { index: number; en: string; ja: string }[]) => void;
-    // Fires when a batch hits a rate limit / transient error and is about to
-    // wait `waitMs` before retrying — for a "still working…" UI hint.
+    // Fires when a batch hits a transient error and is about to retry.
     onRetry?: (info: { status: number; waitMs: number }) => void;
     // Return true for a file index the caller no longer cares about (image
     // removed mid-pass) — it's skipped, not encoded or sent.
@@ -109,23 +96,27 @@ export async function generateDatasetCaptions(
   const captionsJa = new Array<string>(total).fill("");
   const safety = new Set<number>();
 
-  const allIndices = () => Array.from({ length: total }, (_, i) => i);
   const stale = (i: number) => opts.isStale?.(i) ?? false;
   const captioned = (i: number) => captions[i].trim().length > 0;
   // An image still worth sending: present, uncaptioned, not safety-blocked.
   const wanted = (i: number) => !stale(i) && !captioned(i) && !safety.has(i);
+  const aborted = () => opts.signal?.aborted === true;
 
-  const done = (): DatasetCaptionResult => ({
-    captions,
-    captionsJa,
-    captionedCount: captions.filter((c) => c.trim().length > 0).length,
-    safetyRejected: [...safety].sort((a, b) => a - b),
-    complete: total === 0 || allIndices().filter(wanted).length === 0,
-  });
-  if (total === 0) return done();
+  const result = (): DatasetCaptionResult => {
+    let remaining = 0;
+    for (let i = 0; i < total; i++) if (wanted(i)) remaining++;
+    return {
+      captions,
+      captionsJa,
+      captionedCount: captions.filter((c) => c.trim().length > 0).length,
+      safetyRejected: [...safety].sort((a, b) => a - b),
+      complete: total === 0 || remaining === 0,
+    };
+  };
+  if (total === 0) return result();
 
   const token = await accessToken();
-  if (!token) return done();
+  if (!token) return result();
 
   let progressed = 0;
   const bump = (n: number) => {
@@ -133,35 +124,26 @@ export async function generateDatasetCaptions(
     opts.onProgress?.(progressed, total);
   };
 
-  // Serialise batch dispatch across all lanes to >= DISPATCH_GAP_MS apart.
-  let lastDispatch = 0;
-  const pace = async () => {
-    const wait = lastDispatch + DISPATCH_GAP_MS - Date.now();
-    if (wait > 0) await sleep(wait);
-    lastDispatch = Date.now();
-  };
-
-  const aborted = () => opts.signal?.aborted === true;
-
-  // POST one group of file indices, merging captions in place. Retries the
-  // whole request on 429 / 503 / 5xx / network error with exponential backoff.
+  // POST one group of file indices, merging captions in place. One retry on a
+  // transient error, then give up (the straggler pass / worker VLM covers it).
   const postGroup = async (idxs: number[]): Promise<void> => {
     if (aborted()) return;
     const group = idxs.filter(wanted);
-    if (!group.length) return;
+    if (!group.length) {
+      bump(idxs.length);
+      return;
+    }
 
     const encoded = await Promise.all(group.map((i) => downscaleToBase64(files[i])));
     const pairs = group
       .map((i, k) => ({ i, img: encoded[k] }))
       .filter((p): p is { i: number; img: { data: string; mimeType: string } } => p.img != null);
     if (!pairs.length) {
-      bump(group.length);
+      bump(idxs.length);
       return;
     }
 
     for (let attempt = 0; attempt <= MAX_BATCH_RETRIES; attempt++) {
-      if (aborted()) return;
-      await pace();
       if (aborted()) return;
 
       const to = new AbortController();
@@ -174,7 +156,6 @@ export async function generateDatasetCaptions(
         captions?: unknown;
         captionsJa?: unknown;
         safety?: unknown;
-        error?: unknown;
         retryAfterMs?: unknown;
       } = {};
       try {
@@ -191,7 +172,7 @@ export async function generateDatasetCaptions(
         status = res.status;
         data = await res.json().catch(() => ({}));
       } catch {
-        status = 0; // network error / timeout — retryable
+        status = 0; // network error / timeout
       } finally {
         clearTimeout(timer);
         opts.signal?.removeEventListener("abort", onAbort);
@@ -210,37 +191,33 @@ export async function generateDatasetCaptions(
           if (e || j) landed.push({ index: p.i, en: e, ja: j });
         });
         if (landed.length) opts.onBatch?.(landed);
-
-        // Whole request refused by the safety filter and this is a single
-        // image — that's a genuine NSFW/policy block, not a rate limit.
-        if (data.safety === true && landed.length === 0 && pairs.length === 1) {
-          safety.add(pairs[0].i);
+        // Should never happen with BLOCK_NONE, but if the server still reports
+        // a safety refusal, mark the (tiny) batch so the worker VLM fills it.
+        if (data.safety === true && landed.length === 0) {
+          pairs.forEach((p) => safety.add(p.i));
         }
-        bump(pairs.length);
+        bump(idxs.length);
         return;
       }
 
       const retryable =
-        status === 0 || status === 429 || status === 503 || status === 500 || status === 502 || status === 504;
+        status === 0 || status === 429 || status === 503 || status >= 500;
       if (retryable && attempt < MAX_BATCH_RETRIES) {
-        // Prefer Google's own "retry in Xs" hint; fall back to exponential.
-        const hinted =
+        const waitMs =
           typeof data.retryAfterMs === "number" && data.retryAfterMs > 0
-            ? Math.min(data.retryAfterMs + 250, MAX_RETRY_WAIT_MS)
-            : 0;
-        const waitMs = hinted || backoffFor(attempt);
+            ? Math.min(data.retryAfterMs + 200, MAX_RETRY_WAIT_MS)
+            : RETRY_WAIT_MS;
         opts.onRetry?.({ status, waitMs });
         await sleep(waitMs);
         continue;
       }
-      // Out of retries, or a hard 4xx (401/501/…). Leave for the next round;
-      // if none succeed the image ends up blank and the worker VLM fills it.
-      bump(pairs.length);
+      bump(idxs.length);
       return;
     }
   };
 
-  const runRound = async (groups: number[][]): Promise<void> => {
+  // Run `groups` through a CAPTION_CONCURRENCY-wide lane pool.
+  const runPool = async (groups: number[][]): Promise<void> => {
     let next = 0;
     const lane = async (): Promise<void> => {
       while (!aborted()) {
@@ -254,27 +231,26 @@ export async function generateDatasetCaptions(
     );
   };
 
-  for (let round = 0; round < ROUND_BATCH_SIZES.length; round++) {
-    if (aborted()) break;
-    const pending = allIndices().filter(wanted);
-    if (!pending.length) break;
+  const chunk = (idxs: number[], size: number): number[][] => {
+    const out: number[][] = [];
+    for (let s = 0; s < idxs.length; s += size) out.push(idxs.slice(s, s + size));
+    return out;
+  };
 
-    // Re-sweeps re-count from zero against the shrinking pending set.
-    if (round > 0) progressed = total - pending.length;
+  // Main pass: every image, batched by 2.
+  const first: number[] = [];
+  for (let i = 0; i < total; i++) if (wanted(i)) first.push(i);
+  await runPool(chunk(first, CAPTION_BATCH));
 
-    const size = ROUND_BATCH_SIZES[round];
-    const groups: number[][] = [];
-    for (let s = 0; s < pending.length; s += size) groups.push(pending.slice(s, s + size));
-
-    await runRound(groups);
-
-    if (aborted()) break;
-    const after = allIndices().filter(wanted).length;
-    // A whole sweep (with per-batch backoff already exhausted) moved nothing —
-    // the quota is hard-exhausted or every remaining image is unservable.
-    // Further rounds won't help; let the worker's VLM take the rest.
-    if (after === pending.length) break;
+  // One straggler pass at batch size 1 for anything a transient blip missed.
+  if (!aborted()) {
+    const stragglers: number[] = [];
+    for (let i = 0; i < total; i++) if (wanted(i)) stragglers.push(i);
+    if (stragglers.length) {
+      progressed = total - stragglers.length;
+      await runPool(chunk(stragglers, 1));
+    }
   }
 
-  return done();
+  return result();
 }
