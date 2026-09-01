@@ -354,12 +354,14 @@ TARGET_MODELS: dict[str, dict] = {
         "text_encoder": f"{MODELS_DIR}/clip/qwen3vl_32b_minimax_h3_bf16.safetensors",
         "vae": f"{MODELS_DIR}/vae/minimax_h3_video_vae_fp16.safetensors",
     },
-    "wan2_1_14b": {
-        "arch": "wan21",
-        "unet": f"{MODELS_DIR}/diffusion_models/wan2.1_t2v_14b_bf16.safetensors",
-        "text_encoder": f"{MODELS_DIR}/text_encoders/umt5_xxl_fp16.safetensors",
-        "vae": f"{MODELS_DIR}/vae/wan_2.1_vae.safetensors",
-    },
+    # Wan 2.1: ai-toolkit loads it with WanTransformer3DModel.from_pretrained,
+    # which needs a Diffusers repo/dir (transformer + T5 text encoder + VAE +
+    # scheduler, each with its own config.json) — NOT a single .safetensors
+    # (that 404s config.json and then gets misread as an HF repo id ->
+    # "Repo id must use alphanumeric chars ...: '/models'"). So point
+    # name_or_path at the Diffusers repo and let ensure_model_cached_cpu()
+    # snapshot it to the Volume HF cache; no separate text_encoder/vae keys.
+    "wan2_1_14b": {"arch": "wan21", "unet": "Wan-AI/Wan2.1-T2V-14B-Diffusers"},
     "wan2_1_1_3b": {"arch": "wan21", "unet": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"},
     "hunyuan_video": {"arch": "hunyuan", "unet": "hunyuanvideo-community/HunyuanVideo"},
     "cogvideox_5b": {"arch": "cogvideox", "unet": "THUDM/CogVideoX-5b"},
@@ -2851,7 +2853,8 @@ def _pending_stub(item: dict):
 def _hf_repos_for(target_model: str, custom_model_id: str = "") -> list[str]:
     """The HF repo ids this job's base model needs pre-downloaded. Empty when
     every component is already a single-file checkpoint on the Volume
-    (minimax_h3 / wan2_1_14b / flux_schnell) — nothing to fetch."""
+    (minimax_h3 / flux_schnell). Wan 2.1 is a Diffusers repo -> returned here
+    so ensure_model_cached_cpu() snapshots the full component tree."""
 
     def _is_repo(v) -> bool:
         s = str(v or "")
@@ -2871,9 +2874,11 @@ def _hf_repos_for(target_model: str, custom_model_id: str = "") -> list[str]:
 
 @app.function(
     image=dispatch_image,
-    timeout=600,
-    cpu=2,
-    memory=4096,
+    # Wan 2.1 14B Diffusers is ~55GB — hf_transfer parallel pull still needs a
+    # generous budget on a cold Volume.
+    timeout=2400,
+    cpu=4,
+    memory=8192,
     volumes={MODELS_DIR: vol},
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
