@@ -18,20 +18,28 @@ import {
 // go through runGeminiText() so the finicky model-id gating below lives in
 // exactly one place.
 
-// Model notes (2026-09):
-//  - gemini-1.5-flash / gemini-2.0-flash: retired, 404.
-//  - gemini-2.5-flash / -lite: 404 "no longer available to new users" for
-//    recently-created API keys (this project's key is one).
-//  - gemini-3.6-flash: free-tier-only — HARD 20 requests/day even on a billed
-//    key (GenerateRequestsPerDayPerProjectPerModel-FreeTier). Never list it;
-//    once hit it 429s for the rest of the day and poisons every fallthrough.
-//  - gemini-flash-latest: GA alias, honours billed Tier-1 limits → default head.
-//  - gemini-3.7-flash: single fallback if the alias is down.
+// Model notes (2026-09) — verified against this project's key:
+//  - gemini-1.5-flash / 2.0-flash / 2.5-flash / 2.5-flash-lite / 2.5-pro:
+//    all 404 ("no longer available to new users" / retired). Do NOT list them.
+//  - The free-tier daily request quota is PER MODEL
+//    (GenerateRequestsPerDayPerProjectPerModel-FreeTier, ~20/day). So when one
+//    model 429s we fall through to the next — each has its own bucket, which
+//    multiplies the daily budget until the project gets a billed tier.
+//  - gemini-flash-lite-latest: fastest (~3s/batch), own bucket → default head.
+//  - gemini-3.5-flash / flash-latest / 3.6-flash: fallbacks, each own bucket.
 // GEMINI_MODEL overrides the head of the list (pin one; .env.local does).
 export function geminiModelCandidates(): string[] {
   const configured = process.env.GEMINI_MODEL?.trim();
   return [
-    ...new Set([configured, "gemini-flash-latest", "gemini-3.7-flash"].filter(Boolean)),
+    ...new Set(
+      [
+        configured,
+        "gemini-flash-lite-latest",
+        "gemini-3.5-flash",
+        "gemini-flash-latest",
+        "gemini-3.6-flash",
+      ].filter(Boolean),
+    ),
   ] as string[];
 }
 
@@ -58,11 +66,12 @@ function genConfig(model: string, jsonArray: JsonMode, dropThinking: boolean): G
   // (a big chunk of the old caption latency). The EN+JA batch needs headroom.
   const cfg: Record<string, unknown> = { temperature: 0.2, maxOutputTokens: 16384 };
   if (!dropThinking) {
-    if (/^gemini-3\./.test(model)) {
-      // 3.x rejects thinkingBudget:0 (400); thinkingLevel LOW keeps latency
-      // sane (a batch otherwise "thinks" for 20-30s).
+    // The -latest aliases (flash / flash-lite / pro) now resolve to 3.x
+    // models, which REJECT thinkingBudget:0 with a 400 ("invalid argument")
+    // and want thinkingLevel instead. Only genuine 2.x ids take the budget.
+    if (/^gemini-3\./.test(model) || /^gemini-(flash|pro)(-lite)?-latest$/.test(model)) {
       cfg.thinkingConfig = { thinkingLevel: "LOW" };
-    } else if (/^gemini-2\.|^gemini-flash(-lite)?-latest$/.test(model)) {
+    } else if (/^gemini-2\./.test(model)) {
       cfg.thinkingConfig = { thinkingBudget: 0 };
     }
   }
@@ -119,13 +128,20 @@ async function runGeminiGenerate(
   genAI: GoogleGenerativeAI,
   contents: string | Array<string | Part>,
   jsonArray: JsonMode,
+  label = "Gemini",
 ): Promise<string> {
   let lastErr = "";
   let sawBusy = false;
+  let sawQuota = false;
+  const keyTail = (process.env.GEMINI_API_KEY?.trim() ?? "").slice(-4);
   for (const modelId of geminiModelCandidates()) {
     let dropThinking = false;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
+        console.log(
+          `[${label}] Model: ${modelId}, Key: ...${keyTail}` +
+            (attempt > 0 ? ` (attempt ${attempt + 1})` : ""),
+        );
         const model = genAI.getGenerativeModel({
           model: modelId,
           generationConfig: genConfig(modelId, jsonArray, dropThinking),
@@ -149,10 +165,15 @@ async function runGeminiGenerate(
         break; // -> next candidate
       } catch (err) {
         lastErr = err instanceof Error ? err.message : String(err);
-        // Rate limited. Don't fall through — the candidates share the project's
-        // RPM/TPM bucket, so the next model 429s too and just burns time. Let
-        // the caller back off (it honours the retryAfterMs we pass through).
-        if (QUOTA_RE.test(lastErr)) throw { kind: "quota", message: lastErr } satisfies GemErr;
+        // Rate limited. The free-tier daily quota is PER MODEL, so fall through
+        // to the next candidate (its own bucket) rather than dying here. Only
+        // throw `quota` once every candidate is exhausted — the caller then
+        // backs off on the retryAfterMs we pass through.
+        if (QUOTA_RE.test(lastErr)) {
+          sawQuota = true;
+          console.warn(`[geminiText] ${modelId} rate-limited (429), trying next model`);
+          break;
+        }
         if (BUSY_RE.test(lastErr)) {
           sawBusy = true;
           if (attempt === 0) {
@@ -166,9 +187,13 @@ async function runGeminiGenerate(
           console.warn(`[geminiText] ${modelId} unavailable, trying next: ${lastErr}`);
           break;
         }
-        // A 3.x model rejecting thinkingBudget (or a repointed alias) — retry
-        // the same model once with thinkingConfig dropped.
-        if (!dropThinking && THINKING_RE.test(lastErr)) {
+        // A 3.x model / repointed alias rejecting thinkingConfig. The error is
+        // often just "Request contains an invalid argument" (no "thinking"
+        // token), so retry once with thinkingConfig dropped on any 400.
+        if (
+          !dropThinking &&
+          (THINKING_RE.test(lastErr) || /\b400\b|invalid argument/i.test(lastErr))
+        ) {
           dropThinking = true;
           console.warn(`[geminiText] ${modelId}: retrying without thinkingConfig`);
           continue;
@@ -177,7 +202,10 @@ async function runGeminiGenerate(
       }
     }
   }
-  throw { kind: sawBusy ? "busy" : "failed", message: lastErr } satisfies GemErr;
+  throw {
+    kind: sawQuota ? "quota" : sawBusy ? "busy" : "failed",
+    message: lastErr,
+  } satisfies GemErr;
 }
 
 // Text-only call (unchanged public signature).
@@ -201,7 +229,7 @@ export async function runGeminiVision(
     prompt,
     ...images.map((im) => ({ inlineData: { mimeType: im.mimeType, data: im.data } })),
   ];
-  return runGeminiGenerate(genAI, parts, jsonArray);
+  return runGeminiGenerate(genAI, parts, jsonArray, "Gemini Vision");
 }
 
 // Maps a thrown GemErr (or any error) to a JSON NextResponse. `messages`
