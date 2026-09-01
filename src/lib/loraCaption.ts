@@ -68,6 +68,13 @@ export async function generateDatasetCaptions(
     triggerWord?: string;
     captionPrompt?: string;
     onProgress?: (done: number, total: number) => void;
+    // Fires as each batch lands, with the freshly-captioned entries (indices
+    // into `files`). Lets the caller merge results incrementally and drop
+    // any that belong to an image the user has since removed.
+    onBatch?: (entries: { index: number; en: string; ja: string }[]) => void;
+    // Return true for a file index the caller no longer cares about (image
+    // removed mid-pass) — it's skipped, not encoded or sent.
+    isStale?: (index: number) => boolean;
     signal?: AbortSignal;
   } = {},
 ): Promise<DatasetCaptionResult> {
@@ -96,8 +103,10 @@ export async function generateDatasetCaptions(
   const runBatch = async (idxs: number[]): Promise<void> => {
     if (opts.signal?.aborted || quotaHit) return;
 
-    const encoded = await Promise.all(idxs.map((i) => downscaleToBase64(files[i])));
-    const sendPairs = idxs
+    // Drop indices the caller has abandoned (image removed since drop).
+    const live = idxs.filter((i) => !opts.isStale?.(i));
+    const encoded = await Promise.all(live.map((i) => downscaleToBase64(files[i])));
+    const sendPairs = live
       .map((i, k) => ({ i, img: encoded[k] }))
       .filter((p): p is { i: number; img: { data: string; mimeType: string } } => p.img != null);
 
@@ -123,10 +132,15 @@ export async function generateDatasetCaptions(
         if (res.ok && Array.isArray(data?.captions)) {
           const en = data.captions as unknown[];
           const ja = Array.isArray(data?.captionsJa) ? (data.captionsJa as unknown[]) : [];
+          const landed: { index: number; en: string; ja: string }[] = [];
           sendPairs.forEach((p, k) => {
-            if (typeof en[k] === "string") captions[p.i] = (en[k] as string).trim();
-            if (typeof ja[k] === "string") captionsJa[p.i] = (ja[k] as string).trim();
+            const enK = typeof en[k] === "string" ? (en[k] as string).trim() : "";
+            const jaK = typeof ja[k] === "string" ? (ja[k] as string).trim() : "";
+            if (enK) captions[p.i] = enK;
+            if (jaK) captionsJa[p.i] = jaK;
+            if (enK || jaK) landed.push({ index: p.i, en: enK, ja: jaK });
           });
+          if (landed.length) opts.onBatch?.(landed);
         } else {
           console.warn("[loraCaption] batch failed:", data?.error || res.status);
         }

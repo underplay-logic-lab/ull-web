@@ -947,6 +947,14 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // State (not a ref) because the routing badge derives from it in render.
   const [userCaptionIds, setUserCaptionIds] = useState<Set<string>>(() => new Set());
   const autoCaptionAbortRef = useRef<AbortController | null>(null);
+  // Live set of image ids — read by the async caption pass (which captured a
+  // now-stale `targets` list) to drop results for images removed mid-pass.
+  // Kept in sync with `images` right after commit; the pass only reads it
+  // when a network round trip resolves, long after any effect has run.
+  const imageIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    imageIdsRef.current = new Set(images.map((i) => i.id));
+  }, [images]);
   // The caption_prompt the AI captions were last generated with — so
   // handleStart only re-captions when the synthesised instruction changed.
   const recaptionPromptRef = useRef<string>("");
@@ -1544,13 +1552,27 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     try {
       const captionList = (ownCaptions ?? []).map((c) => (c ?? "").trim());
       const anyCaption = captionList.some((c) => c.length > 0);
+      // A caption that's only the trigger word (or blank) is NOT a real
+      // caption — the AI pass failed on that image and the worker's VLM must
+      // fill it. `captionList` is aligned to `imgs` by construction, so this
+      // also enforces "every current image has a caption entry".
+      const trig = effectiveTrigger.trim().toLowerCase();
+      const isSubstantive = (c: string): boolean => {
+        const t = c.trim();
+        if (!t) return false;
+        if (!trig) return true;
+        const rest = t.toLowerCase().startsWith(trig)
+          ? t.slice(trig.length).replace(/^[\s,、]+/, "")
+          : t;
+        return rest.trim().length > 0;
+      };
       const allCaptions =
-        captionList.length === imgs.length && captionList.every((c) => c.length > 0);
+        captionList.length === imgs.length && captionList.every(isSubstantive);
       // "Bring your own" (worker never loads the VLM, blanks become the
       // trigger word) when the user authored the captions (.txt / ZIP /
       // curation edits) — a blank there is intentional. AI captions instead
-      // flow as `captions` (not custom_captions) unless every image is
-      // covered, so the worker's fallback VLM fills only the gaps.
+      // flow as `captions` (not custom_captions) unless every image has a
+      // real caption, so the worker's fallback VLM fills only the gaps.
       const bringOwn = captionsFromUser ? anyCaption : allCaptions;
 
       const trainingConfig = yamlMode
@@ -1636,6 +1658,12 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     [images, captions, userCaptionIds],
   );
   const hasUserCaptions = userCaptionCount > 0;
+  // Images that are the AI pass's responsibility (everything the user didn't
+  // caption themselves) — the live denominator for the progress badge.
+  const aiTargetCount = useMemo(
+    () => images.filter((img) => !userCaptionIds.has(img.id)).length,
+    [images, userCaptionIds],
+  );
   // Any image still waiting on the AI vision pass.
   const pendingCaptionCount = useMemo(
     () =>
@@ -1660,6 +1688,27 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       autoCaptionAbortRef.current = ac;
       recaptionPromptRef.current = captionPrompt;
       setAutoCap({ running: true, done: 0, total: targets.length, error: null, everRan: true });
+
+      // Merge each batch as it lands, dropping any target the user has
+      // removed since the pass started (its id is gone from imageIdsRef).
+      const mergeLive = (
+        entries: { index: number; en: string; ja: string }[],
+      ): { cap: Record<string, string>; ja: Record<string, string> } => {
+        const live = imageIdsRef.current;
+        const cap: Record<string, string> = {};
+        const capJa: Record<string, string> = {};
+        for (const e of entries) {
+          const id = targets[e.index]?.id;
+          if (!id || !live.has(id)) continue;
+          if (e.en.trim()) cap[id] = e.en.trim();
+          if (e.ja.trim()) capJa[id] = e.ja.trim();
+        }
+        if (Object.keys(cap).length) setCaptions((prev) => ({ ...prev, ...cap }));
+        if (Object.keys(capJa).length) setCaptionsJa((prev) => ({ ...prev, ...capJa }));
+        return { cap, ja: capJa };
+      };
+
+      const merged: { cap: Record<string, string>; ja: Record<string, string> } = { cap: {}, ja: {} };
       let res: Awaited<ReturnType<typeof generateDatasetCaptions>>;
       try {
         res = await generateDatasetCaptions(
@@ -1669,6 +1718,15 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             captionPrompt: captionPrompt || undefined,
             signal: ac.signal,
             onProgress: (done, total) => setAutoCap((s) => ({ ...s, done, total })),
+            onBatch: (entries) => {
+              const m = mergeLive(entries);
+              Object.assign(merged.cap, m.cap);
+              Object.assign(merged.ja, m.ja);
+            },
+            isStale: (i) => {
+              const id = targets[i]?.id;
+              return !id || !imageIdsRef.current.has(id);
+            },
           },
         );
       } catch {
@@ -1677,23 +1735,25 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       }
       if (ac.signal.aborted) return null;
 
-      const cap: Record<string, string> = {};
-      const ja: Record<string, string> = {};
-      targets.forEach((t, k) => {
-        if (res.captions[k]?.trim()) cap[t.id] = res.captions[k].trim();
-        if (res.captionsJa[k]?.trim()) ja[t.id] = res.captionsJa[k].trim();
-      });
-      setCaptions((prev) => ({ ...prev, ...cap }));
-      setCaptionsJa((prev) => ({ ...prev, ...ja }));
+      // Safety net: fold in anything onBatch missed, still live-filtered.
+      const tail = mergeLive(
+        targets.map((t, k) => ({ index: k, en: res.captions[k] ?? "", ja: res.captionsJa[k] ?? "" })),
+      );
+      Object.assign(merged.cap, tail.cap);
+      Object.assign(merged.ja, tail.ja);
 
-      const missed = targets.length - res.captionedCount;
+      // "Missed" counts only images that still exist AND still have no caption.
+      const live = imageIdsRef.current;
+      const missed = targets.filter(
+        (t) => live.has(t.id) && !(merged.cap[t.id] ?? "").trim(),
+      ).length;
       setAutoCap((s) => ({
         ...s,
         running: false,
         done: s.total,
         error: missed > 0 ? `${missed} 枚は自動解析できませんでした（学習時に自動補完されます）。` : null,
       }));
-      return { cap, ja };
+      return { cap: merged.cap, ja: merged.ja };
     },
     [],
   );
@@ -1858,6 +1918,16 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       if (!keptIds.has(i.id)) URL.revokeObjectURL(i.url);
     });
     const keptImages: DatasetImage[] = kept.map((p) => ({ id: p.id, file: p.file, url: p.url }));
+    imageIdsRef.current = keptIds;
+    // Purge every trace of the excluded images so a later re-entry / re-pass
+    // can't resurrect their state.
+    curationPairs.forEach((p) => {
+      if (!keptIds.has(p.id)) captionAttemptedRef.current.delete(p.id);
+    });
+    setUserCaptionIds((prev) => {
+      if ([...prev].every((id) => keptIds.has(id))) return prev;
+      return new Set([...prev].filter((id) => keptIds.has(id)));
+    });
     setImages(keptImages);
     setCaptions(Object.fromEntries(kept.map((p) => [p.id, p.caption])));
     setCaptionsJa(Object.fromEntries(kept.map((p) => [p.id, p.captionJa])));
@@ -2010,12 +2080,12 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               the payload will carry, decided by what was dropped in + the AI
               vision pass result. No vendor names (CLAUDE.md §2). */}
           {images.length > 0 &&
-            (autoCap.running ? (
+            (autoCap.running && pendingCaptionCount > 0 ? (
               <p className="flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
                 <Loader2 size={13} className="shrink-0 animate-spin" />
                 <span>
                   <span className="font-medium">高速AIビジョンが全画像を自動解析中…</span>（
-                  {autoCap.done}/{autoCap.total}）
+                  {Math.min(aiCaptionedCount, aiTargetCount)}/{aiTargetCount}）
                 </span>
               </p>
             ) : hasUserCaptions ? (
