@@ -268,49 +268,77 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
 // signed Modal URL and returns it — used by both the direct-download button
 // and the "copy URL for the Model Downloader" button. The link is valid for
 // ~15 minutes and the bytes flow browser<->Modal directly (one hop).
-export async function getLoraCheckpointDownloadUrl(jobId: string, filename: string): Promise<string> {
-  // Force a refresh so an access_token that expired while the completed
-  // screen sat open doesn't 401 the download route.
-  let accessToken: string | undefined;
+// Current access token, force-refreshed if it's within 60s of expiring — so a
+// download started from a completed screen that sat open doesn't 401.
+async function freshAccessToken(): Promise<string> {
+  let token: string | undefined;
   try {
     const { data } = await supabase.auth.getSession();
-    accessToken = data.session?.access_token;
+    token = data.session?.access_token;
     const exp = data.session?.expires_at ?? 0;
-    if (!accessToken || exp * 1000 < Date.now() + 60_000) {
+    if (!token || exp * 1000 < Date.now() + 60_000) {
       const { data: refreshed } = await supabase.auth.refreshSession();
-      accessToken = refreshed.session?.access_token ?? accessToken;
+      token = refreshed.session?.access_token ?? token;
     }
   } catch {
-    /* fall through to the null check */
+    /* fall through */
   }
-  if (!accessToken) throw new Error("セッションの有効期限が切れました。ページを再読み込みしてログインし直してください。");
+  if (!token) {
+    throw new Error("セッションの有効期限が切れました。ページを再読み込みしてログインし直してください。");
+  }
+  return token;
+}
 
+// Hidden-iframe download of a signed, cross-origin URL. `<a download>` is
+// ignored cross-origin and a post-await synthetic click is popup-blocked;
+// Modal's FileResponse sends Content-Disposition: attachment so the iframe
+// navigation just downloads, no page nav.
+function iframeDownload(url: string): void {
+  const iframe = document.createElement("iframe");
+  iframe.style.display = "none";
+  iframe.src = url;
+  document.body.appendChild(iframe);
+  setTimeout(() => iframe.remove(), 180_000);
+}
+
+function mapDownloadError(status: number, error?: string): Error {
+  if (status === 401) return new Error("認証の有効期限が切れました。再読み込みしてお試しください。");
+  if (status === 403) return new Error(error || "このジョブのダウンロード権限がありません。");
+  if (status === 404) return new Error(error || "対象ファイルがまだ準備されていません。");
+  return new Error(error || `ダウンロードURLの取得に失敗しました (${status})。`);
+}
+
+export async function getLoraCheckpointDownloadUrl(jobId: string, filename: string): Promise<string> {
+  const accessToken = await freshAccessToken();
   const res = await fetch(
     `/api/studio/lora/checkpoint?jobId=${encodeURIComponent(jobId)}&file=${encodeURIComponent(filename)}`,
     { headers: { Authorization: `Bearer ${accessToken}` }, cache: "no-store" },
   );
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || typeof data?.downloadUrl !== "string") {
-    if (res.status === 401) throw new Error("認証の有効期限が切れました。再読み込みしてお試しください。");
-    if (res.status === 404) throw new Error(data?.error || "このファイルはまだ準備されていません（一括DLボタンで復元できます）。");
-    throw new Error(data?.error || `ダウンロードURLの取得に失敗しました (${res.status})。`);
-  }
+  if (!res.ok || typeof data?.downloadUrl !== "string") throw mapDownloadError(res.status, data?.error);
   return data.downloadUrl as string;
 }
 
-// Triggers a browser download of a signed Modal checkpoint URL. Uses a hidden
-// iframe — the bytes are cross-origin so `<a download>` is ignored, and a
-// post-`await` synthetic click on `<a>` / `window.open` gets swallowed by the
-// popup blocker (the user gesture is already spent). Modal's FileResponse
-// sends `Content-Disposition: attachment`, so the iframe navigation downloads
-// the file without touching the top page.
 export async function downloadLoraCheckpoint(jobId: string, filename: string): Promise<void> {
-  const downloadUrl = await getLoraCheckpointDownloadUrl(jobId, filename);
-  const iframe = document.createElement("iframe");
-  iframe.style.display = "none";
-  iframe.src = downloadUrl;
-  document.body.appendChild(iframe);
-  setTimeout(() => iframe.remove(), 120_000);
+  iframeDownload(await getLoraCheckpointDownloadUrl(jobId, filename));
+}
+
+// One-shot bulk artefact download. Resolves server-side (no flaky salvage):
+// an existing checkpoints_all.zip / dataset.zip streams via a signed direct
+// URL immediately; otherwise the CPU-only admin_zip_volume_folder endpoint
+// zips loras/<owner>/<job>/ on demand and streams that.
+export async function downloadLoraJobBundle(
+  jobId: string,
+  want: "bundle" | "dataset" = "bundle",
+): Promise<void> {
+  const accessToken = await freshAccessToken();
+  const res = await fetch(
+    `/api/studio/lora/checkpoint/bundle?jobId=${encodeURIComponent(jobId)}&want=${want}`,
+    { headers: { Authorization: `Bearer ${accessToken}` }, cache: "no-store" },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || typeof data?.downloadUrl !== "string") throw mapDownloadError(res.status, data?.error);
+  iframeDownload(data.downloadUrl as string);
 }
 
 export type LoraRecoverResult = {

@@ -34,6 +34,7 @@ import {
   pollLoraJob,
   uploadLoraDataset,
   downloadLoraCheckpoint,
+  downloadLoraJobBundle,
   getLoraCheckpointDownloadUrl,
   salvageLoraJob,
   fetchRecentLoraJob,
@@ -643,17 +644,10 @@ function ProgressPanel({
     }
   };
 
-  // One-click download of a primary artifact, for ANY finished job
-  // (completed / failed / cancelled). If the file isn't in metadata yet, run
-  // salvage first (CPU-only, 0 GPU cost) to build + register it, then
-  // download. "final" falls back to the highest-step checkpoint when a run
-  // never produced a true _final.safetensors.
-  const pickTarget = (
-    want: "dataset" | "bundle" | "final",
-    list: { filename: string; step: number; isFinal: boolean; isBundle: boolean; isCaptionArchive: boolean }[],
-  ): string | undefined => {
-    if (want === "dataset") return list.find((c) => c.isCaptionArchive)?.filename;
-    if (want === "bundle") return list.find((c) => c.isBundle)?.filename;
+  // The "🏆 完成版LoRA" target: the true _final.safetensors, else the
+  // highest-step checkpoint a stopped run left behind.
+  const finalCkptName = (): string | undefined => {
+    const list = job.checkpoints ?? [];
     const fin = list.find((c) => c.isFinal)?.filename;
     if (fin) return fin;
     return [...list]
@@ -661,24 +655,24 @@ function ProgressPanel({
       .sort((a, b) => b.step - a.step)[0]?.filename;
   };
 
+  // One-click download for ANY finished job (completed / failed / cancelled).
+  // No salvage round-trip: `bundle` / `dataset` resolve server-side to a
+  // signed direct URL (an existing zip) or an on-demand CPU folder-zip;
+  // `final` streams the single checkpoint via the signed checkpoint route.
   const handleBundleDownload = async (want: "dataset" | "bundle" | "final") => {
     setDownloadingCkpt(want);
     setCkptError(null);
     try {
-      let target = pickTarget(want, job.checkpoints ?? []);
-      if (!target) {
-        const res = await salvageLoraJob(job.jobId);
-        target = pickTarget(want, res.checkpoints);
+      if (want === "final") {
+        const target = finalCkptName();
+        if (!target) {
+          setCkptError("完成版・中間チェックポイントが見つかりませんでした（学習が初期段階で停止した可能性があります）。");
+          return;
+        }
+        await downloadLoraCheckpoint(job.jobId, target);
+      } else {
+        await downloadLoraJobBundle(job.jobId, want);
       }
-      if (!target) {
-        setCkptError(
-          want === "final"
-            ? "完成版・中間チェックポイントが見つかりませんでした（学習が初期段階で停止した可能性があります）。"
-            : "対象ファイルを準備できませんでした。",
-        );
-        return;
-      }
-      await downloadLoraCheckpoint(job.jobId, target);
       pushToast("ダウンロードを開始しました");
     } catch (err) {
       setCkptError(err instanceof Error ? err.message : "ダウンロードに失敗しました。");
