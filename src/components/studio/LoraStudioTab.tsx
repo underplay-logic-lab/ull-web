@@ -1304,6 +1304,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const [zipBusy, setZipBusy] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [job, setJob] = useState<LoraJobStatus | null>(null);
+  // A previous FAILED / cancelled job found at mount. Never auto-opens its
+  // panel (that async-driven yank is the whole bug) — it surfaces a small,
+  // dismissible banner on the form and the user chooses to open it.
+  const [recoveredJob, setRecoveredJob] = useState<LoraJobStatus | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
   // Seconds since the current job entered 'queued' — drives the cold-start
@@ -1354,6 +1358,23 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // The job id currently being polled and when it entered 'queued'.
   const activeJobIdRef = useRef<string>("");
   const queuedSinceRef = useRef<number>(0);
+  // Live mirror of `phase`, readable synchronously from async callbacks. The
+  // mount-restore fetch and any in-flight poll consult this before touching
+  // state: once the user is on the form (fresh load that resolved to the form,
+  // an explicit reset, or a Start-Training press) NO late async response may
+  // shove them onto "tracking".
+  const phaseRef = useRef<Phase>("form");
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
+  // The mount-restore effect keys on `user`, whose identity changes on every
+  // token refresh / tab refocus — without this it re-runs and re-attaches a
+  // job the user already left. Restore is attempted exactly once per mount.
+  const restoreDoneRef = useRef(false);
+  // Generation counter bumped by resetForm / Start-Training. An async restore
+  // or poll captures the value at dispatch and bails if it no longer matches —
+  // physically decouples a slow response from the current screen.
+  const jobBindGenRef = useRef(0);
   // Caches a successful dataset upload against a fingerprint of the exact
   // image set. Re-running with the same images (only params / YAML changed)
   // reuses these Storage paths and skips the whole upload — 0s, no re-cost.
@@ -1922,7 +1943,22 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // the stale key instead of getting stuck.
   useEffect(() => {
     if (!user) return;
+    // Run EXACTLY ONCE per mount. `user` is only a dependency so this waits
+    // for auth — its identity churns on every token refresh / tab refocus,
+    // and a re-run here is precisely how a job the user already left gets
+    // re-attached seconds later.
+    if (restoreDoneRef.current) return;
+    restoreDoneRef.current = true;
+
     let cancelled = false;
+    // Snapshot the binding generation. resetForm() / Start-Training bump this;
+    // if it moves while we're awaiting, this restore is stale — bail.
+    const gen = jobBindGenRef.current;
+    // True once the user is demonstrably driving the form (not the initial
+    // "form" default). Any state write that would move them to "tracking" is
+    // physically blocked once this holds.
+    const stale = () =>
+      cancelled || jobBindGenRef.current !== gen || phaseRef.current !== "form";
     (async () => {
       const clearKey = () => {
         if (typeof window === "undefined") return;
@@ -1950,7 +1986,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       if (!targetId) {
         try {
           const recent = await fetchRecentLoraJob();
-          if (cancelled) return;
+          if (stale()) return;
           const reattachable =
             recent &&
             !dismissedJobIdsRef.current.has(recent.jobId) &&
@@ -1970,7 +2006,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           /* recent lookup is best-effort */
         }
       }
-      if (!targetId || cancelled) return;
+      if (!targetId || stale()) return;
 
       const persist = () => {
         if (typeof window !== "undefined") {
@@ -1983,7 +2019,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       };
       try {
         const restored = await pollLoraJob(targetId);
-        if (cancelled) return;
+        // The user moved on (started a new job / reset) while this was in
+        // flight — the whole point of the guard. Do NOT touch phase/job.
+        if (stale()) return;
         if (restored.status === "queued" || restored.status === "processing") {
           persist();
           setJob(restored);
@@ -1995,17 +2033,13 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           setJob(restored);
           setPhase("tracking");
         } else if (restored.status === "failed" || restored.status === "cancelled") {
-          // Show the Salvage / download panel ONLY when an explicit pointer
-          // (a job the user was actually watching) brought us here — never
-          // from the recent-job fallback, which would trap the user on an
-          // error screen every visit. resetForm() drops the key + dismisses.
-          if (fromRecent) {
-            clearKey();
-          } else {
-            persist();
-            setJob(restored);
-            setPhase("tracking");
-          }
+          // HARD RULE: a failed / cancelled job NEVER drives setPhase("tracking")
+          // from this async callback. Drop the pointer and (for an explicit
+          // pointer — a job the user was actually watching) surface a small
+          // dismissible banner so the Salvage / download panel is one click
+          // away without ever yanking the user off the form.
+          clearKey();
+          if (!fromRecent) setRecoveredJob(restored);
         } else {
           // failed_timeout / unknown / unreachable — drop the pointer, stay
           // on the form (nothing to salvage).
@@ -2014,7 +2048,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       } catch {
         // 404 (deleted / wrong account) or a transient fetch error — do NOT
         // trap the user; clear the pointer and leave them on the form.
-        if (!cancelled) clearKey();
+        if (!stale()) clearKey();
       }
     })();
     return () => {
@@ -2033,6 +2067,26 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     captionsFromUser: boolean,
   ) => {
     if (!user) return;
+    // HARD-DETACH any previous job BEFORE anything async runs. A lingering
+    // mount-restore / poll must not be able to bind its old id or shove the
+    // old ProgressPanel back after we've started a fresh job.
+    jobBindGenRef.current += 1;
+    pollCancelledRef.current = true;
+    if (pollTimeoutRef.current) {
+      clearTimeout(pollTimeoutRef.current);
+      pollTimeoutRef.current = null;
+    }
+    dismissJob(activeJobIdRef.current);
+    activeJobIdRef.current = "";
+    setRecoveredJob(null);
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+        for (const k of LEGACY_ACTIVE_JOB_KEYS) localStorage.removeItem(k);
+      } catch {
+        /* storage disabled */
+      }
+    }
     // Immediate, synchronous lock + phase flip in the same render pass — the
     // form (price card, credit warning) is gone before the next paint.
     setSubmitting(true);
@@ -2602,6 +2656,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // remember this job so the mount-restore effect can't re-attach to it, and
   // flip to "form" — WITHOUT touching the saved settings draft.
   const resetForm = () => {
+    // Invalidate any async restore / poll captured before this point.
+    jobBindGenRef.current += 1;
     pollCancelledRef.current = true;
     if (pollTimeoutRef.current) {
       clearTimeout(pollTimeoutRef.current);
@@ -2612,6 +2668,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     setPhase("form");
     setSubmitting(false);
     setJob(null);
+    setRecoveredJob(null);
     setErrorMessage(null);
     setUploadProgress(null);
     if (typeof window !== "undefined") {
@@ -2794,6 +2851,52 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
   return (
     <div data-source-file="src/components/studio/LoraStudioTab.tsx" className="space-y-6">
+      {/* A previous failed / cancelled job was found at mount. It NEVER
+          auto-opens (that async yank is the bug) — the user opts in here, or
+          dismisses it for good. */}
+      {recoveredJob && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
+          <p className="flex items-center gap-2 text-[12px] text-amber-300">
+            <AlertTriangle size={14} />
+            前回の学習ジョブは{recoveredJob.status === "cancelled" ? "中断" : "失敗"}しました（クレジットは返金済み）。中間データ・キャプションを取得できます。
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const rj = recoveredJob;
+                setRecoveredJob(null);
+                jobBindGenRef.current += 1;
+                pollCancelledRef.current = true;
+                activeJobIdRef.current = rj.jobId;
+                setJob(rj);
+                setPhase("tracking");
+                if (typeof window !== "undefined") {
+                  try {
+                    localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, rj.jobId);
+                  } catch {
+                    /* storage disabled */
+                  }
+                }
+              }}
+              className="rounded-lg border border-amber-500/40 px-3 py-1.5 text-[11px] text-amber-200 transition-colors hover:bg-amber-500/10"
+            >
+              詳細・中間データを見る
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                dismissJob(recoveredJob.jobId);
+                setRecoveredJob(null);
+              }}
+              className="rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted transition-colors hover:text-foreground"
+            >
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Draft persistence — inputs auto-save to localStorage; this button is
           the only way to wipe them. */}
       <div className="flex flex-wrap items-center justify-between gap-2">
