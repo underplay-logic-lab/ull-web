@@ -417,9 +417,31 @@ TARGET_MODELS: dict[str, dict] = {
     },
     # --- photo / general — Diffusers repos, snapshot_download'd to the
     # Volume HF cache by ensure_model_cached_cpu() like Wan/Qwen above. ---
-    "flux2_klein_4b": {"arch": "flux2_klein_4b", "unet": "black-forest-labs/FLUX.2-klein-base-4B"},
-    "flux2_klein_9b": {"arch": "flux2_klein_9b", "unet": "black-forest-labs/FLUX.2-klein-base-9B"},
-    "flux2": {"arch": "flux2", "unet": "black-forest-labs/FLUX.2-dev"},
+    # FLUX.2 Klein: ai-toolkit's flux2_klein loader hard-wires the text encoder
+    # to Qwen/Qwen3-* and the VAE to ai-toolkit/flux2_vae (Flux2Klein{4B,9B}Model
+    # class attrs) — it does NOT read the text_encoder/ vae/ subfolders bundled
+    # in the -klein-base repo. So all three repos must be pre-cached.
+    "flux2_klein_4b": {
+        "arch": "flux2_klein_4b",
+        "unet": "black-forest-labs/FLUX.2-klein-base-4B",
+        "text_encoder": "Qwen/Qwen3-4B",
+        "vae": "ai-toolkit/flux2_vae",
+    },
+    "flux2_klein_9b": {
+        "arch": "flux2_klein_9b",
+        "unet": "black-forest-labs/FLUX.2-klein-base-9B",
+        "text_encoder": "Qwen/Qwen3-8B",
+        "vae": "ai-toolkit/flux2_vae",
+    },
+    # FLUX.2 [dev]: Flux2Model loads the TE from a (gated) Mistral repo and the
+    # VAE from the shared flux2 autoencoder. The Mistral pull needs an HF token
+    # with that licence accepted (huggingface-secret HF_TOKEN).
+    "flux2": {
+        "arch": "flux2",
+        "unet": "black-forest-labs/FLUX.2-dev",
+        "text_encoder": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+        "vae": "ai-toolkit/flux2_vae",
+    },
     "qwen_image": {"arch": "qwen_image", "unet": "Qwen/Qwen-Image"},
     "krea2": {"arch": "krea2", "unet": "krea/Krea-2-Raw"},
     "zimage": {"arch": "zimage", "unet": "Tongyi-MAI/Z-Image-Turbo"},
@@ -3012,10 +3034,12 @@ def _wan_target(target_model: str) -> str | None:
 
 
 def _hf_repos_for(target_model: str, custom_model_id: str = "") -> list[str]:
-    """The HF repo ids this job's base model needs pre-downloaded (empty for a
-    single-file Volume model like minimax_h3). Wan 2.1 only needs the tiny
-    tokenizer repo here — its multi-GB weights are placed as ComfyUI-layout
-    single files by _ensure_wan_comfy_layout()."""
+    """Every HF repo id this job's base model needs pre-downloaded — the
+    transformer/base repo AND any separate text-encoder / VAE repo the arch
+    hard-wires (e.g. FLUX.2 Klein: TE=Qwen/Qwen3-*, VAE=ai-toolkit/flux2_vae).
+    Empty for a single-file Volume model (minimax_h3). Wan 2.1 only needs the
+    tiny UMT5 tokenizer repo here — its multi-GB weights are placed as
+    ComfyUI-layout single files by _ensure_wan_comfy_layout()."""
 
     def _is_repo(v) -> bool:
         s = str(v or "")
@@ -3100,11 +3124,126 @@ def _ensure_wan_comfy_layout(target_model: str) -> dict:
     return {"ok": True, "placed": placed, "fetched": fetched}
 
 
+# ---------------------------------------------------------------------------
+# Qwen-Image: SAME ComfyUI-single-file story as Wan. ai-toolkit's qwen_image
+# loader resolves the TRANSFORMER from a Comfy-Org repackaged single file it
+# looks for under MODELS_PATH (toolkit/models/v2/diffusion_models/qwen_image +
+# its resolver) — it never reads the 9-shard / ~40GB transformer weights out of
+# the "Qwen/Qwen-Image" Diffusers repo. The text encoder / VAE / tokenizer /
+# every config.json DO come from that HF repo (Qwen25VLTextEncoder.load_model /
+# QwenImageVAE.load_model are hard-wired to base_model_path="Qwen/Qwen-Image"),
+# so it is snapshot'd too — just with the transformer shards ignored.
+_QWEN_IMAGE_HF_REPO = "Qwen/Qwen-Image"
+_QWEN_COMFY_REPO = "Comfy-Org/Qwen-Image_ComfyUI"
+# (path under MODELS_DIR, filename in _QWEN_COMFY_REPO)
+_QWEN_COMFY_FILES: list[tuple[str, str]] = [
+    (
+        "diffusion_models/qwen_image_bf16.safetensors",
+        "split_files/diffusion_models/qwen_image_bf16.safetensors",
+    ),
+]
+# snapshot_download ignore-patterns per repo — the Comfy single file above
+# replaces these weight shards, so pulling them from the Diffusers repo too
+# would just double a 40GB download. `transformer/config.json` is kept (diffusers
+# from_single_file needs it).
+_REPO_SNAPSHOT_IGNORE: dict[str, list[str]] = {
+    _QWEN_IMAGE_HF_REPO: [
+        "transformer/*.safetensors",
+        "transformer/*.safetensors.index.json",
+        "transformer/*.bin",
+        "transformer/*.pth",
+    ],
+}
+
+
+def _is_qwen_image(target_model: str) -> bool:
+    return (
+        target_model == "qwen_image"
+        or TARGET_MODELS.get(target_model, {}).get("arch") == "qwen_image"
+    )
+
+
+def _qwen_comfy_missing(target_model: str) -> list[str]:
+    """ComfyUI-layout files ai-toolkit's qwen_image resolver needs that are NOT
+    yet on the Volume at their exact MODELS_PATH-relative path."""
+    if not _is_qwen_image(target_model):
+        return []
+    missing = []
+    for rel, _repo_file in _QWEN_COMFY_FILES:
+        p = pathlib.Path(MODELS_DIR) / rel
+        if not (p.is_file() and p.stat().st_size > 0):
+            missing.append(rel)
+    return missing
+
+
+def _ensure_qwen_comfy_layout(target_model: str) -> dict:
+    """Place the Comfy-Org Qwen-Image transformer single file at its exact path
+    under MODELS_DIR (and a hardlink at the repo-relative split_files/ path, so
+    the resolver finds it whichever spelling it uses). Never fetches the 40GB
+    Diffusers transformer."""
+    if not _is_qwen_image(target_model):
+        return {"ok": True, "placed": []}
+    from huggingface_hub import hf_hub_download
+
+    placed: list[str] = []
+    fetched: list[str] = []
+    for rel, repo_file in _QWEN_COMFY_FILES:
+        dst = pathlib.Path(MODELS_DIR) / rel
+        alt = pathlib.Path(MODELS_DIR) / repo_file  # split_files/... mirror
+        if dst.is_file() and dst.stat().st_size > 0:
+            placed.append(rel)
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                t0 = time.time()
+                p = hf_hub_download(
+                    repo_id=_QWEN_COMFY_REPO,
+                    filename=repo_file,
+                    local_dir=str(MODELS_DIR),
+                    token=_hf_token(),
+                )
+                if os.path.abspath(p) != os.path.abspath(str(dst)):
+                    os.replace(p, dst)
+                fetched.append(rel)
+                placed.append(rel)
+                print(f"[cache][qwen] fetched {rel} in {time.time() - t0:.0f}s", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "missing": rel, "error": str(exc)[:400]}
+        # keep a 0-byte hardlink at the repo-relative path as a resolver safety net
+        if not (alt.is_file() and alt.stat().st_size > 0):
+            try:
+                alt.parent.mkdir(parents=True, exist_ok=True)
+                os.link(dst, alt)
+            except OSError:
+                pass
+    return {"ok": True, "placed": placed, "fetched": fetched}
+
+
+def _repo_cache_complete(repo_id: str, ignore_patterns: list[str] | None = None) -> bool:
+    """STRICT local-only completeness check: every file huggingface_hub knows
+    this repo has (minus `ignore_patterns`) is present in the Volume hub cache.
+    snapshot_download(local_files_only=True) walks the cached repo listing and
+    raises the moment one expected file is missing — far stronger than the bare
+    dir scan below, so a half-finished CPU pre-cache can't green-light a $/min
+    GPU. Returns False on ANY error (missing listing, missing file, HF quirk):
+    the caller pairs it with the lenient check to avoid false job failures."""
+    try:
+        from huggingface_hub import snapshot_download
+    except Exception:  # noqa: BLE001
+        return False
+    kw = {"ignore_patterns": ignore_patterns} if ignore_patterns else {}
+    try:
+        snapshot_download(repo_id=repo_id, local_files_only=True, **kw)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _repo_snapshot_present(repo_id: str) -> bool:
-    """Local-only (no network) check that a HF repo's snapshot is on the
-    Volume cache, at the EXACT path `_hf_cache_env()` points every stage to.
-    Used by train_lora_job to fail FAST if the CPU pre-cache stage somehow
-    didn't complete — so a $/min B300 never sits through a multi-GB download.
+    """LENIENT local-only check that a HF repo's snapshot is on the Volume
+    cache, at the EXACT path `_hf_cache_env()` points every stage to. Paired
+    with `_repo_cache_complete` — a repo counts as "missing" only when BOTH
+    fail, so a strict-check quirk never fails an otherwise-cached job.
     Requires the snapshot revision to hold at least one real file AND a
     config/metadata json (a bare dir or a half-written tree does not count)."""
     slug = "models--" + repo_id.replace("/", "--")
@@ -3130,11 +3269,14 @@ def _repo_snapshot_present(repo_id: str) -> bool:
 def _missing_base_artifacts(target_model: str, custom_model_id: str = "") -> list[str]:
     """Everything this job's base model needs that is NOT on the Volume yet:
 
-      * HF repo snapshots absent from the local hub cache
-        (Diffusers repos — FLUX.2 Klein / Qwen-Image / SDXL / … — and the
-        few-MB Wan UMT5 tokenizer repo)
-      * Wan 2.1 ComfyUI-layout single files missing from their exact path
-      * hosted single-file checkpoints (minimax_h3 / flux_schnell) not on disk
+      * HF repo snapshots absent / incomplete in the local hub cache — every
+        repo the arch needs: the transformer/base repo AND any SEPARATE text-
+        encoder / VAE repo ai-toolkit hard-wires (FLUX.2 Klein loads its TE from
+        Qwen/Qwen3-*, its VAE from ai-toolkit/flux2_vae; Wan 2.1 needs the UMT5
+        tokenizer repo). Qwen-Image's repo is cached transformer-shards-excluded.
+      * Wan 2.1 / Qwen-Image ComfyUI-layout single files missing from their
+        exact MODELS_PATH-relative path
+      * hosted single-file checkpoints (minimax_h3) not on disk
 
     An empty list is the hard precondition for spawning the GPU: it means
     train_lora_job + the ai-toolkit subprocess can load every byte from local
@@ -3144,10 +3286,15 @@ def _missing_base_artifacts(target_model: str, custom_model_id: str = "") -> lis
     missing: list[str] = []
 
     for repo in _hf_repos_for(target_model, custom_model_id):
-        if not _repo_snapshot_present(repo):
+        ignore = _REPO_SNAPSHOT_IGNORE.get(repo)
+        # "missing" only when BOTH the strict completeness check and the lenient
+        # on-disk check fail — the CPU stage already verified strictly before
+        # returning ok, so a lone strict-check quirk must not fail the job here.
+        if not (_repo_cache_complete(repo, ignore) or _repo_snapshot_present(repo)):
             missing.append(f"hf-repo:{repo}")
 
     missing += [f"wan-file:{f}" for f in _wan_comfy_missing(target_model)]
+    missing += [f"qwen-file:{f}" for f in _qwen_comfy_missing(target_model)]
 
     entry = TARGET_MODELS.get(target_model)
     if entry is None:
@@ -3163,12 +3310,12 @@ def _missing_base_artifacts(target_model: str, custom_model_id: str = "") -> lis
 
 @app.function(
     image=dispatch_image,
-    # Big bases (LTX-Video / Wan 2.1 14B Diffusers ~55GB / FLUX) on a COLD
-    # Volume can take well over half an hour even with the hf_transfer parallel
-    # pull. Pin the ceiling at a full hour so a slow-but-progressing download is
-    # never killed mid-flight by the container timeout (a partial snapshot then
-    # forces the $/min GPU to re-fetch).
-    timeout=3600,
+    # Some presets pull MULTIPLE repos totalling 100GB+ on a COLD Volume — e.g.
+    # FLUX.2 [dev] = transformer + a 24B Mistral text encoder, or LTX-2's full
+    # pipeline repo. 2h ceiling so a slow-but-progressing multi-repo fetch is
+    # never killed mid-flight (a partial snapshot then forces the $/min GPU to
+    # re-fetch). The dispatcher (_prepare_and_spawn_training, 3h) blocks on this.
+    timeout=2 * 60 * 60,
     cpu=4,
     memory=8192,
     volumes={MODELS_DIR: vol},
@@ -3209,6 +3356,80 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
             except Exception as exc:  # noqa: BLE001
                 print(f"[cache][wan] vol.commit skipped: {exc}", flush=True)
 
+    # Qwen-Image: two halves, both placed on the Volume BEFORE the GPU.
+    #  (a) the Comfy-Org repackaged TRANSFORMER single file where ai-toolkit's
+    #      resolver looks (MODELS_PATH/diffusion_models/...).
+    #  (b) the full Qwen/Qwen-Image DIFFUSERS snapshot MINUS the transformer
+    #      weight shards — tokenizer/, text_encoder/, vae/, scheduler/ and every
+    #      config.json / model_index.json. ai-toolkit's Qwen25VLTextEncoder
+    #      .load_tokenizer / .load_model + QwenImageVAE.load_model read these
+    #      straight from HF_HOME by repo id; with HF_HUB_OFFLINE set on the GPU a
+    #      single missing file there is a hard stop (the tokenizer-config crash
+    #      this fixes). Forced every run (snapshot_download is idempotent +
+    #      resumable — a genuine cache hit is a fast re-verify) rather than
+    #      trusting the completeness gate in the repo loop below, which a stale
+    #      transformer-only half-cache from an older deploy could wrongly
+    #      green-light.
+    if _is_qwen_image(str(model_arch or "")):
+        qwen_res = _ensure_qwen_comfy_layout(str(model_arch or ""))
+        if not qwen_res.get("ok"):
+            return {"ok": False, "cached": False, "repo": qwen_res.get("missing"), "error": qwen_res.get("error")}
+
+        from huggingface_hub import snapshot_download as _qwen_snap
+
+        _q_ignore = _REPO_SNAPSHOT_IGNORE.get(
+            _QWEN_IMAGE_HF_REPO,
+            ["transformer/*.safetensors*", "transformer/*.bin", "transformer/*.pth"],
+        )
+        _q_workers = max(4, int(os.environ.get("HF_SNAPSHOT_WORKERS", "8") or "8"))
+        _q_tok = _hf_token()
+        _q_ok = False
+        _q_err = ""
+        for _qs in range(3):
+            try:
+                _t0 = time.time()
+                _qwen_snap(
+                    repo_id=_QWEN_IMAGE_HF_REPO,
+                    ignore_patterns=_q_ignore,
+                    max_workers=_q_workers,
+                    token=_q_tok,
+                )
+                if _repo_cache_complete(_QWEN_IMAGE_HF_REPO, _q_ignore) or _repo_snapshot_present(_QWEN_IMAGE_HF_REPO):
+                    _q_ok = True
+                    print(
+                        f"[cache][qwen] TE/tokenizer/VAE/scheduler snapshot ready in {time.time() - _t0:.0f}s "
+                        "(transformer shards ignored)",
+                        flush=True,
+                    )
+                    break
+                print(f"[cache][qwen] diffusers snapshot post-fetch verify miss (attempt {_qs + 1}/3)", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                _q_err = str(exc)[:400]
+                print(f"[cache][qwen] diffusers snapshot attempt {_qs + 1}/3 FAILED — {_q_err}", flush=True)
+            time.sleep(3)
+        if not _q_ok:
+            return {
+                "ok": False,
+                "cached": False,
+                "repo": _QWEN_IMAGE_HF_REPO,
+                "error": f"{_QWEN_IMAGE_HF_REPO}: TE/tokenizer snapshot not cached after 3 passes ({_q_err})",
+            }
+
+        # Persist BOTH halves (comfy transformer file + diffusers TE/tokenizer/
+        # VAE snapshot) so the GPU can load every byte offline.
+        for _qa in range(2):
+            try:
+                vol.commit()
+                print(
+                    "[cache][qwen] vol.commit() — comfy transformer + Qwen/Qwen-Image "
+                    "TE/tokenizer/VAE/scheduler snapshot",
+                    flush=True,
+                )
+                break
+            except Exception as exc:  # noqa: BLE001
+                print(f"[cache][qwen] vol.commit() attempt {_qa + 1}/2 failed: {exc}", flush=True)
+                time.sleep(2)
+
     repos = _hf_repos_for(str(model_arch or ""), str(custom_model_id or ""))
     if not repos:
         # Single-file / Volume-hosted model (minimax_h3, flux_schnell). Nothing
@@ -3236,27 +3457,53 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
 
     downloaded: list[str] = []
     for repo in repos:
-        try:
-            snapshot_download(repo_id=repo, local_files_only=True, token=hf_tok)
-            print(f"[cache] {repo}: already on Volume", flush=True)
+        # Repos where a ComfyUI single file already covers the heavy weights
+        # (Qwen-Image transformer) are pulled config/other-components-only.
+        ignore = _REPO_SNAPSHOT_IGNORE.get(repo)
+        ig_kw = {"ignore_patterns": ignore} if ignore else {}
+
+        if _repo_cache_complete(repo, ignore):
+            print(f"[cache] {repo}: already complete on Volume", flush=True)
             continue
-        except Exception:  # noqa: BLE001 — not cached yet, fall through to fetch
-            pass
-        try:
-            t0 = time.time()
-            # convrot_quant / other arch-specific expansion is a train-time
-            # code patch (not model files) and stays on the GPU side; the
-            # snapshot here is the complete component tree that patch needs.
-            snapshot_download(repo_id=repo, max_workers=dl_workers, token=hf_tok)
-            downloaded.append(repo)
-            print(
-                f"[cache] {repo}: fetched in {time.time() - t0:.0f}s "
-                f"(max_workers={dl_workers})",
-                flush=True,
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"[cache] {repo}: download FAILED — {exc}", flush=True)
-            return {"ok": False, "cached": False, "repo": repo, "error": str(exc)[:500]}
+
+        # Fetch, then VERIFY completeness; snapshot_download is resumable so a
+        # retry only re-pulls the gap. Give it 3 passes before failing the job.
+        fetched_ok = False
+        last_err = ""
+        for attempt in range(3):
+            try:
+                t0 = time.time()
+                snapshot_download(repo_id=repo, max_workers=dl_workers, token=hf_tok, **ig_kw)
+            except Exception as exc:  # noqa: BLE001
+                last_err = str(exc)[:400]
+                print(f"[cache] {repo}: download attempt {attempt + 1}/3 FAILED — {last_err}", flush=True)
+                time.sleep(3)
+                continue
+            if _repo_cache_complete(repo, ignore):
+                downloaded.append(repo)
+                fetched_ok = True
+                print(
+                    f"[cache] {repo}: fetched + verified in {time.time() - t0:.0f}s "
+                    f"(max_workers={dl_workers}{', transformer-shards-ignored' if ignore else ''})",
+                    flush=True,
+                )
+                break
+            # snapshot_download returned but the strict listing still shows a
+            # gap — loop (idempotent). On the final pass accept the lenient
+            # check so an HF completeness quirk can't fail a real download.
+            print(f"[cache] {repo}: post-fetch strict verify miss (attempt {attempt + 1}/3)", flush=True)
+            if attempt == 2 and _repo_snapshot_present(repo):
+                downloaded.append(repo)
+                fetched_ok = True
+                print(f"[cache] {repo}: accepted on lenient check after 3 passes", flush=True)
+                break
+        if not fetched_ok:
+            return {
+                "ok": False,
+                "cached": False,
+                "repo": repo,
+                "error": f"{repo}: not fully cached after 3 download passes ({last_err})",
+            }
 
     # ALWAYS commit right after the download loop — the GPU only sees Volume
     # state that was explicitly committed here, so this is the single line that
@@ -3275,10 +3522,15 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
             time.sleep(2)
 
     # Post-commit verification — the GPU is only spawned on {"ok": True}, so
-    # confirm every repo's snapshot is actually on-disk (a partial download
-    # that raised no exception, a commit that silently no-op'd, …). This is
-    # the "fully placed on /models" guarantee the lazy-GPU sequence rests on.
-    unverified = [r for r in repos if not _repo_snapshot_present(r)]
+    # confirm every repo's snapshot survived the commit (a partial download that
+    # raised no exception, a commit that silently no-op'd, …). Strict listing
+    # check, lenient fallback. This is the "fully placed on /models" guarantee
+    # the lazy-GPU sequence rests on.
+    unverified = [
+        r
+        for r in repos
+        if not (_repo_cache_complete(r, _REPO_SNAPSHOT_IGNORE.get(r)) or _repo_snapshot_present(r))
+    ]
     if unverified:
         print(f"[cache] POST-COMMIT VERIFY FAILED — snapshot missing for {unverified}", flush=True)
         return {"ok": False, "cached": False, "repo": unverified[0], "error": "snapshot missing after download+commit"}
