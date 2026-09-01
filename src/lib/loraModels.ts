@@ -9,7 +9,8 @@ export type LoraBaseArchitecture =
   | "sd3"
   | "sd15"
   | "hunyuan"
-  | "cogvideox";
+  | "cogvideox"
+  | "ltx2";
 
 export const LORA_BASE_ARCHITECTURES: LoraBaseArchitecture[] = [
   "flux",
@@ -20,6 +21,7 @@ export const LORA_BASE_ARCHITECTURES: LoraBaseArchitecture[] = [
   "sd15",
   "hunyuan",
   "cogvideox",
+  "ltx2",
 ];
 
 export type LoraPresetGroup = "video" | "photo" | "anime";
@@ -47,7 +49,7 @@ export const LORA_PRESETS: LoraPreset[] = [
   { id: "wan2_1_1_3b", label: "Wan 2.1 (1.3B)", group: "video", arch: "wan21", note: "動画 T2V 軽量" },
   { id: "hunyuan_video", label: "HunyuanVideo", group: "video", arch: "hunyuan", note: "動画 T2V" },
   { id: "cogvideox_5b", label: "CogVideoX-5B", group: "video", arch: "cogvideox", note: "動画 T2V" },
-  { id: "ltx_video", label: "LTX-Video", group: "video", arch: "cogvideox", note: "高速動画" },
+  { id: "ltx_video", label: "LTX-Video", group: "video", arch: "ltx2", note: "高速動画" },
   // --- photo / general ---
   { id: "flux_schnell", label: "FLUX.1 [schnell]", group: "photo", arch: "flux", note: "高速画像・Apache-2.0" },
   { id: "sdxl_10", label: "SDXL 1.0", group: "photo", arch: "sdxl", note: "汎用画像" },

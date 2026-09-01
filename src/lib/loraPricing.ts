@@ -26,6 +26,7 @@ export const HEAVY_LORA_ARCHES: ReadonlySet<string> = new Set([
   "hunyuan_video",
   "cogvideox",
   "ltxv",
+  "ltx2",
   "mochi",
 ]);
 

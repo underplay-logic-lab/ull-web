@@ -365,7 +365,10 @@ TARGET_MODELS: dict[str, dict] = {
     "wan2_1_1_3b": {"arch": "wan21", "unet": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"},
     "hunyuan_video": {"arch": "hunyuan", "unet": "hunyuanvideo-community/HunyuanVideo"},
     "cogvideox_5b": {"arch": "cogvideox", "unet": "THUDM/CogVideoX-5b"},
-    "ltx_video": {"arch": "cogvideox", "unet": "Lightricks/LTX-Video"},
+    # LTX-Video: ai-toolkit's known arch for the Lightricks LTX family is
+    # "ltx2" — NOT "cogvideox" (that string isn't in ai-toolkit's arch
+    # registry and fails validation with "Unknown model arch 'cogvideox'").
+    "ltx_video": {"arch": "ltx2", "unet": "Lightricks/LTX-Video"},
     # --- photo / general ---
     "flux_schnell": {
         "arch": "flux",
