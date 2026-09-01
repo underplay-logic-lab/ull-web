@@ -17,9 +17,10 @@ const CAPTION_MAX_EDGE = 768;
 const CAPTION_JPEG_QUALITY = 0.72;
 // 2 per call: a refusal / junk response can only cost these two.
 const CAPTION_BATCH = 2;
-// Fired wide against the Tier-1 quota. Browsers cap same-origin HTTP/1.1 at
-// ~6 sockets, so locally this is effectively 6; on Vercel (HTTP/2) it's 16.
-const CAPTION_CONCURRENCY = 16;
+// Fired wide against the Tier-1 quota (1000 RPM) — ~32 in flight clears 145
+// images in ~5s on Vercel (HTTP/2). Browsers cap same-origin HTTP/1.1 at ~6
+// sockets, so `next dev` on localhost is effectively 6 and will be slower.
+const CAPTION_CONCURRENCY = 32;
 // One retry, short wait — with BLOCK_NONE there are no safety refusals and a
 // 2-image batch is too small to cascade, so one more go clears any blip.
 const MAX_BATCH_RETRIES = 1;
