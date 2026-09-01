@@ -697,6 +697,11 @@ image = (
             # never runs a multi-GB download at GPU rates (cost defence).
             "HF_HOME": HF_CACHE_DIR,
             "HUGGINGFACE_HUB_CACHE": f"{HF_CACHE_DIR}/hub",
+            # ai-toolkit's ComfyUI-layout resolver (toolkit/paths.py) reads
+            # MODELS_PATH — point it at the Volume so Wan 2.1 (and any comfy
+            # model) resolves diffusion_models/ text_encoders/ vae/ IN PLACE
+            # instead of falling through to a Hub download.
+            "MODELS_PATH": MODELS_DIR,
             "TORCH_HOME": TORCH_CACHE_DIR,
             "PYTHONUNBUFFERED": "1",
             "PYTHONPATH": SHIM_DIR,
@@ -1530,15 +1535,15 @@ def _run_ai_toolkit_with_progress(
     .safetensors survive a mid-training SIGKILL."""
     log_path = pathlib.Path("/root/ai_toolkit_run.log")
 
-    # `offline=True` (a preset / pre-cacheable HF-repo model): the CPU
-    # dispatcher already snapshotted every component to the Volume, so pin the
-    # trainer OFFLINE — a stray from_pretrained() must fail fast, never fetch
-    # multi-GB on the GPU (cost defence). `offline=False` only for a
-    # custom_model_id that's a raw URL / an unlisted repo we can't pre-stage.
+    # The GPU MUST NOT be pinned HF_HUB_OFFLINE: ai-toolkit's Wan 2.1 loader
+    # pulls a few small tokenizer / arch-config files from the Hub even when
+    # every weight file is already local under MODELS_PATH — offline mode
+    # turns that into a hard crash ("offline mode is enabled. please unset
+    # HF_HUB_OFFLINE"). The multi-GB weights are guarded instead by the CPU
+    # pre-cache + train_lora_job's fail-fast presence check, so a stray big
+    # download can't happen regardless. (`offline` kept for signature compat.)
+    _ = offline
     child_env = {k: v for k, v in os.environ.items() if k not in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")}
-    if offline:
-        child_env["HF_HUB_OFFLINE"] = "1"
-        child_env["TRANSFORMERS_OFFLINE"] = "1"
 
     # Runtime quant_api shim (no image rebuild): written fresh on every run
     # so a fix here lands on the next deploy without rebuilding the (slow)
@@ -2279,6 +2284,7 @@ def train_lora_job(params: dict) -> dict:
     os.environ["HF_HOME"] = HF_CACHE_DIR
     os.environ["HUGGINGFACE_HUB_CACHE"] = f"{HF_CACHE_DIR}/hub"
     os.environ["TORCH_HOME"] = TORCH_CACHE_DIR
+    os.environ["MODELS_PATH"] = MODELS_DIR  # ai-toolkit comfy-layout resolver root
     os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
     for _d in (f"{HF_CACHE_DIR}/hub", TORCH_CACHE_DIR):
         pathlib.Path(_d).mkdir(parents=True, exist_ok=True)
@@ -2305,17 +2311,19 @@ def train_lora_job(params: dict) -> dict:
     # seconds so the B300 scales straight back down (scaledown_window=30)
     # instead of sitting through a multi-GB fetch at GPU rates.
     _required_repos = [] if override else _hf_repos_for(target_model, custom_model_id)
-    if _required_repos:
+    _wan_key = None if override else _wan_target(target_model)
+    if _required_repos or _wan_key:
         try:
             vol.reload()  # pull the CPU stage's just-committed cache
         except Exception as _re:  # noqa: BLE001
             print(f"[train] vol.reload() before cache check skipped: {_re}", flush=True)
     _missing = [r for r in _required_repos if not _repo_snapshot_present(r)]
+    _missing += _wan_comfy_missing(target_model) if _wan_key else []
     if _missing:
         # InfraError -> _is_infra_error -> full refund (it's the system's
         # orchestration failing, not the user's config).
         raise InfraError(
-            "base model not pre-cached on the Volume: "
+            "base model not pre-staged on the Volume: "
             + ", ".join(_missing)
             + " — the CPU pre-cache stage (ensure_model_cached_cpu) must complete "
             "before the GPU is spawned. Not downloading on the GPU (cost defence). "
@@ -2652,15 +2660,9 @@ def train_lora_job(params: dict) -> dict:
             f"[stage2] cost cap: {credits_cost}C -> {cost_cap_s}s (~{cost_cap_s / 3600:.2f}h)",
             flush=True,
         )
-        # Pin the trainer OFFLINE for every path where we can pre-stage the
-        # model on CPU (all presets + listed custom repos). Only a raw URL
-        # custom model or a raw-YAML override is allowed to reach the network.
-        _needs_online = bool(override) or (
-            target_model == "custom" and custom_model_id.startswith(("http://", "https://"))
-        )
         _run_ai_toolkit_with_progress(
             config_path, job_id, total_steps or 2000, commit_vol=True, job_started_ts=started,
-            safety_limit_s=cost_cap_s, resolution=resolution, offline=not _needs_online,
+            safety_limit_s=cost_cap_s, resolution=resolution,
         )
         print(f"[train] stage 2 done in {time.time() - stage2:.0f}s")
 
@@ -2889,15 +2891,51 @@ def _pending_stub(item: dict):
 # container (cpu=2 / 4GB) verifies + fetches every HF component into the
 # persistent Volume HF cache first; the GPU then loads from local disk in 0s.
 # ---------------------------------------------------------------------------
+# Wan 2.1: ai-toolkit resolves its components from the ComfyUI folder layout
+# under MODELS_PATH by their EXACT (case-sensitive) filenames — see
+# toolkit/models/v2/{diffusion_models/wan,text_encoders/umt5,resolver}.py.
+# ensure_model_cached_cpu places these on the Volume before the GPU spawns
+# (hardlink from an existing case-variant, else a single-file pull from
+# Comfy-Org — never the 55GB Diffusers repo).
+_WAN_COMFY_LAYOUT: dict[str, list[tuple[str, list[str]]]] = {
+    "wan2_1_14b": [
+        ("diffusion_models/wan2.1_t2v_14B_bf16.safetensors", ["diffusion_models/wan2.1_t2v_14b_bf16.safetensors"]),
+        ("text_encoders/umt5_xxl_fp16.safetensors", []),
+        ("vae/wan_2.1_vae.safetensors", []),
+    ],
+    "wan2_1_1_3b": [
+        ("diffusion_models/wan2.1_t2v_1.3B_bf16.safetensors", ["diffusion_models/wan2.1_t2v_1.3b_bf16.safetensors"]),
+        ("text_encoders/umt5_xxl_fp16.safetensors", []),
+        ("vae/wan_2.1_vae.safetensors", []),
+    ],
+}
+_WAN_COMFY_REPO = "Comfy-Org/Wan_2.1_ComfyUI_repackaged"
+# ai-toolkit's default UMT5 tokenizer/config repo (weights come from the comfy
+# file above; this is just tokenizer.json / config.json, a few MB).
+_WAN_TOKENIZER_REPO = "ai-toolkit/umt5_xxl_encoder"
+
+
+def _wan_target(target_model: str) -> str | None:
+    """Map a target id / bare 'wan21' arch to a concrete _WAN_COMFY_LAYOUT key."""
+    if target_model in _WAN_COMFY_LAYOUT:
+        return target_model
+    if target_model == "wan21" or TARGET_MODELS.get(target_model, {}).get("arch") == "wan21":
+        return "wan2_1_14b"
+    return None
+
+
 def _hf_repos_for(target_model: str, custom_model_id: str = "") -> list[str]:
-    """The HF repo ids this job's base model needs pre-downloaded. Empty when
-    every component is already a single-file checkpoint on the Volume
-    (minimax_h3 / flux_schnell). Wan 2.1 is a Diffusers repo -> returned here
-    so ensure_model_cached_cpu() snapshots the full component tree."""
+    """The HF repo ids this job's base model needs pre-downloaded (empty for a
+    single-file Volume model like minimax_h3 / flux_schnell). Wan 2.1 only
+    needs the tiny tokenizer repo here — its multi-GB weights are placed as
+    ComfyUI-layout single files by _ensure_wan_comfy_layout()."""
 
     def _is_repo(v) -> bool:
         s = str(v or "")
         return bool(s) and "/" in s and not s.startswith(("http://", "https://", "/", MODELS_DIR))
+
+    if _wan_target(target_model):
+        return [_WAN_TOKENIZER_REPO]
 
     if target_model == "custom":
         return [custom_model_id] if _is_repo(custom_model_id) else []
@@ -2909,6 +2947,67 @@ def _hf_repos_for(target_model: str, custom_model_id: str = "") -> list[str]:
         return []
     repos = [entry[k] for k in ("unet", "text_encoder", "vae") if _is_repo(entry.get(k))]
     return list(dict.fromkeys(repos))
+
+
+def _wan_comfy_missing(target_model: str) -> list[str]:
+    """ComfyUI-layout files ai-toolkit needs for this Wan target that are NOT
+    yet on the Volume at their exact path."""
+    key = _wan_target(target_model)
+    if not key:
+        return []
+    missing = []
+    for rel, _variants in _WAN_COMFY_LAYOUT[key]:
+        p = pathlib.Path(MODELS_DIR) / rel
+        if not (p.is_file() and p.stat().st_size > 0):
+            missing.append(rel)
+    return missing
+
+
+def _ensure_wan_comfy_layout(target_model: str) -> dict:
+    """Place every ComfyUI-layout file ai-toolkit's Wan loader expects, at its
+    EXACT case-sensitive path under MODELS_DIR. Hardlink from an on-Volume
+    case-variant when possible (0 bytes copied); else pull the single file
+    from Comfy-Org. Never fetches the 55GB Diffusers repo."""
+    key = _wan_target(target_model)
+    if not key:
+        return {"ok": True, "placed": []}
+    from huggingface_hub import hf_hub_download
+
+    placed: list[str] = []
+    fetched: list[str] = []
+    for rel, variants in _WAN_COMFY_LAYOUT[key]:
+        dst = pathlib.Path(MODELS_DIR) / rel
+        if dst.is_file() and dst.stat().st_size > 0:
+            placed.append(rel)
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        done = False
+        for v in variants:
+            src = pathlib.Path(MODELS_DIR) / v
+            if src.is_file() and src.stat().st_size > 0:
+                try:
+                    os.link(src, dst)
+                except OSError:
+                    shutil.copy2(src, dst)
+                placed.append(rel)
+                done = True
+                print(f"[cache][wan] linked {v} -> {rel}", flush=True)
+                break
+        if done:
+            continue
+        try:
+            t0 = time.time()
+            p = hf_hub_download(
+                repo_id=_WAN_COMFY_REPO, filename=f"split_files/{rel}", local_dir=str(MODELS_DIR)
+            )
+            if os.path.abspath(p) != os.path.abspath(str(dst)):
+                os.replace(p, dst)
+            fetched.append(rel)
+            placed.append(rel)
+            print(f"[cache][wan] fetched {rel} in {time.time() - t0:.0f}s", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "missing": rel, "error": str(exc)[:400]}
+    return {"ok": True, "placed": placed, "fetched": fetched}
 
 
 def _repo_snapshot_present(repo_id: str) -> bool:
@@ -2952,6 +3051,21 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
     pathlib.Path(f"{HF_CACHE_DIR}/hub").mkdir(parents=True, exist_ok=True)
     pathlib.Path(TORCH_CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
+    # Wan 2.1: place the ComfyUI-layout single files at their exact paths
+    # BEFORE the GPU. (Hardlink from an on-Volume case-variant / single-file
+    # pull — never the 55GB Diffusers repo.)
+    wan_key = _wan_target(str(model_arch or ""))
+    if wan_key:
+        wan_res = _ensure_wan_comfy_layout(str(model_arch or ""))
+        if not wan_res.get("ok"):
+            return {"ok": False, "cached": False, "repo": wan_res.get("missing"), "error": wan_res.get("error")}
+        if wan_res.get("fetched"):
+            try:
+                vol.commit()
+                print(f"[cache][wan] vol.commit() — {wan_res['fetched']}", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[cache][wan] vol.commit skipped: {exc}", flush=True)
+
     repos = _hf_repos_for(str(model_arch or ""), str(custom_model_id or ""))
     if not repos:
         print(f"[cache] arch={model_arch!r}: single-file / Volume model — nothing to download", flush=True)
@@ -2994,6 +3108,12 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
     if unverified:
         print(f"[cache] POST-COMMIT VERIFY FAILED — snapshot missing for {unverified}", flush=True)
         return {"ok": False, "cached": False, "repo": unverified[0], "error": "snapshot missing after download+commit"}
+
+    if wan_key:
+        wan_missing = _wan_comfy_missing(str(model_arch or ""))
+        if wan_missing:
+            print(f"[cache][wan] POST-COMMIT VERIFY FAILED — {wan_missing}", flush=True)
+            return {"ok": False, "cached": False, "repo": wan_missing[0], "error": "wan comfy file missing after placement"}
 
     return {"ok": True, "cached": not downloaded, "repos": repos, "downloaded": downloaded}
 
