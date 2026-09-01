@@ -3084,6 +3084,100 @@ def download_lora_checkpoint(
 
 
 # ---------------------------------------------------------------------------
+# Admin file explorer — direct signed download of ANY Volume path + folder ZIP
+# ---------------------------------------------------------------------------
+# Both are hit straight from the browser (hidden <iframe>), so no Next.js
+# proxy hop (which base64'd GB-scale .safetensors through a Vercel function
+# and timed out). The Next.js admin route does the requireAdmin() check and
+# mints a short-lived HMAC token; these endpoints only verify the signature.
+_ADMIN_PATH_RE = re.compile(r"^[A-Za-z0-9._-][A-Za-z0-9._/-]{0,399}$")
+
+
+def _verify_admin_token(scope: str, path: str, expires: str, sig: str) -> bool:
+    secret = os.environ.get("MODAL_AUTH_TOKEN", "")
+    if not secret or not sig:
+        return False
+    try:
+        if int(expires) < time.time():
+            return False
+    except ValueError:
+        return False
+    expected = hmac.new(
+        secret.encode(), f"admin:{scope}:{path}:{expires}".encode(), hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
+def _safe_volume_path(rel: str) -> pathlib.Path:
+    """Resolve `rel` under MODELS_DIR, rejecting traversal / escapes."""
+    if not _ADMIN_PATH_RE.match(rel) or ".." in rel.split("/"):
+        raise fastapi.HTTPException(status_code=400, detail="invalid path")
+    root = pathlib.Path(MODELS_DIR).resolve()
+    target = (root / rel).resolve()
+    if target != root and root not in target.parents:
+        raise fastapi.HTTPException(status_code=400, detail="path escapes volume")
+    return target
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol},
+    timeout=1800,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="GET")
+def admin_download_volume_file(path: str, expires: str, sig: str, request: fastapi.Request):
+    if not _verify_admin_token("file", path, expires, sig):
+        raise fastapi.HTTPException(status_code=403, detail="invalid or expired link")
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin-dl] vol.reload() skipped: {exc}", flush=True)
+    fp = _safe_volume_path(path)
+    if not fp.is_file():
+        raise fastapi.HTTPException(status_code=404, detail="file not found")
+    return fastapi.responses.FileResponse(
+        str(fp), media_type="application/octet-stream", filename=fp.name
+    )
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol},
+    timeout=3600,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="GET")
+def admin_zip_volume_folder(path: str, expires: str, sig: str, request: fastapi.Request):
+    if not _verify_admin_token("zip", path, expires, sig):
+        raise fastapi.HTTPException(status_code=403, detail="invalid or expired link")
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin-zip] vol.reload() skipped: {exc}", flush=True)
+    folder = _safe_volume_path(path)
+    if not folder.is_dir():
+        raise fastapi.HTTPException(status_code=404, detail="folder not found")
+    leaf = re.sub(r"[^A-Za-z0-9._-]", "_", path.strip("/").split("/")[-1] or "volume")
+    zip_name = f"{leaf}.zip"
+    tmp = pathlib.Path("/tmp") / f"admzip_{int(time.time())}_{leaf}.zip"
+    files = [f for f in sorted(folder.rglob("*")) if f.is_file()]
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+        for f in files:
+            zf.write(f, arcname=str(f.relative_to(folder)))
+    print(f"[admin-zip] {path}: {len(files)} file(s) -> {tmp.stat().st_size / 1024**2:.1f} MB", flush=True)
+
+    from starlette.background import BackgroundTask
+
+    return fastapi.responses.FileResponse(
+        str(tmp),
+        media_type="application/zip",
+        filename=zip_name,
+        background=BackgroundTask(lambda: tmp.unlink(missing_ok=True)),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Self-healing — Modal-native FunctionCall status probe
 # ---------------------------------------------------------------------------
 # A training container that dies by SIGKILL (Modal 12h timeout, OOM kill,

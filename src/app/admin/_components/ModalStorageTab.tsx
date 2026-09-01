@@ -2,10 +2,22 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, ChevronDown, Download, Folder, GitBranch, HardDrive, Loader2, Trash2, XCircle } from "lucide-react";
+import { GpuCostReferenceCard } from "@/components/admin/GpuCostReferenceCard";
 import type { ModelDownload, VolumeFile } from "./types";
 
 // Mirrors MODEL_SUBFOLDERS in src/lib/modalStorage.ts / scripts/modal_wan_animate.py.
 const MODEL_SUBFOLDERS = ["diffusion_models", "text_encoders", "clip_vision", "vae", "loras"] as const;
+
+// Hidden-iframe GET so the browser's download bar picks up the file without
+// the tab navigating away — the API route 302s to a signed direct Modal URL
+// that carries Content-Disposition: attachment. Popup-blocker-proof.
+function iframeDownload(url: string): void {
+  const iframe = document.createElement("iframe");
+  iframe.style.display = "none";
+  iframe.src = url;
+  document.body.appendChild(iframe);
+  setTimeout(() => iframe.remove(), 120_000);
+}
 
 // Top-level folder display order: model folders first (in this priority
 // order), custom_nodes always last, everything else (outputs/, _logs/, ...)
@@ -162,15 +174,32 @@ function FolderRow({
             {formatSize(sumSizeRecursive(node))}
           </span>
         </button>
-        <button
-          type="button"
-          onClick={() => onDeleteFolder(node.path)}
-          disabled={deletingPath === node.path}
-          className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-red-500/30 px-2.5 py-1 text-xs text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {deletingPath === node.path ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-          📁 フォルダごと一括削除
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {node.path && countFilesRecursive(node) > 0 && (
+            <button
+              type="button"
+              onClick={() =>
+                iframeDownload(
+                  `/api/admin/modal/storage/zip?path=${encodeURIComponent(node.path)}`,
+                )
+              }
+              title="このフォルダ配下の全ファイルを CPU コンテナ（GPU課金0）でZIP化して一括ダウンロードします。"
+              className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-xs font-medium text-neon-violet transition-colors hover:bg-neon-violet/20"
+            >
+              <Download size={12} />
+              📦 このフォルダを一括DL (ZIP)
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => onDeleteFolder(node.path)}
+            disabled={deletingPath === node.path}
+            className="inline-flex items-center gap-1 rounded-lg border border-red-500/30 px-2.5 py-1 text-xs text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {deletingPath === node.path ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+            📁 フォルダごと一括削除
+          </button>
+        </div>
       </div>
 
       {open && (
@@ -209,13 +238,18 @@ function FolderRow({
                       </td>
                       <td className="px-4 py-2.5 text-right">
                         <div className="flex items-center justify-end gap-2">
-                          <a
-                            href={`/api/admin/modal/storage/download?file_path=${encodeURIComponent(file.path)}`}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              iframeDownload(
+                                `/api/admin/modal/storage/download?file_path=${encodeURIComponent(file.path)}`,
+                              )
+                            }
                             className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
                           >
                             <Download size={12} />
                             ダウンロード
-                          </a>
+                          </button>
                           <button
                             type="button"
                             onClick={() => onDeleteFile(file.path)}
@@ -314,6 +348,9 @@ function DownloadTasksPanel({ refreshSignal }: { refreshSignal: number }) {
   };
 
   useEffect(() => {
+    // setState is behind an await inside loadTasks() — not a synchronous
+    // cascading render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadTasks();
   }, [refreshSignal]);
 
@@ -545,6 +582,9 @@ export function ModalStorageTab() {
 
   return (
     <div className="flex flex-col gap-8">
+      {/* 0. GPU selection reference — static, collapsed by default */}
+      <GpuCostReferenceCard />
+
       {/* 1. Remote downloader */}
       <div className="rounded-2xl border-gradient bg-surface/40 p-6">
         <h3 className="mb-4 flex items-center gap-2 text-sm font-bold text-foreground">

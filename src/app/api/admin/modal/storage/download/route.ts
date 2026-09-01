@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/adminApiGuard";
-import { readVolumeFile } from "@/lib/modalStorage";
+import { readVolumeFile, signAdminVolumeUrl } from "@/lib/modalStorage";
 
-// Streams a file back out of the Modal Volume — either as a real download
-// (e.g. an admin-saved generation under outputs/admin/, or a model file —
-// see save_to_volume in scripts/modal_wan_animate.py) via a plain <a href>
-// in ModalStorageTab, or (?inline=1) embedded directly as a <video>/<img>
-// src for the Admin logs preview feature (see LogsTab.tsx).
+// Two modes:
+//  - default: 302 -> a short-lived signed Modal URL that streams the file
+//    straight to the browser (one hop, Content-Disposition: attachment). The
+//    old base64-through-this-route path OOM'd / timed out a Vercel function
+//    on GB-scale .safetensors. A hidden <iframe src> pointed here follows the
+//    redirect and drops the file into the download bar.
+//  - ?inline=1: still proxied as bytes (small <video>/<img> previews in
+//    LogsTab) — those need a same-origin URL and are tiny.
 function contentTypeFor(filename: string): string {
   const ext = filename.toLowerCase().split(".").pop() ?? "";
   const map: Record<string, string> = {
@@ -31,6 +34,24 @@ export async function GET(request: Request) {
   const inline = url.searchParams.get("inline") === "1";
   if (!filePath) {
     return NextResponse.json({ error: "file_path が指定されていません。" }, { status: 400 });
+  }
+
+  // Default: hand the browser a signed direct-download URL (one hop, no
+  // Vercel-function byte limit). `?json=1` returns it instead of redirecting
+  // (for a hidden-iframe caller that wants to know the URL up front).
+  if (!inline) {
+    try {
+      const signed = signAdminVolumeUrl("file", filePath);
+      if (url.searchParams.get("json") === "1") {
+        return NextResponse.json({ downloadUrl: signed });
+      }
+      return NextResponse.redirect(signed, 302);
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "URLの生成に失敗しました。" },
+        { status: 500 },
+      );
+    }
   }
 
   try {
