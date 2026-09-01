@@ -142,6 +142,9 @@ export type LoraCheckpoint = {
   // older jobs: captions-only captions.zip) — shown as its own download
   // button, not in the intermediate-checkpoint list.
   isCaptionArchive: boolean;
+  // true for checkpoints_all.zip — every .safetensors checkpoint in one
+  // archive. Its own "download all" button, not in the per-step list.
+  isBundle: boolean;
 };
 
 export type LoraJobStatus = {
@@ -209,6 +212,7 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
           sizeBytes: typeof c.size_bytes === "number" ? c.size_bytes : 0,
           isFinal: c.is_final === true,
           isCaptionArchive: c.is_caption_archive === true,
+          isBundle: c.is_bundle === true,
         }))
         .filter((c) => c.filename)
     : [];
@@ -379,6 +383,7 @@ export async function salvageLoraJob(jobId: string): Promise<LoraSalvageResult> 
       sizeBytes: typeof c.size_bytes === "number" ? c.size_bytes : 0,
       isFinal: c.is_final === true,
       isCaptionArchive: c.is_caption_archive === true,
+      isBundle: c.is_bundle === true,
     }))
     .filter((c) => c.filename);
 
