@@ -1521,31 +1521,28 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     return () => cancelAnimationFrame(raf);
   }, [phase, job?.status]);
 
-  // Every screen transition (form -> curation, back to form, into the progress
-  // screen) snaps the window to the top — otherwise a long scroll through 100+
-  // dataset thumbnails leaves the next screen scrolled to its middle. The
-  // progress panel keeps its own scrollIntoView anchor above, so skip
-  // "tracking" here to avoid the two fighting.
-  useEffect(() => {
-    if (phase === "tracking" || typeof window === "undefined") return;
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }, [phase]);
-
-  // Captioning a 100+ image set means the user is usually scrolled to the
-  // bottom of the grid when the pass finishes — pull them back to the top so
-  // the completion badge / "次へ" button is in view.
-  const prevAutoCapRunning = useRef(false);
-  useEffect(() => {
-    if (
-      prevAutoCapRunning.current &&
-      !autoCap.running &&
-      phase === "form" &&
-      typeof window !== "undefined"
-    ) {
+  // Snap the window to the top on every screen change (form <-> curation, into
+  // the progress screen) — a long scroll through 100+ thumbnails otherwise
+  // leaves the next screen scrolled to its middle. PURE side effect: it does
+  // nothing but scroll, wrapped so a browser that dislikes the options form
+  // can never throw out of the effect and unmount the tree. Screen-transition
+  // callbacks (handleStart / onCancel) call scrollTopSafe() directly too — the
+  // effect is just the catch-all.
+  const scrollTopSafe = useCallback(() => {
+    if (typeof window === "undefined") return;
+    try {
       window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch {
+      try {
+        window.scrollTo(0, 0);
+      } catch {
+        /* no-op */
+      }
     }
-    prevAutoCapRunning.current = autoCap.running;
-  }, [autoCap.running, phase]);
+  }, []);
+  useEffect(() => {
+    scrollTopSafe();
+  }, [phase, scrollTopSafe]);
 
   // Mirrors `images` for synchronous MAX_IMAGES accounting inside the add
   // helpers (which can't read the just-set state).
@@ -2637,9 +2634,12 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                 ? `${missed} 枚は自動解析できませんでした（うち ${safetyMissed} 枚はコンテンツポリシー対象、学習時に自動補完されます）。`
                 : `${missed} 枚は自動解析できませんでした（学習時に自動補完されます）。`,
       }));
+      // Pass finished while still on the form (the user was scrolled down the
+      // thumbnail grid) — bring the completion badge / 次へ into view.
+      if (phaseRef.current === "form") scrollTopSafe();
       return { cap: merged.cap, ja: merged.ja };
     },
-    [markCaptionsReflect],
+    [markCaptionsReflect, scrollTopSafe],
   );
 
   // Kick the vision pass for images that have no caption yet and haven't been
@@ -2839,7 +2839,14 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       return;
     }
     if (insufficientCredits) {
-      if (typeof window !== "undefined") window.location.hash = "pricing";
+      if (typeof document !== "undefined") {
+        document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth" });
+        try {
+          window.history.replaceState(null, "", "#pricing");
+        } catch {
+          /* no-op */
+        }
+      }
       return;
     }
     if (!canSubmit) return;
@@ -2856,6 +2863,17 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     setSubmitting(true);
     try {
       await runHandleStart();
+    } catch (e) {
+      // A throw here must NOT bubble to an unhandled rejection (which can trip
+      // a framework error boundary and remount the whole form, wiping the
+      // uploaded images). Surface it and leave the user on the form with the
+      // dataset intact — they can retry.
+      console.error("[lora] handleStart failed:", e);
+      setErrorMessage(
+        e instanceof Error && e.message
+          ? `処理に失敗しました: ${e.message}`
+          : "処理中にエラーが発生しました。もう一度お試しください。",
+      );
     } finally {
       // If we're still on the form (an early guard tripped, or curation was
       // cancelled), release the lock; once phase is starting/tracking/curation
@@ -2924,6 +2942,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         })),
       );
       setPhase("curation");
+      scrollTopSafe();
       return;
     }
 
@@ -3166,7 +3185,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           pairs={curationPairs}
           onChange={setCurationPairs}
           onConfirm={confirmCuration}
-          onCancel={() => setPhase("form")}
+          onCancel={() => {
+            setPhase("form");
+            scrollTopSafe();
+          }}
           requiredCredits={requiredCredits}
           triggerWord={curationTrigger}
           maxImages={MAX_IMAGES}
