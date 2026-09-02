@@ -1521,6 +1521,32 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     return () => cancelAnimationFrame(raf);
   }, [phase, job?.status]);
 
+  // Every screen transition (form -> curation, back to form, into the progress
+  // screen) snaps the window to the top — otherwise a long scroll through 100+
+  // dataset thumbnails leaves the next screen scrolled to its middle. The
+  // progress panel keeps its own scrollIntoView anchor above, so skip
+  // "tracking" here to avoid the two fighting.
+  useEffect(() => {
+    if (phase === "tracking" || typeof window === "undefined") return;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [phase]);
+
+  // Captioning a 100+ image set means the user is usually scrolled to the
+  // bottom of the grid when the pass finishes — pull them back to the top so
+  // the completion badge / "次へ" button is in view.
+  const prevAutoCapRunning = useRef(false);
+  useEffect(() => {
+    if (
+      prevAutoCapRunning.current &&
+      !autoCap.running &&
+      phase === "form" &&
+      typeof window !== "undefined"
+    ) {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+    prevAutoCapRunning.current = autoCap.running;
+  }, [autoCap.running, phase]);
+
   // Mirrors `images` for synchronous MAX_IMAGES accounting inside the add
   // helpers (which can't read the just-set state).
   const imagesRef = useRef<DatasetImage[]>([]);

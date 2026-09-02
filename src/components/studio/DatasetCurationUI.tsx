@@ -10,9 +10,11 @@ import {
   Loader2,
   RotateCcw,
   Trash2,
+  ZoomIn,
 } from "lucide-react";
 import { translateCaption, translateCaptionsBatch } from "@/lib/loraTranslate";
 import { buildDatasetZip, downloadBlob } from "@/lib/datasetZip";
+import { ImageLightbox } from "@/components/studio/ImageLightbox";
 
 export type CurationPair = {
   id: string;
@@ -75,6 +77,20 @@ export function DatasetCurationUI({
   const [zipping, setZipping] = useState(false);
   // Pair ids with an AI re-analysis in flight.
   const [recappingIds, setRecappingIds] = useState<Set<string>>(() => new Set());
+  // Index into `pairs` of the image open in the zoom lightbox (null = closed).
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+
+  const lightboxItems = useMemo(
+    () =>
+      pairs.map((p) => ({
+        id: p.id,
+        url: p.url,
+        name: p.name,
+        caption: p.caption,
+        captionJa: p.captionJa,
+      })),
+    [pairs],
+  );
 
   const runRecaption = async (targets: CurationPair[]) => {
     if (!onRecaption || targets.length === 0) return;
@@ -339,7 +355,7 @@ export function DatasetCurationUI({
       )}
 
       <div className="grid max-h-[32rem] gap-2 overflow-y-auto pr-1">
-        {pairs.map((p) => {
+        {pairs.map((p, idx) => {
           const b = busyId[p.id];
           return (
             <div
@@ -349,8 +365,11 @@ export function DatasetCurationUI({
               }`}
             >
               <div className="flex w-24 shrink-0 flex-col items-center gap-1.5">
-                <div
-                  className={`flex aspect-square w-24 items-center justify-center overflow-hidden rounded-lg border border-border bg-neutral-900 ${
+                <button
+                  type="button"
+                  onClick={() => setLightboxIndex(idx)}
+                  title="クリックで拡大（細部をズーム確認）"
+                  className={`group relative flex aspect-square w-24 items-center justify-center overflow-hidden rounded-lg border border-border bg-neutral-900 ${
                     p.excluded ? "grayscale" : ""
                   }`}
                 >
@@ -360,7 +379,10 @@ export function DatasetCurationUI({
                     alt={p.name}
                     className="h-full w-full object-contain"
                   />
-                </div>
+                  <span className="absolute inset-0 flex items-center justify-center bg-black/0 text-white opacity-0 transition-all group-hover:bg-black/40 group-hover:opacity-100">
+                    <ZoomIn size={16} />
+                  </span>
+                </button>
                 <span className="w-full truncate text-center font-mono text-[9px] text-muted" title={p.name}>
                   {p.name}
                 </span>
@@ -472,6 +494,17 @@ export function DatasetCurationUI({
           {`🔥 このデータセットで学習を開始 (${requiredCredits} C)`}
         </button>
       </div>
+
+      {lightboxIndex != null && lightboxItems[lightboxIndex] && (
+        <ImageLightbox
+          items={lightboxItems}
+          index={lightboxIndex}
+          onIndexChange={setLightboxIndex}
+          onClose={() => setLightboxIndex(null)}
+          onCaptionChange={(id, caption) => patch(id, { caption })}
+          disabled={disabled || Boolean(bulk)}
+        />
+      )}
     </div>
   );
 }
