@@ -353,6 +353,8 @@ def _collect_final_lora(lora_name: str) -> pathlib.Path:
     # ~10s captioning + ~10-12min training on H100 for the default 2000
     # steps; the wide ceiling only guards a large dataset / A100 fallback.
     timeout=2 * 60 * 60,
+    # 30s Keep-Warm 規格（CLAUDE.md §1）— 全 GPU ワーカー一律。
+    scaledown_window=30,
 )
 def train(
     images_b64: dict,

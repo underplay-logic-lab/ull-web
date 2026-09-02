@@ -80,7 +80,11 @@ import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
 import { generateDatasetCaptions } from "@/lib/loraCaption";
 const JOB_POLL_INTERVAL_MS = 3000;
 const MAX_IMAGES = 200;
-const MAX_TOTAL_BYTES = 120 * 1024 * 1024; // 120 MB of raw image bytes
+// Raw upload budget. The worker's Smart Ingest stage downscales / re-encodes
+// every image on a free CPU container before the GPU starts, so a large raw
+// dataset (4K PNGs, phone shots) is fine to accept here.
+const MAX_TOTAL_BYTES = 1024 * 1024 * 1024; // 1 GB total
+const MAX_FILE_BYTES = 96 * 1024 * 1024; // 96 MB per image (a ~6K PNG)
 
 // Survives a page reload mid-job (dev server restart, browser refresh,
 // accidental navigation) — job/phase state otherwise lives only in this
@@ -913,9 +917,11 @@ function ProgressPanel({
     const msg = job.progressMessage ?? "";
     const heading = msg.startsWith("🎯")
       ? "多層Latentキャッシュ生成"
-      : msg.startsWith("🔥") || hasSteps
-        ? "深度最適化学習中…"
-        : "準備処理中…";
+      : msg.startsWith("🖼️")
+        ? "データセット最適化中（CPU）"
+        : msg.startsWith("🔥") || hasSteps
+          ? "深度最適化学習中…"
+          : "準備処理中…";
 
     // Live training telemetry line — Step X / Y ・ 残り約 … ・ Loss …
     const telemetry = hasSteps ? (
@@ -1584,7 +1590,21 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     const newImgs: DatasetImage[] = [];
     const newCaps: Record<string, string> = {};
     const newUserCaptionIds: string[] = [];
+    // Reject any single image over the per-file cap (the total-size cap is
+    // enforced separately by the submit gate).
+    const oversized = entries.filter((e) => e.file.size > MAX_FILE_BYTES);
+    if (oversized.length) {
+      setErrorMessage(
+        `${oversized.length} 枚が 1 枚あたりの上限（${(MAX_FILE_BYTES / 1024 / 1024).toFixed(0)} MB）を超えたため除外しました: ` +
+          oversized
+            .slice(0, 3)
+            .map((e) => e.file.name)
+            .join(", ") +
+          (oversized.length > 3 ? " ほか" : ""),
+      );
+    }
     for (const { file, caption } of entries) {
+      if (file.size > MAX_FILE_BYTES) continue;
       if (room <= 0) break;
       room--;
       const base = `${file.name}::${file.size}::${file.lastModified}`;
@@ -3066,7 +3086,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           )}
           {totalBytes > MAX_TOTAL_BYTES && (
             <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-400">
-              画像の合計サイズが上限（{(MAX_TOTAL_BYTES / 1024 / 1024).toFixed(0)} MB）を超えています。枚数を減らすか縮小してください。
+              画像の合計サイズが上限（{(MAX_TOTAL_BYTES / 1024 / 1024 / 1024).toFixed(1)} GB）を超えています。枚数を減らしてください（画質はサーバー側で自動最適化されます）。
             </p>
           )}
 

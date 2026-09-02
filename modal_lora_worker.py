@@ -15,8 +15,8 @@ generation.
 
 Pre-staged resources (Volume: ull-wan-models):
   VLM              /models/LLM/Qwen3.8-27B-abliterated
-  MiniMax H3 UNet  /models/diffusion_models/minimax_h3_fl2va_bf16.safetensors
-  CLIP             /models/clip/qwen3vl_32b_minimax_h3_bf16.safetensors
+  MiniMax H3 UNet  /models/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors
+  CLIP             /models/clip/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
   VAE              /models/vae/minimax_h3_video_vae_fp16.safetensors
   Output           /models/loras/
 
@@ -92,9 +92,10 @@ def _hf_cache_env() -> dict:
     B300 rates. Covers every var current huggingface_hub / transformers / torch
     releases consult so nothing can fall back to ~/.cache.
 
-    NOTE: the offline pins (HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE) are NOT here
-    — the CPU pre-cache function must be free to download. train_lora_job adds
-    them itself so only the GPU is network-sealed."""
+    NOTE: no offline pins (HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE) anywhere —
+    hard offline mode also blocks the metadata HEAD requests transformers needs
+    to resolve a *present* local cache entry (LocalEntryNotFoundError). The GPU
+    download guard is _missing_base_artifacts() Fail-Fast in train_lora_job."""
     return {
         "HF_HOME": HF_CACHE_DIR,                    # -> "/models/training/hf_cache"
         "HF_HUB_CACHE": HF_HUB_CACHE_DIR,           # huggingface_hub (current)
@@ -390,30 +391,60 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 # server-side for internal/admin use, just aren't reachable from the UI.
 TARGET_MODELS: dict[str, dict] = {
     # --- video ---
-    # Wan 2.1: ai-toolkit loads it with WanTransformer3DModel.from_pretrained,
-    # which needs a Diffusers repo/dir (transformer + T5 text encoder + VAE +
-    # scheduler, each with its own config.json) — NOT a single .safetensors
-    # (that 404s config.json and then gets misread as an HF repo id ->
-    # "Repo id must use alphanumeric chars ...: '/models'"). name_or_path
-    # points at the Diffusers repo id purely as ai-toolkit's lookup key into
-    # its own comfy-weight map though — see _WAN_COMFY_LAYOUT below, which is
-    # what actually places the multi-GB weights on the Volume.
-    "wan21_14b": {"arch": "wan21", "unet": "Wan-AI/Wan2.1-T2V-14B-Diffusers"},
-    "wan21_1.3b": {"arch": "wan21", "unet": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"},
-    # Wan 2.2 (MoE 14B): same Diffusers-repo story as Wan 2.1 below —
-    # ensure_model_cached_cpu() snapshot_download's the full component tree to
-    # the Volume HF cache. It is NOT wired through the Wan 2.1 ComfyUI
-    # single-file layout (_ensure_wan_comfy_layout), so no _WAN_COMFY_LAYOUT key.
-    "wan22_14b": {"arch": "wan22_14b", "unet": "ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16"},
+    # Wan 2.1 RETIRED — superseded by Wan 2.2 (below). Kept commented so the
+    # history is legible; admin_cleanup_volume(purge_retired_wan21=True) drops
+    # the leftover diffusion_models/wan2.1_t2v_*.safetensors comfy files.
+    # "wan21_14b": {"arch": "wan21", "unet": "Wan-AI/Wan2.1-T2V-14B-Diffusers"},
+    # "wan21_1.3b": {"arch": "wan21", "unet": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"},
+    # Wan 2.2 (MoE 14B): Wan2214bModel(Wan21) hard-wires TWO components to
+    # SEPARATE repos that name_or_path can't reach —
+    # te_path = "ai-toolkit/umt5_xxl_encoder" (UMT5 text_encoder/ + tokenizer/)
+    # and _wan_vae_path = "ai-toolkit/wan2.1-vae" (the causal video VAE). Both
+    # must be listed so _hf_repos_for() yields them and the CPU stage
+    # snapshot_download's them. `model_kwargs.use_comfy_weights: False` forces
+    # the loader to read the DUAL transformer (transformer/ + transformer_2/,
+    # bf16) straight from the -bf16 Diffusers repo instead of pulling
+    # fp8_scaled comfy single files from Comfy-Org/Wan_2.2_ComfyUI_Repackaged
+    # (a hidden ~28GB GPU download, and the wrong precision for bf16 LoRA).
+    "wan22_14b": {
+        "arch": "wan22_14b",
+        "unet": "ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16",
+        "text_encoder": "ai-toolkit/umt5_xxl_encoder",
+        "vae": "ai-toolkit/wan2.1-vae",
+        "model_kwargs": {"use_comfy_weights": False},
+    },
     # LTX: ai-toolkit's "ltx2" arch is built for LTX-2. Handing it the old
     # Lightricks/LTX-Video (0.9.x) checkpoint crashes with a Meta Tensor error
     # (the state-dict keys don't line up), so point name_or_path at LTX-2.
     "ltx_video": {"arch": "ltx2", "unet": "Lightricks/LTX-2"},
+    # MiniMax H3: NO Diffusers repo — ai-toolkit's minimax_h3 loader resolves
+    # every component through _resolve_comfy_file(), which (a) IGNORES the
+    # top-level text_encoder_path / vae_path YAML keys and (b) defaults to
+    # partition "fl2va_pruned" + the *_int8_convrot / *_nvfp4_awq comfy
+    # filenames. ai-toolkit's MiniMaxH3Transformer is hard-wired to that
+    # fused int8_convrot state-dict layout — feeding it a raw bf16 checkpoint
+    # crashes with "Unexpected key(s) in state_dict: blocks.0.adaln_proj.
+    # linear.bias …" (bf16 keeps adaln_proj split, the quant partition fuses
+    # it). So track ai-toolkit's default: pull the *pruned int8_convrot* DiT +
+    # *nvfp4_awq* TE and select partition "fl2va_pruned". Pin ALL component
+    # paths to the exact MODELS_DIR files _ensure_minimax_h3_weights() places
+    # so there are zero Hub weight downloads on the GPU. `audio_vae` is loaded
+    # unconditionally by _load_vaes() and has no top-level key, so it lives
+    # only in model_kwargs (+ _MINIMAX_H3_WEIGHT_FILES). The VAEs are already
+    # the layout ai-toolkit expects, so they stay as-is.
     "minimax_h3": {
         "arch": "minimax_h3",
-        "unet": f"{MODELS_DIR}/diffusion_models/minimax_h3_fl2va_bf16.safetensors",
-        "text_encoder": f"{MODELS_DIR}/clip/qwen3vl_32b_minimax_h3_bf16.safetensors",
+        "unet": f"{MODELS_DIR}/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "text_encoder": f"{MODELS_DIR}/clip/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
         "vae": f"{MODELS_DIR}/vae/minimax_h3_video_vae_fp16.safetensors",
+        "audio_vae": f"{MODELS_DIR}/vae/minimax_h3_audio_vae_fp32.safetensors",
+        "model_kwargs": {
+            "partition": "fl2va_pruned",
+            "dit_fl2va_pruned_path": f"{MODELS_DIR}/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+            "text_encoder_path": f"{MODELS_DIR}/clip/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+            "video_vae_path": f"{MODELS_DIR}/vae/minimax_h3_video_vae_fp16.safetensors",
+            "audio_vae_path": f"{MODELS_DIR}/vae/minimax_h3_audio_vae_fp32.safetensors",
+        },
     },
     # --- photo / general — Diffusers repos, snapshot_download'd to the
     # Volume HF cache by ensure_model_cached_cpu() like Wan/Qwen above. ---
@@ -447,12 +478,62 @@ TARGET_MODELS: dict[str, dict] = {
     # + configs from this Diffusers repo. ensure_model_cached_cpu() pre-caches it
     # (transformer shards excluded — the Comfy single file covers those).
     "qwen_image": {"arch": "qwen_image", "unet": "Qwen/Qwen-Image", "extras": "Qwen/Qwen-Image"},
-    "krea2": {"arch": "krea2", "unet": "krea/Krea-2-Raw"},
-    "zimage": {"arch": "zimage", "unet": "Tongyi-MAI/Z-Image-Turbo"},
+    # Krea 2: the MMDiT weights are the ONLY thing in "krea/Krea-2-Raw". The
+    # Krea2Model loader (ai-toolkit extensions_built_in/diffusion_models/krea2/
+    # krea2.py) hard-wires its other two components to SEPARATE HF repos —
+    # QWEN3_VL_PATH = "Qwen/Qwen3-VL-4B-Instruct" (whole repo, subfolder="")
+    # for the text encoder + both tokenizers, and QWEN_IMAGE_VAE_PATH =
+    # "Qwen/Qwen-Image" (its "vae" subfolder) for the autoencoder. Neither is
+    # reachable from name_or_path, so without listing them here the CPU
+    # pre-cache misses them and the GPU pulls ~10GB (Qwen3-VL) + the Qwen-Image
+    # VAE at B300 rates. The Qwen-Image snapshot is transformer-shards-excluded
+    # (_REPO_SNAPSHOT_IGNORE) and shared with the qwen_image preset.
+    "krea2": {
+        "arch": "krea2",
+        "unet": "krea/Krea-2-Raw",
+        "text_encoder": "Qwen/Qwen3-VL-4B-Instruct",
+        "vae": "Qwen/Qwen-Image",
+    },
+    # Z-Image: the TE (Qwen3TextEncoder, "text_encoder"), tokenizer and VAE
+    # (KLVAE, "vae") all live inside "Tongyi-MAI/Z-Image-Turbo" (== name_or_path
+    # == extras_name_or_path) and the full snapshot of `unet` covers them. But
+    # ZImageModel.load_transformer defaults use_comfy_weights=True, which would
+    # pull z_image_turbo_bf16.safetensors from Comfy-Org/z_image_turbo (a hidden
+    # ~12GB GPU download) instead of the transformer/ folder already on the
+    # Volume — so force it off. The whole model is then one snapshotted repo.
+    "zimage": {
+        "arch": "zimage",
+        "unet": "Tongyi-MAI/Z-Image-Turbo",
+        "model_kwargs": {"use_comfy_weights": False},
+    },
     # --- anime / illustration ---
+    # Anima: AnimaModel loads EVERY component (CosmosTransformer3DModel,
+    # QwenImageVAE "vae", Qwen3ModelEncoder "text_encoder", AnimaTextConditioner
+    # "text_conditioner", the "tokenizer" + "t5_tokenizer" subfolders) from a
+    # single name_or_path. The full snapshot of `unet` covers all of them — no
+    # hard-coded external TE/VAE repo.
     "anima": {"arch": "anima", "unet": "circlestone-labs/Anima-Base-v1.0-Diffusers"},
+    # SDXL (illustrious_xl / juggernaut_xl): StableDiffusionXLPipeline
+    # .from_pretrained(name_or_path) pulls unet + vae + text_encoder +
+    # text_encoder_2 + both tokenizers from that one repo. ai-toolkit hard-codes
+    # no separate TE/VAE (model_config.vae_path is left unset), so the `unet`
+    # snapshot is complete.
     "illustrious_xl": {"arch": "sdxl", "unet": "OnomaAIResearch/Illustrious-xl-early-release-v0"},
-    "pony_v6": {"arch": "sdxl", "unet": "AstraliteHeart/pony-diffusion-v6-xl"},
+    # Pony V6 XL removed: "AstraliteHeart/pony-diffusion-v6-xl" 404s (repo id
+    # doesn't exist even with a valid HF token) and no vanilla-Pony mirror ships
+    # a full ai-toolkit-loadable DIFFUSERS layout. Replaced with Juggernaut XL.
+    #
+    # RunDiffusion/Juggernaut-XL-v9 ships ONLY *.fp16.safetensors component
+    # files (no plain-variant weights). model_kwargs.variant="fp16" records the
+    # intent, though NOTE: ai-toolkit's SDXL path (toolkit/stable_diffusion_model
+    # .py, is_xl) does not currently thread model_kwargs into from_pretrained —
+    # the real safety net is diffusers>=0.32's own automatic fp16-file fallback
+    # (a warning, not a crash), which this widely-used repo relies on.
+    "juggernaut_xl": {
+        "arch": "sdxl",
+        "unet": "RunDiffusion/Juggernaut-XL-v9",
+        "model_kwargs": {"variant": "fp16"},
+    },
 }
 
 # FLUX.1 [dev] is blocked outright (non-commercial licence). Matches
@@ -574,6 +655,15 @@ def _sanitize_caption(raw_text: str, trigger: str) -> str:
     return f"{trigger}, {text}"
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
+
+# Read-only view of the SAME Volume, for functions that only ever read files
+# off it (checkpoint / artifact downloads, admin file explorer). A read-only
+# mount disables Modal's implicit `allow_background_commits` AND the
+# clean-shutdown auto-commit for that container, so a warm/idle downloader can
+# never resurrect a file another container (the admin explorer, the TTL
+# purges) has deleted + committed. Any function that writes to the Volume must
+# keep mounting the read-write `vol` handle.
+vol_ro = vol.with_mount_options(read_only=True)
 
 # Build-time patch: wrap the eager FP4/NVFP4 quant modules' bodies in a
 # try/except so ANY import-time failure (torch.library.custom_op /
@@ -762,9 +852,9 @@ image = (
         {
             # Load the base model from the persistent Volume cache that
             # ensure_model_cached_cpu() (the CPU dispatcher, before this GPU
-            # was ever spawned) pre-filled. train_lora_job additionally pins
-            # HF_HUB_OFFLINE and self-aborts if a weight is missing — the GPU
-            # NEVER runs a download. `_hf_cache_env()` (HF_HOME, MODELS_PATH,
+            # was ever spawned) pre-filled. train_lora_job self-aborts
+            # (_missing_base_artifacts Fail-Fast) if a weight is missing — the
+            # GPU NEVER runs a download. `_hf_cache_env()` (HF_HOME, MODELS_PATH,
             # …) is the SAME dict every container applies, so a CPU-cached
             # snapshot is always a GPU-local hit.
             **_hf_cache_env(),
@@ -1054,12 +1144,11 @@ def _caption_missing(
         print("[stage1] every image already has a caption — skipping the VLM")
         return filled[: len(image_paths)]
 
-    # Physically cut HuggingFace Hub network access — the checkpoint lives on
-    # the Volume, and any from_pretrained() Hub round-trip (metadata refresh,
-    # revision check) is what was hanging Stage 1 for 5+ minutes.
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["TRANSFORMERS_OFFLINE"] = "1"
-
+    # The Qwen VLM checkpoint is pre-staged on the Volume, so from_pretrained()
+    # resolves from local disk. We do NOT hard-pin HF_HUB_OFFLINE here: that
+    # also blocks the few-byte metadata HEAD requests transformers needs to
+    # resolve a present cache entry (LocalEntryNotFoundError on files that are
+    # physically there). The tiny revision-check round-trip is harmless.
     import torch
     from PIL import Image
     from transformers import AutoProcessor
@@ -1124,12 +1213,11 @@ Follow the user's instructions (provided in Japanese or English) and generate a 
         processor.tokenizer.padding_side = "left"
     print(f"[Qwen Load] Processor loaded in {time.time() - _tp:.1f} seconds", flush=True)
 
-    # Offline mode stays ON for Stage 2 too — the ai-toolkit base model is
-    # 100% pre-staged on the Volume by ensure_model_cached_cpu, and the GPU is
-    # network-sealed (train_lora_job pins HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE
-    # at container start; this section just re-asserts them).
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    # No HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE pin for Stage 2 either — the
+    # ai-toolkit base model is 100% pre-staged on the Volume by
+    # ensure_model_cached_cpu, and the download guard is
+    # _missing_base_artifacts() (Fail-Fast RuntimeError) in train_lora_job.
+    # Hard offline mode broke local cache resolution (LocalEntryNotFoundError).
     try:
         from qwen_vl_utils import process_vision_info
     except Exception:  # noqa: BLE001
@@ -1220,7 +1308,7 @@ Follow the user's instructions (provided in Japanese or English) and generate a 
 # ---------------------------------------------------------------------------
 # Stage 2 — ai-toolkit config + run
 # ---------------------------------------------------------------------------
-H3_LOCAL_UNET = f"{MODELS_DIR}/diffusion_models/minimax_h3_fl2va_bf16.safetensors"
+H3_LOCAL_UNET = f"{MODELS_DIR}/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors"
 
 
 def _cloud_safe_model_block(
@@ -1245,7 +1333,7 @@ def _cloud_safe_model_block(
     # doesn't run for BF16 LoRA training).
     if arch == "minimax_h3":
         h3 = TARGET_MODELS["minimax_h3"]
-        return {
+        block = {
             "name_or_path": h3["unet"],
             "arch": "minimax_h3",
             "quantize": False,
@@ -1253,6 +1341,12 @@ def _cloud_safe_model_block(
             "text_encoder_path": h3["text_encoder"],
             "vae_path": h3["vae"],
         }
+        # model_kwargs is where ai-toolkit's minimax loader ACTUALLY reads the
+        # per-component local paths + partition from (the top-level keys above
+        # are ignored by it) — see TARGET_MODELS["minimax_h3"].
+        if isinstance(h3.get("model_kwargs"), dict):
+            block["model_kwargs"] = dict(h3["model_kwargs"])
+        return block
 
     safe = None
     if target_model and target_model != "custom" and target_model in TARGET_MODELS:
@@ -1271,6 +1365,8 @@ def _cloud_safe_model_block(
             block["text_encoder_path"] = safe["text_encoder"]
         if safe.get("vae"):
             block["vae_path"] = safe["vae"]
+        if isinstance(safe.get("model_kwargs"), dict):
+            block["model_kwargs"] = dict(safe["model_kwargs"])
         return block
 
     if target_model == "custom" and custom_model_id and not _is_blocked_model(custom_model_id):
@@ -1471,6 +1567,11 @@ def _build_config(
     # exact repo (transformer weight shards excluded) so it resolves offline.
     if target.get("extras"):
         model_block["extras_name_or_path"] = target["extras"]
+    # Per-preset ai-toolkit model_kwargs (e.g. use_comfy_weights: False so the
+    # loader reads the transformer/TE from the Diffusers repo the CPU stage
+    # already snapshotted, not a Comfy-Org single file it would fetch on GPU).
+    if isinstance(target.get("model_kwargs"), dict):
+        model_block["model_kwargs"] = {**target["model_kwargs"], **model_block.get("model_kwargs", {})}
 
     config = {
         "job": "extension",
@@ -1633,19 +1734,21 @@ def _run_ai_toolkit_with_progress(
     .safetensors survive a mid-training SIGKILL."""
     log_path = pathlib.Path("/root/ai_toolkit_run.log")
 
-    # NETWORK-SEALED: the ai-toolkit subprocess INHERITS train_lora_job's
-    # HF_HUB_OFFLINE=1 / TRANSFORMERS_OFFLINE=1 pins (no longer stripped). The
-    # full component tree — including the small Wan tokenizer / arch-config
-    # repo (ai-toolkit/umt5_xxl_encoder) — is pre-staged on the Volume by
-    # ensure_model_cached_cpu, so every load resolves from local disk. If the
-    # trainer somehow reaches for an un-cached repo, offline mode turns that
-    # into an immediate crash (correct: a strictly-blocked download, not an
-    # idle-GPU bleed) rather than a silent multi-GB pull at B300 rates.
+    # NO offline pins for the ai-toolkit subprocess. The full component tree —
+    # including the small Wan tokenizer / arch-config repo
+    # (ai-toolkit/umt5_xxl_encoder) — is pre-staged on the Volume by
+    # ensure_model_cached_cpu, so every load resolves from local disk. Hard
+    # HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE also blocked the metadata HEAD
+    # requests transformers needs to resolve a *present* cache entry, raising
+    # LocalEntryNotFoundError on files that were physically there. The download
+    # guard is _missing_base_artifacts() in train_lora_job: it self-aborts
+    # before this subprocess ever starts if any artefact is missing, so a
+    # multi-GB Hub pull can never begin.
     _ = offline
     child_env = dict(os.environ)
-    child_env["HF_HUB_OFFLINE"] = "1"
-    child_env["TRANSFORMERS_OFFLINE"] = "1"
-    child_env["HF_DATASETS_OFFLINE"] = "1"
+    child_env.pop("HF_HUB_OFFLINE", None)
+    child_env.pop("TRANSFORMERS_OFFLINE", None)
+    child_env.pop("HF_DATASETS_OFFLINE", None)
 
     # Runtime quant_api shim (no image rebuild): written fresh on every run
     # so a fix here lands on the next deploy without rebuilding the (slow)
@@ -1757,6 +1860,230 @@ for _k, _v in list(globals().items()):
             print(f"[aitk-patch] {convrot_file} not found — skipping disk patch", flush=True)
     except Exception as _patch_exc:  # noqa: BLE001 — best-effort, sitecustomize is the primary fix
         print(f"[aitk-patch] convrot_quant.py disk patch skipped: {_patch_exc}", flush=True)
+
+    # --- MiniMax H3 int8_convrot dequant "Bake & Skip" ----------------------
+    # ai-toolkit loads minimax_h3_fl2va_pruned_int8_convrot.safetensors and,
+    # because our config asks for NO quantization (bf16 LoRA training), calls
+    # dequantize_ostris_to_linear() on the CPU-resident model in aitk_post_load
+    # — an inverse-Hadamard + per-row-scale pass over every linear of a 33B DiT
+    # that costs 10+ minutes of B300 idle on EVERY run. Patch appended to
+    # minimax_h3.py wraps MinimaxH3Model._load_transformer so that pass runs
+    # ONCE: its bf16 result is baked to the Volume as
+    # diffusion_models/minimax_h3_baked_<component>_bf16.safetensors (keyed by
+    # partition — fl2va_pruned / ref2va_pruned dequantize to different weights),
+    # and every later run loads that file directly (safetensors load + one
+    # load_state_dict(assign=True) — no dequant math at all). A heartbeat line
+    # every 30s during the one-time dequant/bake keeps the worker's 20-minute
+    # prep-silence watchdog (and its checkpoint-I/O grace) from reading the
+    # quiet CPU/disk work as a deadlock. Best-effort: any failure falls back to
+    # ai-toolkit's stock path and training still proceeds.
+    minimax_file = pathlib.Path(AI_TOOLKIT_DIR) / (
+        "extensions_built_in/diffusion_models/minimax_h3/minimax_h3.py"
+    )
+    _H3_BAKE_MARKER = "INJECTED BY ULL STUDIO PATCH: MiniMax H3 dequant Bake & Skip"
+    _H3_BAKE_PATCH = '''
+
+# ===== INJECTED BY ULL STUDIO PATCH: MiniMax H3 dequant Bake & Skip =====
+import time as _ull_time
+import threading as _ull_threading
+
+_ULL_H3_BAKE_DIR = os.environ.get("ULL_H3_BAKE_DIR", "/models/diffusion_models")
+
+
+def _ull_h3_baked_path(model):
+    try:
+        component = model._dit_component()  # "dit_fl2va_pruned" etc.
+    except Exception:
+        component = "dit_unknown"
+    return os.path.join(
+        _ULL_H3_BAKE_DIR, f"minimax_h3_baked_{component}_bf16.safetensors"
+    )
+
+
+def _ull_h3_with_heartbeat(label, fn):
+    """Run fn() on THIS thread; a daemon thread prints a progress line every
+    30s so the worker's prep-silence watchdog never fires during the quiet
+    CPU dequant / disk write. 'writing safetensors' also arms its I/O grace."""
+    stop_evt = _ull_threading.Event()
+
+    def _beat():
+        t0 = _ull_time.time()
+        while not stop_evt.wait(30):
+            print(
+                f"[ULL][minimax] {label} — writing safetensors, "
+                f"{int(_ull_time.time() - t0)}s elapsed",
+                flush=True,
+            )
+
+    hb = _ull_threading.Thread(target=_beat, daemon=True)
+    hb.start()
+    try:
+        return fn()
+    finally:
+        stop_evt.set()
+        hb.join(timeout=1)
+
+
+_ull_h3_orig_load_transformer = MinimaxH3Model._load_transformer
+
+
+def _ull_h3_load_transformer(self):
+    if os.environ.get("ULL_H3_BAKE", "1") == "0":
+        return _ull_h3_orig_load_transformer(self)  # kill switch: stock path
+
+    baked = _ull_h3_baked_path(self)
+
+    # --- SKIP: a baked bf16 transformer is already on the Volume ----------
+    if os.path.isfile(baked) and os.path.getsize(baked) > 0:
+        try:
+            self.print_and_status_update(
+                f"Loading pre-baked bf16 transformer (skipping int8_convrot "
+                f"dequant): {baked}"
+            )
+
+            def _load():
+                sd = load_file(baked)
+                m = MiniMaxH3Transformer.load_from_state_dict(sd, self.torch_dtype)
+                sd.clear()
+                return m
+
+            transformer = _ull_h3_with_heartbeat("loading baked transformer", _load)
+            flush()
+            print(
+                f"[ULL][minimax] baked bf16 transformer loaded from {baked}",
+                flush=True,
+            )
+            return transformer
+        except Exception as e:
+            print(
+                f"[ULL][minimax] baked load failed ({e!r}) — falling back to "
+                f"int8_convrot dequant",
+                flush=True,
+            )
+
+    # --- BAKE: first run — attach quantized layers, dequantize, persist ---
+    transformer = _ull_h3_orig_load_transformer(self)
+    try:
+        from toolkit.util.ostris_quant import OstrisLinear
+
+        if any(isinstance(mod, OstrisLinear) for mod in transformer.modules()):
+            from toolkit.util.quantize import dequantize_ostris_to_linear
+
+            self.print_and_status_update(
+                "Dequantizing int8_convrot -> bf16 (first run; caching the result)"
+            )
+            n = _ull_h3_with_heartbeat(
+                "dequantizing int8_convrot",
+                lambda: dequantize_ostris_to_linear(transformer),
+            )
+            transformer.aitk_is_quantized = False
+            transformer.aitk_qtype = None
+            print(
+                f"[ULL][minimax] dequantized {n} layers -> bf16; baking to {baked}",
+                flush=True,
+            )
+            try:
+                _ull_h3_bake(transformer, baked)
+            except Exception as e:
+                print(
+                    f"[ULL][minimax] bake skipped ({e!r}) — training continues "
+                    f"with the in-memory weights",
+                    flush=True,
+                )
+    except Exception as e:
+        print(
+            f"[ULL][minimax] dequant/bake wrapper error ({e!r}) — using "
+            f"ai-toolkit's default path",
+            flush=True,
+        )
+    return transformer
+
+
+def _ull_h3_bake(transformer, baked):
+    tmp = f"{baked}.tmp.{os.getpid()}"
+    os.makedirs(os.path.dirname(baked), exist_ok=True)
+
+    def _write():
+        cpu_sd = {}
+        for k, v in transformer.state_dict().items():
+            cpu_sd[k] = v.detach().to("cpu").contiguous()
+        save_file(
+            cpu_sd,
+            tmp,
+            metadata={"format": "pt", "ull_baked_from": "minimax_h3_int8_convrot"},
+        )
+        cpu_sd.clear()
+
+    _ull_h3_with_heartbeat("baking bf16 transformer", _write)
+    os.replace(tmp, baked)
+    flush()
+    print(
+        f"[ULL][minimax] baked bf16 transformer -> {baked} "
+        f"({os.path.getsize(baked) / 1e9:.1f} GB)",
+        flush=True,
+    )
+
+
+MinimaxH3Model._load_transformer = _ull_h3_load_transformer
+print(
+    "[aitk-patch] minimax_h3.py — installed int8_convrot dequant Bake & Skip wrapper",
+    flush=True,
+)
+# ===== END INJECTED BY ULL STUDIO PATCH =====
+'''
+    try:
+        if not minimax_file.exists():
+            print(f"[aitk-patch] {minimax_file} not found — skipping MiniMax H3 bake patch", flush=True)
+        else:
+            _mm = minimax_file.read_text(encoding="utf-8")
+            if _H3_BAKE_MARKER in _mm:
+                print("[aitk-patch] minimax_h3.py bake-and-skip patch already applied — skipping", flush=True)
+            else:
+                minimax_file.write_text(_mm + _H3_BAKE_PATCH, encoding="utf-8")
+                print("[aitk-patch] patched minimax_h3.py — int8_convrot dequant Bake & Skip", flush=True)
+    except Exception as _patch_exc:  # noqa: BLE001 — best-effort
+        print(f"[aitk-patch] minimax_h3.py bake patch skipped: {_patch_exc}", flush=True)
+
+    # --- SDXL `variant` resolution patch ------------------------------------
+    # ai-toolkit's SDXL loader (toolkit/stable_diffusion_model.py, the is_xl
+    # branch) calls StableDiffusionXLPipeline.from_pretrained() with variant
+    # hard-commented-out and never reads model_config.model_kwargs. A repo that
+    # ships ONLY *.fp16.safetensors component files (RunDiffusion/Juggernaut-XL-
+    # v9) then fails: diffusers' fp16 auto-fallback needs a Hub round-trip to
+    # confirm no plain-variant file exists, which the Volume-local cache can't
+    # answer -> LocalEntryNotFoundError. Inject a `variant` into load_args right
+    # before that from_pretrained: from model_kwargs.variant when set, else
+    # "fp16" for any Juggernaut repo. Idempotent (marker check); a no-op for
+    # every other SDXL preset (illustrious_xl ships plain-variant weights and
+    # sets no model_kwargs, so neither branch fires).
+    sdm_file = pathlib.Path(AI_TOOLKIT_DIR) / "toolkit/stable_diffusion_model.py"
+    _SDXL_VARIANT_MARKER = "INJECTED BY ULL STUDIO PATCH"
+    # Inject right before the is_xl/ssd/vega branch. `model_path` and `load_args`
+    # are both already in scope by then (built ~15 lines above).
+    _SDXL_ANCHOR = "        if self.model_config.is_xl or self.model_config.is_ssd or self.model_config.is_vega:\n"
+    _SDXL_INJECT = (
+        "        # --- INJECTED BY ULL STUDIO PATCH (variant for fp16-only SDXL repos) ---\n"
+        "        if getattr(self.model_config, \"model_kwargs\", None) and \"variant\" in self.model_config.model_kwargs:\n"
+        "            load_args[\"variant\"] = self.model_config.model_kwargs[\"variant\"]\n"
+        "        elif \"Juggernaut\" in model_path or \"juggernaut\" in model_path.lower():\n"
+        "            load_args[\"variant\"] = \"fp16\"\n"
+        "        # ---------------------------------------------------------------------\n"
+        "        if self.model_config.is_xl or self.model_config.is_ssd or self.model_config.is_vega:\n"
+    )
+    try:
+        if not sdm_file.exists():
+            print(f"[aitk-patch] {sdm_file} not found — skipping SDXL variant patch", flush=True)
+        else:
+            _sdm = sdm_file.read_text(encoding="utf-8")
+            if _SDXL_VARIANT_MARKER in _sdm:
+                print("[aitk-patch] stable_diffusion_model.py SDXL variant patch already applied — skipping", flush=True)
+            elif _sdm.count(_SDXL_ANCHOR) == 1:
+                sdm_file.write_text(_sdm.replace(_SDXL_ANCHOR, _SDXL_INJECT, 1), encoding="utf-8")
+                print("[aitk-patch] patched stable_diffusion_model.py — SDXL load_args['variant'] resolution", flush=True)
+            else:
+                print(f"[aitk-patch] stable_diffusion_model.py anchor matched {_sdm.count(_SDXL_ANCHOR)}x (expected 1) — skipping SDXL variant patch", flush=True)
+    except Exception as _patch_exc:  # noqa: BLE001 — best-effort
+        print(f"[aitk-patch] stable_diffusion_model.py SDXL variant patch skipped: {_patch_exc}", flush=True)
 
     returncode = -1
     state = {"step": 0, "total": total_steps, "loss": None, "eta": None}
@@ -2271,6 +2598,45 @@ def _derive_dataset_id(params: dict) -> str:
 AITK_LATENT_CACHE_DIR = f"{DATASET_DIR}/_latent_cache"
 
 
+# ---------------------------------------------------------------------------
+# ULL Smart Ingest — CPU-side dataset optimisation (see ingest_and_optimize_
+# dataset_cpu). Bake EXIF orientation, high-quality LANCZOS downscale (never
+# upscale) to a training-appropriate long edge, strip metadata, re-encode to
+# a compact uniform format. Output lands on the Volume at
+# PERSIST_ROOT/<dataset_id>/_ingest/<ingest_key>/NNNN<INGEST_EXT> and the GPU
+# job copies it verbatim (zero Supabase re-download, zero GPU-side resize).
+# ---------------------------------------------------------------------------
+INGEST_VERSION = 1            # bump -> every dataset re-ingests (the key changes)
+INGEST_FMT = "WEBP"
+INGEST_EXT = ".webp"
+INGEST_QUALITY = 95
+INGEST_WEBP_METHOD = 6
+# resolution (512/768/1024) -> the training res * 1.5, rounded to a multiple
+# of 8, as the target LONG edge. The 1.5x headroom covers ai-toolkit's
+# aspect-ratio bucketing / crop without paying to VAE-encode pixels we'd
+# never use.
+INGEST_LONG_EDGE = {512: 768, 768: 1152, 1024: 1536}
+INGEST_LONG_EDGE_DEFAULT = 1152
+INGEST_LONG_EDGE_OVERRIDE = 2048   # raw-YAML: resolution can't be parsed -> generous
+
+
+def _ingest_cache_key(long_edge: int) -> str:
+    """The <key> in PERSIST_ROOT/<dataset_id>/_ingest/<key>/. Encodes every
+    ingest parameter so a change to any of them yields a different directory
+    (== a fresh re-ingest, the old one aged out by the 14d TTL)."""
+    return (
+        f"e{long_edge}_{INGEST_FMT.lower()}q{INGEST_QUALITY}"
+        f"m{INGEST_WEBP_METHOD}_v{INGEST_VERSION}"
+    )
+
+
+def _ingest_long_edge(resolution: int, override: bool) -> int:
+    if override:
+        return INGEST_LONG_EDGE_OVERRIDE
+    res = resolution if resolution in (512, 768, 1024) else 768
+    return INGEST_LONG_EDGE.get(res, INGEST_LONG_EDGE_DEFAULT)
+
+
 def _latent_cache_key(target_model: str, custom_model_id: str, resolution: int) -> str:
     """Path segment '<model>_<res>' for PERSIST_ROOT/<dataset_id>/latents/.
     Mirrors _build_config's resolution clamp so the key matches the config
@@ -2399,15 +2765,15 @@ def train_lora_job(params: dict) -> dict:
     #    mismatch here is a silent GPU-side re-download.
     _apply_hf_cache_env()
 
-    # 3) PHYSICALLY seal this GPU container off from the HuggingFace Hub. The
-    #    base model is 100% pre-staged on the Volume by ensure_model_cached_cpu;
-    #    any from_pretrained() / hf_hub_download() the trainer attempts must
-    #    resolve from local disk or hard-fail — it must NEVER pull 30GB+ at
-    #    B300 rates. Inherited by the ai-toolkit subprocess (child_env no
-    #    longer strips these).
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    os.environ["HF_DATASETS_OFFLINE"] = "1"
+    # 3) NO HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE seal here. Hard offline mode
+    #    also blocks the few-byte metadata HEAD requests transformers /
+    #    huggingface_hub issue to *resolve* a local cache entry, which made
+    #    from_pretrained() raise LocalEntryNotFoundError even though every
+    #    weight was physically present on the Volume. The real download guard
+    #    is _missing_base_artifacts() below: the CPU dispatcher pre-staged the
+    #    full component tree and this job self-aborts (Fail-Fast RuntimeError)
+    #    in the first seconds if any artefact is missing — so a genuine 30GB+
+    #    Hub pull can never start regardless of the offline flags.
 
     # Normalise the HF token (or scrub the deploy placeholder so ai-toolkit's
     # own hf_hub_download for the tokenizer never auths with a bogus value).
@@ -2418,7 +2784,7 @@ def train_lora_job(params: dict) -> dict:
         pathlib.Path(_d).mkdir(parents=True, exist_ok=True)
     print(
         f"[train] HF_HOME={HF_CACHE_DIR} MODELS_PATH={MODELS_DIR} "
-        "HF_HUB_OFFLINE=1 (Volume-local, network-sealed)",
+        "(Volume-local; download guard = _missing_base_artifacts Fail-Fast)",
         flush=True,
     )
 
@@ -2466,9 +2832,10 @@ def train_lora_job(params: dict) -> dict:
     try:
         # ---- FAIL-FAST: model must already be on the Volume -----------------
         # The CPU dispatcher ran ensure_model_cached_cpu to completion AND
-        # verified the result before spawning this GPU; combined with the
-        # HF_HUB_OFFLINE seal above, this container CANNOT download the base
-        # model. If any weight / config artefact is missing, self-abort in the
+        # verified the result before spawning this GPU. This check is the sole
+        # download guard now (no HF_HUB_OFFLINE pin): a missing artefact means a
+        # Hub pull would be needed, so we hard-abort instead of letting it run.
+        # If any weight / config artefact is missing, self-abort in the
         # first seconds (scaledown_window=30) — 0s of wasted B300 time. Inside
         # `try` so the handler below refunds it 100% (GUI mode). Raw-YAML jobs
         # point name_or_path somewhere unparseable and are exempt.
@@ -2517,7 +2884,39 @@ def train_lora_job(params: dict) -> dict:
 
         image_paths: list[pathlib.Path] = []
         storage_paths = params.get("storage_paths") or []
-        if storage_paths:
+
+        # --- Smart Ingest fast-path: the dispatcher already downloaded +
+        #     optimised these images onto the Volume. Copy from there — no
+        #     Supabase round-trip, and the GPU never resizes a 4K source.
+        ingest_rel = str(params.get("ingest_dir") or "").strip().strip("/")
+        staged_from_ingest = False
+        if ingest_rel and ".." not in ingest_rel:
+            try:
+                vol.reload()
+            except Exception:  # noqa: BLE001
+                pass
+            ingest_src = pathlib.Path(PERSIST_ROOT) / ingest_rel
+            if ingest_src.is_dir():
+                found = sorted(
+                    p for p in ingest_src.iterdir()
+                    if p.is_file() and p.stat().st_size > 0
+                    and p.suffix.lower() in IMAGE_EXTS
+                )
+                if found and (not storage_paths or len(found) == len(storage_paths)):
+                    for i, src in enumerate(found):
+                        dest = dataset / f"{i:04d}{src.suffix.lower()}"
+                        shutil.copy2(src, dest)
+                        image_paths.append(dest)
+                    staged_from_ingest = True
+                    print(
+                        f"[train] staged {len(image_paths)} pre-optimized images "
+                        f"from {ingest_src} (Smart Ingest — no Supabase download)",
+                        flush=True,
+                    )
+
+        if staged_from_ingest:
+            pass  # images already in /root/dataset
+        elif storage_paths:
             # Primary path: the browser uploaded the images to Supabase
             # Storage and only their object keys were forwarded here, so the
             # Next.js request never hit Vercel's 4.5 MB body cap. Pull them
@@ -2988,12 +3387,23 @@ dispatch_image = (
     # every dispatch_image endpoint imports this module, so it must resolve here
     # too, not just in the training `image`.
     .pip_install(
-        "fastapi[standard]", "modal", "grpclib", "huggingface_hub>=0.24", "hf_transfer", "pyyaml"
+        # `requests` is REQUIRED: _supabase_request / _patch_job / _refund_credits
+        # all `import requests`. Without it every job-status PATCH and every
+        # credit refund from a dispatch-image function (_prepare_and_spawn_training,
+        # ensure_model_cached_cpu, check_call_status, …) throws
+        # ModuleNotFoundError — which _patch_job swallows, so a failed or finished
+        # job never leaves "processing" in the UI (it just "進まない").
+        "fastapi[standard]", "modal", "grpclib", "huggingface_hub>=0.24", "hf_transfer", "pyyaml", "requests"
     )
     # Same canonical HF cache env as the training image — ensure_model_cached_cpu
     # snapshot_download's into exactly the path the GPU later reads from.
     .env(_hf_cache_env())
 )
+
+# Smart Ingest image = dispatch_image (tiny, warm base) + Pillow. Inherits
+# dispatch_image rather than rebuilding from debian_slim so this module's
+# top-level `import fastapi / modal / yaml` still resolve inside the container.
+ingest_image = dispatch_image.pip_install("Pillow>=10.2")
 
 
 # TEST HARNESS: a GPU-less no-op that never touches generation_jobs, so the
@@ -3021,18 +3431,30 @@ def _pending_stub(item: dict):
 # ensure_model_cached_cpu places these on the Volume before the GPU spawns
 # (hardlink from an existing case-variant, else a single-file pull from
 # Comfy-Org — never the 55GB Diffusers repo).
+# Wan 2.1 RETIRED (the wan21_* presets were removed) — layout kept empty so
+# _wan_target() returns None everywhere and nothing pre-stages these files.
 _WAN_COMFY_LAYOUT: dict[str, list[tuple[str, list[str]]]] = {
-    "wan21_14b": [
-        ("diffusion_models/wan2.1_t2v_14B_bf16.safetensors", ["diffusion_models/wan2.1_t2v_14b_bf16.safetensors"]),
-        ("text_encoders/umt5_xxl_fp16.safetensors", []),
-        ("vae/wan_2.1_vae.safetensors", []),
-    ],
-    "wan21_1.3b": [
-        ("diffusion_models/wan2.1_t2v_1.3B_bf16.safetensors", ["diffusion_models/wan2.1_t2v_1.3b_bf16.safetensors"]),
-        ("text_encoders/umt5_xxl_fp16.safetensors", []),
-        ("vae/wan_2.1_vae.safetensors", []),
-    ],
+    # "wan21_14b": [
+    #     ("diffusion_models/wan2.1_t2v_14B_bf16.safetensors", ["diffusion_models/wan2.1_t2v_14b_bf16.safetensors"]),
+    #     ("text_encoders/umt5_xxl_fp16.safetensors", []),
+    #     ("vae/wan_2.1_vae.safetensors", []),
+    # ],
+    # "wan21_1.3b": [
+    #     ("diffusion_models/wan2.1_t2v_1.3B_bf16.safetensors", ["diffusion_models/wan2.1_t2v_1.3b_bf16.safetensors"]),
+    #     ("text_encoders/umt5_xxl_fp16.safetensors", []),
+    #     ("vae/wan_2.1_vae.safetensors", []),
+    # ],
 }
+# Leftover Wan 2.1 comfy DIT files admin_cleanup_volume(purge_retired_wan21=True)
+# removes. Deliberately NOT touching text_encoders/umt5_xxl_fp16.safetensors or
+# vae/wan_2.1_vae.safetensors — those may be shared with the wan-animate app on
+# the same Volume.
+_WAN21_RETIRED_DIT_FILES = [
+    "diffusion_models/wan2.1_t2v_14B_bf16.safetensors",
+    "diffusion_models/wan2.1_t2v_14b_bf16.safetensors",
+    "diffusion_models/wan2.1_t2v_1.3B_bf16.safetensors",
+    "diffusion_models/wan2.1_t2v_1.3b_bf16.safetensors",
+]
 _WAN_COMFY_REPO = "Comfy-Org/Wan_2.1_ComfyUI_repackaged"
 # ai-toolkit's default UMT5 tokenizer/config repo (weights come from the comfy
 # file above; this is just tokenizer.json / config.json, a few MB).
@@ -3040,11 +3462,12 @@ _WAN_TOKENIZER_REPO = "ai-toolkit/umt5_xxl_encoder"
 
 
 def _wan_target(target_model: str) -> str | None:
-    """Map a target id / bare 'wan21' arch to a concrete _WAN_COMFY_LAYOUT key."""
+    """Map a target id / bare 'wan21' arch to a concrete _WAN_COMFY_LAYOUT key
+    (None once Wan 2.1 is retired and _WAN_COMFY_LAYOUT is empty)."""
     if target_model in _WAN_COMFY_LAYOUT:
         return target_model
     if target_model == "wan21" or TARGET_MODELS.get(target_model, {}).get("arch") == "wan21":
-        return "wan21_14b"
+        return "wan21_14b" if "wan21_14b" in _WAN_COMFY_LAYOUT else None
     return None
 
 
@@ -3318,6 +3741,194 @@ def _ensure_qwen_comfy_layout(target_model: str) -> dict:
     return {"ok": True, "placed": placed, "fetched": fetched}
 
 
+# ---------------------------------------------------------------------------
+# MiniMax H3: the DiT / TE / VAE weights are hosted single files on the Volume
+# (TARGET_MODELS["minimax_h3"] points at MODELS_DIR paths), so _hf_repos_for()
+# is empty and the repo loop below never runs for it. BUT ai-toolkit's
+# minimax_h3 loader ALWAYS calls AutoTokenizer/AutoProcessor.from_pretrained(
+# "MiniMaxAI/MiniMax-H3", subfolder="FL2VA/tokenizer" | "FL2VA/processor") and
+# AutoConfig.from_pretrained(..., subfolder="FL2VA/text_encoder") — a small
+# (~23MB) but mandatory set of config/tokenizer files that would otherwise be
+# a GPU-side Hub fetch. Pre-stage exactly those into the Volume HF cache.
+_MINIMAX_H3_AUX_REPO = "MiniMaxAI/MiniMax-H3"
+_MINIMAX_H3_AUX_ALLOW = [
+    "FL2VA/tokenizer/*",
+    "FL2VA/processor/*",
+    "FL2VA/text_encoder/config.json",
+]
+_MINIMAX_H3_AUX_CRITICAL = [
+    "FL2VA/tokenizer/tokenizer_config.json",
+    "FL2VA/tokenizer/tokenizer.json",
+    "FL2VA/processor/preprocessor_config.json",
+    "FL2VA/text_encoder/config.json",
+]
+
+# ---------------------------------------------------------------------------
+# MiniMax H3 hosted single-file checkpoints (DiT / TE / VAE). TARGET_MODELS
+# ["minimax_h3"] points ai-toolkit's minimax_h3 loader straight at these
+# MODELS_DIR paths — there is NO Diffusers repo for it, so _hf_repos_for()
+# yields [] and nothing else fetches them. ai-toolkit's MiniMaxH3Transformer
+# is hard-wired to the fused `fl2va_pruned` int8_convrot state-dict layout, so
+# we MUST pull those exact quant single files (a raw bf16 checkpoint crashes
+# with "Unexpected key(s) in state_dict: blocks.0.adaln_proj.linear.bias …").
+# Pulled once from Comfy-Org/MiniMax-H3 and vol.commit()'d to the Volume.
+# NOTE: the TE lives under `clip/` locally (TARGET_MODELS path) but under
+# `text_encoders/` in the repo — hence the (local rel, repo filename) pair.
+_MINIMAX_H3_WEIGHT_REPO = "Comfy-Org/MiniMax-H3"
+_MINIMAX_H3_WEIGHT_FILES: list[tuple[str, str]] = [
+    (
+        "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+    ),
+    (
+        "clip/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+    ),
+    (
+        "vae/minimax_h3_video_vae_fp16.safetensors",
+        "vae/minimax_h3_video_vae_fp16.safetensors",
+    ),
+    # audio VAE (~0.6GB) — _load_vaes() loads it unconditionally even for
+    # image LoRA training, so it must be on the Volume too.
+    (
+        "vae/minimax_h3_audio_vae_fp32.safetensors",
+        "vae/minimax_h3_audio_vae_fp32.safetensors",
+    ),
+]
+
+
+def _is_minimax_h3(target_model: str) -> bool:
+    return (
+        target_model == "minimax_h3"
+        or TARGET_MODELS.get(target_model, {}).get("arch") == "minimax_h3"
+    )
+
+
+def _minimax_h3_snapshot_dir() -> "pathlib.Path | None":
+    slug = "models--" + _MINIMAX_H3_AUX_REPO.replace("/", "--")
+    root = pathlib.Path(HF_HUB_CACHE_DIR) / slug
+    snap_root = root / "snapshots"
+    if not snap_root.is_dir():
+        return None
+    ref = root / "refs" / "main"
+    try:
+        if ref.is_file():
+            rev = snap_root / ref.read_text().strip()
+            if rev.is_dir():
+                return rev
+    except OSError:
+        pass
+    revs = [r for r in snap_root.iterdir() if r.is_dir()]
+    return max(revs, key=lambda r: r.stat().st_mtime) if revs else None
+
+
+def _minimax_h3_aux_missing(target_model: str) -> list[str]:
+    """Critical FL2VA config/tokenizer files ai-toolkit's minimax_h3 loader
+    reads from MiniMaxAI/MiniMax-H3 that are NOT physically on the Volume."""
+    if not _is_minimax_h3(target_model):
+        return []
+    snap = _minimax_h3_snapshot_dir()
+    if snap is None:
+        return list(_MINIMAX_H3_AUX_CRITICAL)
+    missing: list[str] = []
+    for rel in _MINIMAX_H3_AUX_CRITICAL:
+        p = snap / rel
+        try:
+            real = p.resolve()
+            if not (os.path.isfile(real) and os.path.getsize(real) > 0):
+                missing.append(rel)
+        except OSError:
+            missing.append(rel)
+    return missing
+
+
+def _ensure_minimax_h3_aux(target_model: str) -> dict:
+    """Snapshot just the FL2VA tokenizer/processor/text_encoder-config subset of
+    MiniMaxAI/MiniMax-H3 into the Volume HF cache (never the 68GB weights)."""
+    if not _is_minimax_h3(target_model):
+        return {"ok": True, "fetched": False}
+    if not _minimax_h3_aux_missing(target_model):
+        return {"ok": True, "fetched": False}
+    from huggingface_hub import snapshot_download
+
+    for attempt in range(3):
+        try:
+            snapshot_download(
+                repo_id=_MINIMAX_H3_AUX_REPO,
+                allow_patterns=_MINIMAX_H3_AUX_ALLOW,
+                max_workers=max(4, int(os.environ.get("HF_SNAPSHOT_WORKERS", "8") or "8")),
+                token=_hf_token(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[cache][minimax] FL2VA config fetch attempt {attempt + 1}/3 failed: {str(exc)[:300]}", flush=True)
+            time.sleep(3)
+            continue
+        if not _minimax_h3_aux_missing(target_model):
+            return {"ok": True, "fetched": True}
+    return {"ok": False, "missing": _minimax_h3_aux_missing(target_model)}
+
+
+def _minimax_h3_weights_missing(target_model: str) -> list[str]:
+    """The hosted quant DiT (fl2va_pruned int8_convrot) / TE (nvfp4_awq) / VAE
+    single files ai-toolkit's minimax_h3 loader opens straight off the Volume
+    that are NOT physically present at their exact MODELS_DIR path (0-byte /
+    partial counts as missing)."""
+    if not _is_minimax_h3(target_model):
+        return []
+    missing: list[str] = []
+    for rel, _repo_file in _MINIMAX_H3_WEIGHT_FILES:
+        p = pathlib.Path(MODELS_DIR) / rel
+        if not (p.is_file() and p.stat().st_size > 0):
+            missing.append(rel)
+    return missing
+
+
+def _ensure_minimax_h3_weights(target_model: str) -> dict:
+    """Fetch the MiniMax H3 quant DiT (fl2va_pruned int8_convrot) / TE
+    (nvfp4_awq) / VAE single files from Comfy-Org/MiniMax-H3 and place each at
+    its exact MODELS_DIR path (the minimax_h3 loader reads them from there —
+    see TARGET_MODELS). Pulled once, then vol.commit()'d by the caller.
+    Idempotent: a file already on the Volume is skipped."""
+    if not _is_minimax_h3(target_model):
+        return {"ok": True, "placed": [], "fetched": []}
+    from huggingface_hub import hf_hub_download
+
+    placed: list[str] = []
+    fetched: list[str] = []
+    hf_tok = _hf_token()
+    for rel, repo_file in _MINIMAX_H3_WEIGHT_FILES:
+        dst = pathlib.Path(MODELS_DIR) / rel
+        if dst.is_file() and dst.stat().st_size > 0:
+            placed.append(rel)
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        last_err = ""
+        for attempt in range(3):
+            try:
+                t0 = time.time()
+                p = hf_hub_download(
+                    repo_id=_MINIMAX_H3_WEIGHT_REPO,
+                    filename=repo_file,
+                    local_dir=str(MODELS_DIR),
+                    token=hf_tok,
+                )
+                # TE downloads to MODELS_DIR/text_encoders/... but must land at
+                # MODELS_DIR/clip/... — move it into place when the paths differ.
+                if os.path.abspath(p) != os.path.abspath(str(dst)):
+                    os.replace(p, dst)
+                fetched.append(rel)
+                placed.append(rel)
+                print(f"[cache][minimax] fetched {rel} in {time.time() - t0:.0f}s", flush=True)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_err = str(exc)[:400]
+                print(f"[cache][minimax] {rel} fetch attempt {attempt + 1}/3 FAILED — {last_err}", flush=True)
+                time.sleep(3)
+        if not (dst.is_file() and dst.stat().st_size > 0):
+            return {"ok": False, "missing": rel, "fetched": fetched, "error": last_err}
+    return {"ok": True, "placed": placed, "fetched": fetched}
+
+
 def _repo_cache_complete(repo_id: str, ignore_patterns: list[str] | None = None) -> bool:
     """STRICT local-only completeness check: every file huggingface_hub knows
     this repo has (minus `ignore_patterns`) is present in the Volume hub cache.
@@ -3401,12 +4012,14 @@ def _missing_base_artifacts(target_model: str, custom_model_id: str = "") -> lis
 
     missing += [f"wan-file:{f}" for f in _wan_comfy_missing(target_model)]
     missing += [f"qwen-file:{f}" for f in _qwen_comfy_missing(target_model)]
+    missing += [f"minimax-cfg:{f}" for f in _minimax_h3_aux_missing(target_model)]
+    missing += [f"minimax-weight:{f}" for f in _minimax_h3_weights_missing(target_model)]
 
     entry = TARGET_MODELS.get(target_model)
     if entry is None:
         entry = next((t for t in TARGET_MODELS.values() if t.get("arch") == target_model), None)
     if entry:
-        for k in ("unet", "text_encoder", "vae"):
+        for k in ("unet", "text_encoder", "vae", "audio_vae"):
             v = str(entry.get(k) or "")
             if v.startswith(MODELS_DIR) and not pathlib.Path(v).is_file():
                 missing.append(f"weight-file:{v}")
@@ -3469,7 +4082,7 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
     #      weight shards — tokenizer/, text_encoder/, vae/, scheduler/ and every
     #      config.json / model_index.json. ai-toolkit's Qwen25VLTextEncoder
     #      .load_tokenizer / .load_model + QwenImageVAE.load_model read these
-    #      straight from HF_HOME by repo id; with HF_HUB_OFFLINE set on the GPU a
+    #      straight from HF_HOME by repo id; the GPU has no network token, so a
     #      single missing file there is a hard stop (the tokenizer-config crash
     #      this fixes). Forced every run (snapshot_download is idempotent +
     #      resumable — a genuine cache hit is a fast re-verify) rather than
@@ -3561,6 +4174,49 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
             except Exception as exc:  # noqa: BLE001
                 print(f"[cache][qwen] vol.commit() attempt {_qa + 1}/2 failed: {exc}", flush=True)
                 time.sleep(2)
+
+    # MiniMax H3: its weights are hosted single files (repos == []) that nothing
+    # else fetches. Pull the fl2va_pruned int8_convrot DiT / nvfp4_awq TE / VAE
+    # from Comfy-Org/MiniMax-H3 onto the Volume (ai-toolkit's transformer is
+    # hard-wired to the fused quant state-dict, not raw bf16), AND the mandatory
+    # ~23MB FL2VA config/tokenizer subset from
+    # MiniMaxAI/MiniMax-H3 that the ai-toolkit loader also reads.
+    if _is_minimax_h3(str(model_arch or "")):
+        w_res = _ensure_minimax_h3_weights(str(model_arch or ""))
+        if not w_res.get("ok"):
+            return {
+                "ok": False,
+                "cached": False,
+                "repo": _MINIMAX_H3_WEIGHT_REPO,
+                "error": f"MiniMax-H3 quant weight fetch failed on {w_res.get('missing')}: {w_res.get('error')}",
+            }
+        if w_res.get("fetched"):
+            for _mw in range(3):
+                try:
+                    vol.commit()
+                    print(f"[cache][minimax] vol.commit() — quant weights: {w_res.get('fetched')}", flush=True)
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[cache][minimax] weights vol.commit() attempt {_mw + 1}/3 failed: {exc}", flush=True)
+                    time.sleep(2)
+
+        mm_res = _ensure_minimax_h3_aux(str(model_arch or ""))
+        if not mm_res.get("ok"):
+            return {
+                "ok": False,
+                "cached": False,
+                "repo": _MINIMAX_H3_AUX_REPO,
+                "error": f"MiniMax-H3 FL2VA config files missing after fetch: {mm_res.get('missing')}",
+            }
+        if mm_res.get("fetched"):
+            for _ma in range(2):
+                try:
+                    vol.commit()
+                    print("[cache][minimax] vol.commit() — FL2VA tokenizer/processor/te-config", flush=True)
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[cache][minimax] vol.commit() attempt {_ma + 1}/2 failed: {exc}", flush=True)
+                    time.sleep(2)
 
     repos = _hf_repos_for(str(model_arch or ""), str(custom_model_id or ""))
     if not repos:
@@ -3694,6 +4350,180 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
 
 
 @app.function(
+    image=ingest_image,
+    # 200 images * (download + decode + LANCZOS + WebP m6) worst case, on a
+    # FREE CPU container. cache hit -> returns in <1s.
+    timeout=45 * 60,
+    cpu=4,
+    memory=8192,
+    # RW: writes the optimised images to PERSIST_ROOT (vol_ro can't).
+    volumes={MODELS_DIR: vol},
+    secrets=[modal.Secret.from_name("supabase-model-downloads")],
+    # CPU-only function -> no scaledown_window (CLAUDE.md §1, 30s規格 is GPU-only).
+)
+def ingest_and_optimize_dataset_cpu(
+    bucket: str,
+    storage_paths: list,
+    dataset_id: str,
+    resolution: int,
+    override: bool = False,
+) -> dict:
+    """Stage 1.5 — FREE CPU dataset optimisation, run before the GPU spawns.
+
+    Per image: download from Supabase Storage -> bake EXIF orientation ->
+    LANCZOS downscale (never upscale) so the long edge == the training-derived
+    target -> normalise mode, strip metadata -> re-encode WEBP q95. Output:
+    PERSIST_ROOT/<dataset_id>/_ingest/<ingest_key>/NNNN.webp (index-keyed).
+
+    Idempotent: a complete output dir short-circuits to a cache hit. Never
+    raises — returns {"ok": False, "error": ...} so the dispatcher decides the
+    cost-defence action (mirrors ensure_model_cached_cpu's contract)."""
+    import io
+    import concurrent.futures
+
+    try:
+        from PIL import Image, ImageOps
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"Pillow import failed: {exc}"}
+
+    storage_paths = list(storage_paths or [])
+    dataset_id = _derive_dataset_id(
+        {"dataset_id": dataset_id, "storage_paths": storage_paths}
+    )
+    if not dataset_id:
+        return {"ok": False, "error": "no dataset_id"}
+    n = len(storage_paths)
+    if n == 0:
+        return {"ok": False, "error": "no storage_paths"}
+
+    long_edge = _ingest_long_edge(int(resolution or 768), bool(override))
+    key = _ingest_cache_key(long_edge)
+    rel = f"{dataset_id}/_ingest/{key}"
+    out_dir = pathlib.Path(PERSIST_ROOT) / rel
+
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ingest] vol.reload skipped: {exc}", flush=True)
+
+    # --- idempotency: a complete previous ingest short-circuits ------------
+    if out_dir.is_dir():
+        done = sorted(
+            p for p in out_dir.iterdir()
+            if p.is_file() and p.stat().st_size > 0
+            and p.suffix.lower() in IMAGE_EXTS
+        )
+        if len(done) == n and [p.stem for p in done] == [f"{i:04d}" for i in range(n)]:
+            print(f"[ingest] cache hit — {n} images at {rel}", flush=True)
+            return {
+                "ok": True, "cache_hit": True, "ingest_dir": rel, "ingest_key": key,
+                "count": n, "long_edge": long_edge, "downscaled": 0, "passthrough": 0,
+                "bytes_in": 0, "bytes_out": 0, "error": None,
+            }
+
+    # Wipe any partial remnant and (re)build in place. A crash mid-run leaves an
+    # incomplete dir that the idempotency check above rejects, so the next
+    # dispatch rebuilds it — the dispatcher only ever injects ingest_dir on a
+    # fully-committed {"ok": True}.
+    shutil.rmtree(out_dir, ignore_errors=True)
+
+    _NEEDS_RGB = {"P", "L", "1", "I", "I;16", "CMYK", "YCbCr", "LAB", "HSV", "F"}
+
+    def _one(idx: int, key_path: str) -> tuple:
+        """-> (bytes_in, bytes_out, downscaled, passthrough)."""
+        raw = _download_storage_object(bucket, str(key_path))  # InfraError propagates -> hard fail
+        bytes_in = len(raw)
+        orig_ext = (os.path.splitext(str(key_path))[1] or ".png").lower()
+        try:
+            im = Image.open(io.BytesIO(raw))
+            im.load()
+            im = ImageOps.exif_transpose(im)
+        except Exception as exc:  # noqa: BLE001 — undecodable: hand the raw bytes to the GPU
+            dst = out_dir / f"{idx:04d}{orig_ext if orig_ext in IMAGE_EXTS else '.png'}"
+            dst.write_bytes(raw)
+            print(f"[ingest] {idx:04d}: decode failed ({exc}) — passthrough", flush=True)
+            return (bytes_in, bytes_in, False, True)
+
+        has_alpha = im.mode in ("RGBA", "LA", "PA") or (
+            im.mode == "P" and "transparency" in im.info
+        )
+        if has_alpha and im.mode != "RGBA":
+            im = im.convert("RGBA")
+        elif not has_alpha and im.mode in _NEEDS_RGB:
+            im = im.convert("RGB")
+
+        w, h = im.size
+        downscaled = False
+        if max(w, h) > long_edge:
+            scale = long_edge / float(max(w, h))
+            im = im.resize(
+                (max(1, round(w * scale)), max(1, round(h * scale))),
+                Image.Resampling.LANCZOS,
+            )
+            downscaled = True
+
+        # Format unification: every image (resized or not) is re-encoded to the
+        # one compact format so the GPU DataLoader's decode path is uniform.
+        dst = out_dir / f"{idx:04d}{INGEST_EXT}"
+        save_kw = {"format": INGEST_FMT, "quality": INGEST_QUALITY}
+        if INGEST_FMT == "WEBP":
+            save_kw["method"] = INGEST_WEBP_METHOD
+        elif INGEST_FMT == "JPEG":
+            save_kw["subsampling"] = 0
+            if im.mode == "RGBA":
+                bg = Image.new("RGB", im.size, (255, 255, 255))
+                bg.paste(im, mask=im.split()[-1])
+                im = bg
+        im.save(dst, **save_kw)  # no exif=/icc_profile= -> metadata stripped
+        bytes_out = dst.stat().st_size
+        im.close()
+        return (bytes_in, bytes_out, downscaled, False)
+
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        bytes_in = bytes_out = downscaled = passthrough = 0
+        if n <= 8:
+            results = [_one(i, storage_paths[i]) for i in range(n)]
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+                results = list(ex.map(lambda i: _one(i, storage_paths[i]), range(n)))
+        for bi, bo, dsz, pt in results:
+            bytes_in += bi
+            bytes_out += bo
+            downscaled += 1 if dsz else 0
+            passthrough += 1 if pt else 0
+
+        written = sorted(p for p in out_dir.iterdir() if p.is_file() and p.stat().st_size > 0)
+        if len(written) != n:
+            raise RuntimeError(f"wrote {len(written)}/{n} images")
+
+        for _att in range(3):
+            try:
+                vol.commit()
+                break
+            except Exception as exc:  # noqa: BLE001
+                print(f"[ingest] vol.commit attempt {_att + 1}/3 failed: {exc}", flush=True)
+                time.sleep(2)
+        print(
+            f"[ingest] optimised {n} images -> {rel} "
+            f"(downscaled {downscaled}, passthrough {passthrough}, "
+            f"{bytes_in / 1024**2:.0f}MB -> {bytes_out / 1024**2:.0f}MB, "
+            f"long_edge={long_edge})",
+            flush=True,
+        )
+        return {
+            "ok": True, "cache_hit": False, "ingest_dir": rel, "ingest_key": key,
+            "count": n, "long_edge": long_edge, "downscaled": downscaled,
+            "passthrough": passthrough, "bytes_in": bytes_in, "bytes_out": bytes_out,
+            "error": None,
+        }
+    except Exception as exc:  # noqa: BLE001
+        shutil.rmtree(out_dir, ignore_errors=True)  # leave no partial dir behind
+        print(f"[ingest] FAILED: {type(exc).__name__}: {exc}", flush=True)
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "ingest_key": key}
+
+
+@app.function(
     image=dispatch_image,
     # Long: it may block on a multi-GB ensure_model_cached_cpu.remote() before
     # spawning the GPU. Fired async by train_lora_dispatch — nothing HTTP is
@@ -3701,7 +4531,11 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
     timeout=3 * 60 * 60,
     cpu=1,
     memory=2048,
-    volumes={MODELS_DIR: vol},
+    # read-only: this orchestrator never touches /models itself — the actual
+    # pre-cache runs in ensure_model_cached_cpu (its own RW container). A RW
+    # mount here would just give a 3h-idle container a stale snapshot to
+    # auto-commit.
+    volumes={MODELS_DIR: vol_ro},
     secrets=[
         modal.Secret.from_name("supabase-model-downloads"),
         modal.Secret.from_name("wan-animate-auth"),
@@ -3769,6 +4603,58 @@ def _prepare_and_spawn_training(item: dict) -> dict:
                     f"{(cache_res or {}).get('repo')} — "
                     f"{str((cache_res or {}).get('error'))[:400]}"
                 )
+
+        # ---- STAGE 1.5: Smart Ingest (FREE CPU dataset optimisation) --------
+        # After the model-cache gate, before the GPU spawn. Downscale / EXIF-
+        # bake / re-encode the uploaded images on a cheap CPU container so the
+        # B300 never spends idle time on image I/O or resize. Idempotent
+        # (cache hit -> <1s). Managed job: a failure is a cost-defence stop
+        # (refund, no GPU) — same contract as the model gate. Raw-YAML: a
+        # failure just falls through to the GPU downloading originals itself
+        # (unchanged semantics, no refund).
+        if os.environ.get("ULL_SMART_INGEST", "1") != "0":
+            _sp = list(item.get("storage_paths") or [])
+            _did = _derive_dataset_id(item)
+            if _sp and _did:
+                _bucket = str(item.get("storage_bucket") or "lora_datasets")
+                _res = int(item.get("resolution") or 768)
+                _patch_job(
+                    job_id,
+                    {
+                        "progress_percent": 3,
+                        "progress_message": "🖼️ データセットを最適化中（高品質・CPU）",
+                    },
+                )
+                try:
+                    ing = ingest_and_optimize_dataset_cpu.remote(
+                        _bucket, _sp, _did, _res, override
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    ing = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                if isinstance(ing, dict) and ing.get("ok") and ing.get("ingest_dir"):
+                    item = {
+                        **item,
+                        "ingest_dir": ing["ingest_dir"],
+                        "ingest_key": ing.get("ingest_key"),
+                    }
+                    print(
+                        f"[dispatch] smart-ingest ok: {ing.get('count')} imgs -> "
+                        f"{ing['ingest_dir']} (cache_hit={ing.get('cache_hit')}, "
+                        f"long_edge={ing.get('long_edge')})",
+                        flush=True,
+                    )
+                elif override:
+                    print(
+                        f"[dispatch] smart-ingest skipped (raw-YAML): "
+                        f"{(ing or {}).get('error')}",
+                        flush=True,
+                    )
+                else:
+                    return _fail(
+                        "データセットの最適化（CPU前処理）に失敗しました"
+                        "（GPU は起動しません／コスト防衛）: "
+                        f"{str((ing or {}).get('error'))[:400]}"
+                    )
 
         call = train_lora_job.spawn(item)
         _patch_job(
@@ -3888,7 +4774,10 @@ def _verify_download_token(user_id: str, job_id: str, filename: str, expires: st
 # so only one hop's bandwidth is in play.
 @app.function(
     image=dispatch_image,
-    volumes={MODELS_DIR: vol},
+    # Read-only: this endpoint keeps a warm container (min_containers=1) and
+    # only streams files — a RW mount would let its stale snapshot auto-commit
+    # deleted checkpoints back onto the Volume.
+    volumes={MODELS_DIR: vol_ro},
     # Checkpoints run 600MB-1GB+; observed transfer at ~1.6-3MB/s through
     # the old proxied path, so 120s cut a 620MB file off mid-stream
     # (NGHTTP2_INTERNAL_ERROR on the Next.js proxy side once Modal's
@@ -3977,7 +4866,7 @@ def _safe_volume_path(rel: str) -> pathlib.Path:
 
 @app.function(
     image=dispatch_image,
-    volumes={MODELS_DIR: vol},
+    volumes={MODELS_DIR: vol_ro},  # read-only: streams files only, never writes
     timeout=1800,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
@@ -3999,7 +4888,8 @@ def admin_download_volume_file(path: str, expires: str, sig: str, request: fasta
 
 @app.function(
     image=dispatch_image,
-    volumes={MODELS_DIR: vol},
+    # read-only: reads Volume files, writes the ZIP only to /tmp (not the Volume)
+    volumes={MODELS_DIR: vol_ro},
     timeout=3600,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
@@ -4086,7 +4976,9 @@ def _resolve_job_artifact(user_id: str, job_id: str, call_id: str, want: str):
 
 @app.function(
     image=dispatch_image,
-    volumes={MODELS_DIR: vol},
+    # read-only: resolves + streams job artifacts, builds any on-demand ZIP in
+    # /tmp — never writes the Volume.
+    volumes={MODELS_DIR: vol_ro},
     timeout=3600,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
@@ -4391,11 +5283,12 @@ def salvage_lora_job(data: dict, request: fastapi.Request):
 # ---------------------------------------------------------------------------
 # Data-retention policy (CLAUDE.md §3): generated artefacts are kept a flat
 # 14 days, then purged. The persisted _latent_cache/ copies under
-# PERSIST_ROOT/<dataset_id>/latents/ are derived-from-dataset artefacts, so
-# they get the same treatment. Flat 14d from creation (mtime is NOT bumped
-# on reuse — a heavily re-run dataset just re-encodes + re-persists after
-# the purge). Scoped to latents/ only; the caption cache and the LoRA
-# library have their own lifecycle.
+# PERSIST_ROOT/<dataset_id>/latents/ AND the Smart-Ingest optimised images
+# under PERSIST_ROOT/<dataset_id>/_ingest/ are both derived-from-dataset
+# artefacts, so they get the same treatment. Flat 14d from creation (mtime is
+# NOT bumped on reuse — a heavily re-run dataset just re-encodes / re-ingests
+# after the purge). The caption cache and the LoRA library have their own
+# lifecycle.
 LATENT_CACHE_RETENTION_DAYS = int(os.environ.get("LORA_LATENT_TTL_DAYS", "14"))
 
 
@@ -4406,58 +5299,298 @@ LATENT_CACHE_RETENTION_DAYS = int(os.environ.get("LORA_LATENT_TTL_DAYS", "14"))
     timeout=600,
 )
 def cleanup_old_latent_caches() -> dict:
-    """Daily: delete PERSIST_ROOT/*/latents/**/*.safetensors older than
-    LATENT_CACHE_RETENTION_DAYS, then drop the now-empty dirs. Best-effort."""
+    """Daily: delete files under PERSIST_ROOT/*/latents/ and PERSIST_ROOT/*/
+    _ingest/ older than LATENT_CACHE_RETENTION_DAYS, then drop the now-empty
+    dirs. Best-effort."""
     root = pathlib.Path(PERSIST_ROOT)
     if not root.is_dir():
-        print("[latents-ttl] no dataset cache root yet — nothing to do", flush=True)
+        print("[ds-ttl] no dataset cache root yet — nothing to do", flush=True)
         return {"ok": True, "removed": 0}
 
     try:
         vol.reload()
     except Exception as exc:  # noqa: BLE001
-        print(f"[latents-ttl] vol.reload skipped: {exc}", flush=True)
+        print(f"[ds-ttl] vol.reload skipped: {exc}", flush=True)
 
     cutoff = time.time() - LATENT_CACHE_RETENTION_DAYS * 24 * 60 * 60
     removed = 0
     freed = 0
-    latent_dirs = list(root.glob("*/latents"))
-    for ldir in latent_dirs:
-        if not ldir.is_dir():
-            continue
-        for f in ldir.glob("**/*.safetensors"):
+
+    def _sweep(top: pathlib.Path, pattern: str) -> None:
+        nonlocal removed, freed
+        for f in top.glob(pattern):
             try:
                 if f.is_file() and f.stat().st_mtime < cutoff:
                     freed += f.stat().st_size
                     f.unlink()
                     removed += 1
             except Exception as exc:  # noqa: BLE001
-                print(f"[latents-ttl] unlink skipped {f}: {exc}", flush=True)
-        # prune empty key dirs, then the latents/ dir itself
-        for sub in sorted(ldir.glob("*"), reverse=True):
+                print(f"[ds-ttl] unlink skipped {f}: {exc}", flush=True)
+        # prune empty sub-dirs deepest-first, then `top` itself
+        for sub in sorted(top.glob("**/*"), key=lambda p: len(p.parts), reverse=True):
             try:
                 if sub.is_dir() and not any(sub.iterdir()):
                     sub.rmdir()
             except Exception:  # noqa: BLE001
                 pass
         try:
-            if not any(ldir.iterdir()):
-                ldir.rmdir()
+            if not any(top.iterdir()):
+                top.rmdir()
         except Exception:  # noqa: BLE001
             pass
+
+    scoped = list(root.glob("*/latents")) + list(root.glob("*/_ingest"))
+    for top in scoped:
+        if top.is_dir():
+            _sweep(top, "**/*.safetensors" if top.name == "latents" else "**/*")
 
     if removed:
         try:
             vol.commit()
         except Exception as exc:  # noqa: BLE001
-            print(f"[latents-ttl] vol.commit skipped: {exc}", flush=True)
+            print(f"[ds-ttl] vol.commit skipped: {exc}", flush=True)
     print(
-        f"[latents-ttl] removed {removed} latent file(s) "
-        f"(~{freed / 1024**2:.1f} MB) older than {LATENT_CACHE_RETENTION_DAYS}d "
-        f"across {len(latent_dirs)} dataset(s)",
+        f"[ds-ttl] removed {removed} file(s) (~{freed / 1024**2:.1f} MB) older "
+        f"than {LATENT_CACHE_RETENTION_DAYS}d across {len(scoped)} cache dir(s)",
         flush=True,
     )
     return {"ok": True, "removed": removed, "freed_bytes": freed}
+
+
+# ---------------------------------------------------------------------------
+# Admin: one-shot Volume cleanup (junk HF-cache repos + stale output dirs)
+# ---------------------------------------------------------------------------
+# PERSIST_OUTPUT_ROOT/<run_key>/ is ai-toolkit's per-job working dir. A finished
+# job's weights are copied out to LORA_OUTPUT_DIR/<user>/<job>/; a failed one
+# stays here for salvage_lora_job. After this many days a leftover is stale
+# (max job runtime is ~12h) and safe to drop.
+OUTPUTS_RETENTION_DAYS = int(os.environ.get("LORA_OUTPUTS_TTL_DAYS", "3"))
+
+
+def _hf_cache_slug(repo_id: str) -> str:
+    """`owner/name` -> the `models--owner--name` dir name huggingface_hub uses."""
+    return "models--" + repo_id.replace("/", "--")
+
+
+def _keep_hf_cache_slugs() -> set[str]:
+    """Every `models--…` hub-cache dir the current sealed preset lineup
+    legitimately needs — the per-preset repos (_hf_repos_for) plus the shared
+    comfy / aux repos. Anything else under HF_HUB_CACHE_DIR is a removable
+    remnant (retired presets included — a re-add re-pulls it)."""
+    repos: set[str] = set()
+    for _key in TARGET_MODELS:
+        for _r in _hf_repos_for(_key):
+            if _r and "/" in _r:
+                repos.add(_r)
+    repos.update(
+        {
+            _WAN_TOKENIZER_REPO,
+            _WAN_COMFY_REPO,
+            _QWEN_IMAGE_HF_REPO,
+            _QWEN_COMFY_REPO,
+            _MINIMAX_H3_AUX_REPO,
+            _MINIMAX_H3_WEIGHT_REPO,
+        }
+    )
+    return {_hf_cache_slug(r) for r in repos if r and "/" in r}
+
+
+def _walk_size_dedup(root: "pathlib.Path | str") -> int:
+    """Total bytes under `root`, counting each physical byte ONCE. The HF hub
+    cache symlinks every blob from snapshots/ and the comfy layout hardlinks
+    some weights; os.stat() follows both, so a naive sum double-counts. On a
+    Modal Volume st_ino is unreliable (often 0), so we can't lean on inode
+    de-dupe — instead two physical rules root out the duplication:
+      1. os.path.islink() -> the entry is an alias, contributes 0 bytes.
+      2. a "snapshots" path segment -> HF cache revision view; the real bytes
+         live only in the sibling blobs/ dir, so the whole subtree is skipped.
+    The inode set stays as a fallback for hardlinked comfy weights, where
+    st_ino *is* populated."""
+    seen: set = set()
+    total = 0
+    for dirpath, dirs, names in os.walk(root):
+        dirs.sort()
+        # Prune HF-cache snapshots/ subtrees before descending.
+        if "snapshots" in dirs:
+            dirs.remove("snapshots")
+        for n in names:
+            full = os.path.join(dirpath, n)
+            if os.path.islink(full):
+                continue
+            if "snapshots" in full.replace(os.sep, "/").split("/"):
+                continue
+            try:
+                st = os.lstat(full)
+            except OSError:
+                continue
+            key = (st.st_dev, st.st_ino)
+            if st.st_ino and key in seen:
+                continue
+            if st.st_ino:
+                seen.add(key)
+            total += st.st_size
+    return total
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol},
+    timeout=1800,
+    secrets=[modal.Secret.from_name("huggingface-secret")],
+)
+def admin_cleanup_volume(
+    dry_run: bool = True,
+    outputs_max_age_days: int = OUTPUTS_RETENTION_DAYS,
+    purge_retired_wan21: bool = False,
+    purge_flux2: bool = False,
+) -> dict:
+    """Purge the Volume of (1) HF-cache model dirs outside the sealed preset
+    lineup (e.g. models--AstraliteHeart--pony-diffusion-v6-xl,
+    models--THUDM--CogVideoX-5b, models--stabilityai--stable-diffusion-3.5-*)
+    and (2) empty / stale PERSIST_OUTPUT_ROOT working dirs.
+
+    purge_retired_wan21=True ALSO removes the leftover Wan 2.1 comfy DiT files
+    (diffusion_models/wan2.1_t2v_*.safetensors, ~30GB) — opt-in because the
+    shared umt5 text-encoder / wan VAE files are deliberately left in place
+    (the wan-animate app on the same Volume may still need them).
+
+    purge_flux2=True force-removes the FLUX.2 [dev] HF-cache — the transformer
+    repo (black-forest-labs/FLUX.2-dev) and the 24B Mistral text encoder that
+    ONLY that preset uses (mistralai/Mistral-Small-3.1-24B-Instruct-2503,
+    ~50GB). Both are in the sealed lineup so the generic pass keeps them; this
+    flag is the explicit pre-release storage escape hatch. The shared
+    ai-toolkit/flux2_vae is left intact (flux2_klein_* still need it). A later
+    `flux2` training job re-pulls the ~80GB through the CPU gate.
+
+    dry_run=True (the default) only reports what WOULD be removed — review that
+    list, then re-run to actually delete:
+
+        modal run modal_lora_worker.py::admin_cleanup_volume                # preview
+        modal run modal_lora_worker.py::admin_cleanup_volume --no-dry-run   # delete
+        modal run modal_lora_worker.py::admin_cleanup_volume --purge-flux2 --no-dry-run
+
+    Returns freed_gb and the accurate post-cleanup used_gb (inode-deduped)."""
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[cleanup] vol.reload skipped: {exc}", flush=True)
+
+    GB = 1024**3
+    verb = "WOULD REMOVE" if dry_run else "REMOVING"
+    freed = 0
+    hf_removed: list[dict] = []
+    outputs_removed: list[dict] = []
+    files_removed: list[dict] = []
+
+    # ---- 1) HF cache: model dirs not in the sealed lineup ------------------
+    keep = _keep_hf_cache_slugs()
+    hub = pathlib.Path(HF_HUB_CACHE_DIR)
+    print(f"[cleanup] HF-cache keep-set ({len(keep)}): {', '.join(sorted(keep))}", flush=True)
+    if hub.is_dir():
+        for d in sorted(hub.iterdir()):
+            if not d.is_dir() or not d.name.startswith("models--") or d.name in keep:
+                continue
+            sz = _walk_size_dedup(d)
+            freed += sz
+            hf_removed.append({"dir": d.name, "gb": round(sz / GB, 3)})
+            print(f"[cleanup] {verb} hf-cache/{d.name}  (~{sz / GB:.2f} GB)", flush=True)
+            if not dry_run:
+                shutil.rmtree(d, ignore_errors=True)
+
+    # ---- 1b) FLUX.2 [dev] explicit purge (opt-in) ------------------------
+    # These slugs ARE in the keep-set (flux2 is a sealed preset), so the
+    # generic pass above skips them — this flag deletes them anyway. Scans
+    # both the real HF cache root and a legacy /models/hub in case an old
+    # HF_HUB_CACHE config left a copy there.
+    if purge_flux2:
+        flux2_slugs = {
+            _hf_cache_slug("black-forest-labs/FLUX.2-dev"),
+            _hf_cache_slug("mistralai/Mistral-Small-3.1-24B-Instruct-2503"),
+        }
+        flux2_roots = [pathlib.Path(HF_HUB_CACHE_DIR), pathlib.Path(MODELS_DIR) / "hub"]
+        for base in flux2_roots:
+            if not base.is_dir():
+                continue
+            for slug in sorted(flux2_slugs):
+                d = base / slug
+                if not d.is_dir():
+                    continue
+                sz = _walk_size_dedup(d)
+                freed += sz
+                rel = str(d.relative_to(MODELS_DIR)).replace(os.sep, "/")
+                hf_removed.append({"dir": rel, "gb": round(sz / GB, 3)})
+                print(f"[cleanup] {verb} {rel}  (FLUX.2 [dev] purge, ~{sz / GB:.2f} GB)", flush=True)
+                if not dry_run:
+                    shutil.rmtree(d, ignore_errors=True)
+
+    # ---- 2) outputs/: empty or stale per-job working dirs -----------------
+    out_root = pathlib.Path(PERSIST_OUTPUT_ROOT)
+    cutoff = time.time() - max(0, int(outputs_max_age_days)) * 86400
+    if out_root.is_dir():
+        for d in sorted(out_root.iterdir()):
+            if not d.is_dir():
+                continue
+            file_mtimes = [p.stat().st_mtime for p in d.rglob("*") if p.is_file()]
+            is_empty = not file_mtimes
+            newest = max(file_mtimes) if file_mtimes else d.stat().st_mtime
+            if not is_empty and newest >= cutoff:
+                continue
+            sz = _walk_size_dedup(d)
+            freed += sz
+            reason = "empty" if is_empty else f"stale {(time.time() - newest) / 86400:.1f}d"
+            outputs_removed.append({"dir": d.name, "gb": round(sz / GB, 3), "reason": reason})
+            print(f"[cleanup] {verb} outputs/{d.name}  ({reason}, ~{sz / GB:.2f} GB)", flush=True)
+            if not dry_run:
+                shutil.rmtree(d, ignore_errors=True)
+
+    # ---- 3) retired Wan 2.1 comfy DiT files (opt-in) ---------------------
+    _wan21_live = any(t.get("arch") == "wan21" for t in TARGET_MODELS.values())
+    if purge_retired_wan21 and not _wan21_live:
+        for rel in _WAN21_RETIRED_DIT_FILES:
+            f = pathlib.Path(MODELS_DIR) / rel
+            if not (f.is_file() and f.stat().st_size > 0):
+                continue
+            sz = f.stat().st_size
+            freed += sz
+            files_removed.append({"file": rel, "gb": round(sz / GB, 3)})
+            print(f"[cleanup] {verb} {rel}  (retired Wan 2.1, ~{sz / GB:.2f} GB)", flush=True)
+            if not dry_run:
+                try:
+                    f.unlink()
+                except OSError as exc:
+                    print(f"[cleanup] unlink {rel} failed: {exc}", flush=True)
+    elif purge_retired_wan21 and _wan21_live:
+        print("[cleanup] purge_retired_wan21 ignored — a live preset still has arch:'wan21'", flush=True)
+
+    if not dry_run and (hf_removed or outputs_removed or files_removed):
+        for _att in range(2):
+            try:
+                vol.commit()
+                break
+            except Exception as exc:  # noqa: BLE001
+                print(f"[cleanup] vol.commit() attempt {_att + 1}/2 failed: {exc}", flush=True)
+                time.sleep(2)
+
+    used = _walk_size_dedup(MODELS_DIR)
+    freed_gb = round(freed / GB, 2)
+    used_gb = round(used / GB, 2)
+    print(
+        f"[cleanup] {'DRY-RUN — nothing deleted. ' if dry_run else ''}"
+        f"freed ~{freed_gb} GB "
+        f"({len(hf_removed)} hf-cache dir(s), {len(outputs_removed)} output dir(s), "
+        f"{len(files_removed)} file(s)) | "
+        f"volume now ~{used_gb} GB (inode-deduped, accurate)",
+        flush=True,
+    )
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "freed_gb": freed_gb,
+        "used_gb": used_gb,
+        "hf_cache_removed": hf_removed,
+        "outputs_removed": outputs_removed,
+        "files_removed": files_removed,
+    }
 
 
 # ---------------------------------------------------------------------------

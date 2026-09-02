@@ -64,6 +64,19 @@ ALLOWED_GIT_HOSTS = ("github.com",)
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
 
+
+def _reload_volume(tag: str) -> None:
+    """Best-effort vol.reload() — pull the latest committed Volume state into
+    this container. Used before admin mutate/list operations so a warm
+    container never acts on (or reports) a stale snapshot. Never fatal: a
+    reload can fail if files are held open, and a stale-but-present view is
+    still better than a hard error."""
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[{tag}] vol.reload() skipped: {exc}", flush=True)
+
+
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install(
@@ -913,13 +926,13 @@ class _WanAnimateBase:
 
 # `scaledown_window` is this SDK's current name for what used to be
 # `container_idle_timeout` (modal 1.5.4 no longer accepts that kwarg, and
-# rejects values below 2 at deploy time — "must be between 2 and 3600"). 2 is
-# the closest equivalent to immediate teardown: effectively no idle billing.
+# rejects values below 2 at deploy time — "must be between 2 and 3600").
+# 30s Keep-Warm 規格（CLAUDE.md §1）— 全 GPU クラス/関数一律 30。
 @app.cls(
     image=image,
     gpu=STANDARD_GPU_TYPE,  # 48GB VRAM
     timeout=600,  # 10 min
-    scaledown_window=2,
+    scaledown_window=30,
     volumes={MODELS_DIR: vol},
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
@@ -931,7 +944,7 @@ class WanAnimate(_WanAnimateBase):
     image=image,
     gpu=ULTRA_GPU_TYPE,  # 288GB VRAM — see module docstring re: availability risk
     timeout=600,
-    scaledown_window=60,
+    scaledown_window=30,  # 30s Keep-Warm 規格（CLAUDE.md §1）
     volumes={MODELS_DIR: vol},
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
@@ -965,16 +978,56 @@ class ModalStorage:
     """
 
     def _list(self) -> dict:
+        # Fresh snapshot first — otherwise a warm container can keep reporting
+        # a file (and its bytes) that another container already deleted +
+        # committed, so the admin capacity total never drops.
+        _reload_volume("admin-list")
         files = []
-        for root, _dirs, filenames in os.walk(MODELS_DIR):
+        # Physical de-dupe. The HF hub cache keeps each real blob once under
+        # blobs/ and exposes it via per-revision symlinks in snapshots/; the
+        # ai-toolkit comfy layout also hardlinks some weights. On a Modal Volume
+        # st_ino is unreliable (often 0), so inode de-dupe alone silently
+        # double-counts and the admin capacity total balloons past the volume's
+        # real usage. Two physical rules kill the duplication for good:
+        #   1. os.path.islink() -> the entry is an alias, size 0.
+        #   2. any path segment "snapshots" -> HF cache revision view; the real
+        #      bytes live only in blobs/, so skip the whole subtree.
+        # The inode set is kept as a belt-and-suspenders for hardlinked comfy
+        # weights (where st_ino *is* populated).
+        seen_inodes: set = set()
+        for root, dirs, filenames in os.walk(MODELS_DIR):
+            # visit blobs/ before snapshots/ so the concrete file, not its
+            # symlink, is the entry that carries the size.
+            dirs.sort()
+            # Prune HF-cache snapshots/ subtrees before descending — the real
+            # blobs are under the sibling blobs/ dir, everything here is a
+            # per-revision symlink view.
+            if "snapshots" in dirs:
+                dirs.remove("snapshots")
             for name in filenames:
                 full = os.path.join(root, name)
                 rel = os.path.relpath(full, MODELS_DIR).replace(os.sep, "/")
-                st = os.stat(full)
+                parts = rel.split("/")
+                try:
+                    st = os.lstat(full)
+                except OSError:
+                    continue
+                # Belt-and-suspenders: an explicit /snapshots/ segment (a walk
+                # that somehow reached one) is never counted.
+                in_snapshots = "snapshots" in parts
+                is_link = os.path.islink(full)
+                key = (st.st_dev, st.st_ino)
+                dup = bool(st.st_ino) and key in seen_inodes
+                if st.st_ino and not is_link:
+                    seen_inodes.add(key)
+                if is_link or in_snapshots or dup:
+                    size_bytes = 0
+                else:
+                    size_bytes = st.st_size
                 files.append(
                     {
                         "path": rel,
-                        "size_bytes": st.st_size,
+                        "size_bytes": size_bytes,
                         "modified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime)),
                     }
                 )
@@ -1042,10 +1095,18 @@ class ModalStorage:
         full = os.path.normpath(os.path.join(base, rel_path))
         if not (full == base or full.startswith(base + os.sep)):
             raise fastapi.HTTPException(status_code=400, detail="Invalid file_path.")
+        # Pull the freshest committed Volume state first so os.remove() acts on
+        # what's really there and vol.commit()'s reconciliation is diffed
+        # against current truth (a stale baseline can re-upload files another
+        # container deleted).
+        _reload_volume("admin-delete")
         if not os.path.isfile(full):
             raise fastapi.HTTPException(status_code=404, detail="File not found.")
         os.remove(full)
+        # MUST commit right here — a Modal Volume rolls the unlink back when the
+        # container exits unless it was explicitly persisted.
         vol.commit()
+        print(f"[admin] Deleted and committed: {rel_path}", flush=True)
         return {"ok": True}
 
     def _delete_dir(self, item: dict) -> dict:
@@ -1061,10 +1122,13 @@ class ModalStorage:
             # Deliberately excludes full == base too — never let this wipe
             # the whole volume root, only a subdirectory within it.
             raise fastapi.HTTPException(status_code=400, detail="Invalid file_path.")
+        _reload_volume("admin-delete-dir")
         if not os.path.isdir(full):
             raise fastapi.HTTPException(status_code=404, detail="Directory not found.")
         shutil.rmtree(full)
+        # MUST commit right here — see _delete().
         vol.commit()
+        print(f"[admin] Deleted and committed: {rel_path}", flush=True)
         return {"ok": True}
 
     def _install_node(self, item: dict) -> dict:

@@ -46,3 +46,7 @@ supabase/.temp/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local build / large binary artifacts (not tracked in git — rebuild or fetch out of band)
+ai_toolkit-*.whl
+/public/downloads/

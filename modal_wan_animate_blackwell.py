@@ -77,6 +77,19 @@ ALLOWED_GIT_HOSTS = ("github.com",)
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
 
+
+def _reload_volume(tag: str) -> None:
+    """Best-effort vol.reload() — pull the latest committed Volume state into
+    this container. Used before admin mutate/list operations so a warm
+    container never acts on (or reports) a stale snapshot. Never fatal: a
+    reload can fail if files are held open, and a stale-but-present view is
+    still better than a hard error."""
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[{tag}] vol.reload() skipped: {exc}", flush=True)
+
+
 image = (
     modal.Image.from_registry(
         "nvidia/cuda:13.0.0-devel-ubuntu24.04",
@@ -697,9 +710,8 @@ def download_repo_async(download_id: str, repo_id: str, save_dir: str):
 
 
 # `scaledown_window` is this SDK's current name for what used to be
-# `container_idle_timeout` (modal 1.5.4 rejects values below 2). 60s mirrors
-# scripts/modal_wan_animate.py's WanAnimateUltra — cold starts on this tier
-# are expensive enough that a short grace window is worth the idle billing.
+# `container_idle_timeout` (modal 1.5.4 rejects values below 2).
+# 30s Keep-Warm 規格（CLAUDE.md §1）— 全 GPU クラス/関数一律 30。
 @app.cls(
     image=image,
     gpu=GPU_TYPE,
@@ -709,7 +721,7 @@ def download_repo_async(download_id: str, repo_id: str, save_dir: str):
     # ~118GB combined), and a cold container's first-ever load of those off
     # the Volume can plausibly exceed 10 minutes on its own.
     timeout=1800,
-    scaledown_window=60,
+    scaledown_window=30,
     volumes={MODELS_DIR: vol},
     # supabase-model-downloads: despite the name, this is just generic
     # SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY credentials (see
@@ -1205,16 +1217,34 @@ class ModalStorageBlackwell:
     """
 
     def _list(self) -> dict:
+        # Fresh snapshot first — otherwise a warm container can keep reporting
+        # a file (and its bytes) that another container already deleted +
+        # committed, so the admin capacity total never drops.
+        _reload_volume("admin-list")
         files = []
-        for root, _dirs, filenames in os.walk(MODELS_DIR):
+        # De-dupe by physical inode — the HF hub cache symlinks every blob from
+        # snapshots/, and the comfy layout hardlinks some weights; os.stat()
+        # follows both, so a naive walk counts the same bytes 2-3x and inflates
+        # the admin capacity total. First path to an inode carries the real
+        # size; later aliases report 0, keeping the summed list accurate.
+        seen_inodes: set = set()
+        for root, dirs, filenames in os.walk(MODELS_DIR):
+            dirs.sort()  # blobs/ before snapshots/
             for name in filenames:
                 full = os.path.join(root, name)
                 rel = os.path.relpath(full, MODELS_DIR).replace(os.sep, "/")
-                st = os.stat(full)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                key = (st.st_dev, st.st_ino)
+                dup = bool(st.st_ino) and key in seen_inodes
+                if st.st_ino:
+                    seen_inodes.add(key)
                 files.append(
                     {
                         "path": rel,
-                        "size_bytes": st.st_size,
+                        "size_bytes": 0 if dup else st.st_size,
                         "modified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime)),
                     }
                 )
@@ -1263,10 +1293,18 @@ class ModalStorageBlackwell:
         full = os.path.normpath(os.path.join(base, rel_path))
         if not (full == base or full.startswith(base + os.sep)):
             raise fastapi.HTTPException(status_code=400, detail="Invalid file_path.")
+        # Pull the freshest committed Volume state first so os.remove() acts on
+        # what's really there and vol.commit()'s reconciliation is diffed
+        # against current truth (a stale baseline can re-upload files another
+        # container deleted).
+        _reload_volume("admin-delete")
         if not os.path.isfile(full):
             raise fastapi.HTTPException(status_code=404, detail="File not found.")
         os.remove(full)
+        # MUST commit right here — a Modal Volume rolls the unlink back when the
+        # container exits unless it was explicitly persisted.
         vol.commit()
+        print(f"[admin] Deleted and committed: {rel_path}", flush=True)
         return {"ok": True}
 
     def _delete_dir(self, item: dict) -> dict:
@@ -1277,10 +1315,13 @@ class ModalStorageBlackwell:
         full = os.path.normpath(os.path.join(base, rel_path))
         if not full.startswith(base + os.sep) or full == base:
             raise fastapi.HTTPException(status_code=400, detail="Invalid file_path.")
+        _reload_volume("admin-delete-dir")
         if not os.path.isdir(full):
             raise fastapi.HTTPException(status_code=404, detail="Directory not found.")
         shutil.rmtree(full)
+        # MUST commit right here — see _delete().
         vol.commit()
+        print(f"[admin] Deleted and committed: {rel_path}", flush=True)
         return {"ok": True}
 
     def _install_node(self, item: dict) -> dict:

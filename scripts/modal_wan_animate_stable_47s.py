@@ -64,6 +64,19 @@ ALLOWED_GIT_HOSTS = ("github.com",)
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
 
+
+def _reload_volume(tag: str) -> None:
+    """Best-effort vol.reload() — pull the latest committed Volume state into
+    this container. Used before admin mutate/list operations so a warm
+    container never acts on (or reports) a stale snapshot. Never fatal: a
+    reload can fail if files are held open, and a stale-but-present view is
+    still better than a hard error."""
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[{tag}] vol.reload() skipped: {exc}", flush=True)
+
+
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install(
@@ -881,7 +894,7 @@ class _WanAnimateBase:
     image=image,
     gpu=STANDARD_GPU_TYPE,  # 48GB VRAM
     timeout=600,  # 10 min
-    scaledown_window=2,
+    scaledown_window=30,  # 30s Keep-Warm 規格（CLAUDE.md §1）
     volumes={MODELS_DIR: vol},
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
@@ -893,7 +906,7 @@ class WanAnimate(_WanAnimateBase):
     image=image,
     gpu=ULTRA_GPU_TYPE,  # 288GB VRAM — see module docstring re: availability risk
     timeout=600,
-    scaledown_window=60,
+    scaledown_window=30,  # 30s Keep-Warm 規格（CLAUDE.md §1）
     volumes={MODELS_DIR: vol},
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
@@ -916,6 +929,10 @@ class ModalStorage:
     """
 
     def _list(self) -> dict:
+        # Fresh snapshot first — otherwise a warm container can keep reporting
+        # a file (and its bytes) that another container already deleted +
+        # committed, so the admin capacity total never drops.
+        _reload_volume("admin-list")
         files = []
         for root, _dirs, filenames in os.walk(MODELS_DIR):
             for name in filenames:
@@ -993,10 +1010,18 @@ class ModalStorage:
         full = os.path.normpath(os.path.join(base, rel_path))
         if not (full == base or full.startswith(base + os.sep)):
             raise fastapi.HTTPException(status_code=400, detail="Invalid file_path.")
+        # Pull the freshest committed Volume state first so os.remove() acts on
+        # what's really there and vol.commit()'s reconciliation is diffed
+        # against current truth (a stale baseline can re-upload files another
+        # container deleted).
+        _reload_volume("admin-delete")
         if not os.path.isfile(full):
             raise fastapi.HTTPException(status_code=404, detail="File not found.")
         os.remove(full)
+        # MUST commit right here — a Modal Volume rolls the unlink back when the
+        # container exits unless it was explicitly persisted.
         vol.commit()
+        print(f"[admin] Deleted and committed: {rel_path}", flush=True)
         return {"ok": True}
 
     def _delete_dir(self, item: dict) -> dict:
@@ -1012,10 +1037,13 @@ class ModalStorage:
             # Deliberately excludes full == base too — never let this wipe
             # the whole volume root, only a subdirectory within it.
             raise fastapi.HTTPException(status_code=400, detail="Invalid file_path.")
+        _reload_volume("admin-delete-dir")
         if not os.path.isdir(full):
             raise fastapi.HTTPException(status_code=404, detail="Directory not found.")
         shutil.rmtree(full)
+        # MUST commit right here — see _delete().
         vol.commit()
+        print(f"[admin] Deleted and committed: {rel_path}", flush=True)
         return {"ok": True}
 
     def _install_node(self, item: dict) -> dict:

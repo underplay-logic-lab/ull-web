@@ -7,7 +7,7 @@ import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { useGpuWarmCountdown, formatWarmCountdown } from "@/hooks/useGpuWarmCountdown";
 import { extendGpuWarm, type GpuWarmApiError } from "@/lib/gpuWarmApi";
-import { WARM_EXTEND_COST } from "@/lib/gpuWarm";
+import { WARM_EXTEND_COST, WARM_EXTEND_SECONDS } from "@/lib/gpuWarm";
 import { LoginModal } from "@/components/LoginModal";
 
 function InsufficientWarmCreditsModal({
@@ -121,7 +121,7 @@ export function GpuWarmStokeWidget() {
           className="inline-flex items-center gap-1.5 rounded-full border border-neon-pink/40 bg-neon-pink/10 px-3 py-1 text-xs font-medium text-neon-pink transition-colors hover:bg-neon-pink/20 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {extending ? <Loader2 size={13} className="animate-spin" /> : <Flame size={13} />}
-          {`GPUを維持 / +1分延長（${WARM_EXTEND_COST} credit）`}
+          {`GPUを維持 / +${WARM_EXTEND_SECONDS}秒延長（${WARM_EXTEND_COST} credit）`}
         </button>
 
         {errorNotice && <p className="w-full text-center text-[11px] text-red-400">{errorNotice}</p>}

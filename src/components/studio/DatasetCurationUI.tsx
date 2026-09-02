@@ -30,7 +30,8 @@ const inputCls =
   "w-full rounded-lg border border-border bg-background/70 px-3 py-2 text-xs text-foreground outline-none transition-colors focus:border-neon-violet/50 disabled:opacity-50";
 
 function fmtMb(bytes: number): string {
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  const mb = bytes / 1024 / 1024;
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(1)} MB`;
 }
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

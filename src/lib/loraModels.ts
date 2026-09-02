@@ -52,6 +52,13 @@ export type LoraPreset = {
   // 3.0x as a HEAVY_LORA_ARCHES member) but is priced 1.0x. Omit to price
   // purely from `arch` membership in HEAVY_LORA_ARCHES (the normal case).
   pricingModelMult?: number;
+  // The exact HuggingFace repo id the Modal worker resolves for this preset
+  // (mirrors TARGET_MODELS[<id>].unet in modal_lora_worker.py). Informational
+  // on the client; the worker is the source of truth.
+  repo?: string;
+  // Per-preset training-resolution recommendation; falls back to
+  // recommendedResolution(arch) when omitted.
+  recommendedResolution?: LoraResolution;
 };
 
 export const LORA_PRESET_GROUP_LABELS: Record<LoraPresetGroup, string> = {
@@ -60,22 +67,25 @@ export const LORA_PRESET_GROUP_LABELS: Record<LoraPresetGroup, string> = {
   anime: "🌸 アニメ・イラスト",
 };
 
-// The confirmed commercial lineup — 12 presets curated for licence safety and
-// verified ai-toolkit compatibility. Deprecated / rights-risk / unverified
-// models removed in this pass: CogVideoX-5B, HunyuanVideo, SD 3.5 Large/
+// The confirmed commercial lineup — curated for licence safety and verified
+// ai-toolkit compatibility. Deprecated / rights-risk / unverified models
+// removed in an earlier pass: CogVideoX-5B, HunyuanVideo, SD 3.5 Large/
 // Medium, PixArt-Σ, SD 1.5, FLUX.1 [schnell], SDXL 1.0 (base), Animagine XL
 // 3.1 — FLUX.1 [dev] was never listed here (blocked outright below).
+// FLUX.2 [dev] ("flux2") is temporarily commented out below — storage cost
+// (see the note on that block).
 export const LORA_PRESETS: LoraPreset[] = [
-  // --- video (HEAVY_LORA_ARCHES -> 3.0x, except the 1.3B override below) ---
-  { id: "wan21_14b", label: "WAN 2.1 (14B Video)", group: "video", arch: "wan21", note: "動画 T2V 大" },
-  {
-    id: "wan21_1.3b",
-    label: "WAN 2.1 (1.3B Video)",
-    group: "video",
-    arch: "wan21",
-    note: "動画 T2V 軽量",
-    pricingModelMult: 1.0,
-  },
+  // --- video (HEAVY_LORA_ARCHES -> 3.0x) ---
+  // WAN 2.1 RETIRED — superseded by WAN 2.2 below. Kept commented for history.
+  // { id: "wan21_14b", label: "WAN 2.1 (14B Video)", group: "video", arch: "wan21", note: "動画 T2V 大" },
+  // {
+  //   id: "wan21_1.3b",
+  //   label: "WAN 2.1 (1.3B Video)",
+  //   group: "video",
+  //   arch: "wan21",
+  //   note: "動画 T2V 軽量",
+  //   pricingModelMult: 1.0,
+  // },
   {
     id: "wan22_14b",
     label: "WAN 2.2 (14B Video)",
@@ -106,13 +116,18 @@ export const LORA_PRESETS: LoraPreset[] = [
     arch: "flux2_klein_9b",
     note: "Klein系の上位モデル。より高い再現性・忠実度。",
   },
-  {
-    id: "flux2",
-    label: "FLUX.2 (Base)",
-    group: "photo",
-    arch: "flux2",
-    note: "FLUX.2 の標準ベースモデル。",
-  },
+  // FLUX.2 [dev] ("flux2") — 一般ユーザー向けプリセットから一旦非表示。
+  // transformer + 24B Mistral TE で Volume 実消費 ~210GB と突出して大きく、
+  // 誤選択1回で永続ボリュームが 1TB 無料枠を超過するため。FLUX 系は
+  // flux2_klein_4b / 9b を主力とする。arch:"flux2" 自体（型・API検証・worker
+  // 側 TARGET_MODELS）は残しているので、再開時はこのブロックを戻すだけでよい。
+  // {
+  //   id: "flux2",
+  //   label: "FLUX.2 (Base)",
+  //   group: "photo",
+  //   arch: "flux2",
+  //   note: "FLUX.2 の標準ベースモデル。",
+  // },
   {
     id: "qwen_image",
     label: "Qwen-Image (Alibaba 20B)",
@@ -128,6 +143,16 @@ export const LORA_PRESETS: LoraPreset[] = [
     arch: "zimage",
     note: "超高速ステップの軽量ターボモデル。",
   },
+  {
+    id: "juggernaut_xl",
+    label: "Juggernaut XL (Photo/Real SDXL)",
+    group: "photo",
+    arch: "sdxl",
+    note: "写実・実写系に強い定番SDXLファインチューン。",
+    repo: "RunDiffusion/Juggernaut-XL-v9",
+    recommendedResolution: 1024,
+    pricingModelMult: 1.0,
+  },
   // --- anime / illustration (1.0x) ---
   {
     id: "anima",
@@ -137,7 +162,6 @@ export const LORA_PRESETS: LoraPreset[] = [
     note: "アニメ・イラスト生成に特化した次世代2B DiTモデル。",
   },
   { id: "illustrious_xl", label: "Illustrious XL", group: "anime", arch: "sdxl", note: "イラスト SDXL" },
-  { id: "pony_v6", label: "Pony Diffusion V6 XL", group: "anime", arch: "sdxl", note: "アニメ SDXL" },
 ];
 
 export const LORA_PRESET_IDS = new Set(LORA_PRESETS.map((p) => p.id));
