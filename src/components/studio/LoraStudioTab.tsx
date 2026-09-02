@@ -77,13 +77,14 @@ import {
   type LoraCaptionSpec,
 } from "@/lib/loraCaptionSpec";
 import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
-import { generateDatasetCaptions } from "@/lib/loraCaption";
+import { generateDatasetCaptions, captionFileKey } from "@/lib/loraCaption";
 const JOB_POLL_INTERVAL_MS = 3000;
 const MAX_IMAGES = 200;
 // Raw upload budget. The worker's Smart Ingest stage downscales / re-encodes
-// every image on a free CPU container before the GPU starts, so a large raw
-// dataset (4K PNGs, phone shots) is fine to accept here.
-const MAX_TOTAL_BYTES = 1024 * 1024 * 1024; // 1 GB total
+// every image on a free CPU container before the GPU starts, and AI-vision
+// captioning only ever sees ~640px browser thumbnails — so a large raw
+// dataset (4K crops, phone shots) is fine to accept here.
+const MAX_TOTAL_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB total
 const MAX_FILE_BYTES = 96 * 1024 * 1024; // 96 MB per image (a ~6K PNG)
 
 // Survives a page reload mid-job (dev server restart, browser refresh,
@@ -106,6 +107,48 @@ const DISMISSED_JOBS_STORAGE_KEY = "lora_studio_dismissed_jobs";
 // after a failed run never drops a hand-tuned config. Cleared only by the
 // explicit "フォームを初期化" button, never automatically.
 const FORM_DRAFT_STORAGE_KEY = "lora_studio_form_draft_v1";
+
+// AI-vision captions cached by file identity ("name::size::lastModified"), so a
+// mid-run browser crash / reload doesn't lose the captions already earned — the
+// same files dropped back in rehydrate instantly and only the incomplete ones
+// are re-analyzed. Written through on every batch that lands; pruned to the
+// most recent CAPTION_CACHE_MAX entries so it can't grow unbounded.
+const CAPTION_CACHE_STORAGE_KEY = "lora_studio_captions_v1";
+const CAPTION_CACHE_MAX = 1000;
+type CaptionCacheEntry = { en: string; ja: string; at: number };
+
+function loadCaptionCache(): Record<string, CaptionCacheEntry> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(CAPTION_CACHE_STORAGE_KEY);
+    const obj = raw ? (JSON.parse(raw) as unknown) : null;
+    return obj && typeof obj === "object" ? (obj as Record<string, CaptionCacheEntry>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistCaptionCache(entries: { key: string; en: string; ja: string }[]): void {
+  if (typeof window === "undefined" || entries.length === 0) return;
+  try {
+    const cache = loadCaptionCache();
+    const now = Date.now();
+    for (const e of entries) {
+      if (!e.en.trim() && !e.ja.trim()) continue;
+      cache[e.key] = { en: e.en, ja: e.ja, at: now };
+    }
+    const keys = Object.keys(cache);
+    if (keys.length > CAPTION_CACHE_MAX) {
+      keys
+        .sort((a, b) => (cache[a]?.at ?? 0) - (cache[b]?.at ?? 0))
+        .slice(0, keys.length - CAPTION_CACHE_MAX)
+        .forEach((k) => delete cache[k]);
+    }
+    window.localStorage.setItem(CAPTION_CACHE_STORAGE_KEY, JSON.stringify(cache));
+  } catch {
+    /* quota / disabled storage — captions still live in React state */
+  }
+}
 
 type LoraFormDraft = {
   triggerWord: string;
@@ -294,11 +337,18 @@ function ImageDropzone({
   onAdd,
   onRemove,
   disabled,
+  captionState,
+  recaptioningIds,
+  onRecaption,
 }: {
   images: DatasetImage[];
   onAdd: (files: FileList | File[]) => void;
   onRemove: (id: string) => void;
   disabled: boolean;
+  // "ok" (captioned) | "error" (retries exhausted) | "pending" (not yet done).
+  captionState?: (id: string) => "ok" | "error" | "pending";
+  recaptioningIds?: Set<string>;
+  onRecaption?: (id: string) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -357,29 +407,55 @@ function ImageDropzone({
             )}
           </div>
           <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-5">
-            {images.map((img) => (
-              <div
-                key={img.id}
-                className="group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border border-border bg-neutral-900"
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={img.url}
-                  alt={img.file.name}
-                  className="h-full w-full object-contain"
-                />
-                {!disabled && (
-                  <button
-                    type="button"
-                    onClick={() => onRemove(img.id)}
-                    className="absolute right-1 top-1 rounded-md bg-black/70 p-1 text-white opacity-0 transition-opacity group-hover:opacity-100"
-                    aria-label="削除"
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                )}
-              </div>
-            ))}
+            {images.map((img) => {
+              const st = captionState?.(img.id) ?? "ok";
+              const recapping = recaptioningIds?.has(img.id) ?? false;
+              return (
+                <div
+                  key={img.id}
+                  className={`group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border bg-neutral-900 ${
+                    st === "error" ? "border-red-500/60" : "border-border"
+                  }`}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={img.url}
+                    alt={img.file.name}
+                    className="h-full w-full object-contain"
+                  />
+                  {recapping && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                      <Loader2 size={16} className="animate-spin text-white" />
+                    </div>
+                  )}
+                  {!disabled && !recapping && st === "error" && onRecaption && (
+                    <button
+                      type="button"
+                      onClick={() => onRecaption(img.id)}
+                      title="この画像を再解析"
+                      className="absolute inset-x-1 bottom-1 inline-flex items-center justify-center gap-1 rounded-md bg-red-500/80 px-1 py-0.5 text-[9px] font-semibold text-white transition-opacity hover:bg-red-500"
+                    >
+                      <RotateCcw size={9} /> 再解析
+                    </button>
+                  )}
+                  {!disabled && !recapping && st === "pending" && (
+                    <span className="absolute left-1 top-1 rounded bg-amber-500/80 px-1 py-0.5 text-[8px] font-medium text-white">
+                      未解析
+                    </span>
+                  )}
+                  {!disabled && (
+                    <button
+                      type="button"
+                      onClick={() => onRemove(img.id)}
+                      className="absolute right-1 top-1 rounded-md bg-black/70 p-1 text-white opacity-0 transition-opacity group-hover:opacity-100"
+                      aria-label="削除"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </>
       )}
@@ -1227,6 +1303,12 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     note: string | null;
     everRan: boolean;
   }>({ running: false, done: 0, total: 0, error: null, note: null, everRan: false });
+  // Image ids whose AI-vision caption exhausted its retries (rate limit /
+  // error / timeout). Surfaced on the card + the "未完了を再解析" button;
+  // cleared the moment a caption lands for that id.
+  const [captionErrorIds, setCaptionErrorIds] = useState<Set<string>>(() => new Set());
+  // Image ids with a single-image re-analysis in flight (per-card 🔄 button).
+  const [recaptioningIds, setRecaptioningIds] = useState<Set<string>>(() => new Set());
   // Image ids we've already sent to the vision captioner (so a re-render / new
   // drop doesn't re-caption them). Cleared per-id on remove / on "再解析".
   const captionAttemptedRef = useRef<Set<string>>(new Set());
@@ -1589,7 +1671,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     let room = MAX_IMAGES - imagesRef.current.length;
     const newImgs: DatasetImage[] = [];
     const newCaps: Record<string, string> = {};
+    const newCapsJa: Record<string, string> = {};
     const newUserCaptionIds: string[] = [];
+    // Resume support: captions earned before a crash / reload are cached by
+    // file identity — rehydrate any that match the files being (re-)added.
+    const cache = loadCaptionCache();
     // Reject any single image over the per-file cap (the total-size cap is
     // enforced separately by the submit gate).
     const oversized = entries.filter((e) => e.file.size > MAX_FILE_BYTES);
@@ -1617,10 +1703,19 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         // Brought by the user (.txt / ZIP) — not AI-generated.
         newUserCaptionIds.push(id);
         captionAttemptedRef.current.add(id);
+      } else {
+        const cached = cache[captionFileKey(file)];
+        if (cached && (cached.en?.trim() || cached.ja?.trim())) {
+          if (cached.en?.trim()) newCaps[id] = cached.en.trim();
+          if (cached.ja?.trim()) newCapsJa[id] = cached.ja.trim();
+          // Cached => already analyzed; the auto-kick effect skips it.
+          captionAttemptedRef.current.add(id);
+        }
       }
     }
     if (newImgs.length) setImages((prev) => [...prev, ...newImgs]);
     if (Object.keys(newCaps).length) setCaptions((prev) => ({ ...prev, ...newCaps }));
+    if (Object.keys(newCapsJa).length) setCaptionsJa((prev) => ({ ...prev, ...newCapsJa }));
     if (newUserCaptionIds.length) {
       setUserCaptionIds((prev) => {
         const next = new Set(prev);
@@ -1706,6 +1801,12 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       return next;
     });
     captionAttemptedRef.current.delete(id);
+    setCaptionErrorIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
     setUserCaptionIds((prev) => {
       if (!prev.has(id)) return prev;
       const next = new Set(prev);
@@ -2365,11 +2466,17 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     () => images.filter((img) => !userCaptionIds.has(img.id)).length,
     [images, userCaptionIds],
   );
-  // Any image still waiting on the AI vision pass.
-  const pendingCaptionCount = useMemo(
-    () =>
-      images.filter((img) => !userCaptionIds.has(img.id) && !(captions[img.id] ?? "").trim()).length,
+  // Images still waiting on the AI vision pass — no user caption, no AI
+  // caption yet. This is exactly the set the "未完了を再解析" button targets.
+  const incompleteImages = useMemo(
+    () => images.filter((img) => !userCaptionIds.has(img.id) && !(captions[img.id] ?? "").trim()),
     [images, captions, userCaptionIds],
+  );
+  const pendingCaptionCount = incompleteImages.length;
+  // Of the incomplete ones, how many actually errored out (vs. never started).
+  const captionErrorCount = useMemo(
+    () => incompleteImages.filter((img) => captionErrorIds.has(img.id)).length,
+    [incompleteImages, captionErrorIds],
   );
 
   // --- AI-vision auto-captioning ----------------------------------------
@@ -2394,21 +2501,50 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
       // Merge each batch as it lands, dropping any target the user has
       // removed since the pass started (its id is gone from imageIdsRef).
+      // Every landed caption is also written through to the localStorage
+      // cache and clears the id's error flag.
       const mergeLive = (
         entries: { index: number; en: string; ja: string }[],
       ): { cap: Record<string, string>; ja: Record<string, string> } => {
         const live = imageIdsRef.current;
         const cap: Record<string, string> = {};
         const capJa: Record<string, string> = {};
+        const cacheWrites: { key: string; en: string; ja: string }[] = [];
         for (const e of entries) {
-          const id = targets[e.index]?.id;
-          if (!id || !live.has(id)) continue;
-          if (e.en.trim()) cap[id] = e.en.trim();
-          if (e.ja.trim()) capJa[id] = e.ja.trim();
+          const t = targets[e.index];
+          if (!t || !live.has(t.id)) continue;
+          if (e.en.trim()) cap[t.id] = e.en.trim();
+          if (e.ja.trim()) capJa[t.id] = e.ja.trim();
+          if (e.en.trim() || e.ja.trim()) {
+            cacheWrites.push({ key: captionFileKey(t.file), en: e.en.trim(), ja: e.ja.trim() });
+          }
         }
         if (Object.keys(cap).length) setCaptions((prev) => ({ ...prev, ...cap }));
         if (Object.keys(capJa).length) setCaptionsJa((prev) => ({ ...prev, ...capJa }));
+        if (cacheWrites.length) {
+          persistCaptionCache(cacheWrites);
+          const doneIds = new Set(Object.keys(cap).concat(Object.keys(capJa)));
+          setCaptionErrorIds((prev) => {
+            if (![...doneIds].some((id) => prev.has(id))) return prev;
+            const next = new Set(prev);
+            doneIds.forEach((id) => next.delete(id));
+            return next;
+          });
+        }
         return { cap, ja: capJa };
+      };
+
+      const markErrors = (indices: number[]) => {
+        const live = imageIdsRef.current;
+        const ids = indices
+          .map((i) => targets[i]?.id)
+          .filter((id): id is string => Boolean(id) && live.has(id));
+        if (!ids.length) return;
+        setCaptionErrorIds((prev) => {
+          const next = new Set(prev);
+          ids.forEach((id) => next.add(id));
+          return next;
+        });
       };
 
       const merged: { cap: Record<string, string>; ja: Record<string, string> } = { cap: {}, ja: {} };
@@ -2431,6 +2567,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                 ...s,
                 note: "混雑のため少し待ってから自動で再試行しています…",
               })),
+            onError: markErrors,
             isStale: (i) => {
               const id = targets[i]?.id;
               return !id || !imageIdsRef.current.has(id);
@@ -2515,6 +2652,95 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       resolvedCaptionPromptRef.current.trim() || currentCaptionPrompt(),
     );
   }, [images, userCaptionIds, curationTrigger, runVisionCaptions, currentCaptionPrompt]);
+
+  // "🔄 未完了の画像（N枚）を再解析" — re-run the full pass over ONLY the
+  // images that still have no caption (never started, or errored out).
+  const recaptionIncomplete = useCallback(async () => {
+    const targets = incompleteImages;
+    if (targets.length === 0 || autoCap.running) return null;
+    setCaptionErrorIds((prev) => {
+      if (!targets.some((t) => prev.has(t.id))) return prev;
+      const next = new Set(prev);
+      targets.forEach((t) => next.delete(t.id));
+      return next;
+    });
+    targets.forEach((img) => captionAttemptedRef.current.add(img.id));
+    return runVisionCaptions(
+      targets,
+      curationTrigger,
+      resolvedCaptionPromptRef.current.trim() || currentCaptionPrompt(),
+    );
+  }, [incompleteImages, autoCap.running, curationTrigger, runVisionCaptions, currentCaptionPrompt]);
+
+  // Per-card "🔄 再解析" — one image, on its own lightweight path so it never
+  // touches the batch pass's abort controller or progress UI.
+  const recaptionOne = useCallback(
+    async (id: string) => {
+      const img = imagesRef.current.find((i) => i.id === id);
+      if (!img || recaptioningIds.has(id)) return;
+      setRecaptioningIds((prev) => new Set(prev).add(id));
+      captionAttemptedRef.current.add(id);
+      try {
+        const res = await generateDatasetCaptions([img.file], {
+          triggerWord: curationTrigger,
+          captionPrompt: resolvedCaptionPromptRef.current.trim() || currentCaptionPrompt() || undefined,
+          onBatch: (entries) => {
+            const e = entries[0];
+            if (!e) return;
+            if (!imageIdsRef.current.has(id)) return;
+            if (e.en.trim()) setCaptions((prev) => ({ ...prev, [id]: e.en.trim() }));
+            if (e.ja.trim()) setCaptionsJa((prev) => ({ ...prev, [id]: e.ja.trim() }));
+            persistCaptionCache([{ key: captionFileKey(img.file), en: e.en.trim(), ja: e.ja.trim() }]);
+          },
+        });
+        const ok = (res.captions[0] ?? "").trim().length > 0;
+        setCaptionErrorIds((prev) => {
+          const next = new Set(prev);
+          if (ok) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+      } catch {
+        setCaptionErrorIds((prev) => new Set(prev).add(id));
+      } finally {
+        setRecaptioningIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+    },
+    [recaptioningIds, curationTrigger, currentCaptionPrompt],
+  );
+
+  // Re-analyze handler for the curation screen: runs the vision pass over the
+  // supplied cards and hands the results back so DatasetCurationUI can patch
+  // its own `pairs` state. Also writes through to the caption cache.
+  const recaptionForCuration = useCallback(
+    async (
+      targets: { id: string; file: File }[],
+    ): Promise<Record<string, { en: string; ja: string }>> => {
+      if (targets.length === 0) return {};
+      const res = await generateDatasetCaptions(
+        targets.map((t) => t.file),
+        {
+          triggerWord: curationTrigger,
+          captionPrompt: resolvedCaptionPromptRef.current.trim() || currentCaptionPrompt() || undefined,
+        },
+      );
+      const out: Record<string, { en: string; ja: string }> = {};
+      const cacheWrites: { key: string; en: string; ja: string }[] = [];
+      targets.forEach((t, k) => {
+        const en = (res.captions[k] ?? "").trim();
+        const ja = (res.captionsJa[k] ?? "").trim();
+        out[t.id] = { en, ja };
+        if (en || ja) cacheWrites.push({ key: captionFileKey(t.file), en, ja });
+      });
+      if (cacheWrites.length) persistCaptionCache(cacheWrites);
+      return out;
+    },
+    [curationTrigger, currentCaptionPrompt],
+  );
 
   // Runs on "次へ" / "学習を開始" — turns the selected LoRA type + JP feature
   // notes into the English Qwen instruction (Gemini, with a deterministic
@@ -2780,6 +3006,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     lastCaptionSpecKeyRef.current = "";
     setReflectedSpecKey("");
     setUserCaptionIds(new Set());
+    setCaptionErrorIds(new Set());
+    setRecaptioningIds(new Set());
     setAutoCap({ running: false, done: 0, total: 0, error: null, note: null, everRan: false });
     images.forEach((i) => URL.revokeObjectURL(i.url));
     setImages([]);
@@ -2917,6 +3145,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           triggerWord={curationTrigger}
           maxImages={MAX_IMAGES}
           maxTotalBytes={MAX_TOTAL_BYTES}
+          onRecaption={recaptionForCuration}
         />
         <LoginModal
           open={loginOpen}
@@ -3076,7 +3305,21 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               </button>
             )}
           </div>
-          <ImageDropzone images={images} onAdd={addImages} onRemove={removeImage} disabled={busy} />
+          <ImageDropzone
+            images={images}
+            onAdd={addImages}
+            onRemove={removeImage}
+            disabled={busy}
+            recaptioningIds={recaptioningIds}
+            onRecaption={(id) => void recaptionOne(id)}
+            captionState={(id) =>
+              (captions[id] ?? "").trim() || userCaptionIds.has(id)
+                ? "ok"
+                : captionErrorIds.has(id)
+                  ? "error"
+                  : "pending"
+            }
+          />
 
           {zipBusy && (
             <p className="flex items-center gap-1.5 text-[11px] text-neon-violet">
@@ -3088,6 +3331,28 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-400">
               画像の合計サイズが上限（{(MAX_TOTAL_BYTES / 1024 / 1024 / 1024).toFixed(1)} GB）を超えています。枚数を減らしてください（画質はサーバー側で自動最適化されます）。
             </p>
+          )}
+
+          {/* Resume: re-analyze every image that has no caption yet (never
+              started, timed out, or errored). Always visible while any remain. */}
+          {!autoCap.running && images.length > 0 && pendingCaptionCount > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-300">
+              <span className="flex items-center gap-1.5">
+                <AlertTriangle size={13} className="shrink-0" />
+                {captionErrorCount > 0
+                  ? `${pendingCaptionCount} 枚が未解析です（うち ${captionErrorCount} 枚はエラー / タイムアウト）。`
+                  : `${pendingCaptionCount} 枚がまだ解析されていません。`}
+              </span>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void recaptionIncomplete()}
+                className="inline-flex items-center gap-1.5 rounded-md border border-amber-400/60 bg-amber-400/10 px-3 py-1.5 font-semibold text-amber-200 transition-colors hover:bg-amber-400/20 disabled:opacity-50"
+              >
+                <RotateCcw size={12} />
+                🔄 未完了の画像（{pendingCaptionCount}枚）を再解析
+              </button>
+            </div>
           )}
 
           {/* Auto-routing badge: reflects the customCaptions / skipCaptioning

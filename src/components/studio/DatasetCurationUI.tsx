@@ -46,6 +46,7 @@ export function DatasetCurationUI({
   maxImages,
   maxTotalBytes,
   disabled = false,
+  onRecaption,
 }: {
   pairs: CurationPair[];
   // A setState updater — every mutation is applied against the freshest state
@@ -61,12 +62,64 @@ export function DatasetCurationUI({
   maxImages: number;
   maxTotalBytes: number;
   disabled?: boolean;
+  // Re-run AI-vision captioning for the given cards; resolves to { id: {en,ja} }
+  // for the ones that landed. Omitted -> the re-analyze affordances are hidden.
+  onRecaption?: (
+    targets: { id: string; file: File }[],
+  ) => Promise<Record<string, { en: string; ja: string }>>;
 }) {
   // Per-card in-flight translation direction, keyed by pair id.
   const [busyId, setBusyId] = useState<Record<string, "ja" | "en" | undefined>>({});
   const [bulk, setBulk] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [zipping, setZipping] = useState(false);
+  // Pair ids with an AI re-analysis in flight.
+  const [recappingIds, setRecappingIds] = useState<Set<string>>(() => new Set());
+
+  const runRecaption = async (targets: CurationPair[]) => {
+    if (!onRecaption || targets.length === 0) return;
+    const live = targets.filter((t) => !recappingIds.has(t.id));
+    if (!live.length) return;
+    setError(null);
+    setRecappingIds((prev) => {
+      const next = new Set(prev);
+      live.forEach((t) => next.add(t.id));
+      return next;
+    });
+    try {
+      const out = await onRecaption(live.map((t) => ({ id: t.id, file: t.file })));
+      const updates: Record<string, Partial<CurationPair>> = {};
+      for (const t of live) {
+        const r = out[t.id];
+        if (r && (r.en.trim() || r.ja.trim())) {
+          updates[t.id] = {
+            caption: r.en.trim() || t.caption,
+            captionJa: r.ja.trim() || t.captionJa,
+          };
+        }
+      }
+      if (Object.keys(updates).length) {
+        onChange((prev) => prev.map((p) => (updates[p.id] ? { ...p, ...updates[p.id] } : p)));
+      }
+      const stillEmpty = live.filter((t) => !out[t.id]?.en.trim() && !out[t.id]?.ja.trim());
+      if (stillEmpty.length) {
+        setError(`${stillEmpty.length} 枚は再解析できませんでした（学習時に自動補完されます）。`);
+      }
+    } catch {
+      setError("再解析に失敗しました。時間をおいて再試行してください。");
+    } finally {
+      setRecappingIds((prev) => {
+        const next = new Set(prev);
+        live.forEach((t) => next.delete(t.id));
+        return next;
+      });
+    }
+  };
+
+  const uncaptioned = useMemo(
+    () => pairs.filter((p) => !p.excluded && !p.caption.trim()),
+    [pairs],
+  );
 
   const downloadDataset = async () => {
     setZipping(true);
@@ -229,6 +282,21 @@ export function DatasetCurationUI({
               一括翻訳中… {bulk.done}/{bulk.total}
             </span>
           )}
+          {onRecaption && uncaptioned.length > 0 && (
+            <button
+              type="button"
+              onClick={() => void runRecaption(uncaptioned)}
+              disabled={disabled || Boolean(bulk) || recappingIds.size > 0}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/60 bg-amber-400/10 px-3 py-1.5 text-xs font-semibold text-amber-200 transition-colors hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {recappingIds.size > 0 ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <RotateCcw size={13} />
+              )}
+              🔄 未キャプション {uncaptioned.length} 枚を再解析
+            </button>
+          )}
           <button
             type="button"
             onClick={translateAllToJa}
@@ -316,6 +384,21 @@ export function DatasetCurationUI({
                     </>
                   )}
                 </button>
+                {onRecaption && !p.excluded && !p.caption.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => void runRecaption([p])}
+                    disabled={disabled || Boolean(bulk) || recappingIds.has(p.id)}
+                    className="inline-flex w-full items-center justify-center gap-1 rounded-md border border-amber-400/50 px-1.5 py-1 text-[10px] text-amber-300 transition-colors hover:bg-amber-400/10 disabled:opacity-50"
+                  >
+                    {recappingIds.has(p.id) ? (
+                      <Loader2 size={11} className="animate-spin" />
+                    ) : (
+                      <RotateCcw size={11} />
+                    )}
+                    再解析
+                  </button>
+                )}
               </div>
 
               <div className="flex min-w-0 flex-1 flex-col gap-1.5">
