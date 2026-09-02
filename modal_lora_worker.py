@@ -363,10 +363,11 @@ AI_TOOLKIT_REF = os.environ.get("AI_TOOLKIT_REF", "main")
 #           prep limit — only the silence watchdog. Any output line resets
 #           it (see last_output in _run_ai_toolkit_with_progress).
 #   COST  — after LORA_COST_MIN_STEP real steps, a trimmed moving average of
-#           s/it projects total wall time; if it would cost more real GPU
-#           money than the paid credits cover at a 30% margin
-#           (_credit_covered_seconds), graceful stop + 100% refund +
-#           salvageable partial checkpoints.
+#           s/it projects total wall time; if it exceeds the dynamic cost cap
+#           (_cost_cap_seconds: credit-covered seconds *
+#           ULL_COST_GUARD_MULTIPLIER, floored by the per-arch expected run
+#           time), graceful stop + 100% refund + salvageable partial
+#           checkpoints.
 # Checkpoint I/O (`Saving at step` / `Saved checkpoint`) grants a grace
 # window so a long disk sync never looks like a stall.
 # LORA_SAFETY_LIMIT_S is only a fallback ceiling for credits_cost == 0.
@@ -374,6 +375,45 @@ LORA_PREP_SILENCE_S = int(os.environ.get("LORA_PREP_SILENCE_S", str(20 * 60)))
 LORA_COST_MIN_STEP = int(os.environ.get("LORA_COST_MIN_STEP", "50"))
 LORA_CKPT_IO_GRACE_S = int(os.environ.get("LORA_CKPT_IO_GRACE_S", str(5 * 60)))
 LORA_SAFETY_LIMIT_S = int(os.environ.get("LORA_SAFETY_LIMIT_S", str(5 * 60 * 60)))
+
+# Cost-guard leniency. The projected-wall-time abort compares against
+# (credit-covered seconds * this multiplier). 1.0 == strict break-even
+# margin (the original behaviour); >1 lets a legitimately long run eat
+# slightly into the gross margin instead of being false-aborted a few
+# minutes short. A real runaway is still caught — the per-arch floor below
+# is itself bounded, the projected-time check still fires above the raised
+# threshold, and the 12h container timeout is the hard ceiling.
+ULL_COST_GUARD_MULTIPLIER = max(
+    1.0, min(float(os.environ.get("ULL_COST_GUARD_MULTIPLIER", "1.4")), 3.0)
+)
+# Measured seconds/iteration baseline per arch — floors the cost cap so a
+# correctly-priced-but-slow heavy model (MiniMax H3 measures ~5s/it at 1024)
+# always has enough runway to finish its declared step count even when its
+# credit price underprices the wall time. Unlisted arch -> _DEFAULT.
+LORA_SPI_BASELINE: dict[str, float] = {
+    "minimax_h3": 5.0,
+    "wan22_14b": 4.0,
+    "wan21": 3.5,
+    "ltx2": 3.5,
+    "hunyuan": 4.0,
+    "cogvideox": 4.0,
+    "flux2": 2.2,
+    "flux2_klein_9b": 1.6,
+    "flux2_klein_4b": 1.1,
+    "qwen_image": 2.0,
+    "krea2": 2.0,
+    "zimage": 1.2,
+    "anima": 1.4,
+    "sdxl": 0.9,
+}
+LORA_SPI_BASELINE_DEFAULT = float(os.environ.get("LORA_SPI_BASELINE_DEFAULT", "2.5"))
+# Prep / latent-caching / checkpoint headroom added on top of pure training
+# time in the per-arch floor (a multi-res 1024 run legitimately spends
+# 20-40 min caching latents before step 1).
+LORA_FLOOR_PREP_S = int(os.environ.get("LORA_FLOOR_PREP_S", str(45 * 60)))
+# Hard ceiling shared by every cost-cap path — always stop gracefully before
+# the 12h container timeout.
+LORA_ABS_MAX_RUN_S = 12 * 60 * 60 - 20 * 60
 # Stage 1 (Qwen caption) dynamic budget: 30s/image, min 10 min.
 LORA_CAPTION_S_PER_IMG = int(os.environ.get("LORA_CAPTION_S_PER_IMG", "30"))
 LORA_CAPTION_MIN_S = int(os.environ.get("LORA_CAPTION_MIN_S", str(10 * 60)))
@@ -950,9 +990,11 @@ class InfraError(RuntimeError):
 class SafetyLimitError(RuntimeError):
     """The run was deliberately stopped early by the system to protect real
     GPU cost — either the prep phase deadlocked ("prep"), or the measured
-    projected wall time would cost more than the paid credits cover at a 30%
-    margin ("cost"). Partial checkpoints are committed + salvageable, and the
-    credits are 100% refunded (it's the system's call, not a config crash)."""
+    projected wall time exceeds the dynamic cost cap ("cost") — credit-covered
+    seconds * ULL_COST_GUARD_MULTIPLIER, floored by the per-arch expected
+    run time (see _cost_cap_seconds). Partial checkpoints are committed +
+    salvageable, and the credits are 100% refunded (system's call, not a
+    config crash)."""
 
     def __init__(self, message: str, *, kind: str = "cost", refund: bool = True):
         super().__init__(message)
@@ -970,12 +1012,65 @@ def _credit_covered_seconds(credits_cost: int) -> int:
 
     Floored at 1800s (30 min) so a cheap job still gets a fair shot; capped
     just under the 12h container timeout so we always stop gracefully first.
+    This is the RAW break-even number — the live guard adds
+    ULL_COST_GUARD_MULTIPLIER and the per-arch floor on top (see
+    _cost_cap_seconds).
     """
     revenue_jpy = max(0, credits_cost) * 1.66
     max_cost_jpy = revenue_jpy * 0.70
     b300_jpy_per_sec = 1125 / 3600
     secs = max_cost_jpy / b300_jpy_per_sec if b300_jpy_per_sec else 0.0
-    return int(max(1800, min(secs, 12 * 60 * 60 - 20 * 60)))
+    return int(max(1800, min(secs, LORA_ABS_MAX_RUN_S)))
+
+
+def _arch_for_target(target_model: str, base_architecture: str = "") -> str:
+    """Resolve a preset id / bare arch string to the ai-toolkit arch key used
+    in LORA_SPI_BASELINE (falls back to whatever string was given)."""
+    entry = TARGET_MODELS.get(target_model)
+    if entry and entry.get("arch"):
+        return str(entry["arch"])
+    return (base_architecture or target_model or "").strip()
+
+
+def _expected_run_floor_seconds(
+    target_model: str, total_steps: int, base_architecture: str = ""
+) -> int:
+    """Lower bound for the cost cap: no matter how cheap the credit price came
+    out, never abort a run before it has had a fair shot at completing
+    `total_steps` at this arch's MEASURED s/it (LORA_SPI_BASELINE) plus a 30%
+    cushion and prep headroom. Bounded by LORA_ABS_MAX_RUN_S so a true runaway
+    (actual s/it far above baseline -> projected time still blows past this
+    floor) is still stopped."""
+    if total_steps <= 0:
+        return 0
+    arch = _arch_for_target(target_model, base_architecture)
+    spi = LORA_SPI_BASELINE.get(arch, LORA_SPI_BASELINE_DEFAULT)
+    floor = LORA_FLOOR_PREP_S + total_steps * spi * 1.3
+    return int(min(floor, LORA_ABS_MAX_RUN_S))
+
+
+def _cost_cap_seconds(
+    credits_cost: int, target_model: str, total_steps: int, base_architecture: str = ""
+) -> tuple[int, str]:
+    """The live projected-wall-time abort threshold. Returns (seconds, reason
+    string for the log). Combines three inputs:
+      * base      = _credit_covered_seconds(credits) (or LORA_SAFETY_LIMIT_S
+                    for a zero-credit raw-YAML job)
+      * + margin  = base * ULL_COST_GUARD_MULTIPLIER
+      * floored   = max(margin, per-arch expected run time)
+      * clamped   = min(that, LORA_ABS_MAX_RUN_S)
+    """
+    base = _credit_covered_seconds(credits_cost) if credits_cost > 0 else LORA_SAFETY_LIMIT_S
+    with_margin = base * ULL_COST_GUARD_MULTIPLIER
+    arch_floor = _expected_run_floor_seconds(target_model, total_steps, base_architecture)
+    capped = int(min(max(with_margin, arch_floor), LORA_ABS_MAX_RUN_S))
+    arch = _arch_for_target(target_model, base_architecture)
+    reason = (
+        f"{credits_cost}C -> base {base}s x{ULL_COST_GUARD_MULTIPLIER:.2f} = {int(with_margin)}s, "
+        f"arch-floor[{arch}, {total_steps or '?'}st] {arch_floor}s -> {capped}s "
+        f"(~{capped / 3600:.2f}h)"
+    )
+    return capped, reason
 
 
 def _download_storage_object(bucket: str, key: str, attempts: int = 4) -> bytes:
@@ -2031,18 +2126,86 @@ print(
 )
 # ===== END INJECTED BY ULL STUDIO PATCH =====
 '''
+
+    # --- MiniMax H3 Text Encoder (qwen3vl_32b nvfp4_awq) load timing probe --
+    # PHASE A of the TE "Bake & Skip" work (see plan): pure instrumentation, no
+    # behaviour change. ai-toolkit's MinimaxH3Model._load_text_encoder() reads
+    # the ~16GB nvfp4_awq single file and runs import_comfy_quantized_layers()
+    # to unpack the 4bit-packed AWQ layers into OstrisLinear modules on EVERY
+    # H3 run. Unlike the DiT, there is NO full bf16 dequant pass here — the TE
+    # stays quantized (aitk_is_quantized=True). Before committing to a 64GB
+    # bf16 bake (Volume-capacity risk), this wrapper logs the wall-time of the
+    # whole call and of the suspected hot spot (import_comfy_quantized_layers)
+    # so the real cost is known from one job's logs. Fully try/except-guarded:
+    # a wrap failure leaves ai-toolkit's stock path untouched. Phase B will
+    # extend this same block with the ULL_H3_TE_BAKE skip (redirect
+    # te_name_or_path at a baked Diffusers dir -> the os.path.isdir fast path).
+    _H3_TE_PROBE_MARKER = "INJECTED BY ULL STUDIO PATCH: MiniMax H3 TE load timing probe"
+    _H3_TE_PROBE_PATCH = '''
+
+# ===== INJECTED BY ULL STUDIO PATCH: MiniMax H3 TE load timing probe =====
+import time as _ull_te_time
+
+# import_comfy_quantized_layers is a module global (from ... import) that
+# _load_text_encoder calls by name — rebinding it here routes that call
+# through the timing wrapper.
+try:
+    _ull_te_orig_iccl = import_comfy_quantized_layers
+
+    def _ull_te_timed_iccl(*_a, **_k):
+        _t = _ull_te_time.time()
+        try:
+            return _ull_te_orig_iccl(*_a, **_k)
+        finally:
+            print(
+                f"[ULL][minimax][te-probe] import_comfy_quantized_layers: "
+                f"{_ull_te_time.time() - _t:.1f}s",
+                flush=True,
+            )
+
+    import_comfy_quantized_layers = _ull_te_timed_iccl
+except Exception as _e:  # noqa: BLE001
+    print(f"[ULL][minimax][te-probe] iccl wrap skipped: {_e!r}", flush=True)
+
+try:
+    _ull_te_orig_load = MinimaxH3Model._load_text_encoder
+
+    def _ull_te_load(self):
+        _t0 = _ull_te_time.time()
+        try:
+            return _ull_te_orig_load(self)
+        finally:
+            print(
+                f"[ULL][minimax][te-probe] _load_text_encoder TOTAL: "
+                f"{_ull_te_time.time() - _t0:.1f}s",
+                flush=True,
+            )
+
+    MinimaxH3Model._load_text_encoder = _ull_te_load
+    print("[aitk-patch] minimax_h3.py — installed TE load timing probe", flush=True)
+except Exception as _e:  # noqa: BLE001
+    print(f"[ULL][minimax][te-probe] load wrap skipped: {_e!r}", flush=True)
+# ===== END INJECTED BY ULL STUDIO PATCH =====
+'''
+
     try:
         if not minimax_file.exists():
-            print(f"[aitk-patch] {minimax_file} not found — skipping MiniMax H3 bake patch", flush=True)
+            print(f"[aitk-patch] {minimax_file} not found — skipping MiniMax H3 patches", flush=True)
         else:
             _mm = minimax_file.read_text(encoding="utf-8")
             if _H3_BAKE_MARKER in _mm:
                 print("[aitk-patch] minimax_h3.py bake-and-skip patch already applied — skipping", flush=True)
             else:
-                minimax_file.write_text(_mm + _H3_BAKE_PATCH, encoding="utf-8")
+                _mm += _H3_BAKE_PATCH
+                minimax_file.write_text(_mm, encoding="utf-8")
                 print("[aitk-patch] patched minimax_h3.py — int8_convrot dequant Bake & Skip", flush=True)
+            if _H3_TE_PROBE_MARKER in _mm:
+                print("[aitk-patch] minimax_h3.py TE timing probe already applied — skipping", flush=True)
+            else:
+                minimax_file.write_text(_mm + _H3_TE_PROBE_PATCH, encoding="utf-8")
+                print("[aitk-patch] patched minimax_h3.py — TE load timing probe", flush=True)
     except Exception as _patch_exc:  # noqa: BLE001 — best-effort
-        print(f"[aitk-patch] minimax_h3.py bake patch skipped: {_patch_exc}", flush=True)
+        print(f"[aitk-patch] minimax_h3.py patch skipped: {_patch_exc}", flush=True)
 
     # --- SDXL `variant` resolution patch ------------------------------------
     # ai-toolkit's SDXL loader (toolkit/stable_diffusion_model.py, the is_xl
@@ -2430,8 +2593,8 @@ print(
                         if projected_total > safety_limit_s:
                             aborted = (
                                 f"Terminated to protect cost: Projected time "
-                                f"({projected_total / 3600:.1f}h) exceeds credit-covered limit "
-                                f"({safety_limit_s / 3600:.1f}h). Credits have been fully refunded. "
+                                f"({projected_total / 3600:.2f}h) exceeds the cost-guard limit "
+                                f"({safety_limit_s / 3600:.2f}h). Credits have been fully refunded. "
                                 f"(measured {spi:.2f}s/it, stopped at Step {state['step']}/{state['total']})"
                             )
                             aborted_kind = "cost"
@@ -3173,14 +3336,16 @@ def train_lora_job(params: dict) -> dict:
             )
 
         stage2 = time.time()
-        # Dynamic cost cap: the run may use as much GPU time as the paid
-        # credits cover at a >=30% margin, floored at 30min. Overrunning that
-        # = original-cost breach -> graceful stop + 100% refund.
-        cost_cap_s = _credit_covered_seconds(credits_cost) if credits_cost > 0 else LORA_SAFETY_LIMIT_S
-        print(
-            f"[stage2] cost cap: {credits_cost}C -> {cost_cap_s}s (~{cost_cap_s / 3600:.2f}h)",
-            flush=True,
+        # Dynamic cost cap: credit-covered seconds, widened by
+        # ULL_COST_GUARD_MULTIPLIER and floored by the per-arch expected run
+        # time so a legit heavy run (MiniMax H3 3000 steps @ ~5s/it) never
+        # false-aborts a few minutes short. Overrunning it is still a graceful
+        # stop + 100% refund; a true runaway still trips the projected-time
+        # check above this (higher) threshold.
+        cost_cap_s, _cap_reason = _cost_cap_seconds(
+            credits_cost, target_model, total_steps or 0, base_architecture
         )
+        print(f"[stage2] cost cap: {_cap_reason}", flush=True)
         _run_ai_toolkit_with_progress(
             config_path, job_id, total_steps or 2000, commit_vol=True, job_started_ts=started,
             safety_limit_s=cost_cap_s, resolution=resolution,
@@ -4622,7 +4787,7 @@ def _prepare_and_spawn_training(item: dict) -> dict:
                     job_id,
                     {
                         "progress_percent": 3,
-                        "progress_message": "🖼️ データセットを最適化中（高品質・CPU）",
+                        "progress_message": "🖼️ 超高精細データセット解析・無損失最適化中…",
                     },
                 )
                 try:
@@ -4651,7 +4816,7 @@ def _prepare_and_spawn_training(item: dict) -> dict:
                     )
                 else:
                     return _fail(
-                        "データセットの最適化（CPU前処理）に失敗しました"
+                        "データセットの最適化（データセット前処理）に失敗しました"
                         "（GPU は起動しません／コスト防衛）: "
                         f"{str((ing or {}).get('error'))[:400]}"
                     )

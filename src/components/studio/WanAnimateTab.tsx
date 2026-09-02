@@ -66,6 +66,15 @@ const PRICING_KEY_BY_MODE: Record<MotionMode, string> = {
   custom: "wan_animate_custom",
 };
 
+// Baseline credits map used before /api/studio/pricing responds, and kept as a
+// permanent floor if that call fails (Supabase down, table missing, network).
+// The UI must always render a real price — never block on the fetch.
+const FALLBACK_PRICING: Record<string, number> = {
+  [PRICING_KEY_BY_MODE.preset]: WAN_ANIMATE_GENERATION_COST,
+  [PRICING_KEY_BY_MODE.custom]: WAN_ANIMATE_GENERATION_COST,
+  [GPU_TIER_ADDON_KEY]: WAN_ANIMATE_GPU_ULTRA_ADDON,
+};
+
 function useObjectUrl(file: File | null): string | null {
   const url = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
 
@@ -273,7 +282,7 @@ export function WanAnimateTab() {
 
   const [presets, setPresets] = useState<StudioMotionPreset[]>([]);
   const [presetsLoading, setPresetsLoading] = useState(true);
-  const [pricing, setPricing] = useState<Record<string, number>>({});
+  const [pricing, setPricing] = useState<Record<string, number>>(FALLBACK_PRICING);
 
   const [prompt, setPrompt] = useState(savedForm?.prompt ?? "");
   const [status, setStatus] = useState<Status>("idle");
@@ -307,14 +316,21 @@ export function WanAnimateTab() {
     (async () => {
       try {
         const res = await fetch("/api/studio/pricing");
-        const data = await res.json();
-        if (res.ok) {
-          setPricing(data.pricing as Record<string, number>);
+        const data = await res.json().catch(() => null);
+        if (res.ok && data?.pricing && typeof data.pricing === "object") {
+          // Merge over the fallback so any key the server omits still resolves.
+          setPricing({ ...FALLBACK_PRICING, ...(data.pricing as Record<string, number>) });
         } else {
-          console.error("[WanAnimateTab] failed to load pricing:", data?.error);
+          // Non-fatal: keep the fallback pricing and let the UI render normally.
+          console.warn(
+            "[WanAnimateTab] pricing API unavailable, using fallback:",
+            data?.error ?? res.status,
+          );
+          setPricing(FALLBACK_PRICING);
         }
       } catch (err) {
-        console.error("[WanAnimateTab] failed to load pricing:", err);
+        console.warn("[WanAnimateTab] pricing API request failed, using fallback:", err);
+        setPricing(FALLBACK_PRICING);
       }
     })();
   }, []);

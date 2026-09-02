@@ -994,7 +994,7 @@ function ProgressPanel({
     const heading = msg.startsWith("🎯")
       ? "多層Latentキャッシュ生成"
       : msg.startsWith("🖼️")
-        ? "データセット最適化中（CPU）"
+        ? "超高精細データセット最適化中…"
         : msg.startsWith("🔥") || hasSteps
           ? "深度最適化学習中…"
           : "準備処理中…";
@@ -1411,6 +1411,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // the user never loses the running job (or its download / error card) below
   // the fold.
   const progressRef = useRef<HTMLDivElement>(null);
+  // The outermost Studio container for the current screen. When we DO need to
+  // realign the viewport on a screen change (only the form -> curation
+  // transition), we scroll THIS element into view — never window Y=0, which
+  // would fling the page up to the site Hero.
+  const studioRef = useRef<HTMLDivElement>(null);
   // The scroll target we last honoured ("panel" on first appearance, then the
   // terminal status). Stops the routine queued -> processing step from yanking
   // a user who scrolled down to read the live log.
@@ -1521,28 +1526,21 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     return () => cancelAnimationFrame(raf);
   }, [phase, job?.status]);
 
-  // Snap the window to the top on every screen change (form <-> curation, into
-  // the progress screen) — a long scroll through 100+ thumbnails otherwise
-  // leaves the next screen scrolled to its middle. PURE side effect: it does
-  // nothing but scroll, wrapped so a browser that dislikes the options form
-  // can never throw out of the effect and unmount the tree. Screen-transition
-  // callbacks (handleStart / onCancel) call scrollTopSafe() directly too — the
-  // effect is just the catch-all.
-  const scrollTopSafe = useCallback(() => {
+  // Bring the Studio container (NOT the window top) into view. Used ONLY for
+  // the form -> curation transition, where the user is typically scrolled deep
+  // into a 100+ thumbnail grid and the curation screen would otherwise open
+  // mid-page. Never touches window.scrollTo, so it can't fling the page up to
+  // the site Hero. PURE side effect, fully guarded — it can only scroll.
+  const scrollStudioIntoView = useCallback(() => {
     if (typeof window === "undefined") return;
-    try {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch {
+    requestAnimationFrame(() => {
       try {
-        window.scrollTo(0, 0);
+        studioRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       } catch {
         /* no-op */
       }
-    }
+    });
   }, []);
-  useEffect(() => {
-    scrollTopSafe();
-  }, [phase, scrollTopSafe]);
 
   // Mirrors `images` for synchronous MAX_IMAGES accounting inside the add
   // helpers (which can't read the just-set state).
@@ -2634,12 +2632,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                 ? `${missed} 枚は自動解析できませんでした（うち ${safetyMissed} 枚はコンテンツポリシー対象、学習時に自動補完されます）。`
                 : `${missed} 枚は自動解析できませんでした（学習時に自動補完されます）。`,
       }));
-      // Pass finished while still on the form (the user was scrolled down the
-      // thumbnail grid) — bring the completion badge / 次へ into view.
-      if (phaseRef.current === "form") scrollTopSafe();
+      // Pass finished while still on the form — leave the user exactly where
+      // they are (no forced scroll; the completion badge is inline).
       return { cap: merged.cap, ja: merged.ja };
     },
-    [markCaptionsReflect, scrollTopSafe],
+    [markCaptionsReflect],
   );
 
   // Kick the vision pass for images that have no caption yet and haven't been
@@ -2942,7 +2939,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         })),
       );
       setPhase("curation");
-      scrollTopSafe();
+      scrollStudioIntoView();
       return;
     }
 
@@ -2951,22 +2948,40 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     await runTraining(images, ownCaptions, hasUserCaptions);
   };
 
-  // From the curation screen — drop excluded pairs, sync the visible dataset
-  // to what's kept, and train on the rest.
-  const confirmCuration = async () => {
-    const kept = curationPairs.filter((p) => !p.excluded);
-    if (!kept.length) return;
+  // Push the curation screen's working copy (`curationPairs`) back into the
+  // form's own state so LEAVING curation — via "戻る" or by starting training —
+  // never drops an edit or a removal. Kept images only: an excluded pair is a
+  // deletion (the user excluded it), so its image, its captions and every
+  // side-channel trace are purged here. Also writes the curated captions
+  // through to the localStorage cache (keyed by file identity) so a reload
+  // re-hydrates the curated text, not the stale pre-curation captions.
+  const flushCurationToForm = useCallback((pairs: CurationPair[]) => {
+    const kept = pairs.filter((p) => !p.excluded);
     const keptIds = new Set(kept.map((p) => p.id));
-    images.forEach((i) => {
-      if (!keptIds.has(i.id)) URL.revokeObjectURL(i.url);
+
+    // Revoke object URLs for images removed in curation (skip any URL still
+    // referenced by a kept pair — the pair carries the same url string).
+    const keptUrls = new Set(kept.map((p) => p.url));
+    imagesRef.current.forEach((i) => {
+      if (!keptIds.has(i.id) && !keptUrls.has(i.url)) {
+        try {
+          URL.revokeObjectURL(i.url);
+        } catch {
+          /* no-op */
+        }
+      }
     });
+
     const keptImages: DatasetImage[] = kept.map((p) => ({ id: p.id, file: p.file, url: p.url }));
+    // Keep the async-read refs consistent immediately (their sync effects only
+    // run after the next commit, but runTraining / an in-flight pass may read
+    // them before that).
     imageIdsRef.current = keptIds;
-    // Purge every trace of the excluded images so a later re-entry / re-pass
-    // can't resurrect their state.
-    curationPairs.forEach((p) => {
+    imagesRef.current = keptImages;
+    pairs.forEach((p) => {
       if (!keptIds.has(p.id)) captionAttemptedRef.current.delete(p.id);
     });
+
     setUserCaptionIds((prev) => {
       if ([...prev].every((id) => keptIds.has(id))) return prev;
       return new Set([...prev].filter((id) => keptIds.has(id)));
@@ -2974,6 +2989,53 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     setImages(keptImages);
     setCaptions(Object.fromEntries(kept.map((p) => [p.id, p.caption])));
     setCaptionsJa(Object.fromEntries(kept.map((p) => [p.id, p.captionJa])));
+
+    persistCaptionCache(
+      kept.map((p) => ({
+        key: captionFileKey(p.file),
+        en: p.caption.trim(),
+        ja: p.captionJa.trim(),
+      })),
+    );
+  }, []);
+
+  // While the curation screen is open, mirror every caption edit / removal
+  // back to the form state + the localStorage cache on a short debounce. This
+  // is the write-through half of the sync (the flush above is the on-exit
+  // half): a hard reload or a crash mid-curation now keeps the user's work.
+  // Merge (not replace) so an excluded pair's caption survives here too — the
+  // exit flush is what finally drops excluded ids.
+  useEffect(() => {
+    if (phase !== "curation" || curationPairs.length === 0) return;
+    const t = setTimeout(() => {
+      persistCaptionCache(
+        curationPairs
+          .filter((p) => !p.excluded)
+          .map((p) => ({
+            key: captionFileKey(p.file),
+            en: p.caption.trim(),
+            ja: p.captionJa.trim(),
+          })),
+      );
+      setCaptions((prev) => ({
+        ...prev,
+        ...Object.fromEntries(curationPairs.map((p) => [p.id, p.caption])),
+      }));
+      setCaptionsJa((prev) => ({
+        ...prev,
+        ...Object.fromEntries(curationPairs.map((p) => [p.id, p.captionJa])),
+      }));
+    }, 400);
+    return () => clearTimeout(t);
+  }, [phase, curationPairs]);
+
+  // From the curation screen — flush the curated dataset back into the form
+  // state, then train on exactly what's kept.
+  const confirmCuration = async () => {
+    const kept = curationPairs.filter((p) => !p.excluded);
+    if (!kept.length) return;
+    flushCurationToForm(curationPairs);
+    const keptImages: DatasetImage[] = kept.map((p) => ({ id: p.id, file: p.file, url: p.url }));
     const caps = kept.map((p) => p.caption.trim());
     // A .txt/ZIP dataset stays "bring your own" (blank = intentional). An
     // AI-captioned one keeps its VLM gap-fill even after culling images.
@@ -3180,14 +3242,20 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
   if (phase === "curation") {
     return (
-      <div data-source-file="src/components/studio/LoraStudioTab.tsx" className="space-y-6">
+      <div
+        ref={studioRef}
+        data-source-file="src/components/studio/LoraStudioTab.tsx"
+        className="scroll-mt-20 space-y-6"
+      >
         <DatasetCurationUI
           pairs={curationPairs}
           onChange={setCurationPairs}
           onConfirm={confirmCuration}
           onCancel={() => {
+            // Flush & Sync: carry the curated image list + latest captions
+            // back to the form before leaving — "戻る" must never discard edits.
+            flushCurationToForm(curationPairs);
             setPhase("form");
-            scrollTopSafe();
           }}
           requiredCredits={requiredCredits}
           triggerWord={curationTrigger}
@@ -3205,7 +3273,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   }
 
   return (
-    <div data-source-file="src/components/studio/LoraStudioTab.tsx" className="space-y-6">
+    <div
+      ref={studioRef}
+      data-source-file="src/components/studio/LoraStudioTab.tsx"
+      className="scroll-mt-20 space-y-6"
+    >
       {/* Return-to-progress banner — always on top while a job dispatched
           this session is still queued/processing and the user has soft-
           returned to the form ("フォームに戻る（学習は継続）"). Also backs
