@@ -84,14 +84,90 @@ export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraD
   };
 }
 
-// How long to wait on the *dispatch* ack. train_lora_dispatch is a GPU-less
-// Modal function that auth-checks, then (only for HF-repo base models) runs
-// the CPU model pre-cache synchronously — a first-time snapshot_download of a
-// multi-GB model can take a few minutes — before .spawn()ing the GPU job.
-// A single-file / Volume model (the common path) still returns in ~1-5s.
-// 5 min covers the worst case without a spurious client-side timeout; the
-// route's own maxDuration must be raised alongside this to actually wait it out.
-const SPAWN_TIMEOUT_MS = 300_000;
+// train_lora_dispatch is a warm (min_containers=1) GPU-less Modal function
+// that only auth-checks and .spawn()s the async pre-cache/GPU orchestrator,
+// then ACKs — it returns in well under a second, cold start or not (the CPU
+// snapshot_download and GPU work all happen off this request, in the spawned
+// _prepare_and_spawn_training). So a slow/failed ACK is a transient network /
+// edge blip, not real work in progress: retry it.
+//
+// Per-attempt AbortController ceiling. 30s absorbs a Modal edge/proxy hiccup
+// or a rare FastAPI container recycle without a spurious client abort, while
+// still failing fast enough to fit 3 attempts + backoff inside the route's
+// maxDuration.
+const DISPATCH_ATTEMPT_TIMEOUT_MS = 30_000;
+const DISPATCH_MAX_ATTEMPTS = 3;
+// Exponential backoff between attempts (ms): after attempt 1 wait ~1.5s,
+// after attempt 2 wait ~3s (attempt 3 is the last — no wait after it). Full
+// jitter of up to +0.5s is added so simultaneous failures don't retry in
+// lockstep. A 6s slot is kept for symmetry / future MAX_ATTEMPTS bumps.
+const DISPATCH_BACKOFF_MS = [1_500, 3_000, 6_000];
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function dispatchBackoff(attemptIndex: number): number {
+  const base =
+    DISPATCH_BACKOFF_MS[attemptIndex] ?? DISPATCH_BACKOFF_MS[DISPATCH_BACKOFF_MS.length - 1];
+  return base + Math.floor(Math.random() * 500);
+}
+
+// A thrown fetch error worth retrying: a network-level failure where the
+// request provably did NOT get processed by Modal (undici "fetch failed" ->
+// TypeError; DNS / connect / socket errors; our own AbortController timeout).
+// A deterministic error (bad payload, auth) is a TypeError only in pathological
+// cases and would just fail again — but retrying 3x is cheap and the dispatch
+// endpoint is idempotent enough for our purposes (a duplicate spawn on the
+// same job_id is the far rarer failure mode than the fetch simply not landing).
+function isRetriableDispatchError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.name === "TypeError" || err.name === "AbortError" || err.name === "TimeoutError";
+}
+
+// Robust POST to train_lora_dispatch: up to DISPATCH_MAX_ATTEMPTS tries with a
+// per-attempt 30s timeout and exponential backoff + jitter between them.
+// Retries transient failures only — a network throw, or an HTTP 429 / 5xx
+// (Modal edge error / .spawn() failure, i.e. the job was NOT queued). A 2xx or
+// a deterministic 4xx (auth / bad request) is returned to the caller as-is,
+// body unread. On exhaustion it throws the last error so the caller's existing
+// catch (mark job failed + refund) runs unchanged.
+async function postModalDispatchWithRetry(
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+  ctx: { host: string; jobId: string },
+): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= DISPATCH_MAX_ATTEMPTS; attempt++) {
+    const isLast = attempt === DISPATCH_MAX_ATTEMPTS;
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body,
+        signal: AbortSignal.timeout(DISPATCH_ATTEMPT_TIMEOUT_MS),
+      });
+      if (res.status !== 429 && res.status < 500) return res;
+      const snippet = (await res.text().catch(() => "")).slice(0, 500);
+      lastErr = new Error(
+        `Modal dispatch (${ctx.host}) HTTP ${res.status}: ${snippet || "(empty body)"}`,
+      );
+      if (isLast) break;
+      console.warn(
+        `[modalDispatch] ${ctx.host} job ${ctx.jobId}: attempt ${attempt}/${DISPATCH_MAX_ATTEMPTS} -> HTTP ${res.status}; retrying`,
+      );
+    } catch (err) {
+      lastErr = err;
+      if (isLast || !isRetriableDispatchError(err)) break;
+      const name = err instanceof Error ? err.name : "Error";
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[modalDispatch] ${ctx.host} job ${ctx.jobId}: attempt ${attempt}/${DISPATCH_MAX_ATTEMPTS} threw ${name} (${msg}); retrying`,
+      );
+    }
+    await sleep(dispatchBackoff(attempt - 1));
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
 
 // Fire-and-forget: posts to modal_lora_worker.py's train_lora_dispatch,
 // which .spawn()s the GPU training job and returns immediately. The spawned
@@ -160,25 +236,31 @@ export async function spawnLoraTrainingJob(
 
   let res: Response;
   try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: {
+    res = await postModalDispatchWithRetry(
+      url,
+      {
         "Content-Type": "application/json",
         // _authorize accepts this header OR "Authorization: Bearer <token>".
         "x-modal-secret": authToken,
         Authorization: `Bearer ${authToken}`,
       },
       body,
-      signal: AbortSignal.timeout(SPAWN_TIMEOUT_MS),
-    });
+      { host, jobId: params.jobId },
+    );
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    console.error(`[spawnLoraTrainingJob] fetch to ${host} threw:`, reason);
-    throw new Error(`Modal dispatch (${host}) への接続に失敗しました: ${reason}`);
+    console.error(
+      `[spawnLoraTrainingJob] dispatch to ${host} failed after ${DISPATCH_MAX_ATTEMPTS} attempts (job ${params.jobId}):`,
+      reason,
+    );
+    throw new Error(
+      `Modal dispatch (${host}) への接続に失敗しました（${DISPATCH_MAX_ATTEMPTS}回リトライ後）: ${reason}`,
+    );
   }
 
   const text = await res.text().catch(() => "");
   if (!res.ok) {
+    // Only a deterministic 4xx reaches here — 429 / 5xx were retried then thrown.
     console.error(`[spawnLoraTrainingJob] ${host} responded ${res.status}: ${text.slice(0, 2000)}`);
     throw new Error(`Modal dispatch failed — HTTP ${res.status} from ${host}: ${text.slice(0, 1000) || "(empty body)"}`);
   }
@@ -202,22 +284,22 @@ export async function redispatchLoraTrainingJob(args: {
   payload: LoraDispatchPayload;
 }): Promise<{ modalCallId: string | null }> {
   const { url, authToken, host } = await modalEnv("train");
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
+  const res = await postModalDispatchWithRetry(
+    url,
+    {
       "Content-Type": "application/json",
       "x-modal-secret": authToken,
       Authorization: `Bearer ${authToken}`,
     },
-    body: JSON.stringify({
+    JSON.stringify({
       job_id: args.jobId,
       user_id: args.userId,
       credits_cost: 0,
       ...args.payload,
       ...(TEST_STUB ? { _test_stub: true } : {}),
     }),
-    signal: AbortSignal.timeout(SPAWN_TIMEOUT_MS),
-  });
+    { host, jobId: args.jobId },
+  );
   const text = await res.text().catch(() => "");
   if (!res.ok) {
     throw new Error(`Modal re-dispatch failed — HTTP ${res.status} from ${host}: ${text.slice(0, 1000)}`);

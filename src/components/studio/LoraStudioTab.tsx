@@ -718,6 +718,22 @@ function SalvageSection({
   );
 }
 
+// The worker prefixes every Live-Terminal line with its container wall clock
+// ("HH:MM:SS  <message>" — time.strftime on a UTC Modal container). Shift ONLY
+// that leading stamp to JST (Asia/Tokyo is a fixed UTC+9, no DST) for display;
+// the message body — text, numbers, step progress, error strings — is left
+// byte-for-byte untouched. Modulo-24 arithmetic is exact for a bare wall-clock
+// time (no date is shown, so a midnight rollover is a non-issue). A line with
+// no leading stamp is returned unchanged.
+const LOG_UTC_TS_RE = /^(\d{2}):(\d{2}):(\d{2})(?=\s)/;
+
+function toJstLogLine(line: string): string {
+  return line.replace(LOG_UTC_TS_RE, (_full, h: string, m: string, s: string) => {
+    const jstHour = (Number(h) + 9) % 24;
+    return `${String(jstHour).padStart(2, "0")}:${m}:${s}`;
+  });
+}
+
 // Collapsible "Live Terminal" — streams the worker's recent stdout/stderr
 // (synced through generation_jobs.metadata.logs, ~40-line ring buffer). Purely
 // presentational; auto-scrolls to the newest line while open.
@@ -743,7 +759,7 @@ function LiveTerminal({ logs }: { logs: string[] }) {
         >
           {logs.map((l, i) => (
             <div key={i} className="whitespace-pre-wrap break-all">
-              {l}
+              {toJstLogLine(l)}
             </div>
           ))}
         </div>

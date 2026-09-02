@@ -36,12 +36,12 @@ import {
 const DEFAULT_LORA_RANK = 32;
 
 // Only debits credits, inserts a generation_jobs row and fires the dispatch
-// at Modal (train_lora_dispatch). For a single-file / Volume base model the
-// spawn ack lands in seconds; for an uncached HF-repo model train_lora_dispatch
-// runs the CPU snapshot_download synchronously first, which can take a few
-// minutes. maxDuration matches SPAWN_TIMEOUT_MS (300_000ms) so Vercel never
-// 504s that wait; modal_call_id persistence still runs in `after()`, and any
-// pre-spawn Gemini caption-prompt synthesis is hard-capped (see below).
+// at Modal (train_lora_dispatch). That endpoint is warm and async — it just
+// .spawn()s the pre-cache/GPU orchestrator and ACKs in well under a second —
+// and the client wrapper retries a transient failure up to 3x with backoff
+// (see postModalDispatchWithRetry). The generous maxDuration is headroom for
+// those retries + the `after()` modal_call_id persistence + the hard-capped
+// pre-spawn Gemini caption-prompt synthesis (see below), not a single slow call.
 export const maxDuration = 300;
 
 // Hard cap on the optional pre-spawn Gemini caption-prompt synthesis so it
