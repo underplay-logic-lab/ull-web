@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
+import type { LoraCaptionCategory, ResolvedCaptionMode } from "@/lib/loraCaptionSpec";
 
 // Client-side AI-vision auto-captioning for the LoRA Studio dataset.
 //
@@ -145,6 +146,26 @@ export async function generateDatasetCaptions(
   opts: {
     triggerWord?: string;
     captionPrompt?: string;
+    // Selected LoRA training type. Sent alongside every request so that — when
+    // no explicit `captionPrompt` was synthesised (empty feature form) — the
+    // server still applies this category's blacklist/whitelist policy instead
+    // of captioning the whole image. Ignored when `captionPrompt` is set.
+    category?: LoraCaptionCategory;
+    // Caption FORMAT for the selected base model (resolveCaptionMode). "dense"
+    // = natural-language paragraph for LLM/VLM text encoders; "tags" (default
+    // on the server when omitted) = comma-separated phrases for CLIP.
+    captionMode?: ResolvedCaptionMode;
+    // Captions the caller already holds, aligned to `files`. When a slot is a
+    // non-empty string AND `forceOverwrite` is not set, that image counts as
+    // done: its slot is returned unchanged and NO request goes out for it
+    // (the "skip already-captioned" optimisation). Ignored entirely when
+    // `forceOverwrite` is true — every image is then re-analysed from scratch.
+    preCaptioned?: (string | null | undefined)[];
+    preCaptionedJa?: (string | null | undefined)[];
+    // Force a full re-analysis: bypasses the `preCaptioned` skip so every
+    // file is sent to the vision API even if it already has a caption. Used
+    // by the curation screen's "全カードを現在の形式で再解析".
+    forceOverwrite?: boolean;
     onProgress?: (done: number, total: number) => void;
     // Fires as each batch lands, with the freshly-captioned entries (indices
     // into `files`). Lets the caller merge + persist results incrementally.
@@ -163,6 +184,18 @@ export async function generateDatasetCaptions(
   const total = files.length;
   const captions = new Array<string>(total).fill("");
   const captionsJa = new Array<string>(total).fill("");
+  // Seed the slots the caller already has a caption for — unless a full
+  // re-analysis was explicitly requested. A seeded slot is `captioned()` and
+  // therefore never `wanted()`, so no request is sent and `complete` still
+  // resolves normally.
+  if (!opts.forceOverwrite && opts.preCaptioned) {
+    for (let i = 0; i < total; i++) {
+      const en = opts.preCaptioned[i];
+      if (typeof en === "string" && en.trim()) captions[i] = en.trim();
+      const ja = opts.preCaptionedJa?.[i];
+      if (typeof ja === "string" && ja.trim()) captionsJa[i] = ja.trim();
+    }
+  }
   const safety = new Set<number>();
   const undecodable = new Set<number>();
   const errored = new Set<number>();
@@ -263,6 +296,8 @@ export async function generateDatasetCaptions(
           images: pairs.map((p) => p.img),
           trigger_word: opts.triggerWord || undefined,
           caption_prompt: opts.captionPrompt || undefined,
+          caption_mode: opts.captionMode || undefined,
+          category: opts.category || undefined,
         }),
         signal: to.signal,
       });

@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
+import type { ResolvedCaptionMode } from "@/lib/loraCaptionSpec";
 
 export type TranslateAction = "to_ja" | "to_en";
 
@@ -10,16 +11,22 @@ async function accessToken(): Promise<string> {
 }
 
 // Calls /api/studio/lora/translate (Gemini free tier). "to_ja" turns an
-// English tag list / caption into Japanese; "to_en" turns the user's edited
-// Japanese back into a Danbooru-style English tag list for training.
-export async function translateCaption(text: string, action: TranslateAction): Promise<string> {
+// English caption into Japanese; "to_en" turns the user's edited Japanese
+// back into an English caption for training — in the format `mode` asks for
+// ("dense" = natural prose for Minimax H3 & co.; "tags" = Danbooru comma
+// list, the default when omitted).
+export async function translateCaption(
+  text: string,
+  action: TranslateAction,
+  mode?: ResolvedCaptionMode,
+): Promise<string> {
   const trimmed = text.trim();
   if (!trimmed) return "";
 
   const res = await fetch("/api/studio/lora/translate", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${await accessToken()}` },
-    body: JSON.stringify({ text: trimmed, action }),
+    body: JSON.stringify({ text: trimmed, action, caption_type: mode }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || data?.reason || "翻訳に失敗しました。");
@@ -32,13 +39,14 @@ export async function translateCaption(text: string, action: TranslateAction): P
 export async function translateCaptionsBatch(
   texts: string[],
   action: TranslateAction,
+  mode?: ResolvedCaptionMode,
 ): Promise<string[]> {
   if (texts.length === 0) return [];
 
   const res = await fetch("/api/studio/lora/translate", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${await accessToken()}` },
-    body: JSON.stringify({ items: texts, action }),
+    body: JSON.stringify({ items: texts, action, caption_type: mode }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || data?.reason || "翻訳に失敗しました。");

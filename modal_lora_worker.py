@@ -1110,6 +1110,53 @@ def _download_storage_object(bucket: str, key: str, attempts: int = 4) -> bytes:
     raise InfraError(f"storage download for {bucket}/{key} failed after {attempts} attempts: {last_exc}")
 
 
+def _purge_storage_objects(bucket: str, keys: list, *, batch: int = 100) -> int:
+    """Best-effort PHYSICAL delete of objects from a (private) Supabase Storage
+    bucket with the service-role key — mirrors supabase-js
+    `storage.from(bucket).remove(paths)` (DELETE /object/<bucket> with a
+    {"prefixes": [...]} body).
+
+    Called the moment Smart Ingest has baked its own optimised WebP copies onto
+    the persistent Modal Volume: the uploaded originals are dead weight after
+    that, and leaving them in Storage silently eats the Supabase Free-tier 1GB
+    quota (CLAUDE.md §3). Never raises — a failed purge must never sink a
+    training job. Returns the number of objects Storage reported as removed."""
+    import requests
+
+    supabase_url = os.environ.get("SUPABASE_URL")
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    clean = [str(k).lstrip("/") for k in (keys or []) if k and ".." not in str(k)]
+    if not supabase_url or not service_key or not clean:
+        return 0
+
+    url = f"{supabase_url}/storage/v1/object/{bucket}"
+    headers = {
+        "apikey": service_key,
+        "Authorization": f"Bearer {service_key}",
+        "Content-Type": "application/json",
+    }
+    removed = 0
+    for i in range(0, len(clean), batch):
+        chunk = clean[i : i + batch]
+        try:
+            res = requests.request(
+                "DELETE", url, headers=headers, json={"prefixes": chunk}, timeout=(10, 60)
+            )
+            if res.status_code == 200:
+                try:
+                    removed += len(res.json())
+                except Exception:  # noqa: BLE001 — 200 == the batch is gone
+                    removed += len(chunk)
+            else:
+                print(
+                    f"[ingest] storage purge {bucket}: HTTP {res.status_code} {res.text[:200]}",
+                    flush=True,
+                )
+        except requests.exceptions.RequestException as exc:
+            print(f"[ingest] storage purge {bucket} failed: {exc}", flush=True)
+    return removed
+
+
 # Signatures of a transient NETWORK / storage failure (ours) that aborts a
 # run early — as opposed to a config error or an over-scoped job that just
 # runs out of GPU time. Deliberately NARROW: OOM / CUDA faults / the 12h
@@ -1858,6 +1905,11 @@ def _run_ai_toolkit_with_progress(
     # Modal log stream live (paired with `python -u` and the line-by-line
     # Popen read loop below).
     child_env["PYTHONUNBUFFERED"] = "1"
+    # Name of the persistent Volume, for the aitk-injected H3 TE Bake & Skip
+    # patch to do a best-effort `modal.Volume.from_name(...).commit()` the
+    # moment it finishes writing the ~64GB baked bf16 text encoder (the
+    # parent's periodic vol.commit() would persist it anyway, just later).
+    child_env["ULL_MODAL_VOLUME"] = "ull-wan-models"
 
     # Belt-and-suspenders on top of the sitecustomize shim above: patch the
     # convrot_quant.py source directly so ConvRotInt8Quantizer resolves even
@@ -2127,28 +2179,221 @@ print(
 # ===== END INJECTED BY ULL STUDIO PATCH =====
 '''
 
-    # --- MiniMax H3 Text Encoder (qwen3vl_32b nvfp4_awq) load timing probe --
-    # PHASE A of the TE "Bake & Skip" work (see plan): pure instrumentation, no
-    # behaviour change. ai-toolkit's MinimaxH3Model._load_text_encoder() reads
-    # the ~16GB nvfp4_awq single file and runs import_comfy_quantized_layers()
-    # to unpack the 4bit-packed AWQ layers into OstrisLinear modules on EVERY
-    # H3 run. Unlike the DiT, there is NO full bf16 dequant pass here — the TE
-    # stays quantized (aitk_is_quantized=True). Before committing to a 64GB
-    # bf16 bake (Volume-capacity risk), this wrapper logs the wall-time of the
-    # whole call and of the suspected hot spot (import_comfy_quantized_layers)
-    # so the real cost is known from one job's logs. Fully try/except-guarded:
-    # a wrap failure leaves ai-toolkit's stock path untouched. Phase B will
-    # extend this same block with the ULL_H3_TE_BAKE skip (redirect
-    # te_name_or_path at a baked Diffusers dir -> the os.path.isdir fast path).
-    _H3_TE_PROBE_MARKER = "INJECTED BY ULL STUDIO PATCH: MiniMax H3 TE load timing probe"
+    # --- MiniMax H3 Text Encoder (qwen3vl_32b nvfp4_awq) "Bake & Skip" ------
+    # PHASE B (promoted from the Phase-A timing probe). ai-toolkit's
+    # MinimaxH3Model._load_text_encoder() reads the nvfp4_awq single file and
+    # runs import_comfy_quantized_layers() to unpack the 4bit-packed AWQ
+    # layers into OstrisLinear modules (+ an Int8Embedding token table) on
+    # EVERY H3 run — ~16 min of B300 idle. The injected wrapper runs that pass
+    # ONCE: the unpacked TE is fully dequantized to bf16 (OstrisLinear ->
+    # nn.Linear via dequantize_ostris_to_linear, exactly like the DiT bake;
+    # Int8Embedding -> nn.Embedding), its state_dict baked to the Volume as
+    # diffusion_models/minimax_h3_baked_te_qwen3vl32b_bf16.safetensors, and
+    # every later run rebuilds an empty Qwen3VLTextEncoder skeleton and loads
+    # that file straight into it (safetensors load + one
+    # load_state_dict(assign=True) — no AWQ unpack at all). A 30s heartbeat
+    # during the one-time dequant/write keeps the worker's 20-minute
+    # prep-silence watchdog quiet, and a best-effort modal.Volume commit right
+    # after the write hardens it against a crash before the parent's next
+    # periodic vol.commit(). Kill switch: ULL_H3_TE_BAKE=0 -> stock nvfp4 path.
+    # Fully try/except-guarded end to end: any failure (bake OR skip) falls
+    # back to ai-toolkit's stock nvfp4 load and training proceeds unchanged.
+    _H3_TE_PROBE_MARKER = "INJECTED BY ULL STUDIO PATCH: MiniMax H3 TE Bake and Skip"
     _H3_TE_PROBE_PATCH = '''
 
-# ===== INJECTED BY ULL STUDIO PATCH: MiniMax H3 TE load timing probe =====
+# ===== INJECTED BY ULL STUDIO PATCH: MiniMax H3 TE Bake and Skip =====
 import time as _ull_te_time
+import threading as _ull_te_threading
+
+_ULL_H3_TE_BAKE_DIR = os.environ.get("ULL_H3_BAKE_DIR", "/models/diffusion_models")
+_ULL_H3_TE_BAKED = os.path.join(
+    _ULL_H3_TE_BAKE_DIR, "minimax_h3_baked_te_qwen3vl32b_bf16.safetensors"
+)
+_ULL_H3_TE_DISABLED = os.environ.get("ULL_H3_TE_BAKE", "1") == "0"
+
+
+def _ull_te_baked_ready():
+    return os.path.isfile(_ULL_H3_TE_BAKED) and os.path.getsize(_ULL_H3_TE_BAKED) > 0
+
+
+def _ull_h3_te_with_heartbeat(label, fn):
+    """Run fn() on THIS thread; a daemon prints a progress line every 30s so
+    the worker's prep-silence watchdog never fires during the quiet CPU
+    dequant / disk write ('writing safetensors' also arms its I/O grace)."""
+    _stop = _ull_te_threading.Event()
+
+    def _beat():
+        _t0 = _ull_te_time.time()
+        while not _stop.wait(30):
+            print(
+                f"[ULL][minimax][te] {label} — writing safetensors, "
+                f"{int(_ull_te_time.time() - _t0)}s elapsed",
+                flush=True,
+            )
+
+    _hb = _ull_te_threading.Thread(target=_beat, daemon=True)
+    _hb.start()
+    try:
+        return fn()
+    finally:
+        _stop.set()
+        _hb.join(timeout=1)
+
+
+def _ull_h3_te_commit_volume():
+    """Best-effort immediate Volume commit so the freshly-baked TE survives a
+    crash before the parent process's next periodic vol.commit(). A no-op or
+    failure here is harmless — the parent commits the whole Volume anyway."""
+    try:
+        import modal as _ull_modal
+
+        _vname = os.environ.get("ULL_MODAL_VOLUME", "ull-wan-models")
+        _ull_modal.Volume.from_name(_vname).commit()
+        print(
+            f"[ULL][minimax] vol.commit() — baked bf16 text_encoder persisted "
+            f"to Volume ({_vname})",
+            flush=True,
+        )
+    except Exception as _e:  # noqa: BLE001
+        print(
+            f"[ULL][minimax] vol.commit() skipped ({_e!r}) — the parent's "
+            f"periodic commit will persist the baked TE",
+            flush=True,
+        )
+
+
+def _ull_h3_te_full_dequant(text_encoder):
+    """OstrisLinear -> nn.Linear (folded, layer by layer) and Int8Embedding ->
+    nn.Embedding (materialised table). Returns (n_linear, n_embedding)."""
+    from toolkit.util.quantize import dequantize_ostris_to_linear
+
+    n_lin = dequantize_ostris_to_linear(text_encoder)
+    n_emb = 0
+    try:
+        from toolkit.util.comfy_quant_import import Int8Embedding
+    except Exception:  # noqa: BLE001
+        Int8Embedding = None
+    if Int8Embedding is not None:
+        for _parent in text_encoder.modules():
+            for _cname, _child in list(_parent.named_children()):
+                if isinstance(_child, Int8Embedding):
+                    _w = _child.weight.detach().to("cpu").contiguous()
+                    _emb = torch.nn.Embedding(
+                        _child.num_embeddings, _child.embedding_dim
+                    )
+                    _emb.weight = torch.nn.Parameter(_w, requires_grad=False)
+                    setattr(_parent, _cname, _emb)
+                    n_emb += 1
+    return n_lin, n_emb
+
+
+def _ull_h3_te_bake(text_encoder, baked):
+    n_lin, n_emb = _ull_h3_te_full_dequant(text_encoder)
+    if n_lin == 0 and n_emb == 0:
+        print(
+            "[ULL][minimax] TE carried no quantized layers — nothing to bake",
+            flush=True,
+        )
+        return
+    metas = [
+        k for k, v in text_encoder.state_dict().items()
+        if getattr(v, "is_meta", False)
+    ]
+    if metas:
+        raise ValueError(
+            f"TE state_dict still has {len(metas)} meta tensors "
+            f"(e.g. {metas[:5]}) — refusing to bake a partial file"
+        )
+    print(
+        f"[ULL][minimax] TE dequant: {n_lin} linear + {n_emb} embedding "
+        f"module(s) -> bf16; baking to {baked}",
+        flush=True,
+    )
+    tmp = f"{baked}.tmp.{os.getpid()}"
+    os.makedirs(os.path.dirname(baked), exist_ok=True)
+
+    def _write():
+        cpu_sd = {}
+        for k, v in text_encoder.state_dict().items():
+            t = v.detach().to("cpu")
+            if t.is_floating_point() and t.dtype != torch.bfloat16:
+                t = t.to(torch.bfloat16)
+            cpu_sd[k] = t.contiguous()
+        save_file(
+            cpu_sd,
+            tmp,
+            metadata={
+                "format": "pt",
+                "ull_baked_from": "qwen3vl_32b_minimax_h3_nvfp4_awq",
+            },
+        )
+        cpu_sd.clear()
+
+    _ull_h3_te_with_heartbeat("baking bf16 text_encoder", _write)
+    os.replace(tmp, baked)
+    flush()
+    print(
+        f"[ULL][minimax] baked bf16 text_encoder saved to {baked} "
+        f"({os.path.getsize(baked) / 1e9:.1f} GB)",
+        flush=True,
+    )
+    _ull_h3_te_commit_volume()
+
+
+def _ull_h3_te_load_baked(self, baked):
+    """Rebuild the Qwen3VLTextEncoder skeleton exactly as _load_text_encoder's
+    non-quantized branch does, then load the baked bf16 state_dict into it."""
+    from accelerate import init_empty_weights
+    from transformers import AutoConfig
+
+    config = AutoConfig.from_pretrained(ORIGINAL_REPO, subfolder="FL2VA/text_encoder")
+    config.text_config.num_hidden_layers = TEXT_ENCODER_LAYER
+    config.tie_word_embeddings = False
+    with init_empty_weights():
+        text_encoder = Qwen3VLTextEncoder(config)
+    text_encoder.lm_head = None
+
+    sd = load_file(baked)
+    result = text_encoder.load_state_dict(sd, assign=True, strict=False)
+    sd.clear()
+
+    # The baked state_dict was taken AFTER the stock loader neutralises these
+    # (lm_head -> None, final norm -> Identity), so they are legitimately
+    # absent from the file. Neutralise them here BEFORE the completeness check
+    # so their empty-weights placeholders don't read as "uninitialised".
+    allowed_missing = ("lm_head", "model.language_model.norm")
+    text_encoder.model.language_model.norm = torch.nn.Identity()
+
+    bad_missing = [
+        k for k in result.missing_keys if not k.startswith(allowed_missing)
+    ]
+    if bad_missing or result.unexpected_keys:
+        raise ValueError(
+            f"baked TE key mismatch: missing {bad_missing[:6]}, "
+            f"unexpected {list(result.unexpected_keys)[:6]}"
+        )
+    still_meta = [
+        n
+        for n, t in (
+            list(text_encoder.named_parameters()) + list(text_encoder.named_buffers())
+        )
+        if getattr(t, "is_meta", False) and not n.startswith(allowed_missing)
+    ]
+    if still_meta:
+        raise ValueError(
+            f"baked TE has {len(still_meta)} uninitialised tensor(s) "
+            f"(e.g. {still_meta[:5]}) — baked file is incomplete"
+        )
+
+    text_encoder.eval()
+    text_encoder.requires_grad_(False)
+    flush()
+    return text_encoder
+
 
 # import_comfy_quantized_layers is a module global (from ... import) that
-# _load_text_encoder calls by name — rebinding it here routes that call
-# through the timing wrapper.
+# _load_text_encoder calls by name — rebind it so the AWQ-unpack cost is
+# still logged whenever the BAKE (first run) path hits it.
 try:
     _ull_te_orig_iccl = import_comfy_quantized_layers
 
@@ -2173,7 +2418,53 @@ try:
     def _ull_te_load(self):
         _t0 = _ull_te_time.time()
         try:
-            return _ull_te_orig_load(self)
+            # --- SKIP: a baked bf16 TE is already on the Volume --------------
+            if not _ULL_H3_TE_DISABLED and _ull_te_baked_ready():
+                try:
+                    self.print_and_status_update(
+                        f"Loading pre-baked bf16 text_encoder (skipping nvfp4 "
+                        f"dequant): {_ULL_H3_TE_BAKED}"
+                    )
+                    from transformers import AutoProcessor, AutoTokenizer
+
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        ORIGINAL_REPO, subfolder="FL2VA/tokenizer"
+                    )
+                    processor = AutoProcessor.from_pretrained(
+                        ORIGINAL_REPO, subfolder="FL2VA/processor"
+                    )
+                    text_encoder = _ull_h3_te_with_heartbeat(
+                        "loading baked text_encoder",
+                        lambda: _ull_h3_te_load_baked(self, _ULL_H3_TE_BAKED),
+                    )
+                    print(
+                        "[ULL][minimax] baked bf16 text_encoder loaded "
+                        "(skipping nvfp4 dequant)",
+                        flush=True,
+                    )
+                    return tokenizer, processor, text_encoder
+                except Exception as _se:  # noqa: BLE001
+                    print(
+                        f"[ULL][minimax] baked TE load failed ({_se!r}) — "
+                        f"falling back to nvfp4 dequant",
+                        flush=True,
+                    )
+
+            # --- normal load: nvfp4 read + AWQ unpack -----------------------
+            result = _ull_te_orig_load(self)
+
+            # --- BAKE: first run — dequantize to bf16 + persist -------------
+            if not _ULL_H3_TE_DISABLED and not _ull_te_baked_ready():
+                try:
+                    _tok, _proc, _te = result
+                    _ull_h3_te_bake(_te, _ULL_H3_TE_BAKED)
+                except Exception as _be:  # noqa: BLE001
+                    print(
+                        f"[ULL][minimax] TE bake skipped ({_be!r}) — training "
+                        f"continues with the in-memory nvfp4 TE",
+                        flush=True,
+                    )
+            return result
         finally:
             print(
                 f"[ULL][minimax][te-probe] _load_text_encoder TOTAL: "
@@ -2182,7 +2473,10 @@ try:
             )
 
     MinimaxH3Model._load_text_encoder = _ull_te_load
-    print("[aitk-patch] minimax_h3.py — installed TE load timing probe", flush=True)
+    print(
+        "[aitk-patch] minimax_h3.py — installed TE Bake and Skip (Phase B)",
+        flush=True,
+    )
 except Exception as _e:  # noqa: BLE001
     print(f"[ULL][minimax][te-probe] load wrap skipped: {_e!r}", flush=True)
 # ===== END INJECTED BY ULL STUDIO PATCH =====
@@ -2200,10 +2494,10 @@ except Exception as _e:  # noqa: BLE001
                 minimax_file.write_text(_mm, encoding="utf-8")
                 print("[aitk-patch] patched minimax_h3.py — int8_convrot dequant Bake & Skip", flush=True)
             if _H3_TE_PROBE_MARKER in _mm:
-                print("[aitk-patch] minimax_h3.py TE timing probe already applied — skipping", flush=True)
+                print("[aitk-patch] minimax_h3.py TE Bake & Skip already applied — skipping", flush=True)
             else:
                 minimax_file.write_text(_mm + _H3_TE_PROBE_PATCH, encoding="utf-8")
-                print("[aitk-patch] patched minimax_h3.py — TE load timing probe", flush=True)
+                print("[aitk-patch] patched minimax_h3.py — TE Bake & Skip (Phase B)", flush=True)
     except Exception as _patch_exc:  # noqa: BLE001 — best-effort
         print(f"[aitk-patch] minimax_h3.py patch skipped: {_patch_exc}", flush=True)
 
@@ -2730,9 +3024,18 @@ def _override_identity(override) -> tuple[str, str]:
 
 
 def _derive_dataset_id(params: dict) -> str:
-    """dataset_id keys the persisted-caption cache on the Volume. Prefer the
-    caller's value; otherwise take the 2nd segment of the first storage key
-    ("<user_id>/<dataset_id>/<file>"). Sanitised to a safe path segment."""
+    """dataset_id keys the persisted-caption cache (and the VAE-latent /
+    Smart-Ingest caches) on the Volume. Prefer the caller's value; otherwise
+    take the 2nd segment of the first storage key ("<user_id>/<dataset_id>/
+    <file>"). Sanitised to a safe path segment.
+
+    The caption FORMAT is folded in as a "__dense" / "__tags" suffix so a
+    dense run and a tags run of the SAME images get physically separate
+    cache directories — a stale tag cache must never resurface on a later
+    dense run and silently overwrite its captions (the yukipas Dense→tags
+    swap). Idempotent: re-deriving from an already-suffixed id is a no-op,
+    so the dispatcher can pass the derived value straight to the ingest
+    helper."""
     raw = str(params.get("dataset_id") or "").strip()
     if not raw:
         for key in params.get("storage_paths") or []:
@@ -2741,6 +3044,11 @@ def _derive_dataset_id(params: dict) -> str:
                 raw = parts[1]
                 break
     raw = re.sub(r"[^A-Za-z0-9._-]", "", raw)
+    if not raw:
+        return ""
+    mode = str(params.get("caption_mode") or "").strip().lower()
+    if mode in ("dense", "tags") and not (raw.endswith("__dense") or raw.endswith("__tags")):
+        raw = f"{raw[:56]}__{mode}"
     return raw[:64]
 
 
@@ -3150,12 +3458,26 @@ def train_lora_job(params: dict) -> dict:
                         return str(cc[k]).strip()
             return ""
 
+        supplied_any = False
         for idx, path in enumerate(image_paths):
             cap = _custom_caption_for(idx, path)
             if not cap and idx < len(supplied):
                 cap = (supplied[idx] or "").strip()
             if cap:
                 path.with_suffix(".txt").write_text(cap, encoding="utf-8")
+                supplied_any = True
+
+        # The frontend handed us real caption text for THIS run (Dense prose,
+        # curated edits, a .txt / ZIP set, semi-auto fills, …). That text is
+        # AUTHORITATIVE and has already been written above — the Volume caption
+        # cache must not be consulted, and above all must never overwrite it.
+        # The cache for the same dataset_id can hold a DIFFERENT format from an
+        # earlier run (the yukipas Dense→tags swap); reusing it here silently
+        # replaced confirmed Dense captions with a stale tag list. The cache
+        # fast-path stays available ONLY when the browser sent nothing at all
+        # (a pure pending-timeout re-dispatch, or a total cloud-caption outage
+        # with skip_captioning unset).
+        frontend_supplied_captions = bring_your_own or supplied_any
 
         def _has_caption(p: pathlib.Path) -> bool:
             txt = p.with_suffix(".txt")
@@ -3169,7 +3491,15 @@ def train_lora_job(params: dict) -> dict:
             shutil.rmtree(persist_dir, ignore_errors=True)
             vol.commit()
             print(f"[train] force_recaption — dropped caption cache {persist_dir}", flush=True)
-        elif persist_dir and persist_dir.is_dir() and not bring_your_own:
+        elif frontend_supplied_captions:
+            # Supplied captions win, unconditionally — never touch the cache.
+            if persist_dir and persist_dir.is_dir():
+                print(
+                    f"[train] frontend supplied captions — Volume caption cache "
+                    f"{persist_dir} left untouched (not reused)",
+                    flush=True,
+                )
+        elif persist_dir and persist_dir.is_dir():
             cached = [persist_dir / f"{i:04d}.txt" for i in range(len(image_paths))]
             if all(c.is_file() and c.read_text(encoding="utf-8").strip() for c in cached):
                 texts = [c.read_text(encoding="utf-8").strip() for c in cached]
@@ -4580,6 +4910,13 @@ def ingest_and_optimize_dataset_cpu(
         )
         if len(done) == n and [p.stem for p in done] == [f"{i:04d}" for i in range(n)]:
             print(f"[ingest] cache hit — {n} images at {rel}", flush=True)
+            if os.environ.get("ULL_INGEST_PURGE_SOURCE", "1") != "0":
+                purged = _purge_storage_objects(bucket, storage_paths)
+                print(
+                    f"[ingest] cache-hit — purged {purged}/{n} source objects "
+                    f"from Supabase Storage ({bucket})",
+                    flush=True,
+                )
             return {
                 "ok": True, "cache_hit": True, "ingest_dir": rel, "ingest_key": key,
                 "count": n, "long_edge": long_edge, "downscaled": 0, "passthrough": 0,
@@ -4676,6 +5013,16 @@ def ingest_and_optimize_dataset_cpu(
             f"long_edge={long_edge})",
             flush=True,
         )
+        # Optimised copies are committed to the Volume — the uploaded originals
+        # are now dead weight in Supabase Storage. Purge them so the Free-tier
+        # 1GB quota stays at ~0 (CLAUDE.md §3). Best-effort, never fatal.
+        if os.environ.get("ULL_INGEST_PURGE_SOURCE", "1") != "0":
+            purged = _purge_storage_objects(bucket, storage_paths)
+            print(
+                f"[ingest] purged {purged}/{n} source objects from "
+                f"Supabase Storage ({bucket}) after optimisation",
+                flush=True,
+            )
         return {
             "ok": True, "cache_hit": False, "ingest_dir": rel, "ingest_key": key,
             "count": n, "long_edge": long_edge, "downscaled": downscaled,
@@ -4927,6 +5274,94 @@ def _verify_download_token(user_id: str, job_id: str, filename: str, expires: st
     return hmac.compare_digest(expected, sig)
 
 
+# Large downloads (a rank-32 minimax_h3 LoRA is ~1.18GB) stream in 4 MiB
+# chunks. Starlette's FileResponse reads the Modal Volume (NFS) in 64 KiB
+# slices — ~19k syscalls for a 1.18GB file — and that per-read overhead
+# collapsed real throughput to a few KB/s partway through. A 4 MiB buffered
+# read amortises the NFS round-trip; Starlette runs this sync generator via
+# iterate_in_threadpool, so the blocking reads never touch the event loop.
+_DL_CHUNK = 4 * 1024 * 1024  # 4 MiB
+
+
+def _stream_download(
+    file_path: pathlib.Path,
+    *,
+    download_name: str | None = None,
+    media_type: str = "application/octet-stream",
+    background=None,
+    request: "fastapi.Request | None" = None,
+):
+    """Stream a file off the Volume in 4 MiB chunks, honouring a single HTTP
+    Range request.
+
+    Range support is the difference between a 7GB download that survives a
+    flaky link and one that corrupts: the browser's own download manager (and
+    every resumable client) reconnects with `Range: bytes=<resumed>-` after a
+    drop. Without a 206 for that, it gets a fresh 200 from byte 0 carrying the
+    FULL `Content-Length` while the body is offset -> ERR_CONTENT_LENGTH_
+    MISMATCH / a truncated .safetensors. Pass `request` for any file that
+    lives on the Volume long enough to be re-requested (checkpoints, salvaged
+    weights); leave it None for a build-once /tmp zip that a BackgroundTask
+    deletes right after the response (a later Range would 404 anyway) — that
+    path then streams a plain 200 and does NOT advertise Accept-Ranges, so the
+    client restarts rather than trying a resume that can't work.
+    """
+    file_size = file_path.stat().st_size
+    name = (download_name or file_path.name).replace('"', "")
+    headers = {
+        "Content-Disposition": f'attachment; filename="{name}"',
+        "Content-Type": media_type,
+    }
+
+    start, end = 0, file_size - 1
+    status_code = 200
+    if request is not None:
+        headers["Accept-Ranges"] = "bytes"
+        raw_range = request.headers.get("range") or request.headers.get("Range")
+        if raw_range:
+            m = re.match(r"\s*bytes=(\d*)-(\d*)\s*$", raw_range)
+            if m and (m.group(1) or m.group(2)):
+                if m.group(1):
+                    start = int(m.group(1))
+                    end = int(m.group(2)) if m.group(2) else file_size - 1
+                else:  # suffix range: bytes=-N  -> the last N bytes
+                    start = max(0, file_size - int(m.group(2)))
+                    end = file_size - 1
+                end = min(end, file_size - 1)
+                if start > end or start >= file_size:
+                    return fastapi.responses.Response(
+                        status_code=416,
+                        headers={**headers, "Content-Range": f"bytes */{file_size}"},
+                    )
+                status_code = 206
+                headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+
+    length = end - start + 1
+    headers["Content-Length"] = str(length)
+
+    def _iter():
+        remaining = length
+        # buffering=_DL_CHUNK -> the BufferedReader pulls 4 MiB per NFS read,
+        # amortising the Volume's per-read syscall overhead.
+        with open(file_path, "rb", buffering=_DL_CHUNK) as fh:
+            if start:
+                fh.seek(start)
+            while remaining > 0:
+                chunk = fh.read(min(_DL_CHUNK, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return fastapi.responses.StreamingResponse(
+        _iter(),
+        status_code=status_code,
+        media_type=media_type,
+        background=background,
+        headers=headers,
+    )
+
+
 # Streams a LoRA checkpoint straight off the Volume as raw bytes. The
 # generic ModalStorage.handle(action="read_file") route (a different app,
 # scripts/modal_wan_animate.py) reads the whole file and returns it as a
@@ -4943,12 +5378,12 @@ def _verify_download_token(user_id: str, job_id: str, filename: str, expires: st
     # only streams files — a RW mount would let its stale snapshot auto-commit
     # deleted checkpoints back onto the Volume.
     volumes={MODELS_DIR: vol_ro},
-    # Checkpoints run 600MB-1GB+; observed transfer at ~1.6-3MB/s through
-    # the old proxied path, so 120s cut a 620MB file off mid-stream
-    # (NGHTTP2_INTERNAL_ERROR on the Next.js proxy side once Modal's
-    # timeout killed it). Direct browser<->Modal may be faster, but keep
-    # the generous budget regardless.
-    timeout=600,
+    # Checkpoints run 600MB-1GB+ (a rank-32 minimax_h3 LoRA is ~1.18GB) and a
+    # slow / unstable mobile link can crawl at <1MB/s, so give the whole
+    # transfer a full hour before Modal kills the container mid-stream. The
+    # response is Range-aware, so a dropped connection resumes instead of
+    # restarting.
+    timeout=3600,
     min_containers=1,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
@@ -4988,8 +5423,94 @@ def download_lora_checkpoint(
         if hit is None:
             raise fastapi.HTTPException(status_code=404, detail="checkpoint not found")
         file_path = hit
-    return fastapi.responses.FileResponse(
-        str(file_path), media_type="application/octet-stream", filename=file_path.name
+    return _stream_download(file_path, download_name=file_path.name, request=request)
+
+
+# Bundles a caller-chosen set of this job's checkpoints into ONE uncompressed
+# zip and streams it. safetensors are already incompressible, so ZIP_STORED
+# (Store, no Deflate) makes the "zip" a header-wrapped concat built at raw
+# disk-copy speed — the browser then pulls a single stream instead of racing
+# the same-origin connection cap with N parallel .safetensors downloads.
+# `files` is the sorted, comma-joined name list the Next.js
+# /api/studio/lora/checkpoint/selection route signed (owner-or-admin check +
+# validation against generation_jobs.metadata.checkpoints happens there).
+_SELECTION_MAX_FILES = 64
+
+
+def _verify_selection_token(user_id: str, job_id: str, files: str, expires: str, sig: str) -> bool:
+    secret = os.environ.get("MODAL_AUTH_TOKEN", "")
+    if not secret or not sig:
+        return False
+    try:
+        if int(expires) < time.time():
+            return False
+    except ValueError:
+        return False
+    expected = hmac.new(
+        secret.encode(), f"selection:{user_id}:{job_id}:{files}:{expires}".encode(), hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol_ro},  # read-only: reads checkpoints, zips into /tmp
+    timeout=3600,
+    min_containers=1,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="GET")
+def download_lora_selection(
+    user_id: str, job_id: str, files: str, expires: str, sig: str, request: fastapi.Request
+):
+    if not _verify_selection_token(user_id, job_id, files, expires, sig):
+        raise fastapi.HTTPException(status_code=403, detail="invalid or expired download link")
+    if not (_CKPT_DL_ID_RE.match(user_id) and _CKPT_DL_ID_RE.match(job_id)):
+        raise fastapi.HTTPException(status_code=400, detail="invalid parameters")
+    names = [n for n in files.split(",") if n]
+    if not names or len(names) > _SELECTION_MAX_FILES or any(
+        not _CKPT_DL_FILENAME_RE.match(n) for n in names
+    ):
+        raise fastapi.HTTPException(status_code=400, detail="invalid file list")
+
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[selection] vol.reload() skipped: {exc}", flush=True)
+
+    user_root = pathlib.Path(MODELS_DIR) / "loras" / user_id
+    resolved: list[pathlib.Path] = []
+    seen: set[str] = set()
+    for n in names:
+        if n in seen:
+            continue
+        seen.add(n)
+        p = user_root / job_id / n
+        if not p.is_file():
+            cands = list(user_root.glob(f"**/{n}")) if user_root.is_dir() else []
+            p = min(cands, key=lambda q: len(str(q)), default=None)
+        if p is None or not p.is_file():
+            raise fastapi.HTTPException(status_code=404, detail=f"checkpoint not found: {n}")
+        resolved.append(p)
+
+    stem = re.sub(r"(_step\d+|_final)?\.safetensors$", "", resolved[0].name) or "lora"
+    zip_name = f"{stem}_checkpoints.zip"
+    tmp = pathlib.Path("/tmp") / f"sel_{int(time.time())}_{job_id[:8]}.zip"
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+        for p in resolved:
+            zf.write(p, arcname=p.name)
+    print(
+        f"[selection] job {job_id[:8]}: {len(resolved)} ckpt(s) -> {tmp.stat().st_size / 1024**3:.2f} GB",
+        flush=True,
+    )
+
+    from starlette.background import BackgroundTask
+
+    return _stream_download(
+        tmp,
+        download_name=zip_name,
+        media_type="application/zip",
+        background=BackgroundTask(lambda: tmp.unlink(missing_ok=True)),
     )
 
 
@@ -5032,7 +5553,7 @@ def _safe_volume_path(rel: str) -> pathlib.Path:
 @app.function(
     image=dispatch_image,
     volumes={MODELS_DIR: vol_ro},  # read-only: streams files only, never writes
-    timeout=1800,
+    timeout=3600,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="GET")
@@ -5046,9 +5567,7 @@ def admin_download_volume_file(path: str, expires: str, sig: str, request: fasta
     fp = _safe_volume_path(path)
     if not fp.is_file():
         raise fastapi.HTTPException(status_code=404, detail="file not found")
-    return fastapi.responses.FileResponse(
-        str(fp), media_type="application/octet-stream", filename=fp.name
-    )
+    return _stream_download(fp, download_name=fp.name)
 
 
 @app.function(
@@ -5201,7 +5720,7 @@ def admin_download_job_artifact(
     if probe:
         return {"found": True, "filename": hit.name, "size_bytes": hit.stat().st_size}
     media = "application/zip" if hit.suffix == ".zip" else "application/octet-stream"
-    return fastapi.responses.FileResponse(str(hit), media_type=media, filename=hit.name)
+    return _stream_download(hit, download_name=hit.name, media_type=media, request=request)
 
 
 # ---------------------------------------------------------------------------
@@ -5375,7 +5894,17 @@ def salvage_lora_job(data: dict, request: fastapi.Request):
     caption_count = 0
     image_count = 0
     if dataset_id:
-        ds_dir = pathlib.Path(PERSIST_ROOT) / dataset_id
+        # Captions are persisted under a caption-format-keyed dir
+        # (<dataset_id>__dense / __tags — see _derive_dataset_id); the job
+        # metadata may carry either the bare id or an already-suffixed one.
+        # Probe every shape and take the first that exists.
+        _ds_candidates = [dataset_id]
+        if not (dataset_id.endswith("__dense") or dataset_id.endswith("__tags")):
+            _ds_candidates += [f"{dataset_id[:56]}__dense", f"{dataset_id[:56]}__tags"]
+        ds_dir = next(
+            (d for d in (pathlib.Path(PERSIST_ROOT) / c for c in _ds_candidates) if d.is_dir()),
+            pathlib.Path(PERSIST_ROOT) / dataset_id,
+        )
         if ds_dir.is_dir():
             members = sorted(
                 p
@@ -5608,6 +6137,7 @@ def admin_cleanup_volume(
     outputs_max_age_days: int = OUTPUTS_RETENTION_DAYS,
     purge_retired_wan21: bool = False,
     purge_flux2: bool = False,
+    purge_qwen_image: bool = False,
 ) -> dict:
     """Purge the Volume of (1) HF-cache model dirs outside the sealed preset
     lineup (e.g. models--AstraliteHeart--pony-diffusion-v6-xl,
@@ -5627,12 +6157,21 @@ def admin_cleanup_volume(
     ai-toolkit/flux2_vae is left intact (flux2_klein_* still need it). A later
     `flux2` training job re-pulls the ~80GB through the CPU gate.
 
+    purge_qwen_image=True force-removes the Qwen-Image (Alibaba 20B) transformer
+    single file (diffusion_models/qwen_image_bf16.safetensors + its split_files/
+    hardlink mirror, ~40GB). Opt-in: the `qwen_image` preset is hidden from the
+    GUI (loraModels.ts), so it's dead weight — but the shared Qwen/Qwen-Image HF
+    snapshot is deliberately KEPT (the live `krea2` preset reads its vae/
+    subfolder). A later re-enabled `qwen_image` job re-pulls the ~40GB single
+    file through the CPU gate.
+
     dry_run=True (the default) only reports what WOULD be removed — review that
     list, then re-run to actually delete:
 
         modal run modal_lora_worker.py::admin_cleanup_volume                # preview
         modal run modal_lora_worker.py::admin_cleanup_volume --no-dry-run   # delete
         modal run modal_lora_worker.py::admin_cleanup_volume --purge-flux2 --no-dry-run
+        modal run modal_lora_worker.py::admin_cleanup_volume --purge-qwen-image --no-dry-run
 
     Returns freed_gb and the accurate post-cleanup used_gb (inode-deduped)."""
     try:
@@ -5687,6 +6226,49 @@ def admin_cleanup_volume(
                 print(f"[cleanup] {verb} {rel}  (FLUX.2 [dev] purge, ~{sz / GB:.2f} GB)", flush=True)
                 if not dry_run:
                     shutil.rmtree(d, ignore_errors=True)
+
+    # ---- 1c) Qwen-Image (20B) transformer single file (opt-in) -----------
+    # The `qwen_image` preset is hidden from the GUI (loraModels.ts). Its Comfy
+    # single-file transformer (~40GB) is used by NOTHING else — drop it. The
+    # shared Qwen/Qwen-Image HF snapshot is deliberately NOT touched here: the
+    # live `krea2` preset loads its VAE (vae/ subfolder) from that same repo.
+    if purge_qwen_image:
+        _qwen_seen: set = set()
+        _qwen_targets: list[str] = []
+        for _rel, _repo_file in _QWEN_COMFY_FILES:
+            _qwen_targets.extend([_rel, _repo_file])
+        # also sweep any sibling qwen_image*.safetensors variants (fp8 etc.)
+        for _base_rel in ("diffusion_models", "split_files/diffusion_models"):
+            _dir = pathlib.Path(MODELS_DIR) / _base_rel
+            if _dir.is_dir():
+                for _p in sorted(_dir.glob("qwen_image*.safetensors")):
+                    _qwen_targets.append(str(_p.relative_to(MODELS_DIR)).replace(os.sep, "/"))
+        for _rel in dict.fromkeys(_qwen_targets):  # de-dup, keep order
+            f = pathlib.Path(MODELS_DIR) / _rel
+            if not (f.is_file() and not f.is_symlink() and f.stat().st_size > 0):
+                # still unlink a 0-byte / symlink mirror so the path is clean
+                if f.is_symlink() or (f.is_file() and f.stat().st_size == 0):
+                    files_removed.append({"file": _rel, "gb": 0.0})
+                    print(f"[cleanup] {verb} {_rel}  (Qwen-Image mirror, ~0 GB)", flush=True)
+                    if not dry_run:
+                        try:
+                            f.unlink()
+                        except OSError as exc:
+                            print(f"[cleanup] unlink {_rel} failed: {exc}", flush=True)
+                continue
+            st = f.stat()
+            key = (st.st_dev, st.st_ino)
+            sz = 0 if (st.st_ino and key in _qwen_seen) else st.st_size
+            if st.st_ino:
+                _qwen_seen.add(key)
+            freed += sz
+            files_removed.append({"file": _rel, "gb": round(sz / GB, 3)})
+            print(f"[cleanup] {verb} {_rel}  (Qwen-Image 20B, ~{sz / GB:.2f} GB)", flush=True)
+            if not dry_run:
+                try:
+                    f.unlink()
+                except OSError as exc:
+                    print(f"[cleanup] unlink {_rel} failed: {exc}", flush=True)
 
     # ---- 2) outputs/: empty or stale per-job working dirs -----------------
     out_root = pathlib.Path(PERSIST_OUTPUT_ROOT)

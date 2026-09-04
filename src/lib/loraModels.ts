@@ -1,9 +1,11 @@
 // LoRA Studio model catalogue — shared by the client tab, the API route,
 // and (mirrored) the Modal worker. No imports, so it's safe on both sides.
 //
-// Sealed to a fixed commercial lineup (12 confirmed presets — see the "全面
-//再編" pass): every model here is openly-licensed / permissive and has been
-// verified to load in ai-toolkit. Free-text "any HuggingFace repo id" entry
+// Sealed to a fixed commercial lineup (see the "全面再編" pass): every model
+// here is openly-licensed / permissive and has been verified to load in
+// ai-toolkit. FLUX.2 [dev] and Qwen-Image (20B) are temporarily hidden below
+// for Volume storage cost (their arch strings / TARGET_MODELS entries stay).
+// Free-text "any HuggingFace repo id" entry
 // is deliberately NOT exposed in the general UI any more (LoraStudioTab.tsx
 // no longer renders the "⚙️ 上級者向け" custom-model option) — this array is
 // the ONLY way an ordinary user reaches a base model.
@@ -128,13 +130,19 @@ export const LORA_PRESETS: LoraPreset[] = [
   //   arch: "flux2",
   //   note: "FLUX.2 の標準ベースモデル。",
   // },
-  {
-    id: "qwen_image",
-    label: "Qwen-Image (Alibaba 20B)",
-    group: "photo",
-    arch: "qwen_image",
-    note: "Alibaba開発の最新DiT。卓越したプロンプト追従性とテキスト描画性能。",
-  },
+  // Qwen-Image (Alibaba 20B) ("qwen_image") — 一般ユーザー向けプリセットから
+  // 一旦非表示。Comfy 単一ファイル transformer(~40GB) + Qwen2.5-VL TE で Volume
+  // 実消費が大きく、需要も薄いため（Minimax H3 TE ベイク領域を 1TB 無料枠内で
+  // 確保する対応）。arch:"qwen_image" 自体（型・API検証・worker 側 TARGET_MODELS）
+  // は残しているので、再開時はこのブロックを戻すだけでよい。共有 HF snapshot
+  // "Qwen/Qwen-Image" は krea2 が VAE で使うため物理パージ対象外。
+  // {
+  //   id: "qwen_image",
+  //   label: "Qwen-Image (Alibaba 20B)",
+  //   group: "photo",
+  //   arch: "qwen_image",
+  //   note: "Alibaba開発の最新DiT。卓越したプロンプト追従性とテキスト描画性能。",
+  // },
   { id: "krea2", label: "Krea 2", group: "photo", arch: "krea2", note: "写実性に強い最新世代の汎用DiT。" },
   {
     id: "zimage",

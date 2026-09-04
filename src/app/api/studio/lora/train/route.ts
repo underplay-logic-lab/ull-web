@@ -16,9 +16,12 @@ import { geminiApiKey, runGeminiText } from "@/lib/geminiText";
 import {
   buildCaptionFallbackPrompt,
   buildCaptionMetaPrompt,
+  buildCategoryDefaultInstruction,
   captionSpecHasInput,
   normalizeCaptionSpec,
+  resolveCaptionMode,
   tidyCaptionPrompt,
+  type ResolvedCaptionMode,
 } from "@/lib/loraCaptionSpec";
 import {
   BLOCKED_LORA_MODEL_MESSAGE,
@@ -262,13 +265,26 @@ async function handlePost(request: Request): Promise<NextResponse> {
     : undefined;
   const skipCaptioning =
     body.skip_captioning === true || (customCaptions?.some((c) => c.trim().length > 0) ?? false);
+  // Resolved caption FORMAT for this base model. Trust the client's resolved
+  // value when it sent one; otherwise re-derive it here from the model key
+  // (same rule as resolveCaptionMode on the client). Forwarded to the worker
+  // so its persisted-caption cache is keyed per format — a dense run and a
+  // tags run of the same dataset can never share (and overwrite) a cache.
+  const captionModelKey =
+    targetModel === "custom"
+      ? `${customModelId} ${baseArchitecture}`
+      : `${targetModel} ${loraPresetById(targetModel)?.arch ?? ""} ${loraPresetById(targetModel)?.label ?? ""}`;
+  const resolvedCaptionMode: ResolvedCaptionMode =
+    body.caption_mode === "dense" || body.caption_mode === "tags"
+      ? body.caption_mode
+      : resolveCaptionMode(captionModelKey);
   // The user's own auto-caption VLM instruction. Normally the browser has
   // already run the category-aware Gemini synthesis (see below) and sends the
   // finished English instruction here; free-text edits also land here.
   // Bounded so a huge paste can't bloat the job payload.
   let captionPrompt =
     typeof body.caption_prompt === "string" ? body.caption_prompt.trim().slice(0, 4000) : "";
-  // The structured category spec (人物 / 画風 / 物質 / 風景 ＋ 固定/変化させたい
+  // The structured category spec (人物 / 衣装 / 物体 / 背景 / 画風 ＋ 固定/変化させたい
   // 特徴の日本語). Used to (re)build caption_prompt server-side when the client
   // didn't send a generated one — the authoritative fallback for the request.
   const captionSpec = normalizeCaptionSpec(body.caption_spec);
@@ -308,6 +324,12 @@ async function handlePost(request: Request): Promise<NextResponse> {
       captionPrompt = buildCaptionFallbackPrompt(captionSpec, triggerWord).slice(0, 4000);
       captionPromptSource = "fallback";
     }
+  } else if (!captionPrompt && !skipCaptioning && captionSpec) {
+    // A category was chosen but no fixed/varying text — hand the worker VLM
+    // that category's built-in blacklist/whitelist policy so it never
+    // captions the whole image and hollows out the trigger word.
+    captionPrompt = buildCategoryDefaultInstruction(captionSpec.category, triggerWord).slice(0, 4000);
+    captionPromptSource = "fallback";
   }
   const resolution = (LORA_RESOLUTIONS as readonly number[]).includes(Number(body.resolution))
     ? Number(body.resolution)
@@ -395,6 +417,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
     captions,
     customCaptions,
     skipCaptioning,
+    captionMode: resolvedCaptionMode,
     captionPrompt: captionPrompt || undefined,
     targetModel,
     customModelId: targetModel === "custom" ? customModelId : undefined,
@@ -434,6 +457,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
           has_varying: captionSpec.varying.length > 0,
         }
       : { source: captionPromptSource },
+    caption_mode: resolvedCaptionMode,
     dispatch: dispatchPayload,
   };
 

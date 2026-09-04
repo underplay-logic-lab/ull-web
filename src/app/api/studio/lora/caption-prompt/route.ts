@@ -16,7 +16,7 @@ import {
 
 // Category-aware Qwen-27B caption-prompt synthesis for LoRA Studio.
 //
-// Given the LoRA training TYPE (人物 / 画風 / 物質 / 風景) and the user's
+// Given the LoRA training TYPE (人物 / 衣装 / 物体 / 背景 / 画風) and the user's
 // Japanese description of the fixed vs. varying features, Gemini builds the
 // English instruction that the Modal worker feeds to its Qwen captioner as
 // `caption_prompt`. The browser calls this when the user advances past the
@@ -54,7 +54,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     const spec = normalizeCaptionSpec(body);
     if (!spec) {
       return NextResponse.json(
-        { error: "category は person / style / object / scene のいずれかを指定してください。" },
+        { error: "category は character / outfit / object / background / style のいずれかを指定してください。" },
         { status: 400 },
       );
     }

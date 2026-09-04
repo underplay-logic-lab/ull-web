@@ -2,15 +2,31 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { checkLoraCallStatus } from "@/lib/modalLoraTrain";
-import { loraCallIdOf, markLoraJobContainerDead } from "@/lib/loraJobHealth";
+import {
+  loraCallIdOf,
+  markLoraJobContainerDead,
+  markLoraJobCompletedFromModal,
+} from "@/lib/loraJobHealth";
 
 type RouteParams = { params: Promise<{ id: string }> };
+
+// The stuck-row recovery below can run a ~2-min Volume-scan salvage — but only
+// on the rare tick that first detects a stuck job. The common fast path
+// returns in well under a second.
+export const maxDuration = 120;
 
 // A LoRA training container that dies by SIGKILL never runs its own failure
 // handler, so the row is stuck 'processing'. Once it's been silent this long
 // (normal runs PATCH progress every ~5s), ask Modal directly whether the
 // FunctionCall is still alive — see check_call_status in modal_lora_worker.py.
 const LORA_STUCK_PROBE_AFTER_MS = 180_000;
+
+// True when generation_jobs.metadata[flag] is already set — used to make the
+// stuck-row recovery below run at most once per job.
+function existingMetaFlag(job: Record<string, unknown>, flag: string): boolean {
+  const meta = job.metadata;
+  return Boolean(meta && typeof meta === "object" && (meta as Record<string, unknown>)[flag] === true);
+}
 
 // Polled by the frontend (every couple seconds while a job is queued/
 // processing — see CinematicVideoTab.tsx) instead of the old design where
@@ -97,6 +113,35 @@ export async function GET(request: Request, { params }: RouteParams) {
           status = String((fresh as Record<string, unknown>).status ?? "failed");
         } else {
           status = "failed";
+        }
+      } else if (
+        probe.status === "completed" &&
+        status === "processing" &&
+        !existingMetaFlag(job, "recovered_completed")
+      ) {
+        // 'processing' ONLY: by now the row carries train_lora_job's OWN
+        // fc-id (self-recorded), so a "completed" verdict means the training
+        // call genuinely returned a result — but the worker's final PATCH was
+        // lost (same outage that froze the client's poll), leaving the row
+        // stuck at its last-reported step. (A 'queued' row still carries the
+        // ORCHESTRATOR's fc-id, which returns "completed" the instant it has
+        // spawned the GPU job — that is NOT training-done, so it's excluded.)
+        // Pull the finished artifacts off the Volume and flip the row so the
+        // Studio advances to its download screen.
+        console.warn(`[jobs/[id]] job ${id}: Modal reports FunctionCall completed but row is stuck 'processing' — recovering from Volume`);
+        const rec = await markLoraJobCompletedFromModal(job);
+        if (rec.recovered) {
+          const { data: fresh } = await supabaseAdmin
+            .from("generation_jobs")
+            .select("*")
+            .eq("id", id)
+            .maybeSingle();
+          if (fresh) {
+            effJob = fresh as Record<string, unknown>;
+            status = String((fresh as Record<string, unknown>).status ?? "completed");
+          } else {
+            status = "completed";
+          }
         }
       }
     }

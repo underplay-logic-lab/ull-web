@@ -38,6 +38,10 @@ export type SpawnLoraTrainingParams = {
   // 27B caption VLM load entirely.
   customCaptions?: string[];
   skipCaptioning?: boolean;
+  // Resolved caption FORMAT ("dense" | "tags"). Keys the worker's persisted-
+  // caption cache so a dense run and a tags run of the same dataset never
+  // share (and overwrite) each other's cached captions.
+  captionMode?: "dense" | "tags";
   // User's own auto-caption VLM instruction (category preset / free-text).
   captionPrompt?: string;
 };
@@ -58,6 +62,7 @@ export type LoraDispatchPayload = {
   trigger_word: string;
   custom_captions?: string[];
   skip_captioning?: boolean;
+  caption_mode?: "dense" | "tags";
   caption_prompt?: string;
 };
 
@@ -78,6 +83,9 @@ export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraD
       ? { custom_captions: params.customCaptions }
       : {}),
     ...(params.skipCaptioning ? { skip_captioning: true } : {}),
+    ...(params.captionMode === "dense" || params.captionMode === "tags"
+      ? { caption_mode: params.captionMode }
+      : {}),
     ...(params.captionPrompt && params.captionPrompt.trim()
       ? { caption_prompt: params.captionPrompt.trim() }
       : {}),

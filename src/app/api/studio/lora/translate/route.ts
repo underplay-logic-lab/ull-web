@@ -12,21 +12,28 @@ import {
 // AI Studio (Gemini) — the free tier needs no card / billing ($0). The
 // finicky model-id gating + retry logic lives in src/lib/geminiText.ts.
 //
-//   action "to_ja": English tag list / prose -> natural Japanese
-//   action "to_en": the user's edited Japanese -> a Danbooru-style
-//                   comma-separated English tag list for LoRA training
+//   action "to_ja": English caption -> natural Japanese
+//   action "to_en": the user's edited Japanese -> English caption for LoRA
+//                   training, in the FORMAT the base model wants:
+//     caption_type "tags"  (default) -> Danbooru-style comma-separated tags
+//                                       for the 77-token CLIP encoder (SDXL)
+//     caption_type "dense"           -> a natural-language English sentence /
+//                                       paragraph for the LLM/VLM text
+//                                       encoders (Minimax H3, WAN 2.2, …).
+//                                       NEVER collapsed to a tag list.
 //
-// Two request shapes:
-//   { action, text }            -> { translation }
-//   { action, items: string[] } -> { translations: string[] }  (batch — one
-//        Gemini call for the whole chunk, so the 15 RPM free tier is easy
-//        to stay under even for a 100-image dataset)
+// Two request shapes (both accept an optional `caption_type`):
+//   { action, text, caption_type? }            -> { translation }
+//   { action, items: string[], caption_type? } -> { translations: string[] }
+//        (batch — one Gemini call for the whole chunk, so the 15 RPM free
+//        tier is easy to stay under even for a 100-image dataset)
 export const maxDuration = 45;
 
 const MAX_TEXT = 4000;
 const MAX_BATCH = 40;
 const MAX_BATCH_CHARS = 24000;
 type Action = "to_ja" | "to_en";
+type CaptionType = "dense" | "tags";
 
 const TRANSLATE_ERR_MESSAGES = {
   tag: "studio/lora/translate",
@@ -35,26 +42,37 @@ const TRANSLATE_ERR_MESSAGES = {
   failed: "翻訳に失敗しました。",
 } as const;
 
-function taskLine(action: Action): string {
-  return action === "to_ja"
-    ? "Translate the English caption into natural Japanese, keeping any comma-separated tag structure. No romaji, no notes."
+function taskLine(action: Action, captionType: CaptionType): string {
+  if (action === "to_ja") {
+    return captionType === "dense"
+      ? "Translate the English description into natural Japanese prose, keeping the sentence structure and every modifier relationship. No romaji, no notes."
+      : "Translate the English caption into natural Japanese, keeping the comma-separated tag structure. No romaji, no notes.";
+  }
+  // to_en
+  return captionType === "dense"
+    ? [
+        "Translate the Japanese text into a natural, concise English description written as flowing prose sentences.",
+        "You MUST NOT convert it into a comma-separated tag list — keep it as real sentences.",
+        "Preserve the context and every modifier relationship exactly as written; do not add, drop, compress, or reorder information.",
+        "Keep roughly the same length as the input. No notes, no quotes.",
+      ].join(" ")
     : "Turn the Japanese text into a comma-separated list of English anime/image tagging style tags (like \"1girl, long hair, blue shirt\"). Tags only, no notes.";
 }
 
-function buildSinglePrompt(action: Action, text: string): string {
+function buildSinglePrompt(action: Action, text: string, captionType: CaptionType): string {
   return [
     "You translate AI image-training dataset captions.",
-    taskLine(action),
+    taskLine(action, captionType),
     "Output ONLY the result — no preamble, no explanations, no quotes.",
     "",
     `Input: ${text}`,
   ].join("\n");
 }
 
-function buildBatchPrompt(action: Action, items: string[]): string {
+function buildBatchPrompt(action: Action, items: string[], captionType: CaptionType): string {
   return [
     "You translate AI image-training dataset captions.",
-    taskLine(action),
+    taskLine(action, captionType),
     `Process EACH element of the input JSON array. Return a JSON array of strings of the SAME length and order (${items.length} elements) — results only.`,
     "",
     "Input:",
@@ -62,18 +80,23 @@ function buildBatchPrompt(action: Action, items: string[]): string {
   ].join("\n");
 }
 
-function tidy(action: Action, raw: string): string {
+function tidy(action: Action, raw: string, captionType: CaptionType): string {
   let out = (raw ?? "").trim().replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
   if (out.length > 1 && ((out.startsWith('"') && out.endsWith('"')) || (out.startsWith("「") && out.endsWith("」")))) {
     out = out.slice(1, -1).trim();
   }
-  if (action === "to_en") {
+  if (action === "to_en" && captionType === "tags") {
+    // Tag list: newlines -> commas, normalise comma spacing, drop empties.
     out = out
       .replace(/\s*\n+\s*/g, ", ")
       .replace(/\s*,\s*/g, ", ")
       .replace(/(?:^,\s*)|(?:,\s*$)/g, "")
       .replace(/,\s*,/g, ",")
       .trim();
+  } else if (action === "to_en") {
+    // Dense prose: keep sentence structure — only fold hard line breaks into
+    // spaces and squeeze runs of whitespace. NEVER comma-join.
+    out = out.replace(/\s*\n+\s*/g, " ").replace(/\s{2,}/g, " ").trim();
   }
   return out;
 }
@@ -103,6 +126,9 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (!action) {
       return NextResponse.json({ error: "action は to_ja / to_en のいずれかを指定してください。" }, { status: 400 });
     }
+    // Caption FORMAT. Default "tags" preserves the legacy behaviour for any
+    // caller that doesn't send it; "dense" keeps the result as prose.
+    const captionType: CaptionType = body?.caption_type === "dense" ? "dense" : "tags";
     const genAI = new GoogleGenerativeAI(apiKey);
 
     // ---- batch ----
@@ -121,7 +147,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
       let raw: string;
       try {
-        raw = await runGeminiText(genAI, buildBatchPrompt(action, items), true);
+        raw = await runGeminiText(genAI, buildBatchPrompt(action, items, captionType), true);
       } catch (e) {
         return geminiErrorResponse(e, TRANSLATE_ERR_MESSAGES);
       }
@@ -143,7 +169,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         );
       }
       const translations = items.map((src, i) =>
-        src ? tidy(action, typeof arr[i] === "string" ? (arr[i] as string) : "") : "",
+        src ? tidy(action, typeof arr[i] === "string" ? (arr[i] as string) : "", captionType) : "",
       );
       return NextResponse.json({ translations, action });
     }
@@ -156,11 +182,11 @@ export async function POST(request: Request): Promise<NextResponse> {
     }
     let raw: string;
     try {
-      raw = await runGeminiText(genAI, buildSinglePrompt(action, text), false);
+      raw = await runGeminiText(genAI, buildSinglePrompt(action, text, captionType), false);
     } catch (e) {
       return geminiErrorResponse(e, TRANSLATE_ERR_MESSAGES);
     }
-    return NextResponse.json({ translation: tidy(action, raw), action });
+    return NextResponse.json({ translation: tidy(action, raw, captionType), action });
   } catch (err) {
     return geminiErrorResponse(err, TRANSLATE_ERR_MESSAGES);
   }

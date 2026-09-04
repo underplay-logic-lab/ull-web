@@ -15,6 +15,7 @@ import {
 import { translateCaption, translateCaptionsBatch } from "@/lib/loraTranslate";
 import { buildDatasetZip, downloadBlob } from "@/lib/datasetZip";
 import { ImageLightbox } from "@/components/studio/ImageLightbox";
+import type { ResolvedCaptionMode } from "@/lib/loraCaptionSpec";
 
 export type CurationPair = {
   id: string;
@@ -49,6 +50,7 @@ export function DatasetCurationUI({
   maxTotalBytes,
   disabled = false,
   onRecaption,
+  resolvedCaptionMode = "tags",
 }: {
   pairs: CurationPair[];
   // A setState updater — every mutation is applied against the freshest state
@@ -66,9 +68,14 @@ export function DatasetCurationUI({
   disabled?: boolean;
   // Re-run AI-vision captioning for the given cards; resolves to { id: {en,ja} }
   // for the ones that landed. Omitted -> the re-analyze affordances are hidden.
+  // `forceOverwrite` re-analyses even cards that already have a caption.
   onRecaption?: (
-    targets: { id: string; file: File }[],
+    targets: { id: string; file: File; caption?: string; captionJa?: string }[],
+    opts?: { forceOverwrite?: boolean },
   ) => Promise<Record<string, { en: string; ja: string }>>;
+  // Caption FORMAT resolved for the selected base model — drives the format
+  // mismatch warning and the confirm-dialog wording.
+  resolvedCaptionMode?: ResolvedCaptionMode;
 }) {
   // Per-card in-flight translation direction, keyed by pair id.
   const [busyId, setBusyId] = useState<Record<string, "ja" | "en" | undefined>>({});
@@ -92,7 +99,7 @@ export function DatasetCurationUI({
     [pairs],
   );
 
-  const runRecaption = async (targets: CurationPair[]) => {
+  const runRecaption = async (targets: CurationPair[], forceOverwrite = false) => {
     if (!onRecaption || targets.length === 0) return;
     const live = targets.filter((t) => !recappingIds.has(t.id));
     if (!live.length) return;
@@ -103,7 +110,10 @@ export function DatasetCurationUI({
       return next;
     });
     try {
-      const out = await onRecaption(live.map((t) => ({ id: t.id, file: t.file })));
+      const out = await onRecaption(
+        live.map((t) => ({ id: t.id, file: t.file, caption: t.caption, captionJa: t.captionJa })),
+        { forceOverwrite },
+      );
       const updates: Record<string, Partial<CurationPair>> = {};
       for (const t of live) {
         const r = out[t.id];
@@ -136,6 +146,44 @@ export function DatasetCurationUI({
     () => pairs.filter((p) => !p.excluded && !p.caption.trim()),
     [pairs],
   );
+
+  const captionModeLabel = (m: ResolvedCaptionMode) =>
+    m === "dense" ? "Dense（自然言語散文）" : "Tags（カンマ区切りタグ）";
+
+  // Format-mismatch guard: the base model resolves to Dense prose, but the
+  // cards on screen are mostly comma-tag lists — a stale localStorage draft or
+  // a Tags→Dense model switch left a chimera dataset. Excluded cards are not
+  // counted. "Tag-like" means it genuinely reads as a Danbooru list: NO
+  // sentence-ending punctuation AND either densely comma-separated (≥4
+  // segments) or just a handful of words. A short prose sentence that ends in
+  // "." is NOT a mismatch — the old "< 50 words" cutoff false-flagged every
+  // faithfully back-translated Dense caption. Warn only when tag-like cards
+  // are the majority.
+  const formatMismatch = useMemo(() => {
+    if (resolvedCaptionMode !== "dense") return false;
+    const withCap = pairs.filter((p) => !p.excluded && p.caption.trim());
+    if (withCap.length < 2) return false;
+    const tagLike = withCap.filter((p) => {
+      const c = p.caption.trim();
+      const hasSentencePunct = /[.!?]["')\]]?(\s|$)/.test(c);
+      const commaSegs = c.split(",").length - 1;
+      const words = c.split(/\s+/).filter(Boolean).length;
+      return !hasSentencePunct && (commaSegs >= 4 || words < 12);
+    }).length;
+    return tagLike > withCap.length / 2;
+  }, [pairs, resolvedCaptionMode]);
+
+  // Confirm, then re-analyse EVERY card in the current format (forceOverwrite).
+  // Shared by the toolbar button and the mismatch banner's repair button.
+  const forceRecaptionAll = () => {
+    if (!onRecaption || pairs.length === 0) return;
+    const ok = window.confirm(
+      `現在の形式【${captionModeLabel(resolvedCaptionMode)}】で、すべてのカード（${pairs.length}件）の` +
+        `キャプションを上書き再解析しますか？手動編集した内容はリセットされます。`,
+    );
+    if (!ok) return;
+    void runRecaption(pairs, true);
+  };
 
   const downloadDataset = async () => {
     setZipping(true);
@@ -197,7 +245,7 @@ export function DatasetCurationUI({
   const translateProtected = async (text: string, dir: "ja" | "en"): Promise<string | null> => {
     const body = stripTrigger(text).trim();
     if (!body) return trig ? trig : null;
-    const out = await translateCaption(body, dir === "ja" ? "to_ja" : "to_en");
+    const out = await translateCaption(body, dir === "ja" ? "to_ja" : "to_en", resolvedCaptionMode);
     return withTrigger(out);
   };
 
@@ -237,6 +285,7 @@ export function DatasetCurationUI({
           const res = await translateCaptionsBatch(
             sendIdx.map((k) => bodies[k]),
             dir === "ja" ? "to_ja" : "to_en",
+            resolvedCaptionMode,
           );
           sendIdx.forEach((k, j) => {
             outs[k] = res[j] ?? "";
@@ -313,6 +362,22 @@ export function DatasetCurationUI({
               🔄 未キャプション {uncaptioned.length} 枚を再解析
             </button>
           )}
+          {onRecaption && pairs.length > 0 && (
+            <button
+              type="button"
+              onClick={forceRecaptionAll}
+              disabled={disabled || Boolean(bulk) || recappingIds.size > 0}
+              title={`全カードを現在の形式【${captionModeLabel(resolvedCaptionMode)}】で上書き再解析します。`}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-neon-violet/50 bg-neon-violet/10 px-3 py-1.5 text-xs font-semibold text-neon-violet transition-colors hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {recappingIds.size > 0 ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <RotateCcw size={13} />
+              )}
+              🔄 全カードを現在の形式で再解析
+            </button>
+          )}
           <button
             type="button"
             onClick={translateAllToJa}
@@ -349,6 +414,28 @@ export function DatasetCurationUI({
           {overCount && `画像は最大 ${maxImages} 枚までです（あと ${kept.length - maxImages} 枚除外してください）。`}
           {overBytes && ` 合計サイズが上限（${fmtMb(maxTotalBytes)}）を超えています。`}
         </p>
+      )}
+
+      {formatMismatch && onRecaption && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-2.5">
+          <p className="min-w-0 flex-1 text-[11px] leading-relaxed text-amber-300">
+            ⚠️ キャプション形式の不整合:
+            現在のモデルには【Dense（自然言語散文）】が適用されていますが、既存カードの多くが【Tags（タグ列）】形式です。
+          </p>
+          <button
+            type="button"
+            onClick={forceRecaptionAll}
+            disabled={disabled || Boolean(bulk) || recappingIds.size > 0}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-amber-400/70 bg-amber-400/20 px-3 py-1.5 text-xs font-semibold text-amber-100 transition-colors hover:bg-amber-400/30 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {recappingIds.size > 0 ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <RotateCcw size={13} />
+            )}
+            現在の形式で全カードを一括修復
+          </button>
+        </div>
       )}
       {error && (
         <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-400">{error}</p>

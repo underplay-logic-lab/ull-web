@@ -35,6 +35,7 @@ import {
   pollLoraJob,
   uploadLoraDataset,
   downloadLoraCheckpoint,
+  downloadLoraSelectionZip,
   downloadLoraJobBundle,
   probeLoraJobArtifact,
   getLoraCheckpointDownloadUrl,
@@ -42,6 +43,7 @@ import {
   fetchRecentLoraJob,
   type LoraJobStatus,
   type LoraApiError,
+  type LoraPollError,
   type LoraSalvageResult,
 } from "@/lib/loraApi";
 import {
@@ -71,14 +73,29 @@ import { parseDatasetZip, isZipFile, buildDatasetZip, downloadBlob } from "@/lib
 import {
   LORA_CAPTION_CATEGORIES,
   LORA_CAPTION_CATEGORY_META,
+  coerceLoraCaptionCategory,
   captionSpecHasInput,
   buildCaptionFallbackPrompt,
+  resolveCaptionMode,
+  isCaptionMode,
   type LoraCaptionCategory,
   type LoraCaptionSpec,
+  type CaptionMode,
+  type ResolvedCaptionMode,
 } from "@/lib/loraCaptionSpec";
 import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
 import { generateDatasetCaptions, captionFileKey } from "@/lib/loraCaption";
 const JOB_POLL_INTERVAL_MS = 3000;
+// Consecutive transient poll failures (5xx / network) tolerated before the
+// monitor shows the "connection lost" fallback card. Each retry in between
+// waits an exponentially longer backoff. Reaching this no longer STOPS the
+// loop — it drops to a slow keep-alive tick (POLL_KEEPALIVE_MS) that
+// self-heals the screen the moment the API / network is back.
+const MAX_RETRY_COUNT = 6;
+// Slow keep-alive cadence once the fast retries are spent and the degraded
+// card is up. The job keeps running server-side; this tick is what catches
+// its completion without the user having to click anything.
+const POLL_KEEPALIVE_MS = 15_000;
 const MAX_IMAGES = 200;
 // Raw upload budget. The worker's Smart Ingest stage downscales / re-encodes
 // every image on a free CPU container before the GPU starts, and AI-vision
@@ -98,6 +115,16 @@ const ACTIVE_JOB_STORAGE_KEY = "lora_studio_active_job";
 // too so a stale pointer from any of them can't strand the user.
 const LEGACY_ACTIVE_JOB_KEYS = ["active_lora_job_id", "ull_active_job", "lora_studio_active_job_id"];
 const DISMISSED_JOBS_STORAGE_KEY = "lora_studio_dismissed_jobs";
+
+// How recently a `completed` job must have finished for the mount-restore
+// fallback (fetchRecentLoraJob, used only when the localStorage pointer was
+// lost) to still surface its "🏆 直前の学習が完了しています" download banner.
+// A long H3 / video run legitimately takes 5h+, so a user who trains
+// overnight and reopens the Studio the next day must still land on the
+// banner — 12h was too tight for exactly that case. Artifacts live 14 days
+// (CLAUDE.md §3); 7 days keeps the banner reachable well within that without
+// resurfacing ancient jobs on every visit.
+const RECENT_COMPLETED_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Auto-saved draft of the whole form — text inputs (trigger word, raw YAML,
 // the Japanese "固定/変化させたい特徴" notes) AND the expert / model settings
@@ -150,6 +177,19 @@ function persistCaptionCache(entries: { key: string; en: string; ja: string }[])
   }
 }
 
+// Wipe the whole AI-caption draft cache. Used when the user starts a fresh
+// dataset and chooses NOT to carry the previous run's captions — otherwise a
+// re-dropped file (same name::size::lastModified) silently rehydrates a stale,
+// possibly wrong-format caption ("zombie draft").
+function clearCaptionCache(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(CAPTION_CACHE_STORAGE_KEY);
+  } catch {
+    /* no-op */
+  }
+}
+
 type LoraFormDraft = {
   triggerWord: string;
   loraName: string;
@@ -157,6 +197,9 @@ type LoraFormDraft = {
   captionFixed: string;
   captionVarying: string;
   captionPromptOverride: string;
+  // Caption FORMAT preference: 'auto' lets the base model decide (dense prose
+  // vs. comma tags), 'dense' / 'tags' pin it. See resolveCaptionMode().
+  captionMode: CaptionMode;
   curationEnabled: boolean;
   // Expert / model settings — persisted so a reload, a component re-mount, or
   // a switch back to the form after a failed run never drops a hand-tuned
@@ -182,6 +225,7 @@ function buildFormDraft(v: {
   captionFixed: string;
   captionVarying: string;
   captionPromptOverride: string;
+  captionMode: CaptionMode;
   curationEnabled: boolean;
   mode: Mode;
   modelChoice: string;
@@ -198,6 +242,7 @@ function buildFormDraft(v: {
     captionFixed: v.captionFixed,
     captionVarying: v.captionVarying,
     captionPromptOverride: v.captionPromptOverride,
+    captionMode: v.captionMode,
     curationEnabled: v.curationEnabled,
     mode: v.mode,
     modelChoice: v.modelChoice,
@@ -274,9 +319,9 @@ const LR_PRESETS: { value: number; label: string }[] = [
   { value: 0.00005, label: "0.00005 (5e-5) ・ 微調整" },
 ];
 
-// Auto-caption prompt is now built from the selected LoRA type (人物 / 画風 /
-// 物質 / 風景) plus the user's Japanese notes on which features to lock in vs.
-// let vary — see src/lib/loraCaptionSpec.ts. On "次へ" the browser calls
+// Auto-caption prompt is now built from the selected LoRA type (人物 / 衣装 /
+// 物体 / 背景 / 画風) plus the user's Japanese notes on which features to lock
+// in vs. let vary — see src/lib/loraCaptionSpec.ts. On "次へ" the browser calls
 // /api/studio/lora/caption-prompt (Gemini) to synthesise the English
 // instruction handed to the worker's Qwen captioner as `caption_prompt`.
 
@@ -311,10 +356,11 @@ const DEFAULT_PRO: ProConfig = {
 const DEFAULT_FORM_DRAFT: LoraFormDraft = buildFormDraft({
   triggerWord: "",
   loraName: "",
-  captionCategory: "person",
+  captionCategory: "character",
   captionFixed: "",
   captionVarying: "",
   captionPromptOverride: "",
+  captionMode: "auto",
   curationEnabled: false,
   mode: "auto",
   modelChoice: "minimax_h3",
@@ -329,6 +375,10 @@ type Phase = "form" | "curation" | "starting" | "tracking";
 
 const fieldCls =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-neon-violet/50";
+
+// Quick-select helper buttons above the checkpoint list (全選択 / 後半のみ / 全解除).
+const quickSelectBtnCls =
+  "rounded-md border border-border px-2 py-0.5 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground";
 
 // ---------------------------------------------------------------------------
 
@@ -780,8 +830,16 @@ function ProgressPanel({
   queuedElapsedSec?: number;
   onUseLora?: (loraFilename: string) => void;
 }) {
+  // Bundle-download busy flag ("final" / "dataset") — a single heavy op, so it
+  // stays serialised. The per-row ⬇️ buttons do NOT use this (see
+  // `ckptDownloading` below): each click fires its own signed download
+  // immediately with no shared lock / queue.
   const [downloadingCkpt, setDownloadingCkpt] = useState<string | null>(null);
   const [copyingCkpt, setCopyingCkpt] = useState<string | null>(null);
+  // Filenames whose per-row ⬇️ signed-URL round-trip (~1s) is in flight — for a
+  // per-button spinner + a same-file double-tap guard ONLY. Never a global
+  // lock: other rows stay clickable, and clicks are never dropped.
+  const [ckptDownloading, setCkptDownloading] = useState<Set<string>>(() => new Set());
   const [ckptError, setCkptError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastData[]>([]);
   // Server-confirmed existence of each artefact — only consulted for a job
@@ -791,9 +849,31 @@ function ProgressPanel({
   const [artifactProbe, setArtifactProbe] = useState<{
     jobId: string | null;
     final: boolean | null;
-    bundle: boolean | null;
     dataset: boolean | null;
-  }>({ jobId: null, final: null, bundle: null, dataset: null });
+  }>({ jobId: null, final: null, dataset: null });
+
+  // "一括ダウンロード" state. 1 file selected -> its own .safetensors download;
+  // 2+ -> the server bundles them into a single uncompressed (ZIP_STORED) zip
+  // and the browser pulls that as ONE stream (dodges the same-origin
+  // concurrent-connection cap that hung a multi-file dispatch). Tagged with
+  // the job id (like `artifactProbe`) so a stale "✅ 開始しました" never carries
+  // onto another job's panel.
+  // `bundle` -> the 2+ file path, whose "preparing" window is the ~30-60s the
+  // worker spends writing a multi-GB ZIP_STORED file before the browser sees a
+  // single byte (single-file "preparing" is just the ~1s URL-sign round-trip).
+  const [bulkDl, setBulkDl] = useState<{
+    jobId: string;
+    state: "idle" | "preparing" | "done";
+    bundle: boolean;
+  }>({ jobId: "", state: "idle", bundle: false });
+
+  // Which checkpoints are ticked for the "選択したチェックポイントを保存"
+  // button. Tagged with jobId; when it doesn't match the current job the
+  // selection defaults to 全選択 (resolved in the completed branch below).
+  const [ckptSel, setCkptSel] = useState<{ jobId: string; selected: Set<string> }>({
+    jobId: "",
+    selected: new Set<string>(),
+  });
 
   const pushToast = (message: string) =>
     setToasts((prev) => [...prev, { id: Date.now() + Math.random(), message }]);
@@ -809,12 +889,11 @@ function ProgressPanel({
     }
     let alive = true;
     void (async () => {
-      const [final, bundle, dataset] = await Promise.all([
+      const [final, dataset] = await Promise.all([
         probeLoraJobArtifact(probeJobId, "final").catch(() => false),
-        probeLoraJobArtifact(probeJobId, "bundle").catch(() => false),
         probeLoraJobArtifact(probeJobId, "dataset").catch(() => false),
       ]);
-      if (alive) setArtifactProbe({ jobId: probeJobId, final, bundle, dataset });
+      if (alive) setArtifactProbe({ jobId: probeJobId, final, dataset });
     })();
     return () => {
       alive = false;
@@ -827,18 +906,32 @@ function ProgressPanel({
   const probe =
     artifactProbe.jobId === job.jobId
       ? artifactProbe
-      : { final: null, bundle: null, dataset: null };
+      : { final: null, dataset: null };
+  // Same guard for the bulk-download state.
+  const bulk =
+    bulkDl.jobId === job.jobId ? bulkDl : { state: "idle" as const, bundle: false };
 
-  const handleCkptDownload = async (filename: string) => {
-    setDownloadingCkpt(filename);
+  // Per-row ⬇️. Fires immediately, every click — no concurrency limit, no
+  // pending queue, no shared disable. `ckptDownloading` only tracks this
+  // file's own ~1s signing round-trip for its spinner / double-tap guard.
+  const handleCkptDownload = (filename: string) => {
     setCkptError(null);
-    try {
-      await downloadLoraCheckpoint(job.jobId, filename);
-    } catch (err) {
-      setCkptError(err instanceof Error ? err.message : "ダウンロードに失敗しました。");
-    } finally {
-      setDownloadingCkpt(null);
-    }
+    setCkptDownloading((s) => {
+      const n = new Set(s);
+      n.add(filename);
+      return n;
+    });
+    void downloadLoraCheckpoint(job.jobId, filename)
+      .catch((err) =>
+        setCkptError(err instanceof Error ? err.message : "ダウンロードに失敗しました。"),
+      )
+      .finally(() =>
+        setCkptDownloading((s) => {
+          const n = new Set(s);
+          n.delete(filename);
+          return n;
+        }),
+      );
   };
 
   const handleCkptCopyUrl = async (filename: string) => {
@@ -855,11 +948,48 @@ function ProgressPanel({
     }
   };
 
+  // 一括ダウンロード. One file -> its own .safetensors. Two or more -> the
+  // server stitches them into a single uncompressed (ZIP_STORED) zip and the
+  // browser pulls that as ONE stream — a multi-file client-side dispatch hits
+  // the same-origin concurrent-connection cap and wedges after ~2. Both paths
+  // await only the URL-signing round-trip (+ the server's fast Store-mode zip
+  // build) then hand off to the browser's own download manager.
+  const handleSelectionDownload = async (files: string[]) => {
+    if (files.length === 0 || bulk.state === "preparing") return;
+    const isBundle = files.length > 1;
+
+    setCkptError(null);
+    setBulkDl({ jobId: job.jobId, state: "preparing", bundle: isBundle });
+    try {
+      if (!isBundle) {
+        await downloadLoraCheckpoint(job.jobId, files[0]);
+        setBulkDl({ jobId: job.jobId, state: "done", bundle: false });
+        return;
+      }
+      // The signed URL is minted in ~1s, but the browser then blocks on the
+      // worker writing a multi-GB ZIP_STORED bundle (~30-60s) before the
+      // download actually begins. Hold the "まとめています" copy across that
+      // window instead of flashing "開始しました" a minute early — we can't
+      // observe the cross-origin response, so approximate with a timer.
+      await downloadLoraSelectionZip(job.jobId, files);
+      window.setTimeout(() => {
+        setBulkDl((prev) =>
+          prev.jobId === job.jobId && prev.state === "preparing" && prev.bundle
+            ? { jobId: job.jobId, state: "done", bundle: true }
+            : prev,
+        );
+      }, 45_000);
+    } catch (err) {
+      setBulkDl({ jobId: job.jobId, state: "idle", bundle: false });
+      setCkptError(err instanceof Error ? err.message : "ダウンロードの開始に失敗しました。");
+    }
+  };
+
   // All three primary buttons resolve the ACTUAL file server-side (recursive
   // Volume search, on-demand zip) and only fire the iframe once the API has
   // confirmed the file exists — a genuine miss becomes a visible toast, never
   // a silent iframe 404. No salvage round-trip.
-  const handleBundleDownload = async (want: "dataset" | "bundle" | "final") => {
+  const handleBundleDownload = async (want: "dataset" | "final") => {
     setDownloadingCkpt(want);
     setCkptError(null);
     try {
@@ -877,13 +1007,11 @@ function ProgressPanel({
   //  - failed / _timeout  → only what the server-side probe actually found
   //                         (a Step-0 init crash produces nothing, so the
   //                         whole block collapses to null).
-  const dlBusy = downloadingCkpt !== null || copyingCkpt !== null;
-  const renderArtifactDownloads = (show: {
-    final: boolean;
-    dataset: boolean;
-    bundle: boolean;
-  }) => {
-    if (!show.final && !show.dataset && !show.bundle) return null;
+  // Only the bundle (完成版 / データセット) ops serialise each other — a per-row
+  // ⬇️ or URLコピー must never gate these.
+  const dlBusy = downloadingCkpt !== null;
+  const renderArtifactDownloads = (show: { final: boolean; dataset: boolean }) => {
+    if (!show.final && !show.dataset) return null;
     return (
       <div className="space-y-2 rounded-lg border border-neon-violet/40 bg-background/50 p-3">
         <p className="text-[11px] font-semibold text-foreground">📥 成果物ダウンロード</p>
@@ -912,22 +1040,10 @@ function ProgressPanel({
               📦 キャプション付きデータセットDL (ZIP)
             </button>
           )}
-          {show.bundle && (
-            <button
-              type="button"
-              onClick={() => handleBundleDownload("bundle")}
-              disabled={dlBusy}
-              title="このジョブの全 .safetensors（中間＋最終）を1つの ZIP にまとめて取得します。"
-              className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-3 py-2.5 text-xs font-semibold text-neon-violet transition-all hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {downloadingCkpt === "bundle" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-              📦 全チェックポイント一括DL (ZIP)
-            </button>
-          )}
         </div>
         {ckptError && <p className="text-[10px] text-red-400">{ckptError}</p>}
         <p className="text-[10px] leading-relaxed text-muted opacity-70">
-          未生成の ZIP はクリック時にクラウド上で復元してから取得します（GPU課金なし）。
+          未生成のファイルはクリック時にクラウド上で復元してから取得します（GPU課金なし）。
         </p>
       </div>
     );
@@ -939,7 +1055,6 @@ function ProgressPanel({
         {renderArtifactDownloads({
           final: probe.final === true,
           dataset: probe.dataset === true,
-          bundle: probe.bundle === true,
         })}
         <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-amber-400">
@@ -1084,13 +1199,10 @@ function ProgressPanel({
           この LoRA はモデルライブラリに保存され、動画生成ワークフローからすぐに利用できます。
         </p>
 
-        <div className="mt-3">
-          {renderArtifactDownloads({
-            final: true,
-            dataset: true,
-            bundle: allCheckpoints.length > 0,
-          })}
-        </div>
+        {/* Completed jobs don't get the single 完成版 button — final (Step 3000)
+            is already in the checkpoint list below (selection DL + per-row ⬇️).
+            Only the dataset ZIP belongs up here. */}
+        <div className="mt-3">{renderArtifactDownloads({ final: false, dataset: true })}</div>
 
         <div className="mt-3 flex flex-wrap gap-2">
           <button
@@ -1116,67 +1228,152 @@ function ProgressPanel({
           <p className="mt-1.5 text-[10px] text-red-400">{ckptError}</p>
         )}
 
-        {checkpoints.length > 0 && (
-          <div className="mt-4 border-t border-green-500/20 pt-3">
-            <p className="mb-1.5 text-[11px] font-medium text-foreground">
-              中間チェックポイント（過学習を避けて最適なステップを選択）
-            </p>
-            <div className="flex flex-col gap-1.5">
-              {checkpoints.map((c) => (
-                <div
-                  key={c.filename}
-                  className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-1.5 text-xs ${
-                    c.isFinal ? "border-neon-pink/40 bg-neon-pink/5" : "border-border bg-background/40"
-                  }`}
-                >
-                  <span className="flex items-center gap-2 font-mono text-[11px] text-muted">
-                    <span className={c.isFinal ? "font-semibold text-neon-pink" : "text-foreground"}>
-                      {c.isFinal ? "最終版" : `Step ${c.step}`}
-                    </span>
-                    <span className="opacity-60">{formatMb(c.sizeBytes)}</span>
-                  </span>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => handleCkptDownload(c.filename)}
-                      disabled={downloadingCkpt !== null || copyingCkpt !== null}
-                      className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {downloadingCkpt === c.filename ? (
-                        <Loader2 size={11} className="animate-spin" />
-                      ) : (
-                        <Download size={11} />
-                      )}
-                      ⬇️ ダウンロード
+        {checkpoints.length > 0 &&
+          (() => {
+            const allNames = checkpoints.map((c) => c.filename);
+            // Default = 全選択 until the user touches the selection for THIS job.
+            const selectedNames =
+              ckptSel.jobId === job.jobId ? ckptSel.selected : new Set(allNames);
+            const isSel = (name: string) => selectedNames.has(name);
+            const selectedFiles = checkpoints
+              .filter((c) => isSel(c.filename))
+              .map((c) => c.filename);
+            const selectedCount = selectedFiles.length;
+            const commit = (names: Iterable<string>) => {
+              setCkptSel({ jobId: job.jobId, selected: new Set(names) });
+              // Clear a previous run's "✅ 開始しました" once the selection changes.
+              if (bulk.state !== "idle") {
+                setBulkDl({ jobId: job.jobId, state: "idle", bundle: false });
+              }
+            };
+            const toggle = (name: string) => {
+              const next = new Set(selectedNames);
+              if (next.has(name)) next.delete(name);
+              else next.add(name);
+              commit(next);
+            };
+            // 後半のみ: Step 2000+ if any, otherwise the top 50% by step.
+            const laterHalf = () => {
+              const strong = checkpoints.filter((c) => c.step >= 2000);
+              if (strong.length > 0) return strong.map((c) => c.filename);
+              const sorted = [...checkpoints].sort((a, b) => a.step - b.step);
+              return sorted.slice(Math.floor(sorted.length / 2)).map((c) => c.filename);
+            };
+            return (
+              <div className="mt-4 border-t border-green-500/20 pt-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-[11px] font-medium text-foreground">
+                    中間チェックポイント（過学習を避けて最適なステップを選択）
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    <button type="button" onClick={() => commit(allNames)} className={quickSelectBtnCls}>
+                      全選択
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => handleCkptCopyUrl(c.filename)}
-                      disabled={downloadingCkpt !== null || copyingCkpt !== null}
-                      className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {copyingCkpt === c.filename ? (
-                        <Loader2 size={11} className="animate-spin" />
-                      ) : (
-                        <ClipboardCopy size={11} />
-                      )}
-                      📋 URLコピー
+                    <button type="button" onClick={() => commit(laterHalf())} className={quickSelectBtnCls}>
+                      後半のみ (2000+)
+                    </button>
+                    <button type="button" onClick={() => commit([])} className={quickSelectBtnCls}>
+                      全解除
                     </button>
                   </div>
                 </div>
-              ))}
-            </div>
-            <p className="mt-1.5 text-[10px] text-muted opacity-70">
-              「URLコピー」の直通リンクは約15分間有効です（Model Downloader 等での取り込み用）。
-            </p>
-            {ckptError && <p className="mt-1.5 text-[10px] text-red-400">{ckptError}</p>}
-          </div>
-        )}
+
+                <button
+                  type="button"
+                  onClick={() => handleSelectionDownload(selectedFiles)}
+                  disabled={selectedCount === 0 || bulk.state === "preparing"}
+                  title="チェックを入れたチェックポイントをまとめて1つのファイルとしてダウンロードします（解凍不要・そのまま取り込み可）。"
+                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-3 text-sm font-bold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {bulk.state === "preparing" ? (
+                    <>
+                      <Loader2 size={15} className="animate-spin" />
+                      {bulk.bundle
+                        ? "📦 サーバーでファイルをまとめています…（約30〜60秒）"
+                        : "📦 ダウンロードを準備中…"}
+                    </>
+                  ) : bulk.state === "done" ? (
+                    <>
+                      <Check size={15} />
+                      ✅ ダウンロードを開始しました（ブラウザの進行状況を確認してください）
+                    </>
+                  ) : (
+                    <>
+                      <Download size={15} />⚡ 選択したチェックポイントを一括ダウンロード ({selectedCount} 件)
+                    </>
+                  )}
+                </button>
+                <p className="mt-1.5 text-[10px] leading-relaxed text-muted opacity-70">
+                  まず 1 個だけ各行の「⬇️」でテスト取得し、良ければ必要な数件をチェックして一括ダウンロードできます。2
+                  件以上は自動で 1
+                  つのファイルにまとめて配信されます。
+                  <br />
+                  ※複数ファイルのまとめ処理（数GB）を行うため、ブラウザのダウンロードが実際に開始されるまで30〜60秒ほど準備時間がかかります。
+                </p>
+
+                <div className="mt-2 flex flex-col gap-1.5">
+                  {checkpoints.map((c) => (
+                    <div
+                      key={c.filename}
+                      className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-1.5 text-xs ${
+                        c.isFinal ? "border-neon-pink/40 bg-neon-pink/5" : "border-border bg-background/40"
+                      }`}
+                    >
+                      <label className="flex cursor-pointer items-center gap-2 font-mono text-[11px] text-muted">
+                        <input
+                          type="checkbox"
+                          checked={isSel(c.filename)}
+                          onChange={() => toggle(c.filename)}
+                          className="h-3.5 w-3.5 shrink-0 accent-neon-violet"
+                        />
+                        <span className={c.isFinal ? "font-semibold text-neon-pink" : "text-foreground"}>
+                          {c.isFinal ? "最終版" : `Step ${c.step}`}
+                        </span>
+                        <span className="opacity-60">{formatMb(c.sizeBytes)}</span>
+                      </label>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleCkptDownload(c.filename)}
+                          disabled={ckptDownloading.has(c.filename)}
+                          className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {ckptDownloading.has(c.filename) ? (
+                            <Loader2 size={11} className="animate-spin" />
+                          ) : (
+                            <Download size={11} />
+                          )}
+                          ⬇️ ダウンロード
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleCkptCopyUrl(c.filename)}
+                          disabled={copyingCkpt === c.filename}
+                          className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {copyingCkpt === c.filename ? (
+                            <Loader2 size={11} className="animate-spin" />
+                          ) : (
+                            <ClipboardCopy size={11} />
+                          )}
+                          📋 URLコピー
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-[10px] text-muted opacity-70">
+                  「URLコピー」の直通リンクは約15分間有効です（Model Downloader 等での取り込み用）。
+                </p>
+                {ckptError && <p className="mt-1.5 text-[10px] text-red-400">{ckptError}</p>}
+              </div>
+            );
+          })()}
 
         {checkpoints.length === 0 && (
           <p className="mt-3 text-[10px] leading-relaxed text-muted">
-            中間チェックポイントが個別に表示されていない場合は、上の「📦
-            全チェックポイント一括DL」で復元・取得できます。
+            中間チェックポイントの一覧が表示されていない場合は、上の「🏆 完成版LoRA
+            DL」から最新の重みを取得できます。
           </p>
         )}
 
@@ -1192,16 +1389,16 @@ function ProgressPanel({
     .filter((c) => !c.isCaptionArchive && !c.isBundle)
     .sort((a, b) => a.step - b.step);
   const hasCaptionArchive = (job.checkpoints ?? []).some((c) => c.isCaptionArchive);
-  // A Step-0 init crash leaves nothing behind — offer 完成版 / 全チェックポイント
-  // ONLY when the file is really there (client-side signal or server probe),
-  // and the dataset ZIP only when captions actually got parsed & persisted.
+  // A Step-0 init crash leaves nothing behind — offer 完成版 ONLY when the
+  // file is really there (client-side signal or server probe), and the
+  // dataset ZIP only when captions actually got parsed & persisted. The
+  // per-step checkpoints (partialCkpts) render as their own list below.
   const artifactShow = {
     final: probe.final === true,
-    bundle: partialCkpts.length > 0 || probe.bundle === true,
     dataset: hasCaptionArchive || probe.dataset === true,
   };
-  const probingArtifacts =
-    probe.final === null && probe.bundle === null && probe.dataset === null;
+  const hasPartialCkpts = partialCkpts.length > 0;
+  const probingArtifacts = probe.final === null && probe.dataset === null;
   return (
     <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4">
       <div className="flex items-center gap-2 text-sm font-semibold text-red-400">
@@ -1213,7 +1410,7 @@ function ProgressPanel({
         <br />
         {job.safetyStop
           ? `設定負荷に対してクレジットが不足したため、原価割れを避けて安全停止し、全額返金されました。解像度・ステップ数・バッチを下げるか、投入クレジットを増やしてください。${
-              artifactShow.bundle ? "中断時点までの中間チェックポイントはダウンロードできます。" : ""
+              hasPartialCkpts ? "中断時点までの中間チェックポイントはダウンロードできます。" : ""
             }`
           : job.refunded === true
             ? "消費したクレジットは全額返金されました。"
@@ -1255,10 +1452,10 @@ function ProgressPanel({
                   <button
                     type="button"
                     onClick={() => handleCkptDownload(c.filename)}
-                    disabled={downloadingCkpt !== null || copyingCkpt !== null}
+                    disabled={ckptDownloading.has(c.filename)}
                     className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {downloadingCkpt === c.filename ? (
+                    {ckptDownloading.has(c.filename) ? (
                       <Loader2 size={11} className="animate-spin" />
                     ) : (
                       <Download size={11} />
@@ -1268,7 +1465,7 @@ function ProgressPanel({
                   <button
                     type="button"
                     onClick={() => handleCkptCopyUrl(c.filename)}
-                    disabled={downloadingCkpt !== null || copyingCkpt !== null}
+                    disabled={copyingCkpt === c.filename}
                     className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {copyingCkpt === c.filename ? (
@@ -1328,6 +1525,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // Image ids we've already sent to the vision captioner (so a re-render / new
   // drop doesn't re-caption them). Cleared per-id on remove / on "再解析".
   const captionAttemptedRef = useRef<Set<string>>(new Set());
+  // Asked at most once per mount: when a fresh dataset drop would rehydrate
+  // captions from the localStorage draft cache, offer a clean start so a stale
+  // (or wrong-format) draft can't zombie back in. Once the user has answered,
+  // their choice stands for the rest of the session.
+  const zombieDraftDecidedRef = useRef(false);
   // Image ids whose caption came from a user .txt / ZIP (NOT the AI) — a
   // blank one of these is intentional, so the worker must not VLM-fill it.
   // State (not a ref) because the routing badge derives from it in render.
@@ -1359,13 +1561,17 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // LoRA-type-aware auto-caption spec: the training TYPE + the user's JP notes
   // on which features to lock into the trigger (blacklisted from captions) vs.
   // let vary (described). Gemini turns this into the English Qwen instruction.
-  const [captionCategory, setCaptionCategory] = useState<LoraCaptionCategory>("person");
+  const [captionCategory, setCaptionCategory] = useState<LoraCaptionCategory>("character");
   const [captionFixed, setCaptionFixed] = useState("");
   const [captionVarying, setCaptionVarying] = useState("");
   // User-edited final English instruction — empty = use whatever Gemini builds
   // on "次へ". Non-empty overrides generation.
   const [captionPromptOverride, setCaptionPromptOverride] = useState("");
   const [captionPromptOpen, setCaptionPromptOpen] = useState(false);
+  // Caption FORMAT: 'auto' routes off the base model (dense prose for the
+  // next-gen DiT lineup, comma tags for CLIP-encoder SDXL); 'dense' / 'tags'
+  // pin it. Resolved via resolveCaptionMode() and sent to the vision API.
+  const [captionMode, setCaptionMode] = useState<CaptionMode>("auto");
   // Last synthesised English instruction + how it was produced, for display.
   const [captionGen, setCaptionGen] = useState<{
     state: "idle" | "generating" | "done" | "error";
@@ -1421,6 +1627,16 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // provisioning copy in ProgressPanel. Only ever written from the interval
   // callback below (never synchronously in the effect body).
   const [queuedElapsedSec, setQueuedElapsedSec] = useState(0);
+  // Transient-failure state for the status poll (see startPolling /
+  // MAX_RETRY_COUNT). `pollRetry` > 0 drives the light "再接続中 (n/6)…" hint
+  // while the loop is still on its fast exponential backoff; `pollLost` means
+  // the fast retries were spent (or the job 404'd) so the degraded card is
+  // shown — but a slow keep-alive poll keeps running underneath (plus an
+  // instant re-poll on tab-focus / network-online), so the screen self-heals
+  // when the backend is reachable again. Only a 404 truly stops the loop.
+  // Neither path ever throws or unmounts the progress screen.
+  const [pollRetry, setPollRetry] = useState(0);
+  const [pollLost, setPollLost] = useState(false);
 
   // Wraps the progress / completion / error panel — the viewport is pulled
   // here the moment a job is dispatched and again on every terminal flip, so
@@ -1439,6 +1655,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
   const pollCancelledRef = useRef(false);
   const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Count of consecutive failed poll ticks. Reset to 0 on any 200; when it
+  // reaches MAX_RETRY_COUNT the loop stops and `pollLost` is raised.
+  const consecutiveErrorsRef = useRef(0);
   // Job ids the user has explicitly dismissed via "新しい LoRA を学習する" /
   // フォームに戻る — the mount-restore effect must never resurrect them (the
   // fetchRecentLoraJob fallback would otherwise bounce the user straight back
@@ -1580,12 +1799,14 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       if (d) {
         if (typeof d.triggerWord === "string") setTriggerWord(d.triggerWord);
         if (typeof d.loraName === "string") setLoraName(d.loraName);
-        if (d.captionCategory && (LORA_CAPTION_CATEGORIES as readonly string[]).includes(d.captionCategory)) {
-          setCaptionCategory(d.captionCategory);
+        {
+          const migrated = coerceLoraCaptionCategory(d.captionCategory);
+          if (migrated) setCaptionCategory(migrated);
         }
         if (typeof d.captionFixed === "string") setCaptionFixed(d.captionFixed);
         if (typeof d.captionVarying === "string") setCaptionVarying(d.captionVarying);
         if (typeof d.captionPromptOverride === "string") setCaptionPromptOverride(d.captionPromptOverride);
+        if (isCaptionMode(d.captionMode)) setCaptionMode(d.captionMode);
         if (typeof d.curationEnabled === "boolean") setCurationEnabled(d.curationEnabled);
 
         // --- expert / model settings ---------------------------------------
@@ -1662,6 +1883,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       captionFixed,
       captionVarying,
       captionPromptOverride,
+      captionMode,
       curationEnabled,
       mode,
       modelChoice,
@@ -1690,6 +1912,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     captionFixed,
     captionVarying,
     captionPromptOverride,
+    captionMode,
     curationEnabled,
     mode,
     modelChoice,
@@ -1713,6 +1936,33 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     // Resume support: captions earned before a crash / reload are cached by
     // file identity — rehydrate any that match the files being (re-)added.
     const cache = loadCaptionCache();
+
+    // Zombie-draft guard: a fresh dataset drop that WOULD rehydrate captions
+    // from a previous session's cache — ask once whether to keep that draft or
+    // start clean. Without this, a re-dropped file silently restores a stale
+    // (or wrong-format, e.g. Tags after a switch to Dense) caption.
+    let useCache = true;
+    const freshStart = imagesRef.current.length === 0;
+    const cacheWouldRehydrate =
+      freshStart &&
+      Object.keys(cache).length > 0 &&
+      entries.some((e) => !(e.caption ?? "").trim() && Boolean(cache[captionFileKey(e.file)]));
+    if (cacheWouldRehydrate && !zombieDraftDecidedRef.current) {
+      zombieDraftDecidedRef.current = true;
+      const startClean = window.confirm(
+        "新しいデータセットが読み込まれました。以前のキャプション下書きを破棄して完全に新規作成しますか？\n\n" +
+          "「OK」= 下書きを破棄し、クリーンな状態でキャプションを作り直します\n" +
+          "「キャンセル」= 以前のキャプション下書きを引き継ぎます",
+      );
+      if (startClean) {
+        useCache = false;
+        clearCaptionCache();
+        setCaptions({});
+        setCaptionsJa({});
+        setCurationPairs([]);
+        captionAttemptedRef.current = new Set();
+      }
+    }
     // Reject any single image over the per-file cap (the total-size cap is
     // enforced separately by the submit gate).
     const oversized = entries.filter((e) => e.file.size > MAX_FILE_BYTES);
@@ -1740,7 +1990,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         // Brought by the user (.txt / ZIP) — not AI-generated.
         newUserCaptionIds.push(id);
         captionAttemptedRef.current.add(id);
-      } else {
+      } else if (useCache) {
         const cached = cache[captionFileKey(file)];
         if (cached && (cached.en?.trim() || cached.ja?.trim())) {
           if (cached.en?.trim()) newCaps[id] = cached.en.trim();
@@ -1911,7 +2161,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       JSON.stringify([
         curationTrigger,
         captionPromptOverride.trim(),
-        captionSpecFilled ? [captionSpec.category, captionSpec.fixed, captionSpec.varying] : null,
+        // Category always counts — even with no fixed/varying text it now
+        // drives the server-side blacklist/whitelist policy, so switching it
+        // must invalidate the "captions already reflect the spec" guard.
+        captionSpec.category,
+        captionSpecFilled ? [captionSpec.fixed, captionSpec.varying] : null,
       ]),
     [curationTrigger, captionPromptOverride, captionSpecFilled, captionSpec],
   );
@@ -1919,6 +2173,12 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   useEffect(() => {
     captionSpecKeyRef.current = captionSpecKey;
   }, [captionSpecKey]);
+  // Selected training type, mirrored into a ref so the caption callbacks can
+  // forward it to /api/studio/lora/caption without re-creating themselves.
+  const captionCategoryRef = useRef<LoraCaptionCategory>(captionCategory);
+  useEffect(() => {
+    captionCategoryRef.current = captionCategory;
+  }, [captionCategory]);
 
   // The English instruction to hand the vision API *right now*, with zero
   // network round-trip: a manual override wins, else the deterministic
@@ -1983,6 +2243,25 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const targetModel = isCustom ? "custom" : modelChoice;
   const selectedPreset = isCustom ? undefined : loraPresetById(modelChoice);
   const pricedArch = isCustom ? baseArchitecture : (selectedPreset?.arch ?? "");
+
+  // Caption FORMAT resolved for the model in the dropdown right now. The key
+  // blends preset id + arch + label + (custom) base architecture so a tag
+  // hint anywhere (illustrious / juggernaut / sdxl / pony / sd15) routes to
+  // the CLIP tag pipeline; everything else is dense prose.
+  const captionModelKey = isCustom
+    ? `${customModelId} ${baseArchitecture}`
+    : `${modelChoice} ${selectedPreset?.arch ?? ""} ${selectedPreset?.label ?? ""}`;
+  const resolvedCaptionMode: ResolvedCaptionMode = resolveCaptionMode(captionModelKey, captionMode);
+  const captionModelLabel = isCustom
+    ? customModelId.trim() || "カスタムモデル"
+    : (selectedPreset?.label ?? modelChoice);
+  // Read by the (async) vision passes when a request resolves, long after any
+  // render — a ref keeps them on the current model's format without threading
+  // it through every recaption entry point.
+  const resolvedCaptionModeRef = useRef<ResolvedCaptionMode>(resolvedCaptionMode);
+  useEffect(() => {
+    resolvedCaptionModeRef.current = resolvedCaptionMode;
+  }, [resolvedCaptionMode]);
 
   // A job dispatched this session that is still running server-side.
   // Non-null independent of `phase` — it stays true after the tracking
@@ -2070,11 +2349,20 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   }, [user]);
 
   const startPolling = useCallback(
-    (jobId: string) => {
+    (jobId: string, opts?: { immediate?: boolean }) => {
+      // Kill any tick still scheduled by a previous startPolling / keep-alive
+      // loop so we never run two overlapping loops for the same job.
+      if (pollTimeoutRef.current) {
+        clearTimeout(pollTimeoutRef.current);
+        pollTimeoutRef.current = null;
+      }
       pollCancelledRef.current = false;
       activeJobIdRef.current = jobId;
       queuedSinceRef.current = Date.now();
-      console.log(`[lora] startPolling job=${jobId}`);
+      consecutiveErrorsRef.current = 0;
+      setPollRetry(0);
+      setPollLost(false);
+      console.log(`[lora] startPolling job=${jobId}${opts?.immediate ? " (immediate)" : ""}`);
 
       const tick = async () => {
         if (pollCancelledRef.current) return;
@@ -2085,9 +2373,59 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           next = await pollLoraJob(pollingId);
           console.log(`[lora] tick job=${pollingId} status=${next.status} elapsed=${elapsed}s retryCount=${next.retryCount}`);
           if (pollCancelledRef.current || pollingId !== activeJobIdRef.current) return;
+          // A good response wipes any accumulated transient-failure state —
+          // including a raised "connection lost" card: the progress bar snaps
+          // straight back to the live value and any terminal status below now
+          // drives the screen to its completed / failed panel.
+          if (consecutiveErrorsRef.current !== 0) {
+            consecutiveErrorsRef.current = 0;
+            setPollRetry(0);
+          }
+          setPollLost((wasLost) => (wasLost ? false : wasLost));
           setJob(next);
         } catch (err) {
-          console.error(`[lora] poll FAILED job=${pollingId} elapsed=${elapsed}s:`, err);
+          if (pollCancelledRef.current || pollingId !== activeJobIdRef.current) return;
+          const e = (err ?? {}) as Partial<LoraPollError>;
+          const fatal = e.isFatal === true || e.status === 404;
+          const attempt = consecutiveErrorsRef.current + 1;
+          console.error(
+            `[lora] poll FAILED job=${pollingId} elapsed=${elapsed}s ` +
+              `(fatal=${fatal}, attempt=${attempt}/${MAX_RETRY_COUNT}):`,
+            err,
+          );
+
+          if (fatal) {
+            // Unrecoverable (404 — job row gone / wrong account). Stop the
+            // loop for good and show the degraded card; nothing to poll.
+            consecutiveErrorsRef.current = MAX_RETRY_COUNT;
+            pollCancelledRef.current = true;
+            if (pollTimeoutRef.current) {
+              clearTimeout(pollTimeoutRef.current);
+              pollTimeoutRef.current = null;
+            }
+            setPollRetry(MAX_RETRY_COUNT);
+            setPollLost(true);
+            return;
+          }
+
+          consecutiveErrorsRef.current = Math.min(attempt, MAX_RETRY_COUNT);
+          setPollRetry(consecutiveErrorsRef.current);
+
+          if (attempt >= MAX_RETRY_COUNT) {
+            // Fast retries spent — raise the degraded card, but DO NOT stop:
+            // drop to a slow keep-alive tick so the screen catches the job's
+            // completion on its own the moment the API / network recovers.
+            setPollLost(true);
+            if (!pollCancelledRef.current) pollTimeoutRef.current = setTimeout(tick, POLL_KEEPALIVE_MS);
+            return;
+          }
+
+          // Transient failure with fast retries left: the light "再接続中
+          // (n/6)…" hint, next tick on an exponential backoff (2s * 1.5^n,
+          // capped at 10s).
+          const backoff = Math.min(2000 * Math.pow(1.5, attempt), 10000);
+          if (!pollCancelledRef.current) pollTimeoutRef.current = setTimeout(tick, backoff);
+          return;
         }
 
         if (next) {
@@ -2117,10 +2455,44 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
         if (!pollCancelledRef.current) pollTimeoutRef.current = setTimeout(tick, JOB_POLL_INTERVAL_MS);
       };
-      pollTimeoutRef.current = setTimeout(tick, JOB_POLL_INTERVAL_MS);
+      pollTimeoutRef.current = setTimeout(tick, opts?.immediate ? 0 : JOB_POLL_INTERVAL_MS);
     },
     [refreshCredits],
   );
+
+  // "[今すぐ再接続]" on the degraded card — restarts the poll loop against the
+  // same job id with an IMMEDIATE first fetch (no 3s wait), so the newest
+  // Modal-side status lands right away and the panel restores / advances to
+  // its completed screen.
+  const retryPolling = useCallback(() => {
+    const id = activeJobIdRef.current;
+    if (!id) return;
+    startPolling(id, { immediate: true });
+  }, [startPolling]);
+
+  // Auto-recovery while the degraded card is up: the moment the tab regains
+  // focus or the network comes back, fire an immediate re-poll instead of
+  // waiting out the slow keep-alive tick. Belt-and-suspenders on top of the
+  // in-loop keep-alive so a user returning to a long-idle tab sees the real
+  // (often already-completed) state at once.
+  useEffect(() => {
+    if (!pollLost) return;
+    const kick = () => {
+      const id = activeJobIdRef.current;
+      if (id && !pollCancelledRef.current) startPolling(id, { immediate: true });
+    };
+    const onVisible = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") kick();
+    };
+    window.addEventListener("online", kick);
+    window.addEventListener("focus", kick);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("online", kick);
+      window.removeEventListener("focus", kick);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [pollLost, startPolling]);
 
   // Restores an in-flight or just-finished job after the page re-mounts —
   // the job survives server-side (generation_jobs) regardless; only this
@@ -2129,12 +2501,19 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // the stale key instead of getting stuck.
   useEffect(() => {
     if (!user) return;
-    // Run EXACTLY ONCE per mount. `user` is only a dependency so this waits
-    // for auth — its identity churns on every token refresh / tab refocus,
-    // and a re-run here is precisely how a job the user already left gets
-    // re-attached seconds later.
+    // Run EXACTLY ONCE per successful mount. `user` is only a dependency so
+    // this waits for auth — its identity churns on every token refresh / tab
+    // refocus, and a re-run here is precisely how a job the user already left
+    // gets re-attached seconds later.
+    //
+    // The guard is set in the async `finally` — NOT synchronously up here —
+    // so React 18/19 StrictMode's mount→unmount→remount in dev doesn't leave
+    // it stuck: the first (immediately torn-down) run would set it, `cancelled`
+    // would make every `stale()` check bail, and the real remount would then
+    // early-return forever — the just-completed job never rehydrating. Marking
+    // "done" only when a run actually finished un-cancelled fixes that while
+    // still blocking the token-refresh re-attach trap.
     if (restoreDoneRef.current) return;
-    restoreDoneRef.current = true;
 
     let cancelled = false;
     // Snapshot the binding generation. resetForm() / Start-Training bump this;
@@ -2145,96 +2524,122 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     // physically blocked once this holds.
     const stale = () =>
       cancelled || jobBindGenRef.current !== gen || phaseRef.current !== "form";
-    (async () => {
-      const clearKey = () => {
-        if (typeof window === "undefined") return;
-        try {
-          localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
-          for (const k of LEGACY_ACTIVE_JOB_KEYS) localStorage.removeItem(k);
-        } catch {
-          /* storage disabled */
-        }
-      };
-
-      let targetId =
-        typeof window !== "undefined" ? localStorage.getItem(ACTIVE_JOB_STORAGE_KEY) : null;
-      // A job the user explicitly dismissed this session — never re-attach.
-      if (targetId && dismissedJobIdsRef.current.has(targetId)) {
-        clearKey();
-        targetId = null;
-      }
-      let fromRecent = false;
-
-      // No explicit pointer — fall back to the user's most recent LoRA job to
-      // re-attach a still-running one, or to surface a recently-COMPLETED
-      // one's download panel. A recent FAILED / cancelled job must NOT hijack
-      // the form on every visit — that's the trap this fixes.
-      if (!targetId) {
-        try {
-          const recent = await fetchRecentLoraJob();
-          if (stale()) return;
-          const reattachable =
-            recent &&
-            !dismissedJobIdsRef.current.has(recent.jobId) &&
-            (recent.status === "queued" ||
-              recent.status === "processing" ||
-              (recent.status === "completed" &&
-                (() => {
-                  const ref = recent.updatedAt || recent.createdAt;
-                  const ageMs = ref ? Date.now() - new Date(ref).getTime() : Infinity;
-                  return ageMs < 12 * 60 * 60 * 1000;
-                })()));
-          if (reattachable) {
-            targetId = recent.jobId;
-            fromRecent = true;
-          }
-        } catch {
-          /* recent lookup is best-effort */
-        }
-      }
-      if (!targetId || stale()) return;
-
-      const persist = () => {
-        if (typeof window !== "undefined") {
+    // Marks the restore attempt as spent — but only if THIS run reached the
+    // end without being torn down. A cancelled run (StrictMode's throw-away
+    // first mount) leaves the guard clear so the real mount still runs.
+    const markDone = () => {
+      if (!cancelled) restoreDoneRef.current = true;
+    };
+    void (async () => {
+      try {
+        const clearKey = () => {
+          if (typeof window === "undefined") return;
           try {
-            localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, targetId!);
+            localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+            for (const k of LEGACY_ACTIVE_JOB_KEYS) localStorage.removeItem(k);
           } catch {
             /* storage disabled */
           }
-        }
-      };
-      try {
-        const restored = await pollLoraJob(targetId);
-        // The user moved on (started a new job / reset) while this was in
-        // flight — the whole point of the guard. Do NOT touch phase/job.
-        if (stale()) return;
-        if (restored.status === "queued" || restored.status === "processing") {
-          persist();
-          setJob(restored);
-          setPhase("tracking");
-          startPolling(targetId);
-        } else if (restored.status === "completed") {
-          // Positive + escapable — always show its download panel.
-          persist();
-          setJob(restored);
-          setPhase("tracking");
-        } else if (restored.status === "failed" || restored.status === "cancelled") {
-          // HARD RULE: a failed / cancelled job NEVER drives setPhase("tracking")
-          // from this async callback. Drop the pointer and (for an explicit
-          // pointer — a job the user was actually watching) surface a small
-          // dismissible banner so the Salvage / download panel is one click
-          // away without ever yanking the user off the form.
+        };
+
+        let targetId =
+          typeof window !== "undefined" ? localStorage.getItem(ACTIVE_JOB_STORAGE_KEY) : null;
+        // A job the user explicitly dismissed this session — never re-attach.
+        if (targetId && dismissedJobIdsRef.current.has(targetId)) {
           clearKey();
-          if (!fromRecent) setRecoveredJob(restored);
-        } else {
-          // failed_timeout / unknown / unreachable — drop the pointer, stay
-          // on the form (nothing to salvage).
-          clearKey();
+          targetId = null;
         }
-      } catch {
-        // 404 (deleted / wrong account) or a transient fetch error — do NOT
-        // trap the user; clear the pointer and leave them on the form.
-        if (!stale()) clearKey();
+        let fromRecent = false;
+
+        // No explicit pointer — fall back to the user's most recent LoRA job
+        // to re-attach a still-running one, or to surface a recently-COMPLETED
+        // one's download banner. A recent FAILED / cancelled job must NOT
+        // hijack the form on every visit — that's the trap this fixes.
+        if (!targetId) {
+          try {
+            const recent = await fetchRecentLoraJob();
+            if (stale()) return;
+            const reattachable =
+              recent &&
+              !dismissedJobIdsRef.current.has(recent.jobId) &&
+              (recent.status === "queued" ||
+                recent.status === "processing" ||
+                (recent.status === "completed" &&
+                  (() => {
+                    const ref = recent.updatedAt || recent.createdAt;
+                    const ageMs = ref ? Date.now() - new Date(ref).getTime() : Infinity;
+                    return ageMs < RECENT_COMPLETED_MAX_AGE_MS;
+                  })()));
+            if (reattachable) {
+              targetId = recent.jobId;
+              fromRecent = true;
+            }
+          } catch {
+            /* recent lookup is best-effort */
+          }
+        }
+        if (!targetId || stale()) return;
+
+        const persist = () => {
+          if (typeof window !== "undefined") {
+            try {
+              localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, targetId!);
+            } catch {
+              /* storage disabled */
+            }
+          }
+        };
+        try {
+          const restored = await pollLoraJob(targetId);
+          // The user moved on (started a new job / reset) while this was in
+          // flight — the whole point of the guard. Do NOT touch phase/job.
+          if (stale()) return;
+          if (restored.status === "queued" || restored.status === "processing") {
+            persist();
+            activeJobIdRef.current = targetId;
+            setJob(restored);
+            setPhase("tracking");
+            startPolling(targetId);
+          } else if (restored.status === "completed") {
+            // An un-downloaded completed job. Persist the pointer and, when the
+            // form is still untouched (a plain reload / server restart — NOT a
+            // user who's begun a new dataset), land straight on the artefact /
+            // download screen and KEEP them there. "フォームに戻る（成果物は
+            // 保持されます）" is the explicit way out; the form-top "🏆 直前の
+            // 学習が完了しています" banner then links back. Only the async yank
+            // of a job the user has moved past is the bug — the pristine-form
+            // guard + stale() together stop exactly that.
+            persist();
+            activeJobIdRef.current = targetId;
+            setJob(restored);
+            if (!stale() && imagesRef.current.length === 0) {
+              setPhase("tracking");
+              scrollStudioIntoView();
+            }
+          } else if (restored.status === "failed" || restored.status === "cancelled") {
+            // HARD RULE: a failed / cancelled job NEVER drives
+            // setPhase("tracking") from this async callback. Drop the pointer
+            // and (for an explicit pointer — a job the user was actually
+            // watching) surface a small dismissible banner so the Salvage /
+            // download panel is one click away without ever yanking the user
+            // off the form.
+            clearKey();
+            if (!fromRecent) setRecoveredJob(restored);
+          } else {
+            // failed_timeout / unknown — drop the pointer, stay on the form
+            // (nothing to salvage).
+            clearKey();
+          }
+        } catch (err) {
+          // ONLY a definitive 404 (job deleted / belongs to another account)
+          // clears the pointer. A transient 5xx / network blip during mount
+          // must not strand a perfectly good job — leave the pointer so the
+          // next load simply retries.
+          const httpStatus = (err as { status?: number } | null)?.status;
+          if (!stale() && httpStatus === 404) clearKey();
+        }
+      } finally {
+        markDone();
       }
     })();
     return () => {
@@ -2333,28 +2738,18 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     try {
       const captionList = (ownCaptions ?? []).map((c) => (c ?? "").trim());
       const anyCaption = captionList.some((c) => c.length > 0);
-      // A caption that's only the trigger word (or blank) is NOT a real
-      // caption — the AI pass failed on that image and the worker's VLM must
-      // fill it. `captionList` is aligned to `imgs` by construction, so this
-      // also enforces "every current image has a caption entry".
-      const trig = effectiveTrigger.trim().toLowerCase();
-      const isSubstantive = (c: string): boolean => {
-        const t = c.trim();
-        if (!t) return false;
-        if (!trig) return true;
-        const rest = t.toLowerCase().startsWith(trig)
-          ? t.slice(trig.length).replace(/^[\s,、]+/, "")
-          : t;
-        return rest.trim().length > 0;
-      };
-      const allCaptions =
-        captionList.length === imgs.length && captionList.every(isSubstantive);
-      // "Bring your own" (worker never loads the VLM, blanks become the
-      // trigger word) when the user authored the captions (.txt / ZIP /
-      // curation edits) — a blank there is intentional. AI captions instead
-      // flow as `captions` (not custom_captions) unless every image has a
-      // real caption, so the worker's fallback VLM fills only the gaps.
-      const bringOwn = captionsFromUser ? anyCaption : allCaptions;
+      // "Bring your own" — the worker writes exactly these captions, never
+      // loads its (tag-format) caption VLM, and NEVER consults the Volume
+      // caption cache. A blank slot becomes the trigger word.
+      //
+      // We now take this path as soon as ONE real caption exists, whoever
+      // authored it. Previously an AI-captioned set had to have EVERY slot
+      // filled to qualify, so a single Gemini quota/safety miss dropped the
+      // whole (Dense) set onto the plain `captions` path — where a stale
+      // tag-format cache for the same dataset_id would silently overwrite it,
+      // and tag-format VLM gap-fill would contaminate the rest (the yukipas
+      // Dense→tags swap). Safe side: honour the confirmed captions verbatim.
+      const bringOwn = anyCaption || captionsFromUser;
 
       const trainingConfig = yamlMode
         ? { custom_yaml_override: pro.rawYaml }
@@ -2384,6 +2779,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         triggerWord: effectiveTrigger,
         customCaptions: bringOwn ? captionList : undefined,
         skipCaptioning: bringOwn || undefined,
+        // The resolved caption FORMAT for this base model — forwarded to the
+        // worker so its persisted-caption cache is keyed per-format (a dense
+        // run and a tags run of the same dataset never share a cache dir).
+        captionMode: resolvedCaptionModeRef.current,
         captionPrompt: resolvedCaptionPromptRef.current.trim() || undefined,
         // The structured LoRA-type spec — the server rebuilds caption_prompt
         // from this if the browser couldn't (Gemini down here).
@@ -2592,6 +2991,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           {
             triggerWord: trigger,
             captionPrompt: captionPrompt || undefined,
+            category: captionCategoryRef.current,
+            captionMode: resolvedCaptionModeRef.current,
             signal: ac.signal,
             onProgress: (done, total) => setAutoCap((s) => ({ ...s, done, total, note: null })),
             onBatch: (entries) => {
@@ -2723,6 +3124,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         const res = await generateDatasetCaptions([img.file], {
           triggerWord: curationTrigger,
           captionPrompt: resolvedCaptionPromptRef.current.trim() || currentCaptionPrompt() || undefined,
+          category: captionCategoryRef.current,
+          captionMode: resolvedCaptionModeRef.current,
           onBatch: (entries) => {
             const e = entries[0];
             if (!e) return;
@@ -2757,14 +3160,23 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // its own `pairs` state. Also writes through to the caption cache.
   const recaptionForCuration = useCallback(
     async (
-      targets: { id: string; file: File }[],
+      targets: { id: string; file: File; caption?: string; captionJa?: string }[],
+      opts?: { forceOverwrite?: boolean },
     ): Promise<Record<string, { en: string; ja: string }>> => {
       if (targets.length === 0) return {};
+      const force = opts?.forceOverwrite ?? false;
       const res = await generateDatasetCaptions(
         targets.map((t) => t.file),
         {
           triggerWord: curationTrigger,
           captionPrompt: resolvedCaptionPromptRef.current.trim() || currentCaptionPrompt() || undefined,
+          category: captionCategoryRef.current,
+          captionMode: resolvedCaptionModeRef.current,
+          forceOverwrite: force,
+          // Without a force, skip cards that already carry a caption (only the
+          // blank ones are re-analysed); with a force, re-do everything.
+          preCaptioned: force ? undefined : targets.map((t) => t.caption ?? ""),
+          preCaptionedJa: force ? undefined : targets.map((t) => t.captionJa ?? ""),
         },
       );
       const out: Record<string, { en: string; ja: string }> = {};
@@ -3072,6 +3484,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     }
     dismissJob(job?.jobId ?? activeJobIdRef.current);
     activeJobIdRef.current = "";
+    consecutiveErrorsRef.current = 0;
+    setPollRetry(0);
+    setPollLost(false);
     setPhase("form");
     setSubmitting(false);
     setJob(null);
@@ -3145,11 +3560,14 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     setTriggerWord("");
     setLoraName("");
     setPro(DEFAULT_PRO);
-    setCaptionCategory("person");
+    setCaptionCategory("character");
     setCaptionFixed("");
     setCaptionVarying("");
     setCaptionPromptOverride("");
+    setCaptionMode("auto");
     setCaptionPromptOpen(false);
+    // Re-arm the zombie-draft prompt for the next fresh dataset.
+    zombieDraftDecidedRef.current = false;
     setCaptionGen({ state: "idle", prompt: "", fromGemini: false, error: null });
     setCurationEnabled(false);
     setCurationPairs([]);
@@ -3218,6 +3636,43 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               </div>
             )}
             <ProgressPanel job={job} queuedElapsedSec={queuedElapsedSec} onUseLora={onUseLora} />
+
+            {/* Transient poll failure — still retrying with backoff. A light,
+                non-alarming hint; the progress bar above keeps its last value. */}
+            {pollRetry > 0 && !pollLost && (
+              <div className="flex items-center gap-2 rounded-xl border border-amber-400/25 bg-amber-400/[0.06] px-3 py-2 text-[12px] text-amber-300/90">
+                <Loader2 size={13} className="shrink-0 animate-spin" />
+                <span>
+                  再接続中 ({pollRetry}/{MAX_RETRY_COUNT})… サーバー応答を待機しています。学習はバックエンドで継続中です。
+                </span>
+              </div>
+            )}
+
+            {/* Fast retries spent (or the job 404'd). Safe degraded card — the
+                screen never crashed, the job keeps running server-side, and a
+                slow keep-alive poll (+ an instant re-poll on tab focus /
+                network recovery) is still running underneath, so this clears
+                itself the moment the backend is reachable again. */}
+            {pollLost && (
+              <div className="space-y-3 rounded-xl border border-amber-400/40 bg-amber-400/10 p-4 text-[12px] text-amber-100">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle size={15} className="mt-0.5 shrink-0 text-amber-300" />
+                  <p className="leading-relaxed">
+                    ⚠️ サーバーとの通信が一時的に途絶えました。学習ジョブはバックエンドで継続中です。
+                    自動で再接続を試み続けています（接続が回復すると最新の状態に自動で追いつきます）。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={retryPolling}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300/40 bg-amber-300/10 px-3 py-1.5 text-[11px] font-medium text-amber-100 transition-colors hover:border-amber-300/70 hover:bg-amber-300/20"
+                >
+                  <RotateCcw size={12} />
+                  今すぐ再接続
+                </button>
+              </div>
+            )}
+
             {images.length > 0 && job?.status === "processing" && (
               <button
                 type="button"
@@ -3278,6 +3733,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           maxImages={MAX_IMAGES}
           maxTotalBytes={MAX_TOTAL_BYTES}
           onRecaption={recaptionForCuration}
+          resolvedCaptionMode={resolvedCaptionMode}
         />
         <LoginModal
           open={loginOpen}
@@ -3316,8 +3772,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         </div>
       )}
 
-      {/* Just-completed job — its artefact-download panel stays one click
-          away until the user starts a new run (soft return keeps `job`). */}
+      {/* Just-completed job — its artefact-download panel stays one click away,
+          and survives a reload (mount-restore re-opens it), until the user
+          either starts a new run OR explicitly dismisses it here. */}
       {completedJob && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-green-500/40 bg-green-500/10 p-3">
           <p className="flex items-center gap-2 text-[12px] font-semibold text-green-400">
@@ -3325,14 +3782,37 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             🏆 直前の学習が完了しています
             {activeJobModelLabel && ` (${activeJobModelLabel})`}
           </p>
-          <button
-            type="button"
-            onClick={() => setPhase("tracking")}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-white transition-all hover:opacity-90"
-          >
-            成果物をダウンロードする
-            <ArrowLeft size={12} className="rotate-180" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPhase("tracking")}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-white transition-all hover:opacity-90"
+            >
+              成果物をダウンロードする
+              <ArrowLeft size={12} className="rotate-180" />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                dismissJob(completedJob.jobId);
+                activeJobIdRef.current = "";
+                setJob(null);
+                setActiveJobModelLabel(null);
+                if (typeof window !== "undefined") {
+                  try {
+                    localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+                    for (const k of LEGACY_ACTIVE_JOB_KEYS) localStorage.removeItem(k);
+                  } catch {
+                    /* storage disabled */
+                  }
+                }
+              }}
+              title="ダウンロード済みの場合はこれで閉じられます（成果物はサーバー側に14日間保持されます）"
+              className="rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted transition-colors hover:text-foreground"
+            >
+              閉じる
+            </button>
+          </div>
         </div>
       )}
 
@@ -3733,6 +4213,66 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                   「次へ」を押すと入力内容をAIが解析し、画像解析エンジン向けの最適な英語キャプション指示を自動生成・反映します
                   （固定したい特徴はキャプションから除外＝トリガーワードに焼き込み、変化させたい特徴のみ描写）。
                 </p>
+
+                {/* Caption FORMAT — dense prose vs. comma tags, routed by the
+                    selected base model unless the user pins it. */}
+                <div className="space-y-1.5 rounded-lg border border-border bg-background/40 p-2">
+                  <label className="block text-[10px] font-medium text-foreground">
+                    📝 キャプション形式
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(
+                      [
+                        { id: "auto", label: "自動判定（推奨）" },
+                        { id: "dense", label: "Dense（自然言語散文）" },
+                        { id: "tags", label: "Tags（タグ列）" },
+                      ] as { id: CaptionMode; label: string }[]
+                    ).map((o) => {
+                      const active = captionMode === o.id;
+                      return (
+                        <button
+                          key={o.id}
+                          type="button"
+                          disabled={busy}
+                          onClick={() => setCaptionMode(o.id)}
+                          className={`rounded-lg border px-2.5 py-1 text-[10px] font-medium transition-colors disabled:opacity-50 ${
+                            active
+                              ? "border-neon-violet/50 bg-neon-violet/10 text-neon-violet"
+                              : "border-border bg-background/60 text-muted hover:border-neon-violet/40"
+                          }`}
+                        >
+                          {o.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[10px] leading-relaxed text-muted">
+                    {captionMode === "auto" ? (
+                      <>
+                        現在「{captionModelLabel}」選択中：自動的に
+                        <span className="font-semibold text-neon-violet">
+                          {resolvedCaptionMode === "dense"
+                            ? "【Dense（自然言語）】"
+                            : "【Tags（タグ列）】"}
+                        </span>
+                        が適用されます
+                        {resolvedCaptionMode === "dense"
+                          ? "（LLM/VLM テキストエンコーダ搭載の次世代モデル向け）。"
+                          : "（77トークン CLIP・Danbooru タグ特化の SDXL 系向け）。"}
+                      </>
+                    ) : (
+                      <>
+                        手動指定：
+                        <span className="font-semibold text-neon-violet">
+                          {resolvedCaptionMode === "dense"
+                            ? "【Dense（自然言語）】"
+                            : "【Tags（タグ列）】"}
+                        </span>
+                        を使用します（モデル自動判定を上書き）。
+                      </>
+                    )}
+                  </p>
+                </div>
 
                 <div className="flex flex-wrap gap-1.5">
                   {LORA_CAPTION_CATEGORIES.map((c) => {
