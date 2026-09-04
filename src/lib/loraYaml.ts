@@ -40,13 +40,64 @@ export function validateLoraYaml(text: string): LoraYamlValidation {
     };
   }
   if (data === null || data === undefined || typeof data !== "object" || Array.isArray(data)) {
-    return { ok: false, message: "有効な設定オブジェクト（マッピング）ではありません", line: null, column: null };
+    return {
+      ok: false,
+      message: "無効な YAML 設定です: 有効な設定オブジェクト（マッピング）ではありません。",
+      line: null,
+      column: null,
+      errors: ["❌ 無効な YAML 設定です: 有効な設定オブジェクト（マッピング）ではありません。"],
+    };
+  }
+  // Structural prerequisites ai-toolkit's toolkit/config.py enforces before it
+  // reads anything else. A miss here is the "config file must have a job key"
+  // ValueError that would otherwise only surface AFTER the Modal container
+  // starts — a non-refundable wasted launch.
+  const structureErrors = collectLoraYamlStructureErrors(data);
+  if (structureErrors.length > 0) {
+    return { ok: false, message: structureErrors.join(" / "), line: null, column: null, errors: structureErrors };
   }
   const errors = collectLoraYamlErrors(data);
   if (errors.length > 0) {
     return { ok: false, message: errors.join(" / "), line: null, column: null, errors };
   }
   return { ok: true, data, warnings: collectLoraYamlWarnings(data) };
+}
+
+// ai-toolkit hard-requires a root `job` string (usually "extension") and a
+// root `config` mapping whose `process` is a non-empty list. Missing any of
+// these makes `toolkit/config.py` raise before the trainer even loads — this
+// is the gate that keeps such a YAML from ever reaching a GPU container.
+// Returned strings are display-ready (❌-prefixed), one per line.
+export function collectLoraYamlStructureErrors(data: unknown): string[] {
+  const errs: string[] = [];
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return ["❌ 無効な YAML 設定です: 有効な設定オブジェクト（マッピング）ではありません。"];
+  }
+  const root = data as Record<string, unknown>;
+
+  const job = root.job;
+  if (job === undefined || job === null || (typeof job === "string" && job.trim() === "")) {
+    errs.push("❌ 無効な YAML 設定です: ルートレベルに `job: extension` が必要です。");
+  } else if (typeof job !== "string") {
+    errs.push("❌ 無効な YAML 設定です: `job` は文字列で指定してください（通常は `job: extension`）。");
+  }
+
+  const config = root.config;
+  if (config === undefined || config === null) {
+    errs.push("❌ 無効な YAML 設定です: ルートレベルに `config`（オブジェクト）が必要です。");
+    return errs;
+  }
+  if (typeof config !== "object" || Array.isArray(config)) {
+    errs.push("❌ 無効な YAML 設定です: `config` はオブジェクト（マッピング）で指定してください。");
+    return errs;
+  }
+
+  const process = (config as Record<string, unknown>).process;
+  if (!Array.isArray(process) || process.length === 0) {
+    errs.push("❌ 無効な YAML 設定です: `config.process` の定義が見つかりません（1要素以上のリストが必要です）。");
+  }
+
+  return errs;
 }
 
 // The LoRA name + trigger word declared inside a raw ai-toolkit YAML. In

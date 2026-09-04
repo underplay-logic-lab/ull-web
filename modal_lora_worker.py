@@ -3023,6 +3023,41 @@ def _override_identity(override) -> tuple[str, str]:
     return name, trigger
 
 
+def _override_structure_error(override) -> "str | None":
+    """Fast structural check of a raw ai-toolkit YAML override, mirroring
+    collectLoraYamlStructureErrors() on the web side and the checks
+    toolkit/config.py does before anything else. Returns a Japanese error
+    string when the override can never load (missing `job` / `config` /
+    `config.process`), else None. The Next.js route already blocks these
+    before the credit debit — this is the last-line CPU-side guard so such a
+    job never reaches the GPU (the "config file must have a job key"
+    ValueError that used to burn a container start)."""
+    if not override:
+        return None
+    try:
+        import yaml
+
+        data = override if isinstance(override, dict) else yaml.safe_load(override)
+    except Exception:  # noqa: BLE001 — a syntax error is reported by _sanitize_override_yaml
+        return None
+    if not isinstance(data, dict):
+        return "無効な YAML 設定です: 有効な設定オブジェクト（マッピング）ではありません。"
+    job = data.get("job")
+    if job is None or (isinstance(job, str) and not job.strip()):
+        return "無効な YAML 設定です: ルートレベルに `job: extension` が必要です。"
+    if not isinstance(job, str):
+        return "無効な YAML 設定です: `job` は文字列で指定してください（通常は `job: extension`）。"
+    config = data.get("config")
+    if config is None:
+        return "無効な YAML 設定です: ルートレベルに `config`（オブジェクト）が必要です。"
+    if not isinstance(config, dict):
+        return "無効な YAML 設定です: `config` はオブジェクト（マッピング）で指定してください。"
+    process = config.get("process")
+    if not isinstance(process, list) or len(process) == 0:
+        return "無効な YAML 設定です: `config.process` の定義が見つかりません（1要素以上のリストが必要です）。"
+    return None
+
+
 def _derive_dataset_id(params: dict) -> str:
     """dataset_id keys the persisted-caption cache (and the VAE-latent /
     Smart-Ingest caches) on the Volume. Prefer the caller's value; otherwise
@@ -5082,7 +5117,16 @@ def _prepare_and_spawn_training(item: dict) -> dict:
     # model's artefacts to verify.
     target_model = str(item.get("target_model") or "minimax_h3")
     custom_model_id = str(item.get("custom_model_id") or "").strip()
-    override = bool(dict(item.get("training_config") or {}).get("custom_yaml_override"))
+    _override_raw = dict(item.get("training_config") or {}).get("custom_yaml_override")
+    override = bool(_override_raw)
+
+    # Structural pre-flight for raw-YAML jobs: a missing `job` / `config` /
+    # `config.process` makes ai-toolkit's toolkit/config.py raise on load —
+    # catch it here (CPU, before the GPU spawn) with a clear message + refund
+    # instead of burning a container start on a cryptic ValueError.
+    _struct_err = _override_structure_error(_override_raw)
+    if _struct_err:
+        return _fail(_struct_err)
 
     try:
         # ---- STRICT CPU-GATE ------------------------------------------------

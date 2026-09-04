@@ -9,7 +9,7 @@ import {
   loraPriceBreakdown,
   LORA_CREDIT_WORST_CASE,
 } from "@/lib/loraPricing";
-import { validateLoraYaml, loraYamlIdentity } from "@/lib/loraYaml";
+import { validateLoraYaml, loraYamlIdentity, collectLoraYamlStructureErrors } from "@/lib/loraYaml";
 import { getAdminEmails } from "@/lib/adminAuth";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { geminiApiKey, runGeminiText } from "@/lib/geminiText";
@@ -182,6 +182,18 @@ async function handlePost(request: Request): Promise<NextResponse> {
     }
     parsedOverride = check.data;
   } else if (hasOverride && trainingConfig.custom_yaml_override && typeof trainingConfig.custom_yaml_override === "object") {
+    // A pre-parsed dict override skips yaml.load, but the same ai-toolkit
+    // structural prerequisites still apply — check them before any debit.
+    const structErrors = collectLoraYamlStructureErrors(trainingConfig.custom_yaml_override);
+    if (structErrors.length > 0) {
+      return NextResponse.json(
+        {
+          error: `custom_yaml の設定エラー: ${structErrors.join(" / ")}`,
+          yamlError: { message: structErrors.join(" / "), line: null, column: null, errors: structErrors },
+        },
+        { status: 400 },
+      );
+    }
     parsedOverride = trainingConfig.custom_yaml_override;
   }
 
