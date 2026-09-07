@@ -111,7 +111,11 @@ DEFAULT_NEGATIVE_PROMPT = " "
 
 # --- 二重ウォッチドッグ（run_edit_job 内の監視スレッド）--------------------
 # (1) フリーズ検知: 1 ステップも進まないまま WATCHDOG_FREEZE_S 経過 → os._exit(1)
-# (2) 原価割れ損切り: ジョブ開始から API 由来の max_allowed_time 超過 → os._exit(1)
+#     （GPU デッドロックで協調停止不能。retries=0 + idempotency ガードで
+#      リトライループは防ぐ）
+# (2) 原価割れ損切り: ジョブ開始から max_allowed_time 超過 → cost_stop を立てて
+#     主ループを次アングル境界で break させ、正常 return（os._exit しない —
+#     Modal のインフラ障害誤認による無限リトライを避けるため）
 WATCHDOG_FREEZE_S = int(os.environ.get("ANGLE_WATCHDOG_FREEZE_S", str(15 * 60)))
 WATCHDOG_POLL_S = 15
 
@@ -335,6 +339,27 @@ def _patch_angle_job(job_id: str, fields: dict) -> None:
         print(f"[angle-job] failed to patch job {job_id}: {exc}", flush=True)
 
 
+def _get_angle_job_status(job_id: str):
+    """angle_jobs.status を 1 発 GET。取得不能なら None（＝判定不能、続行させる）。
+    Modal のクラッシュ由来リトライを冒頭で弾く idempotency ガード用。"""
+    if not job_id:
+        return None
+    try:
+        res = _supabase_request(
+            "GET",
+            "/rest/v1/angle_jobs",
+            params={"id": f"eq.{job_id}", "select": "status"},
+        )
+        if res is None:
+            return None
+        res.raise_for_status()
+        rows = res.json()
+        return rows[0].get("status") if rows else None
+    except Exception as exc:  # noqa: BLE001
+        print(f"[angle-job] status probe failed for {job_id}: {exc}", flush=True)
+        return None
+
+
 def _append_angle_result(job_id: str, image_url: str, label: str = "") -> None:
     """1 アングル完了を angle_jobs にアトミックに反映（RPC）。"""
     if not job_id or not image_url:
@@ -478,6 +503,11 @@ def ensure_qwen_edit_cached(repo: str = "") -> dict:
     image=image,
     gpu=GPU_REQUEST,
     volumes={MODELS_DIR: vol},
+    # run_edit_job の自動リトライは厳禁。ウォッチドッグが os._exit(1) すると
+    # Modal は「インフラ障害」とみなして spawned 入力を再実行し、また 840s
+    # 走ってまた os._exit … の無限ループで GPU を焼き続ける（2026-09-07 実障害）。
+    # retries=0 ＋ run_edit_job 冒頭の idempotency ガードで二重に防ぐ。
+    retries=0,
     # 外部歯止め（Modal 強制）。以前は timeout=86400（24h）+ in-process
     # ウォッチドッグ依存だったが、ウォッチドッグは daemon スレッドなので
     # コンテナが @modal.enter() 中に wedge する / GIL が飢餓する / スレッドが
@@ -870,10 +900,14 @@ class QwenImageEditWorker:
         完了時 status=completed、失敗時 status=failed ＋ 未生成分のクレジット返金。
         Next.js のリクエストはとうに終了しているので、進捗の担い手はこの関数だけ。
 
-        構図数の上限なし。原価の歯止めは別スレッドの二重ウォッチドッグ:
+        冒頭で angle_jobs.status を確認し、既に failed/completed なら即 no-op で
+        返す（Modal のクラッシュ由来リトライを弾く idempotency ガード）。
+
+        原価の歯止めは別スレッドの二重ウォッチドッグ:
           (1) フリーズ検知 — WATCHDOG_FREEZE_S(15分) 進捗ゼロ → os._exit(1)
-          (2) 原価割れ損切り — 稼働時間 > max_allowed_time → os._exit(1)
-        どちらも angle_jobs を failed にして未生成分を返金してから自爆する。
+          (2) 原価割れ損切り — 稼働時間 > max_allowed_time → cost_stop で協調停止 →
+              正常 return（os._exit しない）
+        どちらも先に angle_jobs を failed にし、未生成分を 1 回だけ返金する。
 
         payload: { job_id, user_id, credits_cost, image(base64|url),
                    instructions[str], labels[str]?, max_allowed_time?(秒),
@@ -892,6 +926,17 @@ class QwenImageEditWorker:
         negative_prompt = payload.get("negative_prompt") or DEFAULT_NEGATIVE_PROMPT
         seed = payload.get("seed")
         base_seed = None if seed is None or seed == "" else int(seed)
+
+        # --- idempotency ガード（Modal クラッシュ由来リトライの無限ループ対策）---
+        # ウォッチドッグ発火 → os._exit(1) → Modal が spawned 入力を再実行 → …
+        # を断ち切る。既に終了状態のジョブなら GPU に触れず即 no-op で返す。
+        _existing = _get_angle_job_status(job_id)
+        if _existing in ("failed", "completed"):
+            print(
+                f"[angle-job] {job_id} already {_existing} — skip (Modal retry no-op)",
+                flush=True,
+            )
+            return {"ok": False, "error": f"job already {_existing}", "skipped": True}
 
         instructions = [str(x).strip() for x in raw_instructions if str(x).strip()][:MAX_INSTRUCTIONS]
         if not instructions:
@@ -921,41 +966,65 @@ class QwenImageEditWorker:
             max_allowed_time = None
 
         # --- 二重ウォッチドッグ（別スレッド）--------------------------------
-        # (1) フリーズ検知: WATCHDOG_FREEZE_S の間 1 ステップも進まない
-        # (2) 原価割れ損切り: ジョブ開始から max_allowed_time 超過
-        # どちらも os._exit(1) でコンテナごと強制終了（未生成分は返金）。
+        # (1) フリーズ検知 = GPU デッドロック。主スレッドが CUDA 呼び出しで
+        #     wedge しており協調停止できない → os._exit(1) しかない。
+        #     retries=0 ＋ 冒頭の idempotency ガードでリトライループは防ぐ。
+        # (2) 原価割れ損切り = プロセスは健全、ただ遅いだけ。ハード kill せず
+        #     cost_stop を立てて主ループを次アングル境界で break させ、
+        #     run_edit_job を正常 return させる（os._exit すると Modal が
+        #     インフラ障害と誤認して再実行 → 無限ループ。2026-09-07 実障害）。
         n_total = len(instructions)
         last_progress_time = [time.time()]  # Heartbeat が更新する可変ボックス
         progress_box = {"done": 0}          # 監視スレッドが返金額計算に使う
         watchdog_stop = threading.Event()
+        cost_stop = threading.Event()       # COST 超過 → 主ループが break
+        refund_box = {"done": False}        # 返金は最大 1 回
 
-        def _self_destruct(reason: str, kind: str) -> None:
-            print(f"[angle-job][WATCHDOG] {job_id}: {kind} — {reason} → os._exit(1)", flush=True)
-            try:
-                _patch_angle_job(job_id, {"status": "failed", "error_message": reason[:500]})
-                remaining = n_total - progress_box["done"]
-                if remaining > 0 and credits_cost > 0 and n_total > 0:
-                    _refund_credits(user_id, int(round(credits_cost * remaining / n_total)))
-            except Exception as _e:  # noqa: BLE001
-                print(f"[angle-job][WATCHDOG] cleanup failed: {_e}", flush=True)
-            os._exit(1)
+        def _refund_remaining(note: str) -> None:
+            if refund_box["done"]:
+                return
+            refund_box["done"] = True
+            remaining = n_total - progress_box["done"]
+            if remaining > 0 and credits_cost > 0 and n_total > 0:
+                _refund_credits(user_id, int(round(credits_cost * remaining / n_total)))
+                print(
+                    f"[angle-job] {job_id} refunded {remaining}/{n_total} angles ({note})",
+                    flush=True,
+                )
 
         def _watchdog() -> None:
             while not watchdog_stop.wait(WATCHDOG_POLL_S):
                 now = time.time()
                 stalled = now - last_progress_time[0]
                 if stalled > WATCHDOG_FREEZE_S:
-                    _self_destruct(
+                    reason = (
                         f"フリーズ検知: {int(stalled)}s の間 1 ステップも進捗なし"
-                        f"（>{WATCHDOG_FREEZE_S}s）。GPU デッドロックとみなし強制終了。",
-                        "FREEZE",
+                        f"（>{WATCHDOG_FREEZE_S}s）。GPU デッドロックとみなし強制終了。"
                     )
-                if max_allowed_time is not None and (now - t0) > max_allowed_time:
-                    _self_destruct(
+                    print(f"[angle-job][WATCHDOG] {job_id}: FREEZE — {reason} → os._exit(1)", flush=True)
+                    try:
+                        _patch_angle_job(job_id, {"status": "failed", "error_message": reason[:500]})
+                        _refund_remaining("freeze")
+                    except Exception as _e:  # noqa: BLE001
+                        print(f"[angle-job][WATCHDOG] cleanup failed: {_e}", flush=True)
+                    os._exit(1)
+                if (
+                    max_allowed_time is not None
+                    and (now - t0) > max_allowed_time
+                    and not cost_stop.is_set()
+                ):
+                    reason = (
                         f"原価割れ検知（損切り）: GPU 稼働 {int(now - t0)}s が"
-                        f"許容最大 {int(max_allowed_time)}s を超過。強制終了。",
-                        "COST",
+                        f"許容最大 {int(max_allowed_time)}s を超過。協調停止。"
                     )
+                    print(f"[angle-job][WATCHDOG] {job_id}: COST — {reason}", flush=True)
+                    try:
+                        _patch_angle_job(job_id, {"status": "failed", "error_message": reason[:500]})
+                        _refund_remaining("cost-cap")
+                    except Exception as _e:  # noqa: BLE001
+                        print(f"[angle-job][WATCHDOG] cleanup failed: {_e}", flush=True)
+                    cost_stop.set()
+                    return  # ウォッチドッグ終了。主ループが break して正常 return する。
 
         watchdog = threading.Thread(target=_watchdog, name="angle-watchdog", daemon=True)
         watchdog.start()
@@ -974,6 +1043,12 @@ class QwenImageEditWorker:
         done = 0
         try:
             for idx, instr in enumerate(instructions):
+                if cost_stop.is_set():
+                    print(
+                        f"[angle-job] {job_id} halting at {done}/{n_total} — cost cap",
+                        flush=True,
+                    )
+                    break
                 # 各アングルの開始で Heartbeat をリセット — フリーズ判定は
                 # 「この 1 枚が 15 分まったく進まない」を基準にする。
                 last_progress_time[0] = time.time()
@@ -1022,10 +1097,7 @@ class QwenImageEditWorker:
         except Exception as exc:  # noqa: BLE001
             print(f"[angle-job] {job_id} failed after {done}/{n_total}: {exc}", flush=True)
             _patch_angle_job(job_id, {"status": "failed", "error_message": str(exc)[:500]})
-            # 生成できた分だけ課金、残りは返金。
-            remaining = n_total - done
-            if remaining > 0 and credits_cost > 0:
-                _refund_credits(user_id, int(round(credits_cost * remaining / n_total)))
+            _refund_remaining("exception")  # 生成できた分だけ課金、残りは返金
             return {"ok": False, "error": str(exc), "completed": done}
         finally:
             # 監視スレッドを安全に終了（正常完了・例外の両方でここを通る）。
@@ -1043,6 +1115,14 @@ class QwenImageEditWorker:
                 pass
 
         elapsed = round(time.time() - t0, 2)
+        if cost_stop.is_set():
+            # ウォッチドッグが status=failed + 返金済み。ここでは何も上書きせず、
+            # 正常 return して Modal のリトライを回避する。
+            print(
+                f"[angle-job] {job_id} halted by cost cap after {done}/{n_total} in {elapsed}s",
+                flush=True,
+            )
+            return {"ok": False, "error": "cost cap exceeded", "completed": done, "elapsed_time": elapsed}
         _patch_angle_job(job_id, {"status": "completed"})
         print(f"[angle-job] {job_id} completed {done} angle(s) in {elapsed}s", flush=True)
         return {"ok": True, "completed": done, "elapsed_time": elapsed}
