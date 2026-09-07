@@ -13,15 +13,6 @@ export type VolumeFile = {
   modified_at: string;
 };
 
-export type ModalLogEntry = {
-  ts: number;
-  gpu_tier: "standard" | "ultra";
-  status: "success" | "failed";
-  duration_s: number;
-  filename: string | null;
-  error: string | null;
-};
-
 // Same admin-only model-file subfolders the Modal image symlinks into
 // ComfyUI's models/ dir (see MODEL_SUBFOLDERS in scripts/modal_wan_animate.py).
 export const MODEL_SUBFOLDERS = ["diffusion_models", "text_encoders", "clip_vision", "vae", "loras"] as const;
@@ -39,8 +30,7 @@ type ModalStorageAction =
   | { action: "read_file"; file_path: string }
   | { action: "delete"; file_path: string }
   | { action: "delete_dir"; file_path: string }
-  | { action: "install_node"; git_url: string }
-  | { action: "logs"; limit?: number };
+  | { action: "install_node"; git_url: string };
 
 async function callModalStorage<T>(body: ModalStorageAction, timeoutMs = MODAL_STORAGE_TIMEOUT_MS): Promise<T> {
   const url = process.env.MODAL_STORAGE_URL;
@@ -124,11 +114,6 @@ export async function deleteVolumeDir(filePath: string): Promise<{ ok: true }> {
 
 export async function installCustomNode(gitUrl: string): Promise<{ ok: true; name: string }> {
   return callModalStorage({ action: "install_node", git_url: gitUrl }, MODAL_STORAGE_LONG_TIMEOUT_MS);
-}
-
-export async function getModalLogs(limit = 100): Promise<ModalLogEntry[]> {
-  const result = await callModalStorage<{ entries: ModalLogEntry[] }>({ action: "logs", limit });
-  return result.entries;
 }
 
 // --- Direct browser<->Modal signed downloads (admin file explorer) --------

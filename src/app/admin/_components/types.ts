@@ -74,34 +74,3 @@ export type ModelDownload = {
   created_at: string;
   updated_at: string;
 };
-
-export type ModalLogEntry = {
-  ts: number;
-  gpu_tier: "standard" | "ultra";
-  status: "success" | "failed";
-  duration_s: number;
-  filename: string | null;
-  error: string | null;
-};
-
-export type GpuTierStatus = {
-  name: string;
-  vramGb: number;
-  runningJobs: number;
-};
-
-export type ActiveJob = {
-  id: string;
-  user_id: string;
-  user_email: string | null;
-  job_type: string;
-  gpu_tier: "standard" | "ultra";
-  started_at: string;
-};
-
-export type ModalLogsResponse = {
-  gpuStatus: { standard: GpuTierStatus; ultra: GpuTierStatus };
-  activeJobs: ActiveJob[];
-  comfyLogs: ModalLogEntry[];
-  comfyLogsUnavailable: boolean;
-};
