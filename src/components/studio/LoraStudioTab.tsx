@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity,
   AlertTriangle,
   ArrowLeft,
   Bot,
@@ -26,6 +25,7 @@ import {
 import { LoginModal } from "@/components/LoginModal";
 import { ToastStack, type ToastData } from "@/components/Toast";
 import { QueueStatusPanel } from "@/components/studio/QueueStatusPanel";
+import { VramBadge } from "@/components/studio/VramBadge";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
@@ -68,6 +68,7 @@ import {
   LORA_CREDIT_WORST_CASE,
 } from "@/lib/loraPricing";
 import { validateLoraYaml, loraYamlIdentity } from "@/lib/loraYaml";
+import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { DatasetCurationUI, type CurationPair } from "@/components/studio/DatasetCurationUI";
 import { parseDatasetZip, isZipFile, buildDatasetZip, downloadBlob } from "@/lib/datasetZip";
 import {
@@ -563,18 +564,6 @@ config:
         </div>
       </div>
     </div>
-  );
-}
-
-// Spoiler-free live load indicator — deliberately no total, no %, no GPU
-// model. Just how much weight is currently resident.
-function VramBadge({ gb }: { gb: number | null | undefined }) {
-  if (gb == null) return null;
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-neon-violet/40 bg-neon-violet/10 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-neon-violet">
-      <Activity size={11} />
-      Active VRAM: {gb} GB
-    </span>
   );
 }
 
@@ -1494,6 +1483,7 @@ function ProgressPanel({
 export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string) => void }) {
   const { user } = useSupabaseUser();
   const { credits, loading: creditsLoading } = useProfileCredits(user);
+  const { knobs: pricingKnobs } = usePricingKnobs();
   // Gates the raw-YAML editor (a bespoke-contract / support feature). Non-
   // admins get the consultation card and can never reach yamlMode, so the
   // train payload from a normal account can't carry custom_yaml_override.
@@ -2293,7 +2283,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   //    equivalent config from the GUI knobs (batch is always 1 in GUI mode).
   const priceBreakdown = useMemo(() => {
     if (yamlMode) {
-      if (yamlCheck?.ok) return loraPriceBreakdown(yamlCheck.data, { archFallback: pricedArch });
+      if (yamlCheck?.ok)
+        return loraPriceBreakdown(yamlCheck.data, { archFallback: pricedArch, knobs: pricingKnobs });
       return null; // worst-case shown below
     }
     return loraPriceBreakdown(
@@ -2303,9 +2294,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         linearRank: mode === "pro" ? pro.rank : DEFAULT_PRO.rank,
         steps: mode === "pro" ? pro.steps : DEFAULT_LORA_STEPS,
       }),
-      { modelMultOverride: selectedPreset?.pricingModelMult },
+      { modelMultOverride: selectedPreset?.pricingModelMult, knobs: pricingKnobs },
     );
-  }, [yamlMode, yamlCheck, pricedArch, resolution, mode, pro.rank, pro.steps, selectedPreset]);
+  }, [yamlMode, yamlCheck, pricedArch, resolution, mode, pro.rank, pro.steps, selectedPreset, pricingKnobs]);
   const requiredCredits =
     priceBreakdown && priceBreakdown.credits > 0
       ? Math.min(LORA_CREDIT_WORST_CASE, priceBreakdown.credits)

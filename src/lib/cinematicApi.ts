@@ -69,6 +69,9 @@ export type CinematicJobStatus = {
   videoUrl: string | null;
   errorMessage: string | null;
   queue: CinematicQueueInfo | null;
+  /** ライブ実効 VRAM 消費量（GB）。ネタバレ防止 — 分母・％・GPU名なし。
+   *  worker 未デプロイ／CUDA 無しなら null。 */
+  vramUsedGb: number | null;
 };
 
 // Single poll of a job's current state — see /api/jobs/[id]. The caller
@@ -92,11 +95,18 @@ export async function pollCinematicJob(jobId: string): Promise<CinematicJobStatu
     throw new Error(data?.error || "ジョブ状態の取得に失敗しました。");
   }
 
+  const meta = (data.metadata ?? {}) as { vram_used_gb?: unknown };
+  const vramUsedGb =
+    typeof meta.vram_used_gb === "number" && Number.isFinite(meta.vram_used_gb)
+      ? meta.vram_used_gb
+      : null;
+
   return {
     jobId: data.jobId as string,
     status: data.status as CinematicJobStatus["status"],
     videoUrl: (data.videoUrl as string | null) ?? null,
     errorMessage: (data.errorMessage as string | null) ?? null,
+    vramUsedGb,
     queue:
       typeof data.queuePosition === "number"
         ? {

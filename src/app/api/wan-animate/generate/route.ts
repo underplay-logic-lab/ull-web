@@ -222,6 +222,7 @@ export async function POST(request: Request) {
       success: true,
       videoBase64: result.video_base64,
       remainingCredits: debitedCredits,
+      vramUsedGb: typeof result.vram_used_gb === "number" ? result.vram_used_gb : null,
     });
   } catch (err) {
     console.error("[wan-animate/generate] generation failed:", err);

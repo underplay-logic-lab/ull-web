@@ -19,12 +19,15 @@ import {
 } from "lucide-react";
 import {
   CINEMATIC_MODES,
+  cinematicModeCredits,
   cinematicTargetDimensions,
   type CinematicAspectRatio,
   type CinematicModeId,
 } from "@/lib/cinematicPricing";
+import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { generateCinematicVideo, pollCinematicJob, type CinematicQueueInfo } from "@/lib/cinematicApi";
 import { QueueStatusPanel } from "@/components/studio/QueueStatusPanel";
+import { VramBadge } from "@/components/studio/VramBadge";
 import { resizeImageBlobTo } from "@/lib/imageCanvas";
 import { ImageCropper } from "@/components/studio/ImageCropper";
 import { GpuWarmStokeWidget } from "@/components/studio/GpuWarmStokeWidget";
@@ -169,14 +172,18 @@ export function CinematicVideoTab() {
   const [aspect, setAspect] = useState<CinematicAspectRatio>("16:9");
   const [cropperOpen, setCropperOpen] = useState(false);
 
+  const { knobs } = usePricingKnobs();
+
   const [modeId, setModeId] = useState<CinematicModeId>("standard");
   const mode = useMemo(() => CINEMATIC_MODES.find((m) => m.id === modeId)!, [modeId]);
+  const modeCredits = cinematicModeCredits(modeId, knobs);
   const targetDims = useMemo(() => cinematicTargetDimensions(mode, aspect), [mode, aspect]);
 
   const [prompt, setPrompt] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [jobPhase, setJobPhase] = useState<JobPhase>(null);
   const [queueInfo, setQueueInfo] = useState<CinematicQueueInfo | null>(null);
+  const [vramUsedGb, setVramUsedGb] = useState<number | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [downloadFilename, setDownloadFilename] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -215,7 +222,7 @@ export function CinematicVideoTab() {
     };
   }, [croppedPreviewUrl]);
 
-  const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < mode.credits;
+  const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < modeCredits;
   const missingInputs = !croppedBlob;
 
   const handleFileSelected = (file: File) => {
@@ -250,6 +257,7 @@ export function CinematicVideoTab() {
     setStatus("loading");
     setJobPhase("queued");
     setQueueInfo(null);
+    setVramUsedGb(null);
     setResultUrl(null);
     setDownloadFilename(null);
     setErrorMessage(null);
@@ -276,6 +284,7 @@ export function CinematicVideoTab() {
         try {
           const job = await pollCinematicJob(jobId);
           if (pollCancelledRef.current) return;
+          setVramUsedGb(job.vramUsedGb);
 
           if (job.status === "completed") {
             setResultUrl(job.videoUrl);
@@ -361,7 +370,7 @@ export function CinematicVideoTab() {
     buttonLabel = (
       <>
         <Wand2 size={16} />
-        {mode.credits} クレジットで生成
+        {modeCredits} クレジットで生成
       </>
     );
   }
@@ -447,7 +456,8 @@ export function CinematicVideoTab() {
                     </div>
                     <span className="text-[11px] text-muted">{m.tagline}</span>
                     <span className="font-mono text-[11px] text-neon-pink">
-                      {m.credits} Credit{m.credits > 1 ? "s" : ""}
+                      {cinematicModeCredits(m.id, knobs)} Credit
+                      {cinematicModeCredits(m.id, knobs) > 1 ? "s" : ""}
                     </span>
                     <span className="font-mono text-[10px] text-muted/70">
                       {dims.width}×{dims.height} / {m.steps} steps
@@ -526,6 +536,11 @@ export function CinematicVideoTab() {
                 <span className="relative z-10 font-mono text-[11px] text-muted">
                   経過 {formatElapsedSeconds(elapsedMs)}s ・ {jobPhase === "queued" ? "空きGPUを確保しています..." : "高精度サンプリング中..."}
                 </span>
+                {vramUsedGb != null && (
+                  <span className="relative z-10">
+                    <VramBadge gb={vramUsedGb} />
+                  </span>
+                )}
               </div>
             )}
 
@@ -583,7 +598,7 @@ export function CinematicVideoTab() {
         open={chargeModalOpen}
         onClose={() => setChargeModalOpen(false)}
         credits={credits}
-        cost={mode.credits}
+        cost={modeCredits}
       />
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </div>

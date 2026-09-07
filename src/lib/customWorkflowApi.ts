@@ -11,6 +11,8 @@ export type GenerateCustomWorkflowResult = {
   resultUrl: string;
   outputKind: "image" | "video";
   remainingCredits: number;
+  /** 生成完了時点の実効 VRAM 消費量（GB）。ネタバレ防止 — 分母・％・GPU名なし。 */
+  vramUsedGb: number | null;
 };
 
 export type CustomWorkflowApiError = Error & { remainingCredits?: number };
@@ -71,5 +73,10 @@ export async function generateCustomWorkflow(
     base64ToBlob(data.resultBase64, mimeTypeFor(data.filename ?? "", outputKind)),
   );
 
-  return { resultUrl, outputKind, remainingCredits: data.remainingCredits };
+  return {
+    resultUrl,
+    outputKind,
+    remainingCredits: data.remainingCredits,
+    vramUsedGb: typeof data.vramUsedGb === "number" && Number.isFinite(data.vramUsedGb) ? data.vramUsedGb : null,
+  };
 }

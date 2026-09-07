@@ -283,6 +283,7 @@ export async function POST(request: Request) {
       outputKind: inferOutputKind(result.filename),
       filename: result.filename,
       remainingCredits: debitedCredits,
+      vramUsedGb: typeof result.vram_used_gb === "number" ? result.vram_used_gb : null,
     });
   } catch (err) {
     console.error("[studio/custom-workflows/generate] generation failed:", err);

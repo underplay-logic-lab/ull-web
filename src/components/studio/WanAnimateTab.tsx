@@ -30,6 +30,7 @@ import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { LoginModal } from "@/components/LoginModal";
 import { GpuTierSelector } from "@/components/studio/GpuTierSelector";
 import { GpuWarmStokeWidget } from "@/components/studio/GpuWarmStokeWidget";
+import { VramBadge } from "@/components/studio/VramBadge";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits } from "@/hooks/useProfileCredits";
 import { broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
@@ -289,6 +290,7 @@ export function WanAnimateTab() {
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [downloadFilename, setDownloadFilename] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [vramUsedGb, setVramUsedGb] = useState<number | null>(null);
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeModalOpen, setChargeModalOpen] = useState(false);
@@ -369,6 +371,7 @@ export function WanAnimateTab() {
     setResultUrl(null);
     setDownloadFilename(null);
     setErrorMessage(null);
+    setVramUsedGb(null);
 
     try {
       const result = await generateWanAnimateVideo({
@@ -385,6 +388,7 @@ export function WanAnimateTab() {
         return result.videoUrl;
       });
       setDownloadFilename(buildDownloadFilename());
+      setVramUsedGb(result.vramUsedGb);
       setStatus("done");
       broadcastCreditsUpdate(user.id, result.remainingCredits);
     } catch (err) {
@@ -659,6 +663,11 @@ export function WanAnimateTab() {
             <p className="mt-3 text-center font-mono text-xs text-muted">
               ⚡ 生成完了（所要時間: {formatElapsedSeconds(elapsedMs)}秒）
             </p>
+            {vramUsedGb != null && (
+              <div className="mt-2 flex justify-center">
+                <VramBadge gb={vramUsedGb} />
+              </div>
+            )}
             <a
               href={resultUrl}
               download={downloadFilename ?? buildDownloadFilename()}

@@ -13,6 +13,8 @@ export type WanAnimateGenerateParams = {
 export type WanAnimateGenerateResult = {
   videoUrl: string;
   remainingCredits: number;
+  /** 生成完了時点の実効 VRAM 消費量（GB）。ネタバレ防止 — 分母・％・GPU名なし。 */
+  vramUsedGb: number | null;
 };
 
 export type WanAnimateApiError = Error & { remainingCredits?: number };
@@ -66,5 +68,9 @@ export async function generateWanAnimateVideo(
 
   const videoUrl = URL.createObjectURL(base64ToBlob(data.videoBase64, "video/mp4"));
 
-  return { videoUrl, remainingCredits: data.remainingCredits };
+  return {
+    videoUrl,
+    remainingCredits: data.remainingCredits,
+    vramUsedGb: typeof data.vramUsedGb === "number" && Number.isFinite(data.vramUsedGb) ? data.vramUsedGb : null,
+  };
 }

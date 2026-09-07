@@ -2,7 +2,14 @@ import "server-only";
 import type { WanAnimateWorkflow } from "@/lib/wanAnimateWorkflow";
 import type { GpuTier } from "@/lib/gpuTier";
 
-export type ModalGenerateResult = { filename: string; video_base64: string; output_path: string };
+export type ModalGenerateResult = {
+  filename: string;
+  video_base64: string;
+  output_path: string;
+  /** 生成完了時点の実効 VRAM 消費量（GB）。ネタバレ防止 — 分母・％・GPU名なし。
+   *  worker 未デプロイ／CUDA 無しなら欠落 or null。 */
+  vram_used_gb?: number | null;
+};
 
 export type ModalGenerateParams = {
   workflow: WanAnimateWorkflow;
