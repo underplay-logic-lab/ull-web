@@ -5,6 +5,7 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { generateImageWithRunpod } from "@/lib/runpod";
 import { translateToEnglish } from "@/lib/translate";
 import { aspectRatios, type AspectRatio } from "@/lib/data";
+import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 
 // GPU cold starts + ComfyUI inference can comfortably exceed the default
 // serverless timeout, so give this route room to wait on RunPod.
@@ -76,6 +77,10 @@ export async function POST(request: Request) {
     : false;
   const currentCredits = isExpired ? 0 : (rawCredits ?? 0);
 
+  // Per-image cost — admin-editable (pricing_knobs.image_generate), min 1.
+  const knobs = await getPricingKnobs();
+  const generationCost = Math.max(1, Math.ceil(knobs.image_generate));
+
   // JIT (just-in-time) expiry: write the reset back to the DB now rather
   // than only treating the balance as 0 for this request's check, so the
   // stale credits don't linger and get miscounted by anything else that
@@ -91,7 +96,7 @@ export async function POST(request: Request) {
     }
   }
 
-  if (currentCredits < 1) {
+  if (currentCredits < generationCost) {
     return NextResponse.json(
       {
         error: isExpired
@@ -111,7 +116,7 @@ export async function POST(request: Request) {
   // concurrent requests can't both pass the balance check above and
   // overdraw the account. If generation then fails, the credit is refunded
   // below — the user is never charged for a failed run.
-  const debitedCredits = currentCredits - 1;
+  const debitedCredits = currentCredits - generationCost;
   const { error: debitError } = await supabaseAdmin
     .from("profiles")
     .update({ credits: debitedCredits })

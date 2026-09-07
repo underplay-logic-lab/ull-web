@@ -22,6 +22,18 @@ export type StudioPricing = {
   updated_at: string;
 };
 
+export type PricingKnobRow = {
+  key: string;
+  value: number;
+  label: string;
+  category: "feature_credits" | "lora_formula" | "cost_guard" | "rates";
+  unit: string | null;
+  description: string | null;
+  is_public: boolean;
+  updated_at: string | null;
+  is_default: boolean;
+};
+
 export type GenerationLog = {
   id: string;
   user_id: string;

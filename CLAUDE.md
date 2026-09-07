@@ -35,11 +35,20 @@ ULL Studio の開発において、すべての AI エージェント（Claude /
 - **CUDA / PyTorch**: 必ず **CUDA 13.0 (cu130)** を使用すること。
   - インストール元: `--index-url https://download.pytorch.org/whl/cu130 --extra-index-url https://download.pytorch.org/whl/nightly/cu130`
 - **GPU Architecture**: 標準 GPU は **Blackwell（`GPU_REQUEST = ["b300", "b200"]` または `"b200"`）** を使用すること。
-- **GPU コンテナ ライフサイクル標準（30秒 Keep-Warm 規格）**:
-  - すべての GPU ワーカー（LoRA学習 / 動画生成）の `@app.function` / `@app.cls` に **`scaledown_window=30`（30秒）** を明示すること。値は一律 `30` で統一し、個別に変更しない。
-  - 対象: `modal_lora_worker.py` の `train_lora_job`、`scripts/modal_wan_animate.py` の `WanAnimate` / `WanAnimateUltra`、`modal_wan_animate_blackwell.py` の `WanAnimateBlackwell` 等、`gpu=` を持つ全関数・全クラス。
-  - GPU-less（CPU のみ）の関数（`ModalStorage*`, `*_dispatch`, `download_*` 等）はこの規格の対象外（現状の値を維持）。
-  - 理由: コスト最適化（アイドル待機課金の抑制）と、ユーザー体験（30秒カウントダウン中の「🔥 火をくべる」連続生成でコールドスタートを回避）の両立。フロントの `WARM_EXTEND_SECONDS`（`src/lib/gpuWarm.ts`）もこの 30 秒に一致させること。
+- **GPU コンテナ ライフサイクル標準**:
+  - **動画生成系 GPU ワーカー（30秒 Keep-Warm 規格）**: `scripts/modal_wan_animate.py` の `WanAnimate` / `WanAnimateUltra`、`modal_wan_animate_blackwell.py` の `WanAnimateBlackwell` 等、`gpu=` を持つ関数・クラスには **`scaledown_window=30`（30秒）** を明示すること。値は一律 `30` で統一し、個別に変更しない。理由: コスト最適化（アイドル待機課金の抑制）と、ユーザー体験（30秒カウントダウン中の「🔥 火をくべる」連続生成でコールドスタートを回避）の両立。フロントの `WARM_EXTEND_SECONDS`（`src/lib/gpuWarm.ts`）もこの 30 秒に一致させること。
+  - **LoRA worker（`modal_lora_worker.py`）は例外— 全関数一律 `scaledown_window=2`（2秒即切り）**: `train_lora_job`（GPU）を含む、この1ファイル内の全 `@app.function` / `@app.cls`（Web エンドポイント／内部関数を問わず）に `scaledown_window=2` を明示し、`min_containers` は使用しない（常に0＝常駐なし）。理由: LoRA学習は長時間の単発バッチジョブであり、動画生成のような「🔥 火をくべる」連続実行UXが存在しないため、30秒Keep-Warmの恩恵がなくアイドル課金だけが残る。コールドスタートの数秒より、アイドル課金ゼロを優先する。
+  - GPU-less（CPU のみ）の関数（`ModalStorage*` 等、`modal_lora_worker.py` 以外）はこの規格の対象外（現状の値を維持）。
+- **PyTorch 最適化標準（`torch.compile`）**: すべての GPU 推論・学習ワーカー（Diffusers / ai-toolkit / Wan 等）で、Transformer / UNet / DiT の基幹ブロックに `torch.compile`（`mode="reduce-overhead"` または Inductor デフォルト、`dynamic=True`）を標準適用すること。適用方法はワーカー種別ごとに以下で統一する。
+  - **Diffusers 系推論ワーカー**（`modal_angle_worker.py` 等）: `@modal.enter()` のパイプラインロード直後に `self.pipe.transformer`（または `.unet`）へ `torch.compile(..., dynamic=True)`（**Inductor デフォルト mode**）を適用。`try/except` と `torch._dynamo.config.suppress_errors = True` で必ずガードし、環境変数で ON/OFF できるようにする。**採用可否はワーカーごとに実機計測で判断すること**（一律 ON にしない）。既知の落とし穴:
+    - **`mode="reduce-overhead"`（CUDA Graphs）は禁止**: CFG（`true_cfg_scale` / `guidance_scale`）を使うパイプラインは 1 ステップで transformer を pos/neg の 2 回呼ぶため、CUDA Graphs が 1 回目の出力バッファを 2 回目で上書きし `accessing tensor output of CUDAGraphs that has been overwritten` で落ちる（2026-09-06 A100/B300 実機で確認）。
+    - **初回 forward の warmup が巨大**（Qwen-Image-Edit BF16: B300 で 500s、A100 で 640-915s。RoPE の複素演算が Inductor 非対応で eager フォールバック）。`scaledown_window` が短い（Keep-Warm しない）ワーカーでは 1 コンテナ寿命で warmup を回収できず **差し引きマイナス**。`modal_angle_worker.py` は計測の結果 **既定オフ**（`ANGLE_ENABLE_COMPILE=1` でオプトイン。定常も A100 で悪化・B300 で -22% 止まり）。
+    - VRAM は Inductor デフォルトでは変化なし（CUDA Graphs 不使用のため静的メモリプールが乗らない）。
+    - **inference 回帰の別件**（2026-09-06）: `torch 2.14.0+cu130` + diffusers 0.40 + transformers 5.16 の現行スタックで、`modal_angle_worker.py` の Qwen-Image-Edit DiT forward が **A100(sm_80) で ~6x 退行**（2.4s/step、健全時 ~0.4s/step）。attention backend / GEMM / SDPA / RoPE / compile いずれも無関係と実機確認済み。`whl/cu130` は torch 2.14.0 しか配信せずダウングレード不可。**B300(sm_100) は影響なし**（0.47s/step）→ 当該ワーカーの本番は Blackwell 一択、A100/B200 は degraded 扱い。
+  - **ai-toolkit / LoRA 学習**（`modal_lora_worker.py`）: `_build_config()` が生成する `process[0].model` ブロックに `compile: true`（ai-toolkit `ModelConfig` のネイティブオプション。`compile_dynamic` は既定 `true`）を付与。`LORA_DISABLE_COMPILE=1` / `training_config.compile: false` で無効化可能。生 YAML override 経由のジョブも `_sanitize_override_yaml()` で未指定時のみ補完。
+    - **実機計測（2026-09-06、B300 / minimax_h3 / rank 32 / 768px）**: eager 2.6 it/s → compile **5.0-5.4 it/s（~2x）**。warmup は cold で ~599s、永続 Inductor キャッシュ（`TORCHINDUCTOR_CACHE_DIR` / `TRITON_CACHE_DIR` を Volume に、`_apply_hf_cache_env()` で実行時のみ設定）ありで ~325s。break-even（warm）~1700 step → **既定の 2000 step 以上のジョブでは compile が純増**（3000 step で -23%、5000 step で -34%）。学習は推論と違い compile が明確に効く。
+    - compile 有効時は途中サンプル生成が別 shape で毎回 ~220s 再コンパイル → `_build_config` は `_compile_on` のとき `sample_every` を最終 1 回だけに落とす。
+  - **ComfyUI ベースの動画ワーカー**（`scripts/modal_wan_animate.py` / `modal_wan_animate_blackwell.py` / `scripts/modal_wan_animate_stable_47s.py`）: 呼び出し側が渡すワークフロー JSON に対し、diffusion-model ローダーノードを 1 つだけ一意に特定できる場合のみ、その下流に `TorchCompileModel` ノードを挿入する後処理（`_inject_torch_compile`）を実行パスに組み込む。曖昧・既存 compile ノードあり・例外時はワークフローを無改変で返す（fail-open）。`WAN_TORCH_COMPILE=0` で完全無効化。CUDA graphs と ComfyUI のモデルオフロードが競合し得るため、本番反映前に実生成での検証を必須とする。
 - **デプロイコマンド**: バッチ文字化けを防ぐため、必ず `PYTHONIOENCODING=utf-8 PYTHONUTF8=1 modal deploy ...` を使用すること。
 
 ---
@@ -53,15 +62,23 @@ ULL Studio の開発において、すべての AI エージェント（Claude /
 
 ## 3. データ保持 ＆ 課金ポリシー
 - **14日間完全自動パージ**: 生成された LoRA（.safetensors）、画像、動画、素材画像、キャプションはすべて一律 **14日間保持** 後に自動削除する。
+- **単価は DB knob で一元管理（`pricing_knobs` テーブル / `/admin`「Pricing」タブ）**:
+  - 全工程のクレジット単価・課金係数・原価割れ損切り閾値・レートは `pricing_knobs`（key/value）に集約。admin で編集 → 約1分で反映、Modal 再デプロイ不要。
+  - コード側の SSOT は `src/lib/pricing/knobDefaults.ts` の `DEFAULT_KNOBS`（＝マイグレーションのシード値のフォールバック）。DB 読み取り失敗時はこの既定値で動作し、生成は止めない。
+  - サーバーは `getPricingKnobs()`（`src/lib/pricing/knobs.server.ts`）、クライアントは `usePricingKnobs()` フックで公開 knob（`is_public`）を取得し、純関数へ渡す。公開 knob は `GET /api/studio/pricing` の `knobs` フィールドで配信。損切り閾値・レートは非公開（サーバーのみ）。
+  - 既存の `studio_pricing` テーブル（Wan Animate）はそのまま併存。
 - **多次元動的クレジット課金（`src/lib/loraPricing.ts`）**:
-  - 計算式: `credits = ceil(0.1 * modelMult * resolutionMult * batchMult * rankMult * steps)`（基本単価 `0.1 C/step`）
-  - `modelMult`: `model.arch` が動画系（`minimax_h3` / `wan21` / `hunyuan` / `cogvideox` 等）なら `3.0`、それ以外は `1.0`
-  - `resolutionMult`: `datasets[].resolution` の最大値が `1280+` なら `2.0`、`1024+` なら `1.5`、それ未満は `1.0`
-  - `batchMult`: `train.batch_size * train.gradient_accumulation_steps` が `4+` なら `2.0`、`2+` なら `1.5`、それ未満は `1.0`
-  - `rankMult`: `network.linear` が `64+` なら `1.2`、それ未満は `1.0`
+  - 計算式: `credits = ceil(lora_per_step * modelMult * resolutionMult * batchMult * rankMult * steps)`（基本単価 knob `lora_per_step`、既定 `0.1 C/step`）
+  - `modelMult`: `model.arch` が動画系（`minimax_h3` / `wan21` / `hunyuan` / `cogvideox` 等）なら knob `lora_mult_model_heavy`（既定 `3.0`）、それ以外は `1.0`
+  - `resolutionMult`: `datasets[].resolution` の最大値が `1280+` なら `lora_mult_res_1280`（既定 `2.0`）、`1024+` なら `lora_mult_res_1024`（既定 `1.5`）、それ未満は `1.0`
+  - `batchMult`: `train.batch_size * train.gradient_accumulation_steps` が `4+` なら `lora_mult_batch_4`（既定 `2.0`）、`2+` なら `lora_mult_batch_2`（既定 `1.5`）、それ未満は `1.0`
+  - `rankMult`: `network.linear` が `64+` なら knob `lora_mult_rank_64`（既定 `1.2`）、それ未満は `1.0`
   - 旧「ステップ数のみの固定課金」（200→50C 等）は**廃止**。原価割れ防止のため計算負荷連動に刷新。
-  - フロント（`LoraStudioTab.tsx` の「消費クレジット」表示）と API 検証（`/api/studio/lora/train`）は同一のパース済み ai-toolkit config を `loraPriceBreakdown()` に渡し、両者が絶対に食い違わないようにすること。GUI モード（オート/セミオート/スライダー）は `guiLoraPricingConfig()` で等価な config を合成して同じ関数に通す。
-  - 生YAMLがパース不能で API まで到達した場合は上限 `LORA_CREDIT_WORST_CASE`（7200 C）を課金。
+  - フロント（`LoraStudioTab.tsx` の「消費クレジット」表示）と API 検証（`/api/studio/lora/train`）は同一のパース済み ai-toolkit config ＋ 同一の knob を `loraPriceBreakdown()` に渡し、両者が絶対に食い違わないようにすること。GUI モード（オート/セミオート/スライダー）は `guiLoraPricingConfig()` で等価な config を合成して同じ関数に通す。
+  - 生YAMLがパース不能で API まで到達した場合は上限 `loraCreditWorstCase(knobs)`（既定 7200 C）を課金。
+- **原価割れ損切り（cost-guard）の閾値も knob 駆動**:
+  - `src/lib/pricing/costGuard.server.ts` が `pricing_knobs`（`credit_to_jpy` / `gpu_jpy_per_hour_b300` / `lora_margin_target` / `lora_cost_guard_multiplier` / `lora_floor_prep_s` / `angle_time_per_credit_s` / `angle_cold_start_grace_s` 等）からジョブの許容 GPU 秒を算出。
+  - Next API がこの値を Modal ワーカーへ payload で渡す（LoRA: `cost_cap_seconds`、Angle: `max_allowed_time`）。ワーカー側の env override と `LORA_ABS_MAX_RUN_S` ハード上限は不変で残す。
 - **LoRA 中間チェックポイント**: `save_every: 500`（または25%刻み）で中間 `.safetensors` を永続化し、完了画面で個別ダウンロードを可能にすること。
 
 ---

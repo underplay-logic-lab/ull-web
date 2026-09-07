@@ -5,7 +5,8 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { buildCinematicWorkflow } from "@/lib/cinematicWorkflow";
 import { spawnCinematicVideoJob } from "@/lib/modalCinematic";
 import { startActiveJob, endActiveJob } from "@/lib/activeGenerationJobs";
-import { CINEMATIC_MODE_BY_ID, isCinematicModeId } from "@/lib/cinematicPricing";
+import { CINEMATIC_MODE_BY_ID, cinematicModeCredits, isCinematicModeId } from "@/lib/cinematicPricing";
+import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 
 // This route only debits credits, inserts a generation_jobs row, and fires
 // a fast dispatch request at Modal (see spawnCinematicVideoJob) — the
@@ -67,7 +68,7 @@ export async function POST(request: Request) {
   // by mode id — never trusted from the client, same posture as
   // wan-animate/generate's pricing lookups.
   const mode = CINEMATIC_MODE_BY_ID[modeRaw];
-  const generationCost = mode.credits;
+  const generationCost = cinematicModeCredits(modeRaw, await getPricingKnobs());
 
   const { data: profile, error: profileError } = await getOrCreateProfile(
     user.id,

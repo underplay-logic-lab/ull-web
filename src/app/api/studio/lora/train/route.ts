@@ -4,11 +4,10 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { spawnLoraTrainingJob, buildLoraDispatchPayload } from "@/lib/modalLoraTrain";
 import { DEFAULT_LORA_STEPS } from "@/lib/loraCredits";
-import {
-  guiLoraPricingConfig,
-  loraPriceBreakdown,
-  LORA_CREDIT_WORST_CASE,
-} from "@/lib/loraPricing";
+import { guiLoraPricingConfig, loraPriceBreakdown } from "@/lib/loraPricing";
+import { getPricingKnobs } from "@/lib/pricing/knobs.server";
+import { loraCostCapSeconds } from "@/lib/pricing/costGuard.server";
+import { loraCreditWorstCase } from "@/lib/pricing/knobDefaults";
 import { validateLoraYaml, loraYamlIdentity, collectLoraYamlStructureErrors } from "@/lib/loraYaml";
 import { getAdminEmails } from "@/lib/adminAuth";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -365,21 +364,34 @@ async function handlePost(request: Request): Promise<NextResponse> {
           typeof trainingConfig.rank === "number" ? trainingConfig.rank : DEFAULT_LORA_RANK,
         steps: typeof trainingConfig.steps === "number" ? trainingConfig.steps : DEFAULT_LORA_STEPS,
       });
+  const knobs = await getPricingKnobs();
   const priceBreakdown = pricedConfig
     ? loraPriceBreakdown(pricedConfig, {
         archFallback: pricedArch,
         // Raw-YAML (hasOverride) prices purely off the YAML's own arch — a
         // preset's per-model override only applies to the GUI-synthesised path.
         modelMultOverride: hasOverride ? undefined : pricedPreset?.pricingModelMult,
+        knobs,
       })
     : null;
   // A raw YAML that reached here unparseable (UI blocks it, so defence only),
-  // or one with no positive step count -> the worst-case ceiling.
+  // or one with no positive step count -> the worst-case ceiling. Recomputed
+  // from the live knobs so raising a coefficient can't be clamped away.
+  const worstCase = loraCreditWorstCase(knobs);
   let requiredCredits =
-    priceBreakdown && priceBreakdown.credits > 0
-      ? priceBreakdown.credits
-      : LORA_CREDIT_WORST_CASE;
-  requiredCredits = Math.max(1, Math.min(LORA_CREDIT_WORST_CASE, Math.ceil(requiredCredits)));
+    priceBreakdown && priceBreakdown.credits > 0 ? priceBreakdown.credits : worstCase;
+  requiredCredits = Math.max(1, Math.min(worstCase, Math.ceil(requiredCredits)));
+
+  // Cost-guard budget handed to the Modal worker (it aborts a run whose
+  // projected wall time exceeds this). Derived here from the same knobs as the
+  // price so a pricing edit moves the loss-cut threshold with it — no worker
+  // redeploy. See src/lib/pricing/costGuard.server.ts.
+  const costCap = loraCostCapSeconds({
+    creditsCost: requiredCredits,
+    arch: priceBreakdown?.arch || pricedArch,
+    steps: priceBreakdown?.steps ?? 0,
+    knobs,
+  });
 
   // --- credits ------------------------------------------------------------
   const { data: profile, error: profileError } = await getOrCreateProfile(
@@ -424,6 +436,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
     jobId: "", // filled after insert
     userId: user.id,
     creditsCost: requiredCredits,
+    costCapSeconds: costCap.seconds,
     storagePaths,
     datasetId,
     captions,
@@ -459,6 +472,8 @@ async function handlePost(request: Request): Promise<NextResponse> {
       // recorded so a disputed debit is auditable.
       priced_steps: priceBreakdown?.steps ?? null,
       price_breakdown: priceBreakdown,
+      cost_cap_seconds: costCap.seconds,
+      cost_cap_reason: costCap.reason,
     },
     // How the auto-caption instruction was produced, for support / auditing.
     caption_prompt_meta: captionSpec

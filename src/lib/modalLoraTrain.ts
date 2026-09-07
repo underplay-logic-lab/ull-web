@@ -22,6 +22,11 @@ export type SpawnLoraTrainingParams = {
   jobId: string;
   userId: string;
   creditsCost: number;
+  // Cost-guard budget (seconds) computed by the API from the credit price and
+  // the pricing_knobs cost-guard thresholds — the worker's projected-wall-time
+  // abort uses this directly instead of re-deriving it from credits_cost with
+  // hardcoded rates. See src/lib/pricing/costGuard.server.ts.
+  costCapSeconds?: number;
   // Supabase Storage object paths in the lora_datasets bucket, caption order.
   storagePaths: string[];
   // Keys the worker's persisted-caption cache on the Volume.
@@ -64,6 +69,7 @@ export type LoraDispatchPayload = {
   skip_captioning?: boolean;
   caption_mode?: "dense" | "tags";
   caption_prompt?: string;
+  cost_cap_seconds?: number;
 };
 
 export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraDispatchPayload {
@@ -88,6 +94,9 @@ export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraD
       : {}),
     ...(params.captionPrompt && params.captionPrompt.trim()
       ? { caption_prompt: params.captionPrompt.trim() }
+      : {}),
+    ...(typeof params.costCapSeconds === "number" && Number.isFinite(params.costCapSeconds)
+      ? { cost_cap_seconds: Math.round(params.costCapSeconds) }
       : {}),
   };
 }
