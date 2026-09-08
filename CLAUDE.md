@@ -35,6 +35,12 @@ ULL Studio の開発において、すべての AI エージェント（Claude /
 - **CUDA / PyTorch**: 必ず **CUDA 13.0 (cu130)** を使用すること。
   - インストール元: `--index-url https://download.pytorch.org/whl/cu130 --extra-index-url https://download.pytorch.org/whl/nightly/cu130`
 - **GPU Architecture**: 標準 GPU は **Blackwell（`GPU_REQUEST = ["b300", "b200"]` または `"b200"`）** を使用すること。
+- **モデル精度（量子化禁止）**: 推論・学習とも **BF16 フル精度を既定**とし、量子化（fp8 / int8 / int4 / NF4 / GGUF 等）およびモデルオフロード（CPU offload / sequential offload）は原則使用しない。Blackwell の大 VRAM を活かしてフル精度のまま常駐させるのが ULL Studio の基本方針。量子化・オフロードをどうしても使う場合は、実機計測で品質・速度の劣化がないことを示したうえでホスト承認を得ること。
+- **GPU（B300）は「GPU が必須な本番処理」でのみ使う（必須）**: 本番の推論・学習でのみ Blackwell GPU コンテナを起動する。**それ以外の目的で `gpu=` 付きコンテナを起動しない**:
+  - モデル重み・リポジトリ・torch.hub アセットのプリキャッシュ／ダウンロード → **CPU 関数**でやる（重い DL を GPU にやらせない）。
+  - import 連鎖の検証・依存ビルドの切り分け・PoC の配管確認 → GPU を使う前に **CPU 専用の probe 関数**（本番と同じ image を `gpu=` なしで起動）で通す。
+  - 新規ワーカーの立ち上げは「CPU で import と資産準備がグリーン → はじめて GPU 実行」の順を厳守する。`modal run` で GPU クラスを直接叩くと、crash-loop 時に Modal がコンテナ起動を繰り返し **GPU 課金が垂れ流しになる**（`retries=0` では止まらない。2026-09-08 に TRELLIS worker の立ち上げで ~31分の無駄が発生）。
+  - バックグラウンドで GPU ジョブを投げたら **放置しない**。最初の数分でログを確認し、crash-loop していたら即 kill する。
 - **GPU コンテナ ライフサイクル標準**:
   - **動画生成系 GPU ワーカー（30秒 Keep-Warm 規格）**: `scripts/modal_wan_animate.py` の `WanAnimate` / `WanAnimateUltra`、`modal_wan_animate_blackwell.py` の `WanAnimateBlackwell` 等、`gpu=` を持つ関数・クラスには **`scaledown_window=30`（30秒）** を明示すること。値は一律 `30` で統一し、個別に変更しない。理由: コスト最適化（アイドル待機課金の抑制）と、ユーザー体験（30秒カウントダウン中の「🔥 火をくべる」連続生成でコールドスタートを回避）の両立。フロントの `WARM_EXTEND_SECONDS`（`src/lib/gpuWarm.ts`）もこの 30 秒に一致させること。
   - **LoRA worker（`modal_lora_worker.py`）は例外— 全関数一律 `scaledown_window=2`（2秒即切り）**: `train_lora_job`（GPU）を含む、この1ファイル内の全 `@app.function` / `@app.cls`（Web エンドポイント／内部関数を問わず）に `scaledown_window=2` を明示し、`min_containers` は使用しない（常に0＝常駐なし）。理由: LoRA学習は長時間の単発バッチジョブであり、動画生成のような「🔥 火をくべる」連続実行UXが存在しないため、30秒Keep-Warmの恩恵がなくアイドル課金だけが残る。コールドスタートの数秒より、アイドル課金ゼロを優先する。
@@ -86,3 +92,18 @@ ULL Studio の開発において、すべての AI エージェント（Claude /
 ## 4. DBマイグレーション出力プロトコル（必須）
 - Supabase のマイグレーションファイル（`supabase/migrations/*.sql`）を新規作成・修正した場合、またはホストに DB マイグレーションの適用を案内する際は、**該当する SQL 全文をチャット上のコードブロックとして必ずそのまま出力すること**。
 - ファイルパスの提示だけで終わらせず、ホストがチャット画面からワンクリックでコピーして Supabase Dashboard (SQL Editor) に貼り付けられる状態を徹底すること。
+
+---
+
+## 5. モデル ＆ OSS ライセンス方針（商用リリース前提・必須）
+- **ULL Studio は商用サービスとして一般公開する前提**。パイプラインに新しいモデル・推論コード・レンダラ・依存ライブラリを組み込む前に、**必ずライセンスを確認し、商用利用・SaaS 再頒布・地域制限の 3 点を満たすものだけ採用すること**。判断に迷う場合は採用せず、ホストに確認する。
+- **不可（本番採用禁止）**:
+  - **非商用ライセンス**（CC-BY-NC、"research only"、FLUX.1 `[dev]` 非商用ライセンス、**FLUX.1 Kontext `[dev]`** 等）。Kontext は BFL の有償商用ライセンスまたは Kontext Pro/Max API 経由でのみ商用可 → 自ホスト採用は不可。
+  - **`nvdiffrast` / `nvdiffrec`**（NVIDIA Source Code License = 非商用）。3D レンダリングは商用可のものを使う: **3D Gaussian Splatting 出力を `gsplat`（Apache-2.0）でレンダリング**、またはメッシュは PyTorch3D（BSD）/ Kaolin（Apache-2.0）。Inria 版 3DGS ラスタライザ（`diff-gaussian-rasterization`）も研究用途限定なので不可。
+- **可（確認済み・商用 OK）**:
+  - **Qwen-Image / Qwen-Image-Edit-2511**: Apache-2.0。現行の画像編集・リスタイルの基盤はこれ。
+  - **Microsoft TRELLIS / TRELLIS.2（`microsoft/TRELLIS.2-4B`）**: MIT。image→3D の第一候補（オプションの非商用レンダラ依存は上記のとおり回避すること）。
+- **要注意（地域制限あり・原則回避）**:
+  - **Hunyuan3D 2.1**（`tencent/Hunyuan3D-2.1`、Tencent Hunyuan 3D 2.1 Community License）: 重み＋学習コード公開だが **EU・英国・韓国では利用不可**、MAU 1 億超で別途ライセンス要、NOTICE 同梱義務。グローバル公開サービスでは原則採用しない（TRELLIS を優先）。どうしても品質面で必要なら geofence 前提でホスト承認を取る。
+  - **Hunyuan3D 3.0 / 3.1**: プロプライエタリ（Tencent Cloud API のみ、重み非公開）。自ホスト不可・外部 API 依存になり「Blackwell 自ホスト」の売りと矛盾するため採用しない。
+- 採用したモデル／依存の名称・バージョン・ライセンス・確認日を、当該ワーカーファイル冒頭の docstring に明記すること（`modal_angle_worker.py` の記法に倣う）。
