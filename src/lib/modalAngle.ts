@@ -11,6 +11,7 @@ export type SpawnAngleJobParams = {
   instructions: string[];
   /** instructions と並行な日本語構図ラベル（ギャラリー表示用） */
   labels: string[];
+  /** 2026-09-09: 単一モードに統一（"standard"）。payload 互換のため型は残置。 */
   mode: AngleMode;
   seed?: number | null;
 };
@@ -80,7 +81,7 @@ export async function spawnAngleJob(
     image: params.imageBase64,
     instructions: sanitized.map((p) => p.instruction),
     labels: sanitized.map((p) => p.label),
-    num_inference_steps: angleModeSteps(params.mode),
+    num_inference_steps: angleModeSteps(),
     ...(typeof params.seed === "number" && Number.isFinite(params.seed)
       ? { seed: Math.trunc(params.seed) }
       : {}),

@@ -128,7 +128,7 @@ export async function pollAngleJob(jobId: string): Promise<AngleJob> {
   return {
     id: data.id,
     status: data.status,
-    mode: data.mode === "pro" ? "pro" : "turbo",
+    mode: "standard",
     totalAngles: data.total_angles ?? 0,
     completedAngles: data.completed_angles ?? 0,
     images: toStringArray(data.images),

@@ -18,39 +18,34 @@
 
 import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";
 
-export type AngleMode = "turbo" | "pro";
+// 2026-09-09: turbo(35)/pro(40) の 2 モードは廃止。35 と 40 の差は誤差なうえ
+// 課金が 1C/2C と乖離していた → **40 ステップ単一モード**に統一。`AngleMode` 型は
+// 既存の payload/DB 互換のため 1 値だけ残す。単価は `angle_pro_per_angle` knob を
+// そのまま流用（legacy `angle_turbo_per_angle` は未使用のまま残置）。
+export type AngleMode = "standard";
 
-// `creditsPerAngle` here is the hardcoded fallback shown before
-// /api/studio/pricing responds; the live value is the admin-editable
-// angle_{turbo,pro}_per_angle knob — always price through
-// angleCreditsPerAngle(mode, knobs).
-//
-// steps は 2511 Multi-Angle LoRA の破綻防止レンジ（35〜40）に両モードとも
-// 収める。ワーカー側（modal_angle_worker.py の _clamp_steps）でも 35〜40 へ
-// クランプされるため、ここを外れても最終的には矯正される。
+// `creditsPerAngle` は /api/studio/pricing 応答前のフォールバック表示。実値は
+// admin 編集可能な `angle_pro_per_angle` knob（angleCreditsPerAngle 経由）。
 export const ANGLE_MODES: Record<
   AngleMode,
   { id: AngleMode; label: string; sublabel: string; steps: number; creditsPerAngle: number }
 > = {
-  turbo: { id: "turbo", label: "🚀 Turbo", sublabel: "軽量 / 35ステップ", steps: 35, creditsPerAngle: 1 },
-  pro: { id: "pro", label: "💎 Pro", sublabel: "高精細 / 40ステップ", steps: 40, creditsPerAngle: 2 },
+  standard: { id: "standard", label: "アングル生成", sublabel: "40ステップ", steps: 40, creditsPerAngle: 2 },
 };
 
-const ANGLE_MODE_KNOB: Record<AngleMode, "angle_turbo_per_angle" | "angle_pro_per_angle"> = {
-  turbo: "angle_turbo_per_angle",
-  pro: "angle_pro_per_angle",
-};
+const ANGLE_STEPS = 40;
 
 export function isAngleMode(v: unknown): v is AngleMode {
-  return v === "turbo" || v === "pro";
+  // 旧 "turbo" / "pro" もここへ吸収（route 側で "standard" に丸める）。
+  return v === "standard" || v === "turbo" || v === "pro";
 }
 
-export function angleModeSteps(mode: AngleMode): number {
-  return ANGLE_MODES[mode].steps;
+export function angleModeSteps(): number {
+  return ANGLE_STEPS;
 }
 
-export function angleCreditsPerAngle(mode: AngleMode, knobs: PricingKnobs = DEFAULT_KNOBS): number {
-  return knobs[ANGLE_MODE_KNOB[mode]];
+export function angleCreditsPerAngle(knobs: PricingKnobs = DEFAULT_KNOBS): number {
+  return knobs.angle_pro_per_angle;
 }
 
 // 構図数の上限は撤廃（無限スケール）。原価の歯止めは「枚数」ではなく「時間」——
@@ -237,6 +232,37 @@ export function angleSelectionCount(selection: AngleSelection): number {
   return buildAngleCombos(selection).length;
 }
 
+// 顔クロップだと「体のシルエット」が画面に無く、この方位への大角度回転がほぼ
+// 効かない（2026-09-09 実機）。正面〜斜め前は close-up でも軽い振り向きが可能。
+const HARD_AZIMUTHS_FOR_CLOSEUP = new Set([
+  "right_profile",
+  "back_right",
+  "back",
+  "back_left",
+  "left_profile",
+]);
+
+/**
+ * 「回転がほぼ効かない組み合わせ」を選んだときの警告文（無ければ null）。
+ * close-up 自体は LoRA 素材として重要（顔がメインで学習される）。問題なのは
+ * 「close-up 単独 × 真横/背面系の方位」の組み合わせだけ。
+ */
+export function angleSelectionWarning(selection: AngleSelection): string | null {
+  const d = selection.distances;
+  const closeUpOnly = d.includes("close_up") && !d.includes("medium") && !d.includes("wide");
+  const hasHardAzimuth = selection.azimuths.some((a) => HARD_AZIMUTHS_FOR_CLOSEUP.has(a));
+  if (closeUpOnly && hasHardAzimuth) {
+    return "顔アップ（クローズアップ）だと真横・背面への回転はほぼ効きません。真横・背面は「バストアップ」か「全身」を選び、顔アップは正面〜斜め前に絞ってください。";
+  }
+
+  const e = selection.elevations;
+  const noEyeLevel = e.length > 0 && !e.includes("eye_level");
+  if (selection.azimuths.length >= 3 && noEyeLevel) {
+    return "アオリ／フカンのみだと大角度の回転が弱くなりがちです。「水平（0°）」も併せて選ぶと安定します。";
+  }
+  return null;
+}
+
 export function isAngleSelectionEmpty(selection: AngleSelection): boolean {
   return (
     selection.azimuths.length === 0 &&
@@ -247,10 +273,9 @@ export function isAngleSelectionEmpty(selection: AngleSelection): boolean {
 
 export function angleGenerationCost(
   selection: AngleSelection,
-  mode: AngleMode,
   knobs: PricingKnobs = DEFAULT_KNOBS,
 ): number {
-  return angleSelectionCount(selection) * angleCreditsPerAngle(mode, knobs);
+  return angleSelectionCount(selection) * angleCreditsPerAngle(knobs);
 }
 
 // --- クイックプリセット -------------------------------------------------
@@ -272,11 +297,21 @@ export const ANGLE_PRESETS: AnglePreset[] = [
   {
     id: "turnaround8",
     label: "8方向ターンアラウンド",
-    hint: "全方位 / 水平・ワイド",
+    hint: "全方位 / 水平・バストアップ",
     selection: {
       azimuths: allIds(AZIMUTH_OPTIONS),
       elevations: ["eye_level"],
-      distances: ["wide"],
+      distances: ["medium"],
+    },
+  },
+  {
+    id: "face_set",
+    label: "顔アップ集（LoRA向け）",
+    hint: "正面・斜め前 / 水平 / 顔アップ・バストアップ",
+    selection: {
+      azimuths: ["front", "front_right", "front_left"],
+      elevations: ["eye_level"],
+      distances: ["close_up", "medium"],
     },
   },
   {

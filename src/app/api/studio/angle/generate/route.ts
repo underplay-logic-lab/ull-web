@@ -8,7 +8,6 @@ import { angleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import {
   angleCreditsPerAngle,
   buildAngleCombos,
-  isAngleMode,
   MAX_ANGLES,
   AZIMUTH_OPTIONS,
   ELEVATION_OPTIONS,
@@ -133,7 +132,9 @@ export async function POST(request: Request) {
     );
   }
 
-  const mode = isAngleMode(modeRaw) ? modeRaw : "turbo";
+  // 2026-09-09: 単一モードに統一。旧 "turbo"/"pro" payload も "standard" に丸める。
+  void modeRaw;
+  const mode = "standard" as const;
 
   let selection: AngleSelection = { azimuths: [], elevations: [], distances: [] };
   if (typeof selectionRaw === "string" && selectionRaw.trim()) {
@@ -167,7 +168,7 @@ export async function POST(request: Request) {
 
   // Server-side price — never trusted from the client.
   const knobs = await getPricingKnobs();
-  const generationCost = combos.length * angleCreditsPerAngle(mode, knobs);
+  const generationCost = combos.length * angleCreditsPerAngle(knobs);
   const maxAllowedTime = angleMaxAllowedTime({ creditsCost: generationCost, knobs });
 
   const { data: profile, error: profileError } = await getOrCreateProfile(

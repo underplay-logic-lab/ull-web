@@ -62,17 +62,19 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     description: "1枚あたりの消費クレジット（/api/generate）",
     isPublic: true,
   },
+  // 2026-09-09: turbo/pro の 2 モード廃止。angle_turbo_per_angle は未使用（DB 行は
+  // 残置・admin 非表示化は任意）。単価は angle_pro_per_angle に一本化。
   angle_turbo_per_angle: {
-    value: 1,
-    label: "Multi-Angle 🚀 Turbo",
+    value: 2,
+    label: "Multi-Angle Turbo（廃止・未使用）",
     category: "feature_credits",
     unit: "C/構図",
-    description: "1構図あたりの消費クレジット（35ステップ）",
-    isPublic: true,
+    description: "（廃止）turbo/pro 統合前の名残。課金は angle_pro_per_angle を使用。",
+    isPublic: false,
   },
   angle_pro_per_angle: {
     value: 2,
-    label: "Multi-Angle 💎 Pro",
+    label: "Multi-Angle（1構図）",
     category: "feature_credits",
     unit: "C/構図",
     description: "1構図あたりの消費クレジット（40ステップ）",

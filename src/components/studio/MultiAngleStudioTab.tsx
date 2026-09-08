@@ -25,11 +25,11 @@ import {
   ANGLE_PRESETS,
   angleCreditsPerAngle,
   AZIMUTH_OPTIONS,
+  angleSelectionWarning,
   buildAngleCombos,
   DISTANCE_OPTIONS,
   ELEVATION_OPTIONS,
   EMPTY_ANGLE_SELECTION,
-  isAngleMode,
   MAX_ANGLES,
   type AngleAxis,
   type AngleAxisOption,
@@ -414,7 +414,8 @@ export function MultiAngleStudioTab() {
     setImage(file);
   }, []);
 
-  const [mode, setMode] = useState<AngleMode>(isAngleMode(savedForm?.mode) ? savedForm!.mode : "turbo");
+  // 2026-09-09: turbo/pro を廃止し単一モードに統一。
+  const mode: AngleMode = "standard";
   const [selection, setSelection] = useState<AngleSelection>(() => {
     const s = savedForm?.selection;
     if (!s || !Array.isArray(s.azimuths) || !Array.isArray(s.elevations) || !Array.isArray(s.distances)) {
@@ -533,8 +534,9 @@ export function MultiAngleStudioTab() {
   }, [reroll]);
 
   const combos = useMemo(() => buildAngleCombos(selection), [selection]);
+  const selectionWarning = useMemo(() => angleSelectionWarning(selection), [selection]);
   const count = combos.length;
-  const perAngle = angleCreditsPerAngle(mode, knobs);
+  const perAngle = angleCreditsPerAngle(knobs);
   const cost = count * perAngle;
   const overCap = count > MAX_ANGLES;
 
@@ -716,26 +718,6 @@ export function MultiAngleStudioTab() {
             )}
           </div>
 
-          <div>
-            <p className="mb-1.5 text-xs font-medium text-muted">生成モード</p>
-            <div className="flex gap-1 rounded-lg border border-border bg-background p-1">
-              {(Object.keys(ANGLE_MODES) as AngleMode[]).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setMode(m)}
-                  className={`flex-1 rounded-md px-3 py-2 text-xs font-medium transition-colors ${
-                    mode === m ? "bg-surface-hover text-foreground" : "text-muted hover:text-foreground"
-                  }`}
-                >
-                  <span className="block">{ANGLE_MODES[m].label}</span>
-                  <span className="block text-[10px] text-muted">
-                    {ANGLE_MODES[m].sublabel}・{angleCreditsPerAngle(m, knobs)} クレジット/構図
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
 
           {/* アクションバー */}
           <div className="rounded-xl border border-border bg-background p-4">
@@ -867,6 +849,12 @@ export function MultiAngleStudioTab() {
                 </span>
               )}
             </p>
+            {selectionWarning && (
+              <p className="flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-amber-300">
+                <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                {selectionWarning}
+              </p>
+            )}
           </div>
         </div>
       </div>

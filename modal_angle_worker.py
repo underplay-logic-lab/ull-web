@@ -9,9 +9,13 @@ Qwen-Image-Edit-2511 の BF16 フル精度パイプライン（`fal/Qwen-Image-E
 
 素の 2511 はテキスト指示だけでは正面〜微斜めに張り付き、90° 真横 / 180° 背面
 などの大角度回転が反映されない。2511 専用の 3DGS 学習済み視点合成 LoRA を
-load_lora_weights で載せ、CLAUDE.md 準拠の破綻防止スタック（true_cfg_scale
-3.2〜3.5 / LoRA scale 0.85〜0.9 / 35〜40 steps / 入力を 64 の倍数へアライン）
-で顔パーツ崩れ・色彩破綻を抑える。
+load_lora_weights で載せる。推論スタック（2026-09-09 実機チューニング後）:
+  - true_cfg_scale 3.8〜4.4（旧 3.2〜3.5。回転指示への追従が弱く 8 方向でも
+    大半が正面付近に戻る症状の一因だった。4.0 前後で破綻が出るなら要ダイヤルバック）
+  - LoRA scale 1.0（model card 既定。旧 0.9）
+  - 35〜40 steps / 入力を 64 の倍数へアライン
+  - フレーミングは eye-level + medium/wide 推奨。close-up + アオリは回転が
+    ほぼ効かない（顔クロップだとシルエット情報が無い）。
 
 構成・規約は modal_lora_worker.py / modal_wan_animate_blackwell.py を踏襲:
   - コンテナ標準 (CLAUDE.md §1、改変厳禁): nvidia/cuda:13.0.0-devel +
@@ -48,13 +52,13 @@ Env overrides:
   ANGLE_LORA_FILENAME     LoRA safetensors のファイル名
                          （既定: qwen-image-edit-2511-multiple-angles-lora.safetensors。
                           取得失敗時は repo を snapshot して *.safetensors を拾う）
-  ANGLE_LORA_SCALE        LoRA 強度（既定 0.9。CLAUDE 指定レンジ 0.85〜0.9 の上端）
+  ANGLE_LORA_SCALE        LoRA 強度（既定 1.0 = model card 既定）
   ANGLE_LORA_TRIGGER      LoRA トリガートークン（既定 "<sks>"。HF model card 規格
                          "<sks> [azimuth] [elevation] [distance]"。LoRA ロード時のみ
                          プロンプト先頭へ前置。空文字で前置しない）
   ANGLE_DISABLE_LORA      "1" で LoRA を載せず素の 2511 で動かす（切り分け用）
   ANGLE_STEPS_FLOOR/CEIL  推論ステップのクランプ範囲（既定 35 / 40）
-  ANGLE_CFG_FLOOR/CEIL    true_cfg_scale のクランプ範囲（既定 3.2 / 3.5）
+  ANGLE_CFG_FLOOR/CEIL    true_cfg_scale のクランプ範囲（既定 3.8 / 4.4）
   ANGLE_ALIGN_MULTIPLE    入力画像の辺長を丸める倍数（既定 64。0/1 で無効）
   ANGLE_ALIGN_MAX_EDGE    アライン時の長辺上限 px（既定 1536）
   ANGLE_ENABLE_COMPILE    "1" で transformer への torch.compile をオプトイン
@@ -129,7 +133,7 @@ ANGLE_LORA_FILENAME = (
     os.environ.get("ANGLE_LORA_FILENAME", "").strip()
     or "qwen-image-edit-2511-multiple-angles-lora.safetensors"
 )
-DEFAULT_LORA_SCALE = _env_float("ANGLE_LORA_SCALE", 0.9)  # 指定レンジ 0.85〜0.9 の上端
+DEFAULT_LORA_SCALE = _env_float("ANGLE_LORA_SCALE", 1.0)  # 2026-09-09 チューニング: model card 既定の 1.0（旧 0.9）
 # HF model card のプロンプト規格: "<sks> [azimuth] [elevation] [distance]"。
 # `<sks>` が無いと LoRA がほぼ発火せず、素の 2511 が弱い編集をするだけになる
 # （＝左右反転・アングルほぼ不変の症状）。フロントは記述子部分だけを送り、
@@ -172,17 +176,20 @@ GPU_REQUEST = _resolve_angle_worker_gpu()
 MAX_INSTRUCTIONS = 9999
 
 # 推論パラメータ（payload で上書き可、ただし下記レンジへクランプ）。
-# CLAUDE.md / タスク仕様の破綻防止規格:
-#   - steps は 35〜40 を死守（過小だと LoRA の視点移動が半端になり、過大でも
-#     顔ディテールが崩れやすい）。
-#   - true_cfg_scale は 3.2〜3.5（4.0 以上の過剰 CFG が破綻の主因）。
+#   - steps は 35〜40（過小だと LoRA の視点移動が半端になり、過大でも顔ディテール
+#     が崩れやすい）。
+#   - true_cfg_scale は 3.8〜4.4（2026-09-09 チューニング。詳細は下）。
 DEFAULT_STEPS = 40
-DEFAULT_TRUE_CFG = 3.5
+# 2026-09-09 チューニング: 回転指示への追従を上げるため CFG レンジを 3.2-3.5 →
+# 3.8-4.4 へ引き上げ（旧レンジは破綻防止優先で追従が弱く、8方向で大半が正面付近に
+# 戻る症状の一因だった）。4.0 前後で破綻するようなら要ダイヤルバック。
+DEFAULT_TRUE_CFG = 4.0
 DEFAULT_NEGATIVE_PROMPT = " "
-ANGLE_STEPS_FLOOR = _env_int("ANGLE_STEPS_FLOOR", 35)
+# 2026-09-09: turbo(35)/pro(40) の 2 モード廃止 → 40 ステップ単一。クランプも 40 固定。
+ANGLE_STEPS_FLOOR = _env_int("ANGLE_STEPS_FLOOR", 40)
 ANGLE_STEPS_CEIL = _env_int("ANGLE_STEPS_CEIL", 40)
-ANGLE_CFG_FLOOR = _env_float("ANGLE_CFG_FLOOR", 3.2)
-ANGLE_CFG_CEIL = _env_float("ANGLE_CFG_CEIL", 3.5)
+ANGLE_CFG_FLOOR = _env_float("ANGLE_CFG_FLOOR", 3.8)
+ANGLE_CFG_CEIL = _env_float("ANGLE_CFG_CEIL", 4.4)
 ANGLE_ALIGN_MULTIPLE = _env_int("ANGLE_ALIGN_MULTIPLE", 64)
 ANGLE_ALIGN_MAX_EDGE = _env_int("ANGLE_ALIGN_MAX_EDGE", 1536)
 
@@ -1095,7 +1102,7 @@ class QwenImageEditWorker:
                 detail=f"too many instructions ({len(instructions)} > {MAX_INSTRUCTIONS})",
             )
 
-        # 破綻防止レンジへクランプ（35〜40 steps / 3.2〜3.5 CFG を死守）。
+        # 破綻防止レンジへクランプ（35〜40 steps / 3.8〜4.4 CFG へ）。
         steps = _clamp_steps(num_inference_steps)
         cfg = _clamp_cfg(true_cfg_scale)
         base_seed = None if seed is None or seed == "" else int(seed)
@@ -1221,7 +1228,7 @@ class QwenImageEditWorker:
         image_spec = payload.get("image") or payload.get("image_b64") or ""
         raw_instructions = payload.get("instructions") or []
         labels = payload.get("labels") or []
-        # 破綻防止レンジへクランプ（35〜40 steps / 3.2〜3.5 CFG を死守）。
+        # 破綻防止レンジへクランプ（35〜40 steps / 3.8〜4.4 CFG へ）。
         # フロントの Turbo/Pro が渡す step 数もこの範囲に収める。
         steps = _clamp_steps(payload.get("num_inference_steps"))
         cfg = _clamp_cfg(payload.get("true_cfg_scale"))
@@ -1506,6 +1513,7 @@ def main(
     instructions: str,
     seed: int = -1,
     steps: int = DEFAULT_STEPS,
+    cfg: float = DEFAULT_TRUE_CFG,
     out_dir: str = "./angle_out",
 ):
     """modal run modal_angle_worker.py --image-path ./ref.png \
@@ -1531,13 +1539,20 @@ def main(
         instr_list,
         seed=None if seed is None or seed < 0 else seed,
         num_inference_steps=steps,
+        true_cfg_scale=cfg,
     )
 
     dst = pathlib.Path(out_dir).expanduser()
     dst.mkdir(parents=True, exist_ok=True)
+
+    def _slug(s: str) -> str:
+        return "".join(c if c.isalnum() else "-" for c in s.lower())[:48].strip("-")
+
     for i, b64 in enumerate(result["images"]):
-        (dst / f"angle_{i:02d}.png").write_bytes(base64.b64decode(b64))
+        tag = _slug(instr_list[i]) if i < len(instr_list) else "x"
+        (dst / f"angle_{i:02d}_{tag}.png").write_bytes(base64.b64decode(b64))
     print(
-        f"[main] {result['count']} image(s) in {result['elapsed_time']}s -> {dst}",
+        f"[main] {result['count']} image(s) in {result['elapsed_time']}s "
+        f"(steps={result.get('steps')}, seed={result.get('seed')}) -> {dst}",
         flush=True,
     )
