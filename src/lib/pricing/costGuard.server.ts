@@ -26,7 +26,6 @@ const LORA_SPI_BASELINE: Record<string, number> = {
   ltx2: 3.5,
   hunyuan: 4.0,
   cogvideox: 4.0,
-  flux2: 2.2,
   flux2_klein_4b: 1.1,
   qwen_image: 2.0,
   krea2: 2.0,

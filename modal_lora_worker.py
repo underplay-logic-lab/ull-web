@@ -73,6 +73,11 @@ PERSIST_ROOT = f"{MODELS_DIR}/datasets"
 # and loads everything from local disk in 0s.
 HF_CACHE_DIR = f"{MODELS_DIR}/training/hf_cache"
 TORCH_CACHE_DIR = f"{MODELS_DIR}/training/torch_cache"
+# torch.compile（model.compile: true）の Inductor / Triton コンパイル成果物を
+# 永続 Volume に置く。B300 の初回コンパイル（数分〜十数分）を 2 回目以降の
+# ジョブで丸ごとスキップできるようにする — これが無いと毎ジョブ再コンパイル。
+INDUCTOR_CACHE_DIR = f"{MODELS_DIR}/training/inductor_cache"
+TRITON_CACHE_DIR = f"{MODELS_DIR}/training/triton_cache"
 # The ONE HuggingFace hub cache directory. `snapshot_download` (in the CPU
 # pre-cache stage) and every from_pretrained() on the GPU must resolve to
 # EXACTLY this path, or a repo the CPU stage placed here is a cache MISS on the
@@ -112,8 +117,16 @@ def _hf_cache_env() -> dict:
 
 def _apply_hf_cache_env() -> None:
     """Force the canonical model/cache env into os.environ for the current
-    process (and thus every subprocess that inherits it)."""
+    process (and thus every subprocess that inherits it).
+
+    NOTE: TORCHINDUCTOR_CACHE_DIR / TRITON_CACHE_DIR は **ここ（実行時）だけ**
+    で設定する。イメージ .env に入れると、その後の build-time な torch import /
+    Triton コンパイルが /models 配下に書き込んで "/models" が非空になり、
+    Volume マウントが `cannot mount volume on non-empty path` で失敗する。
+    実行時は Volume が既にマウント済みなので安全。"""
     os.environ.update(_hf_cache_env())
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = INDUCTOR_CACHE_DIR
+    os.environ["TRITON_CACHE_DIR"] = TRITON_CACHE_DIR
 
 # Auto-imported by CPython's `site` at interpreter startup (including the
 # `python run.py` subprocess), because SHIM_DIR is on PYTHONPATH. Makes
@@ -354,6 +367,18 @@ LORA_OUTPUT_DIR = f"{MODELS_DIR}/loras"
 GPU_REQUEST = os.environ.get("LORA_WORKER_GPU", "").strip() or ["b300", "b200"]
 AI_TOOLKIT_REF = os.environ.get("AI_TOOLKIT_REF", "main")
 
+# PyTorch 最適化標準（CLAUDE.md §1）: ai-toolkit の model ブロックに
+# `compile: true` を付けて DiT/UNet を torch.compile（Inductor）し、学習
+# ステップループを高速化する。ai-toolkit `ModelConfig` のネイティブ
+# オプション（compile / compile_mode / compile_dynamic=既定 true）。
+# 12h 上限の単発バッチなので初回コンパイル数分は step 単価で確実に回収できる。
+# LORA_DISABLE_COMPILE=1 で無効化（特定 arch でコンパイルが不安定なとき用）。
+LORA_COMPILE_ENABLED = os.environ.get("LORA_DISABLE_COMPILE", "").strip().lower() not in (
+    "1",
+    "true",
+    "yes",
+)
+
 # --- GPU-cost defence / watchdogs ----------------------------------------
 # The container timeout is 12h; the only earlier stops are:
 #   PREP  — a TRUE deadlock: no stdout/stderr/tqdm output AT ALL for
@@ -364,10 +389,14 @@ AI_TOOLKIT_REF = os.environ.get("AI_TOOLKIT_REF", "main")
 #           it (see last_output in _run_ai_toolkit_with_progress).
 #   COST  — after LORA_COST_MIN_STEP real steps, a trimmed moving average of
 #           s/it projects total wall time; if it exceeds the dynamic cost cap
-#           (_cost_cap_seconds: credit-covered seconds *
+#           (_cost_cap_seconds), graceful stop + 100% refund + salvageable
+#           partial checkpoints. The cap is normally the value the API
+#           pre-computed from the credit price and the admin-editable
+#           pricing_knobs thresholds and sent as payload cost_cap_seconds; with
+#           no payload value it is derived here (credit-covered seconds *
 #           ULL_COST_GUARD_MULTIPLIER, floored by the per-arch expected run
-#           time), graceful stop + 100% refund + salvageable partial
-#           checkpoints.
+#           time). The env vars below still override and LORA_ABS_MAX_RUN_S is
+#           the hard ceiling either way.
 # Checkpoint I/O (`Saving at step` / `Saved checkpoint`) grants a grace
 # window so a long disk sync never looks like a stall.
 # LORA_SAFETY_LIMIT_S is only a fallback ceiling for credits_cost == 0.
@@ -397,8 +426,6 @@ LORA_SPI_BASELINE: dict[str, float] = {
     "ltx2": 3.5,
     "hunyuan": 4.0,
     "cogvideox": 4.0,
-    "flux2": 2.2,
-    "flux2_klein_9b": 1.6,
     "flux2_klein_4b": 1.1,
     "qwen_image": 2.0,
     "krea2": 2.0,
@@ -488,31 +515,29 @@ TARGET_MODELS: dict[str, dict] = {
     },
     # --- photo / general — Diffusers repos, snapshot_download'd to the
     # Volume HF cache by ensure_model_cached_cpu() like Wan/Qwen above. ---
-    # FLUX.2 Klein: ai-toolkit's flux2_klein loader hard-wires the text encoder
-    # to Qwen/Qwen3-* and the VAE to ai-toolkit/flux2_vae (Flux2Klein{4B,9B}Model
-    # class attrs) — it does NOT read the text_encoder/ vae/ subfolders bundled
-    # in the -klein-base repo. So all three repos must be pre-cached.
+    # FLUX.2 Klein (4B): ai-toolkit's flux2_klein loader hard-wires the text
+    # encoder to Qwen/Qwen3-4B and the VAE to ai-toolkit/flux2_vae
+    # (Flux2Klein4BModel class attrs) — it does NOT read the text_encoder/ vae/
+    # subfolders bundled in the -klein-base repo. So all three repos must be
+    # pre-cached.
+    # NOTE: the 9B variant (flux2_klein_9b / FLUX.2-klein-base-9B) is
+    # deliberately NOT listed — it ships under the FLUX Non-Commercial License
+    # and cannot be hosted by a commercial SaaS. It is also rejected by
+    # _is_blocked_model() below.
     "flux2_klein_4b": {
         "arch": "flux2_klein_4b",
         "unet": "black-forest-labs/FLUX.2-klein-base-4B",
         "text_encoder": "Qwen/Qwen3-4B",
         "vae": "ai-toolkit/flux2_vae",
     },
-    "flux2_klein_9b": {
-        "arch": "flux2_klein_9b",
-        "unet": "black-forest-labs/FLUX.2-klein-base-9B",
-        "text_encoder": "Qwen/Qwen3-8B",
-        "vae": "ai-toolkit/flux2_vae",
-    },
-    # FLUX.2 [dev]: Flux2Model loads the TE from a (gated) Mistral repo and the
-    # VAE from the shared flux2 autoencoder. The Mistral pull needs an HF token
-    # with that licence accepted (huggingface-secret HF_TOKEN).
-    "flux2": {
-        "arch": "flux2",
-        "unet": "black-forest-labs/FLUX.2-dev",
-        "text_encoder": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
-        "vae": "ai-toolkit/flux2_vae",
-    },
+    # FLUX.2 [dev] — REMOVED (non-commercial). FLUX.2-dev ships under the FLUX
+    # Non-Commercial License; a commercial SaaS cannot host it (same class as
+    # FLUX.1 [dev] and FLUX.2 [klein] 9B). It is now rejected by
+    # _is_blocked_model(). Its HF cache (transformer + 24B Mistral TE, ~210GB)
+    # and the Mistral-Small repo are purged by admin_cleanup_volume — they leave
+    # the keep-set with this entry gone, so the generic pass drops them (the
+    # explicit --purge-flux2 flag also still works). ai-toolkit/flux2_vae stays
+    # cached: flux2_klein_4b shares it.
     # `extras` -> YAML model.extras_name_or_path: ai-toolkit's qwen_image loader
     # reads the tokenizer("tokenizer" subfolder) / text_encoder / vae / scheduler
     # + configs from this Diffusers repo. ensure_model_cached_cpu() pre-caches it
@@ -579,10 +604,27 @@ TARGET_MODELS: dict[str, dict] = {
 # FLUX.1 [dev] is blocked outright (non-commercial licence). Matches
 # "flux dev", "flux-dev", "FLUX.1-dev", "black-forest-labs/FLUX.1-dev", ...
 _FLUX_DEV_RE = re.compile(r"flux[\s._-]*(?:1[\s._-]*)?dev\b", re.IGNORECASE)
+# FLUX.2 [dev] is blocked too — FLUX Non-Commercial License. Matches "flux2dev",
+# "flux.2-dev", "FLUX.2 dev", "black-forest-labs/FLUX.2-dev", … (the "2" is what
+# separates it from _FLUX_DEV_RE, which only reaches the ".1"/bare variant).
+_FLUX2_DEV_RE = re.compile(r"flux[\s._-]*2[\s._-]*dev\b", re.IGNORECASE)
+# FLUX.2 [klein] 9B is also blocked — FLUX Non-Commercial License (a commercial
+# SaaS cannot host it). Matches "flux2_klein_9b",
+# "black-forest-labs/FLUX.2-klein-base-9B", "flux.2 klein 9b", … but never the
+# Apache-2.0 4B variant.
+_FLUX2_KLEIN_9B_RE = re.compile(r"flux[\s._-]*2[\s._-]*klein[\w\s.-]{0,24}9b\b", re.IGNORECASE)
 
 
 def _is_blocked_model(value: str) -> bool:
-    return bool(value) and (_FLUX_DEV_RE.search(value) is not None or value.strip().lower() == "flux_dev")
+    if not value:
+        return False
+    v = value.strip().lower()
+    return (
+        _FLUX_DEV_RE.search(value) is not None
+        or _FLUX2_DEV_RE.search(value) is not None
+        or v in {"flux_dev", "flux2", "flux2_dev", "flux2_klein_9b"}
+        or _FLUX2_KLEIN_9B_RE.search(value) is not None
+    )
 
 DEFAULT_TRAINING_CONFIG = {
     "rank": 32,
@@ -1050,16 +1092,32 @@ def _expected_run_floor_seconds(
 
 
 def _cost_cap_seconds(
-    credits_cost: int, target_model: str, total_steps: int, base_architecture: str = ""
+    credits_cost: int,
+    target_model: str,
+    total_steps: int,
+    base_architecture: str = "",
+    override_s: int = 0,
 ) -> tuple[int, str]:
     """The live projected-wall-time abort threshold. Returns (seconds, reason
-    string for the log). Combines three inputs:
+    string for the log).
+
+    `override_s` (> 0) is the value the API pre-computed from the credit price
+    and the admin-editable pricing_knobs cost-guard thresholds — it is used
+    verbatim (only clamped to LORA_ABS_MAX_RUN_S) so a pricing edit moves the
+    loss-cut threshold without a worker redeploy. With no override the value is
+    derived here from:
       * base      = _credit_covered_seconds(credits) (or LORA_SAFETY_LIMIT_S
                     for a zero-credit raw-YAML job)
       * + margin  = base * ULL_COST_GUARD_MULTIPLIER
       * floored   = max(margin, per-arch expected run time)
       * clamped   = min(that, LORA_ABS_MAX_RUN_S)
     """
+    if override_s and override_s > 0:
+        capped = int(min(override_s, LORA_ABS_MAX_RUN_S))
+        return capped, (
+            f"{credits_cost}C -> API-provided cap {override_s}s -> {capped}s "
+            f"(~{capped / 3600:.2f}h)"
+        )
     base = _credit_covered_seconds(credits_cost) if credits_cost > 0 else LORA_SAFETY_LIMIT_S
     with_margin = base * ULL_COST_GUARD_MULTIPLIER
     arch_floor = _expected_run_floor_seconds(target_model, total_steps, base_architecture)
@@ -1598,9 +1656,15 @@ def _sanitize_override_yaml(
             proc["trigger_word"] = trigger
 
         user_model = proc.get("model") if isinstance(proc.get("model"), dict) else {}
-        proc["model"] = _cloud_safe_model_block(
+        safe_model = _cloud_safe_model_block(
             user_model, target_model, custom_model_id, base_architecture
         )
+        if LORA_COMPILE_ENABLED:
+            # torch.compile 標準（CLAUDE.md §1）。生 YAML が明示的に compile を
+            # 指定していればそれを尊重し、未指定のときだけ有効化する。
+            safe_model.setdefault("compile", bool(user_model.get("compile", True)))
+            safe_model.setdefault("compile_dynamic", bool(user_model.get("compile_dynamic", True)))
+        proc["model"] = safe_model
 
         datasets = proc.get("datasets")
         if isinstance(datasets, list) and datasets and isinstance(datasets[0], dict):
@@ -1663,7 +1727,7 @@ def _build_config(
         if not custom_model_id or not base_architecture:
             raise ValueError("target_model='custom' requires custom_model_id and base_architecture")
         if _is_blocked_model(custom_model_id):
-            raise ValueError("FLUX.1 [dev] is blocked (non-commercial licence)")
+            raise ValueError("FLUX.1 [dev] / FLUX.2 [klein] 9B is blocked (non-commercial licence)")
         path = custom_model_id
         # A bare filename resolves against the Volume; an "owner/name" HF repo
         # id, an absolute path, or a URL is passed through untouched.
@@ -1673,7 +1737,7 @@ def _build_config(
         print(f"[stage2] universal loader: arch={base_architecture} model={path}")
     else:
         if _is_blocked_model(target_model):
-            raise ValueError("FLUX.1 [dev] is blocked (non-commercial licence)")
+            raise ValueError("FLUX.1 [dev] / FLUX.2 [klein] 9B is blocked (non-commercial licence)")
         target = TARGET_MODELS.get(target_model)
         if not target:
             raise ValueError(
@@ -1694,6 +1758,16 @@ def _build_config(
     # low_vram off — the Blackwell tiers (b300/b200) have the headroom to
     # keep everything resident at full speed instead of offloading.
     model_block = {"name_or_path": target["unet"], "arch": target["arch"], "quantize": False, "low_vram": False}
+    # torch.compile: training_config.compile が明示指定（True/False）ならそれを
+    # 最優先（ベンチ用 — 環境変数はコンテナ側で再評価されるため CLI から効かない）。
+    # 未指定なら LORA_COMPILE_ENABLED（= LORA_DISABLE_COMPILE!=1、既定 ON）。
+    _compile_explicit = tc.get("compile")
+    _compile_on = bool(_compile_explicit) if _compile_explicit is not None else LORA_COMPILE_ENABLED
+    if _compile_on:
+        # torch.compile 標準（CLAUDE.md §1）。compile_dynamic は ai-toolkit 既定
+        # で true なので明示不要だが、意図を残すため書いておく。
+        model_block["compile"] = True
+        model_block["compile_dynamic"] = True
     if target.get("text_encoder"):
         model_block["text_encoder_path"] = target["text_encoder"]
     if target.get("vae"):
@@ -1757,7 +1831,11 @@ def _build_config(
                     "model": model_block,
                     "sample": {
                         "sampler": "flowmatch",
-                        "sample_every": save_every,
+                        # torch.compile 有効時: サンプル生成は学習と別 shape なので
+                        # 毎回 ~220s の再コンパイルが走る（B300 実測、2026-09-06）。
+                        # 途中サンプルを止めて最終 1 回だけにし、compile の利得を
+                        # 食い潰さないようにする。eager 時は従来どおり save_every。
+                        "sample_every": (steps if _compile_on else save_every),
                         "width": res,
                         "height": res,
                         "prompts": [f"{trigger}, full-body standing view, studio lighting"],
@@ -3222,8 +3300,11 @@ def _persist_latent_cache(dataset_id: str, key: str) -> int:
     # streams live progress (see _run_ai_toolkit_with_progress), so a long
     # run is visible rather than blind.
     timeout=12 * 60 * 60,
-    # 30s Keep-Warm 規格（CLAUDE.md §1）— 全 GPU ワーカー一律。
-    scaledown_window=30,
+    # LoRA worker は例外的に 2秒即切り（CLAUDE.md §1）— 学習ジョブは長時間の
+    # バッチ処理で「🔥火をくべる」的な連続実行UXが無いため、30秒Keep-Warmの
+    # 恩恵がなくアイドル課金だけが残る。動画生成系GPUワーカー（WanAnimate等）
+    # は引き続き30秒を維持。
+    scaledown_window=2,
     secrets=[
         modal.Secret.from_name("supabase-model-downloads"),
         modal.Secret.from_name("wan-animate-auth"),
@@ -3286,7 +3367,7 @@ def train_lora_job(params: dict) -> dict:
     if not _hf_token():
         for _k in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_TOKEN", "HF_API_TOKEN"):
             os.environ.pop(_k, None)
-    for _d in (HF_HUB_CACHE_DIR, TORCH_CACHE_DIR):
+    for _d in (HF_HUB_CACHE_DIR, TORCH_CACHE_DIR, INDUCTOR_CACHE_DIR, TRITON_CACHE_DIR):
         pathlib.Path(_d).mkdir(parents=True, exist_ok=True)
     print(
         f"[train] HF_HOME={HF_CACHE_DIR} MODELS_PATH={MODELS_DIR} "
@@ -3297,6 +3378,14 @@ def train_lora_job(params: dict) -> dict:
     job_id = str(params.get("job_id") or "")
     user_id = str(params.get("user_id") or "")
     credits_cost = int(params.get("credits_cost") or 0)
+    # Cost-guard budget (seconds) pre-computed by the API from the credit price
+    # and the admin-editable pricing_knobs thresholds. When present it is used
+    # verbatim instead of re-deriving from credits_cost with hardcoded rates
+    # (see _cost_cap_seconds). 0 / missing -> fall back to the internal calc.
+    try:
+        cost_cap_override = int(float(params.get("cost_cap_seconds") or 0))
+    except (TypeError, ValueError):
+        cost_cap_override = 0
     lora_name = str(params.get("output_lora_name") or "").strip()
     target_model = str(params.get("target_model") or "minimax_h3")
     custom_model_id = str(params.get("custom_model_id") or "").strip()
@@ -3306,7 +3395,7 @@ def train_lora_job(params: dict) -> dict:
     override = tc.get("custom_yaml_override")
 
     if _is_blocked_model(target_model) or _is_blocked_model(custom_model_id):
-        raise ValueError("FLUX.1 [dev] is blocked in LoRA Studio (non-commercial licence)")
+        raise ValueError("FLUX.1 [dev] / FLUX.2 [klein] 9B is blocked in LoRA Studio (non-commercial licence)")
 
     # Raw-YAML mode: the YAML's own config.name / process[0].trigger_word are
     # authoritative (the UI disables the form fields). Adopt them here so the
@@ -3708,7 +3797,8 @@ def train_lora_job(params: dict) -> dict:
         # stop + 100% refund; a true runaway still trips the projected-time
         # check above this (higher) threshold.
         cost_cap_s, _cap_reason = _cost_cap_seconds(
-            credits_cost, target_model, total_steps or 0, base_architecture
+            credits_cost, target_model, total_steps or 0, base_architecture,
+            override_s=cost_cap_override,
         )
         print(f"[stage2] cost cap: {_cap_reason}", flush=True)
         _run_ai_toolkit_with_progress(
@@ -3941,7 +4031,7 @@ ingest_image = dispatch_image.pip_install("Pillow>=10.2")
 # the client's pending-timeout auto-failover (cancel -> retry -> refund)
 # against real, cancellable Modal FunctionCalls. Triggered by _test_stub in
 # the dispatch payload (Next.js sets it when LORA_TRAIN_TEST_STUB=1).
-@app.function(image=dispatch_image, timeout=900)
+@app.function(image=dispatch_image, timeout=900, scaledown_window=2)
 def _pending_stub(item: dict):
     print(f"[test-stub] pretending to be a stuck pending job: {item.get('job_id')}", flush=True)
     time.sleep(900)
@@ -4572,6 +4662,7 @@ def _missing_base_artifacts(target_model: str, custom_model_id: str = "") -> lis
         modal.Secret.from_name("wan-animate-auth"),
         modal.Secret.from_name("huggingface-secret"),
     ],
+    scaledown_window=2,
 )
 def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
     """Stage 1. Guarantee every HF component of the base model is on the
@@ -4889,7 +4980,8 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
     # RW: writes the optimised images to PERSIST_ROOT (vol_ro can't).
     volumes={MODELS_DIR: vol},
     secrets=[modal.Secret.from_name("supabase-model-downloads")],
-    # CPU-only function -> no scaledown_window (CLAUDE.md §1, 30s規格 is GPU-only).
+    # LoRA worker は全関数一律2秒即切り（CLAUDE.md §1）。
+    scaledown_window=2,
 )
 def ingest_and_optimize_dataset_cpu(
     bucket: str,
@@ -5088,6 +5180,7 @@ def ingest_and_optimize_dataset_cpu(
         modal.Secret.from_name("wan-animate-auth"),
         modal.Secret.from_name("huggingface-secret"),
     ],
+    scaledown_window=2,
 )
 def _prepare_and_spawn_training(item: dict) -> dict:
     """CPU orchestrator: pre-cache the base model on the persistent Volume,
@@ -5225,7 +5318,7 @@ def _prepare_and_spawn_training(item: dict) -> dict:
 @app.function(
     image=dispatch_image,
     timeout=60,
-    min_containers=1,
+    scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="POST")
@@ -5254,8 +5347,9 @@ def train_lora_dispatch(item: dict, request: fastapi.Request):
 # Physically cancels a spawned training FunctionCall so a pending-timeout
 # refund never leaves a zombie job on Modal's queue. Best-effort — a call
 # that's already done / gone / invalid just reports cancelled:false.
-# Accepts either {"call_id": ...} or {"modal_call_id": ...}. Warm + tiny
-# image so it answers instantly.
+# Accepts either {"call_id": ...} or {"modal_call_id": ...}. Tiny image;
+# no longer kept warm (min_containers removed — 2秒即切り, CLAUDE.md §1)
+# so a cold call may add a second or two before it answers.
 def _cancel_function_call(call_id: str) -> dict:
     call_id = str(call_id or "").strip()
     if not call_id:
@@ -5271,7 +5365,7 @@ def _cancel_function_call(call_id: str) -> dict:
 @app.function(
     image=dispatch_image,
     timeout=30,
-    min_containers=1,
+    scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="POST")
@@ -5284,7 +5378,7 @@ def cancel_lora_job(data: dict, request: fastapi.Request):
 @app.function(
     image=dispatch_image,
     timeout=30,
-    min_containers=1,
+    scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="POST")
@@ -5418,9 +5512,8 @@ def _stream_download(
 # so only one hop's bandwidth is in play.
 @app.function(
     image=dispatch_image,
-    # Read-only: this endpoint keeps a warm container (min_containers=1) and
-    # only streams files — a RW mount would let its stale snapshot auto-commit
-    # deleted checkpoints back onto the Volume.
+    # Read-only: only streams files — a RW mount would let its stale snapshot
+    # auto-commit deleted checkpoints back onto the Volume.
     volumes={MODELS_DIR: vol_ro},
     # Checkpoints run 600MB-1GB+ (a rank-32 minimax_h3 LoRA is ~1.18GB) and a
     # slow / unstable mobile link can crawl at <1MB/s, so give the whole
@@ -5428,7 +5521,9 @@ def _stream_download(
     # response is Range-aware, so a dropped connection resumes instead of
     # restarting.
     timeout=3600,
-    min_containers=1,
+    # 2秒即切り（CLAUDE.md §1、LoRA worker）— min_containers は使わず、
+    # コールドスタート許容でアイドル課金ゼロを優先する。
+    scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="GET")
@@ -5439,10 +5534,9 @@ def download_lora_checkpoint(
         raise fastapi.HTTPException(status_code=403, detail="invalid or expired download link")
     if not (_CKPT_DL_ID_RE.match(user_id) and _CKPT_DL_ID_RE.match(job_id) and _CKPT_DL_FILENAME_RE.match(filename)):
         raise fastapi.HTTPException(status_code=400, detail="invalid parameters")
-    # This endpoint keeps a warm container (min_containers=1) whose Volume
-    # snapshot is frozen at mount time — a checkpoint another container just
-    # wrote + committed (a fresh training publish, or salvage_lora_job) is
-    # invisible here until we explicitly pull the latest Volume state.
+    # min_containers を廃止したので毎回ほぼ確実に新規コンテナ = 新規マウントだが、
+    # 稀に別コンテナが直前に書いた最新コミットを取りこぼす窓が残るため、
+    # 安全側として引き続き明示的に pull しておく。
     try:
         vol.reload()
     except Exception as exc:  # noqa: BLE001 — stale-but-present read is still better than a hard fail
@@ -5500,7 +5594,7 @@ def _verify_selection_token(user_id: str, job_id: str, files: str, expires: str,
     image=dispatch_image,
     volumes={MODELS_DIR: vol_ro},  # read-only: reads checkpoints, zips into /tmp
     timeout=3600,
-    min_containers=1,
+    scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="GET")
@@ -5598,6 +5692,7 @@ def _safe_volume_path(rel: str) -> pathlib.Path:
     image=dispatch_image,
     volumes={MODELS_DIR: vol_ro},  # read-only: streams files only, never writes
     timeout=3600,
+    scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="GET")
@@ -5619,6 +5714,7 @@ def admin_download_volume_file(path: str, expires: str, sig: str, request: fasta
     # read-only: reads Volume files, writes the ZIP only to /tmp (not the Volume)
     volumes={MODELS_DIR: vol_ro},
     timeout=3600,
+    scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="GET")
@@ -5708,6 +5804,7 @@ def _resolve_job_artifact(user_id: str, job_id: str, call_id: str, want: str):
     # /tmp — never writes the Volume.
     volumes={MODELS_DIR: vol_ro},
     timeout=3600,
+    scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="GET")
@@ -5787,7 +5884,7 @@ def admin_download_job_artifact(
 @app.function(
     image=dispatch_image,
     timeout=30,
-    min_containers=1,
+    scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="GET")
@@ -5829,6 +5926,7 @@ def check_call_status(call_id: str, request: fastapi.Request):
     image=dispatch_image,
     volumes={MODELS_DIR: vol},
     timeout=300,
+    scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="POST")
@@ -6035,6 +6133,7 @@ LATENT_CACHE_RETENTION_DAYS = int(os.environ.get("LORA_LATENT_TTL_DAYS", "14"))
     volumes={MODELS_DIR: vol},
     schedule=modal.Period(days=1),
     timeout=600,
+    scaledown_window=2,
 )
 def cleanup_old_latent_caches() -> dict:
     """Daily: delete files under PERSIST_ROOT/*/latents/ and PERSIST_ROOT/*/
@@ -6128,6 +6227,13 @@ def _keep_hf_cache_slugs() -> set[str]:
             _QWEN_COMFY_REPO,
             _MINIMAX_H3_AUX_REPO,
             _MINIMAX_H3_WEIGHT_REPO,
+            # Cross-worker: modal_angle_worker.py (Multi-Angle Studio) shares this
+            # same Volume / HF cache. Its Qwen-Image-Edit-2511 base + fal
+            # Multi-Angle LoRA are NOT in this worker's TARGET_MODELS, so without
+            # listing them here the generic purge below would delete them and
+            # force a ~54GB re-download on the angle worker's next cold start.
+            "Qwen/Qwen-Image-Edit-2511",
+            "fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA",
         }
     )
     return {_hf_cache_slug(r) for r in repos if r and "/" in r}
@@ -6175,6 +6281,7 @@ def _walk_size_dedup(root: "pathlib.Path | str") -> int:
     volumes={MODELS_DIR: vol},
     timeout=1800,
     secrets=[modal.Secret.from_name("huggingface-secret")],
+    scaledown_window=2,
 )
 def admin_cleanup_volume(
     dry_run: bool = True,
@@ -6195,11 +6302,12 @@ def admin_cleanup_volume(
 
     purge_flux2=True force-removes the FLUX.2 [dev] HF-cache — the transformer
     repo (black-forest-labs/FLUX.2-dev) and the 24B Mistral text encoder that
-    ONLY that preset uses (mistralai/Mistral-Small-3.1-24B-Instruct-2503,
-    ~50GB). Both are in the sealed lineup so the generic pass keeps them; this
-    flag is the explicit pre-release storage escape hatch. The shared
-    ai-toolkit/flux2_vae is left intact (flux2_klein_* still need it). A later
-    `flux2` training job re-pulls the ~80GB through the CPU gate.
+    ONLY that preset used (mistralai/Mistral-Small-3.1-24B-Instruct-2503).
+    FLUX.2-dev is now REMOVED from TARGET_MODELS (non-commercial licence,
+    blocked by _is_blocked_model), so both slugs already leave the keep-set and
+    the generic pass drops them — this flag is now just a redundant explicit
+    path. The shared ai-toolkit/flux2_vae is left intact (flux2_klein_4b still
+    needs it). There is no longer any way to re-pull FLUX.2-dev.
 
     purge_qwen_image=True force-removes the Qwen-Image (Alibaba 20B) transformer
     single file (diffusion_models/qwen_image_bf16.safetensors + its split_files/
@@ -6401,8 +6509,15 @@ def main(
     learning_rate: float = 1e-4,
     optimizer: str = "adamw8bit",
     resolution: int = 768,
+    caption: str = "",
+    compile: str = "",
 ):
-    """modal run modal_lora_worker.py --data-dir <dir> --lora-name <name>"""
+    """modal run modal_lora_worker.py --data-dir <dir> --lora-name <name>
+
+    ベンチ用オプション:
+      --caption "<txt>"  全画像に同じキャプションを付け、27B VLM 段を丸ごとスキップ
+      --compile on|off   torch.compile を明示 ON/OFF（既定は環境の LORA_COMPILE）
+    """
     src = pathlib.Path(data_dir).expanduser()
     if not src.is_dir():
         raise SystemExit(f"--data-dir is not a directory: {src}")
@@ -6419,30 +6534,45 @@ def main(
     if total > 1_500_000_000:
         raise SystemExit(f"dataset is {total / 1024**2:.0f} MB — downscale it first")
 
-    print(f"[main] {len(images)} images ({total / 1024**2:.1f} MB) -> Modal ({GPU_REQUEST}), target={target_model}")
+    _tc: dict = {
+        "rank": rank,
+        "alpha": alpha,
+        "learning_rate": learning_rate,
+        "steps": steps,
+        "optimizer": optimizer,
+    }
+    _c = compile.strip().lower()
+    if _c in ("on", "1", "true", "yes"):
+        _tc["compile"] = True
+    elif _c in ("off", "0", "false", "no"):
+        _tc["compile"] = False
 
-    result = train_lora_job.remote(
-        {
-            "images": images,
-            "captions": [],
-            "target_model": target_model,
-            "custom_model_id": custom_model_id,
-            "base_architecture": base_architecture,
-            "resolution": resolution,
-            "training_config": {
-                "rank": rank,
-                "alpha": alpha,
-                "learning_rate": learning_rate,
-                "steps": steps,
-                "optimizer": optimizer,
-            },
-            "output_lora_name": lora_name,
-            "trigger_word": trigger_word,
-            "job_id": "",
-            "user_id": "",
-            "credits_cost": 0,
-        }
+    _payload: dict = {
+        "images": images,
+        "captions": [],
+        "target_model": target_model,
+        "custom_model_id": custom_model_id,
+        "base_architecture": base_architecture,
+        "resolution": resolution,
+        "training_config": _tc,
+        "output_lora_name": lora_name,
+        "trigger_word": trigger_word,
+        "job_id": "",
+        "user_id": "",
+        "credits_cost": 0,
+    }
+    if caption.strip():
+        # 全画像に同一キャプション → custom_captions で 27B VLM 段をスキップ。
+        _payload["custom_captions"] = [caption.strip()] * len(images)
+        _payload["skip_captioning"] = True
+
+    print(
+        f"[main] {len(images)} images ({total / 1024**2:.1f} MB) -> Modal ({GPU_REQUEST}), "
+        f"target={target_model}, steps={steps}, compile={_tc.get('compile', 'env-default')}, "
+        f"caption={'fixed' if caption.strip() else 'auto(VLM)'}"
     )
+
+    result = train_lora_job.remote(_payload)
     print(f"\n[main] ✅ {result['lora_path']} ({result['size_bytes'] / 1024**2:.1f} MB)")
     print(f"[main] {result['num_images']} images, {result['total_seconds']}s, trigger={result['trigger_word']}")
     for cap in result["sample_captions"]:
