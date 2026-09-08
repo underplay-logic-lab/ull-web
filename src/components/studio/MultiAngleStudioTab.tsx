@@ -24,13 +24,13 @@ import {
   ANGLE_MODES,
   ANGLE_PRESETS,
   angleCreditsPerAngle,
+  AZIMUTH_OPTIONS,
   buildAngleCombos,
-  CAMERA_ANGLE_OPTIONS,
   DISTANCE_OPTIONS,
+  ELEVATION_OPTIONS,
   EMPTY_ANGLE_SELECTION,
   isAngleMode,
   MAX_ANGLES,
-  ORIENTATION_OPTIONS,
   type AngleAxis,
   type AngleAxisOption,
   type AngleCombo,
@@ -417,10 +417,10 @@ export function MultiAngleStudioTab() {
   const [mode, setMode] = useState<AngleMode>(isAngleMode(savedForm?.mode) ? savedForm!.mode : "turbo");
   const [selection, setSelection] = useState<AngleSelection>(() => {
     const s = savedForm?.selection;
-    if (!s || !Array.isArray(s.orientations) || !Array.isArray(s.cameraAngles) || !Array.isArray(s.distances)) {
+    if (!s || !Array.isArray(s.azimuths) || !Array.isArray(s.elevations) || !Array.isArray(s.distances)) {
       return ANGLE_PRESETS[0].selection;
     }
-    return { orientations: s.orientations, cameraAngles: s.cameraAngles, distances: s.distances };
+    return { azimuths: s.azimuths, elevations: s.elevations, distances: s.distances };
   });
 
   // 直近のアクティブジョブがあれば復元してポーリングを再開する（初期値で解決 —
@@ -836,23 +836,23 @@ export function MultiAngleStudioTab() {
 
           <div className="grid gap-4 rounded-xl border border-border bg-background p-4">
             <AxisGroup
-              title="向き"
-              options={ORIENTATION_OPTIONS}
-              selected={selection.orientations}
-              onToggle={(id) => toggleOption("orientations", id)}
-              onAll={() => setAxis("orientations", ORIENTATION_OPTIONS.map((o) => o.id))}
-              onClear={() => setAxis("orientations", [])}
+              title="方位（Azimuth）"
+              options={AZIMUTH_OPTIONS}
+              selected={selection.azimuths}
+              onToggle={(id) => toggleOption("azimuths", id)}
+              onAll={() => setAxis("azimuths", AZIMUTH_OPTIONS.map((o) => o.id))}
+              onClear={() => setAxis("azimuths", [])}
             />
             <AxisGroup
-              title="アングル"
-              options={CAMERA_ANGLE_OPTIONS}
-              selected={selection.cameraAngles}
-              onToggle={(id) => toggleOption("cameraAngles", id)}
-              onAll={() => setAxis("cameraAngles", CAMERA_ANGLE_OPTIONS.map((o) => o.id))}
-              onClear={() => setAxis("cameraAngles", [])}
+              title="仰角（Elevation）"
+              options={ELEVATION_OPTIONS}
+              selected={selection.elevations}
+              onToggle={(id) => toggleOption("elevations", id)}
+              onAll={() => setAxis("elevations", ELEVATION_OPTIONS.map((o) => o.id))}
+              onClear={() => setAxis("elevations", [])}
             />
             <AxisGroup
-              title="距離"
+              title="距離（Distance）"
               options={DISTANCE_OPTIONS}
               selected={selection.distances}
               onToggle={(id) => toggleOption("distances", id)}

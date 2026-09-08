@@ -1,10 +1,17 @@
 """
-Angle worker on Modal — Qwen-Image-Edit (BF16 full model) single / batch
-inference for構図（アングル）編集.
+Angle worker on Modal — Qwen-Image-Edit-2511 (BF16 full model) + 2511 専用
+Multi-Angle LoRA による単発 / バッチ推論（構図＝アングル編集）.
 
 1枚の参照画像と、複数の構図編集プロンプト（instructions 配列）を受け取り、
-Qwen-Image-Edit の BF16 フル精度パイプラインで各アングルの編集画像を生成して
-返す同期エンドポイント。「1参照画像 → N アングル」を 1 リクエストで捌く。
+Qwen-Image-Edit-2511 の BF16 フル精度パイプライン（`fal/Qwen-Image-Edit-
+2511-Multiple-Angles-LoRA` を融合）で各アングルの編集画像を生成して返す。
+「1参照画像 → N アングル」を 1 リクエストで捌く。
+
+素の 2511 はテキスト指示だけでは正面〜微斜めに張り付き、90° 真横 / 180° 背面
+などの大角度回転が反映されない。2511 専用の 3DGS 学習済み視点合成 LoRA を
+load_lora_weights で載せ、CLAUDE.md 準拠の破綻防止スタック（true_cfg_scale
+3.2〜3.5 / LoRA scale 0.85〜0.9 / 35〜40 steps / 入力を 64 の倍数へアライン）
+で顔パーツ崩れ・色彩破綻を抑える。
 
 構成・規約は modal_lora_worker.py / modal_wan_animate_blackwell.py を踏襲:
   - コンテナ標準 (CLAUDE.md §1、改変厳禁): nvidia/cuda:13.0.0-devel +
@@ -35,7 +42,21 @@ Env overrides:
                          ローカル `modal run` で検証コストを抑えたいときだけ
                          `ANGLE_WORKER_GPU=a100-80gb` を明示する（modal_lora_worker
                          の LORA_WORKER_GPU と同じ運用）。
-  ANGLE_QWEN_EDIT_REPO    Qwen-Image-Edit の HF repo（既定: Qwen/Qwen-Image-Edit）
+  ANGLE_QWEN_EDIT_REPO    Qwen-Image-Edit の HF repo（既定: Qwen/Qwen-Image-Edit-2511）
+  ANGLE_LORA_REPO         Multi-Angle LoRA の HF repo
+                         （既定: fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA）
+  ANGLE_LORA_FILENAME     LoRA safetensors のファイル名
+                         （既定: qwen-image-edit-2511-multiple-angles-lora.safetensors。
+                          取得失敗時は repo を snapshot して *.safetensors を拾う）
+  ANGLE_LORA_SCALE        LoRA 強度（既定 0.9。CLAUDE 指定レンジ 0.85〜0.9 の上端）
+  ANGLE_LORA_TRIGGER      LoRA トリガートークン（既定 "<sks>"。HF model card 規格
+                         "<sks> [azimuth] [elevation] [distance]"。LoRA ロード時のみ
+                         プロンプト先頭へ前置。空文字で前置しない）
+  ANGLE_DISABLE_LORA      "1" で LoRA を載せず素の 2511 で動かす（切り分け用）
+  ANGLE_STEPS_FLOOR/CEIL  推論ステップのクランプ範囲（既定 35 / 40）
+  ANGLE_CFG_FLOOR/CEIL    true_cfg_scale のクランプ範囲（既定 3.2 / 3.5）
+  ANGLE_ALIGN_MULTIPLE    入力画像の辺長を丸める倍数（既定 64。0/1 で無効）
+  ANGLE_ALIGN_MAX_EDGE    アライン時の長辺上限 px（既定 1536）
   ANGLE_ENABLE_COMPILE    "1" で transformer への torch.compile をオプトイン
                          （既定: 無効。2026-09-06 実機計測で逆効果と判明 —
                           warmup 500s+ / A100 定常も悪化 / VRAM 変化なし）
@@ -43,6 +64,7 @@ Env overrides:
 
 import base64
 import gc
+import glob
 import io
 import os
 import pathlib
@@ -64,10 +86,55 @@ HF_CACHE_DIR = f"{MODELS_DIR}/training/hf_cache"
 HF_HUB_CACHE_DIR = f"{HF_CACHE_DIR}/hub"
 TORCH_CACHE_DIR = f"{MODELS_DIR}/training/torch_cache"
 
-# Qwen-Image-Edit（Diffusers 形式・BF16 フルモデル）。
-# multi-image 版 (`Qwen/Qwen-Image-Edit-2509` + QwenImageEditPlusPipeline) が
-# 必要なら env で差し替え可能だが、既定は 1 参照画像を前提とする base 版。
-QWEN_EDIT_REPO = os.environ.get("ANGLE_QWEN_EDIT_REPO", "").strip() or "Qwen/Qwen-Image-Edit"
+# Qwen-Image-Edit-2511（Diffusers 形式・BF16 フルモデル）。
+# 2511 専用 Multi-Angle LoRA（fal/…-2511-Multiple-Angles-LoRA）と世代を合わせる
+# ため既定を 2511 に固定。パイプラインクラスは model_index.json の _class_name
+# から自動解決する（QwenImageEditPlusPipeline 等、diffusers のバージョンで
+# 名前が変わりうるので明示 import しない）。旧 base 版へ戻す場合は
+# `ANGLE_QWEN_EDIT_REPO=Qwen/Qwen-Image-Edit` を明示。
+QWEN_EDIT_REPO = (
+    os.environ.get("ANGLE_QWEN_EDIT_REPO", "").strip() or "Qwen/Qwen-Image-Edit-2511"
+)
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        v = os.environ.get(name, "").strip()
+        return float(v) if v else float(default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        v = os.environ.get(name, "").strip()
+        return int(v) if v else int(default)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+# --- Multi-Angle LoRA（CLAUDE.md 準拠の破綻防止スタックの中核）--------------
+# fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA: 2511 専用の 3DGS 学習済み
+# 視点合成 LoRA。90° 真横・180° 背面など大角度回転をテキスト指示だけで確実に
+# 反映させる。永続 Volume の HF キャッシュに置き、@modal.enter() で融合する。
+ANGLE_LORA_REPO = (
+    os.environ.get("ANGLE_LORA_REPO", "").strip()
+    or "fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA"
+)
+ANGLE_LORA_FILENAME = (
+    os.environ.get("ANGLE_LORA_FILENAME", "").strip()
+    or "qwen-image-edit-2511-multiple-angles-lora.safetensors"
+)
+DEFAULT_LORA_SCALE = _env_float("ANGLE_LORA_SCALE", 0.9)  # 指定レンジ 0.85〜0.9 の上端
+# HF model card のプロンプト規格: "<sks> [azimuth] [elevation] [distance]"。
+# `<sks>` が無いと LoRA がほぼ発火せず、素の 2511 が弱い編集をするだけになる
+# （＝左右反転・アングルほぼ不変の症状）。フロントは記述子部分だけを送り、
+# ここで LoRA ロード時のみ前置する。空文字にすると前置しない。
+ANGLE_LORA_TRIGGER = os.environ.get("ANGLE_LORA_TRIGGER", "<sks>").strip()
 
 # GPU tier は CLAUDE.md §1 / modal_lora_worker.py（LORA_WORKER_GPU）に揃えて
 # 既定 Blackwell 固定（b300 -> b200）。`ANGLE_WORKER_GPU` を明示したときだけ
@@ -104,10 +171,117 @@ GPU_REQUEST = _resolve_angle_worker_gpu()
 # min_containers=0（アイドル即 Scale-to-Zero）。
 MAX_INSTRUCTIONS = 9999
 
-# 推論パラメータの既定値（payload で上書き可）。
+# 推論パラメータ（payload で上書き可、ただし下記レンジへクランプ）。
+# CLAUDE.md / タスク仕様の破綻防止規格:
+#   - steps は 35〜40 を死守（過小だと LoRA の視点移動が半端になり、過大でも
+#     顔ディテールが崩れやすい）。
+#   - true_cfg_scale は 3.2〜3.5（4.0 以上の過剰 CFG が破綻の主因）。
 DEFAULT_STEPS = 40
-DEFAULT_TRUE_CFG = 4.0
+DEFAULT_TRUE_CFG = 3.5
 DEFAULT_NEGATIVE_PROMPT = " "
+ANGLE_STEPS_FLOOR = _env_int("ANGLE_STEPS_FLOOR", 35)
+ANGLE_STEPS_CEIL = _env_int("ANGLE_STEPS_CEIL", 40)
+ANGLE_CFG_FLOOR = _env_float("ANGLE_CFG_FLOOR", 3.2)
+ANGLE_CFG_CEIL = _env_float("ANGLE_CFG_CEIL", 3.5)
+ANGLE_ALIGN_MULTIPLE = _env_int("ANGLE_ALIGN_MULTIPLE", 64)
+ANGLE_ALIGN_MAX_EDGE = _env_int("ANGLE_ALIGN_MAX_EDGE", 1536)
+
+
+def _clamp_steps(v) -> int:
+    try:
+        n = int(v) if v not in (None, "") else DEFAULT_STEPS
+    except (TypeError, ValueError):
+        n = DEFAULT_STEPS
+    lo, hi = min(ANGLE_STEPS_FLOOR, ANGLE_STEPS_CEIL), max(ANGLE_STEPS_FLOOR, ANGLE_STEPS_CEIL)
+    return max(lo, min(n, hi))
+
+
+def _clamp_cfg(v) -> float:
+    try:
+        f = float(v) if v not in (None, "") else DEFAULT_TRUE_CFG
+    except (TypeError, ValueError):
+        f = DEFAULT_TRUE_CFG
+    lo, hi = min(ANGLE_CFG_FLOOR, ANGLE_CFG_CEIL), max(ANGLE_CFG_FLOOR, ANGLE_CFG_CEIL)
+    return max(lo, min(f, hi))
+
+
+def _clamp_lora_scale(v) -> float:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        f = DEFAULT_LORA_SCALE
+    return max(0.0, min(f, 1.5))
+
+
+def _align_image(img):
+    """入力 PIL を『64 の倍数』の辺長へ丸める（RoPE 位置歪み対策）。
+    アスペクト比は近傍丸めでおおむね維持し、長辺は ANGLE_ALIGN_MAX_EDGE で
+    頭打ちにする。ANGLE_ALIGN_MULTIPLE=0/1 で無効化。"""
+    m = ANGLE_ALIGN_MULTIPLE
+    if not m or m <= 1:
+        return img
+    from PIL import Image
+
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        return img
+    longest = max(w, h)
+    scale = min(1.0, ANGLE_ALIGN_MAX_EDGE / longest) if ANGLE_ALIGN_MAX_EDGE > 0 else 1.0
+    tw, th = w * scale, h * scale
+    nw = max(m, int(round(tw / m)) * m)
+    nh = max(m, int(round(th / m)) * m)
+    if (nw, nh) != (w, h):
+        img = img.resize((nw, nh), Image.LANCZOS)
+        print(f"[angle] ref image aligned {w}x{h} -> {nw}x{nh} (multiple of {m})", flush=True)
+    return img
+
+
+def _apply_lora_trigger(prompt: str, lora_on: bool) -> str:
+    """プロンプトを HF model card 規格 "<sks> [azimuth] [elevation] [distance]"
+    に整形する。
+      - 空白を正規化し、カンマはスペースへ（フロントが旧カンマ区切りを送っても
+        発火するように）。
+      - LoRA ロード時のみ ANGLE_LORA_TRIGGER を前置（既に付いていれば二重に
+        しない）。`<sks>` が無いと LoRA はほぼ効かない（2026-09-08 CLI 実写で
+        `<sks> right side view eye-level shot medium shot` 等が正しく機能する
+        ことを確認済み。左右も model card どおりで正しい）。
+    """
+    p = " ".join(str(prompt or "").replace(",", " ").split())
+    if lora_on and ANGLE_LORA_TRIGGER and not p.startswith(ANGLE_LORA_TRIGGER):
+        p = f"{ANGLE_LORA_TRIGGER} {p}".strip()
+    return p
+
+
+def _ensure_angle_lora(token: str | None = None) -> str:
+    """Multi-Angle LoRA safetensors を永続 Volume の HF キャッシュへ確保し、
+    ローカルパスを返す。単一ファイル取得に失敗したら（ファイル名ドリフト等）
+    repo を snapshot して *.safetensors を拾う。"""
+    from huggingface_hub import hf_hub_download
+
+    _apply_hf_cache_env()
+    try:
+        return hf_hub_download(
+            ANGLE_LORA_REPO,
+            filename=ANGLE_LORA_FILENAME,
+            cache_dir=HF_HUB_CACHE_DIR,
+            token=token,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[angle] LoRA single-file fetch failed ({exc}); snapshotting repo", flush=True)
+        from huggingface_hub import snapshot_download
+
+        d = snapshot_download(
+            ANGLE_LORA_REPO,
+            cache_dir=HF_HUB_CACHE_DIR,
+            token=token,
+            allow_patterns=["*.safetensors"],
+        )
+        cands = sorted(glob.glob(os.path.join(d, "**", "*.safetensors"), recursive=True))
+        if not cands:
+            raise RuntimeError(f"no .safetensors found in {ANGLE_LORA_REPO}") from exc
+        pref = [c for c in cands if "angle" in os.path.basename(c).lower()]
+        return (pref or cands)[0]
+
 
 # --- 二重ウォッチドッグ（run_edit_job 内の監視スレッド）--------------------
 # (1) フリーズ検知: 1 ステップも進まないまま WATCHDOG_FREEZE_S 経過 → os._exit(1)
@@ -179,8 +353,11 @@ image = (
         extra_index_url="https://download.pytorch.org/whl/nightly/cu130",
     )
     .pip_install(
-        # QwenImageEditPipeline は diffusers 0.35 系で追加。transformers は
-        # Qwen2.5-VL テキストエンコーダに新しめが必要。
+        # Qwen-Image-Edit-2511 のパイプライン（QwenImageEditPlus 系）は比較的
+        # 新しい diffusers が必要。`>=0.35.1` は実際には最新版を引くが、2511 の
+        # model_index.json を解決できない古い版を掴んだ場合は _load_pipeline が
+        # 「diffusers を上げよ」と明示して落ちる。transformers は Qwen2.5-VL
+        # テキストエンコーダに新しめが必要。
         "diffusers>=0.35.1",
         "transformers>=4.52.0",
         "accelerate>=1.2.0",
@@ -189,6 +366,7 @@ image = (
         "einops",
         "Pillow",
         "ftfy",
+        "peft>=0.11.0",
         "huggingface_hub>=0.24",
         "hf_transfer",
         "requests",
@@ -477,15 +655,30 @@ def ensure_qwen_edit_cached(repo: str = "") -> dict:
         # BF16 フル精度のみ。fp8 / GGUF / onnx など他フォーマットは引かない。
         ignore_patterns=["*.gguf", "*fp8*", "*onnx*", "*.pt", "*.ckpt"],
     )
+
+    # Multi-Angle LoRA も同じ HF キャッシュへ（GPU 側はこのあと 0s ロード）。
+    lora_local = None
+    try:
+        lora_local = _ensure_angle_lora(token)
+        print(f"[cache] angle LoRA staged -> {lora_local}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[cache] angle LoRA precache skipped: {exc}", flush=True)
+
     elapsed = round(time.time() - t0, 1)
 
     try:
         vol.commit()
-        print(f"[cache] vol.commit() — {repo} ({elapsed}s) -> {local_dir}", flush=True)
+        print(f"[cache] vol.commit() — {repo} + LoRA ({elapsed}s) -> {local_dir}", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[cache] vol.commit skipped: {exc}", flush=True)
 
-    return {"ok": True, "repo": repo, "elapsed_s": elapsed, "local_dir": str(local_dir)}
+    return {
+        "ok": True,
+        "repo": repo,
+        "elapsed_s": elapsed,
+        "local_dir": str(local_dir),
+        "lora": str(lora_local) if lora_local else None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -533,13 +726,6 @@ class QwenImageEditWorker:
         warm な間に来た次リクエストはロード 0s で走る。"""
         import torch
 
-        try:
-            from diffusers import QwenImageEditPipeline
-        except ImportError as exc:  # noqa: BLE001
-            raise RuntimeError(
-                "QwenImageEditPipeline unavailable — bump diffusers (>=0.35.1)"
-            ) from exc
-
         _apply_hf_cache_env()
         try:
             vol.reload()
@@ -570,11 +756,10 @@ class QwenImageEditWorker:
 
         t0 = time.time()
         # torch_dtype=bfloat16 = 「BF16 フルモデル」。量子化・オフロードなし。
-        self.pipe = QwenImageEditPipeline.from_pretrained(
-            QWEN_EDIT_REPO,
-            torch_dtype=torch.bfloat16,
-            token=token,
-        )
+        # パイプラインクラスは repo の model_index.json から自動解決（2511 の
+        # QwenImageEditPlus 系 / 将来の別名に追従）。失敗時のみ旧 base 版用の
+        # QwenImageEditPipeline へフォールバックする。
+        self.pipe = self._load_pipeline(torch.bfloat16, token)
         self.pipe.to("cuda")
         self.pipe.set_progress_bar_config(disable=True)
         # 大きめ入力での VAE デコード OOM を避ける。速度影響はごく小。
@@ -582,6 +767,83 @@ class QwenImageEditWorker:
             self.pipe.vae.enable_tiling()
         except Exception:  # noqa: BLE001
             pass
+
+        # auto-resolve が選んだパイプラインクラスを記録（QwenImageEditPlus 系か）。
+        self._pipe_cls = type(self.pipe).__name__
+        print(f"[angle] pipeline class -> {self._pipe_cls}", flush=True)
+
+        # --- Multi-Angle LoRA（2511 専用・破綻防止スタックの中核）-----------
+        # load_lora_weights → set_adapters（強度）→ 既定で fuse_lora。
+        # ComfyUI の LoraLoaderModelOnly は「model へ強度 1.0 で融合」なので、
+        # set_adapters だけだと __call__ 時に効かないケースの保険として fuse する。
+        # ANGLE_LORA_NO_FUSE=1 で set_adapters のみ。torch.compile より前に載せる。
+        self._lora_loaded = False
+        self._lora_fused = False
+        self._lora_scale = _clamp_lora_scale(DEFAULT_LORA_SCALE)
+        if _env_flag("ANGLE_DISABLE_LORA"):
+            print("[angle] Multi-Angle LoRA disabled via ANGLE_DISABLE_LORA", flush=True)
+        else:
+            try:
+                lora_path = _ensure_angle_lora(token)
+
+                # 生 state_dict のキー診断（transformer にマッチしているか）。
+                try:
+                    from safetensors.torch import load_file as _load_sft
+
+                    _sd = _load_sft(lora_path)
+                    _lk = list(_sd.keys())
+                    _has_te = any(("text_encoder" in k or "text_model" in k) for k in _lk)
+                    print(
+                        f"[angle][lora] raw: {len(_lk)} tensors, has_text_encoder={_has_te}, "
+                        f"sample={_lk[:2]}",
+                        flush=True,
+                    )
+                    del _sd
+                except Exception as _de:  # noqa: BLE001
+                    print(f"[angle][lora] key diag skipped: {_de}", flush=True)
+
+                self.pipe.load_lora_weights(lora_path, adapter_name="angles")
+
+                # transformer に実際に注入された LoRA パラメータ数（0 なら key 不一致）。
+                try:
+                    _lp = [n for n, _ in self.pipe.transformer.named_parameters() if "lora" in n.lower()]
+                    print(
+                        f"[angle][lora] injected into transformer: {len(_lp)} params "
+                        f"(e.g. {_lp[0] if _lp else 'NONE — key mismatch!'})",
+                        flush=True,
+                    )
+                except Exception as _ce:  # noqa: BLE001
+                    print(f"[angle][lora] inject count skipped: {_ce}", flush=True)
+
+                try:
+                    self.pipe.set_adapters(["angles"], adapter_weights=[self._lora_scale])
+                except Exception as _se:  # noqa: BLE001
+                    print(f"[angle] set_adapters skipped ({_se})", flush=True)
+
+                if not _env_flag("ANGLE_LORA_NO_FUSE"):
+                    try:
+                        self.pipe.fuse_lora(lora_scale=self._lora_scale, adapter_names=["angles"])
+                        self._lora_fused = True
+                        print(f"[angle][lora] fused @ {self._lora_scale}", flush=True)
+                    except Exception as _fe:  # noqa: BLE001
+                        print(f"[angle][lora] fuse_lora failed ({_fe}); using set_adapters", flush=True)
+
+                try:
+                    print(f"[angle][lora] active adapters: {self.pipe.get_active_adapters()}", flush=True)
+                except Exception:  # noqa: BLE001
+                    pass
+
+                self._lora_loaded = True
+                print(
+                    f"[angle] Multi-Angle LoRA loaded: {ANGLE_LORA_REPO}"
+                    f"/{os.path.basename(lora_path)} scale={self._lora_scale} fused={self._lora_fused}",
+                    flush=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[angle] Multi-Angle LoRA load FAILED — running base 2511: {exc}",
+                    flush=True,
+                )
 
         # --- 複素 RoPE を bf16 実数実装に差し替え（回帰の主因対策）----------
         # diffusers 0.40 の QwenDoubleStreamAttnProcessor2_0 は CUDA 既定で
@@ -761,9 +1023,42 @@ class QwenImageEditWorker:
         self._repo = QWEN_EDIT_REPO
         print(
             f"[angle] pipeline ready: {QWEN_EDIT_REPO} bf16 in {time.time() - t0:.1f}s "
-            f"(step-callback={self._supports_step_cb})",
+            f"(step-callback={self._supports_step_cb}, "
+            f"lora={'on@' + str(self._lora_scale) if self._lora_loaded else 'off'}, "
+            f"trigger={ANGLE_LORA_TRIGGER!r}, "
+            f"steps={ANGLE_STEPS_FLOOR}-{ANGLE_STEPS_CEIL}, "
+            f"cfg={ANGLE_CFG_FLOOR}-{ANGLE_CFG_CEIL}, align={ANGLE_ALIGN_MULTIPLE})",
             flush=True,
         )
+
+    def _load_pipeline(self, dtype, token):
+        """repo の model_index.json からパイプラインクラスを自動解決する。
+        2511 は QwenImageEditPlus 系だが diffusers のバージョンでクラス名が
+        変わりうるため明示 import しない。自動解決に失敗したら旧 base 版用の
+        QwenImageEditPipeline へフォールバックし、それも無ければ「diffusers を
+        上げよ」と明示して落とす（完了条件 1 の切り分けを容易にする）。"""
+        from diffusers import DiffusionPipeline
+
+        try:
+            return DiffusionPipeline.from_pretrained(
+                QWEN_EDIT_REPO, torch_dtype=dtype, token=token
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[angle] DiffusionPipeline auto-load failed ({exc}); "
+                "falling back to QwenImageEditPipeline",
+                flush=True,
+            )
+            try:
+                from diffusers import QwenImageEditPipeline
+            except ImportError as ie:  # noqa: BLE001
+                raise RuntimeError(
+                    f"Could not load {QWEN_EDIT_REPO}. 2511 needs a recent diffusers "
+                    f"release — bump `diffusers` in the Modal image. Original error: {exc}"
+                ) from ie
+            return QwenImageEditPipeline.from_pretrained(
+                QWEN_EDIT_REPO, torch_dtype=dtype, token=token
+            )
 
     def _vram_gb(self):
         """実効 VRAM 消費量のみ（分母・％・GPU 名は出さない — CLAUDE.md §2）。"""
@@ -800,8 +1095,9 @@ class QwenImageEditWorker:
                 detail=f"too many instructions ({len(instructions)} > {MAX_INSTRUCTIONS})",
             )
 
-        steps = max(1, min(int(num_inference_steps or DEFAULT_STEPS), 60))
-        cfg = float(true_cfg_scale or DEFAULT_TRUE_CFG)
+        # 破綻防止レンジへクランプ（35〜40 steps / 3.2〜3.5 CFG を死守）。
+        steps = _clamp_steps(num_inference_steps)
+        cfg = _clamp_cfg(true_cfg_scale)
         base_seed = None if seed is None or seed == "" else int(seed)
 
         t0 = time.time()
@@ -810,8 +1106,8 @@ class QwenImageEditWorker:
         # 全 instruction で同じオブジェクトを使い回す（デコード / RGB 変換の
         # コストは 1 回だけ）。VAE / VL エンコード自体は Diffusers パイプライン
         # の __call__ 内で行われるため呼び出しごとに走るが、その分の入力は
-        # 共通で、モデルは常駐済み。
-        ref = _load_ref_image(image_spec)
+        # 共通で、モデルは常駐済み。入力は 64 の倍数へアライン（RoPE 歪み対策）。
+        ref = _align_image(_load_ref_image(image_spec))
 
         images_b64 = []
         try:
@@ -832,9 +1128,13 @@ class QwenImageEditWorker:
                     _prof["nsteps"] += 1
                     return a[-1] if a and isinstance(a[-1], dict) else {}
 
+                final_prompt = _apply_lora_trigger(instr, self._lora_loaded)
+                if idx == 0:
+                    print(f"[angle] prompt[0]: {final_prompt!r}", flush=True)
+
                 call_kwargs = dict(
                     image=ref,
-                    prompt=instr,
+                    prompt=final_prompt,
                     negative_prompt=negative_prompt,
                     num_inference_steps=steps,
                     true_cfg_scale=cfg,
@@ -921,8 +1221,10 @@ class QwenImageEditWorker:
         image_spec = payload.get("image") or payload.get("image_b64") or ""
         raw_instructions = payload.get("instructions") or []
         labels = payload.get("labels") or []
-        steps = max(1, min(int(payload.get("num_inference_steps") or DEFAULT_STEPS), 60))
-        cfg = float(payload.get("true_cfg_scale") or DEFAULT_TRUE_CFG)
+        # 破綻防止レンジへクランプ（35〜40 steps / 3.2〜3.5 CFG を死守）。
+        # フロントの Turbo/Pro が渡す step 数もこの範囲に収める。
+        steps = _clamp_steps(payload.get("num_inference_steps"))
+        cfg = _clamp_cfg(payload.get("true_cfg_scale"))
         negative_prompt = payload.get("negative_prompt") or DEFAULT_NEGATIVE_PROMPT
         seed = payload.get("seed")
         base_seed = None if seed is None or seed == "" else int(seed)
@@ -948,7 +1250,7 @@ class QwenImageEditWorker:
         _patch_angle_job(job_id, {"status": "processing", "total_angles": len(instructions)})
 
         try:
-            ref = _load_ref_image(image_spec)
+            ref = _align_image(_load_ref_image(image_spec))
         except Exception as exc:  # noqa: BLE001
             _patch_angle_job(
                 job_id, {"status": "failed", "error_message": f"reference image error: {exc}"[:500]}
@@ -1056,9 +1358,13 @@ class QwenImageEditWorker:
                 if base_seed is not None:
                     generator = torch.Generator(device="cuda").manual_seed(base_seed + idx)
 
+                final_prompt = _apply_lora_trigger(instr, self._lora_loaded)
+                if idx == 0:
+                    print(f"[angle-job] {job_id} prompt[0]: {final_prompt!r}", flush=True)
+
                 call_kwargs = dict(
                     image=ref,
-                    prompt=instr,
+                    prompt=final_prompt,
                     negative_prompt=negative_prompt,
                     num_inference_steps=steps,
                     true_cfg_scale=cfg,

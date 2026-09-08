@@ -67,7 +67,7 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     label: "Multi-Angle 🚀 Turbo",
     category: "feature_credits",
     unit: "C/構図",
-    description: "1構図あたりの消費クレジット（8ステップ）",
+    description: "1構図あたりの消費クレジット（35ステップ）",
     isPublic: true,
   },
   angle_pro_per_angle: {

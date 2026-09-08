@@ -2,6 +2,19 @@
 // pricing. Imported from BOTH the client tab (live 構図数 / クレジット表示) and
 // the API route (server-side re-derivation — the client's numbers are never
 // trusted). No "server-only" guard, same posture as gpuWarm.ts.
+//
+// プロンプト規格は `fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA` の HF model
+// card 公式フォーマットに準拠する:
+//   "<sks> [azimuth] [elevation] [distance]"   ← スペース区切り・カンマなし
+//   例: "<sks> right side view high-angle shot close-up"
+// トリガートークン `<sks>` は Modal ワーカー側（_apply_lora_trigger、LoRA
+// ロード時のみ）で前置するため、ここが生成するのは記述子部分だけ。
+// 記述子は model card の厳密表記に一致させること（"quarter view" / "close-up"
+// に " shot" を付けない 等、ズレると LoRA が発火しない）。
+// 「azimuth = 被写体のどちら側が見えるか」（"right side view" は被写体の右側）。
+// 2026-09-08 の CLI 実写で `<sks> right side view eye-level shot medium shot` 等が
+// model card どおり正しく機能することを確認済み（左右反転なし）。
+// 3 軸マトリクス（直積）で構図を展開する構造は据え置き。
 
 import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";
 
@@ -11,11 +24,15 @@ export type AngleMode = "turbo" | "pro";
 // /api/studio/pricing responds; the live value is the admin-editable
 // angle_{turbo,pro}_per_angle knob — always price through
 // angleCreditsPerAngle(mode, knobs).
+//
+// steps は 2511 Multi-Angle LoRA の破綻防止レンジ（35〜40）に両モードとも
+// 収める。ワーカー側（modal_angle_worker.py の _clamp_steps）でも 35〜40 へ
+// クランプされるため、ここを外れても最終的には矯正される。
 export const ANGLE_MODES: Record<
   AngleMode,
   { id: AngleMode; label: string; sublabel: string; steps: number; creditsPerAngle: number }
 > = {
-  turbo: { id: "turbo", label: "🚀 Turbo", sublabel: "高速 / 8ステップ", steps: 8, creditsPerAngle: 1 },
+  turbo: { id: "turbo", label: "🚀 Turbo", sublabel: "軽量 / 35ステップ", steps: 35, creditsPerAngle: 1 },
   pro: { id: "pro", label: "💎 Pro", sublabel: "高精細 / 40ステップ", steps: 40, creditsPerAngle: 2 },
 };
 
@@ -41,55 +58,106 @@ export function angleCreditsPerAngle(mode: AngleMode, knobs: PricingKnobs = DEFA
 // ウォッチドッグ（フリーズ検知 / 原価割れ損切り）が守る。名目値だけ残置。
 export const MAX_ANGLES = 9999;
 
+// ---------------------------------------------------------------------------
+// 2511 Multi-Angle LoRA 確定プロンプト定義（公式フォーマット）
+// ---------------------------------------------------------------------------
+// LoRA トリガートークン。ワーカーの ANGLE_LORA_TRIGGER 既定と一致させること。
+export const ANGLE_LORA_TRIGGER = "<sks>";
+
+// azimuth（水平方位）: 45/135/225/315° は "quarter view"（"view" だけだと発火弱）。
+export const CAMERA_AZIMUTH = {
+  FRONT: "front view",
+  FRONT_RIGHT: "front-right quarter view",
+  RIGHT_PROFILE: "right side view",
+  BACK_RIGHT: "back-right quarter view",
+  BACK: "back view",
+  BACK_LEFT: "back-left quarter view",
+  LEFT_PROFILE: "left side view",
+  FRONT_LEFT: "front-left quarter view",
+} as const;
+
+// elevation（仰角）: model card の 4 値のみ（-30 / 0 / 30 / 60°）。
+export const CAMERA_ELEVATION = {
+  LOW_ANGLE: "low-angle shot",
+  EYE_LEVEL: "eye-level shot",
+  ELEVATED: "elevated shot",
+  HIGH_ANGLE: "high-angle shot",
+} as const;
+
+// distance（距離）: close-up は " shot" を付けない（model card 表記）。
+export const CAMERA_DISTANCE = {
+  CLOSE_UP: "close-up",
+  MEDIUM: "medium shot",
+  WIDE: "wide shot",
+} as const;
+
+/**
+ * 2511 Multi-Angle LoRA の構図プロンプトを model card 公式フォーマットで
+ * 組み立てる（`<sks>` トリガー + スペース区切り、elevation / distance は既定値で
+ * 補完）。外部呼び出し・単発生成・ドキュメント用。
+ * マトリクス経由の生成は buildAngleCombos → buildInstruction を通り、そちらは
+ * `<sks>` を付けず（ワーカーが前置）、未選択の軸の記述子を省く。
+ */
+export function build2511AnglePrompt(
+  azimuth: keyof typeof CAMERA_AZIMUTH,
+  elevation: keyof typeof CAMERA_ELEVATION = "EYE_LEVEL",
+  distance: keyof typeof CAMERA_DISTANCE = "MEDIUM",
+): string {
+  return `${ANGLE_LORA_TRIGGER} ${CAMERA_AZIMUTH[azimuth]} ${CAMERA_ELEVATION[elevation]} ${CAMERA_DISTANCE[distance]}`;
+}
+
 export type AngleAxisOption = {
   id: string;
   /** 日本語ラベル（UI 表示） */
   label: string;
-  /** 生成プロンプトに差し込む英語フレーズ */
+  /** 生成プロンプトに差し込む英語フレーズ（2511 LoRA 公式表記） */
   en: string;
 };
 
-// --- 向き（体・顔の向き） -------------------------------------------------
-export const ORIENTATION_OPTIONS: AngleAxisOption[] = [
-  { id: "front", label: "正面", en: "a front-facing view" },
-  { id: "three_quarter", label: "3/4 斜め", en: "a 3/4 turned view" },
-  { id: "profile_left", label: "真横（左）", en: "a left-side profile view" },
-  { id: "profile_right", label: "真横（右）", en: "a right-side profile view" },
-  { id: "looking_back", label: "見返り", en: "a looking-back-over-the-shoulder view" },
-  { id: "back", label: "真後ろ", en: "a full rear (back) view" },
+// --- 水平方位（Azimuth / 被写体のどちら側が見えるか） -----------------------
+export const AZIMUTH_OPTIONS: AngleAxisOption[] = [
+  { id: "front", label: "正面（0°）", en: CAMERA_AZIMUTH.FRONT },
+  { id: "front_right", label: "右斜め前（45°）", en: CAMERA_AZIMUTH.FRONT_RIGHT },
+  { id: "right_profile", label: "真横・右（90°）", en: CAMERA_AZIMUTH.RIGHT_PROFILE },
+  { id: "back_right", label: "右斜め後ろ（135°）", en: CAMERA_AZIMUTH.BACK_RIGHT },
+  { id: "back", label: "真後ろ（180°）", en: CAMERA_AZIMUTH.BACK },
+  { id: "back_left", label: "左斜め後ろ（225°）", en: CAMERA_AZIMUTH.BACK_LEFT },
+  { id: "left_profile", label: "真横・左（270°）", en: CAMERA_AZIMUTH.LEFT_PROFILE },
+  { id: "front_left", label: "左斜め前（315°）", en: CAMERA_AZIMUTH.FRONT_LEFT },
 ];
 
-// --- アングル（カメラの高さ） -------------------------------------------
-export const CAMERA_ANGLE_OPTIONS: AngleAxisOption[] = [
-  { id: "eye_level", label: "水平（アイレベル）", en: "eye level" },
-  { id: "low_angle", label: "アオリ（ローアングル）", en: "a low angle looking up" },
-  { id: "high_angle", label: "フカン（ハイアングル）", en: "a high angle looking down" },
+// --- 仰角（Elevation / カメラの高さ、model card の 4 値） -------------------
+export const ELEVATION_OPTIONS: AngleAxisOption[] = [
+  { id: "low_angle", label: "アオリ（-30°）", en: CAMERA_ELEVATION.LOW_ANGLE },
+  { id: "eye_level", label: "水平（0°）", en: CAMERA_ELEVATION.EYE_LEVEL },
+  { id: "elevated", label: "やや俯瞰（30°）", en: CAMERA_ELEVATION.ELEVATED },
+  { id: "high_angle", label: "フカン（60°）", en: CAMERA_ELEVATION.HIGH_ANGLE },
 ];
 
-// --- 距離（画角・フレーミング） ----------------------------------------
+// --- 距離（Distance / フレーミング） --------------------------------------
 export const DISTANCE_OPTIONS: AngleAxisOption[] = [
-  { id: "face", label: "顔アップ", en: "a tight close-up of the face" },
-  { id: "bust_up", label: "バストアップ", en: "a bust-up shot from the waist up" },
-  { id: "full_body", label: "全身", en: "a full-body shot" },
+  { id: "close_up", label: "顔アップ（×0.6）", en: CAMERA_DISTANCE.CLOSE_UP },
+  { id: "medium", label: "バストアップ（×1.0）", en: CAMERA_DISTANCE.MEDIUM },
+  { id: "wide", label: "全身（×1.8）", en: CAMERA_DISTANCE.WIDE },
 ];
 
-export type AngleAxis = "orientations" | "cameraAngles" | "distances";
+export type AngleAxis = "azimuths" | "elevations" | "distances";
 
 export type AngleSelection = {
-  orientations: string[];
-  cameraAngles: string[];
+  azimuths: string[];
+  elevations: string[];
   distances: string[];
 };
 
 export const EMPTY_ANGLE_SELECTION: AngleSelection = {
-  orientations: [],
-  cameraAngles: [],
+  azimuths: [],
+  elevations: [],
   distances: [],
 };
 
 const OPTIONS_BY_AXIS: Record<AngleAxis, AngleAxisOption[]> = {
-  orientations: ORIENTATION_OPTIONS,
-  cameraAngles: CAMERA_ANGLE_OPTIONS,
+  azimuths: AZIMUTH_OPTIONS,
+  elevations: ELEVATION_OPTIONS,
   distances: DISTANCE_OPTIONS,
 };
 
@@ -105,27 +173,26 @@ export type AngleCombo = {
   labelJa: string;
   /** ファイル名などに使う ASCII スラッグ */
   slug: string;
-  /** Modal ワーカーへ渡す英語の編集指示 1 行 */
+  /** Modal ワーカーへ渡す英語の編集指示 1 行（2511 LoRA 規格） */
   instruction: string;
   /** この 1 構図だけを再現する最小 selection（個別リロール用） */
   selection: AngleSelection;
 };
 
+/**
+ * 2511 Multi-Angle LoRA 規格の instruction 記述子部分を組み立てる。
+ * 選択された軸のフレーズだけを "azimuth elevation distance" の順で**スペース**
+ * 結合する（未選択の軸は省く＝その軸は元画像のまま）。`<sks>` トリガーは
+ * ワーカー側（_apply_lora_trigger）が前置する。
+ *   例: (right_profile, eye_level, medium) -> "right side view eye-level shot medium shot"
+ *       (back, -, -)                        -> "back view"
+ */
 function buildInstruction(
-  o: AngleAxisOption | undefined,
-  c: AngleAxisOption | undefined,
+  a: AngleAxisOption | undefined,
+  e: AngleAxisOption | undefined,
   d: AngleAxisOption | undefined,
 ): string {
-  const clauses: string[] = [];
-  if (o) clauses.push(`to ${o.en}`);
-  if (c) clauses.push(`shot at ${c.en}`);
-  if (d) clauses.push(`framed as ${d.en}`);
-  const body = clauses.join(", ");
-  return (
-    `Change the camera angle ${body}. ` +
-    "Keep the exact same character, face, hairstyle, outfit, colors and art style — " +
-    "only change the viewing angle and framing. Do not alter the character's identity."
-  );
+  return [a?.en, e?.en, d?.en].filter(Boolean).join(" ");
 }
 
 /**
@@ -134,29 +201,29 @@ function buildInstruction(
  * プロンプト節を省く。全軸未選択なら空配列（＝生成不可）。
  */
 export function buildAngleCombos(selection: AngleSelection): AngleCombo[] {
-  const os = orderedPick("orientations", selection.orientations);
-  const cs = orderedPick("cameraAngles", selection.cameraAngles);
+  const as = orderedPick("azimuths", selection.azimuths);
+  const es = orderedPick("elevations", selection.elevations);
   const ds = orderedPick("distances", selection.distances);
 
-  if (os.length === 0 && cs.length === 0 && ds.length === 0) return [];
+  if (as.length === 0 && es.length === 0 && ds.length === 0) return [];
 
-  const oList: (AngleAxisOption | undefined)[] = os.length ? os : [undefined];
-  const cList: (AngleAxisOption | undefined)[] = cs.length ? cs : [undefined];
+  const aList: (AngleAxisOption | undefined)[] = as.length ? as : [undefined];
+  const eList: (AngleAxisOption | undefined)[] = es.length ? es : [undefined];
   const dList: (AngleAxisOption | undefined)[] = ds.length ? ds : [undefined];
 
   const combos: AngleCombo[] = [];
-  for (const o of oList) {
-    for (const c of cList) {
+  for (const a of aList) {
+    for (const e of eList) {
       for (const d of dList) {
-        const parts = [o, c, d].filter(Boolean) as AngleAxisOption[];
+        const parts = [a, e, d].filter(Boolean) as AngleAxisOption[];
         combos.push({
-          key: `${o?.id ?? "-"}|${c?.id ?? "-"}|${d?.id ?? "-"}`,
+          key: `${a?.id ?? "-"}|${e?.id ?? "-"}|${d?.id ?? "-"}`,
           labelJa: parts.map((p) => p.label).join("・"),
           slug: parts.map((p) => p.id).join("-") || "angle",
-          instruction: buildInstruction(o, c, d),
+          instruction: buildInstruction(a, e, d),
           selection: {
-            orientations: o ? [o.id] : [],
-            cameraAngles: c ? [c.id] : [],
+            azimuths: a ? [a.id] : [],
+            elevations: e ? [e.id] : [],
             distances: d ? [d.id] : [],
           },
         });
@@ -172,8 +239,8 @@ export function angleSelectionCount(selection: AngleSelection): number {
 
 export function isAngleSelectionEmpty(selection: AngleSelection): boolean {
   return (
-    selection.orientations.length === 0 &&
-    selection.cameraAngles.length === 0 &&
+    selection.azimuths.length === 0 &&
+    selection.elevations.length === 0 &&
     selection.distances.length === 0
   );
 }
@@ -195,51 +262,51 @@ export const ANGLE_PRESETS: AnglePreset[] = [
   {
     id: "turnaround3",
     label: "三面図",
-    hint: "正面・真横・真後ろ / 全身",
+    hint: "正面・真横・真後ろ / 水平・ミディアム",
     selection: {
-      orientations: ["front", "profile_right", "back"],
-      cameraAngles: ["eye_level"],
-      distances: ["full_body"],
+      azimuths: ["front", "right_profile", "back"],
+      elevations: ["eye_level"],
+      distances: ["medium"],
     },
   },
   {
-    id: "turnaround6",
-    label: "6方向ターンアラウンド",
-    hint: "全方向 / 全身",
+    id: "turnaround8",
+    label: "8方向ターンアラウンド",
+    hint: "全方位 / 水平・ワイド",
     selection: {
-      orientations: allIds(ORIENTATION_OPTIONS),
-      cameraAngles: ["eye_level"],
-      distances: ["full_body"],
+      azimuths: allIds(AZIMUTH_OPTIONS),
+      elevations: ["eye_level"],
+      distances: ["wide"],
     },
   },
   {
-    id: "angle_compare",
-    label: "アングル比較",
-    hint: "正面 / 水平・アオリ・フカン",
+    id: "elevation_compare",
+    label: "仰角比較",
+    hint: "正面 / 水平・アオリ・フカン・俯瞰",
     selection: {
-      orientations: ["front"],
-      cameraAngles: allIds(CAMERA_ANGLE_OPTIONS),
-      distances: ["bust_up"],
+      azimuths: ["front"],
+      elevations: allIds(ELEVATION_OPTIONS),
+      distances: ["medium"],
     },
   },
   {
     id: "distance_set",
     label: "寄り引き3種",
-    hint: "正面 / 顔・バスト・全身",
+    hint: "正面 / クローズアップ・ミディアム・ワイド",
     selection: {
-      orientations: ["front"],
-      cameraAngles: ["eye_level"],
+      azimuths: ["front"],
+      elevations: ["eye_level"],
       distances: allIds(DISTANCE_OPTIONS),
     },
   },
   {
     id: "select_all",
     label: "全選択",
-    hint: "全方向 × 全アングル / 全身",
+    hint: "全方位 × 水平・アオリ・フカン / ワイド",
     selection: {
-      orientations: allIds(ORIENTATION_OPTIONS),
-      cameraAngles: allIds(CAMERA_ANGLE_OPTIONS),
-      distances: ["full_body"],
+      azimuths: allIds(AZIMUTH_OPTIONS),
+      elevations: ["eye_level", "low_angle", "high_angle"],
+      distances: ["wide"],
     },
   },
 ];

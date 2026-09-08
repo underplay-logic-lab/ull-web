@@ -10,8 +10,8 @@ import {
   buildAngleCombos,
   isAngleMode,
   MAX_ANGLES,
-  ORIENTATION_OPTIONS,
-  CAMERA_ANGLE_OPTIONS,
+  AZIMUTH_OPTIONS,
+  ELEVATION_OPTIONS,
   DISTANCE_OPTIONS,
   type AngleSelection,
 } from "@/lib/angleStudio";
@@ -29,8 +29,8 @@ const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 // ワーカーの原価割れウォッチドッグ（損切り自爆）へ max_allowed_time として渡す。
 
 const VALID_IDS: Record<keyof AngleSelection, Set<string>> = {
-  orientations: new Set(ORIENTATION_OPTIONS.map((o) => o.id)),
-  cameraAngles: new Set(CAMERA_ANGLE_OPTIONS.map((o) => o.id)),
+  azimuths: new Set(AZIMUTH_OPTIONS.map((o) => o.id)),
+  elevations: new Set(ELEVATION_OPTIONS.map((o) => o.id)),
   distances: new Set(DISTANCE_OPTIONS.map((o) => o.id)),
 };
 
@@ -45,8 +45,8 @@ function sanitizeSelection(raw: unknown): AngleSelection {
     return [...seen];
   };
   return {
-    orientations: pick("orientations"),
-    cameraAngles: pick("cameraAngles"),
+    azimuths: pick("azimuths"),
+    elevations: pick("elevations"),
     distances: pick("distances"),
   };
 }
@@ -78,7 +78,7 @@ export async function POST(request: Request) {
   // 約 4.5MB）でボディが途中で打ち切られ、request.formData() が壊れて
   // 「リクエストの形式が正しくありません。」になる。クライアントは
   // normalizeAngleReferenceImage() で縮小してから送るが、外部呼び出しや
-  // 縮小不能な入力に備えて JSON 経路も残す。構図数（最大 54）そのものは
+  // 縮小不能な入力に備えて JSON 経路も残す。構図数（8×4×3=最大 96）そのものは
   // どちらの経路でも一切制限しない。
   const contentType = request.headers.get("content-type") ?? "";
   let imageBytes: Buffer;
@@ -135,7 +135,7 @@ export async function POST(request: Request) {
 
   const mode = isAngleMode(modeRaw) ? modeRaw : "turbo";
 
-  let selection: AngleSelection = { orientations: [], cameraAngles: [], distances: [] };
+  let selection: AngleSelection = { azimuths: [], elevations: [], distances: [] };
   if (typeof selectionRaw === "string" && selectionRaw.trim()) {
     try {
       selection = sanitizeSelection(JSON.parse(selectionRaw));
