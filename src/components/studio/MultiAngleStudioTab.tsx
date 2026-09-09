@@ -31,6 +31,7 @@ import {
   ELEVATION_OPTIONS,
   EMPTY_ANGLE_SELECTION,
   MAX_ANGLES,
+  MAX_ANGLES_WITH_SUBREFS,
   MAX_SUB_REFERENCE_IMAGES,
   MIN_ANGLES,
   type AngleAxis,
@@ -651,9 +652,13 @@ export function MultiAngleStudioTab() {
   const combos = useMemo(() => buildAngleCombos(selection), [selection]);
   const selectionWarning = useMemo(() => angleSelectionWarning(selection), [selection]);
   const count = combos.length;
-  const perAngle = angleCreditsPerAngle(knobs);
+  // Multi-Reference: サブ参照ぶんの生成時間増（B300 実測 ~3.0x @ 3枚）を単価へ反映。
+  const subRefCount = subImages.length;
+  const perAngleBase = angleCreditsPerAngle(knobs);
+  const perAngle = angleCreditsPerAngle(knobs, subRefCount);
   const cost = count * perAngle;
-  const overCap = count > MAX_ANGLES;
+  const angleCap = subRefCount > 0 ? MAX_ANGLES_WITH_SUBREFS : MAX_ANGLES;
+  const overCap = count > angleCap;
   const underMin = count > 0 && count < MIN_ANGLES;
 
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
@@ -790,7 +795,7 @@ export function MultiAngleStudioTab() {
     buttonLabel = (
       <>
         <AlertTriangle size={16} />
-        構図が多すぎます（最大 {MAX_ANGLES}）
+        構図が多すぎます（最大 {angleCap}）
       </>
     );
   } else if (underMin) {
@@ -912,6 +917,15 @@ export function MultiAngleStudioTab() {
               : "Multi-Angle Studio の利用にはログインが必要です。初回登録で10クレジットが付与されます。"}
           </p>
 
+          {subRefCount > 0 && (
+            <p className="-mt-2 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-300">
+              <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+              サブ参照 {subRefCount} 枚ぶん、1 構図の生成時間・消費クレジットが約
+              {(perAngle / perAngleBase).toFixed(1)} 倍（{perAngleBase} → {perAngle} クレジット/構図）。
+              サブ参照ありは最大 {MAX_ANGLES_WITH_SUBREFS} 構図まで。出力の縦横比はサブ参照画像に寄ります。
+            </p>
+          )}
+
           <p className="-mt-2 flex items-start gap-2 text-xs leading-relaxed text-muted">
             <ImagePlus size={14} className="mt-0.5 shrink-0 text-neon-violet" />
             出力解像度は約100万画素（アップロード画像のアスペクト比を維持し、およそ1024×1024相当）です。
@@ -984,7 +998,8 @@ export function MultiAngleStudioTab() {
               各軸の組み合わせ（直積）が構図数になります。未選択の軸は元の画像のままにします。
               {overCap && (
                 <span className="mt-1 block text-red-400">
-                  現在 {count} 構図です。1 ジョブで生成できるのは最大 {MAX_ANGLES} 構図までです。
+                  現在 {count} 構図です。1 ジョブで生成できるのは最大 {angleCap} 構図までです
+                  {subRefCount > 0 ? "（サブ参照あり）" : ""}。
                 </span>
               )}
             </p>

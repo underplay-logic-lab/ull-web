@@ -15,6 +15,7 @@ export type KnobKey =
   | "image_generate"
   | "angle_turbo_per_angle"
   | "angle_pro_per_angle"
+  | "angle_ref_multiplier_per_sub"
   | "cinematic_speed"
   | "cinematic_standard"
   | "cinematic_cinema_master"
@@ -81,6 +82,18 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "feature_credits",
     unit: "C/構図",
     description: "1構図あたりの消費クレジット（40ステップ / 最低3構図）",
+    isPublic: true,
+  },
+  angle_ref_multiplier_per_sub: {
+    // Multi-Reference（Pro）: サブ参照 1 枚ごとに per-構図 単価へ加える係数。
+    // 係数 = 1 + これ × サブ枚数。B300 実測でサブ 3 枚 = 生成時間 ×3.0
+    // （per-step 463ms→1373ms）→ 0.7 で係数 3.1、粗利 ~69% を維持。
+    // per-構図 単価 = ceil(angle_pro_per_angle × 係数)。
+    value: 0.7,
+    label: "Multi-Angle サブ参照 加算係数",
+    category: "feature_credits",
+    unit: "×/枚",
+    description: "サブ参照1枚ごとに 1構図単価へ乗せる係数（係数 = 1 + これ×枚数）。0で無料。",
     isPublic: true,
   },
   cinematic_speed: {

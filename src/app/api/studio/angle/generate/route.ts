@@ -10,6 +10,7 @@ import {
   angleCreditsPerAngle,
   buildAngleCombos,
   MAX_ANGLES,
+  MAX_ANGLES_WITH_SUBREFS,
   MAX_SUB_REFERENCE_IMAGES,
   MIN_ANGLES,
   AZIMUTH_OPTIONS,
@@ -199,6 +200,17 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+  // Multi-Reference: サブ参照ありは 1 構図 ~3倍の時間なので、96 構図フルだと
+  // 1 本 ~1.6h（Modal timeout 接近）。サブ参照ありのときだけ構図数を絞る。
+  const subImageCount = imageBuffers.length - 1;
+  if (subImageCount > 0 && combos.length > MAX_ANGLES_WITH_SUBREFS) {
+    return NextResponse.json(
+      {
+        error: `サブ参照画像ありの場合、1回のジョブは最大 ${MAX_ANGLES_WITH_SUBREFS} 構図までです（生成時間が約3倍のため）。構図を減らすか、サブ参照を外してください。`,
+      },
+      { status: 400 },
+    );
+  }
 
   const seedNum =
     typeof seedRaw === "number"
@@ -209,8 +221,9 @@ export async function POST(request: Request) {
   const seed = Number.isFinite(seedNum) ? Math.trunc(seedNum) : null;
 
   // Server-side price — never trusted from the client.
+  // サブ参照ぶんの生成コスト増（B300 実測 ~3.0x @ サブ3枚）を単価へ反映。
   const knobs = await getPricingKnobs();
-  const generationCost = combos.length * angleCreditsPerAngle(knobs);
+  const generationCost = combos.length * angleCreditsPerAngle(knobs, subImageCount);
   const maxAllowedTime = angleMaxAllowedTime({ creditsCost: generationCost, knobs });
 
   const { data: profile, error: profileError } = await getOrCreateProfile(
