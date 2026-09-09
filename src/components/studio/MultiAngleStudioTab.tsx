@@ -31,6 +31,7 @@ import {
   ELEVATION_OPTIONS,
   EMPTY_ANGLE_SELECTION,
   MAX_ANGLES,
+  MIN_ANGLES,
   type AngleAxis,
   type AngleAxisOption,
   type AngleCombo,
@@ -539,10 +540,11 @@ export function MultiAngleStudioTab() {
   const perAngle = angleCreditsPerAngle(knobs);
   const cost = count * perAngle;
   const overCap = count > MAX_ANGLES;
+  const underMin = count > 0 && count < MIN_ANGLES;
 
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
   const busy = phase === "submitting" || phase === "running";
-  const missingInputs = !image || count === 0 || overCap;
+  const missingInputs = !image || count === 0 || overCap || underMin;
 
   const toggleOption = useCallback((axis: AngleAxis, id: string) => {
     setSelection((prev) => {
@@ -674,6 +676,13 @@ export function MultiAngleStudioTab() {
       <>
         <AlertTriangle size={16} />
         構図が多すぎます（最大 {MAX_ANGLES}）
+      </>
+    );
+  } else if (underMin) {
+    buttonLabel = (
+      <>
+        <AlertTriangle size={16} />
+        最低 {MIN_ANGLES} 構図から生成できます
       </>
     );
   } else if (insufficientCredits) {

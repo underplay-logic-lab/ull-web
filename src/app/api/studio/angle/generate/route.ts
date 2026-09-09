@@ -5,10 +5,12 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { spawnAngleJob } from "@/lib/modalAngle";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { angleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
+import { autoExtendGpuWarmOnSuccess } from "@/lib/gpuWarmAutoExtend";
 import {
   angleCreditsPerAngle,
   buildAngleCombos,
   MAX_ANGLES,
+  MIN_ANGLES,
   AZIMUTH_OPTIONS,
   ELEVATION_OPTIONS,
   DISTANCE_OPTIONS,
@@ -151,6 +153,12 @@ export async function POST(request: Request) {
   if (combos.length === 0) {
     return NextResponse.json({ error: "構図を1つ以上選択してください。" }, { status: 400 });
   }
+  if (combos.length < MIN_ANGLES) {
+    return NextResponse.json(
+      { error: `1回のジョブは最低 ${MIN_ANGLES} 構図から生成できます。` },
+      { status: 400 },
+    );
+  }
   if (combos.length > MAX_ANGLES) {
     return NextResponse.json(
       { error: `1回のジョブで生成できる構図は最大 ${MAX_ANGLES} 個です。選択を減らしてください。` },
@@ -264,6 +272,10 @@ export async function POST(request: Request) {
       { status: 502 },
     );
   }
+
+  // 生成が走り出したので共有 GPU ウォーム状態を 30 秒延長（無料・失敗しても無視）。
+  // 直後に別アングルを追加生成／リロールしてもコールドスタートを避けられる。
+  await autoExtendGpuWarmOnSuccess(user.id);
 
   return NextResponse.json({
     success: true,

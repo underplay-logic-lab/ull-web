@@ -73,11 +73,14 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     isPublic: false,
   },
   angle_pro_per_angle: {
-    value: 2,
+    // 2026-09-09: 12C ≈ ¥20/構図（credit_to_jpy 1.66）。B300 実測でコールドスタート
+    // + 1構図(60s)でも黒字になる下限。最低 3 構図（MIN_ANGLES）と併せて原価割れを
+    // 防ぐ。値は /admin の Pricing で調整可（¥25 なら 15C 等）。
+    value: 12,
     label: "Multi-Angle（1構図）",
     category: "feature_credits",
     unit: "C/構図",
-    description: "1構図あたりの消費クレジット（40ステップ）",
+    description: "1構図あたりの消費クレジット（40ステップ / 最低3構図）",
     isPublic: true,
   },
   cinematic_speed: {
