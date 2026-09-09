@@ -10,6 +10,7 @@ import {
   angleCreditsPerAngle,
   buildAngleCombos,
   MAX_ANGLES,
+  MAX_SUB_REFERENCE_IMAGES,
   MIN_ANGLES,
   AZIMUTH_OPTIONS,
   ELEVATION_OPTIONS,
@@ -23,6 +24,19 @@ import {
 export const maxDuration = 30;
 
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+// メイン参照 + サブ参照（死角補完）。Multi-Angle Studio Pro。
+const MAX_REF_IMAGES = 1 + MAX_SUB_REFERENCE_IMAGES;
+
+function decodeBase64Image(raw: unknown): Buffer {
+  const s = typeof raw === "string" ? raw.trim() : "";
+  if (!s) return Buffer.alloc(0);
+  const b64 = s.startsWith("data:") ? s.slice(s.indexOf(",") + 1) : s;
+  try {
+    return Buffer.from(b64, "base64");
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
 
 // 「このジョブに許容できる最大 GPU 稼働時間（秒）」は消費クレジットから
 // angleMaxAllowedTime() が算出し（式: 消費C × angle_time_per_credit_s +
@@ -82,7 +96,9 @@ export async function POST(request: Request) {
   // 縮小不能な入力に備えて JSON 経路も残す。構図数（8×4×3=最大 96）そのものは
   // どちらの経路でも一切制限しない。
   const contentType = request.headers.get("content-type") ?? "";
-  let imageBytes: Buffer;
+  // imageBuffers[0] = メイン参照（正面等）。以降 = サブ参照（背面ラフ・衣装
+  // パーツ等、死角補完用、最大 MAX_SUB_REFERENCE_IMAGES 枚）。
+  let imageBuffers: Buffer[] = [];
   let modeRaw: unknown;
   let selectionRaw: unknown;
   let seedRaw: unknown;
@@ -94,9 +110,15 @@ export async function POST(request: Request) {
     } catch {
       return NextResponse.json({ error: "リクエストの形式が正しくありません。" }, { status: 400 });
     }
-    const imageStr = typeof body.image === "string" ? body.image.trim() : "";
-    const b64 = imageStr.startsWith("data:") ? imageStr.slice(imageStr.indexOf(",") + 1) : imageStr;
-    imageBytes = b64 ? Buffer.from(b64, "base64") : Buffer.alloc(0);
+    // `images: string[]`（メイン + サブ、先頭がメイン）があれば優先。
+    // 無ければ `image` + `subImages: string[]`。
+    const imagesArr = Array.isArray(body.images) ? (body.images as unknown[]) : null;
+    if (imagesArr && imagesArr.length > 0) {
+      imageBuffers = imagesArr.map(decodeBase64Image);
+    } else {
+      const subs = Array.isArray(body.subImages) ? (body.subImages as unknown[]) : [];
+      imageBuffers = [decodeBase64Image(body.image), ...subs.map(decodeBase64Image)];
+    }
     modeRaw = body.mode;
     selectionRaw =
       typeof body.selection === "string" ? body.selection : JSON.stringify(body.selection ?? {});
@@ -118,18 +140,30 @@ export async function POST(request: Request) {
     if (!(imageFile instanceof File) || imageFile.size === 0) {
       return NextResponse.json({ error: "キャラクター画像をアップロードしてください。" }, { status: 400 });
     }
-    imageBytes = Buffer.from(await imageFile.arrayBuffer());
+    const subFiles = formData
+      .getAll("subImage")
+      .filter((f): f is File => f instanceof File && f.size > 0);
+    const files = [imageFile, ...subFiles];
+    imageBuffers = await Promise.all(files.map(async (f) => Buffer.from(await f.arrayBuffer())));
     modeRaw = formData.get("mode");
     selectionRaw = formData.get("selection");
     seedRaw = formData.get("seed");
   }
 
-  if (imageBytes.length === 0) {
+  // 空要素（サブスロット未使用など）を落とし、先頭がメイン参照であることを保つ。
+  imageBuffers = imageBuffers.filter((b) => b.length > 0);
+  if (imageBuffers.length === 0) {
     return NextResponse.json({ error: "キャラクター画像をアップロードしてください。" }, { status: 400 });
   }
-  if (imageBytes.length > MAX_IMAGE_BYTES) {
+  if (imageBuffers.length > MAX_REF_IMAGES) {
     return NextResponse.json(
-      { error: "画像サイズが大きすぎます。12MB 以下にしてください。" },
+      { error: `参照画像はメイン1枚＋サブ最大${MAX_SUB_REFERENCE_IMAGES}枚までです。` },
+      { status: 400 },
+    );
+  }
+  if (imageBuffers.some((b) => b.length > MAX_IMAGE_BYTES)) {
+    return NextResponse.json(
+      { error: "画像サイズが大きすぎます。1枚あたり 12MB 以下にしてください。" },
       { status: 400 },
     );
   }
@@ -231,6 +265,9 @@ export async function POST(request: Request) {
       images: [],
       labels: combos.map((c) => c.labelJa),
       credits_cost: generationCost,
+      // Multi-Reference のデバッグ用（既存 jsonb 列・マイグレーション不要）。
+      // worker が生成中に vram_used_gb を書き込むので、それとマージされる。
+      metadata: { ref_image_count: imageBuffers.length },
     })
     .select("id")
     .single();
@@ -247,13 +284,13 @@ export async function POST(request: Request) {
 
   // --- dispatch to Modal ---------------------------------------------
   try {
-    const imageBase64 = imageBytes.toString("base64");
+    const imagesBase64 = imageBuffers.map((b) => b.toString("base64"));
     await spawnAngleJob({
       jobId,
       userId: user.id,
       creditsCost: generationCost,
       maxAllowedTime,
-      imageBase64,
+      imagesBase64,
       instructions: combos.map((c) => c.instruction),
       labels: combos.map((c) => c.labelJa),
       mode,

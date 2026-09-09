@@ -64,6 +64,18 @@ export const MIN_ANGLES = 3;
 // LoRA トリガートークン。ワーカーの ANGLE_LORA_TRIGGER 既定と一致させること。
 export const ANGLE_LORA_TRIGGER = "<sks>";
 
+// Multi-Reference（Pro）: メイン参照 1 枚に加えて、死角補完用のサブ参照画像
+// （背面ラフ・衣装パーツ・テクスチャ等）を最大 3 枚まで同時に渡せる。
+// Qwen-Image-Edit-2511 のネイティブ複数画像入力を使う。合計上限は 4 枚
+// （ワーカー側 MAX_REF_IMAGES と一致させること）。
+export const MAX_SUB_REFERENCE_IMAGES = 3;
+
+// サブ参照を 1 枚以上渡したとき、ワーカーがカメラ指示プロンプトの文末へ
+// 付け足す英文（実体は modal_angle_worker.py の ANGLE_MULTIREF_PROMPT_SUFFIX が
+// 正。ここは参照用）:
+//   "Maintaining exact features, lengths, and texture details from all
+//    provided reference images."
+
 // azimuth（水平方位）: 45/135/225/315° は "quarter view"（"view" だけだと発火弱）。
 export const CAMERA_AZIMUTH = {
   FRONT: "front view",

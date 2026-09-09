@@ -7,7 +7,8 @@ export type SpawnAngleJobParams = {
   creditsCost: number;
   /** 原価割れウォッチドッグ（損切り自爆）へ渡す許容最大 GPU 稼働時間（秒）。 */
   maxAllowedTime: number;
-  imageBase64: string;
+  /** 参照画像（base64）。先頭がメイン参照、以降がサブ参照（死角補完）。1〜4 枚。 */
+  imagesBase64: string[];
   instructions: string[];
   /** instructions と並行な日本語構図ラベル（ギャラリー表示用） */
   labels: string[];
@@ -73,12 +74,19 @@ export async function spawnAngleJob(
     throw new Error("Modal へ渡す構図プロンプトが空です。");
   }
 
+  const images = params.imagesBase64.filter((s) => typeof s === "string" && s.length > 0);
+  if (images.length === 0) {
+    throw new Error("Modal へ渡す参照画像が空です。");
+  }
+
   const body = JSON.stringify({
     job_id: params.jobId,
     user_id: params.userId,
     credits_cost: params.creditsCost,
     max_allowed_time: params.maxAllowedTime,
-    image: params.imageBase64,
+    // 先頭がメイン参照。worker は images を優先し、無ければ image を見る。
+    images,
+    image: images[0],
     instructions: sanitized.map((p) => p.instruction),
     labels: sanitized.map((p) => p.label),
     num_inference_steps: angleModeSteps(),

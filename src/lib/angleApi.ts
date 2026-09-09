@@ -35,6 +35,9 @@ export type StartAngleJobResult = {
  */
 export async function startAngleJob(params: {
   image: File;
+  /** Multi-Reference（Pro）: 死角補完用のサブ参照画像（背面ラフ・衣装パーツ等）。
+   *  最大 MAX_SUB_REFERENCE_IMAGES 枚。省略時は従来どおりの単一画像生成。 */
+  subImages?: File[];
   selection: AngleSelection;
   mode: AngleMode;
   /** reroll 用: 指定すると worker が seed + index で分散させる。 */
@@ -47,10 +50,17 @@ export async function startAngleJob(params: {
   // 生画像をそのまま送るとデプロイ環境のボディ上限でボディが打ち切られ、
   // サーバーの request.formData() が壊れる（=「リクエストの形式が正しく
   // ありません。」400）。長辺 1536px へ縮小・再エンコードしてから送る。
+  // サブ参照画像も同じ正規化を通す。
   const { blob: imageBlob, filename } = await normalizeAngleReferenceImage(params.image);
+  const subs = await Promise.all(
+    (params.subImages ?? []).map((f) => normalizeAngleReferenceImage(f)),
+  );
 
   const form = new FormData();
   form.append("image", imageBlob, filename);
+  for (let i = 0; i < subs.length; i++) {
+    form.append("subImage", subs[i].blob, subs[i].filename || `sub_${i}.png`);
+  }
   form.append("selection", JSON.stringify(params.selection));
   form.append("mode", params.mode);
   if (typeof params.seed === "number") form.append("seed", String(params.seed));
