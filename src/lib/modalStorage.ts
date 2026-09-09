@@ -13,15 +13,6 @@ export type VolumeFile = {
   modified_at: string;
 };
 
-export type ModalLogEntry = {
-  ts: number;
-  gpu_tier: "standard" | "ultra";
-  status: "success" | "failed";
-  duration_s: number;
-  filename: string | null;
-  error: string | null;
-};
-
 // Same admin-only model-file subfolders the Modal image symlinks into
 // ComfyUI's models/ dir (see MODEL_SUBFOLDERS in scripts/modal_wan_animate.py).
 export const MODEL_SUBFOLDERS = ["diffusion_models", "text_encoders", "clip_vision", "vae", "loras"] as const;
@@ -39,8 +30,7 @@ type ModalStorageAction =
   | { action: "read_file"; file_path: string }
   | { action: "delete"; file_path: string }
   | { action: "delete_dir"; file_path: string }
-  | { action: "install_node"; git_url: string }
-  | { action: "logs"; limit?: number };
+  | { action: "install_node"; git_url: string };
 
 async function callModalStorage<T>(body: ModalStorageAction, timeoutMs = MODAL_STORAGE_TIMEOUT_MS): Promise<T> {
   const url = process.env.MODAL_STORAGE_URL;
@@ -126,11 +116,6 @@ export async function installCustomNode(gitUrl: string): Promise<{ ok: true; nam
   return callModalStorage({ action: "install_node", git_url: gitUrl }, MODAL_STORAGE_LONG_TIMEOUT_MS);
 }
 
-export async function getModalLogs(limit = 100): Promise<ModalLogEntry[]> {
-  const result = await callModalStorage<{ entries: ModalLogEntry[] }>({ action: "logs", limit });
-  return result.entries;
-}
-
 // --- Direct browser<->Modal signed downloads (admin file explorer) --------
 //
 // The base64-through-Next.js path (readVolumeFile) OOMs / times out a Vercel
@@ -199,5 +184,30 @@ export function signJobArtifactUrl(
   u.searchParams.set("sig", sig);
   if (opts.callId) u.searchParams.set("call_id", opts.callId);
   if (opts.probe) u.searchParams.set("probe", "1");
+  return u.toString();
+}
+
+// Signed URL for download_lora_selection — the worker resolves each named
+// checkpoint under loras/<user>/<job_id>/, stitches them into ONE
+// uncompressed (ZIP_STORED) zip in /tmp and streams that (4 MiB chunks,
+// BackgroundTask cleanup). `files` is sorted + comma-joined so the same
+// string is both signed here and re-hashed by the worker.
+export function signJobSelectionZipUrl(userId: string, jobId: string, files: string[]): string {
+  const secret = process.env.MODAL_AUTH_TOKEN;
+  if (!secret) throw new Error("Modal is not configured (missing MODAL_AUTH_TOKEN).");
+  const base = process.env.MODAL_LORA_CHECKPOINT_DOWNLOAD_URL;
+  if (!base) throw new Error("Modal is not configured (missing MODAL_LORA_CHECKPOINT_DOWNLOAD_URL).");
+  const joined = [...files].sort().join(",");
+  const expires = Math.floor(Date.now() / 1000) + ADMIN_DL_TOKEN_TTL_S;
+  const sig = crypto
+    .createHmac("sha256", secret)
+    .update(`selection:${userId}:${jobId}:${joined}:${expires}`)
+    .digest("hex");
+  const u = new URL(base.replace("download-lora-checkpoint", "download-lora-selection"));
+  u.searchParams.set("user_id", userId);
+  u.searchParams.set("job_id", jobId);
+  u.searchParams.set("files", joined);
+  u.searchParams.set("expires", String(expires));
+  u.searchParams.set("sig", sig);
   return u.toString();
 }

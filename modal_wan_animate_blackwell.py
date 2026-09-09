@@ -353,6 +353,90 @@ def _is_valid_repo_id(repo_id: str) -> bool:
     return bool(repo_id) and bool(_REPO_ID_RE.match(repo_id)) and ".." not in repo_id
 
 
+# ---------------------------------------------------------------------------
+# PyTorch 最適化標準（CLAUDE.md §1）: torch.compile を ComfyUI ワークフローへ
+# 安全に組み込む。対象は呼び出し側が渡す任意の API-format グラフなので、少しでも
+# 曖昧なら一切触らず原型を返す（fail-open）。WAN_TORCH_COMPILE=0 で完全無効化。
+# ---------------------------------------------------------------------------
+# ComfyUI 標準 "MODEL" 型を出力する diffusion ローダーのみ対象。KJNodes の
+# WanVideoModelLoader（独自 WANVIDEOMODEL 型）は core TorchCompileModel と型が
+# 合わず /prompt 検証で弾かれるため、あえて対象外。
+_WAN_MODEL_LOADER_CLASSES = frozenset(
+    {"UNETLoader", "UnetLoaderGGUF", "CheckpointLoaderSimple", "CheckpointLoader"}
+)
+_WAN_COMPILE_CLASSES = frozenset(
+    {
+        "TorchCompileModel",
+        "TorchCompileModelAdvanced",
+        "TorchCompileModelWanVideo",
+        "TorchCompileModelWanVideoV2",
+    }
+)
+
+
+def _comfy_node_available(class_type: str) -> bool:
+    """その class_type が起動中の ComfyUI に登録されているか。未登録ノードを
+    workflow に足すと /prompt 検証でグラフ全体が落ちるので、挿入前に必ず確認する。"""
+    try:
+        import requests
+
+        r = requests.get(f"http://127.0.0.1:8188/object_info/{class_type}", timeout=5)
+        return bool(r.ok and isinstance(r.json(), dict) and class_type in r.json())
+    except Exception:
+        return False
+
+
+def _inject_torch_compile(workflow):
+    """API-format ワークフローに core TorchCompileModel を 1 つ挿入し、DiT/UNet の
+    サンプリングを Inductor でコンパイルする。次のいずれかに当たれば無改変で返す:
+    WAN_TORCH_COMPILE=0 / workflow が dict でない / 既に compile 系ノードがある /
+    MODEL を出すローダーが一意でない / そのローダーを model 入力に使うノードが無い /
+    実行中 ComfyUI に TorchCompileModel が無い / 例外。"""
+    if os.environ.get("WAN_TORCH_COMPILE", "1").strip().lower() in ("0", "false", "no"):
+        return workflow
+    try:
+        if not isinstance(workflow, dict):
+            return workflow
+        nodes = {k: v for k, v in workflow.items() if isinstance(v, dict)}
+        if any(v.get("class_type") in _WAN_COMPILE_CLASSES for v in nodes.values()):
+            return workflow
+        loaders = [
+            k for k, v in nodes.items() if v.get("class_type") in _WAN_MODEL_LOADER_CLASSES
+        ]
+        if len(loaders) != 1:
+            return workflow
+        loader_id = loaders[0]
+        consumers = []
+        for k, v in nodes.items():
+            m = v.get("inputs", {}).get("model")
+            if isinstance(m, list) and len(m) == 2 and str(m[0]) == str(loader_id):
+                consumers.append((k, m[1]))
+        if not consumers:
+            return workflow
+        if not _comfy_node_available("TorchCompileModel"):
+            print("[wan] torch.compile: TorchCompileModel node unavailable, skipping", flush=True)
+            return workflow
+        new_id = "torch_compile_std"
+        while new_id in workflow:
+            new_id += "_x"
+        workflow[new_id] = {
+            "class_type": "TorchCompileModel",
+            "inputs": {"model": [str(loader_id), consumers[0][1]], "backend": "inductor"},
+            "_meta": {"title": "torch.compile (CLAUDE.md §1)"},
+        }
+        for k, _idx in consumers:
+            workflow[k]["inputs"]["model"] = [new_id, 0]
+        print(
+            f"[wan] torch.compile injected: loader {loader_id} -> {new_id} "
+            f"-> {[c[0] for c in consumers]}",
+            flush=True,
+        )
+        return workflow
+    except Exception as exc:  # noqa: BLE001 — fail-open, never block a generation
+        print(f"[wan] torch.compile injection skipped: {exc}", flush=True)
+        return workflow
+
+
 def _sanitize_relative_dir(raw: str) -> str | None:
     """
     Normalizes a MODELS_DIR-relative directory path for the repo downloader.
@@ -520,6 +604,23 @@ def _supabase_patch_job(job_id: str, fields: dict) -> None:
         )
     except Exception as exc:  # noqa: BLE001 — best-effort, never propagate
         print(f"[generation_jobs] failed to update job {job_id}: {exc}")
+
+
+def _current_effective_vram_gb():
+    """Device-global effective VRAM in use, in GB — just the one number, no
+    total / denominator and no GPU model name (the client renders it as a
+    spoiler-free 'Active VRAM' badge — CLAUDE.md §2). None when CUDA isn't
+    available. Canonical copy lives in modal_lora_worker.py
+    (_current_effective_vram_gb); keep them behaviourally identical."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            free_b, total_b = torch.cuda.mem_get_info()
+            return round((total_b - free_b) / (1024**3), 1)
+    except Exception:  # noqa: BLE001 — telemetry only, never fatal
+        pass
+    return None
 
 
 def _refund_credits(user_id: str, amount: int) -> None:
@@ -893,6 +994,9 @@ class WanAnimateBlackwell:
 
         self._write_inputs(files)
 
+        # PyTorch 最適化標準（CLAUDE.md §1）: fail-open。詳細は _inject_torch_compile。
+        workflow = _inject_torch_compile(workflow)
+
         client_id = str(uuid.uuid4())
         output_dir = os.path.join(COMFY_DIR, "output")
         os.makedirs(output_dir, exist_ok=True)
@@ -1102,12 +1206,37 @@ class WanAnimateBlackwell:
             # started_at feeds the "推定待機時間" average (completed_at -
             # started_at) the Studio queue monitor shows.
             _supabase_patch_job(job_id, {"status": "processing", "started_at": _now_iso()})
+
+        # ライブ「Active VRAM」バッジ用の背景サンプラー（async パスのみ）。
+        # _run_workflow は 1 本のブロッキング ComfyUI 実行なので per-step の
+        # フックが無い → 別スレッドで ~8s 毎に実効 VRAM を generation_jobs.
+        # metadata.vram_used_gb へ PATCH する（cinematic の行は metadata を
+        # 他に使っていないので丸ごと上書きで可）。model_downloads の
+        # _poll_progress と同じ daemon スレッド方式。
+        _vram_stop = None
+        _vram_thread = None
+        if is_async:
+            import threading
+
+            _vram_stop = threading.Event()
+
+            def _poll_vram():
+                while not _vram_stop.wait(8):
+                    gb = _current_effective_vram_gb()
+                    if gb is not None:
+                        _supabase_patch_job(job_id, {"metadata": {"vram_used_gb": gb}})
+
+            _vram_thread = threading.Thread(target=_poll_vram, name="cinematic-vram", daemon=True)
+            _vram_thread.start()
+
         try:
             self._ensure_comfy_running(exec_config)
             workflow = json.loads(workflow_json)
             files = [(name, base64.b64decode(b64)) for name, b64 in files_b64.items()]
             result_bytes, filename = self._run_workflow(workflow, files, output_node_id=output_node_id or None)
         except Exception as exc:
+            if _vram_stop is not None:
+                _vram_stop.set()
             self._append_log("failed", time.time() - started, error=str(exc)[:500])
             if is_async:
                 _supabase_patch_job(
@@ -1117,16 +1246,20 @@ class WanAnimateBlackwell:
                 _refund_credits(user_id, credits_cost)
                 _clear_active_job(active_job_id)
             raise
+        if _vram_stop is not None:
+            _vram_stop.set()
         self._append_log("success", time.time() - started, filename=filename)
         if save_to_volume:
             self._save_output_to_volume(filename, result_bytes)
         output_path = self._save_output_temp(filename, result_bytes)
         result_base64 = base64.b64encode(result_bytes).decode("ascii")
+        _vram_used_gb = _current_effective_vram_gb()
         result = {
             "filename": filename,
             "result_base64": result_base64,
             "gpu_tier": GPU_TIER,
             "output_path": output_path,
+            "vram_used_gb": _vram_used_gb,
         }
         if is_async:
             # Stored as a data: URI directly in generation_jobs.video_url
@@ -1137,14 +1270,16 @@ class WanAnimateBlackwell:
             # notice). Worth revisiting if/when this expands to other
             # workflow types or job history becomes a real feature: a hot
             # table growing multi-MB text rows isn't a great long-term fit.
-            _supabase_patch_job(
-                job_id,
-                {
-                    "status": "completed",
-                    "video_url": f"data:video/mp4;base64,{result_base64}",
-                    "completed_at": _now_iso(),
-                },
-            )
+            if _vram_thread is not None:
+                _vram_thread.join(timeout=3)
+            _completed_fields = {
+                "status": "completed",
+                "video_url": f"data:video/mp4;base64,{result_base64}",
+                "completed_at": _now_iso(),
+            }
+            if _vram_used_gb is not None:
+                _completed_fields["metadata"] = {"vram_used_gb": _vram_used_gb}
+            _supabase_patch_job(job_id, _completed_fields)
             _extend_gpu_warm(user_id)
             _clear_active_job(active_job_id)
         return result

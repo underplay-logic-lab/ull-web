@@ -4,21 +4,23 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { spawnLoraTrainingJob, buildLoraDispatchPayload } from "@/lib/modalLoraTrain";
 import { DEFAULT_LORA_STEPS } from "@/lib/loraCredits";
-import {
-  guiLoraPricingConfig,
-  loraPriceBreakdown,
-  LORA_CREDIT_WORST_CASE,
-} from "@/lib/loraPricing";
-import { validateLoraYaml, loraYamlIdentity } from "@/lib/loraYaml";
+import { guiLoraPricingConfig, loraPriceBreakdown } from "@/lib/loraPricing";
+import { getPricingKnobs } from "@/lib/pricing/knobs.server";
+import { loraCostCapSeconds } from "@/lib/pricing/costGuard.server";
+import { loraCreditWorstCase } from "@/lib/pricing/knobDefaults";
+import { validateLoraYaml, loraYamlIdentity, collectLoraYamlStructureErrors } from "@/lib/loraYaml";
 import { getAdminEmails } from "@/lib/adminAuth";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { geminiApiKey, runGeminiText } from "@/lib/geminiText";
 import {
   buildCaptionFallbackPrompt,
   buildCaptionMetaPrompt,
+  buildCategoryDefaultInstruction,
   captionSpecHasInput,
   normalizeCaptionSpec,
+  resolveCaptionMode,
   tidyCaptionPrompt,
+  type ResolvedCaptionMode,
 } from "@/lib/loraCaptionSpec";
 import {
   BLOCKED_LORA_MODEL_MESSAGE,
@@ -36,12 +38,12 @@ import {
 const DEFAULT_LORA_RANK = 32;
 
 // Only debits credits, inserts a generation_jobs row and fires the dispatch
-// at Modal (train_lora_dispatch). For a single-file / Volume base model the
-// spawn ack lands in seconds; for an uncached HF-repo model train_lora_dispatch
-// runs the CPU snapshot_download synchronously first, which can take a few
-// minutes. maxDuration matches SPAWN_TIMEOUT_MS (300_000ms) so Vercel never
-// 504s that wait; modal_call_id persistence still runs in `after()`, and any
-// pre-spawn Gemini caption-prompt synthesis is hard-capped (see below).
+// at Modal (train_lora_dispatch). That endpoint is warm and async — it just
+// .spawn()s the pre-cache/GPU orchestrator and ACKs in well under a second —
+// and the client wrapper retries a transient failure up to 3x with backoff
+// (see postModalDispatchWithRetry). The generous maxDuration is headroom for
+// those retries + the `after()` modal_call_id persistence + the hard-capped
+// pre-spawn Gemini caption-prompt synthesis (see below), not a single slow call.
 export const maxDuration = 300;
 
 // Hard cap on the optional pre-spawn Gemini caption-prompt synthesis so it
@@ -179,6 +181,18 @@ async function handlePost(request: Request): Promise<NextResponse> {
     }
     parsedOverride = check.data;
   } else if (hasOverride && trainingConfig.custom_yaml_override && typeof trainingConfig.custom_yaml_override === "object") {
+    // A pre-parsed dict override skips yaml.load, but the same ai-toolkit
+    // structural prerequisites still apply — check them before any debit.
+    const structErrors = collectLoraYamlStructureErrors(trainingConfig.custom_yaml_override);
+    if (structErrors.length > 0) {
+      return NextResponse.json(
+        {
+          error: `custom_yaml の設定エラー: ${structErrors.join(" / ")}`,
+          yamlError: { message: structErrors.join(" / "), line: null, column: null, errors: structErrors },
+        },
+        { status: 400 },
+      );
+    }
     parsedOverride = trainingConfig.custom_yaml_override;
   }
 
@@ -262,13 +276,26 @@ async function handlePost(request: Request): Promise<NextResponse> {
     : undefined;
   const skipCaptioning =
     body.skip_captioning === true || (customCaptions?.some((c) => c.trim().length > 0) ?? false);
+  // Resolved caption FORMAT for this base model. Trust the client's resolved
+  // value when it sent one; otherwise re-derive it here from the model key
+  // (same rule as resolveCaptionMode on the client). Forwarded to the worker
+  // so its persisted-caption cache is keyed per format — a dense run and a
+  // tags run of the same dataset can never share (and overwrite) a cache.
+  const captionModelKey =
+    targetModel === "custom"
+      ? `${customModelId} ${baseArchitecture}`
+      : `${targetModel} ${loraPresetById(targetModel)?.arch ?? ""} ${loraPresetById(targetModel)?.label ?? ""}`;
+  const resolvedCaptionMode: ResolvedCaptionMode =
+    body.caption_mode === "dense" || body.caption_mode === "tags"
+      ? body.caption_mode
+      : resolveCaptionMode(captionModelKey);
   // The user's own auto-caption VLM instruction. Normally the browser has
   // already run the category-aware Gemini synthesis (see below) and sends the
   // finished English instruction here; free-text edits also land here.
   // Bounded so a huge paste can't bloat the job payload.
   let captionPrompt =
     typeof body.caption_prompt === "string" ? body.caption_prompt.trim().slice(0, 4000) : "";
-  // The structured category spec (人物 / 画風 / 物質 / 風景 ＋ 固定/変化させたい
+  // The structured category spec (人物 / 衣装 / 物体 / 背景 / 画風 ＋ 固定/変化させたい
   // 特徴の日本語). Used to (re)build caption_prompt server-side when the client
   // didn't send a generated one — the authoritative fallback for the request.
   const captionSpec = normalizeCaptionSpec(body.caption_spec);
@@ -308,6 +335,12 @@ async function handlePost(request: Request): Promise<NextResponse> {
       captionPrompt = buildCaptionFallbackPrompt(captionSpec, triggerWord).slice(0, 4000);
       captionPromptSource = "fallback";
     }
+  } else if (!captionPrompt && !skipCaptioning && captionSpec) {
+    // A category was chosen but no fixed/varying text — hand the worker VLM
+    // that category's built-in blacklist/whitelist policy so it never
+    // captions the whole image and hollows out the trigger word.
+    captionPrompt = buildCategoryDefaultInstruction(captionSpec.category, triggerWord).slice(0, 4000);
+    captionPromptSource = "fallback";
   }
   const resolution = (LORA_RESOLUTIONS as readonly number[]).includes(Number(body.resolution))
     ? Number(body.resolution)
@@ -331,21 +364,34 @@ async function handlePost(request: Request): Promise<NextResponse> {
           typeof trainingConfig.rank === "number" ? trainingConfig.rank : DEFAULT_LORA_RANK,
         steps: typeof trainingConfig.steps === "number" ? trainingConfig.steps : DEFAULT_LORA_STEPS,
       });
+  const knobs = await getPricingKnobs();
   const priceBreakdown = pricedConfig
     ? loraPriceBreakdown(pricedConfig, {
         archFallback: pricedArch,
         // Raw-YAML (hasOverride) prices purely off the YAML's own arch — a
         // preset's per-model override only applies to the GUI-synthesised path.
         modelMultOverride: hasOverride ? undefined : pricedPreset?.pricingModelMult,
+        knobs,
       })
     : null;
   // A raw YAML that reached here unparseable (UI blocks it, so defence only),
-  // or one with no positive step count -> the worst-case ceiling.
+  // or one with no positive step count -> the worst-case ceiling. Recomputed
+  // from the live knobs so raising a coefficient can't be clamped away.
+  const worstCase = loraCreditWorstCase(knobs);
   let requiredCredits =
-    priceBreakdown && priceBreakdown.credits > 0
-      ? priceBreakdown.credits
-      : LORA_CREDIT_WORST_CASE;
-  requiredCredits = Math.max(1, Math.min(LORA_CREDIT_WORST_CASE, Math.ceil(requiredCredits)));
+    priceBreakdown && priceBreakdown.credits > 0 ? priceBreakdown.credits : worstCase;
+  requiredCredits = Math.max(1, Math.min(worstCase, Math.ceil(requiredCredits)));
+
+  // Cost-guard budget handed to the Modal worker (it aborts a run whose
+  // projected wall time exceeds this). Derived here from the same knobs as the
+  // price so a pricing edit moves the loss-cut threshold with it — no worker
+  // redeploy. See src/lib/pricing/costGuard.server.ts.
+  const costCap = loraCostCapSeconds({
+    creditsCost: requiredCredits,
+    arch: priceBreakdown?.arch || pricedArch,
+    steps: priceBreakdown?.steps ?? 0,
+    knobs,
+  });
 
   // --- credits ------------------------------------------------------------
   const { data: profile, error: profileError } = await getOrCreateProfile(
@@ -390,11 +436,13 @@ async function handlePost(request: Request): Promise<NextResponse> {
     jobId: "", // filled after insert
     userId: user.id,
     creditsCost: requiredCredits,
+    costCapSeconds: costCap.seconds,
     storagePaths,
     datasetId,
     captions,
     customCaptions,
     skipCaptioning,
+    captionMode: resolvedCaptionMode,
     captionPrompt: captionPrompt || undefined,
     targetModel,
     customModelId: targetModel === "custom" ? customModelId : undefined,
@@ -424,6 +472,8 @@ async function handlePost(request: Request): Promise<NextResponse> {
       // recorded so a disputed debit is auditable.
       priced_steps: priceBreakdown?.steps ?? null,
       price_breakdown: priceBreakdown,
+      cost_cap_seconds: costCap.seconds,
+      cost_cap_reason: costCap.reason,
     },
     // How the auto-caption instruction was produced, for support / auditing.
     caption_prompt_meta: captionSpec
@@ -434,6 +484,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
           has_varying: captionSpec.varying.length > 0,
         }
       : { source: captionPromptSource },
+    caption_mode: resolvedCaptionMode,
     dispatch: dispatchPayload,
   };
 

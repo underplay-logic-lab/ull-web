@@ -1,9 +1,12 @@
 // LoRA Studio model catalogue — shared by the client tab, the API route,
 // and (mirrored) the Modal worker. No imports, so it's safe on both sides.
 //
-// Sealed to a fixed commercial lineup (12 confirmed presets — see the "全面
-//再編" pass): every model here is openly-licensed / permissive and has been
-// verified to load in ai-toolkit. Free-text "any HuggingFace repo id" entry
+// Sealed to a fixed commercial lineup (see the "全面再編" pass): every model
+// here is openly-licensed / permissive and has been verified to load in
+// ai-toolkit. Qwen-Image (20B) is temporarily hidden below for Volume storage
+// cost (its arch string / TARGET_MODELS entry stays). FLUX.2 [dev] was removed
+// outright — non-commercial licence, now blocked by isBlockedLoraModel().
+// Free-text "any HuggingFace repo id" entry
 // is deliberately NOT exposed in the general UI any more (LoraStudioTab.tsx
 // no longer renders the "⚙️ 上級者向け" custom-model option) — this array is
 // the ONLY way an ordinary user reaches a base model.
@@ -14,8 +17,6 @@ export type LoraBaseArchitecture =
   | "ltx2"
   | "minimax_h3"
   | "flux2_klein_4b"
-  | "flux2_klein_9b"
-  | "flux2"
   | "qwen_image"
   | "krea2"
   | "zimage"
@@ -28,8 +29,6 @@ export const LORA_BASE_ARCHITECTURES: LoraBaseArchitecture[] = [
   "ltx2",
   "minimax_h3",
   "flux2_klein_4b",
-  "flux2_klein_9b",
-  "flux2",
   "qwen_image",
   "krea2",
   "zimage",
@@ -72,8 +71,9 @@ export const LORA_PRESET_GROUP_LABELS: Record<LoraPresetGroup, string> = {
 // removed in an earlier pass: CogVideoX-5B, HunyuanVideo, SD 3.5 Large/
 // Medium, PixArt-Σ, SD 1.5, FLUX.1 [schnell], SDXL 1.0 (base), Animagine XL
 // 3.1 — FLUX.1 [dev] was never listed here (blocked outright below).
-// FLUX.2 [dev] ("flux2") is temporarily commented out below — storage cost
-// (see the note on that block).
+// FLUX.2 [dev] ("flux2") removed outright: FLUX Non-Commercial License, cannot
+// be hosted by a commercial SaaS (same as FLUX.1 [dev] / FLUX.2 [klein] 9B).
+// arch string, TARGET_MODELS entry and HF cache all deleted; blocked below.
 export const LORA_PRESETS: LoraPreset[] = [
   // --- video (HEAVY_LORA_ARCHES -> 3.0x) ---
   // WAN 2.1 RETIRED — superseded by WAN 2.2 below. Kept commented for history.
@@ -109,32 +109,30 @@ export const LORA_PRESETS: LoraPreset[] = [
     arch: "flux2_klein_4b",
     note: "超軽量・爆速FLUX後継モデル。低コストで高精度な静止画LoRAを高速生成。",
   },
-  {
-    id: "flux2_klein_9b",
-    label: "FLUX.2 Klein (9B)",
-    group: "photo",
-    arch: "flux2_klein_9b",
-    note: "Klein系の上位モデル。より高い再現性・忠実度。",
-  },
-  // FLUX.2 [dev] ("flux2") — 一般ユーザー向けプリセットから一旦非表示。
-  // transformer + 24B Mistral TE で Volume 実消費 ~210GB と突出して大きく、
-  // 誤選択1回で永続ボリュームが 1TB 無料枠を超過するため。FLUX 系は
-  // flux2_klein_4b / 9b を主力とする。arch:"flux2" 自体（型・API検証・worker
-  // 側 TARGET_MODELS）は残しているので、再開時はこのブロックを戻すだけでよい。
+  // FLUX.2 [klein] 9B ("flux2_klein_9b") — 完全撤去。9B は FLUX Non-Commercial
+  // License（商用SaaSでのホスト禁止）のため ULL Studio（商用サービス）では
+  // 提供不可。型・TARGET_MODELS・SPI ベースラインからも削除済みで、
+  // isBlockedLoraModel() でも明示的にブロックする。FLUX 系の主力は
+  // 商用フリー（Apache 2.0）の flux2_klein_4b に統一。
+  // FLUX.2 [dev] ("flux2") — 完全撤去。FLUX Non-Commercial License のため商用
+  // SaaS でホスト不可（FLUX.1 [dev] / FLUX.2 [klein] 9B と同じ）。arch union・
+  // LORA_BASE_ARCHITECTURES・worker の TARGET_MODELS からも削除し、HF キャッシュ
+  // （transformer + 24B Mistral TE, ~210GB）は admin_cleanup_volume でパージ済み。
+  // isBlockedLoraModel() で明示ブロック。FLUX 系の主力は商用フリー（Apache 2.0）
+  // の flux2_klein_4b に統一。
+  // Qwen-Image (Alibaba 20B) ("qwen_image") — 一般ユーザー向けプリセットから
+  // 一旦非表示。Comfy 単一ファイル transformer(~40GB) + Qwen2.5-VL TE で Volume
+  // 実消費が大きく、需要も薄いため（Minimax H3 TE ベイク領域を 1TB 無料枠内で
+  // 確保する対応）。arch:"qwen_image" 自体（型・API検証・worker 側 TARGET_MODELS）
+  // は残しているので、再開時はこのブロックを戻すだけでよい。共有 HF snapshot
+  // "Qwen/Qwen-Image" は krea2 が VAE で使うため物理パージ対象外。
   // {
-  //   id: "flux2",
-  //   label: "FLUX.2 (Base)",
+  //   id: "qwen_image",
+  //   label: "Qwen-Image (Alibaba 20B)",
   //   group: "photo",
-  //   arch: "flux2",
-  //   note: "FLUX.2 の標準ベースモデル。",
+  //   arch: "qwen_image",
+  //   note: "Alibaba開発の最新DiT。卓越したプロンプト追従性とテキスト描画性能。",
   // },
-  {
-    id: "qwen_image",
-    label: "Qwen-Image (Alibaba 20B)",
-    group: "photo",
-    arch: "qwen_image",
-    note: "Alibaba開発の最新DiT。卓越したプロンプト追従性とテキスト描画性能。",
-  },
   { id: "krea2", label: "Krea 2", group: "photo", arch: "krea2", note: "写実性に強い最新世代の汎用DiT。" },
   {
     id: "zimage",
@@ -184,8 +182,6 @@ export const LORA_RESOLUTION_LABELS: Record<LoraResolution, string> = {
 // backbones train at 1024; every video arch trains at 768.
 const STILL_IMAGE_ARCHES: ReadonlySet<LoraBaseArchitecture> = new Set([
   "flux2_klein_4b",
-  "flux2_klein_9b",
-  "flux2",
   "qwen_image",
   "krea2",
   "zimage",
@@ -199,13 +195,30 @@ export function recommendedResolution(arch: LoraBaseArchitecture): LoraResolutio
 
 // FLUX.1 [dev] block — matches "flux dev", "flux-dev", "FLUX.1-dev",
 // "black-forest-labs/FLUX.1-dev", "flux1_dev", … but never "flux schnell",
-// "flux .1 schnell", or the (distinct-licence) FLUX.2 family.
+// "flux .1 schnell", or the commercial-OK FLUX.2 Klein 4B.
 const FLUX_DEV_RE = /flux[\s._-]*(?:1[\s._-]*)?dev\b/i;
+// FLUX.2 [dev] block — FLUX Non-Commercial License. matches "flux2dev",
+// "flux.2-dev", "FLUX.2 dev", "black-forest-labs/FLUX.2-dev", … (the "2" is
+// what separates it from FLUX_DEV_RE, which only reaches ".1"/bare).
+const FLUX2_DEV_RE = /flux[\s._-]*2[\s._-]*dev\b/i;
+// FLUX.2 [klein] 9B block — FLUX Non-Commercial License (商用SaaSでのホスト
+// 禁止)。matches "flux2_klein_9b", "black-forest-labs/FLUX.2-klein-base-9B",
+// "flux.2 klein 9b", … but never the Apache-2.0 4B variant.
+const FLUX2_KLEIN_9B_RE = /flux[\s._-]*2[\s._-]*klein[\w\s.-]{0,24}9b\b/i;
 
 export function isBlockedLoraModel(value: string | null | undefined): boolean {
   if (!value) return false;
-  return FLUX_DEV_RE.test(value) || value.trim().toLowerCase() === "flux_dev";
+  const v = value.trim().toLowerCase();
+  return (
+    FLUX_DEV_RE.test(value) ||
+    FLUX2_DEV_RE.test(value) ||
+    v === "flux_dev" ||
+    v === "flux2" ||
+    v === "flux2_dev" ||
+    v === "flux2_klein_9b" ||
+    FLUX2_KLEIN_9B_RE.test(value)
+  );
 }
 
 export const BLOCKED_LORA_MODEL_MESSAGE =
-  "FLUX.1 [dev] は非商用ライセンスのため LoRA Studio では利用できません。FLUX.2 Klein などをご利用ください。";
+  "FLUX.1 [dev] / FLUX.2 [dev] / FLUX.2 [klein] 9B は非商用ライセンスのため LoRA Studio では利用できません。FLUX.2 Klein (4B) などの商用可モデルをご利用ください。";

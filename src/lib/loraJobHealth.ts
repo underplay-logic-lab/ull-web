@@ -1,5 +1,6 @@
 import "server-only";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { salvageLoraJobRemote } from "@/lib/modalLoraTrain";
 
 // Shared helpers for the LoRA Studio self-healing path — used by the
 // /api/jobs/[id] poll (Modal-native container-death detection) and the
@@ -85,6 +86,9 @@ async function updateJobResilient(id: string, fields: Record<string, unknown>): 
         "completed_at",
         "updated_at",
         "progress_message",
+        "progress_percent",
+        "result_path",
+        "video_url",
         "metadata",
         "inputs",
       ]);
@@ -155,4 +159,81 @@ export async function markLoraJobContainerDead(
     },
   });
   return { refunded, customYaml };
+}
+
+// The mirror of markLoraJobContainerDead for the OTHER stuck-row case: the
+// Modal FunctionCall returned a RESULT (check_call_status -> "completed") but
+// the worker's own final PATCH never reached us (the network blip that also
+// froze the client's poll dropped it), so the row is stuck 'processing' at
+// whatever step it last reported. Pull the finished artifacts off the Volume
+// via the salvage endpoint — same Volume-scan the failed-job Salvage button
+// uses, it doesn't care WHY the publish didn't land — and flip the row to
+// 'completed' with the full checkpoint list so the Studio transitions to its
+// download screen. No credit change: the run finished, the charge stands.
+export async function markLoraJobCompletedFromModal(
+  job: JobRow,
+): Promise<{ recovered: boolean; checkpoints: number }> {
+  const id = String(job.id);
+  const userId = String(job.user_id ?? "");
+  const existingMeta =
+    job.metadata && typeof job.metadata === "object" ? (job.metadata as Record<string, unknown>) : {};
+
+  let salv: Awaited<ReturnType<typeof salvageLoraJobRemote>>;
+  try {
+    salv = await salvageLoraJobRemote({
+      userId,
+      jobId: id,
+      modalCallId: loraCallIdOf(job),
+      datasetId: loraDatasetIdOf(job),
+      outputLoraName: loraOutputNameOf(job),
+    });
+  } catch (err) {
+    console.error(
+      `[loraJobHealth] completed-recovery salvage failed for ${id}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return { recovered: false, checkpoints: 0 };
+  }
+
+  // Merge the salvaged checkpoints over any mid-run ones the row already had
+  // (dedup by filename — the salvaged entries, incl. the final Step-N one, win).
+  const existingCkpts = Array.isArray(existingMeta.checkpoints)
+    ? (existingMeta.checkpoints as Record<string, unknown>[])
+    : [];
+  const byName = new Map<string, Record<string, unknown>>();
+  for (const c of existingCkpts) {
+    if (typeof c.filename === "string") byName.set(c.filename, c);
+  }
+  for (const c of salv.checkpoints) {
+    byName.set(c.filename, c as unknown as Record<string, unknown>);
+  }
+  const mergedCkpts = [...byName.values()];
+  if (mergedCkpts.length === 0) {
+    // Nothing on the Volume — don't fake a completion. Leave the row alone so
+    // the stale-probe keeps trying (or the 12h container-timeout path closes it).
+    console.error(`[loraJobHealth] job ${id}: Modal reports completed but salvage found no checkpoints`);
+    return { recovered: false, checkpoints: 0 };
+  }
+
+  const finalCkpt =
+    mergedCkpts.find((c) => c.is_final === true) ??
+    mergedCkpts
+      .filter((c) => c.is_caption_archive !== true && c.is_bundle !== true)
+      .sort((a, b) => (Number(b.step) || 0) - (Number(a.step) || 0))[0];
+  const resultPath =
+    (typeof finalCkpt?.path === "string" && finalCkpt.path) ||
+    (typeof finalCkpt?.filename === "string" && userId
+      ? `loras/${userId}/${id}/${finalCkpt.filename}`
+      : null);
+
+  await updateJobResilient(id, {
+    status: "completed",
+    progress_percent: 100,
+    progress_message: "done",
+    completed_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    ...(resultPath ? { result_path: resultPath, video_url: resultPath } : {}),
+    metadata: { ...existingMeta, checkpoints: mergedCkpts, recovered_completed: true },
+  });
+  return { recovered: true, checkpoints: mergedCkpts.length };
 }

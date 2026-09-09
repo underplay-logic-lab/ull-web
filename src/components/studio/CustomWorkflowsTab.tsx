@@ -9,6 +9,7 @@ import { generateCustomWorkflow } from "@/lib/customWorkflowApi";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { LoginModal } from "@/components/LoginModal";
 import { GpuWarmStokeWidget } from "@/components/studio/GpuWarmStokeWidget";
+import { VramBadge } from "@/components/studio/VramBadge";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
@@ -39,6 +40,7 @@ export function CustomWorkflowsTab() {
   const [resultKind, setResultKind] = useState<"image" | "video" | null>(null);
   const [downloadFilename, setDownloadFilename] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [vramUsedGb, setVramUsedGb] = useState<number | null>(null);
 
   const elapsedMs = useElapsedTimer(status === "loading");
 
@@ -154,6 +156,7 @@ export function CustomWorkflowsTab() {
     setNotice(null);
     setStatus("loading");
     setErrorMessage(null);
+    setVramUsedGb(null);
     setResultUrl((previous) => {
       if (previous) URL.revokeObjectURL(previous);
       return null;
@@ -163,6 +166,7 @@ export function CustomWorkflowsTab() {
       const result = await generateCustomWorkflow({ slug: selectedWorkflow.slug, values });
       setResultUrl(result.resultUrl);
       setResultKind(result.outputKind);
+      setVramUsedGb(result.vramUsedGb);
       setDownloadFilename(`custom_workflow_${Date.now()}.${result.outputKind === "video" ? "mp4" : "png"}`);
       setStatus("done");
       broadcastCreditsUpdate(user.id, result.remainingCredits);
@@ -341,6 +345,11 @@ export function CustomWorkflowsTab() {
             <p className="text-center font-mono text-xs text-muted">
               ⚡ 生成完了（所要時間: {formatElapsedSeconds(elapsedMs)}秒）
             </p>
+            {vramUsedGb != null && (
+              <div className="flex justify-center">
+                <VramBadge gb={vramUsedGb} />
+              </div>
+            )}
             <a
               href={resultUrl}
               download={downloadFilename ?? `custom_workflow.${resultKind === "video" ? "mp4" : "png"}`}

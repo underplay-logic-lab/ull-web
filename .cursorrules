@@ -9,11 +9,10 @@ ULL Studio の開発において、すべての AI エージェント（Claude /
 - **CUDA / PyTorch**: 必ず **CUDA 13.0 (cu130)** を使用すること。
   - インストール元: `--index-url https://download.pytorch.org/whl/cu130 --extra-index-url https://download.pytorch.org/whl/nightly/cu130`
 - **GPU Architecture**: 標準 GPU は **Blackwell（`GPU_REQUEST = ["b300", "b200"]` または `"b200"`）** を使用すること。
-- **GPU コンテナ ライフサイクル標準（30秒 Keep-Warm 規格）**:
-  - すべての GPU ワーカー（LoRA学習 / 動画生成）の `@app.function` / `@app.cls` に **`scaledown_window=30`（30秒）** を明示すること。値は一律 `30` で統一し、個別に変更しない。
-  - 対象: `modal_lora_worker.py` の `train_lora_job`、`scripts/modal_wan_animate.py` の `WanAnimate` / `WanAnimateUltra`、`modal_wan_animate_blackwell.py` の `WanAnimateBlackwell` 等、`gpu=` を持つ全関数・全クラス。
-  - GPU-less（CPU のみ）の関数はこの規格の対象外（現状の値を維持）。
-  - 理由: コスト最適化（アイドル待機課金の抑制）と、ユーザー体験（30秒カウントダウン中の「🔥 火をくべる」連続生成でコールドスタートを回避）の両立。フロントの `WARM_EXTEND_SECONDS`（`src/lib/gpuWarm.ts`）もこの 30 秒に一致させること。
+- **GPU コンテナ ライフサイクル標準**:
+  - **動画生成系 GPU ワーカー（30秒 Keep-Warm 規格）**: `scripts/modal_wan_animate.py` の `WanAnimate` / `WanAnimateUltra`、`modal_wan_animate_blackwell.py` の `WanAnimateBlackwell` 等、`gpu=` を持つ関数・クラスには **`scaledown_window=30`（30秒）** を明示すること。値は一律 `30` で統一し、個別に変更しない。理由: コスト最適化（アイドル待機課金の抑制）と、ユーザー体験（30秒カウントダウン中の「🔥 火をくべる」連続生成でコールドスタートを回避）の両立。フロントの `WARM_EXTEND_SECONDS`（`src/lib/gpuWarm.ts`）もこの 30 秒に一致させること。
+  - **LoRA worker（`modal_lora_worker.py`）は例外— 全関数一律 `scaledown_window=2`（2秒即切り）**: `train_lora_job`（GPU）を含む、この1ファイル内の全 `@app.function` / `@app.cls`（Web エンドポイント／内部関数を問わず）に `scaledown_window=2` を明示し、`min_containers` は使用しない（常に0＝常駐なし）。理由: LoRA学習は長時間の単発バッチジョブであり、動画生成のような「🔥 火をくべる」連続実行UXが存在しないため、30秒Keep-Warmの恩恵がなくアイドル課金だけが残る。コールドスタートの数秒より、アイドル課金ゼロを優先する。
+  - GPU-less（CPU のみ）の関数（`modal_lora_worker.py` 以外）はこの規格の対象外（現状の値を維持）。
 - **デプロイコマンド**: バッチ文字化けを防ぐため、必ず `PYTHONIOENCODING=utf-8 PYTHONUTF8=1 modal deploy ...` を使用すること。
 
 ---
@@ -27,13 +26,15 @@ ULL Studio の開発において、すべての AI エージェント（Claude /
 
 ## 3. データ保持 ＆ 課金ポリシー
 - **14日間完全自動パージ**: 生成された LoRA（.safetensors）、画像、動画、素材画像、キャプションはすべて一律 **14日間保持** 後に自動削除する。
+- **単価は DB knob（`pricing_knobs` / `/admin`「Pricing」タブ）で一元管理**。全工程のクレジット単価・課金係数・原価割れ損切り閾値・レートを集約し、admin 編集で約1分反映・Modal 再デプロイ不要。コード側 SSOT は `src/lib/pricing/knobDefaults.ts` の `DEFAULT_KNOBS`（DB 断のフォールバック）。サーバー=`getPricingKnobs()`、クライアント=`usePricingKnobs()`。公開 knob は `GET /api/studio/pricing` 経由。損切り閾値・レートは非公開。
 - **多次元動的クレジット課金（`src/lib/loraPricing.ts`）**:
-  - 計算式: `credits = ceil(0.1 * modelMult * resolutionMult * batchMult * rankMult * steps)`
-  - `modelMult`: 動画系 arch（`minimax_h3` 等）→ `3.0` / それ以外 → `1.0`
-  - `resolutionMult`: `resolution` 最大値 `1280+`→`2.0` / `1024+`→`1.5` / それ未満→`1.0`
-  - `batchMult`: `batch_size * gradient_accumulation_steps` `4+`→`2.0` / `2+`→`1.5` / それ未満→`1.0`
-  - `rankMult`: `network.linear` `64+`→`1.2` / それ未満→`1.0`
-  - 旧「ステップ数のみの固定課金」は廃止。フロント表示（`LoraStudioTab.tsx`）と API 検証（`/api/studio/lora/train`）は同一ロジック（`loraPriceBreakdown()`）で算出すること。
+  - 計算式: `credits = ceil(lora_per_step * modelMult * resolutionMult * batchMult * rankMult * steps)`（各値は knob。既定 `0.1 / 3.0 / 1.5・2.0 / 1.5・2.0 / 1.2`）
+  - `modelMult`: 動画系 arch（`minimax_h3` 等）→ `lora_mult_model_heavy` / それ以外 → `1.0`
+  - `resolutionMult`: `resolution` 最大値 `1280+`→`lora_mult_res_1280` / `1024+`→`lora_mult_res_1024` / それ未満→`1.0`
+  - `batchMult`: `batch_size * gradient_accumulation_steps` `4+`→`lora_mult_batch_4` / `2+`→`lora_mult_batch_2` / それ未満→`1.0`
+  - `rankMult`: `network.linear` `64+`→`lora_mult_rank_64` / それ未満→`1.0`
+  - 旧「ステップ数のみの固定課金」は廃止。フロント表示（`LoraStudioTab.tsx`）と API 検証（`/api/studio/lora/train`）は同一ロジック（`loraPriceBreakdown()`）＋同一 knob で算出すること。
+  - 原価割れ損切り閾値も `src/lib/pricing/costGuard.server.ts` が knob から算出し、Modal へ payload（`cost_cap_seconds` / `max_allowed_time`）で渡す。
 - **LoRA 中間チェックポイント**: `save_every: 500`（または25%刻み）で中間 `.safetensors` を永続化し、完了画面で個別ダウンロードを可能にすること。
 
 ---

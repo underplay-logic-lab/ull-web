@@ -4,6 +4,8 @@
 // costs, and target dimensions are all shown directly in the client UI, not
 // just used server-side.
 
+import { DEFAULT_KNOBS, type KnobKey, type PricingKnobs } from "@/lib/pricing/knobDefaults";
+
 export type CinematicAspectRatio = "16:9" | "9:16" | "1:1" | "4:3";
 
 export const CINEMATIC_ASPECT_RATIOS: { id: CinematicAspectRatio; label: string; ratio: number }[] = [
@@ -67,6 +69,22 @@ export const CINEMATIC_MODE_BY_ID: Record<CinematicModeId, CinematicMode> = Obje
 
 export function isCinematicModeId(value: unknown): value is CinematicModeId {
   return typeof value === "string" && value in CINEMATIC_MODE_BY_ID;
+}
+
+const CINEMATIC_MODE_KNOB: Record<CinematicModeId, KnobKey> = {
+  speed: "cinematic_speed",
+  standard: "cinematic_standard",
+  cinemaMaster: "cinematic_cinema_master",
+};
+
+// Live per-mode credit cost. `CINEMATIC_MODES[].credits` is the hardcoded
+// fallback shown before /api/studio/pricing responds; this is the
+// admin-editable value both the UI and /api/generate/cinematic must use.
+export function cinematicModeCredits(
+  id: CinematicModeId,
+  knobs: PricingKnobs = DEFAULT_KNOBS,
+): number {
+  return knobs[CINEMATIC_MODE_KNOB[id]];
 }
 
 export function isCinematicAspectRatio(value: unknown): value is CinematicAspectRatio {

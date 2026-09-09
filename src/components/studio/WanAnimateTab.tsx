@@ -30,6 +30,7 @@ import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { LoginModal } from "@/components/LoginModal";
 import { GpuTierSelector } from "@/components/studio/GpuTierSelector";
 import { GpuWarmStokeWidget } from "@/components/studio/GpuWarmStokeWidget";
+import { VramBadge } from "@/components/studio/VramBadge";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits } from "@/hooks/useProfileCredits";
 import { broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
@@ -64,6 +65,15 @@ type StudioMotionPreset = {
 const PRICING_KEY_BY_MODE: Record<MotionMode, string> = {
   preset: "wan_animate_preset",
   custom: "wan_animate_custom",
+};
+
+// Baseline credits map used before /api/studio/pricing responds, and kept as a
+// permanent floor if that call fails (Supabase down, table missing, network).
+// The UI must always render a real price — never block on the fetch.
+const FALLBACK_PRICING: Record<string, number> = {
+  [PRICING_KEY_BY_MODE.preset]: WAN_ANIMATE_GENERATION_COST,
+  [PRICING_KEY_BY_MODE.custom]: WAN_ANIMATE_GENERATION_COST,
+  [GPU_TIER_ADDON_KEY]: WAN_ANIMATE_GPU_ULTRA_ADDON,
 };
 
 function useObjectUrl(file: File | null): string | null {
@@ -273,13 +283,14 @@ export function WanAnimateTab() {
 
   const [presets, setPresets] = useState<StudioMotionPreset[]>([]);
   const [presetsLoading, setPresetsLoading] = useState(true);
-  const [pricing, setPricing] = useState<Record<string, number>>({});
+  const [pricing, setPricing] = useState<Record<string, number>>(FALLBACK_PRICING);
 
   const [prompt, setPrompt] = useState(savedForm?.prompt ?? "");
   const [status, setStatus] = useState<Status>("idle");
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [downloadFilename, setDownloadFilename] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [vramUsedGb, setVramUsedGb] = useState<number | null>(null);
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeModalOpen, setChargeModalOpen] = useState(false);
@@ -307,14 +318,21 @@ export function WanAnimateTab() {
     (async () => {
       try {
         const res = await fetch("/api/studio/pricing");
-        const data = await res.json();
-        if (res.ok) {
-          setPricing(data.pricing as Record<string, number>);
+        const data = await res.json().catch(() => null);
+        if (res.ok && data?.pricing && typeof data.pricing === "object") {
+          // Merge over the fallback so any key the server omits still resolves.
+          setPricing({ ...FALLBACK_PRICING, ...(data.pricing as Record<string, number>) });
         } else {
-          console.error("[WanAnimateTab] failed to load pricing:", data?.error);
+          // Non-fatal: keep the fallback pricing and let the UI render normally.
+          console.warn(
+            "[WanAnimateTab] pricing API unavailable, using fallback:",
+            data?.error ?? res.status,
+          );
+          setPricing(FALLBACK_PRICING);
         }
       } catch (err) {
-        console.error("[WanAnimateTab] failed to load pricing:", err);
+        console.warn("[WanAnimateTab] pricing API request failed, using fallback:", err);
+        setPricing(FALLBACK_PRICING);
       }
     })();
   }, []);
@@ -353,6 +371,7 @@ export function WanAnimateTab() {
     setResultUrl(null);
     setDownloadFilename(null);
     setErrorMessage(null);
+    setVramUsedGb(null);
 
     try {
       const result = await generateWanAnimateVideo({
@@ -369,6 +388,7 @@ export function WanAnimateTab() {
         return result.videoUrl;
       });
       setDownloadFilename(buildDownloadFilename());
+      setVramUsedGb(result.vramUsedGb);
       setStatus("done");
       broadcastCreditsUpdate(user.id, result.remainingCredits);
     } catch (err) {
@@ -643,6 +663,11 @@ export function WanAnimateTab() {
             <p className="mt-3 text-center font-mono text-xs text-muted">
               ⚡ 生成完了（所要時間: {formatElapsedSeconds(elapsedMs)}秒）
             </p>
+            {vramUsedGb != null && (
+              <div className="mt-2 flex justify-center">
+                <VramBadge gb={vramUsedGb} />
+              </div>
+            )}
             <a
               href={resultUrl}
               download={downloadFilename ?? buildDownloadFilename()}

@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabaseClient";
 import type { LoraBaseArchitecture } from "@/lib/loraModels";
-import type { LoraCaptionSpec } from "@/lib/loraCaptionSpec";
+import type { LoraCaptionSpec, ResolvedCaptionMode } from "@/lib/loraCaptionSpec";
 
 // A preset id from LORA_PRESETS, or the literal "custom" (universal loader).
 export type LoraTargetModel = string;
@@ -72,10 +72,14 @@ export type StartLoraTrainingParams = {
   // .txt set): the worker then skips loading the 27B caption VLM entirely.
   customCaptions?: string[];
   skipCaptioning?: boolean;
+  // Resolved caption FORMAT ("dense" | "tags") for the selected base model.
+  // Forwarded to the worker so the persisted-caption cache is keyed per
+  // format — a dense run and a tags run of the same dataset never collide.
+  captionMode?: ResolvedCaptionMode;
   // The user's own instruction for the auto-caption VLM (category preset or
   // free-text). Empty / omitted -> the worker's default character prompt.
   captionPrompt?: string;
-  // The structured LoRA-type spec (人物 / 画風 / 物質 / 風景 ＋ 固定/変化させ
+  // The structured LoRA-type spec (人物 / 衣装 / 物体 / 背景 / 画風 ＋ 固定/変化させ
   // たい特徴の日本語). The server rebuilds captionPrompt from this when the
   // browser didn't send a generated one.
   captionSpec?: LoraCaptionSpec;
@@ -105,6 +109,7 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
       trigger_word: params.triggerWord,
       custom_captions: params.customCaptions,
       skip_captioning: params.skipCaptioning,
+      caption_mode: params.captionMode,
       caption_prompt: params.captionPrompt,
       caption_spec: params.captionSpec,
     }),
@@ -183,17 +188,52 @@ export type LoraJobStatus = {
     | null;
 };
 
+// A pollLoraJob failure, tagged so the caller's polling loop can decide
+// whether to keep retrying (indexed backoff) or stop:
+//   isTransient — a 5xx from the API, or fetch itself rejected (offline /
+//     DNS / connection reset / timeout). The job is fine server-side; retry.
+//   isFatal     — a definitive 404: the job row is gone or belongs to another
+//     account. No amount of retrying fixes it — stop + drop the saved pointer.
+export type LoraPollError = Error & {
+  status?: number;
+  isTransient?: boolean;
+  isFatal?: boolean;
+};
+
 export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) throw new Error("ログインが必要です。");
 
-  const res = await fetch(`/api/jobs/${jobId}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    cache: "no-store",
-  });
+  let res: Response;
+  try {
+    res = await fetch(`/api/jobs/${jobId}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+    });
+  } catch (netErr) {
+    // fetch rejected outright — offline, DNS failure, connection reset, the
+    // request timed out. Always transient: the job lives on server-side, we
+    // just couldn't reach it this tick.
+    const err = new Error(
+      netErr instanceof Error ? `通信エラー: ${netErr.message}` : "通信エラー",
+    ) as LoraPollError;
+    err.isTransient = true;
+    throw err;
+  }
+
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || "ジョブ状態の取得に失敗しました。");
+  if (!res.ok) {
+    // Tag the HTTP status so callers can tell a definitive 404 (job gone /
+    // wrong account) from a transient 5xx / network error — the mount-restore
+    // path only drops its saved job pointer on the former, and the polling
+    // loop keeps retrying the latter with exponential backoff.
+    const err = new Error(data?.error || "ジョブ状態の取得に失敗しました。") as LoraPollError;
+    err.status = res.status;
+    if (res.status === 404) err.isFatal = true;
+    else if (res.status >= 500) err.isTransient = true;
+    throw err;
+  }
 
   const meta = (data.metadata ?? {}) as {
     vram_used_gb?: unknown;
@@ -289,16 +329,23 @@ async function freshAccessToken(): Promise<string> {
   return token;
 }
 
-// Hidden-iframe download of a signed, cross-origin URL. `<a download>` is
-// ignored cross-origin and a post-await synthetic click is popup-blocked;
-// Modal's FileResponse sends Content-Disposition: attachment so the iframe
-// navigation just downloads, no page nav.
-function iframeDownload(url: string): void {
-  const iframe = document.createElement("iframe");
-  iframe.style.display = "none";
-  iframe.src = url;
-  document.body.appendChild(iframe);
-  setTimeout(() => iframe.remove(), 180_000);
+// Hands a signed, cross-origin download URL straight to the browser's own
+// download manager.
+//
+// A same-frame top-level navigation is the robust trigger: the Modal endpoint
+// answers with `Content-Disposition: attachment` (+ `Content-Length` +
+// `Accept-Ranges: bytes`), so the browser hands the response to its download
+// manager and the page itself never leaves — and, unlike a programmatic
+// `<a download>.click()`, a navigation is NEVER gated behind *transient user
+// activation*. That gate is exactly what silently swallowed downloads here:
+// `freshAccessToken()` + the signing round-trip can take >5s on a poor
+// connection, by which point the click's activation budget is spent and
+// Chrome/Edge drop the download with only a console warning. `location.assign`
+// has no such budget. The `download` attribute was cross-origin-ignored
+// anyway, so nothing is lost. Range-aware, so a dropped connection resumes.
+function triggerBrowserDownload(url: string): void {
+  if (typeof window === "undefined") return;
+  window.location.assign(url);
 }
 
 function mapDownloadError(status: number, error?: string): Error {
@@ -320,14 +367,40 @@ export async function getLoraCheckpointDownloadUrl(jobId: string, filename: stri
 }
 
 export async function downloadLoraCheckpoint(jobId: string, filename: string): Promise<void> {
-  iframeDownload(await getLoraCheckpointDownloadUrl(jobId, filename));
+  triggerBrowserDownload(await getLoraCheckpointDownloadUrl(jobId, filename));
+}
+
+// Signed URL for the server-side "bundle these exact checkpoints into ONE
+// uncompressed (ZIP_STORED) zip" endpoint. The Next.js route validates every
+// name against generation_jobs.metadata.checkpoints for the owning job, then
+// mints the HMAC token the Modal worker verifies. Used for a 2+ file
+// selection so the browser pulls a single stream instead of racing the
+// same-origin connection cap.
+export async function getLoraSelectionZipUrl(
+  jobId: string,
+  filenames: string[],
+): Promise<string> {
+  const accessToken = await freshAccessToken();
+  const res = await fetch(
+    `/api/studio/lora/checkpoint/selection?jobId=${encodeURIComponent(jobId)}&files=${encodeURIComponent(
+      filenames.join(","),
+    )}`,
+    { headers: { Authorization: `Bearer ${accessToken}` }, cache: "no-store" },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || typeof data?.downloadUrl !== "string") throw mapDownloadError(res.status, data?.error);
+  return data.downloadUrl as string;
+}
+
+export async function downloadLoraSelectionZip(jobId: string, filenames: string[]): Promise<void> {
+  triggerBrowserDownload(await getLoraSelectionZipUrl(jobId, filenames));
 }
 
 // One-shot smart artefact download. The API probes the Volume server-side
 // (recursive search across loras/<user>/<job_id|call_id>/, salvaged_ names,
 // on-demand zip) and returns a signed streaming URL only when the file
 // genuinely exists — a real miss is a 404 here, surfaced as a toast, not a
-// silent iframe failure.
+// silent failed download.
 export async function downloadLoraJobBundle(
   jobId: string,
   want: "final" | "bundle" | "dataset" = "bundle",
@@ -342,12 +415,12 @@ export async function downloadLoraJobBundle(
     if (res.status === 404) throw new Error(data?.error || "ダウンロード対象が見つかりません。");
     throw mapDownloadError(res.status, data?.error);
   }
-  iframeDownload(data.downloadUrl as string);
+  triggerBrowserDownload(data.downloadUrl as string);
 }
 
 // Lightweight "does this artefact actually exist?" check. Hits the same
 // smart-resolve endpoint as downloadLoraJobBundle (recursive Volume probe,
-// salvaged_ names, on-demand zip candidates) but NEVER fires the iframe —
+// salvaged_ names, on-demand zip candidates) but NEVER starts a download —
 // it just reports whether the file is there. Used to gate the 完成版 /
 // 全チェックポイント download buttons on a failed job so we don't show a
 // download for something a Step-0 init crash never produced.

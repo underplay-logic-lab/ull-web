@@ -248,6 +248,90 @@ def _is_valid_repo_id(repo_id: str) -> bool:
     return bool(repo_id) and bool(_REPO_ID_RE.match(repo_id)) and ".." not in repo_id
 
 
+# ---------------------------------------------------------------------------
+# PyTorch 最適化標準（CLAUDE.md §1）: torch.compile を ComfyUI ワークフローへ
+# 安全に組み込む。対象は呼び出し側が渡す任意の API-format グラフなので、少しでも
+# 曖昧なら一切触らず原型を返す（fail-open）。WAN_TORCH_COMPILE=0 で完全無効化。
+# ---------------------------------------------------------------------------
+# ComfyUI 標準 "MODEL" 型を出力する diffusion ローダーのみ対象。KJNodes の
+# WanVideoModelLoader（独自 WANVIDEOMODEL 型）は core TorchCompileModel と型が
+# 合わず /prompt 検証で弾かれるため、あえて対象外。
+_WAN_MODEL_LOADER_CLASSES = frozenset(
+    {"UNETLoader", "UnetLoaderGGUF", "CheckpointLoaderSimple", "CheckpointLoader"}
+)
+_WAN_COMPILE_CLASSES = frozenset(
+    {
+        "TorchCompileModel",
+        "TorchCompileModelAdvanced",
+        "TorchCompileModelWanVideo",
+        "TorchCompileModelWanVideoV2",
+    }
+)
+
+
+def _comfy_node_available(class_type: str) -> bool:
+    """その class_type が起動中の ComfyUI に登録されているか。未登録ノードを
+    workflow に足すと /prompt 検証でグラフ全体が落ちるので、挿入前に必ず確認する。"""
+    try:
+        import requests
+
+        r = requests.get(f"http://127.0.0.1:8188/object_info/{class_type}", timeout=5)
+        return bool(r.ok and isinstance(r.json(), dict) and class_type in r.json())
+    except Exception:
+        return False
+
+
+def _inject_torch_compile(workflow):
+    """API-format ワークフローに core TorchCompileModel を 1 つ挿入し、DiT/UNet の
+    サンプリングを Inductor でコンパイルする。次のいずれかに当たれば無改変で返す:
+    WAN_TORCH_COMPILE=0 / workflow が dict でない / 既に compile 系ノードがある /
+    MODEL を出すローダーが一意でない / そのローダーを model 入力に使うノードが無い /
+    実行中 ComfyUI に TorchCompileModel が無い / 例外。"""
+    if os.environ.get("WAN_TORCH_COMPILE", "1").strip().lower() in ("0", "false", "no"):
+        return workflow
+    try:
+        if not isinstance(workflow, dict):
+            return workflow
+        nodes = {k: v for k, v in workflow.items() if isinstance(v, dict)}
+        if any(v.get("class_type") in _WAN_COMPILE_CLASSES for v in nodes.values()):
+            return workflow
+        loaders = [
+            k for k, v in nodes.items() if v.get("class_type") in _WAN_MODEL_LOADER_CLASSES
+        ]
+        if len(loaders) != 1:
+            return workflow
+        loader_id = loaders[0]
+        consumers = []
+        for k, v in nodes.items():
+            m = v.get("inputs", {}).get("model")
+            if isinstance(m, list) and len(m) == 2 and str(m[0]) == str(loader_id):
+                consumers.append((k, m[1]))
+        if not consumers:
+            return workflow
+        if not _comfy_node_available("TorchCompileModel"):
+            print("[wan] torch.compile: TorchCompileModel node unavailable, skipping", flush=True)
+            return workflow
+        new_id = "torch_compile_std"
+        while new_id in workflow:
+            new_id += "_x"
+        workflow[new_id] = {
+            "class_type": "TorchCompileModel",
+            "inputs": {"model": [str(loader_id), consumers[0][1]], "backend": "inductor"},
+            "_meta": {"title": "torch.compile (CLAUDE.md §1)"},
+        }
+        for k, _idx in consumers:
+            workflow[k]["inputs"]["model"] = [new_id, 0]
+        print(
+            f"[wan] torch.compile injected: loader {loader_id} -> {new_id} "
+            f"-> {[c[0] for c in consumers]}",
+            flush=True,
+        )
+        return workflow
+    except Exception as exc:  # noqa: BLE001 — fail-open, never block a generation
+        print(f"[wan] torch.compile injection skipped: {exc}", flush=True)
+        return workflow
+
+
 def _sanitize_relative_dir(raw: str) -> str | None:
     """
     Normalizes a MODELS_DIR-relative directory path for the repo downloader
@@ -658,6 +742,9 @@ class _WanAnimateBase:
         import requests
 
         self._write_inputs(files)
+
+        # PyTorch 最適化標準（CLAUDE.md §1）: fail-open。詳細は _inject_torch_compile。
+        workflow = _inject_torch_compile(workflow)
 
         client_id = str(uuid.uuid4())
         output_dir = os.path.join(COMFY_DIR, "output")

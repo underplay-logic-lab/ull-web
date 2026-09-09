@@ -11,9 +11,16 @@
 // Used by BOTH the LoRA Studio UI (live "消費クレジット" label) and
 // /api/studio/lora/train (the authoritative debit), fed the same parsed
 // ai-toolkit config object so the two can never disagree.
+//
+// The base rate and the four multipliers are admin-editable knobs
+// (pricing_knobs table). Callers pass the live values via `opts.knobs`; when
+// omitted the hardcoded DEFAULT_KNOBS are used, so a DB outage never breaks
+// pricing.
 
-// Per-step base rate, in credits.
-export const LORA_CREDIT_PER_STEP = 0.1;
+import { DEFAULT_KNOBS, loraCreditWorstCase, type PricingKnobs } from "@/lib/pricing/knobDefaults";
+
+// Per-step base rate, in credits (DEFAULT_KNOBS.lora_per_step).
+export const LORA_CREDIT_PER_STEP = DEFAULT_KNOBS.lora_per_step;
 
 // Model archs whose per-step compute is materially higher — the video DiT
 // backbones. Everything else (SDXL / FLUX / SD3 / SD1.5 …) is 1.0x.
@@ -33,8 +40,9 @@ export const HEAVY_LORA_ARCHES: ReadonlySet<string> = new Set([
 
 // Absolute ceiling — charged server-side when a raw YAML can't be parsed at
 // all (the UI already blocks submit in that case, so this is pure defence).
-// = 0.1 * 3.0 * 2.0 * 2.0 * 1.2 * 5000
-export const LORA_CREDIT_WORST_CASE = 7200;
+// Derived from the default knobs (0.1 * 3.0 * 2.0 * 2.0 * 1.2 * 5000 = 7200)
+// so it tracks any change to the seed coefficients.
+export const LORA_CREDIT_WORST_CASE = loraCreditWorstCase();
 
 export type LoraPriceBreakdown = {
   steps: number;
@@ -65,8 +73,14 @@ function pickProcess(yamlObj: unknown): Record<string, unknown> {
 
 export function loraPriceBreakdown(
   yamlObj: unknown,
-  opts: { archFallback?: string; modelMultOverride?: number } = {},
+  opts: {
+    archFallback?: string;
+    modelMultOverride?: number;
+    /** Live admin-edited knobs; falls back to DEFAULT_KNOBS when omitted. */
+    knobs?: PricingKnobs;
+  } = {},
 ): LoraPriceBreakdown {
+  const knobs = opts.knobs ?? DEFAULT_KNOBS;
   const proc = pickProcess(yamlObj);
   const model = asObject(proc.model);
   const train = asObject(proc.train);
@@ -86,7 +100,11 @@ export function loraPriceBreakdown(
   // the 3x-priced 14B.
   const arch = (String(model.arch ?? "").trim() || (opts.archFallback ?? "")).toLowerCase();
   const modelMult =
-    typeof opts.modelMultOverride === "number" ? opts.modelMultOverride : HEAVY_LORA_ARCHES.has(arch) ? 3.0 : 1.0;
+    typeof opts.modelMultOverride === "number"
+      ? opts.modelMultOverride
+      : HEAVY_LORA_ARCHES.has(arch)
+        ? knobs.lora_mult_model_heavy
+        : 1.0;
 
   // resolution coefficient — the largest edge requested across every dataset
   // (resolution is usually a list like [512, 768, 1024], sometimes a scalar).
@@ -98,26 +116,36 @@ export function loraPriceBreakdown(
       if (n !== null && n > maxResolution) maxResolution = n;
     }
   }
-  const resolutionMult = maxResolution >= 1280 ? 2.0 : maxResolution >= 1024 ? 1.5 : 1.0;
+  const resolutionMult =
+    maxResolution >= 1280
+      ? knobs.lora_mult_res_1280
+      : maxResolution >= 1024
+        ? knobs.lora_mult_res_1024
+        : 1.0;
 
   // batch coefficient — effective batch = batch_size * grad-accum
   const effectiveBatch =
     Math.max(1, asNumber(train.batch_size) ?? 1) *
     Math.max(1, asNumber(train.gradient_accumulation_steps) ?? 1);
-  const batchMult = effectiveBatch >= 4 ? 2.0 : effectiveBatch >= 2 ? 1.5 : 1.0;
+  const batchMult =
+    effectiveBatch >= 4
+      ? knobs.lora_mult_batch_4
+      : effectiveBatch >= 2
+        ? knobs.lora_mult_batch_2
+        : 1.0;
 
   // rank coefficient — network.linear (LoRA dim)
   const linearRank = asNumber(network.linear) ?? 0;
-  const rankMult = linearRank >= 64 ? 1.2 : 1.0;
+  const rankMult = linearRank >= 64 ? knobs.lora_mult_rank_64 : 1.0;
 
   // Round away IEEE-754 noise (0.1 * 3 * 2000 === 600.0000000000001) before
   // the ceil so a clean 600 doesn't become 601.
-  const raw = LORA_CREDIT_PER_STEP * modelMult * resolutionMult * batchMult * rankMult * steps;
+  const raw = knobs.lora_per_step * modelMult * resolutionMult * batchMult * rankMult * steps;
   const credits = Math.ceil(Math.round(raw * 1e6) / 1e6);
 
   return {
     steps,
-    perStep: LORA_CREDIT_PER_STEP,
+    perStep: knobs.lora_per_step,
     modelMult,
     resolutionMult,
     batchMult,
@@ -133,7 +161,7 @@ export function loraPriceBreakdown(
 // The one number both the UI and the debit use.
 export function calculateLoraCredits(
   yamlObj: unknown,
-  opts?: { archFallback?: string; modelMultOverride?: number },
+  opts?: { archFallback?: string; modelMultOverride?: number; knobs?: PricingKnobs },
 ): number {
   return loraPriceBreakdown(yamlObj, opts).credits;
 }
