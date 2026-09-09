@@ -788,6 +788,12 @@ export function MultiAngleStudioTab() {
               : "Multi-Angle Studio の利用にはログインが必要です。初回登録で10クレジットが付与されます。"}
           </p>
 
+          <p className="-mt-2 flex items-start gap-2 text-xs leading-relaxed text-muted">
+            <ImagePlus size={14} className="mt-0.5 shrink-0 text-neon-violet" />
+            出力解像度は約100万画素（アップロード画像のアスペクト比を維持し、およそ1024×1024相当）です。
+            サイズ・形式・向き（HEIC / 透過PNG / スマホの縦写真など）は内部で自動補正されるため、そのままアップロードできます。
+          </p>
+
           {phase === "error" && errorMessage && (
             <p className="-mt-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
               {errorMessage}

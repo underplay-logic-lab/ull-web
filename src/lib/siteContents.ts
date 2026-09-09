@@ -42,7 +42,11 @@ export type PageSectionConfig = { id: string; visible: boolean };
 
 export const DEFAULT_PAGE_SECTIONS: PageSectionConfig[] = [
   { id: "hero", visible: true },
+  { id: "comparison", visible: true },
+  { id: "showcase", visible: true },
   { id: "studio", visible: true },
+  { id: "devicezerowaste", visible: true },
+  { id: "trustmedia", visible: true },
   { id: "pricing", visible: true },
   { id: "contact", visible: true },
   { id: "articles", visible: false },

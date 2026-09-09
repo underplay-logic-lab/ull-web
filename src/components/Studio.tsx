@@ -3,8 +3,6 @@
 import { useState } from "react";
 import { Wrench } from "lucide-react";
 import { CreditsBadge } from "@/components/CreditsBadge";
-import { WanAnimateTab } from "@/components/studio/WanAnimateTab";
-import { CinematicVideoTab } from "@/components/studio/CinematicVideoTab";
 import { CustomWorkflowsTab } from "@/components/studio/CustomWorkflowsTab";
 import { LoraStudioTab } from "@/components/studio/LoraStudioTab";
 import { MultiAngleStudioTab } from "@/components/studio/MultiAngleStudioTab";
@@ -12,11 +10,11 @@ import { GpuWarmBadge } from "@/components/studio/GpuWarmBadge";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { EditableText } from "@/components/EditableText";
 
-type StudioTab = "wan-animate" | "cinematic" | "image" | "custom" | "lora" | "angle";
+// 2026-09-09: Wan Animate 2 / Cinematic Video タブは廃止。汎用の動画・特殊要望は
+// すべて「特化ワークフロー」で対応する方針（管理者がワークフローを登録）。
+type StudioTab = "image" | "custom" | "lora" | "angle";
 
 const STUDIO_TABS: { id: StudioTab; label: string }[] = [
-  { id: "wan-animate", label: "Wan Animate 2" },
-  { id: "cinematic", label: "Cinematic Video" },
   // "image" (画像生成) is temporarily hidden from navigation — the engine
   // behind it is mid-swap and ImageGenMaintenancePlaceholder is the only
   // thing it currently renders. Re-add here once the new engine ships.
@@ -39,7 +37,7 @@ function ImageGenMaintenancePlaceholder() {
 
 export function Studio() {
   const { user } = useSupabaseUser();
-  const [activeTab, setActiveTab] = useState<StudioTab>("wan-animate");
+  const [activeTab, setActiveTab] = useState<StudioTab>("custom");
 
   return (
     <section id="studio" data-source-file="src/components/Studio.tsx" className="relative py-24 sm:py-32">
@@ -60,17 +58,7 @@ export function Studio() {
             className="text-3xl font-bold tracking-tight sm:text-4xl"
           />
           <p className="mx-auto mt-4 max-w-xl text-muted">
-            {activeTab === "wan-animate" ? (
-              <EditableText
-                siteKey="studio_desc_wan_animate"
-                fallback="キャラクター画像とモーションを指定するだけ。Wan Animate 2 が高品質なアニメーション動画を生成します。"
-              />
-            ) : activeTab === "cinematic" ? (
-              <EditableText
-                siteKey="studio_desc_cinematic"
-                fallback="画像を1枚アップロードするだけ。独自のLogic Engineが音声付きシネマティック動画を自動生成します。"
-              />
-            ) : activeTab === "custom" ? (
+            {activeTab === "custom" ? (
               <EditableText
                 siteKey="studio_desc_custom"
                 fallback="管理者が登録した専用ワークフローを選択し、必要な入力を指定するだけで実行できます。"
@@ -118,11 +106,7 @@ export function Studio() {
           </div>
         </div>
 
-        {activeTab === "wan-animate" ? (
-          <WanAnimateTab />
-        ) : activeTab === "cinematic" ? (
-          <CinematicVideoTab />
-        ) : activeTab === "custom" ? (
+        {activeTab === "custom" ? (
           <CustomWorkflowsTab />
         ) : activeTab === "angle" ? (
           <MultiAngleStudioTab />
