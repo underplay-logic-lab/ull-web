@@ -15,7 +15,9 @@ create table if not exists public.angle_jobs (
   user_id uuid not null references auth.users(id) on delete cascade,
   status text not null default 'pending'
     check (status in ('pending', 'processing', 'completed', 'failed')),
-  mode text not null default 'turbo' check (mode in ('turbo', 'pro')),
+  -- 2026-09-09: turbo/pro collapsed to a single 'standard' mode. 'turbo'/'pro'
+  -- kept in the CHECK so any pre-existing rows stay valid.
+  mode text not null default 'standard' check (mode in ('standard', 'turbo', 'pro')),
   total_angles integer not null default 0,
   completed_angles integer not null default 0,
   -- Ordered array of public Storage URLs (angle-results bucket), generation
@@ -52,6 +54,15 @@ create trigger angle_jobs_touch_updated_at
   for each row execute function public.touch_angle_jobs_updated_at();
 
 alter table public.angle_jobs enable row level security;
+
+-- Idempotent fixes if the table was created by an earlier version of this
+-- migration (mode 'turbo'/'pro' only, no metadata column).
+alter table public.angle_jobs alter column mode set default 'standard';
+alter table public.angle_jobs drop constraint if exists angle_jobs_mode_check;
+alter table public.angle_jobs
+  add constraint angle_jobs_mode_check check (mode in ('standard', 'turbo', 'pro'));
+alter table public.angle_jobs
+  add column if not exists metadata jsonb not null default '{}'::jsonb;
 
 -- Owners poll their own job.
 drop policy if exists "Users can read their own angle jobs" on public.angle_jobs;
