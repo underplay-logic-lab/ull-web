@@ -61,6 +61,13 @@ LOGS_SUBDIR = "_logs"
 COMFYUI_LOG_FILENAME = "comfyui.log"
 GPU_TIER = "blackwell"
 
+# 入力参照画像の正規化（ull_image_prep）。形式デコード / EXIF 回転 / ICC→sRGB /
+# 透過→白合成 / 16bit→8bit の是正と過大サイズの頭打ちを担う。最終解像度は
+# ワークフロー側のノード（ImageScaleToTotalPixels 等）が確定させる。
+INPUT_IMG_MAX_EDGE = int(os.environ.get("ULL_INPUT_IMG_MAX_EDGE", "2048"))
+INPUT_IMG_MIN_EDGE = int(os.environ.get("ULL_INPUT_IMG_MIN_EDGE", "512"))
+INPUT_IMG_MULTIPLE = int(os.environ.get("ULL_INPUT_IMG_MULTIPLE", "16"))
+
 # GPU passed to Modal as a plain string, not modal.gpu.B300() — the modal.gpu
 # module was removed from the SDK well before this version (modal==1.5.4
 # here; confirmed via `python -c "import modal.gpu"` -> ModuleNotFoundError).
@@ -247,6 +254,10 @@ image = (
         f" {COMFY_DIR}/custom_nodes/ComfyUI-Manager",
         f"pip install -r {COMFY_DIR}/custom_nodes/ComfyUI-Manager/requirements.txt",
     )
+    # 全ワーカー共通の入力画像正規化レイヤー（_write_inputs が参照画像に必ず適用）。
+    # HEIC/AVIF プラグインつき。チェーン末尾に置き既存の重いビルド層を触らない。
+    .pip_install("pillow-heif", "pillow-avif-plugin")
+    .add_local_python_source("ull_image_prep")
 )
 
 # Same five Wan 2.1 / Wan Animate 2 weights scripts/modal_wan_animate.py
@@ -483,6 +494,71 @@ def ensure_models():
 
     vol.commit()
     print("[ensure_models] volume committed.")
+
+
+# ---------------------------------------------------------------------------
+# CPU probe: 入力正規化レイヤー（ull_image_prep）の import 連鎖 + 実処理の検証。
+# CLAUDE.md §1「CPU で import と資産準備がグリーン → はじめて GPU 実行」。
+#   PYTHONIOENCODING=utf-8 PYTHONUTF8=1 modal run modal_wan_animate_blackwell.py::probe_image_prep
+# ---------------------------------------------------------------------------
+@app.function(image=image, cpu=2, memory=4096, timeout=300)
+def probe_image_prep() -> dict:
+    import io as _io
+
+    from PIL import Image
+
+    from ull_image_prep import looks_like_image, normalize_to_png_bytes
+
+    report: dict = {"cases": {}, "plugins": {}, "looks_like_image": {}}
+
+    for mod in ("pillow_heif", "pillow_avif"):
+        try:
+            __import__(mod)
+            report["plugins"][mod] = "ok"
+        except Exception as exc:  # noqa: BLE001
+            report["plugins"][mod] = f"MISSING: {exc!r}"
+
+    for fn, want in (("a.heic", True), ("b.JPG", True), ("c.webp", True), ("d.mp4", False), ("e.wav", False)):
+        report["looks_like_image"][fn] = looks_like_image(fn) == want
+
+    def _png(img):
+        b = _io.BytesIO()
+        img.save(b, format="PNG")
+        return b.getvalue()
+
+    def _run(name, raw):
+        try:
+            out = normalize_to_png_bytes(
+                raw, max_edge=INPUT_IMG_MAX_EDGE, min_edge=INPUT_IMG_MIN_EDGE, multiple=INPUT_IMG_MULTIPLE
+            )
+            im = Image.open(_io.BytesIO(out))
+            report["cases"][name] = {"size": list(im.size), "mode": im.mode}
+        except Exception as exc:  # noqa: BLE001
+            report["cases"][name] = f"FAIL: {exc!r}"
+
+    _run("rgb", _png(Image.new("RGB", (1920, 1080), (10, 20, 30))))
+    _run("rgba_transparent", _png(Image.new("RGBA", (900, 900), (255, 0, 0, 0))))
+    _run("grayscale", _png(Image.new("L", (700, 500), 120)))
+    cmyk = _io.BytesIO()
+    Image.new("CMYK", (800, 600)).save(cmyk, format="JPEG")
+    _run("cmyk_jpeg", cmyk.getvalue())
+    _run("tiny_upscale", _png(Image.new("RGB", (100, 80), (0, 0, 0))))
+    _run("huge_downscale", _png(Image.new("RGB", (6000, 4000), (0, 0, 0))))
+    try:
+        import pillow_heif  # type: ignore
+
+        heif = pillow_heif.from_pillow(Image.new("RGB", (1200, 800), (40, 50, 60)))
+        hb = _io.BytesIO()
+        heif.save(hb, format="HEIF")
+        _run("heic", hb.getvalue())
+    except Exception as exc:  # noqa: BLE001
+        report["cases"]["heic"] = f"SKIP: {exc!r}"
+
+    report["ok"] = all(
+        (not isinstance(v, str)) or (not v.startswith("FAIL")) for v in report["cases"].values()
+    ) and all(report["looks_like_image"].values())
+    print("[probe_image_prep]", report, flush=True)
+    return report
 
 
 OUTPUTS_ALL_RETENTION_DAYS = 7
@@ -973,20 +1049,49 @@ class WanAnimateBlackwell:
         self._comfy_flags = normalized
 
     def _write_inputs(self, files):
-        """files: list of (filename, bytes) to place under ComfyUI's input/ dir."""
+        """files: list of (filename, bytes) to place under ComfyUI's input/ dir.
+
+        画像ファイルは書き出し前に必ず共通の入力正規化レイヤー
+        （ull_image_prep）を通す。デコード不能／壊れた画像は fail-open で生
+        バイトのまま書き、ComfyUI 側のエラーに委ねる。動画・音声など非画像は
+        そのまま書く。
+        """
+        from ull_image_prep import ImagePrepError, looks_like_image, normalize_to_png_bytes
+
         input_dir = os.path.join(COMFY_DIR, "input")
         os.makedirs(input_dir, exist_ok=True)
         for filename, data in files:
+            payload = data
+            if looks_like_image(filename):
+                try:
+                    payload = normalize_to_png_bytes(
+                        data,
+                        max_edge=INPUT_IMG_MAX_EDGE,
+                        min_edge=INPUT_IMG_MIN_EDGE,
+                        multiple=INPUT_IMG_MULTIPLE,
+                        bg=(255, 255, 255),
+                    )
+                    print(
+                        f"[inputs] normalized {filename}: {len(data)} -> {len(payload)} bytes",
+                        flush=True,
+                    )
+                except ImagePrepError as exc:
+                    print(f"[inputs] normalize skipped for {filename}: {exc!r}", flush=True)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[inputs] normalize error for {filename} (writing raw): {exc!r}", flush=True)
             with open(os.path.join(input_dir, filename), "wb") as f:
-                f.write(data)
+                f.write(payload)
 
-    def _run_workflow(self, workflow, files, output_node_id=None):
+    def _run_workflow(self, workflow, files, output_node_id=None, skip_torch_compile=False):
         """
         files: list of (filename, bytes) referenced by the workflow's loader
         nodes. output_node_id: if given, that node's output in ComfyUI's
         /history response is read first — falls back to a generic scan
         (across all nodes) if it's unset, absent, or doesn't resolve to an
         actual file, so an admin-mistyped id never breaks generation.
+        skip_torch_compile: caller opts this job out of the _inject_torch_compile
+        pass — for graphs where CUDA graphs / model offload conflict with it
+        (CLAUDE.md §1: 本番反映前に実生成での検証を必須).
         """
         import uuid
 
@@ -995,7 +1100,8 @@ class WanAnimateBlackwell:
         self._write_inputs(files)
 
         # PyTorch 最適化標準（CLAUDE.md §1）: fail-open。詳細は _inject_torch_compile。
-        workflow = _inject_torch_compile(workflow)
+        if not skip_torch_compile:
+            workflow = _inject_torch_compile(workflow)
 
         client_id = str(uuid.uuid4())
         output_dir = os.path.join(COMFY_DIR, "output")
@@ -1175,6 +1281,7 @@ class WanAnimateBlackwell:
         user_id: str = None,
         credits_cost: int = 0,
         active_job_id: str = None,
+        skip_torch_compile: bool = False,
     ) -> dict:
         """
         Generic counterpart to generate_video for admin-authored Custom
@@ -1233,7 +1340,12 @@ class WanAnimateBlackwell:
             self._ensure_comfy_running(exec_config)
             workflow = json.loads(workflow_json)
             files = [(name, base64.b64decode(b64)) for name, b64 in files_b64.items()]
-            result_bytes, filename = self._run_workflow(workflow, files, output_node_id=output_node_id or None)
+            result_bytes, filename = self._run_workflow(
+                workflow,
+                files,
+                output_node_id=output_node_id or None,
+                skip_torch_compile=skip_torch_compile,
+            )
         except Exception as exc:
             if _vram_stop is not None:
                 _vram_stop.set()
@@ -1331,6 +1443,7 @@ def custom_workflow_async(item: dict, request: fastapi.Request):
         item.get("user_id"),
         item.get("credits_cost", 0),
         item.get("active_job_id"),
+        item.get("skip_torch_compile", False),
     )
     return {"ok": True, "job_id": job_id, "call_id": call.object_id}
 

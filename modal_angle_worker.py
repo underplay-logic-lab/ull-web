@@ -192,6 +192,8 @@ ANGLE_CFG_FLOOR = _env_float("ANGLE_CFG_FLOOR", 3.8)
 ANGLE_CFG_CEIL = _env_float("ANGLE_CFG_CEIL", 4.4)
 ANGLE_ALIGN_MULTIPLE = _env_int("ANGLE_ALIGN_MULTIPLE", 64)
 ANGLE_ALIGN_MAX_EDGE = _env_int("ANGLE_ALIGN_MAX_EDGE", 1536)
+# 極小画像（サムネ等）を上げられても破綻しないよう短辺の下限を設ける。
+ANGLE_ALIGN_MIN_EDGE = _env_int("ANGLE_ALIGN_MIN_EDGE", 768)
 
 
 def _clamp_steps(v) -> int:
@@ -221,25 +223,9 @@ def _clamp_lora_scale(v) -> float:
 
 
 def _align_image(img):
-    """入力 PIL を『64 の倍数』の辺長へ丸める（RoPE 位置歪み対策）。
-    アスペクト比は近傍丸めでおおむね維持し、長辺は ANGLE_ALIGN_MAX_EDGE で
-    頭打ちにする。ANGLE_ALIGN_MULTIPLE=0/1 で無効化。"""
-    m = ANGLE_ALIGN_MULTIPLE
-    if not m or m <= 1:
-        return img
-    from PIL import Image
-
-    w, h = img.size
-    if w <= 0 or h <= 0:
-        return img
-    longest = max(w, h)
-    scale = min(1.0, ANGLE_ALIGN_MAX_EDGE / longest) if ANGLE_ALIGN_MAX_EDGE > 0 else 1.0
-    tw, th = w * scale, h * scale
-    nw = max(m, int(round(tw / m)) * m)
-    nh = max(m, int(round(th / m)) * m)
-    if (nw, nh) != (w, h):
-        img = img.resize((nw, nh), Image.LANCZOS)
-        print(f"[angle] ref image aligned {w}x{h} -> {nw}x{nh} (multiple of {m})", flush=True)
+    """後方互換シム。辺長の丸め・長辺クランプ・拡大は _load_ref_image() 内の
+    ull_image_prep.normalize_input_image() が済ませているため、ここでは何もしない。
+    （呼び出し側の差分を最小化するために関数だけ残す。）"""
     return img
 
 
@@ -404,6 +390,12 @@ image = (
             "TORCHINDUCTOR_CACHE_DIR": f"{MODELS_DIR}/training/inductor_cache",
         }
     )
+    # 入力正規化レイヤー（ull_image_prep）が HEIC/AVIF を読むための任意プラグイン。
+    # iPhone の HEIC がそのまま上がってくるため実質必須。チェーン末尾に置き、
+    # flash-attn のソースビルド層を無効化しないようにする（薄い追加レイヤーで済む）。
+    .pip_install("pillow-heif", "pillow-avif-plugin")
+    # 全ワーカー共通の入力画像正規化レイヤー（_load_ref_image が使う）。
+    .add_local_python_source("ull_image_prep")
 )
 
 # CPU プリキャッシュ / ローカルディスパッチ用の軽量 image。
@@ -444,8 +436,16 @@ _ALLOWED_IMAGE_HOSTS = ("huggingface.co", "supabase.co", "supabase.in", "amazona
 
 
 def _load_ref_image(spec: str):
-    """参照画像を PIL.Image（RGB）で返す。Base64（data URI 可）または https URL。"""
-    from PIL import Image
+    """参照画像を正規化済み PIL.Image（RGB, 8bit）で返す。
+    Base64（data URI 可）または https URL。
+
+    共通の入力正規化レイヤー（ull_image_prep）を必ず通す:
+      - HEIC/AVIF を含む任意形式のデコード
+      - EXIF 回転の焼き込み / ICC→sRGB / 透過→白合成 / 16bit→8bit
+      - 長辺 ANGLE_ALIGN_MAX_EDGE クランプ / 短辺 ANGLE_ALIGN_MIN_EDGE 拡大 /
+        辺長を ANGLE_ALIGN_MULTIPLE の倍数へスナップ（RoPE 位置歪み対策）
+    """
+    from ull_image_prep import ImagePrepError, normalize_input_image
 
     if not spec or not isinstance(spec, str):
         raise fastapi.HTTPException(status_code=400, detail="image is required")
@@ -469,8 +469,14 @@ def _load_ref_image(spec: str):
             raise fastapi.HTTPException(status_code=400, detail=f"image is not valid base64: {exc}")
 
     try:
-        return Image.open(io.BytesIO(raw)).convert("RGB")
-    except Exception as exc:  # noqa: BLE001
+        return normalize_input_image(
+            raw,
+            max_edge=ANGLE_ALIGN_MAX_EDGE,
+            min_edge=ANGLE_ALIGN_MIN_EDGE,
+            multiple=ANGLE_ALIGN_MULTIPLE if ANGLE_ALIGN_MULTIPLE and ANGLE_ALIGN_MULTIPLE > 1 else 1,
+            bg=(255, 255, 255),
+        )
+    except ImagePrepError as exc:
         raise fastapi.HTTPException(status_code=400, detail=f"could not decode image: {exc}")
 
 
@@ -611,6 +617,91 @@ def _upload_angle_image(user_id: str, job_id: str, index: int, png_bytes: bytes)
     except Exception as exc:  # noqa: BLE001
         print(f"[angle-job] image upload failed ({obj_path}): {exc}", flush=True)
         return None
+
+
+# ---------------------------------------------------------------------------
+# CPU probe: 入力正規化レイヤー（ull_image_prep）の import 連鎖と実処理の検証。
+# CLAUDE.md §1「CPU で import と資産準備がグリーン → はじめて GPU 実行」。
+#   PYTHONIOENCODING=utf-8 PYTHONUTF8=1 modal run modal_angle_worker.py::probe_image_prep
+# ---------------------------------------------------------------------------
+@app.function(image=image, cpu=2, memory=4096, timeout=300, scaledown_window=2)
+def probe_image_prep() -> dict:
+    import io as _io
+
+    from PIL import Image
+
+    from ull_image_prep import IMAGE_EXTS, normalize_input_image  # noqa: F401
+
+    report: dict = {"cases": {}, "plugins": {}}
+
+    try:
+        import pillow_heif  # type: ignore
+
+        report["plugins"]["pillow_heif"] = getattr(pillow_heif, "__version__", "ok")
+    except Exception as exc:  # noqa: BLE001
+        report["plugins"]["pillow_heif"] = f"MISSING: {exc!r}"
+    try:
+        import pillow_avif  # type: ignore  # noqa: F401
+
+        report["plugins"]["pillow_avif"] = "ok"
+    except Exception as exc:  # noqa: BLE001
+        report["plugins"]["pillow_avif"] = f"MISSING: {exc!r}"
+
+    def _png(img: "Image.Image") -> bytes:
+        b = _io.BytesIO()
+        img.save(b, format="PNG")
+        return b.getvalue()
+
+    def _run(name: str, raw: bytes, **kw):
+        try:
+            out = normalize_input_image(raw, **kw)
+            assert out.mode == "RGB", f"mode={out.mode}"
+            report["cases"][name] = {"size": list(out.size), "mode": out.mode}
+        except Exception as exc:  # noqa: BLE001
+            report["cases"][name] = f"FAIL: {exc!r}"
+
+    # 各種カラーモード
+    _run("rgb_png", _png(Image.new("RGB", (900, 600), (10, 120, 200))), max_edge=1536, min_edge=768, multiple=64)
+    rgba = Image.new("RGBA", (800, 800), (255, 0, 0, 0))  # 完全透過 → 白背景になるはず
+    _run("rgba_transparent", _png(rgba), max_edge=1536, min_edge=768, multiple=64)
+    _run("grayscale_L", _png(Image.new("L", (700, 500), 128)), max_edge=1536, min_edge=768, multiple=64)
+    cmyk = _io.BytesIO()
+    Image.new("CMYK", (640, 480)).save(cmyk, format="JPEG")
+    _run("cmyk_jpeg", cmyk.getvalue(), max_edge=1536, min_edge=768, multiple=64)
+    pal = Image.new("P", (500, 500))
+    pal.info["transparency"] = 0
+    _run("palette_transparency", _png(pal), max_edge=1536, min_edge=768, multiple=64)
+    i16 = _io.BytesIO()
+    Image.new("I;16", (600, 400), 30000).save(i16, format="PNG")
+    _run("i16_png", i16.getvalue(), max_edge=1536, min_edge=768, multiple=64)
+
+    # サイズ制約
+    _run("tiny_upscale", _png(Image.new("RGB", (120, 90), (0, 0, 0))), max_edge=1536, min_edge=768, multiple=64)
+    _run("huge_downscale", _png(Image.new("RGB", (5000, 3000), (0, 0, 0))), max_edge=1536, min_edge=768, multiple=64)
+    _run("multiple_snap", _png(Image.new("RGB", (1001, 777), (0, 0, 0))), max_edge=1536, min_edge=0, multiple=64)
+
+    # EXIF 回転（orientation=6 = 時計回り90°）
+    exif_img = Image.new("RGB", (400, 200), (0, 200, 0))
+    exif = exif_img.getexif()
+    exif[274] = 6
+    eb = _io.BytesIO()
+    exif_img.save(eb, format="JPEG", exif=exif)
+    _run("exif_rotate", eb.getvalue(), max_edge=1536, min_edge=0, multiple=16)
+
+    # HEIC（プラグインがあれば）
+    try:
+        import pillow_heif  # type: ignore
+
+        heif = pillow_heif.from_pillow(Image.new("RGB", (800, 600), (50, 60, 70)))
+        hb = _io.BytesIO()
+        heif.save(hb, format="HEIF")
+        _run("heic", hb.getvalue(), max_edge=1536, min_edge=768, multiple=64)
+    except Exception as exc:  # noqa: BLE001
+        report["cases"]["heic"] = f"SKIP: {exc!r}"
+
+    report["ok"] = all(not isinstance(v, str) or not v.startswith("FAIL") for v in report["cases"].values())
+    print("[probe_image_prep]", report, flush=True)
+    return report
 
 
 # ---------------------------------------------------------------------------
