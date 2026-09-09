@@ -7,6 +7,12 @@ Qwen-Image-Edit-2511 の BF16 フル精度パイプライン（`fal/Qwen-Image-E
 2511-Multiple-Angles-LoRA` を融合）で各アングルの編集画像を生成して返す。
 「1参照画像 → N アングル」を 1 リクエストで捌く。
 
+Multi-Reference（Pro）: `images` に 1〜4 枚（メイン参照＋死角補完用のサブ参照
+＝背面ラフ・衣装パーツ・テクスチャ等）を渡すと、2511 のネイティブ複数画像入力
+（`pipe(image=[primary, sub1, ...])`）で推論する。2 枚以上のときだけ、カメラ
+指示プロンプトの文末へ `ANGLE_MULTIREF_PROMPT_SUFFIX` を付け足す。1 枚
+（`image` 単体 or `images` が 1 要素）のときは従来と完全に同一挙動。
+
 素の 2511 はテキスト指示だけでは正面〜微斜めに張り付き、90° 真横 / 180° 背面
 などの大角度回転が反映されない。2511 専用の 3DGS 学習済み視点合成 LoRA を
 load_lora_weights で載せる。推論スタック（2026-09-09 実機チューニング後）:
@@ -174,6 +180,19 @@ GPU_REQUEST = _resolve_angle_worker_gpu()
 # プロセス状態に関わらず必ず発火する外部上限）、(3) scaledown_window=30 +
 # min_containers=0（アイドル即 Scale-to-Zero）。
 MAX_INSTRUCTIONS = 9999
+
+# Multi-Reference: 1 リクエストで受ける参照画像の最大枚数（メイン + サブ最大3）。
+# フロント側 MAX_SUB_REFERENCE_IMAGES(=3) と一致させること。
+MAX_REF_IMAGES = _env_int("ANGLE_MAX_REF_IMAGES", 4)
+
+# サブ参照を 1 枚以上渡したとき、_apply_lora_trigger の後段でカメラ指示
+# プロンプトの文末へ足す英文。model card 規格（"<sks> [azimuth] ..."・スペース
+# 区切り）を壊さないよう、ピリオド 1 個で区切った短い平叙文にとどめる。
+# 空文字にすると付けない。
+ANGLE_MULTIREF_PROMPT_SUFFIX = (
+    os.environ.get("ANGLE_MULTIREF_SUFFIX", "").strip()
+    or "Maintaining exact features, lengths, and texture details from all provided reference images."
+)
 
 # 推論パラメータ（payload で上書き可、ただし下記レンジへクランプ）。
 #   - steps は 35〜40（過小だと LoRA の視点移動が半端になり、過大でも顔ディテール
@@ -478,6 +497,33 @@ def _load_ref_image(spec: str):
         )
     except ImagePrepError as exc:
         raise fastapi.HTTPException(status_code=400, detail=f"could not decode image: {exc}")
+
+
+def _resolve_ref_specs(images=None, single=None) -> list:
+    """Multi-Reference の入力を正規化済み PIL.Image のリストにして返す。
+
+      - `images`（list）があればそれを優先。無ければ `single`（str）を 1 要素に。
+      - 空 / None は落とし、1〜MAX_REF_IMAGES 枚に制限（超過は 400）。
+      - 各要素は _align_image(_load_ref_image(spec)) を通す（HEIC 等のデコード・
+        EXIF 回転・64 の倍数アライン・長辺クランプは _load_ref_image が担う）。
+
+    先頭がメイン参照（正面等）、以降がサブ参照。1 枚経路は従来と同じく
+    `[ref]` を返すだけ。"""
+    specs: list = []
+    if isinstance(images, (list, tuple)):
+        specs = [s for s in images if isinstance(s, str) and s.strip()]
+    elif isinstance(images, str) and images.strip():
+        specs = [images]
+    if not specs and isinstance(single, str) and single.strip():
+        specs = [single]
+    if not specs:
+        raise fastapi.HTTPException(status_code=400, detail="image is required")
+    if len(specs) > MAX_REF_IMAGES:
+        raise fastapi.HTTPException(
+            status_code=400,
+            detail=f"too many reference images ({len(specs)} > {MAX_REF_IMAGES})",
+        )
+    return [_align_image(_load_ref_image(s)) for s in specs]
 
 
 def _png_b64(img) -> str:
@@ -1173,13 +1219,16 @@ class QwenImageEditWorker:
     @modal.method()
     def run_edit(
         self,
-        image_spec: str,
+        image_spec,
         instructions: list,
         seed=None,
         num_inference_steps: int = DEFAULT_STEPS,
         true_cfg_scale: float = DEFAULT_TRUE_CFG,
         negative_prompt: str = DEFAULT_NEGATIVE_PROMPT,
+        images=None,
     ) -> dict:
+        """`image_spec` は str（後方互換）。`images`（list, 最大 MAX_REF_IMAGES）を
+        渡すと Multi-Reference。先頭がメイン参照。"""
         import torch
 
         if not isinstance(instructions, list) or not instructions:
@@ -1205,7 +1254,11 @@ class QwenImageEditWorker:
         # コストは 1 回だけ）。VAE / VL エンコード自体は Diffusers パイプライン
         # の __call__ 内で行われるため呼び出しごとに走るが、その分の入力は
         # 共通で、モデルは常駐済み。入力は 64 の倍数へアライン（RoPE 歪み対策）。
-        ref = _align_image(_load_ref_image(image_spec))
+        refs = _resolve_ref_specs(images, image_spec)
+        multi_ref = len(refs) > 1
+        pipe_image = refs if multi_ref else refs[0]
+        if multi_ref:
+            print(f"[angle] multi-reference: {len(refs)} images", flush=True)
 
         images_b64 = []
         try:
@@ -1227,11 +1280,13 @@ class QwenImageEditWorker:
                     return a[-1] if a and isinstance(a[-1], dict) else {}
 
                 final_prompt = _apply_lora_trigger(instr, self._lora_loaded)
+                if multi_ref and ANGLE_MULTIREF_PROMPT_SUFFIX:
+                    final_prompt = f"{final_prompt} {ANGLE_MULTIREF_PROMPT_SUFFIX}".strip()
                 if idx == 0:
                     print(f"[angle] prompt[0]: {final_prompt!r}", flush=True)
 
                 call_kwargs = dict(
-                    image=ref,
+                    image=pipe_image,
                     prompt=final_prompt,
                     negative_prompt=negative_prompt,
                     num_inference_steps=steps,
@@ -1270,7 +1325,7 @@ class QwenImageEditWorker:
         finally:
             # 推論終了後は VRAM を速やかに整理する（モデル本体は常駐のまま、
             # activation / KV / 中間テンソルだけ解放）。
-            del ref
+            del refs, pipe_image
             gc.collect()
             try:
                 torch.cuda.empty_cache()
@@ -1316,6 +1371,9 @@ class QwenImageEditWorker:
         job_id = str(payload.get("job_id") or "")
         user_id = str(payload.get("user_id") or "")
         credits_cost = int(payload.get("credits_cost") or 0)
+        # Multi-Reference: `images`（list, 最大 MAX_REF_IMAGES）を優先。無ければ
+        # 単一 `image` / `image_b64`。先頭がメイン参照。
+        image_list = payload.get("images")
         image_spec = payload.get("image") or payload.get("image_b64") or ""
         raw_instructions = payload.get("instructions") or []
         labels = payload.get("labels") or []
@@ -1348,13 +1406,17 @@ class QwenImageEditWorker:
         _patch_angle_job(job_id, {"status": "processing", "total_angles": len(instructions)})
 
         try:
-            ref = _align_image(_load_ref_image(image_spec))
+            refs = _resolve_ref_specs(image_list, image_spec)
         except Exception as exc:  # noqa: BLE001
             _patch_angle_job(
                 job_id, {"status": "failed", "error_message": f"reference image error: {exc}"[:500]}
             )
             _refund_credits(user_id, credits_cost)
             return {"ok": False, "error": str(exc)}
+        multi_ref = len(refs) > 1
+        pipe_image = refs if multi_ref else refs[0]
+        if multi_ref:
+            print(f"[angle-job] {job_id} multi-reference: {len(refs)} images", flush=True)
 
         # --- 許容最大 GPU 稼働時間（API が消費クレジットから算出して渡す）------
         max_allowed_time = None
@@ -1457,11 +1519,13 @@ class QwenImageEditWorker:
                     generator = torch.Generator(device="cuda").manual_seed(base_seed + idx)
 
                 final_prompt = _apply_lora_trigger(instr, self._lora_loaded)
+                if multi_ref and ANGLE_MULTIREF_PROMPT_SUFFIX:
+                    final_prompt = f"{final_prompt} {ANGLE_MULTIREF_PROMPT_SUFFIX}".strip()
                 if idx == 0:
                     print(f"[angle-job] {job_id} prompt[0]: {final_prompt!r}", flush=True)
 
                 call_kwargs = dict(
-                    image=ref,
+                    image=pipe_image,
                     prompt=final_prompt,
                     negative_prompt=negative_prompt,
                     num_inference_steps=steps,
@@ -1508,7 +1572,7 @@ class QwenImageEditWorker:
             watchdog_stop.set()
             watchdog.join(timeout=WATCHDOG_POLL_S + 2)
             try:
-                del ref
+                del refs, pipe_image
             except Exception:  # noqa: BLE001
                 pass
             gc.collect()
@@ -1537,14 +1601,16 @@ class QwenImageEditWorker:
         フロントは非同期版（angle_generate_dispatch + angle_jobs ポーリング）へ
         移行済み。`modal run` / デバッグ / 外部小規模利用向けに残置。
 
-        入力:  {image: <base64|url>, instructions: [str, ...], seed?: int,
+        入力:  {image: <base64|url> | images: [<base64|url>, ...(最大4)],
+                instructions: [str, ...], seed?: int,
                 num_inference_steps?: int, true_cfg_scale?: float,
                 negative_prompt?: str}
         出力:  {images: [base64, ...], elapsed_time: float, count: int}
         """
         _authorize(request)
         image_spec = item.get("image") or item.get("image_b64") or ""
-        if not image_spec:
+        image_list = item.get("images")
+        if not image_spec and not (isinstance(image_list, list) and image_list):
             raise fastapi.HTTPException(status_code=400, detail="image is required")
         # .local() = 同一コンテナ内でメソッド本体を実行（別 GPU コンテナを
         # 立てない）。blackwell の generate → generate_video.local と同じ。
@@ -1555,6 +1621,7 @@ class QwenImageEditWorker:
             num_inference_steps=item.get("num_inference_steps", DEFAULT_STEPS),
             true_cfg_scale=item.get("true_cfg_scale", DEFAULT_TRUE_CFG),
             negative_prompt=item.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT),
+            images=image_list,
         )
 
 
@@ -1576,7 +1643,8 @@ class QwenImageEditWorker:
 def angle_generate_dispatch(item: dict, request: fastapi.Request):
     """POST 非同期ディスパッチ。1 秒以内に ACK し、実生成は .spawn() 側へ委譲。
 
-    入力: { job_id, user_id, credits_cost, image(base64|url), instructions[str],
+    入力: { job_id, user_id, credits_cost,
+            image(base64|url) | images:[base64|url, ...(最大4)], instructions[str],
             labels[str]?, num_inference_steps?, true_cfg_scale?, seed? }
     出力: { ok: true, job_id, call_id }
     """
@@ -1588,7 +1656,9 @@ def angle_generate_dispatch(item: dict, request: fastapi.Request):
     instructions = item.get("instructions") or []
     if not isinstance(instructions, list) or not instructions:
         raise fastapi.HTTPException(status_code=400, detail="instructions must be a non-empty array")
-    if not (item.get("image") or item.get("image_b64")):
+    _imgs = item.get("images")
+    _has_images = isinstance(_imgs, list) and any(isinstance(s, str) and s.strip() for s in _imgs)
+    if not (_has_images or item.get("image") or item.get("image_b64")):
         raise fastapi.HTTPException(status_code=400, detail="image is required")
 
     call = QwenImageEditWorker().run_edit_job.spawn(item)

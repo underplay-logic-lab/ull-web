@@ -31,6 +31,7 @@ import {
   ELEVATION_OPTIONS,
   EMPTY_ANGLE_SELECTION,
   MAX_ANGLES,
+  MAX_SUB_REFERENCE_IMAGES,
   MIN_ANGLES,
   type AngleAxis,
   type AngleAxisOption,
@@ -180,6 +181,98 @@ function ImageDropzone({
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// --- サブ参照画像スロット（Multi-Reference / Pro） --------------------
+// メイン画像で見えない死角（上着の丈・背中のロゴ・髪の結び目・テクスチャ等）を
+// 補完するための追加参照。最大 MAX_SUB_REFERENCE_IMAGES 枚。省略時は従来どおり
+// 単一画像生成。
+function SubReferenceSlots({
+  files,
+  onAdd,
+  onRemove,
+  error,
+}: {
+  files: File[];
+  onAdd: (file: File) => void;
+  onRemove: (index: number) => void;
+  error: string | null;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const previews = useMemo(() => files.map((f) => URL.createObjectURL(f)), [files]);
+  useEffect(
+    () => () => {
+      previews.forEach((u) => URL.revokeObjectURL(u));
+    },
+    [previews],
+  );
+  const canAddMore = files.length < MAX_SUB_REFERENCE_IMAGES;
+
+  return (
+    <div>
+      <label className="mb-1.5 block text-xs font-medium text-muted">
+        サブ参照画像（背面・衣装パーツ等 / 最大{MAX_SUB_REFERENCE_IMAGES}枚・任意）
+      </label>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const picked = e.target.files?.[0];
+          if (picked && picked.type.startsWith("image/")) onAdd(picked);
+          e.target.value = "";
+        }}
+      />
+      <div className="grid grid-cols-3 gap-2">
+        {files.map((file, i) => (
+          <div
+            key={`${file.name}-${i}`}
+            className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-background"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={previews[i]}
+              alt={file.name}
+              className="h-full w-full object-cover"
+            />
+            <button
+              type="button"
+              onClick={() => onRemove(i)}
+              aria-label={`サブ参照 ${i + 1} を削除`}
+              className="absolute right-1 top-1 rounded-full bg-black/60 p-1 text-white transition-colors hover:bg-black/80"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        ))}
+        {canAddMore && (
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const picked = e.dataTransfer.files?.[0];
+              if (picked && picked.type.startsWith("image/")) onAdd(picked);
+            }}
+            className="flex aspect-square flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border bg-background text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+          >
+            <ImagePlus size={18} />
+            <span className="text-[10px]">追加</span>
+          </button>
+        )}
+      </div>
+      {error && <p className="mt-1.5 text-[11px] text-red-400">{error}</p>}
+      {files.length > 0 && (
+        <p className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted/80">
+          <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
+          サブ参照を追加すると、背面・真横の生成で死角のデザイン・丈・テクスチャを
+          そのまま維持します（Qwen-Image-Edit-2511 のマルチ画像入力）。
+        </p>
+      )}
     </div>
   );
 }
@@ -415,6 +508,27 @@ export function MultiAngleStudioTab() {
     setImage(file);
   }, []);
 
+  // Multi-Reference（Pro）: サブ参照画像（死角補完・最大 MAX_SUB_REFERENCE_IMAGES）。
+  // メイン画像と同じく File なので永続化しない。
+  const [subImages, setSubImages] = useState<File[]>([]);
+  const [subImageError, setSubImageError] = useState<string | null>(null);
+
+  const handleAddSubImage = useCallback((file: File) => {
+    if (file.size > MAX_SOURCE_BYTES) {
+      setSubImageError("画像ファイルが大きすぎます。25MB 以下の画像を選んでください。");
+      return;
+    }
+    setSubImageError(null);
+    setSubImages((prev) =>
+      prev.length >= MAX_SUB_REFERENCE_IMAGES ? prev : [...prev, file],
+    );
+  }, []);
+
+  const handleRemoveSubImage = useCallback((index: number) => {
+    setSubImageError(null);
+    setSubImages((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
   // 2026-09-09: turbo/pro を廃止し単一モードに統一。
   const mode: AngleMode = "standard";
   const [selection, setSelection] = useState<AngleSelection>(() => {
@@ -568,7 +682,7 @@ export function MultiAngleStudioTab() {
     setSubmittedCombos(combos);
 
     try {
-      const res = await startAngleJob({ image, selection, mode });
+      const res = await startAngleJob({ image, subImages, selection, mode });
       broadcastCreditsUpdate(user.id, res.remainingCredits);
       saveFormState(JOB_KEY, { jobId: res.jobId });
       setJob({
@@ -599,7 +713,8 @@ export function MultiAngleStudioTab() {
     if (!creditsLoading && (credits ?? 0) < perAngle) return setChargeOpen(true);
     try {
       // seed を渡さない = worker が generator なしで実行 → 毎回別の結果。
-      const res = await startAngleJob({ image, selection: combo.selection, mode });
+      // サブ参照画像も再送して Multi-Reference の整合性を保つ。
+      const res = await startAngleJob({ image, subImages, selection: combo.selection, mode });
       broadcastCreditsUpdate(user.id, res.remainingCredits);
       setReroll({ index, jobId: res.jobId });
     } catch (err) {
@@ -712,7 +827,9 @@ export function MultiAngleStudioTab() {
         {/* 左: 入力 */}
         <div className="flex flex-col gap-6">
           <div>
-            <label className="mb-1.5 block text-xs font-medium text-muted">キャラクター画像</label>
+            <label className="mb-1.5 block text-xs font-medium text-muted">
+              キャラクター画像（メイン参照）
+            </label>
             <ImageDropzone
               file={image}
               previewUrl={imagePreview}
@@ -726,6 +843,13 @@ export function MultiAngleStudioTab() {
               <p className="mt-1.5 text-[11px] text-red-400">{imageError}</p>
             )}
           </div>
+
+          <SubReferenceSlots
+            files={subImages}
+            onAdd={handleAddSubImage}
+            onRemove={handleRemoveSubImage}
+            error={subImageError}
+          />
 
 
           {/* アクションバー */}
