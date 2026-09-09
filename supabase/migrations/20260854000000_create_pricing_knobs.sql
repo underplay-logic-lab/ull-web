@@ -32,8 +32,9 @@ alter table public.pricing_knobs enable row level security;
 
 insert into public.pricing_knobs (key, value, label, category, unit, description, is_public) values
   ('image_generate',            1,     '画像生成',                       'feature_credits', 'C',       '1枚あたりの消費クレジット（/api/generate）',                     true),
-  ('angle_turbo_per_angle',     1,     'Multi-Angle 🚀 Turbo',           'feature_credits', 'C/構図',  '1構図あたりの消費クレジット（8ステップ）',                       true),
-  ('angle_pro_per_angle',       2,     'Multi-Angle 💎 Pro',             'feature_credits', 'C/構図',  '1構図あたりの消費クレジット（40ステップ）',                      true),
+  -- 2026-09-09: turbo/pro を廃止し 40 ステップ単一モードへ。turbo は未使用の legacy。
+  ('angle_turbo_per_angle',     2,     'Multi-Angle Turbo（廃止・未使用）', 'feature_credits', 'C/構図', '（廃止）turbo/pro 統合前の名残。課金は angle_pro_per_angle を使用。', false),
+  ('angle_pro_per_angle',       2,     'Multi-Angle（1構図）',           'feature_credits', 'C/構図',  '1構図あたりの消費クレジット（40ステップ）',                      true),
   ('cinematic_speed',           1,     'Cinematic Speed Mode',           'feature_credits', 'C',       '1本あたりの消費クレジット（4ステップ / 512px）',                 true),
   ('cinematic_standard',        2,     'Cinematic Standard Mode',        'feature_credits', 'C',       '1本あたりの消費クレジット（4ステップ / 768px）',                 true),
   ('cinematic_cinema_master',   5,     'Cinematic Cinema Master',        'feature_credits', 'C',       '1本あたりの消費クレジット（20ステップ / 1024px）',               true),
