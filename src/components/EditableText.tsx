@@ -3,7 +3,7 @@
 import { useLayoutEffect, useRef, type FocusEvent, type FormEvent, type KeyboardEvent } from "react";
 import { useSiteContentEditor } from "@/components/SiteContentEditorProvider";
 
-type EditableTag = "span" | "p" | "h1" | "h2" | "div";
+type EditableTag = "span" | "p" | "h1" | "h2" | "h3" | "div";
 
 type EditableTextProps = {
   // site_contents.key this text is bound to.

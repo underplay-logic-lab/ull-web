@@ -6,13 +6,21 @@ import { Studio } from "@/components/Studio";
 import { Pricing } from "@/components/Pricing";
 import { Contact } from "@/components/Contact";
 import { Articles } from "@/components/Articles";
+import { ComparisonSection } from "@/components/landing/ComparisonSection";
+import { ShowcaseSection } from "@/components/landing/ShowcaseSection";
+import { DeviceZeroWasteSection } from "@/components/landing/DeviceZeroWasteSection";
+import { TrustMediaSection } from "@/components/landing/TrustMediaSection";
 import { SectionManager } from "@/components/SectionManager";
 import { useSiteContentEditor } from "@/components/SiteContentEditorProvider";
 import { DEFAULT_PAGE_SECTIONS, parsePageSectionsOrder } from "@/lib/siteContents";
 
 const SECTION_REGISTRY: Record<string, { label: string; Component: ComponentType }> = {
   hero: { label: "Hero", Component: Hero },
+  comparison: { label: "徹底比較", Component: ComparisonSection },
+  showcase: { label: "実績ショーケース", Component: ShowcaseSection },
   studio: { label: "Studio", Component: Studio },
+  devicezerowaste: { label: "デバイスフリー / 死に金ゼロ", Component: DeviceZeroWasteSection },
+  trustmedia: { label: "信頼・メディア導線", Component: TrustMediaSection },
   pricing: { label: "Pricing", Component: Pricing },
   contact: { label: "Contact", Component: Contact },
   articles: { label: "Articles", Component: Articles },
