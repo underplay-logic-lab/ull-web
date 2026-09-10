@@ -147,15 +147,15 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     isPublic: true,
   },
   upscale_mult_power: {
-    // 8K パワーティア（完全ノンタイル・大判）の課金係数。B300 実測で 8K は
-    // ~27MP・VRAM 85GB・cold ~100s。ローカル 24GB では不可能なレンジなので
-    // プレミアム扱い。1.5 で 8K 縦(~27MP) ≈ 120C ≈ ¥200。
-    value: 1.5,
-    label: "超解像 パワーティア係数（8K）",
+    // 2026-09-10 撤廃・未使用。8K も倍率モードと同じ純 MP 課金にした
+    // （純 MP 課金がすでに「大きい出力ほど高い」を実現しており、8K だけの
+    // 上乗せは実効倍率と釣り合わなかった）。DB 行は残置。
+    value: 1.0,
+    label: "超解像 パワーティア係数（廃止・未使用）",
     category: "feature_credits",
     unit: "×",
-    description: "8K モードの 1構図単価に乗せる係数。倍率モード(×2〜4)は 1.0。",
-    isPublic: true,
+    description: "（廃止）8K も倍率モードも純 MP 課金。この値は使われない。",
+    isPublic: false,
   },
   // ------------------------------------------------------------- lora_formula
   lora_per_step: {

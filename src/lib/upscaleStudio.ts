@@ -5,18 +5,22 @@
 // - 解像度は **倍率（×2/×3/×4）** ＋ 大判用の絶対プリセット「8K」。倍率は
 //   ESRGAN 等の一般的なアップスケーラーと同じメンタルモデル。内部で
 //   target_short / max_edge に変換して worker へ渡す。
-// - 課金は「出力の 100 万画素 × 単価 × モデル係数 × パワー係数」。UI と API は
-//   必ず同じ純関数（upscaleCostBreakdown）に同じ入力を通す。
-// - ⚠️ SeedVR2 のノンタイル上限は B300 実測で ~50-60MP（8K 正方形あたり。
-//   16K=109MP は VAE デコードで OOM）。UPSCALE_MAX_OUTPUT_MP でクランプする。
+// - 課金は「出力の 100 万画素 × 単価 × モデル係数」。UI と API は必ず同じ
+//   純関数（upscaleCostBreakdown）に同じ入力を通す。倍率モードも 8K も同じ式
+//   （8K の追加係数 upscale_mult_power は 2026-09-10 に撤廃 — 純 MP 課金が
+//   すでに「大きい出力ほど高い」を実現しており、上乗せは釣り合わなかった）。
+// - ⚠️ SeedVR2 のノンタイル上限は B300 実測（同一入力・出力 MP を振った）:
+//     27MP=85GB / 61MP=189GB / 79MP=244GB(OK) / 109MP=OOM(>274GB)。
+//   フィット ~3.07 GB/MP + 1GB → 真の限界 ~85-88MP。コンテンツで VRAM が
+//   ブレるので UPSCALE_MAX_OUTPUT_MP=75（予測 ~231GB・~43GB マージン）。
 
 import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";
 
 export const MAX_INPUT_BYTES = 25 * 1024 * 1024;
 export const MAX_INPUT_BYTES_API = 20 * 1024 * 1024;
 
-// SeedVR2 完全ノンタイルの安全上限（実測 OOM 境界 ~55MP の下に余裕を取る）。
-export const UPSCALE_MAX_OUTPUT_MP = 45;
+// SeedVR2 完全ノンタイルの安全上限（MP）。上記フィット参照。
+export const UPSCALE_MAX_OUTPUT_MP = 75;
 
 export type UpscaleModelKey = "seedvr2_7b";
 
@@ -62,17 +66,20 @@ export type UpscaleMode = {
   powerTier?: boolean;
 };
 
+// maxEdge は「1 辺の絶対上限」（極端なアスペクト比の暴走防止 + WebP の
+// 16383px 制限回避）。実効的な上限は UPSCALE_MAX_OUTPUT_MP（面積）の方で、
+// maxEdge は普通のアスペクト比ではまず当たらない緩めの値にする。
 export const UPSCALE_MODES: UpscaleMode[] = [
-  { id: "x2", label: "×2", subLabel: "SNS・軽い底上げ", kind: "multiplier", mult: 2, maxEdge: 5120 },
-  { id: "x3", label: "×3", subLabel: "高解像度・A4印刷", kind: "multiplier", mult: 3, maxEdge: 6144 },
-  { id: "x4", label: "×4", subLabel: "4K・A3印刷", kind: "multiplier", mult: 4, maxEdge: 7168 },
+  { id: "x2", label: "×2", subLabel: "SNS・軽い底上げ", kind: "multiplier", mult: 2, maxEdge: 13000 },
+  { id: "x3", label: "×3", subLabel: "高解像度・A4印刷", kind: "multiplier", mult: 3, maxEdge: 13000 },
+  { id: "x4", label: "×4", subLabel: "4K・A3印刷", kind: "multiplier", mult: 4, maxEdge: 13000 },
   {
     id: "8k",
     label: "8K",
     subLabel: "完全ノンタイル・大判印刷向け",
     kind: "absolute",
-    targetShort: 4320,
-    maxEdge: 8192,
+    targetShort: 5000,
+    maxEdge: 13000,
     powerTier: true,
   },
 ];
@@ -137,13 +144,13 @@ export type UpscaleCostBreakdown = {
   effectiveMult: number;
   perMp: number;
   modelMult: number;
-  powerMult: number;
   clampedByMp: boolean;
 };
 
 /**
  * 純関数: 入力寸法 + モード + モデル + knob → 消費クレジット。
  * UI 表示と API 検証は必ずこれに同じ引数を渡す。入力寸法不明（0）は credits=0。
+ * 8K も倍率モードも同じ式（`per_mp × 出力MP × モデル係数`）。
  */
 export function upscaleCostBreakdown(args: {
   inW: number;
@@ -155,7 +162,6 @@ export function upscaleCostBreakdown(args: {
   const knobs = args.knobs ?? DEFAULT_KNOBS;
   const mode = getUpscaleMode(args.modeId);
   const model = getUpscaleModel(args.modelKey);
-  const powerMult = mode.powerTier ? Math.max(1, knobs.upscale_mult_power) : 1;
 
   const { width, height } = estimateOutputSize(args.inW, args.inH, mode);
   const outputMP = (width * height) / 1_000_000;
@@ -169,16 +175,20 @@ export function upscaleCostBreakdown(args: {
       effectiveMult: 0,
       perMp: knobs.upscale_per_mp,
       modelMult: model.creditMult,
-      powerMult,
       clampedByMp: false,
     };
   }
 
   const inShort = Math.min(args.inW, args.inH);
   const effectiveMult = Math.min(width, height) / inShort;
-  const wantMult = mode.kind === "multiplier" ? mode.mult ?? 2 : Infinity;
 
-  const raw = Math.ceil(knobs.upscale_per_mp * outputMP * model.creditMult * powerMult);
+  // クランプ警告は「倍率モードで ×N をリクエストしたのに maxEdge / MP 上限で
+  // ×N 未満になった」ときだけ。8K（絶対モード）は入力サイズ次第で実効倍率が
+  // 上下するのが仕様なので警告しない。
+  const clampedByMp =
+    mode.kind === "multiplier" && effectiveMult < (mode.mult ?? 2) - 0.05;
+
+  const raw = Math.ceil(knobs.upscale_per_mp * outputMP * model.creditMult);
   const floor = Math.max(1, Math.round(knobs.upscale_min_credits));
   const credits = Math.max(floor, raw);
 
@@ -190,8 +200,7 @@ export function upscaleCostBreakdown(args: {
     effectiveMult,
     perMp: knobs.upscale_per_mp,
     modelMult: model.creditMult,
-    powerMult,
-    clampedByMp: effectiveMult < wantMult - 0.05,
+    clampedByMp,
   };
 }
 
@@ -205,9 +214,7 @@ export function upscaleCredits(args: {
   return upscaleCostBreakdown(args).credits;
 }
 
-/** 寸法パース不能時の上限（HEIC 等）。8K パワー係数込みの最大 MP 相当。 */
+/** 寸法パース不能時の上限（HEIC 等）。最大 MP 相当。 */
 export function upscaleCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): number {
-  return Math.ceil(
-    knobs.upscale_per_mp * UPSCALE_MAX_OUTPUT_MP * Math.max(1, knobs.upscale_mult_power),
-  );
+  return Math.ceil(knobs.upscale_per_mp * UPSCALE_MAX_OUTPUT_MP);
 }
