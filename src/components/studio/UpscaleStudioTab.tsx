@@ -437,7 +437,7 @@ export function UpscaleStudioTab() {
         {inputSize && breakdown.clampedByMp && (
           <p className="-mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-300">
             <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-            この入力サイズだと {mode.label} フル倍率は上限（約 45MP）を超えるため、
+            この入力サイズだと {mode.label} フル倍率は出力上限（約 75MP）を超えるため、
             出力は ×{breakdown.effectiveMult.toFixed(1)} 相当に自動調整されます。
           </p>
         )}
@@ -508,9 +508,9 @@ export function UpscaleStudioTab() {
                   {m.subLabel}。DiT・VAE とも全画面 1 パス処理（タイル分割なし）。
                 </span>
               </span>
-              {breakdown.powerMult > 1 && modeId === m.id && (
+              {modeId === m.id && breakdown.effectiveMult > 0 && (
                 <span className="shrink-0 rounded bg-neon-violet/20 px-1.5 py-0.5 text-[10px] font-medium text-neon-violet">
-                  ×{breakdown.powerMult}
+                  ×{breakdown.effectiveMult.toFixed(1)}
                 </span>
               )}
             </button>
@@ -518,7 +518,7 @@ export function UpscaleStudioTab() {
 
           <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
             <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-            アスペクト比は維持されます。出力の上限は約 45MP（8K 級）。
+            アスペクト比は維持されます。出力の上限は約 75MP（8K〜10K 級）。
           </p>
         </div>
       </div>
