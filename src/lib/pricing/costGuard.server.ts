@@ -85,3 +85,14 @@ export function angleMaxAllowedTime(args: { creditsCost: number; knobs?: Pricing
     Math.max(0, args.creditsCost) * knobs.angle_time_per_credit_s + knobs.angle_cold_start_grace_s,
   );
 }
+
+// 超解像スタジオ（SeedVR2）: modal_seedvr2_worker.py の原価割れウォッチドッグへ
+// 渡す許容最大 GPU 稼働秒（payload.max_allowed_time）。単一画像ジョブなので
+// angle と同じ「消費C × 秒 + コールドスタート猶予」の素朴な式で十分。
+export function upscaleMaxAllowedTime(args: { creditsCost: number; knobs?: PricingKnobs }): number {
+  const knobs = args.knobs ?? DEFAULT_KNOBS;
+  return Math.ceil(
+    Math.max(0, args.creditsCost) * knobs.upscale_time_per_credit_s +
+      knobs.upscale_cold_start_grace_s,
+  );
+}

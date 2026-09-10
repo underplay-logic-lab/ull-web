@@ -6,13 +6,14 @@ import { CreditsBadge } from "@/components/CreditsBadge";
 import { CustomWorkflowsTab } from "@/components/studio/CustomWorkflowsTab";
 import { LoraStudioTab } from "@/components/studio/LoraStudioTab";
 import { MultiAngleStudioTab } from "@/components/studio/MultiAngleStudioTab";
+import { UpscaleStudioTab } from "@/components/studio/UpscaleStudioTab";
 import { GpuWarmBadge } from "@/components/studio/GpuWarmBadge";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { EditableText } from "@/components/EditableText";
 
 // 2026-09-09: Wan Animate 2 / Cinematic Video タブは廃止。汎用の動画・特殊要望は
 // すべて「特化ワークフロー」で対応する方針（管理者がワークフローを登録）。
-type StudioTab = "image" | "custom" | "lora" | "angle";
+type StudioTab = "image" | "custom" | "lora" | "angle" | "upscale";
 
 const STUDIO_TABS: { id: StudioTab; label: string }[] = [
   // "image" (画像生成) is temporarily hidden from navigation — the engine
@@ -20,6 +21,7 @@ const STUDIO_TABS: { id: StudioTab; label: string }[] = [
   // thing it currently renders. Re-add here once the new engine ships.
   { id: "custom", label: "特化ワークフロー" },
   { id: "angle", label: "🎭 Multi-Angle" },
+  { id: "upscale", label: "✨ 超解像" },
   { id: "lora", label: "🎨 LoRA Studio" },
 ];
 
@@ -68,6 +70,11 @@ export function Studio() {
                 siteKey="studio_desc_angle"
                 fallback="キャラクター画像を1枚アップロードするだけ。向き・アングル・距離を選んで、複数の構図を一括生成・プレビューできます。"
               />
+            ) : activeTab === "upscale" ? (
+              <EditableText
+                siteKey="studio_desc_upscale"
+                fallback="画像を1枚アップロードするだけ。ローカルでは不可能なフル精度エンジンで、キャラの同一性を保ったまま解像感を引き上げます。"
+              />
             ) : activeTab === "lora" ? (
               <EditableText
                 siteKey="studio_desc_lora"
@@ -110,6 +117,8 @@ export function Studio() {
           <CustomWorkflowsTab />
         ) : activeTab === "angle" ? (
           <MultiAngleStudioTab />
+        ) : activeTab === "upscale" ? (
+          <UpscaleStudioTab />
         ) : activeTab === "lora" ? (
           <LoraStudioTab onUseLora={() => setActiveTab("custom")} />
         ) : (
