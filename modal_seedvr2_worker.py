@@ -311,14 +311,25 @@ def public_registry() -> list:
 # node_type ごとに分岐。曖昧・未対応は明示的に例外にする（fail-closed）。
 # ---------------------------------------------------------------------------
 def _build_seedvr2_workflow(reg: dict, params: dict, input_filename: str) -> dict:
-    """SeedVR2VideoUpscaler を中心にした最小グラフ。
-    LoadImage -> SeedVR2VideoUpscaler -> SaveImage。
+    """SeedVR2 の 5 ノードグラフ:
+      LoadImage ─┐
+      SeedVR2LoadDiTModel ─┤
+      SeedVR2LoadVAEModel ─┴→ SeedVR2VideoUpscaler → SaveImage
 
-    ソケット名は CPU probe（/object_info）で確認済み（ComfyUI-SeedVR2 v?, 2026-09-09）:
-      required: image, dit, vae, seed, resolution, max_resolution, batch_size,
-                uniform_batch_size, color_correction
-      optional: temporal_overlap, prepend_frames, input_noise_scale,
-                latent_noise_scale, offload_device, enable_debug
+    ⚠️ dit / vae は **別ローダーノードの出力（SEEDVR2_DIT / SEEDVR2_VAE カスタム型・
+    dict）** で、ファイル名文字列を直接 SeedVR2VideoUpscaler.dit に渡すと
+    `dit["model"]` で TypeError（2026-09-10 GPU smoke で確認）。
+    ノード仕様（numz/ComfyUI-SeedVR2_VideoUpscaler main, 2026-09-10 確認）:
+      SeedVR2LoadDiTModel: model(combo: registry名 + models/SEEDVR2 の実ファイル),
+        device, blocks_to_swap, swap_io_components, offload_device, cache_model,
+        attention_mode(sdpa/flash_attn_2/3/sageattn_2/3), torch_compile_args
+        → RETURN SEEDVR2_DIT
+      SeedVR2LoadVAEModel: model(STRING), device, encode_tiled/decode_tiled ほか
+        → RETURN SEEDVR2_VAE
+      SeedVR2VideoUpscaler: image, dit, vae 必須 / seed, resolution(短辺目標),
+        max_resolution, batch_size(4n+1), ほか optional
+    デフォルトが CLAUDE.md §1 準拠（offload_device="none" / cache_model=False =
+    オフロードなし・BF16 常駐）なので、上書きが要る値だけ渡す。
     """
     p = {**reg["default_params"], **(params or {})}
     batch = int(p.get("batch_size", DEFAULT_BATCH_SIZE))
@@ -332,20 +343,42 @@ def _build_seedvr2_workflow(reg: dict, params: dict, input_filename: str) -> dic
             "inputs": {"image": input_filename},
             "_meta": {"title": "input"},
         },
+        "dit_loader": {
+            "class_type": "SeedVR2LoadDiTModel",
+            "inputs": {
+                "model": p["dit"],              # COMBO: models/SEEDVR2 の実ファイル名
+                "device": p.get("device", "cuda:0"),
+                # SDPA 明示（SageAttention は image 未導入。導入後に切替検討）。
+                "attention_mode": p.get("attention_mode", "sdpa"),
+                # CLAUDE.md §1: オフロード禁止（BF16 常駐）。
+                "offload_device": "none",
+            },
+            "_meta": {"title": "DiT"},
+        },
+        "vae_loader": {
+            "class_type": "SeedVR2LoadVAEModel",
+            "inputs": {
+                "model": p["vae"],
+                "device": p.get("device", "cuda:0"),
+                "offload_device": "none",
+            },
+            "_meta": {"title": "VAE"},
+        },
         "seedvr2": {
             "class_type": "SeedVR2VideoUpscaler",
             "inputs": {
                 "image": ["load_image", 0],
-                "dit": p["dit"],
-                "vae": p["vae"],
+                "dit": ["dit_loader", 0],
+                "vae": ["vae_loader", 0],
                 "seed": int(p.get("seed", 100)),
                 "resolution": short,             # 短辺目標 px
                 "max_resolution": int(p.get("max_resolution", DEFAULT_MAX_RESOLUTION)),
-                "batch_size": batch,             # 4n+1
-                "uniform_batch_size": True,
+                "batch_size": batch,             # 4n+1（静止画は 1）
+                "uniform_batch_size": bool(p.get("uniform_batch_size", False)),
+                # COMBO: lab / wavelet / wavelet_adaptive / hsv / adain / none
                 "color_correction": p.get("color_correction", "lab"),
-                # optional — B300 は常駐（オフロードなし: CLAUDE.md §1）
-                "offload_device": p.get("offload_device", "none"),
+                # CLAUDE.md §1: オフロード禁止（既定は "cpu" なので明示上書き）。
+                "offload_device": "none",
             },
             "_meta": {"title": "SeedVR2 upscale"},
         },
@@ -565,7 +598,10 @@ def _load_input_bytes(spec: str) -> bytes:
 
 def _vram_gb():
     """実効 VRAM 消費量のみ（分母・％・GPU 名は出さない — CLAUDE.md §2）。
-    キー名は Studio 共通の vram_used_gb（studio-vram-badge.md）。"""
+    キー名は Studio 共通の vram_used_gb（studio-vram-badge.md）。
+
+    ComfyUI は別プロセスだが mem_get_info はデバイス全体（全プロセス）の
+    free/total を返すので、サブプロセスの消費もここに乗る。"""
     try:
         import torch
 
@@ -575,6 +611,40 @@ def _vram_gb():
     except Exception:  # noqa: BLE001
         pass
     return None
+
+
+class _VramPeak:
+    """with ブロック中、デバイス VRAM 消費を ~0.5s 間隔でサンプリングしてピークを持つ。
+    ComfyUI サブプロセスの推論中ピークを worker 側から観測するため（point-in-time の
+    _vram_gb() では谷を踏むため）。"""
+
+    def __init__(self, interval: float = 0.5):
+        self.interval = interval
+        self.peak = _vram_gb()
+        self._stop = None
+        self._thr = None
+
+    def __enter__(self):
+        import threading
+
+        self._stop = threading.Event()
+
+        def _loop():
+            while not self._stop.wait(self.interval):
+                v = _vram_gb()
+                if v is not None and (self.peak is None or v > self.peak):
+                    self.peak = v
+
+        self._thr = threading.Thread(target=_loop, daemon=True)
+        self._thr.start()
+        return self
+
+    def __exit__(self, *_exc):
+        if self._stop:
+            self._stop.set()
+        if self._thr:
+            self._thr.join(timeout=2)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -683,7 +753,24 @@ def _start_comfy(extra_argv: list, wait_timeout: int = 240) -> "subprocess.Popen
     """ComfyUI を起動して /system_stats が返るまで待つ。"""
     import urllib.request
 
-    argv = ["python", "main.py", *extra_argv, "--listen", "127.0.0.1", "--port", str(COMFY_PORT)]
+    # --use-sage-attention は sageattention 未導入だと ComfyUI が起動時に
+    # ハード fail する（code 255）。image ビルドの SageAttention は
+    # `|| echo ... SDPA fallback` で fail-open にしてあるので、実際に
+    # import できるときだけ渡す。できなければ ComfyUI native の
+    # comfy_kitchen(cuda/eager) attention に自動フォールバックする。
+    argv_extra = list(extra_argv)
+    if "--use-sage-attention" in argv_extra:
+        try:
+            import sageattention  # noqa: F401
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[comfy] sageattention 未導入（{type(exc).__name__}）— "
+                "--use-sage-attention を外し native attention で起動",
+                flush=True,
+            )
+            argv_extra = [a for a in argv_extra if a != "--use-sage-attention"]
+
+    argv = ["python", "main.py", *argv_extra, "--listen", "127.0.0.1", "--port", str(COMFY_PORT)]
     proc = subprocess.Popen(argv, cwd=COMFY_DIR)
     deadline = time.time() + wait_timeout
     while time.time() < deadline:
@@ -775,7 +862,8 @@ def probe_imports() -> dict:
         proc = _start_comfy(["--cpu"], wait_timeout=300)
         result["comfy_boot"] = "OK"
 
-        for ct in ("SeedVR2VideoUpscaler", "LoadImage", "SaveImage",
+        for ct in ("SeedVR2VideoUpscaler", "SeedVR2LoadDiTModel", "SeedVR2LoadVAEModel",
+                   "LoadImage", "SaveImage",
                    "UpscaleModelLoader", "ImageUpscaleWithModel"):
             info = _object_info(ct)
             if info:
@@ -931,15 +1019,21 @@ class SeedVR2Worker:
         workflow = build_upscale_workflow(model_key, params or {}, in_name)
 
         t0 = time.time()
-        data, filename = self._run_workflow(workflow)
+        with _VramPeak() as vp:
+            data, filename = self._run_workflow(workflow)
         elapsed = round(time.time() - t0, 2)
-        print(f"[seedvr2] {model_key} -> {filename} in {elapsed}s VRAM={_vram_gb()}GB", flush=True)
+        print(
+            f"[seedvr2] {model_key} -> {filename} in {elapsed}s "
+            f"VRAM peak={vp.peak}GB now={_vram_gb()}GB",
+            flush=True,
+        )
         return {
             "image_base64": base64.b64encode(data).decode("ascii"),
             "filename": filename,
             "model_key": model_key,
             "elapsed_time": elapsed,
             "vram_used_gb": _vram_gb(),
+            "vram_peak_gb": vp.peak,
         }
 
     @modal.fastapi_endpoint(method="POST")
@@ -1015,7 +1109,8 @@ def gpu_smoke_fn(models=None) -> dict:
             f.write(payload)
 
         for key in (models or _enabled_models()):
-            wf = build_upscale_workflow(key, {}, "smoke_in.png")
+            # 静止画 1 枚なので batch_size=1（4n+1・フレーム数一致が最適）。
+            wf = build_upscale_workflow(key, {"batch_size": 1}, "smoke_in.png")
             t0 = time.time()
             try:
                 # _run_workflow を関数内で最小再現
@@ -1087,3 +1182,49 @@ def main(
     out = dst / result["filename"]
     out.write_bytes(base64.b64decode(result["image_base64"]))
     print(f"[main] {model} -> {out} in {result['elapsed_time']}s (VRAM {result['vram_used_gb']}GB)")
+
+
+@app.local_entrypoint()
+def bench(
+    image_dir: str,
+    model: str = "seedvr2_7b",
+    target_short: int = DEFAULT_TARGET_SHORT,
+    out_dir: str = "./upscale_out",
+):
+    """品質 + 性能ベンチ: image_dir 内の画像を全部 SeedVR2 に通し、最初の 1 枚は
+    warm 再実行して cold/warm を比較。出力を out_dir へ保存。
+
+    modal run modal_seedvr2_worker.py::bench --image-dir ./upscale_bench
+    """
+    exts = {".png", ".jpg", ".jpeg", ".jfif", ".webp", ".bmp"}
+    src_dir = pathlib.Path(image_dir).expanduser()
+    imgs = sorted(p for p in src_dir.iterdir() if p.suffix.lower() in exts)
+    # 同名 .jfif/.jpg の重複を落とす（stem 単位で 1 つ）。
+    seen: dict = {}
+    for p in imgs:
+        seen.setdefault(p.stem, p)
+    imgs = list(seen.values())
+    if not imgs:
+        raise SystemExit(f"no images in {src_dir}")
+
+    ensure_upscalers_cached.remote([model])
+    dst = pathlib.Path(out_dir).expanduser()
+    dst.mkdir(parents=True, exist_ok=True)
+
+    plan = list(imgs) + [imgs[0]]  # 末尾に 1 枚目をもう一度（warm）
+    rows = []
+    for i, src in enumerate(plan):
+        b64 = base64.b64encode(src.read_bytes()).decode("ascii")
+        r = SeedVR2Worker().run_upscale.remote(
+            b64, model_key=model, params={"target_short": target_short, "batch_size": 1},
+        )
+        tag = f"{src.stem}{'_warm' if i == len(plan) - 1 else ''}"
+        out = dst / f"{tag}__{r['filename']}"
+        out.write_bytes(base64.b64decode(r["image_base64"]))
+        rows.append((tag, r["elapsed_time"], r.get("vram_peak_gb"), r.get("vram_used_gb")))
+        print(f"[bench] {tag}: {r['elapsed_time']}s  peak={r.get('vram_peak_gb')}GB -> {out.name}", flush=True)
+
+    print("\n=== SeedVR2 bench ===")
+    print(f"{'image':<40} {'sec':>8} {'peak GB':>9} {'end GB':>8}")
+    for tag, sec, peak, end in rows:
+        print(f"{tag:<40} {sec:>8} {str(peak):>9} {str(end):>8}")
