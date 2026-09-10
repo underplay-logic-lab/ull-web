@@ -598,7 +598,10 @@ def _load_input_bytes(spec: str) -> bytes:
 
 def _vram_gb():
     """実効 VRAM 消費量のみ（分母・％・GPU 名は出さない — CLAUDE.md §2）。
-    キー名は Studio 共通の vram_used_gb（studio-vram-badge.md）。"""
+    キー名は Studio 共通の vram_used_gb（studio-vram-badge.md）。
+
+    ComfyUI は別プロセスだが mem_get_info はデバイス全体（全プロセス）の
+    free/total を返すので、サブプロセスの消費もここに乗る。"""
     try:
         import torch
 
@@ -608,6 +611,40 @@ def _vram_gb():
     except Exception:  # noqa: BLE001
         pass
     return None
+
+
+class _VramPeak:
+    """with ブロック中、デバイス VRAM 消費を ~0.5s 間隔でサンプリングしてピークを持つ。
+    ComfyUI サブプロセスの推論中ピークを worker 側から観測するため（point-in-time の
+    _vram_gb() では谷を踏むため）。"""
+
+    def __init__(self, interval: float = 0.5):
+        self.interval = interval
+        self.peak = _vram_gb()
+        self._stop = None
+        self._thr = None
+
+    def __enter__(self):
+        import threading
+
+        self._stop = threading.Event()
+
+        def _loop():
+            while not self._stop.wait(self.interval):
+                v = _vram_gb()
+                if v is not None and (self.peak is None or v > self.peak):
+                    self.peak = v
+
+        self._thr = threading.Thread(target=_loop, daemon=True)
+        self._thr.start()
+        return self
+
+    def __exit__(self, *_exc):
+        if self._stop:
+            self._stop.set()
+        if self._thr:
+            self._thr.join(timeout=2)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -982,15 +1019,21 @@ class SeedVR2Worker:
         workflow = build_upscale_workflow(model_key, params or {}, in_name)
 
         t0 = time.time()
-        data, filename = self._run_workflow(workflow)
+        with _VramPeak() as vp:
+            data, filename = self._run_workflow(workflow)
         elapsed = round(time.time() - t0, 2)
-        print(f"[seedvr2] {model_key} -> {filename} in {elapsed}s VRAM={_vram_gb()}GB", flush=True)
+        print(
+            f"[seedvr2] {model_key} -> {filename} in {elapsed}s "
+            f"VRAM peak={vp.peak}GB now={_vram_gb()}GB",
+            flush=True,
+        )
         return {
             "image_base64": base64.b64encode(data).decode("ascii"),
             "filename": filename,
             "model_key": model_key,
             "elapsed_time": elapsed,
             "vram_used_gb": _vram_gb(),
+            "vram_peak_gb": vp.peak,
         }
 
     @modal.fastapi_endpoint(method="POST")
@@ -1139,3 +1182,49 @@ def main(
     out = dst / result["filename"]
     out.write_bytes(base64.b64decode(result["image_base64"]))
     print(f"[main] {model} -> {out} in {result['elapsed_time']}s (VRAM {result['vram_used_gb']}GB)")
+
+
+@app.local_entrypoint()
+def bench(
+    image_dir: str,
+    model: str = "seedvr2_7b",
+    target_short: int = DEFAULT_TARGET_SHORT,
+    out_dir: str = "./upscale_out",
+):
+    """品質 + 性能ベンチ: image_dir 内の画像を全部 SeedVR2 に通し、最初の 1 枚は
+    warm 再実行して cold/warm を比較。出力を out_dir へ保存。
+
+    modal run modal_seedvr2_worker.py::bench --image-dir ./upscale_bench
+    """
+    exts = {".png", ".jpg", ".jpeg", ".jfif", ".webp", ".bmp"}
+    src_dir = pathlib.Path(image_dir).expanduser()
+    imgs = sorted(p for p in src_dir.iterdir() if p.suffix.lower() in exts)
+    # 同名 .jfif/.jpg の重複を落とす（stem 単位で 1 つ）。
+    seen: dict = {}
+    for p in imgs:
+        seen.setdefault(p.stem, p)
+    imgs = list(seen.values())
+    if not imgs:
+        raise SystemExit(f"no images in {src_dir}")
+
+    ensure_upscalers_cached.remote([model])
+    dst = pathlib.Path(out_dir).expanduser()
+    dst.mkdir(parents=True, exist_ok=True)
+
+    plan = list(imgs) + [imgs[0]]  # 末尾に 1 枚目をもう一度（warm）
+    rows = []
+    for i, src in enumerate(plan):
+        b64 = base64.b64encode(src.read_bytes()).decode("ascii")
+        r = SeedVR2Worker().run_upscale.remote(
+            b64, model_key=model, params={"target_short": target_short, "batch_size": 1},
+        )
+        tag = f"{src.stem}{'_warm' if i == len(plan) - 1 else ''}"
+        out = dst / f"{tag}__{r['filename']}"
+        out.write_bytes(base64.b64decode(r["image_base64"]))
+        rows.append((tag, r["elapsed_time"], r.get("vram_peak_gb"), r.get("vram_used_gb")))
+        print(f"[bench] {tag}: {r['elapsed_time']}s  peak={r.get('vram_peak_gb')}GB -> {out.name}", flush=True)
+
+    print("\n=== SeedVR2 bench ===")
+    print(f"{'image':<40} {'sec':>8} {'peak GB':>9} {'end GB':>8}")
+    for tag, sec, peak, end in rows:
+        print(f"{tag:<40} {sec:>8} {str(peak):>9} {str(end):>8}")
