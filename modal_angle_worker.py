@@ -76,6 +76,7 @@ import base64
 import gc
 import glob
 import io
+import math
 import os
 import pathlib
 import threading
@@ -304,6 +305,42 @@ def _ensure_angle_lora(token: str | None = None) -> str:
 #     Modal のインフラ障害誤認による無限リトライを避けるため）
 WATCHDOG_FREEZE_S = int(os.environ.get("ANGLE_WATCHDOG_FREEZE_S", str(15 * 60)))
 WATCHDOG_POLL_S = 15
+
+# --- Modal 強制 timeout（wedge 焼損キャップ）をジョブ単位で決める ------------
+# in-process の二重ウォッチドッグは「健全だが長い / 遅いジョブ」は綺麗に止める
+# が、@modal.enter() の wedge / GIL 飢餓 / スレッド死には無力で、そのとき
+# GPU を焼き続けるのを殺せるのは Modal 強制 timeout だけ。だから固定の
+# 上限は「正規ジョブを絶対に切らない範囲でできるだけ低く」が正解。
+#   job_timeout = ceil30m( min(HARD_CAP, (max_allowed_time or フォールバック) + マージン) )
+# マージン = 「cost_stop で協調停止するはず」と「Modal が強制 kill」の隙間。
+# 健全なら cost-guard が先に止め、wedge ならその margin 秒後に Modal が殺す
+# → 焼損時間が支払いクレジット（= max_allowed_time）に比例する。
+#
+# ⚠️ with_options(timeout=) は timeout 値ごとに別 autoscale 変種を作る。値を
+# 連続値のまま使うと warm プールが断片化し「🔥火をくべる」連投 UX
+# （scaledown_window=30 の warm 再利用）が壊れる。30 分単位に切り上げて
+# バケット化し、対話的な小ジョブが全部同じ変種（=同じ warm プール）に
+# 乗るようにする。長時間の大ジョブは元々単発なので変種が増えても実害なし。
+ANGLE_JOB_TIMEOUT_MARGIN_S = _env_int("ANGLE_JOB_TIMEOUT_MARGIN_S", 20 * 60)
+ANGLE_JOB_TIMEOUT_HARD_CAP_S = _env_int("ANGLE_JOB_TIMEOUT_HARD_CAP_S", 6 * 60 * 60)
+ANGLE_JOB_TIMEOUT_FALLBACK_S = _env_int("ANGLE_JOB_TIMEOUT_FALLBACK_S", 2 * 60 * 60)
+ANGLE_JOB_TIMEOUT_BUCKET_S = _env_int("ANGLE_JOB_TIMEOUT_BUCKET_S", 30 * 60)
+
+
+def _resolve_job_timeout(max_allowed_time) -> int:
+    """dispatch payload の max_allowed_time から Modal 強制 timeout を算出。
+
+    30 分単位に切り上げてバケット化（warm プール断片化を避ける）。
+    """
+    try:
+        mat = float(max_allowed_time or 0)
+    except (TypeError, ValueError):
+        mat = 0.0
+    base = mat if mat > 0 else float(ANGLE_JOB_TIMEOUT_FALLBACK_S)
+    raw = min(ANGLE_JOB_TIMEOUT_HARD_CAP_S, base + ANGLE_JOB_TIMEOUT_MARGIN_S)
+    bucket = max(1, ANGLE_JOB_TIMEOUT_BUCKET_S)
+    bucketed = math.ceil(raw / bucket) * bucket
+    return int(min(ANGLE_JOB_TIMEOUT_HARD_CAP_S, bucketed))
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
 
@@ -845,13 +882,12 @@ def ensure_qwen_edit_cached(repo: str = "") -> dict:
     # 走ってまた os._exit … の無限ループで GPU を焼き続ける（2026-09-07 実障害）。
     # retries=0 ＋ run_edit_job 冒頭の idempotency ガードで二重に防ぐ。
     retries=0,
-    # 外部歯止め（Modal 強制）。以前は timeout=86400（24h）+ in-process
-    # ウォッチドッグ依存だったが、ウォッチドッグは daemon スレッドなので
-    # コンテナが @modal.enter() 中に wedge する / GIL が飢餓する / スレッドが
-    # 死ぬと発火せず、24h GPU を焼き続ける（＝「意図せず残る」コンテナの主因）。
-    # 構図は 3 軸固定で最大 6×3×3=54、Pro(40 step) の現実的最悪でも Blackwell
-    # で ~25 分 + コールドスタート/warmup 余裕。2h を Modal 強制の絶対上限とし、
-    # 高速側の歯止めは従来どおり run_edit_job の二重ウォッチドッグが担う。
+    # 外部歯止め（Modal 強制）。ここはあくまで「直 .remote()（CLI）」用の既定値。
+    # 本番の非同期ジョブは angle_generate_dispatch が .with_options(timeout=...) で
+    # ジョブ単位に上書きする（_resolve_job_timeout: max_allowed_time + マージン、
+    # 最大 6h）。焼損キャップが支払いクレジットに比例するようにするため。
+    # 以前は固定 2h だったが、サブ参照ありの満構図（96×~60s ≈ 1.6h + warmup）で
+    # 正規ジョブがこの壁に密着していた。
     timeout=2 * 60 * 60,
     scaledown_window=30,
     min_containers=0,
@@ -1661,7 +1697,15 @@ def angle_generate_dispatch(item: dict, request: fastapi.Request):
     if not (_has_images or item.get("image") or item.get("image_b64")):
         raise fastapi.HTTPException(status_code=400, detail="image is required")
 
-    call = QwenImageEditWorker().run_edit_job.spawn(item)
+    # wedge 焼損キャップをジョブ単位で（_resolve_job_timeout の docstring 参照）。
+    job_timeout = _resolve_job_timeout(item.get("max_allowed_time"))
+    worker = QwenImageEditWorker.with_options(timeout=job_timeout)
+    call = worker().run_edit_job.spawn(item)
+    print(
+        f"[angle-dispatch] {job_id}: {len(instructions)} 構図 / "
+        f"max_allowed_time={item.get('max_allowed_time')!r} → modal timeout={job_timeout}s",
+        flush=True,
+    )
     return {"ok": True, "job_id": job_id, "call_id": call.object_id}
 
 

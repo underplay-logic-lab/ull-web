@@ -50,10 +50,24 @@ export function angleModeSteps(): number {
 // （ワーカー側 MAX_REF_IMAGES と一致させること）。
 export const MAX_SUB_REFERENCE_IMAGES = 3;
 
-// サブ参照ありのときの構図数上限。B300 実測でサブ 3 枚は 1 構図 ~60s なので、
-// 96 構図フルだと 1 本 ~1.6h（Modal timeout 2h に接近）＋ UX が厳しい。
-// サブ参照ありのときだけ緩めに絞る（1 枚のみの通常モードは MAX_ANGLES のまま）。
-export const MAX_ANGLES_WITH_SUBREFS = 48;
+// 1 構図あたりの生成時間の概算（秒・B300・warm）。実測: サブ 0 枚 ~20s /
+// サブ 3 枚 ~61s（per-step がサブ枚数にほぼ線形）。ジョブ全体の所要見積り
+// （UI 表示用）と、ワーカー側 Modal timeout の妥当性確認に使う。
+export function angleSecondsPerAngle(subImageCount = 0): number {
+  const n = Math.max(0, Math.min(MAX_SUB_REFERENCE_IMAGES, Math.trunc(subImageCount || 0)));
+  return 20 + 14 * n;
+}
+
+// ジョブ全体のおおよその生成時間（秒）。コールドスタート + 初回 warmup の
+// 一過性コスト（~約8分）は含めない純生成ぶん。
+export function angleEstimatedSeconds(angleCount: number, subImageCount = 0): number {
+  return Math.max(0, Math.trunc(angleCount || 0)) * angleSecondsPerAngle(subImageCount);
+}
+
+// 構図数の上限はサブ参照の有無に関わらず撤廃（原価の歯止めは「枚数」ではなく
+// 「時間」——課金が枚数連動、ワーカーの Modal timeout がジョブ単位で
+// max_allowed_time + マージンにスケールし、二重ウォッチドッグが守る）。
+// 旧 MAX_ANGLES_WITH_SUBREFS（サブ参照ありは 48 に固定）は 2026-09-10 撤廃。
 
 // Multi-Reference（Pro）: サブ参照 1 枚ごとに生成コスト（＝時間）が線形に増える
 // （B300 実測: サブ3枚で per-構図 時間 ×3.0）。per-構図 の消費クレジットにも

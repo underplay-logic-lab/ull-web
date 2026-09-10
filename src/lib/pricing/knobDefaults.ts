@@ -187,11 +187,14 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     isPublic: false,
   },
   angle_cold_start_grace_s: {
-    value: 300,
+    // コールド時の初回 forward は Qwen の RoPE 複素演算が Inductor 非対応で
+    // eager フォールバックし、B300 でも ~500s かかる（一過性）。旧 300 だと
+    // コールドの大ジョブが生成前に損切り自爆しうるため 600 に引き上げ。
+    value: 600,
     label: "Angle 損切り：コールドスタート猶予",
     category: "cost_guard",
     unit: "s",
-    description: "コンテナ起動 + torch.compile ウォームアップの固定猶予",
+    description: "コンテナ起動 + モデルロード + 初回 forward warmup の固定猶予",
     isPublic: false,
   },
   lora_cost_guard_multiplier: {
