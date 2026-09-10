@@ -739,27 +739,31 @@ def _get_upscale_job_status(job_id: str):
     return None
 
 
-def _upload_upscale_image(user_id: str, job_id: str, png_bytes: bytes):
-    """PNG を upscale-results バケット（public）へ upsert し、公開 URL を返す。
-    ストレージ不通なら None。"""
+def _upload_upscale_image(user_id: str, job_id: str, img_bytes: bytes, ext: str = "png"):
+    """完成画像を upscale-results バケット（public）へ upsert し、公開 URL を返す。
+    ストレージ不通なら None。ext は "png" / "webp" / "jpeg"。"""
     import requests
 
     supabase_url = os.environ.get("SUPABASE_URL")
     service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not supabase_url or not service_key:
         return None
-    obj_path = f"{user_id or 'anon'}/{job_id}.png"
+    ext = (ext or "png").lstrip(".").lower()
+    mime = {"png": "image/png", "webp": "image/webp", "jpg": "image/jpeg", "jpeg": "image/jpeg"}.get(
+        ext, "image/png"
+    )
+    obj_path = f"{user_id or 'anon'}/{job_id}.{ext}"
     try:
         res = requests.post(
             f"{supabase_url}/storage/v1/object/{_UPSCALE_RESULTS_BUCKET}/{obj_path}",
             headers={
                 "apikey": service_key,
                 "Authorization": f"Bearer {service_key}",
-                "Content-Type": "image/png",
+                "Content-Type": mime,
                 "x-upsert": "true",
             },
-            data=png_bytes,
-            timeout=120,
+            data=img_bytes,
+            timeout=180,
         )
         res.raise_for_status()
         return f"{supabase_url}/storage/v1/object/public/{_UPSCALE_RESULTS_BUCKET}/{obj_path}"
@@ -1129,7 +1133,7 @@ class SeedVR2Worker:
         if not prompt_id:
             raise RuntimeError(f"/prompt returned no prompt_id: {resp.text[:500]}")
 
-        deadline = time.time() + 15 * 60
+        deadline = time.time() + _env_int("SEEDVR2_WORKFLOW_TIMEOUT_S", 15 * 60)
         while time.time() < deadline:
             hist = requests.get(
                 f"http://127.0.0.1:{COMFY_PORT}/history/{prompt_id}", timeout=30
@@ -1180,6 +1184,30 @@ class SeedVR2Worker:
                 out_w, out_h = im.size
         except Exception:  # noqa: BLE001
             pass
+
+        # 大きい出力（8K PNG は ~30MB、横長だと 50MB+）は WebP q92 へ再エンコード。
+        # 視覚的にほぼ無損失で、ストレージのファイル上限に安全に収まる。
+        # しきい値は env で調整可（0 で無効）。
+        webp_threshold = _env_int("SEEDVR2_WEBP_ABOVE_BYTES", 20 * 1024 * 1024)
+        if webp_threshold and len(data) > webp_threshold:
+            try:
+                from PIL import Image
+
+                with Image.open(io.BytesIO(data)) as im:
+                    im = im.convert("RGB")
+                    buf = io.BytesIO()
+                    im.save(buf, format="WEBP", quality=92, method=5)
+                new_data = buf.getvalue()
+                if new_data and len(new_data) < len(data):
+                    print(
+                        f"[seedvr2] re-encoded PNG {len(data)/1e6:.1f}MB → "
+                        f"WebP {len(new_data)/1e6:.1f}MB",
+                        flush=True,
+                    )
+                    data = new_data
+                    filename = filename.rsplit(".", 1)[0] + ".webp"
+            except Exception as exc:  # noqa: BLE001
+                print(f"[seedvr2] webp re-encode skipped: {exc}", flush=True)
 
         print(
             f"[seedvr2] {model_key} -> {filename} {out_w}x{out_h} in {elapsed}s "
@@ -1285,13 +1313,15 @@ class SeedVR2Worker:
             return {"ok": False, "error": msg}
         _wd_stop.set()
 
-        url = _upload_upscale_image(user_id, job_id, r["data"])
+        _ext = (r.get("filename") or "out.png").rsplit(".", 1)[-1].lower()
+        url = _upload_upscale_image(user_id, job_id, r["data"], _ext)
         meta = {
             "vram_used_gb": r["vram_used_gb"],
             "vram_peak_gb": r["vram_peak_gb"],
             "elapsed_time": r["elapsed_time"],
             "out_width": r["out_width"],
             "out_height": r["out_height"],
+            "out_bytes": len(r["data"]),
             "model_key": r["model_key"],
             "preset": preset,
         }
@@ -1473,23 +1503,43 @@ def main(
     image_path: str,
     model: str = "seedvr2_7b",
     target_short: int = DEFAULT_TARGET_SHORT,
+    max_edge: int = DEFAULT_MAX_RESOLUTION,
+    color_correction: str = "lab",
     out_dir: str = "./upscale_out",
 ):
-    """modal run modal_seedvr2_worker.py --image-path ./in.png --model seedvr2_7b"""
+    """modal run modal_seedvr2_worker.py::main --image-path ./in.png --model seedvr2_7b
+
+    8K/16K 実測: --target-short 4320 --max-edge 8192 等（max_resolution を上げないと
+    レジストリ既定 4096 でクランプされる）。--color-correction none で LAB 転写を
+    skip した時間も比較できる。
+    """
     src = pathlib.Path(image_path).expanduser()
     if not src.is_file():
         raise SystemExit(f"--image-path is not a file: {src}")
 
     ensure_upscalers_cached.remote([model])
     b64 = base64.b64encode(src.read_bytes()).decode("ascii")
-    result = SeedVR2Worker().run_upscale.remote(
-        b64, model_key=model, params={"target_short": target_short}
+    # 8K/16K 実測用に Modal 強制 timeout を 45 分へ（既定 20 分だと 16K が切れうる）。
+    worker = SeedVR2Worker.with_options(timeout=45 * 60)
+    result = worker().run_upscale.remote(
+        b64,
+        model_key=model,
+        params={
+            "target_short": target_short,
+            "max_resolution": max_edge,
+            "batch_size": 1,
+            "color_correction": color_correction,
+        },
     )
     dst = pathlib.Path(out_dir).expanduser()
     dst.mkdir(parents=True, exist_ok=True)
     out = dst / result["filename"]
     out.write_bytes(base64.b64decode(result["image_base64"]))
-    print(f"[main] {model} -> {out} in {result['elapsed_time']}s (VRAM {result['vram_used_gb']}GB)")
+    print(
+        f"[main] {model} {result.get('out_width')}x{result.get('out_height')} "
+        f"in {result['elapsed_time']}s  VRAM peak={result.get('vram_peak_gb')}GB "
+        f"end={result['vram_used_gb']}GB -> {out}"
+    )
 
 
 @app.local_entrypoint()

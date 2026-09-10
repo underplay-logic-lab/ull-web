@@ -21,6 +21,7 @@ export type KnobKey =
   | "cinematic_cinema_master"
   | "upscale_per_mp"
   | "upscale_min_credits"
+  | "upscale_mult_power"
   // --- lora_formula (public) ---
   | "lora_per_step"
   | "lora_mult_model_heavy"
@@ -137,12 +138,23 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     isPublic: true,
   },
   upscale_min_credits: {
-    // 小さい出力（HD プリセット等）でもコールドスタートを償却できる下限。
+    // 小さい出力（×2 等）でもコールドスタートを償却できる下限。
     value: 8,
     label: "超解像 最低クレジット",
     category: "feature_credits",
     unit: "C",
     description: "1枚あたりの消費クレジット下限（コールドスタート償却）",
+    isPublic: true,
+  },
+  upscale_mult_power: {
+    // 8K パワーティア（完全ノンタイル・大判）の課金係数。B300 実測で 8K は
+    // ~27MP・VRAM 85GB・cold ~100s。ローカル 24GB では不可能なレンジなので
+    // プレミアム扱い。1.5 で 8K 縦(~27MP) ≈ 120C ≈ ¥200。
+    value: 1.5,
+    label: "超解像 パワーティア係数（8K）",
+    category: "feature_credits",
+    unit: "×",
+    description: "8K モードの 1構図単価に乗せる係数。倍率モード(×2〜4)は 1.0。",
     isPublic: true,
   },
   // ------------------------------------------------------------- lora_formula

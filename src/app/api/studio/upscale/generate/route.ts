@@ -8,13 +8,14 @@ import { upscaleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import { autoExtendGpuWarmOnSuccess } from "@/lib/gpuWarmAutoExtend";
 import { readImageDimensions } from "@/lib/imageDimensions";
 import {
-  DEFAULT_RESOLUTION_PRESET,
+  DEFAULT_UPSCALE_MODE,
   DEFAULT_UPSCALE_MODEL,
   MAX_INPUT_BYTES_API,
-  RESOLUTION_PRESETS,
   UPSCALE_MODELS,
-  getResolutionPreset,
+  UPSCALE_MODES,
+  getUpscaleMode,
   getUpscaleModel,
+  resolveTargetShort,
   upscaleCostBreakdown,
   upscaleCreditsWorstCase,
 } from "@/lib/upscaleStudio";
@@ -24,7 +25,7 @@ import {
 // 生成そのものは待たない。
 export const maxDuration = 30;
 
-const VALID_PRESET_IDS: Set<string> = new Set(RESOLUTION_PRESETS.map((p) => p.id));
+const VALID_MODE_IDS: Set<string> = new Set(UPSCALE_MODES.map((m) => m.id));
 const VALID_MODEL_KEYS: Set<string> = new Set(UPSCALE_MODELS.map((m) => m.key));
 
 function decodeBase64Image(raw: unknown): Buffer {
@@ -62,7 +63,7 @@ export async function POST(request: Request) {
   const contentType = request.headers.get("content-type") ?? "";
   let imageBuffer: Buffer = Buffer.alloc(0);
   let modelKeyRaw: unknown = DEFAULT_UPSCALE_MODEL;
-  let presetRaw: unknown = DEFAULT_RESOLUTION_PRESET;
+  let modeRaw: unknown = DEFAULT_UPSCALE_MODE;
 
   if (contentType.includes("application/json")) {
     let body: Record<string, unknown>;
@@ -73,7 +74,7 @@ export async function POST(request: Request) {
     }
     imageBuffer = decodeBase64Image(body.image ?? body.image_b64);
     modelKeyRaw = body.modelKey ?? body.model_key ?? DEFAULT_UPSCALE_MODEL;
-    presetRaw = body.preset ?? DEFAULT_RESOLUTION_PRESET;
+    modeRaw = body.mode ?? body.preset ?? DEFAULT_UPSCALE_MODE;
   } else {
     let formData: FormData;
     try {
@@ -93,7 +94,7 @@ export async function POST(request: Request) {
     }
     imageBuffer = Buffer.from(await imageFile.arrayBuffer());
     modelKeyRaw = formData.get("modelKey") ?? DEFAULT_UPSCALE_MODEL;
-    presetRaw = formData.get("preset") ?? DEFAULT_RESOLUTION_PRESET;
+    modeRaw = formData.get("mode") ?? formData.get("preset") ?? DEFAULT_UPSCALE_MODE;
   }
 
   if (imageBuffer.length === 0) {
@@ -109,12 +110,12 @@ export async function POST(request: Request) {
   const modelKey = typeof modelKeyRaw === "string" && VALID_MODEL_KEYS.has(modelKeyRaw)
     ? modelKeyRaw
     : DEFAULT_UPSCALE_MODEL;
-  const presetId = typeof presetRaw === "string" && VALID_PRESET_IDS.has(presetRaw)
-    ? presetRaw
-    : DEFAULT_RESOLUTION_PRESET;
+  const modeId = typeof modeRaw === "string" && VALID_MODE_IDS.has(modeRaw)
+    ? modeRaw
+    : DEFAULT_UPSCALE_MODE;
 
   const model = getUpscaleModel(modelKey);
-  const preset = getResolutionPreset(presetId);
+  const mode = getUpscaleMode(modeId);
 
   // 入力寸法をサーバー側で読む（クライアント申告は信用しない）。
   const dims = readImageDimensions(imageBuffer);
@@ -123,17 +124,19 @@ export async function POST(request: Request) {
   let creditsCost: number;
   let outWidth = 0;
   let outHeight = 0;
+  let targetShort = mode.targetShort ?? 1920;
   if (dims && dims.width > 0 && dims.height > 0) {
     const bd = upscaleCostBreakdown({
       inW: dims.width,
       inH: dims.height,
-      presetId,
+      modeId,
       modelKey,
       knobs,
     });
     creditsCost = bd.credits;
     outWidth = bd.outputWidth;
     outHeight = bd.outputHeight;
+    targetShort = resolveTargetShort(dims.width, dims.height, mode);
   } else {
     // 寸法が読めない形式（HEIC 等）。worst-case 課金で受け、worker が実寸法を
     // metadata に書く。
@@ -188,13 +191,15 @@ export async function POST(request: Request) {
       user_id: user.id,
       status: "pending",
       model_key: modelKey,
-      preset: presetId,
+      preset: modeId,
       credits_cost: creditsCost,
       metadata: {
         in_width: dims?.width ?? null,
         in_height: dims?.height ?? null,
         est_out_width: outWidth || null,
         est_out_height: outHeight || null,
+        target_short: targetShort,
+        power_tier: Boolean(mode.powerTier),
         model_label: model.label,
       },
     })
@@ -220,10 +225,10 @@ export async function POST(request: Request) {
       maxAllowedTime: upscaleMaxAllowedTime({ creditsCost, knobs }),
       imageBase64: imageBuffer.toString("base64"),
       modelKey,
-      presetId,
+      presetId: modeId,
       params: {
-        target_short: preset.targetShort,
-        max_resolution: preset.maxEdge,
+        target_short: targetShort,
+        max_resolution: mode.maxEdge,
         batch_size: 1,
       },
     });
