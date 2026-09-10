@@ -53,6 +53,7 @@ ai_toolkit-*.whl
 
 # `modal run modal_angle_worker.py` local CLI output
 /angle_out/
+/angle_bench/
 
 # TRELLIS / angle worker local CLI output
 trellis_out/
