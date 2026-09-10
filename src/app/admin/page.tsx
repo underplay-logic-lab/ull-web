@@ -1,15 +1,23 @@
 "use client";
 
 import { useState } from "react";
-import { Activity, DollarSign, FileText, HardDrive, Sparkles, Workflow } from "lucide-react";
+import { Activity, DollarSign, FileText, HardDrive, Image, Sparkles, Workflow } from "lucide-react";
 import { PresetsTab } from "./_components/PresetsTab";
 import { PricingTab } from "./_components/PricingTab";
 import { LogsTab } from "./_components/LogsTab";
 import { CustomWorkflowsTab } from "./_components/CustomWorkflowsTab";
 import { SiteContentsTab } from "./_components/SiteContentsTab";
 import { ModalStorageTab } from "./_components/ModalStorageTab";
+import { GeneratedArtifactsTab } from "./_components/GeneratedArtifactsTab";
 
-type AdminTab = "presets" | "pricing" | "logs" | "custom-workflows" | "site-contents" | "modal-storage";
+type AdminTab =
+  | "presets"
+  | "pricing"
+  | "logs"
+  | "custom-workflows"
+  | "site-contents"
+  | "modal-storage"
+  | "generated";
 
 const TABS: { id: AdminTab; label: string; icon: typeof Sparkles }[] = [
   { id: "presets", label: "プリセット管理", icon: Sparkles },
@@ -17,6 +25,7 @@ const TABS: { id: AdminTab; label: string; icon: typeof Sparkles }[] = [
   { id: "logs", label: "実稼働ログ & 粗利監視", icon: Activity },
   { id: "custom-workflows", label: "特化ワークフロー管理", icon: Workflow },
   { id: "site-contents", label: "サイトコンテンツ管理", icon: FileText },
+  { id: "generated", label: "生成物 & ストレージ", icon: Image },
   { id: "modal-storage", label: "Modal ストレージ & ノード管理", icon: HardDrive },
 ];
 
@@ -52,6 +61,7 @@ export default function AdminPage() {
       {activeTab === "logs" && <LogsTab />}
       {activeTab === "custom-workflows" && <CustomWorkflowsTab />}
       {activeTab === "site-contents" && <SiteContentsTab />}
+      {activeTab === "generated" && <GeneratedArtifactsTab />}
       {activeTab === "modal-storage" && <ModalStorageTab />}
     </div>
   );
