@@ -19,6 +19,8 @@ export type KnobKey =
   | "cinematic_speed"
   | "cinematic_standard"
   | "cinematic_cinema_master"
+  | "upscale_per_mp"
+  | "upscale_min_credits"
   // --- lora_formula (public) ---
   | "lora_per_step"
   | "lora_mult_model_heavy"
@@ -30,6 +32,8 @@ export type KnobKey =
   // --- cost_guard (server-only) ---
   | "angle_time_per_credit_s"
   | "angle_cold_start_grace_s"
+  | "upscale_time_per_credit_s"
+  | "upscale_cold_start_grace_s"
   | "lora_cost_guard_multiplier"
   | "lora_margin_target"
   | "lora_floor_prep_s"
@@ -120,6 +124,27 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     description: "1本あたりの消費クレジット（20ステップ / 1024px）",
     isPublic: true,
   },
+  upscale_per_mp: {
+    // 超解像スタジオ（SeedVR2）: 出力の 100 万画素あたりの消費クレジット。
+    // credits = max(upscale_min_credits, ceil(これ × 出力MP × モデル係数))。
+    // B300 実測: 出力 ~5MP を warm ~20s / cold ~60s。3 C/MP で 2K プリセット
+    // （~5MP）≈ 15C ≈ ¥25、cold 原価 ~¥19・warm ~¥6 → 黒字。
+    value: 3,
+    label: "超解像（100万画素あたり）",
+    category: "feature_credits",
+    unit: "C/MP",
+    description: "出力の100万画素あたりの消費クレジット（× モデル係数）",
+    isPublic: true,
+  },
+  upscale_min_credits: {
+    // 小さい出力（HD プリセット等）でもコールドスタートを償却できる下限。
+    value: 8,
+    label: "超解像 最低クレジット",
+    category: "feature_credits",
+    unit: "C",
+    description: "1枚あたりの消費クレジット下限（コールドスタート償却）",
+    isPublic: true,
+  },
   // ------------------------------------------------------------- lora_formula
   lora_per_step: {
     value: 0.1,
@@ -195,6 +220,24 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "cost_guard",
     unit: "s",
     description: "コンテナ起動 + モデルロード + 初回 forward warmup の固定猶予",
+    isPublic: false,
+  },
+  upscale_time_per_credit_s: {
+    value: 4,
+    label: "超解像 損切り：1C あたり猶予秒",
+    category: "cost_guard",
+    unit: "s/C",
+    description: "max_allowed_time = 消費C × これ + コールドスタート猶予",
+    isPublic: false,
+  },
+  upscale_cold_start_grace_s: {
+    // ComfyUI 起動 + SeedVR2 7B（16.5GB）ロード + 初回 forward warmup。
+    // B300 実測でコールド 1 枚目 ~40-60s。
+    value: 180,
+    label: "超解像 損切り：コールドスタート猶予",
+    category: "cost_guard",
+    unit: "s",
+    description: "ComfyUI 起動 + SeedVR2 重みロード + 初回 forward の固定猶予",
     isPublic: false,
   },
   lora_cost_guard_multiplier: {

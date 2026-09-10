@@ -557,6 +557,13 @@ precache_image = (
     .env(_hf_cache_env())
 )
 
+# 非同期ディスパッチ endpoint 用（GPU なし・.spawn() して即 ACK するだけ）。
+# _authorize（hmac）と .spawn() しか要らないので最小構成。
+dispatch_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .pip_install("fastapi[standard]", "requests")
+)
+
 
 # ---------------------------------------------------------------------------
 # Auth（他ワーカーと同一実装 — 共有シークレット wan-animate-auth）
@@ -645,6 +652,143 @@ class _VramPeak:
         if self._thr:
             self._thr.join(timeout=2)
         return False
+
+
+# ---------------------------------------------------------------------------
+# Supabase 連携（非同期ジョブ更新）— modal_angle_worker.py の同名ヘルパーと同型。
+# `supabase-model-downloads` シークレットが SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
+# を供給する（GPU クラスにマウント）。すべて best-effort で、アップスケール本体を
+# 落とさない。
+# ---------------------------------------------------------------------------
+_UPSCALE_RESULTS_BUCKET = "upscale-results"
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _supabase_request(method: str, path: str, **kwargs):
+    import requests
+
+    supabase_url = os.environ.get("SUPABASE_URL")
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not supabase_url or not service_key:
+        print("[upscale-job] Supabase env not configured — skipping update", flush=True)
+        return None
+    headers = {
+        "apikey": service_key,
+        "Authorization": f"Bearer {service_key}",
+        "Content-Type": "application/json",
+        **kwargs.pop("headers", {}),
+    }
+    return requests.request(method, f"{supabase_url}{path}", headers=headers, timeout=15, **kwargs)
+
+
+def _patch_upscale_job(job_id: str, fields: dict) -> None:
+    if not job_id:
+        return
+    try:
+        _supabase_request(
+            "PATCH",
+            "/rest/v1/upscale_jobs",
+            params={"id": f"eq.{job_id}"},
+            json={**fields, "updated_at": _now_iso()},
+            headers={"Prefer": "return=minimal"},
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        print(f"[upscale-job] failed to patch job {job_id}: {exc}", flush=True)
+
+
+def _merge_upscale_metadata(job_id: str, extra: dict) -> None:
+    """metadata は jsonb。周期 PATCH で既存キーを潰さないよう GET→merge→PATCH。"""
+    if not job_id:
+        return
+    try:
+        res = _supabase_request(
+            "GET",
+            "/rest/v1/upscale_jobs",
+            params={"id": f"eq.{job_id}", "select": "metadata"},
+        )
+        current = {}
+        if res is not None and res.ok:
+            rows = res.json()
+            if rows and isinstance(rows[0].get("metadata"), dict):
+                current = rows[0]["metadata"]
+        _patch_upscale_job(job_id, {"metadata": {**current, **extra}})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[upscale-job] metadata merge failed {job_id}: {exc}", flush=True)
+
+
+def _get_upscale_job_status(job_id: str):
+    """upscale_jobs.status を 1 発 GET。取得不能なら None（判定不能＝続行）。
+    Modal のクラッシュ由来リトライを冒頭で弾く idempotency ガード用。"""
+    if not job_id:
+        return None
+    try:
+        res = _supabase_request(
+            "GET",
+            "/rest/v1/upscale_jobs",
+            params={"id": f"eq.{job_id}", "select": "status,credits_cost,user_id"},
+        )
+        if res is not None and res.ok:
+            rows = res.json()
+            if rows:
+                return rows[0]
+    except Exception as exc:  # noqa: BLE001
+        print(f"[upscale-job] status GET failed {job_id}: {exc}", flush=True)
+    return None
+
+
+def _upload_upscale_image(user_id: str, job_id: str, png_bytes: bytes):
+    """PNG を upscale-results バケット（public）へ upsert し、公開 URL を返す。
+    ストレージ不通なら None。"""
+    import requests
+
+    supabase_url = os.environ.get("SUPABASE_URL")
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not supabase_url or not service_key:
+        return None
+    obj_path = f"{user_id or 'anon'}/{job_id}.png"
+    try:
+        res = requests.post(
+            f"{supabase_url}/storage/v1/object/{_UPSCALE_RESULTS_BUCKET}/{obj_path}",
+            headers={
+                "apikey": service_key,
+                "Authorization": f"Bearer {service_key}",
+                "Content-Type": "image/png",
+                "x-upsert": "true",
+            },
+            data=png_bytes,
+            timeout=120,
+        )
+        res.raise_for_status()
+        return f"{supabase_url}/storage/v1/object/public/{_UPSCALE_RESULTS_BUCKET}/{obj_path}"
+    except Exception as exc:  # noqa: BLE001
+        print(f"[upscale-job] image upload failed ({obj_path}): {exc}", flush=True)
+        return None
+
+
+def _refund_upscale_credits(user_id: str, amount: int) -> None:
+    """失敗ジョブの返金（best-effort・最大 1 回）。profiles.credits に加算。"""
+    if not user_id or not amount or amount <= 0:
+        return
+    try:
+        res = _supabase_request(
+            "GET", "/rest/v1/profiles",
+            params={"id": f"eq.{user_id}", "select": "credits"},
+        )
+        if res is None or not res.ok or not res.json():
+            return
+        current = res.json()[0].get("credits") or 0
+        _supabase_request(
+            "PATCH", "/rest/v1/profiles",
+            params={"id": f"eq.{user_id}"},
+            json={"credits": current + int(amount)},
+            headers={"Prefer": "return=minimal"},
+        )
+        print(f"[upscale-job] refunded {amount}C to {user_id}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[upscale-job] refund failed {user_id}: {exc}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -910,7 +1054,13 @@ def probe():
     timeout=20 * 60,
     scaledown_window=30,
     min_containers=0,
-    secrets=[modal.Secret.from_name("wan-animate-auth")],
+    secrets=[
+        modal.Secret.from_name("wan-animate-auth"),
+        modal.Secret.from_name("huggingface-secret"),
+        # SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY — 非同期ジョブが upscale_jobs を
+        # 直接 PATCH / rpc し、upscale-results バケットへ画像を上げるために必要。
+        modal.Secret.from_name("supabase-model-downloads"),
+    ],
 )
 class SeedVR2Worker:
     @modal.enter()
@@ -1006,9 +1156,8 @@ class SeedVR2Worker:
             time.sleep(2)
         raise TimeoutError("timed out waiting for ComfyUI")
 
-    @modal.method()
-    def run_upscale(self, image_spec: str, model_key: str = "seedvr2_7b",
-                    params: dict | None = None) -> dict:
+    def _do_upscale(self, image_spec: str, model_key: str, params: dict) -> dict:
+        """アップスケール本体（run_upscale / run_upscale_job 共通）。"""
         if model_key not in UPSCALER_REGISTRY:
             raise fastapi.HTTPException(status_code=400, detail=f"unknown model_key {model_key!r}")
         if model_key not in _enabled_models():
@@ -1022,19 +1171,144 @@ class SeedVR2Worker:
         with _VramPeak() as vp:
             data, filename = self._run_workflow(workflow)
         elapsed = round(time.time() - t0, 2)
+
+        out_w = out_h = None
+        try:
+            from PIL import Image
+
+            with Image.open(io.BytesIO(data)) as im:
+                out_w, out_h = im.size
+        except Exception:  # noqa: BLE001
+            pass
+
         print(
-            f"[seedvr2] {model_key} -> {filename} in {elapsed}s "
+            f"[seedvr2] {model_key} -> {filename} {out_w}x{out_h} in {elapsed}s "
             f"VRAM peak={vp.peak}GB now={_vram_gb()}GB",
             flush=True,
         )
         return {
-            "image_base64": base64.b64encode(data).decode("ascii"),
+            "data": data,
             "filename": filename,
             "model_key": model_key,
             "elapsed_time": elapsed,
             "vram_used_gb": _vram_gb(),
             "vram_peak_gb": vp.peak,
+            "out_width": out_w,
+            "out_height": out_h,
         }
+
+    @modal.method()
+    def run_upscale(self, image_spec: str, model_key: str = "seedvr2_7b",
+                    params: dict | None = None) -> dict:
+        r = self._do_upscale(image_spec, model_key, params or {})
+        return {
+            "image_base64": base64.b64encode(r["data"]).decode("ascii"),
+            "filename": r["filename"],
+            "model_key": r["model_key"],
+            "elapsed_time": r["elapsed_time"],
+            "vram_used_gb": r["vram_used_gb"],
+            "vram_peak_gb": r["vram_peak_gb"],
+            "out_width": r["out_width"],
+            "out_height": r["out_height"],
+        }
+
+    @modal.method()
+    def run_upscale_job(self, payload: dict) -> dict:
+        """完全非同期ジョブ本体。`upscale_generate_dispatch` が .spawn() する。
+
+        入力: { job_id, user_id, credits_cost, max_allowed_time?,
+                image(base64|url), model_key?, preset?, params?{target_short,...} }
+        upscale_jobs を直接 PATCH（Next のリクエストはもう生きていない）。
+        """
+        job_id = str(payload.get("job_id") or "")
+        user_id = str(payload.get("user_id") or "")
+        credits_cost = int(payload.get("credits_cost") or 0)
+        model_key = payload.get("model_key") or "seedvr2_7b"
+        preset = payload.get("preset") or ""
+        params = payload.get("params") or {}
+        image_spec = payload.get("image") or payload.get("image_b64") or ""
+
+        # idempotency ガード: Modal のクラッシュ由来リトライで二重課金 / 二重生成
+        # しないよう、既に終端状態なら即 no-op。
+        existing = _get_upscale_job_status(job_id)
+        if existing and existing.get("status") in ("completed", "failed"):
+            print(f"[upscale-job] {job_id} already {existing['status']} — no-op", flush=True)
+            return {"ok": True, "skipped": True}
+
+        if not image_spec:
+            _patch_upscale_job(job_id, {"status": "failed", "error_message": "image is required"})
+            _refund_upscale_credits(user_id, credits_cost)
+            return {"ok": False, "error": "image is required"}
+
+        _patch_upscale_job(job_id, {"status": "processing"})
+
+        # 損切り: 別スレッドで max_allowed_time を監視し、超過したら os._exit で
+        # コンテナごと落とす（GPU 焼き逃げ防止）。angle worker と違い 1 枚だけの
+        # 単発ジョブなので協調停止ポイントが無く、強制終了でよい。retries=0 なので
+        # リトライループにはならない。
+        # ⚠️ この関数を抜けたら必ず _wd_stop.set() すること。さもないと daemon
+        # スレッドが生き残り、同じ warm コンテナが処理する次のジョブ実行中に
+        # os._exit を撃つ（＝別ジョブの巻き添え）。
+        import threading
+
+        try:
+            mat = float(payload.get("max_allowed_time") or 0)
+        except (TypeError, ValueError):
+            mat = 0.0
+        _wd_stop = threading.Event()
+
+        if mat > 0:
+            def _watchdog():
+                if _wd_stop.wait(mat):
+                    return  # 正常終了 — 何もしない
+                print(
+                    f"[upscale-job][WATCHDOG] {job_id}: 許容 {int(mat)}s 超過 → os._exit(1)",
+                    flush=True,
+                )
+                _patch_upscale_job(
+                    job_id,
+                    {"status": "failed", "error_message": "処理時間の上限を超えました。"},
+                )
+                _refund_upscale_credits(user_id, credits_cost)
+                os._exit(1)
+
+            threading.Thread(target=_watchdog, daemon=True).start()
+
+        try:
+            r = self._do_upscale(image_spec, model_key, params)
+        except Exception as exc:  # noqa: BLE001
+            _wd_stop.set()
+            msg = f"{type(exc).__name__}: {exc}"[:500]
+            print(f"[upscale-job] {job_id} FAILED: {msg}", flush=True)
+            _patch_upscale_job(job_id, {"status": "failed", "error_message": msg})
+            _refund_upscale_credits(user_id, credits_cost)
+            return {"ok": False, "error": msg}
+        _wd_stop.set()
+
+        url = _upload_upscale_image(user_id, job_id, r["data"])
+        meta = {
+            "vram_used_gb": r["vram_used_gb"],
+            "vram_peak_gb": r["vram_peak_gb"],
+            "elapsed_time": r["elapsed_time"],
+            "out_width": r["out_width"],
+            "out_height": r["out_height"],
+            "model_key": r["model_key"],
+            "preset": preset,
+        }
+        if url:
+            _patch_upscale_job(job_id, {"status": "completed", "result_url": url})
+            _merge_upscale_metadata(job_id, meta)
+            print(f"[upscale-job] {job_id} completed -> {url}", flush=True)
+            return {"ok": True, "result_url": url}
+
+        # ストレージ不通 — 課金しておいて結果を返せないのは避ける。返金 + failed。
+        _patch_upscale_job(
+            job_id,
+            {"status": "failed", "error_message": "結果画像の保存に失敗しました。"},
+        )
+        _merge_upscale_metadata(job_id, meta)
+        _refund_upscale_credits(user_id, credits_cost)
+        return {"ok": False, "error": "upload failed"}
 
     @modal.fastapi_endpoint(method="POST")
     def upscale(self, item: dict, request: fastapi.Request):
@@ -1057,6 +1331,40 @@ class SeedVR2Worker:
         """フロントの超解像タブ用のモデル一覧（1 行説明つき）。"""
         _authorize(request)
         return {"models": public_registry()}
+
+
+# ---------------------------------------------------------------------------
+# 非同期ディスパッチ（GPU なし・.spawn() して即 ACK）— angle worker と同型。
+# ---------------------------------------------------------------------------
+@app.function(
+    image=dispatch_image,
+    timeout=300,
+    scaledown_window=30,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="POST")
+def upscale_generate_dispatch(item: dict, request: fastapi.Request):
+    """POST 非同期ディスパッチ。1 秒以内に ACK し、実処理は .spawn() 側へ委譲。
+
+    入力: { job_id, user_id, credits_cost, max_allowed_time?,
+            image(base64|url), model_key?, preset?, params? }
+    出力: { ok: true, job_id, call_id }
+    """
+    _authorize(request)
+
+    job_id = str(item.get("job_id") or "")
+    if not job_id:
+        raise fastapi.HTTPException(status_code=400, detail="job_id is required")
+    if not (item.get("image") or item.get("image_b64")):
+        raise fastapi.HTTPException(status_code=400, detail="image is required")
+
+    call = SeedVR2Worker().run_upscale_job.spawn(item)
+    print(
+        f"[upscale-dispatch] {job_id}: model={item.get('model_key')} "
+        f"preset={item.get('preset')} max_allowed_time={item.get('max_allowed_time')!r}",
+        flush=True,
+    )
+    return {"ok": True, "job_id": job_id, "call_id": call.object_id}
 
 
 # ---------------------------------------------------------------------------
