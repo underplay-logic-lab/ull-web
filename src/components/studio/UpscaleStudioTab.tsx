@@ -14,16 +14,16 @@ import {
   Zap,
 } from "lucide-react";
 import {
-  DEFAULT_RESOLUTION_PRESET,
+  DEFAULT_UPSCALE_MODE,
   DEFAULT_UPSCALE_MODEL,
   MAX_INPUT_BYTES,
-  RESOLUTION_PRESETS,
   UPSCALE_MODELS,
+  UPSCALE_MODES,
   estimateOutputSize,
-  getResolutionPreset,
+  getUpscaleMode,
   getUpscaleModel,
   upscaleCostBreakdown,
-  type ResolutionPresetId,
+  type UpscaleModeId,
 } from "@/lib/upscaleStudio";
 import {
   downloadUpscaleImage,
@@ -47,7 +47,7 @@ const JOB_KEY = "upscale-active-job";
 const POLL_INTERVAL_MS = 2500;
 const POLL_MAX_CONSECUTIVE_ERRORS = 8;
 
-type PersistedForm = { presetId: ResolutionPresetId; modelKey: string };
+type PersistedForm = { modeId: UpscaleModeId; modelKey: string };
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -75,12 +75,13 @@ async function readImageSize(file: File): Promise<{ width: number; height: numbe
   }
 }
 
-function buildOutFilename() {
+function buildOutFilename(url: string) {
   const now = new Date();
   const p = (n: number) => String(n).padStart(2, "0");
+  const ext = /\.webp(\?|$)/i.test(url) ? "webp" : /\.jpe?g(\?|$)/i.test(url) ? "jpg" : "png";
   return `ullstudio_upscale_${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}_${p(
     now.getHours(),
-  )}${p(now.getMinutes())}${p(now.getSeconds())}.png`;
+  )}${p(now.getMinutes())}${p(now.getSeconds())}.${ext}`;
 }
 
 // --- 画像アップローダー -------------------------------------------------
@@ -263,10 +264,10 @@ export function UpscaleStudioTab() {
       ? savedForm.modelKey
       : DEFAULT_UPSCALE_MODEL,
   );
-  const [presetId, setPresetId] = useState<ResolutionPresetId>(
-    savedForm?.presetId && RESOLUTION_PRESETS.some((p) => p.id === savedForm.presetId)
-      ? savedForm.presetId
-      : DEFAULT_RESOLUTION_PRESET,
+  const [modeId, setModeId] = useState<UpscaleModeId>(
+    savedForm?.modeId && UPSCALE_MODES.some((m) => m.id === savedForm.modeId)
+      ? savedForm.modeId
+      : DEFAULT_UPSCALE_MODE,
   );
 
   const resumedJobId = useMemo(
@@ -285,8 +286,8 @@ export function UpscaleStudioTab() {
   const elapsedMs = useElapsedTimer(phase === "running");
 
   useEffect(() => {
-    saveFormState(FORM_ID, { presetId, modelKey } satisfies PersistedForm);
-  }, [presetId, modelKey]);
+    saveFormState(FORM_ID, { modeId, modelKey } satisfies PersistedForm);
+  }, [modeId, modelKey]);
 
   const handleImageSelected = useCallback((file: File) => {
     if (file.size > MAX_INPUT_BYTES) {
@@ -355,24 +356,24 @@ export function UpscaleStudioTab() {
   }, [jobId]);
 
   const model = getUpscaleModel(modelKey);
-  const preset = getResolutionPreset(presetId);
+  const mode = getUpscaleMode(modeId);
 
   const breakdown = useMemo(
     () =>
       upscaleCostBreakdown({
         inW: inputSize?.width ?? 0,
         inH: inputSize?.height ?? 0,
-        presetId,
+        modeId,
         modelKey,
         knobs,
       }),
-    [inputSize, presetId, modelKey, knobs],
+    [inputSize, modeId, modelKey, knobs],
   );
   const cost = breakdown.credits;
 
   const outSize =
     inputSize && inputSize.width > 0
-      ? estimateOutputSize(inputSize.width, inputSize.height, preset)
+      ? estimateOutputSize(inputSize.width, inputSize.height, mode)
       : null;
 
   const insufficientCredits =
@@ -391,7 +392,7 @@ export function UpscaleStudioTab() {
     setResultBeforeUrl(image ? URL.createObjectURL(image) : null);
 
     try {
-      const res = await startUpscaleJob({ image, modelKey, presetId });
+      const res = await startUpscaleJob({ image, modelKey, modeId });
       broadcastCreditsUpdate(user.id, res.remainingCredits);
       setJobId(res.jobId);
       setPhase("running");
@@ -404,7 +405,7 @@ export function UpscaleStudioTab() {
       setErrorMessage(e.message || "ジョブの作成に失敗しました。");
       if (e.message?.includes("クレジット")) setChargeOpen(true);
     }
-  }, [user, image, modelKey, presetId, insufficientCredits]);
+  }, [user, image, modelKey, modeId, insufficientCredits]);
 
   const progressPct = phase === "running" ? (job?.status === "processing" ? 70 : 25) : 0;
 
@@ -425,12 +426,19 @@ export function UpscaleStudioTab() {
         {inputSize && (
           <p className="-mt-3 text-[11px] text-muted">
             入力 {inputSize.width}×{inputSize.height}px
-            {outSize && (
+            {outSize && outSize.width > 0 && (
               <>
                 {" → "}出力 約 {outSize.width}×{outSize.height}px（
-                {breakdown.outputMP.toFixed(1)} MP）
+                {breakdown.outputMP.toFixed(1)} MP・×{breakdown.effectiveMult.toFixed(1)}）
               </>
             )}
+          </p>
+        )}
+        {inputSize && breakdown.clampedByMp && (
+          <p className="-mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-300">
+            <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+            この入力サイズだと {mode.label} フル倍率は上限（約 45MP）を超えるため、
+            出力は ×{breakdown.effectiveMult.toFixed(1)} 相当に自動調整されます。
           </p>
         )}
 
@@ -458,29 +466,59 @@ export function UpscaleStudioTab() {
           </div>
         </div>
 
-        {/* 解像度プリセット */}
+        {/* 倍率 */}
         <div>
-          <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">出力解像度</p>
+          <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">拡大倍率</p>
           <div className="grid grid-cols-3 gap-2">
-            {RESOLUTION_PRESETS.map((p) => (
+            {UPSCALE_MODES.filter((m) => m.kind === "multiplier").map((m) => (
               <button
-                key={p.id}
+                key={m.id}
                 type="button"
-                onClick={() => setPresetId(p.id)}
+                onClick={() => setModeId(m.id)}
                 className={`rounded-xl border px-3 py-2.5 text-center transition-colors ${
-                  presetId === p.id
+                  modeId === m.id
                     ? "border-neon-pink/40 bg-neon-pink/5 text-neon-pink"
                     : "border-border bg-background text-muted hover:border-neon-violet/40"
                 }`}
               >
-                <span className="block text-sm font-semibold">{p.label}</span>
-                <span className="block text-[10px]">{p.subLabel}</span>
+                <span className="block text-sm font-semibold">{m.label}</span>
+                <span className="block text-[10px]">{m.subLabel}</span>
               </button>
             ))}
           </div>
+
+          {/* パワーティア: 8K */}
+          {UPSCALE_MODES.filter((m) => m.powerTier).map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => setModeId(m.id)}
+              className={`mt-2 flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition-colors ${
+                modeId === m.id
+                  ? "border-neon-violet/50 bg-neon-violet/10"
+                  : "border-border bg-background hover:border-neon-violet/40"
+              }`}
+            >
+              <span>
+                <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                  <Sparkles size={13} className="text-neon-violet" />
+                  {m.label} パワーモード
+                </span>
+                <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">
+                  {m.subLabel}。DiT・VAE とも全画面 1 パス処理（タイル分割なし）。
+                </span>
+              </span>
+              {breakdown.powerMult > 1 && modeId === m.id && (
+                <span className="shrink-0 rounded bg-neon-violet/20 px-1.5 py-0.5 text-[10px] font-medium text-neon-violet">
+                  ×{breakdown.powerMult}
+                </span>
+              )}
+            </button>
+          ))}
+
           <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
             <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-            アスペクト比は維持されます。4K / 8K は近日対応。
+            アスペクト比は維持されます。出力の上限は約 45MP（8K 級）。
           </p>
         </div>
       </div>
@@ -593,7 +631,7 @@ export function UpscaleStudioTab() {
             <button
               type="button"
               onClick={() =>
-                job.resultUrl && downloadUpscaleImage(job.resultUrl, buildOutFilename())
+                job.resultUrl && downloadUpscaleImage(job.resultUrl, buildOutFilename(job.resultUrl))
               }
               className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-background px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:border-neon-violet/40"
             >

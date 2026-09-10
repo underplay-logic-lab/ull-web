@@ -30,7 +30,7 @@ export type StartUpscaleJobResult = {
 export async function startUpscaleJob(params: {
   image: File;
   modelKey: string;
-  presetId: string;
+  modeId: string;
 }): Promise<StartUpscaleJobResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -41,7 +41,7 @@ export async function startUpscaleJob(params: {
   const form = new FormData();
   form.append("image", norm.blob, norm.filename);
   form.append("modelKey", params.modelKey);
-  form.append("preset", params.presetId);
+  form.append("mode", params.modeId);
 
   const res = await fetch("/api/studio/upscale/generate", {
     method: "POST",
