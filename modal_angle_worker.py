@@ -1717,3 +1717,69 @@ def main(
         f"(steps={result.get('steps')}, seed={result.get('seed')}) -> {dst}",
         flush=True,
     )
+
+
+@app.local_entrypoint()
+def bench(
+    image_path: str,
+    sub_paths: str = "",
+    instruction: str = "back view eye-level shot medium shot",
+    seed: int = 42,
+    out_dir: str = "./angle_bench",
+):
+    """Multi-Reference の生成時間 A/B 計測。
+
+    modal run modal_angle_worker.py::bench --image-path ./ref.png \
+        --sub-paths "./back.png || ./sleeve.png || ./tex.png"
+
+    同一 instruction / seed で、暖機 → 1 枚 → N 枚 → 1 枚（再）の順に同じ warm
+    コンテナで回し、run_edit の elapsed_time を比較する。フェーズ内訳
+    （pre+TE / diffusion loop / VAE+post）は Modal ログの `[angle][prof]` 行。
+    """
+    src = pathlib.Path(image_path).expanduser()
+    if not src.is_file():
+        raise SystemExit(f"--image-path is not a file: {src}")
+    primary = base64.b64encode(src.read_bytes()).decode("ascii")
+
+    subs = []
+    for p in (s.strip() for s in sub_paths.split("||") if s.strip()):
+        sp = pathlib.Path(p).expanduser()
+        if not sp.is_file():
+            raise SystemExit(f"sub path is not a file: {sp}")
+        subs.append(base64.b64encode(sp.read_bytes()).decode("ascii"))
+    n_multi = 1 + len(subs)
+
+    ensure_qwen_edit_cached.remote()
+    worker = QwenImageEditWorker()
+
+    def _one(tag: str, images):
+        r = worker.run_edit.remote(
+            primary, [instruction], seed=seed, images=images
+        )
+        el = r["elapsed_time"]
+        print(f"[bench] {tag}: elapsed_time = {el}s", flush=True)
+        return r, el
+
+    print(f"[bench] instruction={instruction!r} seed={seed} | 1 ref vs {n_multi} refs", flush=True)
+    print("[bench] --- warmup (1 ref, discarded) ---", flush=True)
+    worker.run_edit.remote(primary, [instruction], seed=seed)
+
+    rA1, a1 = _one("A1 (1 ref)", None)
+    rB, b = _one(f"B ({n_multi} refs)", [primary, *subs] if subs else None)
+    rA2, a2 = _one("A2 (1 ref, repeat)", None)
+
+    base = (a1 + a2) / 2
+    ratio = (b / base) if base else float("nan")
+    print("", flush=True)
+    print("=" * 56, flush=True)
+    print(f"[bench] 1 ref  : {a1}s / {a2}s  (avg {base:.1f}s)", flush=True)
+    print(f"[bench] {n_multi} refs : {b}s", flush=True)
+    print(f"[bench] ratio  : x{ratio:.2f}  (+{b - base:.1f}s / 構図)", flush=True)
+    print("=" * 56, flush=True)
+
+    dst = pathlib.Path(out_dir).expanduser()
+    dst.mkdir(parents=True, exist_ok=True)
+    for tag, r in (("a1_1ref", rA1), (f"b_{n_multi}ref", rB), ("a2_1ref", rA2)):
+        if r.get("images"):
+            (dst / f"bench_{tag}.png").write_bytes(base64.b64decode(r["images"][0]))
+    print(f"[bench] outputs -> {dst}", flush=True)

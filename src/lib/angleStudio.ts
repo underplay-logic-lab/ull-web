@@ -44,8 +44,33 @@ export function angleModeSteps(): number {
   return ANGLE_STEPS;
 }
 
-export function angleCreditsPerAngle(knobs: PricingKnobs = DEFAULT_KNOBS): number {
-  return knobs.angle_pro_per_angle;
+// Multi-Reference（Pro）: メイン参照 1 枚に加えて、死角補完用のサブ参照画像
+// （背面ラフ・衣装パーツ・テクスチャ等）を最大 3 枚まで同時に渡せる。
+// Qwen-Image-Edit-2511 のネイティブ複数画像入力を使う。合計上限は 4 枚
+// （ワーカー側 MAX_REF_IMAGES と一致させること）。
+export const MAX_SUB_REFERENCE_IMAGES = 3;
+
+// サブ参照ありのときの構図数上限。B300 実測でサブ 3 枚は 1 構図 ~60s なので、
+// 96 構図フルだと 1 本 ~1.6h（Modal timeout 2h に接近）＋ UX が厳しい。
+// サブ参照ありのときだけ緩めに絞る（1 枚のみの通常モードは MAX_ANGLES のまま）。
+export const MAX_ANGLES_WITH_SUBREFS = 48;
+
+// Multi-Reference（Pro）: サブ参照 1 枚ごとに生成コスト（＝時間）が線形に増える
+// （B300 実測: サブ3枚で per-構図 時間 ×3.0）。per-構図 の消費クレジットにも
+// 同じ係数を乗せて原価割れを防ぐ。係数 = 1 + knob × clamp(サブ枚数, 0..3)。
+export function angleRefMultiplier(
+  subImageCount: number,
+  knobs: PricingKnobs = DEFAULT_KNOBS,
+): number {
+  const n = Math.max(0, Math.min(MAX_SUB_REFERENCE_IMAGES, Math.trunc(subImageCount || 0)));
+  return 1 + knobs.angle_ref_multiplier_per_sub * n;
+}
+
+export function angleCreditsPerAngle(
+  knobs: PricingKnobs = DEFAULT_KNOBS,
+  subImageCount = 0,
+): number {
+  return Math.ceil(knobs.angle_pro_per_angle * angleRefMultiplier(subImageCount, knobs));
 }
 
 // 構図数の上限は撤廃（無限スケール）。原価の歯止めは「枚数」ではなく「時間」——
@@ -63,12 +88,6 @@ export const MIN_ANGLES = 3;
 // ---------------------------------------------------------------------------
 // LoRA トリガートークン。ワーカーの ANGLE_LORA_TRIGGER 既定と一致させること。
 export const ANGLE_LORA_TRIGGER = "<sks>";
-
-// Multi-Reference（Pro）: メイン参照 1 枚に加えて、死角補完用のサブ参照画像
-// （背面ラフ・衣装パーツ・テクスチャ等）を最大 3 枚まで同時に渡せる。
-// Qwen-Image-Edit-2511 のネイティブ複数画像入力を使う。合計上限は 4 枚
-// （ワーカー側 MAX_REF_IMAGES と一致させること）。
-export const MAX_SUB_REFERENCE_IMAGES = 3;
 
 // サブ参照を 1 枚以上渡したとき、ワーカーがカメラ指示プロンプトの文末へ
 // 付け足す英文（実体は modal_angle_worker.py の ANGLE_MULTIREF_PROMPT_SUFFIX が
@@ -291,8 +310,9 @@ export function isAngleSelectionEmpty(selection: AngleSelection): boolean {
 export function angleGenerationCost(
   selection: AngleSelection,
   knobs: PricingKnobs = DEFAULT_KNOBS,
+  subImageCount = 0,
 ): number {
-  return angleSelectionCount(selection) * angleCreditsPerAngle(knobs);
+  return angleSelectionCount(selection) * angleCreditsPerAngle(knobs, subImageCount);
 }
 
 // --- クイックプリセット -------------------------------------------------
