@@ -24,6 +24,7 @@ import {
   ANGLE_MODES,
   ANGLE_PRESETS,
   angleCreditsPerAngle,
+  angleEstimatedSeconds,
   AZIMUTH_OPTIONS,
   angleSelectionWarning,
   buildAngleCombos,
@@ -31,7 +32,6 @@ import {
   ELEVATION_OPTIONS,
   EMPTY_ANGLE_SELECTION,
   MAX_ANGLES,
-  MAX_ANGLES_WITH_SUBREFS,
   MAX_SUB_REFERENCE_IMAGES,
   MIN_ANGLES,
   type AngleAxis,
@@ -657,8 +657,9 @@ export function MultiAngleStudioTab() {
   const perAngleBase = angleCreditsPerAngle(knobs);
   const perAngle = angleCreditsPerAngle(knobs, subRefCount);
   const cost = count * perAngle;
-  const angleCap = subRefCount > 0 ? MAX_ANGLES_WITH_SUBREFS : MAX_ANGLES;
+  const angleCap = MAX_ANGLES;
   const overCap = count > angleCap;
+  const estMinutes = Math.round(angleEstimatedSeconds(count, subRefCount) / 60);
   const underMin = count > 0 && count < MIN_ANGLES;
 
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
@@ -922,7 +923,8 @@ export function MultiAngleStudioTab() {
               <AlertTriangle size={13} className="mt-0.5 shrink-0" />
               サブ参照 {subRefCount} 枚ぶん、1 構図の生成時間・消費クレジットが約
               {(perAngle / perAngleBase).toFixed(1)} 倍（{perAngleBase} → {perAngle} クレジット/構図）。
-              サブ参照ありは最大 {MAX_ANGLES_WITH_SUBREFS} 構図まで。出力の縦横比はサブ参照画像に寄ります。
+              この選択（{count} 構図）だと生成におよそ {estMinutes} 分かかります。
+              出力の縦横比はサブ参照画像に寄ります。
             </p>
           )}
 
