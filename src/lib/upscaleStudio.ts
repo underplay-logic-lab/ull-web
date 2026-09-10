@@ -2,12 +2,12 @@
 //
 // - モデルレジストリは modal_seedvr2_worker.py の UPSCALER_REGISTRY のうち
 //   enabled なものだけをミラー（v1 は SeedVR2 7B のみ）。
-// - 解像度は **倍率（×2/×3/×4）** ＋ 大判用の絶対プリセット「8K」。倍率は
-//   ESRGAN 等の一般的なアップスケーラーと同じメンタルモデル。内部で
-//   target_short / max_edge に変換して worker へ渡す。
+// - 解像度は全部 **倍率**（×2/×3/×4 + パワー枠の ×8）。ESRGAN 等の一般的な
+//   アップスケーラーと同じメンタルモデル。内部で target_short / max_edge に
+//   変換して worker へ渡す。
 // - 課金は「出力の 100 万画素 × 単価 × モデル係数」。UI と API は必ず同じ
-//   純関数（upscaleCostBreakdown）に同じ入力を通す。倍率モードも 8K も同じ式
-//   （8K の追加係数 upscale_mult_power は 2026-09-10 に撤廃 — 純 MP 課金が
+//   純関数（upscaleCostBreakdown）に同じ入力を通す。全モード同じ式
+//   （旧 8K の追加係数 upscale_mult_power は 2026-09-10 に撤廃 — 純 MP 課金が
 //   すでに「大きい出力ほど高い」を実現しており、上乗せは釣り合わなかった）。
 // - ⚠️ SeedVR2 のノンタイル上限は B300 実測（同一入力・出力 MP を振った）:
 //     27MP=85GB / 61MP=189GB / 79MP=244GB(OK) / 109MP=OOM(>274GB)。
@@ -48,37 +48,36 @@ export function getUpscaleModel(key: string): UpscaleModel {
   return UPSCALE_MODELS.find((m) => m.key === key) ?? UPSCALE_MODELS[0];
 }
 
-// --- アップスケールモード（倍率 + 8K） ------------------------------------
-export type UpscaleModeId = "x2" | "x3" | "x4" | "8k";
+// --- アップスケールモード（全部 倍率） -----------------------------------
+export type UpscaleModeId = "x2" | "x3" | "x4" | "x8";
 
 export type UpscaleMode = {
   id: UpscaleModeId;
   label: string;
   subLabel: string;
-  kind: "multiplier" | "absolute";
-  /** kind === "multiplier": 入力の各辺に掛ける倍率。 */
-  mult?: number;
-  /** kind === "absolute": 出力の短辺目標 px。 */
-  targetShort?: number;
-  /** 長辺の上限 px（SeedVR2 の max_resolution）。 */
+  kind: "multiplier";
+  /** 入力の各辺に掛ける倍率。 */
+  mult: number;
+  /** 長辺の絶対上限 px（極端なアスペクト比の暴走 + WebP 16383px 制限回避）。 */
   maxEdge: number;
-  /** パワーティア（大判・ネタ枠）。課金にパワー係数が乗る。 */
+  /** パワー枠（大判・ネタ枠）。UI で ×2〜4 と分けて表示するだけ。 */
   powerTier?: boolean;
 };
 
-// maxEdge は「1 辺の絶対上限」（極端なアスペクト比の暴走防止 + WebP の
-// 16383px 制限回避）。実効的な上限は UPSCALE_MAX_OUTPUT_MP（面積）の方で、
-// maxEdge は普通のアスペクト比ではまず当たらない緩めの値にする。
+// maxEdge は「1 辺の絶対上限」だけ。実効上限は UPSCALE_MAX_OUTPUT_MP（面積）の
+// 方で、maxEdge は普通のアスペクト比ではまず当たらない緩めの値にする。
+// ×8 は 1MP 前後の生成物なら ~65MP（75MP 上限内・真の ×8）、大きい入力では
+// MP 上限でクランプ（UI に警告）。
 export const UPSCALE_MODES: UpscaleMode[] = [
   { id: "x2", label: "×2", subLabel: "SNS・軽い底上げ", kind: "multiplier", mult: 2, maxEdge: 13000 },
   { id: "x3", label: "×3", subLabel: "高解像度・A4印刷", kind: "multiplier", mult: 3, maxEdge: 13000 },
   { id: "x4", label: "×4", subLabel: "4K・A3印刷", kind: "multiplier", mult: 4, maxEdge: 13000 },
   {
-    id: "8k",
-    label: "8K",
-    subLabel: "完全ノンタイル・大判印刷向け",
-    kind: "absolute",
-    targetShort: 5000,
+    id: "x8",
+    label: "×8",
+    subLabel: "最大級・大判印刷 / タペストリー向け",
+    kind: "multiplier",
+    mult: 8,
     maxEdge: 13000,
     powerTier: true,
   },
@@ -97,9 +96,9 @@ function round2(n: number): number {
 }
 
 /**
- * 入力寸法 + モード → SeedVR2 へ渡す target_short（短辺目標 px）。
- * 倍率モードは inputShort × mult。全モードとも「推定出力 MP ≤
- * UPSCALE_MAX_OUTPUT_MP」になるよう最後にクランプする（ノンタイル OOM 回避）。
+ * 入力寸法 + モード → SeedVR2 へ渡す target_short（短辺目標 px）= inputShort × mult。
+ * 「推定出力 MP ≤ UPSCALE_MAX_OUTPUT_MP」になるよう最後にクランプする
+ * （ノンタイル OOM 回避）。
  */
 export function resolveTargetShort(inW: number, inH: number, mode: UpscaleMode): number {
   const w = Math.max(1, Math.round(inW || 0));
@@ -108,8 +107,7 @@ export function resolveTargetShort(inW: number, inH: number, mode: UpscaleMode):
   const long = Math.max(w, h);
   const aspect = long / short;
 
-  let target =
-    mode.kind === "multiplier" ? short * (mode.mult ?? 2) : mode.targetShort ?? 1920;
+  let target = short * mode.mult;
 
   // 長辺 maxEdge クランプ。
   if (target * aspect > mode.maxEdge) target = mode.maxEdge / aspect;
@@ -150,7 +148,7 @@ export type UpscaleCostBreakdown = {
 /**
  * 純関数: 入力寸法 + モード + モデル + knob → 消費クレジット。
  * UI 表示と API 検証は必ずこれに同じ引数を渡す。入力寸法不明（0）は credits=0。
- * 8K も倍率モードも同じ式（`per_mp × 出力MP × モデル係数`）。
+ * 全モード同じ式（`per_mp × 出力MP × モデル係数`）。
  */
 export function upscaleCostBreakdown(args: {
   inW: number;
@@ -182,11 +180,9 @@ export function upscaleCostBreakdown(args: {
   const inShort = Math.min(args.inW, args.inH);
   const effectiveMult = Math.min(width, height) / inShort;
 
-  // クランプ警告は「倍率モードで ×N をリクエストしたのに maxEdge / MP 上限で
-  // ×N 未満になった」ときだけ。8K（絶対モード）は入力サイズ次第で実効倍率が
-  // 上下するのが仕様なので警告しない。
-  const clampedByMp =
-    mode.kind === "multiplier" && effectiveMult < (mode.mult ?? 2) - 0.05;
+  // クランプ警告 = 「×N をリクエストしたのに maxEdge / MP 上限で ×N 未満に
+  // 落ちた」とき。特に ×8 は大きい入力だと 75MP 上限で ×5〜6 相当に落ちる。
+  const clampedByMp = effectiveMult < mode.mult - 0.05;
 
   const raw = Math.ceil(knobs.upscale_per_mp * outputMP * model.creditMult);
   const floor = Math.max(1, Math.round(knobs.upscale_min_credits));

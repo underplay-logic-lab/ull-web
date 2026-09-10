@@ -487,7 +487,7 @@ export function UpscaleStudioTab() {
             ))}
           </div>
 
-          {/* パワーティア: 8K */}
+          {/* パワー枠: ×8 */}
           {UPSCALE_MODES.filter((m) => m.powerTier).map((m) => (
             <button
               key={m.id}
@@ -518,7 +518,8 @@ export function UpscaleStudioTab() {
 
           <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
             <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-            アスペクト比は維持されます。出力の上限は約 75MP（8K〜10K 級）。
+            アスペクト比は維持されます。出力は最大 約75MP（8K〜10K 級）。大きい画像で
+            ×8 を選ぶと上限に合わせて自動調整されます。
           </p>
         </div>
       </div>

@@ -124,7 +124,9 @@ export async function POST(request: Request) {
   let creditsCost: number;
   let outWidth = 0;
   let outHeight = 0;
-  let targetShort = mode.targetShort ?? 1920;
+  // 寸法不明時のフォールバック（worker 側で ull_image_prep が実寸法から
+  // 再計算するので概算でよい）。1MP 入力想定の短辺 × mult。
+  let targetShort = 1000 * mode.mult;
   if (dims && dims.width > 0 && dims.height > 0) {
     const bd = upscaleCostBreakdown({
       inW: dims.width,
