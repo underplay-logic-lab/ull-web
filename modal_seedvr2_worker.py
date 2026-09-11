@@ -1214,6 +1214,21 @@ class SeedVR2Worker:
             time.sleep(2)
         raise TimeoutError("timed out waiting for ComfyUI")
 
+    def _comfy_free(self, unload_models: bool = False) -> None:
+        """ComfyUI の /free でキャッシュ/メモリを明示解放（best-effort）。
+        unload_models=False ならモデル重みは VRAM 常駐のまま（warm 速度を
+        落とさない）、実行キャッシュ・中間テンソルだけ払う。"""
+        import requests
+
+        try:
+            requests.post(
+                f"http://127.0.0.1:{COMFY_PORT}/free",
+                json={"unload_models": unload_models, "free_memory": True},
+                timeout=30,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[seedvr2] /free failed (non-fatal): {exc}", flush=True)
+
     def _do_upscale(self, image_spec: str, model_key: str, params: dict) -> dict:
         """アップスケール本体（run_upscale / run_upscale_job 共通）。"""
         if model_key not in UPSCALER_REGISTRY:
@@ -1257,6 +1272,14 @@ class SeedVR2Worker:
                 # INPUT_IMG_MAX_EDGE（既定2048）で縮めないよう max_edge を
                 # 大きく取って正規化レイヤーだけ通す。
                 in_name = self._write_input(data, "in.png", max_edge=20000)
+                # 実運用で確認済みの OOM（2026-09-12・×4 カスケード
+                # 2048→4096→8192・67MP 最終段で "workflow finished but
+                # produced no output"）: ComfyUI の実行キャッシュが前段の
+                # 大きい中間出力を持ったまま次段に積み重なり、単発直行なら
+                # 収まるはずの MP でも VRAM が足りなくなる。モデル重みは
+                # VRAM に残す（warm の速度を落とさない）が中間キャッシュだけ
+                # 明示的に解放してから次段へ進む。
+                self._comfy_free()
         elapsed = round(time.time() - t0, 2)
         if len(stage_targets) > 1:
             print(
@@ -1361,14 +1384,34 @@ class SeedVR2Worker:
 
         _patch_upscale_job(job_id, {"status": "processing"})
 
+        # ライブ VRAM 表示: ~8秒毎に metadata.vram_used_gb を更新
+        # （studio-vram-badge.md の非同期タブ規約）。job作成時に route.ts が
+        # 書いた metadata（in_width 等）を消さないよう _merge_upscale_metadata
+        # （GET→merge→PATCH）で更新する — 他 worker の直PATCH方式は流用不可。
+        import threading
+
+        _vram_stop = threading.Event()
+
+        def _poll_vram():
+            while not _vram_stop.wait(8):
+                gb = _vram_gb()
+                if gb is not None:
+                    _merge_upscale_metadata(job_id, {"vram_used_gb": gb})
+
+        _vram_thread = threading.Thread(target=_poll_vram, name="upscale-vram", daemon=True)
+        _vram_thread.start()
+
         try:
             r = self._do_upscale(image_spec, model_key, params)
         except Exception as exc:  # noqa: BLE001
+            _vram_stop.set()
             msg = f"{type(exc).__name__}: {exc}"[:500]
             print(f"[upscale-job] {job_id} FAILED: {msg}", flush=True)
             _patch_upscale_job(job_id, {"status": "failed", "error_message": msg})
             _refund_upscale_credits(user_id, credits_cost)
             return {"ok": False, "error": msg}
+        _vram_stop.set()
+        _vram_thread.join(timeout=3)
 
         _ext = (r.get("filename") or "out.png").rsplit(".", 1)[-1].lower()
         url = _upload_upscale_image(user_id, job_id, r["data"], _ext)

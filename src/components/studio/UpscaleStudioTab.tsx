@@ -466,6 +466,29 @@ export function UpscaleStudioTab() {
     }
   }, [user, batchItems, batchInsufficientCredits, modelKey, modeId]);
 
+  const batchCompletedUrls = useMemo(
+    () =>
+      batchJobIds
+        .map((id) => batchJobs[id])
+        .filter((j): j is UpscaleJob => Boolean(j?.resultUrl && j.status === "completed"))
+        .map((j) => j.resultUrl as string),
+    [batchJobIds, batchJobs],
+  );
+  const [downloadingAll, setDownloadingAll] = useState(false);
+
+  const handleDownloadAll = useCallback(async () => {
+    if (batchCompletedUrls.length === 0 || downloadingAll) return;
+    setDownloadingAll(true);
+    try {
+      for (const url of batchCompletedUrls) {
+        await downloadUpscaleImage(url, buildOutFilename(url));
+        await sleep(400); // 連続ダウンロードをブラウザに弾かれないよう少し間隔を空ける
+      }
+    } finally {
+      setDownloadingAll(false);
+    }
+  }, [batchCompletedUrls, downloadingAll]);
+
   // タブを閉じても続行 — batchJobIds をローカルに永続化してポーリングで復元。
   useEffect(() => {
     if (batchJobIds.length === 0) return;
@@ -1030,6 +1053,27 @@ export function UpscaleStudioTab() {
               <AlertTriangle size={14} className="mt-0.5 shrink-0" />
               {batchError}
             </p>
+          )}
+
+          {batchCompletedUrls.length > 0 && (
+            <button
+              type="button"
+              onClick={handleDownloadAll}
+              disabled={downloadingAll}
+              className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-background px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:border-neon-violet/40 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {downloadingAll ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" />
+                  ダウンロード中…
+                </>
+              ) : (
+                <>
+                  <Download size={16} />
+                  完了した {batchCompletedUrls.length} 枚をまとめてダウンロード
+                </>
+              )}
+            </button>
           )}
 
           {batchJobIds.length > 0 && (
