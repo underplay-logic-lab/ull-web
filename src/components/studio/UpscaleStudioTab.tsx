@@ -17,6 +17,7 @@ import {
   DEFAULT_UPSCALE_MODE,
   DEFAULT_UPSCALE_MODEL,
   MAX_INPUT_BYTES,
+  UPSCALE_BATCH_MAX_ITEMS,
   UPSCALE_MODELS,
   UPSCALE_MODES,
   estimateOutputSize,
@@ -28,6 +29,7 @@ import {
 import {
   downloadUpscaleImage,
   pollUpscaleJob,
+  startUpscaleBatchJob,
   startUpscaleJob,
   type UpscaleApiError,
   type UpscaleJob,
@@ -44,6 +46,7 @@ type Phase = "idle" | "submitting" | "running" | "done" | "error";
 
 const FORM_ID = "upscale-studio";
 const JOB_KEY = "upscale-active-job";
+const BATCH_JOB_KEY = "upscale-active-batch";
 const POLL_INTERVAL_MS = 2500;
 const POLL_MAX_CONSECUTIVE_ERRORS = 8;
 
@@ -247,6 +250,60 @@ function CompareSlider({ before, after }: { before: string; after: string }) {
   );
 }
 
+// --- バッチ用サムネ / 結果カード -----------------------------------------
+function BatchThumb({ file, onRemove }: { file: File; onRemove: () => void }) {
+  const url = useObjectUrl(file);
+  return (
+    <div className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-background">
+      {url && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={url} alt={file.name} className="h-full w-full object-cover" />
+      )}
+      <button
+        type="button"
+        onClick={onRemove}
+        className="absolute right-1 top-1 rounded-full bg-black/60 p-1 text-white opacity-0 transition-opacity group-hover:opacity-100"
+        aria-label="削除"
+      >
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
+function BatchResultCard({ job }: { job: UpscaleJob | undefined }) {
+  if (job?.status === "completed" && job.resultUrl) {
+    const url = job.resultUrl;
+    return (
+      <button
+        type="button"
+        onClick={() => downloadUpscaleImage(url, buildOutFilename(url))}
+        className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-background"
+        title="ダウンロード"
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={url} alt="結果" className="h-full w-full object-cover" />
+        <span className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-black/60 py-1 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
+          <Download size={11} /> 保存
+        </span>
+      </button>
+    );
+  }
+  if (job?.status === "failed") {
+    return (
+      <div className="flex aspect-square flex-col items-center justify-center gap-1 rounded-lg border border-red-500/40 bg-red-500/10 p-2 text-center text-[10px] leading-tight text-red-300">
+        <AlertTriangle size={14} />
+        {job.errorMessage || "失敗"}
+      </div>
+    );
+  }
+  return (
+    <div className="flex aspect-square items-center justify-center rounded-lg border border-border bg-background text-muted">
+      <Loader2 size={14} className="animate-spin" />
+    </div>
+  );
+}
+
 export function UpscaleStudioTab() {
   const { user } = useSupabaseUser();
   const { credits, loading: creditsLoading } = useProfileCredits(user);
@@ -269,6 +326,8 @@ export function UpscaleStudioTab() {
       ? savedForm.modeId
       : DEFAULT_UPSCALE_MODE,
   );
+
+  const [uiMode, setUiMode] = useState<"single" | "batch">("single");
 
   const resumedJobId = useMemo(
     () => loadFormState<{ jobId: string }>(JOB_KEY)?.jobId || null,
@@ -308,6 +367,139 @@ export function UpscaleStudioTab() {
     setInputSize(null);
     setImageError(null);
   }, []);
+
+  // --- バッチ（複数画像） ----------------------------------------------
+  type BatchItem = { file: File; dims: { width: number; height: number } | null };
+  const batchInputRef = useRef<HTMLInputElement>(null);
+  const [batchItems, setBatchItems] = useState<BatchItem[]>([]);
+  const [batchError, setBatchError] = useState<string | null>(null);
+
+  const resumedBatchJobIds = useMemo(
+    () => loadFormState<{ jobIds: string[] }>(BATCH_JOB_KEY)?.jobIds || null,
+    [],
+  );
+  const [batchPhase, setBatchPhase] = useState<Phase>(
+    resumedBatchJobIds?.length ? "running" : "idle",
+  );
+  const [batchJobIds, setBatchJobIds] = useState<string[]>(resumedBatchJobIds || []);
+  const [batchJobs, setBatchJobs] = useState<Record<string, UpscaleJob>>({});
+
+  const addBatchFiles = useCallback((files: FileList | File[] | null) => {
+    if (!files) return;
+    const incoming = Array.from(files).filter(
+      (f) => f.type.startsWith("image/") && f.size <= MAX_INPUT_BYTES,
+    );
+    if (incoming.length === 0) return;
+    setBatchError(null);
+    setBatchItems((prev) => {
+      const room = Math.max(0, UPSCALE_BATCH_MAX_ITEMS - prev.length);
+      if (incoming.length > room) {
+        setBatchError(`一度に処理できるのは最大 ${UPSCALE_BATCH_MAX_ITEMS} 枚です。`);
+      }
+      const toAdd = incoming.slice(0, room);
+      return [...prev, ...toAdd.map((file) => ({ file, dims: null }))];
+    });
+    incoming.forEach((file) => {
+      readImageSize(file).then((dims) => {
+        setBatchItems((prev) => prev.map((it) => (it.file === file ? { ...it, dims } : it)));
+      });
+    });
+  }, []);
+
+  const removeBatchItem = useCallback((file: File) => {
+    setBatchItems((prev) => prev.filter((it) => it.file !== file));
+  }, []);
+
+  const batchBreakdowns = useMemo(
+    () =>
+      batchItems.map((it) =>
+        upscaleCostBreakdown({
+          inW: it.dims?.width ?? 0,
+          inH: it.dims?.height ?? 0,
+          modeId,
+          modelKey,
+          knobs,
+        }),
+      ),
+    [batchItems, modeId, modelKey, knobs],
+  );
+  const batchTotalCredits = batchBreakdowns.reduce((sum, b) => sum + b.credits, 0);
+  const batchInsufficientCredits =
+    Boolean(user) && !creditsLoading && batchTotalCredits > 0 && (credits ?? 0) < batchTotalCredits;
+  const batchBusy = batchPhase === "submitting" || batchPhase === "running";
+  const batchDoneCount = Object.values(batchJobs).filter(
+    (j) => j.status === "completed" || j.status === "failed",
+  ).length;
+
+  const handleBatchRun = useCallback(async () => {
+    if (!user) return setLoginOpen(true);
+    if (batchItems.length === 0) return;
+    if (batchInsufficientCredits) return setChargeOpen(true);
+
+    setBatchPhase("submitting");
+    setBatchError(null);
+    setBatchJobs({});
+    try {
+      const res = await startUpscaleBatchJob({
+        images: batchItems.map((it) => it.file),
+        modelKey,
+        modeId,
+      });
+      broadcastCreditsUpdate(user.id, res.remainingCredits);
+      setBatchItems([]);
+      setBatchJobIds(res.jobIds);
+      setBatchPhase("running");
+    } catch (err) {
+      const e = err as UpscaleApiError;
+      console.error("[UpscaleStudioTab] batch start failed:", e);
+      const remaining = e.remainingCredits;
+      if (typeof remaining === "number") broadcastCreditsUpdate(user.id, remaining);
+      setBatchPhase("error");
+      setBatchError(e.message || "バッチの作成に失敗しました。");
+      if (e.message?.includes("クレジット")) setChargeOpen(true);
+    }
+  }, [user, batchItems, batchInsufficientCredits, modelKey, modeId]);
+
+  // タブを閉じても続行 — batchJobIds をローカルに永続化してポーリングで復元。
+  useEffect(() => {
+    if (batchJobIds.length === 0) return;
+    let cancelled = false;
+    let errorStreak = 0;
+    saveFormState(BATCH_JOB_KEY, { jobIds: batchJobIds });
+
+    (async () => {
+      while (!cancelled) {
+        try {
+          const results = await Promise.all(batchJobIds.map((id) => pollUpscaleJob(id)));
+          if (cancelled) return;
+          errorStreak = 0;
+          setBatchJobs(Object.fromEntries(results.map((j) => [j.id, j])));
+
+          const allDone = results.every((j) => j.status === "completed" || j.status === "failed");
+          if (allDone) {
+            setBatchPhase("done");
+            saveFormState(BATCH_JOB_KEY, { jobIds: [] });
+            return;
+          }
+          setBatchPhase("running");
+        } catch (err) {
+          if (cancelled) return;
+          errorStreak += 1;
+          console.warn("[UpscaleStudioTab] batch poll error:", err);
+          if (errorStreak >= POLL_MAX_CONSECUTIVE_ERRORS) {
+            setBatchPhase("error");
+            setBatchError("状況の取得に繰り返し失敗しました。時間をおいて再読み込みしてください。");
+            return;
+          }
+        }
+        await sleep(POLL_INTERVAL_MS);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [batchJobIds]);
 
   // --- ポーリングループ ----------------------------------------------
   useEffect(() => {
@@ -410,10 +602,35 @@ export function UpscaleStudioTab() {
   const progressPct = phase === "running" ? (job?.status === "processing" ? 70 : 25) : 0;
 
   return (
-    <div
-      data-source-file="src/components/studio/UpscaleStudioTab.tsx"
-      className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"
-    >
+    <div data-source-file="src/components/studio/UpscaleStudioTab.tsx" className="flex flex-col gap-4">
+      {/* ── モード切替 ───────────────────────────────────────── */}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => setUiMode("single")}
+          className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+            uiMode === "single"
+              ? "border-neon-pink/40 bg-neon-pink/5 text-neon-pink"
+              : "border-border bg-background text-muted hover:border-neon-violet/40"
+          }`}
+        >
+          1枚ずつ
+        </button>
+        <button
+          type="button"
+          onClick={() => setUiMode("batch")}
+          className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+            uiMode === "batch"
+              ? "border-neon-pink/40 bg-neon-pink/5 text-neon-pink"
+              : "border-border bg-background text-muted hover:border-neon-violet/40"
+          }`}
+        >
+          まとめて処理（最大{UPSCALE_BATCH_MAX_ITEMS}枚）
+        </button>
+      </div>
+
+      {uiMode === "single" && (
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
       {/* ── 左: 入力 ─────────────────────────────────────────── */}
       <div className="flex flex-col gap-5 rounded-2xl border-gradient bg-surface/40 p-5">
         <ImageDropzone
@@ -470,7 +687,7 @@ export function UpscaleStudioTab() {
         <div>
           <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">拡大倍率</p>
           <div className="grid grid-cols-3 gap-2">
-            {UPSCALE_MODES.filter((m) => m.kind === "multiplier").map((m) => (
+            {UPSCALE_MODES.map((m) => (
               <button
                 key={m.id}
                 type="button"
@@ -487,35 +704,12 @@ export function UpscaleStudioTab() {
             ))}
           </div>
 
-          {/* パワーティア: 8K */}
-          {UPSCALE_MODES.filter((m) => m.powerTier).map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              onClick={() => setModeId(m.id)}
-              className={`mt-2 flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition-colors ${
-                modeId === m.id
-                  ? "border-neon-violet/50 bg-neon-violet/10"
-                  : "border-border bg-background hover:border-neon-violet/40"
-              }`}
-            >
-              <span>
-                <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
-                  <Sparkles size={13} className="text-neon-violet" />
-                  {m.label} パワーモード
-                </span>
-                <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">
-                  {m.subLabel}。DiT・VAE とも全画面 1 パス処理（タイル分割なし）。
-                </span>
-              </span>
-              {modeId === m.id && breakdown.effectiveMult > 0 && (
-                <span className="shrink-0 rounded bg-neon-violet/20 px-1.5 py-0.5 text-[10px] font-medium text-neon-violet">
-                  ×{breakdown.effectiveMult.toFixed(1)}
-                </span>
-              )}
-            </button>
-          ))}
-
+          {mode.cascadeStages > 1 && (
+            <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
+              <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
+              {mode.label} は内部で {mode.cascadeStages} 段階に分けて処理し、単発より高画質に仕上げます（その分クレジットが上がります）。
+            </p>
+          )}
           <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
             <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
             アスペクト比は維持されます。出力の上限は約 75MP（8K〜10K 級）。
@@ -648,6 +842,202 @@ export function UpscaleStudioTab() {
             : "超解像スタジオの利用にはログインが必要です。初回登録で10クレジットが付与されます。"}
         </p>
       </div>
+      </div>
+      )}
+
+      {uiMode === "batch" && (
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        {/* ── 左: 入力（複数） ─────────────────────────────────── */}
+        <div className="flex flex-col gap-5 rounded-2xl border-gradient bg-surface/40 p-5">
+          <div>
+            <input
+              ref={batchInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                addBatchFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <div
+              onClick={() => batchInputRef.current?.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                addBatchFiles(e.dataTransfer.files);
+              }}
+              className="cursor-pointer rounded-xl border-2 border-dashed border-border bg-background px-4 py-8 text-center text-sm text-muted transition-colors hover:border-neon-violet/40"
+            >
+              <ImagePlus size={22} className="mx-auto mb-2 text-neon-violet" />
+              クリックまたはドラッグで複数画像を追加
+              <span className="mt-1 block text-[11px]">
+                {batchItems.length}/{UPSCALE_BATCH_MAX_ITEMS} 枚
+              </span>
+            </div>
+          </div>
+
+          {batchItems.length > 0 && (
+            <div className="grid grid-cols-4 gap-2 sm:grid-cols-5">
+              {batchItems.map((it, i) => (
+                <BatchThumb key={i} file={it.file} onRemove={() => removeBatchItem(it.file)} />
+              ))}
+            </div>
+          )}
+          {batchError && <p className="-mt-2 text-[11px] text-red-400">{batchError}</p>}
+
+          {/* モデル選択 */}
+          <div>
+            <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">エンジン</p>
+            <div className="flex flex-col gap-2">
+              {UPSCALE_MODELS.map((m) => (
+                <button
+                  key={m.key}
+                  type="button"
+                  onClick={() => setModelKey(m.key)}
+                  className={`rounded-xl border px-4 py-3 text-left transition-colors ${
+                    modelKey === m.key
+                      ? "border-neon-pink/40 bg-neon-pink/5"
+                      : "border-border bg-background hover:border-neon-violet/40"
+                  }`}
+                >
+                  <span className="text-sm font-medium text-foreground">{m.label}</span>
+                  <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">
+                    {m.descJa}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 倍率 */}
+          <div>
+            <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">拡大倍率</p>
+            <div className="grid grid-cols-3 gap-2">
+              {UPSCALE_MODES.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setModeId(m.id)}
+                  className={`rounded-xl border px-3 py-2.5 text-center transition-colors ${
+                    modeId === m.id
+                      ? "border-neon-pink/40 bg-neon-pink/5 text-neon-pink"
+                      : "border-border bg-background text-muted hover:border-neon-violet/40"
+                  }`}
+                >
+                  <span className="block text-sm font-semibold">{m.label}</span>
+                  <span className="block text-[10px]">{m.subLabel}</span>
+                </button>
+              ))}
+            </div>
+            {mode.cascadeStages > 1 && (
+              <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
+                <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
+                {mode.label} は内部で {mode.cascadeStages} 段階に分けて処理し、単発より高画質に仕上げます（その分クレジットが上がります）。
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* ── 右: 実行 / 結果一覧 ─────────────────────────────── */}
+        <div className="flex flex-col gap-4">
+          <div className="rounded-xl border border-border bg-background p-4">
+            <div className="flex items-center justify-between text-sm">
+              <span className="flex items-center gap-1.5 text-muted">
+                <Wand2 size={14} />
+                {model.label} ・ {batchItems.length}枚
+              </span>
+              <span className="font-mono font-medium text-foreground">
+                {batchTotalCredits > 0 ? (
+                  <span className="text-neon-pink">{batchTotalCredits} Credits</span>
+                ) : (
+                  <span className="text-muted">画像を選択</span>
+                )}
+              </span>
+            </div>
+
+            {batchPhase === "running" && batchJobIds.length > 0 && (
+              <div className="mt-3">
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-hover">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-neon-pink to-neon-violet transition-[width] duration-500"
+                    style={{
+                      width: `${Math.max(4, (batchDoneCount / batchJobIds.length) * 100)}%`,
+                    }}
+                  />
+                </div>
+                <p className="mt-1.5 text-center text-[11px] text-muted">
+                  {batchDoneCount}/{batchJobIds.length} 完了
+                </p>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleBatchRun}
+              disabled={(batchItems.length === 0 || batchBusy) && Boolean(user)}
+              className={`mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold text-white transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
+                batchInsufficientCredits
+                  ? "bg-amber-600/80 hover:opacity-90"
+                  : "bg-gradient-to-r from-neon-pink to-neon-violet hover:opacity-90 glow-pink"
+              }`}
+            >
+              {batchBusy ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" />
+                  {batchPhase === "submitting" ? "送信中…" : "処理中…"}
+                </>
+              ) : !user ? (
+                <>
+                  <LogIn size={16} />
+                  ログインしてアップスケール
+                </>
+              ) : batchInsufficientCredits ? (
+                <>
+                  <Zap size={16} />
+                  クレジットをチャージ
+                </>
+              ) : (
+                <>
+                  <Wand2 size={16} />
+                  {batchItems.length > 0 ? `${batchItems.length}枚をまとめて処理` : "アップスケール"}
+                </>
+              )}
+            </button>
+          </div>
+
+          {batchBusy && (
+            <p className="flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-xs leading-relaxed text-neon-violet">
+              <Sparkles size={14} className="mt-0.5 shrink-0" />
+              バックグラウンドで処理中です。タブを閉じたり再読み込みしても継続し、次に開いたときに結果が表示されます。
+            </p>
+          )}
+
+          {batchPhase === "error" && batchError && (
+            <p className="flex items-start gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-300">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              {batchError}
+            </p>
+          )}
+
+          {batchJobIds.length > 0 && (
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+              {batchJobIds.map((id) => (
+                <BatchResultCard key={id} job={batchJobs[id]} />
+              ))}
+            </div>
+          )}
+
+          <p className="flex items-start gap-2 text-xs leading-relaxed text-muted">
+            <ImagePlus size={14} className="mt-0.5 shrink-0 text-neon-violet" />
+            {user
+              ? "同じ倍率でまとめて処理します。コールドスタートはバッチ全体で1回分だけなので、1枚ずつより割安です。"
+              : "超解像スタジオの利用にはログインが必要です。初回登録で10クレジットが付与されます。"}
+          </p>
+        </div>
+      </div>
+      )}
 
       <LoginModal
         open={loginOpen}
@@ -658,7 +1048,7 @@ export function UpscaleStudioTab() {
         open={chargeOpen}
         onClose={() => setChargeOpen(false)}
         credits={credits}
-        cost={cost || 8}
+        cost={(uiMode === "batch" ? batchTotalCredits : cost) || 8}
       />
     </div>
   );

@@ -63,6 +63,51 @@ export async function startUpscaleJob(params: {
   };
 }
 
+export type StartUpscaleBatchJobResult = {
+  batchId: string;
+  jobIds: string[];
+  remainingCredits: number;
+  creditsCost: number;
+};
+
+export async function startUpscaleBatchJob(params: {
+  images: File[];
+  modelKey: string;
+  modeId: string;
+}): Promise<StartUpscaleBatchJobResult> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) throw new Error("ログインが必要です。");
+
+  const form = new FormData();
+  for (const file of params.images) {
+    const norm = await normalizeUpscaleInput(file);
+    form.append("images", norm.blob, norm.filename);
+  }
+  form.append("modelKey", params.modelKey);
+  form.append("mode", params.modeId);
+
+  const res = await fetch("/api/studio/upscale/batch", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: form,
+  });
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data?.success) {
+    const error: UpscaleApiError = new Error(data?.error || "バッチの作成に失敗しました。");
+    if (typeof data?.remainingCredits === "number") error.remainingCredits = data.remainingCredits;
+    throw error;
+  }
+
+  return {
+    batchId: data.batchId as string,
+    jobIds: data.jobIds as string[],
+    remainingCredits: data.remainingCredits as number,
+    creditsCost: data.creditsCost as number,
+  };
+}
+
 type UpscaleJobRow = {
   id: string;
   status: UpscaleJobStatus;

@@ -14,6 +14,23 @@ export type SpawnUpscaleJobParams = {
   params: Record<string, number | string | boolean>;
 };
 
+export type SpawnUpscaleBatchItem = {
+  jobId: string;
+  creditsCost: number;
+  imageBase64: string;
+  modelKey: string;
+  presetId: string;
+  params: Record<string, number | string | boolean>;
+};
+
+export type SpawnUpscaleBatchJobParams = {
+  batchId: string;
+  userId: string;
+  /** バッチ全体の推定合計処理秒数（コールドスタート猶予1回分込み）。 */
+  maxAllowedTime: number;
+  items: SpawnUpscaleBatchItem[];
+};
+
 const DISPATCH_TIMEOUT_MS = 25_000;
 const DISPATCH_MAX_ATTEMPTS = 3;
 
@@ -34,6 +51,16 @@ function resolveDispatchUrl(): string | undefined {
   return base
     .replace("seedvr2worker-upscale", "upscale-generate-dispatch")
     .replace("seedvr2worker-models", "upscale-generate-dispatch");
+}
+
+function resolveBatchDispatchUrl(): string | undefined {
+  const explicit = process.env.MODAL_UPSCALE_BATCH_DISPATCH_URL;
+  if (explicit) return explicit;
+  const base = process.env.MODAL_SEEDVR2_URL || process.env.MODAL_UPSCALE_URL;
+  if (!base) return undefined;
+  return base
+    .replace("seedvr2worker-upscale", "upscale-batch-generate-dispatch")
+    .replace("seedvr2worker-models", "upscale-batch-generate-dispatch");
 }
 
 /**
@@ -91,6 +118,72 @@ export async function spawnUpscaleJob(
       }
       const text = (await res.text().catch(() => "")).slice(0, 500);
       lastErr = new Error(`Modal dispatch HTTP ${res.status}: ${text || "(empty)"}`);
+      if (res.status < 500 && res.status !== 429) break;
+    } catch (err) {
+      lastErr = err;
+    }
+    if (attempt < DISPATCH_MAX_ATTEMPTS) await sleep(400 * attempt);
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+/**
+ * modal_seedvr2_worker.py の `upscale_batch_generate_dispatch` を叩き、複数
+ * 画像を1コンテナ内で順番に処理するバッチジョブを spawn させて即 return
+ * する。dispatch 自体が失敗したときだけ throw する（個々のアイテムの成否は
+ * worker が upscale_jobs を直接更新する）。
+ */
+export async function spawnUpscaleBatchJob(
+  params: SpawnUpscaleBatchJobParams,
+): Promise<{ callId: string | null }> {
+  const url = resolveBatchDispatchUrl();
+  const authToken = process.env.MODAL_AUTH_TOKEN;
+
+  if (!url) {
+    throw new Error(
+      "MODAL_SEEDVR2_URL（または MODAL_UPSCALE_BATCH_DISPATCH_URL）が未設定です。",
+    );
+  }
+  if (!authToken) {
+    throw new Error("MODAL_AUTH_TOKEN が未設定です（modal_seedvr2_worker.py の _authorize が期待する共有シークレット）。");
+  }
+  if (params.items.length === 0) throw new Error("バッチの画像が空です。");
+
+  const body = JSON.stringify({
+    batch_id: params.batchId,
+    user_id: params.userId,
+    max_allowed_time: params.maxAllowedTime,
+    items: params.items.map((it) => ({
+      job_id: it.jobId,
+      credits_cost: it.creditsCost,
+      image: it.imageBase64,
+      model_key: it.modelKey,
+      preset: it.presetId,
+      params: it.params,
+    })),
+  });
+
+  const headers = {
+    "Content-Type": "application/json",
+    "x-modal-secret": authToken,
+    Authorization: `Bearer ${authToken}`,
+  };
+
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= DISPATCH_MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body,
+        signal: AbortSignal.timeout(DISPATCH_TIMEOUT_MS),
+      });
+      if (res.ok) {
+        const parsed = (await res.json().catch(() => null)) as { call_id?: string } | null;
+        return { callId: typeof parsed?.call_id === "string" ? parsed.call_id : null };
+      }
+      const text = (await res.text().catch(() => "")).slice(0, 500);
+      lastErr = new Error(`Modal batch dispatch HTTP ${res.status}: ${text || "(empty)"}`);
       if (res.status < 500 && res.status !== 429) break;
     } catch (err) {
       lastErr = err;

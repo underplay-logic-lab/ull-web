@@ -22,6 +22,8 @@ export type KnobKey =
   | "upscale_per_mp"
   | "upscale_min_credits"
   | "upscale_mult_power"
+  | "upscale_cascade_mult_2stage"
+  | "upscale_cascade_mult_3stage"
   // --- lora_formula (public) ---
   | "lora_per_step"
   | "lora_mult_model_heavy"
@@ -35,6 +37,7 @@ export type KnobKey =
   | "angle_cold_start_grace_s"
   | "upscale_time_per_credit_s"
   | "upscale_cold_start_grace_s"
+  | "upscale_batch_max_seconds"
   | "lora_cost_guard_multiplier"
   | "lora_margin_target"
   | "lora_floor_prep_s"
@@ -157,6 +160,28 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     description: "（廃止）8K も倍率モードも純 MP 課金。この値は使われない。",
     isPublic: false,
   },
+  upscale_cascade_mult_2stage: {
+    // 2026-09-12: ×4 モードは内部で ×2→×4 の2段カスケードにして高画質化
+    // （単発直行よりディテールがシャープ。B300 実測は要参照だが理論値
+    // ~1.25倍）。実 GPU 秒が伸びる分をクレジットにも反映する。
+    value: 1.3,
+    label: "超解像 カスケード係数（2段）",
+    category: "feature_credits",
+    unit: "×",
+    description: "×4 モード（×2→×4 の2段カスケード）に乗せる追加係数。",
+    isPublic: true,
+  },
+  upscale_cascade_mult_3stage: {
+    // ×8 モードは ×2→×4→×8 の3段カスケード。B300 実測（yukipas.png,
+    // 2026-09-11）: 単発108.77s vs カスケード157.46s = 1.45倍。少し余裕を
+    // 見て1.5に設定。
+    value: 1.5,
+    label: "超解像 カスケード係数（3段）",
+    category: "feature_credits",
+    unit: "×",
+    description: "×8 モード（×2→×4→×8 の3段カスケード）に乗せる追加係数。",
+    isPublic: true,
+  },
   // ------------------------------------------------------------- lora_formula
   lora_per_step: {
     value: 0.1,
@@ -250,6 +275,20 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "cost_guard",
     unit: "s",
     description: "ComfyUI 起動 + SeedVR2 重みロード + 初回 forward の固定猶予",
+    isPublic: false,
+  },
+  upscale_batch_max_seconds: {
+    // 2026-09-12: 複数画像バッチ機能。1コンテナ内で温まったまま順番に処理する
+    // ので、コールドスタート償却はバッチ全体で1回だけ（upscale_cold_start_grace_s
+    // を1回だけ足す）。合計推定秒数がこれを超えるバッチは受け付けない
+    // （src/lib/upscaleStudio.ts の upscaleBatchEstimatedSeconds 参照）。
+    // Modal 側の強制 timeout（SEEDVR2_BATCH_TIMEOUT_HARD_CAP_S 既定45分）より
+    // 十分小さく取ってあるので、見積もりがブレても Modal 側の保険が効く。
+    value: 1800,
+    label: "超解像 バッチ：合計処理秒数の上限",
+    category: "cost_guard",
+    unit: "s",
+    description: "1バッチの推定合計処理秒数がこれを超えたら受け付けない。",
     isPublic: false,
   },
   lora_cost_guard_multiplier: {

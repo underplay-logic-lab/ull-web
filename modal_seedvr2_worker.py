@@ -81,6 +81,7 @@ import base64
 import hmac
 import io
 import json
+import math
 import os
 import pathlib
 import subprocess
@@ -155,6 +156,31 @@ SEEDVR2_NODE_REPO = _env_str(
 DEFAULT_TARGET_SHORT = _env_int("SEEDVR2_TARGET_SHORT", 1920)
 DEFAULT_MAX_RESOLUTION = _env_int("SEEDVR2_MAX_RESOLUTION", 4096)
 DEFAULT_BATCH_SIZE = _env_int("SEEDVR2_BATCH_SIZE", 5)  # 4n+1
+
+# ---------------------------------------------------------------------------
+# 複数画像バッチジョブ — Modal 強制 timeout の動的算出（modal_angle_worker.py
+# の _resolve_job_timeout と同じ考え方。バッチは1コンテナで完結する単発ジョブ
+# より短命なので値のレンジだけ小さくしてある）。
+# ---------------------------------------------------------------------------
+UPSCALE_BATCH_TIMEOUT_MARGIN_S = _env_int("SEEDVR2_BATCH_TIMEOUT_MARGIN_S", 5 * 60)
+UPSCALE_BATCH_TIMEOUT_HARD_CAP_S = _env_int("SEEDVR2_BATCH_TIMEOUT_HARD_CAP_S", 45 * 60)
+UPSCALE_BATCH_TIMEOUT_FALLBACK_S = _env_int("SEEDVR2_BATCH_TIMEOUT_FALLBACK_S", 20 * 60)
+UPSCALE_BATCH_TIMEOUT_BUCKET_S = _env_int("SEEDVR2_BATCH_TIMEOUT_BUCKET_S", 5 * 60)
+
+
+def _resolve_batch_timeout(max_allowed_time) -> int:
+    """dispatch payload の max_allowed_time（バッチ全体の推定秒数、Next 側の
+    upscaleBatchEstimatedSeconds() 由来）から Modal 強制 timeout を算出。
+    5分単位に切り上げてバケット化（warm プール断片化を避ける）。"""
+    try:
+        mat = float(max_allowed_time or 0)
+    except (TypeError, ValueError):
+        mat = 0.0
+    base = mat if mat > 0 else float(UPSCALE_BATCH_TIMEOUT_FALLBACK_S)
+    raw = min(UPSCALE_BATCH_TIMEOUT_HARD_CAP_S, base + UPSCALE_BATCH_TIMEOUT_MARGIN_S)
+    bucket = max(1, UPSCALE_BATCH_TIMEOUT_BUCKET_S)
+    bucketed = math.ceil(raw / bucket) * bucket
+    return int(min(UPSCALE_BATCH_TIMEOUT_HARD_CAP_S, bucketed))
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
 
@@ -428,6 +454,28 @@ def build_upscale_workflow(model_key: str, params: dict, input_filename: str) ->
     if node_type == "upscale_model":
         return _build_upscale_model_workflow(reg, params, input_filename)
     raise ValueError(f"unsupported node_type {node_type!r} for {model_key!r}")
+
+
+def _cascade_stage_targets(orig_short: int, final_short: int) -> list:
+    """orig_short（実際に SeedVR2 へ渡る入力の短辺 px）から final_short まで、
+    ×2 刻みで到達する中間ターゲット短辺 px のリストを返す。
+
+    1段で足りるなら [final_short] を返す（＝従来通りの単発、×2 モード相当）。
+    B300 実測（2026-09-11, yukipas.png, 921px→7368px）: 単発直行より
+    ×2×2×2 カスケードの方が高画質（顔・エフェクト・髪のエッジがシャープ）。
+    処理時間は +45%（108.77s → 157.46s）。詳細はホスト側メモリ参照。
+    """
+    if orig_short <= 0 or final_short <= orig_short:
+        return [final_short]
+    n = max(1, math.ceil(math.log2(final_short / orig_short)))
+    targets = []
+    cur = orig_short
+    for _ in range(n):
+        cur = min(final_short, cur * 2)
+        targets.append(cur)
+    if targets[-1] != final_short:
+        targets[-1] = final_short
+    return targets
 
 
 # ---------------------------------------------------------------------------
@@ -1082,8 +1130,14 @@ class SeedVR2Worker:
         )
         print(f"[seedvr2] ComfyUI ready (VRAM={_vram_gb()}GB)", flush=True)
 
-    def _write_input(self, raw: bytes, filename: str) -> str:
-        """入力を共通正規化レイヤーに通して ComfyUI の input/ へ。"""
+    def _write_input(self, raw: bytes, filename: str, max_edge: int | None = None) -> str:
+        """入力を共通正規化レイヤーに通して ComfyUI の input/ へ。
+
+        `max_edge` 省略時はユーザー生アップロード向けの INPUT_IMG_MAX_EDGE
+        （既定2048）でクランプする。カスケードの中間段（自分自身の前段出力を
+        次段の入力として書き戻すとき）はこれを大きく上書きし、せっかく
+        大きくした画像を次段に渡す前に縮めてしまわないようにする。
+        """
         from ull_image_prep import ImagePrepError, normalize_to_png_bytes
 
         input_dir = os.path.join(COMFY_DIR, "input")
@@ -1092,7 +1146,7 @@ class SeedVR2Worker:
         try:
             payload = normalize_to_png_bytes(
                 raw,
-                max_edge=INPUT_IMG_MAX_EDGE,
+                max_edge=max_edge if max_edge is not None else INPUT_IMG_MAX_EDGE,
                 min_edge=INPUT_IMG_MIN_EDGE,
                 multiple=INPUT_IMG_MULTIPLE,
                 bg=(255, 255, 255),
@@ -1167,14 +1221,49 @@ class SeedVR2Worker:
         if model_key not in _enabled_models():
             raise fastapi.HTTPException(status_code=400, detail=f"model {model_key!r} not available yet")
 
+        reg = UPSCALER_REGISTRY[model_key]
+        params = dict(params or {})
+
         raw = _load_input_bytes(image_spec)
         in_name = self._write_input(raw, "in.png")
-        workflow = build_upscale_workflow(model_key, params or {}, in_name)
+
+        # カスケード対象は SeedVR2 のみ（ESRGAN/SwinIR は scale_by 固定倍率の
+        # CNN で target_short を使わないため対象外）。B300 実測で単発直行より
+        # ×2 刻みの多段カスケードの方が高画質と確認済み（詳細はホスト側メモリ
+        # / _cascade_stage_targets のコメント参照）。×2 モード相当（1段で足りる
+        # 場合）は従来通りの単発 1 回のまま。
+        stage_targets = [int(params.get("target_short", DEFAULT_TARGET_SHORT))]
+        if reg.get("node_type") == "seedvr2":
+            try:
+                from PIL import Image as _Image
+
+                with _Image.open(os.path.join(COMFY_DIR, "input", in_name)) as im:
+                    orig_short = min(im.size)
+            except Exception:  # noqa: BLE001
+                orig_short = 0
+            stage_targets = _cascade_stage_targets(orig_short, stage_targets[0])
 
         t0 = time.time()
-        with _VramPeak() as vp:
-            data, filename = self._run_workflow(workflow)
+        vram_peak = 0.0
+        data = filename = None
+        for i, stage_short in enumerate(stage_targets):
+            stage_params = {**params, "target_short": stage_short}
+            workflow = build_upscale_workflow(model_key, stage_params, in_name)
+            with _VramPeak() as vp:
+                data, filename = self._run_workflow(workflow)
+            vram_peak = max(vram_peak, vp.peak or 0)
+            if i < len(stage_targets) - 1:
+                # 次段の入力へ。せっかく拡大した画像を次段に渡す前に
+                # INPUT_IMG_MAX_EDGE（既定2048）で縮めないよう max_edge を
+                # 大きく取って正規化レイヤーだけ通す。
+                in_name = self._write_input(data, "in.png", max_edge=20000)
         elapsed = round(time.time() - t0, 2)
+        if len(stage_targets) > 1:
+            print(
+                f"[seedvr2] cascade {len(stage_targets)} stages -> {stage_targets} "
+                f"total {elapsed}s",
+                flush=True,
+            )
 
         out_w = out_h = None
         try:
@@ -1211,7 +1300,7 @@ class SeedVR2Worker:
 
         print(
             f"[seedvr2] {model_key} -> {filename} {out_w}x{out_h} in {elapsed}s "
-            f"VRAM peak={vp.peak}GB now={_vram_gb()}GB",
+            f"VRAM peak={vram_peak}GB now={_vram_gb()}GB stages={len(stage_targets)}",
             flush=True,
         )
         return {
@@ -1220,9 +1309,10 @@ class SeedVR2Worker:
             "model_key": model_key,
             "elapsed_time": elapsed,
             "vram_used_gb": _vram_gb(),
-            "vram_peak_gb": vp.peak,
+            "vram_peak_gb": vram_peak,
             "out_width": out_w,
             "out_height": out_h,
+            "stages_ran": len(stage_targets),
         }
 
     @modal.method()
@@ -1238,24 +1328,25 @@ class SeedVR2Worker:
             "vram_peak_gb": r["vram_peak_gb"],
             "out_width": r["out_width"],
             "out_height": r["out_height"],
+            "stages_ran": r.get("stages_ran", 1),
         }
 
-    @modal.method()
-    def run_upscale_job(self, payload: dict) -> dict:
-        """完全非同期ジョブ本体。`upscale_generate_dispatch` が .spawn() する。
+    def _process_one_upscale_item(
+        self,
+        job_id: str,
+        user_id: str,
+        credits_cost: int,
+        model_key: str,
+        preset: str,
+        params: dict,
+        image_spec: str,
+    ) -> dict:
+        """1件分の実処理: _do_upscale → upload → upscale_jobs PATCH。
 
-        入力: { job_id, user_id, credits_cost, max_allowed_time?,
-                image(base64|url), model_key?, preset?, params?{target_short,...} }
-        upscale_jobs を直接 PATCH（Next のリクエストはもう生きていない）。
+        例外は failed + 返金にして return するだけで再送出しない — バッチの
+        ループ（run_upscale_batch_job）を1件の失敗で止めないため。
+        run_upscale_job（単発）と run_upscale_batch_job（複数）の共通処理。
         """
-        job_id = str(payload.get("job_id") or "")
-        user_id = str(payload.get("user_id") or "")
-        credits_cost = int(payload.get("credits_cost") or 0)
-        model_key = payload.get("model_key") or "seedvr2_7b"
-        preset = payload.get("preset") or ""
-        params = payload.get("params") or {}
-        image_spec = payload.get("image") or payload.get("image_b64") or ""
-
         # idempotency ガード: Modal のクラッシュ由来リトライで二重課金 / 二重生成
         # しないよう、既に終端状態なら即 no-op。
         existing = _get_upscale_job_status(job_id)
@@ -1269,6 +1360,59 @@ class SeedVR2Worker:
             return {"ok": False, "error": "image is required"}
 
         _patch_upscale_job(job_id, {"status": "processing"})
+
+        try:
+            r = self._do_upscale(image_spec, model_key, params)
+        except Exception as exc:  # noqa: BLE001
+            msg = f"{type(exc).__name__}: {exc}"[:500]
+            print(f"[upscale-job] {job_id} FAILED: {msg}", flush=True)
+            _patch_upscale_job(job_id, {"status": "failed", "error_message": msg})
+            _refund_upscale_credits(user_id, credits_cost)
+            return {"ok": False, "error": msg}
+
+        _ext = (r.get("filename") or "out.png").rsplit(".", 1)[-1].lower()
+        url = _upload_upscale_image(user_id, job_id, r["data"], _ext)
+        meta = {
+            "vram_used_gb": r["vram_used_gb"],
+            "vram_peak_gb": r["vram_peak_gb"],
+            "elapsed_time": r["elapsed_time"],
+            "out_width": r["out_width"],
+            "out_height": r["out_height"],
+            "out_bytes": len(r["data"]),
+            "model_key": r["model_key"],
+            "preset": preset,
+            "stages_ran": r.get("stages_ran", 1),
+        }
+        if url:
+            _patch_upscale_job(job_id, {"status": "completed", "result_url": url})
+            _merge_upscale_metadata(job_id, meta)
+            print(f"[upscale-job] {job_id} completed -> {url}", flush=True)
+            return {"ok": True, "result_url": url}
+
+        # ストレージ不通 — 課金しておいて結果を返せないのは避ける。返金 + failed。
+        _patch_upscale_job(
+            job_id,
+            {"status": "failed", "error_message": "結果画像の保存に失敗しました。"},
+        )
+        _merge_upscale_metadata(job_id, meta)
+        _refund_upscale_credits(user_id, credits_cost)
+        return {"ok": False, "error": "upload failed"}
+
+    @modal.method()
+    def run_upscale_job(self, payload: dict) -> dict:
+        """完全非同期ジョブ本体（1枚）。`upscale_generate_dispatch` が .spawn() する。
+
+        入力: { job_id, user_id, credits_cost, max_allowed_time?,
+                image(base64|url), model_key?, preset?, params?{target_short,...} }
+        upscale_jobs を直接 PATCH（Next のリクエストはもう生きていない）。
+        """
+        job_id = str(payload.get("job_id") or "")
+        user_id = str(payload.get("user_id") or "")
+        credits_cost = int(payload.get("credits_cost") or 0)
+        model_key = payload.get("model_key") or "seedvr2_7b"
+        preset = payload.get("preset") or ""
+        params = payload.get("params") or {}
+        image_spec = payload.get("image") or payload.get("image_b64") or ""
 
         # 損切り: 別スレッドで max_allowed_time を監視し、超過したら os._exit で
         # コンテナごと落とす（GPU 焼き逃げ防止）。angle worker と違い 1 枚だけの
@@ -1303,42 +1447,83 @@ class SeedVR2Worker:
             threading.Thread(target=_watchdog, daemon=True).start()
 
         try:
-            r = self._do_upscale(image_spec, model_key, params)
-        except Exception as exc:  # noqa: BLE001
+            return self._process_one_upscale_item(
+                job_id, user_id, credits_cost, model_key, preset, params, image_spec
+            )
+        finally:
             _wd_stop.set()
-            msg = f"{type(exc).__name__}: {exc}"[:500]
-            print(f"[upscale-job] {job_id} FAILED: {msg}", flush=True)
-            _patch_upscale_job(job_id, {"status": "failed", "error_message": msg})
-            _refund_upscale_credits(user_id, credits_cost)
-            return {"ok": False, "error": msg}
-        _wd_stop.set()
 
-        _ext = (r.get("filename") or "out.png").rsplit(".", 1)[-1].lower()
-        url = _upload_upscale_image(user_id, job_id, r["data"], _ext)
-        meta = {
-            "vram_used_gb": r["vram_used_gb"],
-            "vram_peak_gb": r["vram_peak_gb"],
-            "elapsed_time": r["elapsed_time"],
-            "out_width": r["out_width"],
-            "out_height": r["out_height"],
-            "out_bytes": len(r["data"]),
-            "model_key": r["model_key"],
-            "preset": preset,
-        }
-        if url:
-            _patch_upscale_job(job_id, {"status": "completed", "result_url": url})
-            _merge_upscale_metadata(job_id, meta)
-            print(f"[upscale-job] {job_id} completed -> {url}", flush=True)
-            return {"ok": True, "result_url": url}
+    @modal.method()
+    def run_upscale_batch_job(self, payload: dict) -> dict:
+        """複数画像バッチジョブ本体。`upscale_batch_generate_dispatch` が
+        .spawn() する。同一（温まった）コンテナ内で順番に1枚ずつ処理する —
+        コールドスタートはバッチ全体で1回分だけになる（実コスト削減の本体）。
 
-        # ストレージ不通 — 課金しておいて結果を返せないのは避ける。返金 + failed。
-        _patch_upscale_job(
-            job_id,
-            {"status": "failed", "error_message": "結果画像の保存に失敗しました。"},
-        )
-        _merge_upscale_metadata(job_id, meta)
-        _refund_upscale_credits(user_id, credits_cost)
-        return {"ok": False, "error": "upload failed"}
+        入力: { batch_id, user_id, max_allowed_time?,
+                items: [{ job_id, credits_cost, model_key?, preset?,
+                          params?{target_short,...}, image(base64|url) }, ...] }
+        各アイテムは _process_one_upscale_item で upscale_jobs を個別に直接
+        PATCH。1件失敗してもそのアイテムだけ failed+返金にしてループは継続する
+        （他アイテムを巻き添えにしない）。
+        """
+        batch_id = str(payload.get("batch_id") or "")
+        user_id = str(payload.get("user_id") or "")
+        items = payload.get("items") or []
+
+        import threading
+
+        try:
+            mat = float(payload.get("max_allowed_time") or 0)
+        except (TypeError, ValueError):
+            mat = 0.0
+        _wd_stop = threading.Event()
+        _pending_lock = threading.Lock()
+        _pending_ids = {str(it.get("job_id")) for it in items}
+
+        if mat > 0:
+            def _watchdog():
+                if _wd_stop.wait(mat):
+                    return  # 正常終了 — 何もしない
+                with _pending_lock:
+                    remaining = set(_pending_ids)
+                print(
+                    f"[upscale-batch][WATCHDOG] {batch_id}: 許容 {int(mat)}s 超過 → "
+                    f"未処理 {len(remaining)}/{len(items)} 件を failed+返金 して os._exit(1)",
+                    flush=True,
+                )
+                for it in items:
+                    jid = str(it.get("job_id"))
+                    if jid in remaining:
+                        _patch_upscale_job(
+                            jid, {"status": "failed", "error_message": "処理時間の上限を超えました。"}
+                        )
+                        _refund_upscale_credits(user_id, int(it.get("credits_cost") or 0))
+                os._exit(1)
+
+            threading.Thread(target=_watchdog, daemon=True).start()
+
+        results = []
+        try:
+            for it in items:
+                job_id = str(it.get("job_id") or "")
+                r = self._process_one_upscale_item(
+                    job_id,
+                    user_id,
+                    int(it.get("credits_cost") or 0),
+                    it.get("model_key") or "seedvr2_7b",
+                    it.get("preset") or "",
+                    it.get("params") or {},
+                    it.get("image") or it.get("image_b64") or "",
+                )
+                with _pending_lock:
+                    _pending_ids.discard(job_id)
+                results.append({"job_id": job_id, **r})
+        finally:
+            _wd_stop.set()
+
+        ok_count = sum(1 for r in results if r.get("ok"))
+        print(f"[upscale-batch] {batch_id} done: {ok_count}/{len(items)} ok", flush=True)
+        return {"ok": True, "batch_id": batch_id, "results": results}
 
     @modal.fastapi_endpoint(method="POST")
     def upscale(self, item: dict, request: fastapi.Request):
@@ -1395,6 +1580,49 @@ def upscale_generate_dispatch(item: dict, request: fastapi.Request):
         flush=True,
     )
     return {"ok": True, "job_id": job_id, "call_id": call.object_id}
+
+
+@app.function(
+    image=dispatch_image,
+    timeout=300,
+    scaledown_window=30,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="POST")
+def upscale_batch_generate_dispatch(item: dict, request: fastapi.Request):
+    """POST 非同期バッチディスパッチ。複数画像を1回のリクエストでまとめて
+    キューし、Modal 側の強制 timeout をバッチの推定合計秒数まで動的に引き
+    上げてから spawn する（modal_angle_worker.py の angle_generate_dispatch /
+    _resolve_job_timeout と同じ考え方）。
+
+    入力: { batch_id, user_id, max_allowed_time?,
+            items: [{ job_id, credits_cost, model_key?, preset?, params?,
+                      image(base64|url) }, ...] }
+    出力: { ok: true, batch_id, call_id }
+    """
+    _authorize(request)
+
+    batch_id = str(item.get("batch_id") or "")
+    if not batch_id:
+        raise fastapi.HTTPException(status_code=400, detail="batch_id is required")
+    items = item.get("items") or []
+    if not isinstance(items, list) or not items:
+        raise fastapi.HTTPException(status_code=400, detail="items is required")
+    for it in items:
+        if not (it.get("job_id") and (it.get("image") or it.get("image_b64"))):
+            raise fastapi.HTTPException(
+                status_code=400, detail="each item requires job_id and image"
+            )
+
+    modal_timeout = _resolve_batch_timeout(item.get("max_allowed_time"))
+    worker = SeedVR2Worker.with_options(timeout=modal_timeout)
+    call = worker().run_upscale_batch_job.spawn(item)
+    print(
+        f"[upscale-batch-dispatch] {batch_id}: {len(items)} items "
+        f"max_allowed_time={item.get('max_allowed_time')!r} modal_timeout={modal_timeout}s",
+        flush=True,
+    )
+    return {"ok": True, "batch_id": batch_id, "call_id": call.object_id}
 
 
 # ---------------------------------------------------------------------------

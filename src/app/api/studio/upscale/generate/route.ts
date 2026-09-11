@@ -124,7 +124,7 @@ export async function POST(request: Request) {
   let creditsCost: number;
   let outWidth = 0;
   let outHeight = 0;
-  let targetShort = mode.targetShort ?? 1920;
+  let targetShort = 1920;
   if (dims && dims.width > 0 && dims.height > 0) {
     const bd = upscaleCostBreakdown({
       inW: dims.width,
@@ -199,7 +199,7 @@ export async function POST(request: Request) {
         est_out_width: outWidth || null,
         est_out_height: outHeight || null,
         target_short: targetShort,
-        power_tier: Boolean(mode.powerTier),
+        cascade_stages: mode.cascadeStages,
         model_label: model.label,
       },
     })
