@@ -430,6 +430,12 @@ export function UpscaleStudioTab() {
   const batchDoneCount = Object.values(batchJobs).filter(
     (j) => j.status === "completed" || j.status === "failed",
   ).length;
+  const batchProcessingVramGb = useMemo(() => {
+    const processing = Object.values(batchJobs).find(
+      (j) => j.status === "processing" && j.vramUsedGb != null,
+    );
+    return processing?.vramUsedGb ?? null;
+  }, [batchJobs]);
 
   const handleBatchRun = useCallback(async () => {
     if (!user) return setLoginOpen(true);
@@ -970,6 +976,11 @@ export function UpscaleStudioTab() {
                 <p className="mt-1.5 text-center text-[11px] text-muted">
                   {batchDoneCount}/{batchJobIds.length} 完了
                 </p>
+                {batchProcessingVramGb != null && (
+                  <div className="mt-2 flex justify-center">
+                    <VramBadge gb={batchProcessingVramGb} />
+                  </div>
+                )}
               </div>
             )}
 
