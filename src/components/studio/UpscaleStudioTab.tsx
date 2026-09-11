@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import JSZip from "jszip";
 import {
   AlertTriangle,
   Download,
@@ -476,14 +477,37 @@ export function UpscaleStudioTab() {
   );
   const [downloadingAll, setDownloadingAll] = useState(false);
 
+  // ブラウザは <a download> の連続クリックを「複数ファイルの自動ダウンロード」
+  // として2つ目以降を黙ってブロックすることがある（Chrome等）。MultiAngleStudioTab
+  // と同じく ZIP に固めて1回のダウンロードにする。
   const handleDownloadAll = useCallback(async () => {
     if (batchCompletedUrls.length === 0 || downloadingAll) return;
     setDownloadingAll(true);
     try {
-      for (const url of batchCompletedUrls) {
-        await downloadUpscaleImage(url, buildOutFilename(url));
-        await sleep(400); // 連続ダウンロードをブラウザに弾かれないよう少し間隔を空ける
-      }
+      const zip = new JSZip();
+      await Promise.all(
+        batchCompletedUrls.map(async (url, i) => {
+          const res = await fetch(url);
+          if (!res.ok) return;
+          const buf = await res.arrayBuffer();
+          const ext = /\.webp(\?|$)/i.test(url) ? "webp" : /\.jpe?g(\?|$)/i.test(url) ? "jpg" : "png";
+          zip.file(`${String(i + 1).padStart(2, "0")}_upscale.${ext}`, buf);
+        }),
+      );
+      const blob = await zip.generateAsync({ type: "blob" });
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      const now = new Date();
+      const p = (n: number) => String(n).padStart(2, "0");
+      a.download = `ullstudio_upscale_batch_${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}_${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch (err) {
+      console.error("[UpscaleStudioTab] batch zip download failed:", err);
+      setBatchError("ZIP の作成に失敗しました。");
     } finally {
       setDownloadingAll(false);
     }
