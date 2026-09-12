@@ -30,7 +30,6 @@ import { QueueStatusPanel } from "@/components/studio/QueueStatusPanel";
 import { VramBadge } from "@/components/studio/VramBadge";
 import { resizeImageBlobTo } from "@/lib/imageCanvas";
 import { ImageCropper } from "@/components/studio/ImageCropper";
-import { GpuWarmStokeWidget } from "@/components/studio/GpuWarmStokeWidget";
 import { LoginModal } from "@/components/LoginModal";
 import { ToastStack, type ToastData } from "@/components/Toast";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
@@ -481,8 +480,6 @@ export function CinematicVideoTab() {
               className="w-full resize-none rounded-lg border border-border bg-background px-4 py-3 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
             />
           </div>
-
-          <GpuWarmStokeWidget />
 
           <button
             type="button"

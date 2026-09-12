@@ -7,13 +7,14 @@ import { CustomWorkflowsTab } from "@/components/studio/CustomWorkflowsTab";
 import { LoraStudioTab } from "@/components/studio/LoraStudioTab";
 import { MultiAngleStudioTab } from "@/components/studio/MultiAngleStudioTab";
 import { UpscaleStudioTab } from "@/components/studio/UpscaleStudioTab";
-import { GpuWarmBadge } from "@/components/studio/GpuWarmBadge";
+import { UpscaleVideoStudioTab } from "@/components/studio/UpscaleVideoStudioTab";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { EditableText } from "@/components/EditableText";
 
 // 2026-09-09: Wan Animate 2 / Cinematic Video タブは廃止。汎用の動画・特殊要望は
 // すべて「特化ワークフロー」で対応する方針（管理者がワークフローを登録）。
-type StudioTab = "image" | "custom" | "lora" | "angle" | "upscale";
+// 2026-09-12: 動画超解像（v1・最小スコープ）を専用タブとして追加。
+type StudioTab = "image" | "custom" | "lora" | "angle" | "upscale" | "upscale_video";
 
 const STUDIO_TABS: { id: StudioTab; label: string }[] = [
   // "image" (画像生成) is temporarily hidden from navigation — the engine
@@ -22,6 +23,7 @@ const STUDIO_TABS: { id: StudioTab; label: string }[] = [
   { id: "custom", label: "特化ワークフロー" },
   { id: "angle", label: "🎭 Multi-Angle" },
   { id: "upscale", label: "✨ 超解像" },
+  { id: "upscale_video", label: "🎬 動画超解像" },
   { id: "lora", label: "🎨 LoRA Studio" },
 ];
 
@@ -75,6 +77,11 @@ export function Studio() {
                 siteKey="studio_desc_upscale"
                 fallback="画像を1枚アップロードするだけ。ローカルでは不可能なフル精度エンジンで、キャラの同一性を保ったまま解像感を引き上げます。"
               />
+            ) : activeTab === "upscale_video" ? (
+              <EditableText
+                siteKey="studio_desc_upscale_video"
+                fallback="短い動画を1本アップロードするだけ。同じフル精度エンジンで、動きの一貫性を保ったまま解像感を引き上げます（最小構成の提供です）。"
+              />
             ) : activeTab === "lora" ? (
               <EditableText
                 siteKey="studio_desc_lora"
@@ -92,8 +99,6 @@ export function Studio() {
               <CreditsBadge user={user} className="inline-flex" />
             </div>
           )}
-
-          <GpuWarmBadge />
 
           <div className="mt-8 flex flex-wrap items-center justify-center gap-2">
             {STUDIO_TABS.map((tab) => (
@@ -119,6 +124,8 @@ export function Studio() {
           <MultiAngleStudioTab />
         ) : activeTab === "upscale" ? (
           <UpscaleStudioTab />
+        ) : activeTab === "upscale_video" ? (
+          <UpscaleVideoStudioTab />
         ) : activeTab === "lora" ? (
           <LoraStudioTab onUseLora={() => setActiveTab("custom")} />
         ) : (

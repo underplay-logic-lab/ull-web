@@ -18,7 +18,6 @@ import { runCustomWorkflowOnModal } from "@/lib/modalCustomWorkflow";
 import type { GpuTier } from "@/lib/gpuTier";
 import { logGenerationActivity } from "@/lib/generationLogger";
 import { startActiveJob, endActiveJob } from "@/lib/activeGenerationJobs";
-import { autoExtendGpuWarmOnSuccess } from "@/lib/gpuWarmAutoExtend";
 import { getAdminEmails } from "@/lib/adminAuth";
 
 // Same cold-start budget as /api/wan-animate/generate — see modalCustomWorkflow.ts.
@@ -273,9 +272,6 @@ export async function POST(request: Request) {
       gpuTier: effectiveGpuTier,
       outputFileName: result.output_path,
     });
-
-    // Free side-effect of a successful generation — see gpuWarmAutoExtend.ts.
-    await autoExtendGpuWarmOnSuccess(user.id);
 
     return NextResponse.json({
       success: true,

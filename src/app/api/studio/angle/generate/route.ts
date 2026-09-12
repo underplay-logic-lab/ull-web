@@ -5,7 +5,6 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { spawnAngleJob } from "@/lib/modalAngle";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { angleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
-import { autoExtendGpuWarmOnSuccess } from "@/lib/gpuWarmAutoExtend";
 import {
   angleCreditsPerAngle,
   buildAngleCombos,
@@ -315,10 +314,6 @@ export async function POST(request: Request) {
       { status: 502 },
     );
   }
-
-  // 生成が走り出したので共有 GPU ウォーム状態を 30 秒延長（無料・失敗しても無視）。
-  // 直後に別アングルを追加生成／リロールしてもコールドスタートを避けられる。
-  await autoExtendGpuWarmOnSuccess(user.id);
 
   return NextResponse.json({
     success: true,

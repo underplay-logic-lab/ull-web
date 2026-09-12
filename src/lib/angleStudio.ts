@@ -1,7 +1,7 @@
 // ULL Multi-Angle Studio — shared composition matrix, prompt builder and
 // pricing. Imported from BOTH the client tab (live 構図数 / クレジット表示) and
 // the API route (server-side re-derivation — the client's numbers are never
-// trusted). No "server-only" guard, same posture as gpuWarm.ts.
+// trusted). No "server-only" guard.
 //
 // プロンプト規格は `fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA` の HF model
 // card 公式フォーマットに準拠する:

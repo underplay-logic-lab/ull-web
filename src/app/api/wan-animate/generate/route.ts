@@ -11,7 +11,6 @@ import { getWanAnimateGenerationCost } from "@/lib/wanAnimatePricing";
 import { getGpuTierUltraAddon } from "@/lib/gpuTierPricing";
 import type { GpuTier } from "@/lib/gpuTier";
 import { startActiveJob, endActiveJob } from "@/lib/activeGenerationJobs";
-import { autoExtendGpuWarmOnSuccess } from "@/lib/gpuWarmAutoExtend";
 import { getAdminEmails } from "@/lib/adminAuth";
 
 // Cold-started GPU inference on Modal (container spin-up + model load +
@@ -212,11 +211,6 @@ export async function POST(request: Request) {
       gpuTier,
       outputFileName: result.output_path,
     });
-
-    // Free side-effect of a successful generation — keeps the shared
-    // "🔥 火入れ" status hot for whoever generates next (see
-    // gpuWarmAutoExtend.ts). Never blocks/fails the response.
-    await autoExtendGpuWarmOnSuccess(user.id);
 
     return NextResponse.json({
       success: true,

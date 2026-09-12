@@ -5,7 +5,6 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { spawnUpscaleBatchJob, type SpawnUpscaleBatchItem } from "@/lib/modalUpscale";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
-import { autoExtendGpuWarmOnSuccess } from "@/lib/gpuWarmAutoExtend";
 import { readImageDimensions } from "@/lib/imageDimensions";
 import {
   DEFAULT_UPSCALE_MODE,
@@ -282,8 +281,6 @@ export async function POST(request: Request) {
       { status: 502 },
     );
   }
-
-  await autoExtendGpuWarmOnSuccess(user.id);
 
   return NextResponse.json({
     success: true,

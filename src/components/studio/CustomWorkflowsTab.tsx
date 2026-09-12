@@ -8,7 +8,6 @@ import { WorkflowFieldLayout } from "@/components/studio/workflow/WorkflowFieldL
 import { generateCustomWorkflow } from "@/lib/customWorkflowApi";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { LoginModal } from "@/components/LoginModal";
-import { GpuWarmStokeWidget } from "@/components/studio/GpuWarmStokeWidget";
 import { VramBadge } from "@/components/studio/VramBadge";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
@@ -285,8 +284,6 @@ export function CustomWorkflowsTab() {
           onChange={handleFieldChange}
           onLockedInteract={handleLockedInteract}
         />
-
-        <GpuWarmStokeWidget />
 
         <button
           type="button"
