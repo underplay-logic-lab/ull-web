@@ -32,6 +32,7 @@ import {
   pollUpscaleJob,
   startUpscaleBatchJob,
   startUpscaleJob,
+  UpscaleJobNotFoundError,
   type UpscaleApiError,
   type UpscaleJob,
 } from "@/lib/upscaleApi";
@@ -538,6 +539,14 @@ export function UpscaleStudioTab() {
           setBatchPhase("running");
         } catch (err) {
           if (cancelled) return;
+          if (err instanceof UpscaleJobNotFoundError) {
+            setBatchPhase("error");
+            setBatchError(
+              "このバッチの記録が見つかりませんでした（生成から14日以上経つと自動的に削除されます）。お手数ですが新しく生成してください。",
+            );
+            saveFormState(BATCH_JOB_KEY, { jobIds: [] });
+            return;
+          }
           errorStreak += 1;
           console.warn("[UpscaleStudioTab] batch poll error:", err);
           if (errorStreak >= POLL_MAX_CONSECUTIVE_ERRORS) {
@@ -584,6 +593,17 @@ export function UpscaleStudioTab() {
           setPhase("running");
         } catch (err) {
           if (cancelled) return;
+          if (err instanceof UpscaleJobNotFoundError) {
+            // 一時的な通信エラーと違いリトライしても直らない（14日保持を
+            // 過ぎて自動 purge 済み等）。すぐ諦めて案内し、無くなった
+            // データを指す古い参照は消しておく。
+            setPhase("error");
+            setErrorMessage(
+              "このジョブの記録が見つかりませんでした（生成から14日以上経つと自動的に削除されます）。お手数ですが新しく生成してください。",
+            );
+            saveFormState(JOB_KEY, { jobId: "" });
+            return;
+          }
           errorStreak += 1;
           console.warn("[UpscaleStudioTab] poll error:", err);
           if (errorStreak >= POLL_MAX_CONSECUTIVE_ERRORS) {

@@ -127,6 +127,15 @@ function metaNumber(meta: unknown, key: string): number | null {
 const UPSCALE_COLS =
   "id, status, model_key, preset, result_url, error_message, metadata";
 
+/** ジョブ行が見つからない（14日保持を過ぎて自動 purge 済み等）— 一時的な
+ * 通信エラーと違いリトライしても直らないので、呼び出し側で区別して案内する。 */
+export class UpscaleJobNotFoundError extends Error {
+  constructor() {
+    super("ジョブが見つかりません。");
+    this.name = "UpscaleJobNotFoundError";
+  }
+}
+
 export async function pollUpscaleJob(jobId: string): Promise<UpscaleJob> {
   const { data, error } = await supabase
     .from("upscale_jobs")
@@ -134,8 +143,10 @@ export async function pollUpscaleJob(jobId: string): Promise<UpscaleJob> {
     .eq("id", jobId)
     .single<UpscaleJobRow>();
 
+  // .single() は 0 件でも PGRST116 でエラーを返す（profile.ts と同じ規約）。
+  if (error?.code === "PGRST116") throw new UpscaleJobNotFoundError();
   if (error) throw new Error(error.message);
-  if (!data) throw new Error("ジョブが見つかりません。");
+  if (!data) throw new UpscaleJobNotFoundError();
 
   return {
     id: data.id,
