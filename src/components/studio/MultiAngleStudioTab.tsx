@@ -42,6 +42,7 @@ import {
 } from "@/lib/angleStudio";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import {
+  AngleJobNotFoundError,
   downloadAngleImage,
   pollAngleJob,
   startAngleJob,
@@ -589,6 +590,17 @@ export function MultiAngleStudioTab() {
           setPhase("running");
         } catch (err) {
           if (cancelled) return;
+          if (err instanceof AngleJobNotFoundError) {
+            // 一時的な通信エラーと違いリトライしても直らない（14日保持を
+            // 過ぎて自動 purge 済み等）。すぐ諦めて案内し、無くなった
+            // データを指す古い参照は消しておく。
+            setPhase("error");
+            setErrorMessage(
+              "このジョブの記録が見つかりませんでした（生成から14日以上経つと自動的に削除されます）。お手数ですが新しく生成してください。",
+            );
+            saveFormState(JOB_KEY, { jobId: "" });
+            return;
+          }
           errorStreak += 1;
           console.warn("[MultiAngleStudioTab] poll error:", err);
           if (errorStreak >= POLL_MAX_CONSECUTIVE_ERRORS) {
@@ -633,7 +645,14 @@ export function MultiAngleStudioTab() {
             setErrorMessage("リロールに失敗しました。");
             return;
           }
-        } catch {
+        } catch (err) {
+          if (err instanceof AngleJobNotFoundError) {
+            setReroll(null);
+            setErrorMessage(
+              "このジョブの記録が見つかりませんでした（生成から14日以上経つと自動的に削除されます）。",
+            );
+            return;
+          }
           streak += 1;
           if (streak >= POLL_MAX_CONSECUTIVE_ERRORS) {
             setReroll(null);

@@ -4,6 +4,15 @@ import type { AngleMode, AngleSelection } from "@/lib/angleStudio";
 
 export type AngleApiError = Error & { remainingCredits?: number };
 
+/** ジョブ行が見つからない（14日保持を過ぎて自動 purge 済み等）— 一時的な
+ * 通信エラーと違いリトライしても直らないので、呼び出し側で区別して案内する。 */
+export class AngleJobNotFoundError extends Error {
+  constructor() {
+    super("ジョブが見つかりません。");
+    this.name = "AngleJobNotFoundError";
+  }
+}
+
 export type AngleJobStatus = "pending" | "processing" | "completed" | "failed";
 
 export type AngleJob = {
@@ -132,8 +141,10 @@ export async function pollAngleJob(jobId: string): Promise<AngleJob> {
       .single<AngleJobRow>());
   }
 
+  // .single() は 0 件でも PGRST116 でエラーを返す（profile.ts と同じ規約）。
+  if (error?.code === "PGRST116") throw new AngleJobNotFoundError();
   if (error) throw new Error(error.message);
-  if (!data) throw new Error("ジョブが見つかりません。");
+  if (!data) throw new AngleJobNotFoundError();
 
   return {
     id: data.id,
