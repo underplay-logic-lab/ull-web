@@ -107,6 +107,41 @@ QWEN_EDIT_REPO = (
     os.environ.get("ANGLE_QWEN_EDIT_REPO", "").strip() or "Qwen/Qwen-Image-Edit-2511"
 )
 
+# --- 検閲耐性テキストエンコーダー差し替え（オプトイン・既定オフ）----------
+# 2026-09-13: 参照画像が成人向け/NSFW系だと、内蔵の Qwen2.5-VL（text_encoder）
+# が画像をうまく解釈しない／内部で検閲的に振る舞い生成が壊れる、という
+# ホスト報告への対応。
+#
+# 当初案（Qwen3.8-27B-abliterated＝Qwen3_5ForConditionalGeneration系の別
+# アーキテクチャVLM）への差し替えは見送った: Qwen-Image-Edit の20B DiTは
+# Qwen2.5-VL-7B の埋め込み空間に合わせて学習されているため、別系統モデルの
+# 埋め込みを渡しても理解されず生成が破綻するリスクが高い（CLIPをSDで無関係な
+# モデルに差し替えるのと同種の問題）。
+#
+# 代わりに `huihui-ai/Qwen2.5-VL-7B-Instruct-abliterated` を採用候補とする —
+# Qwen-Image-Edit-2511 が内部で使う text_encoder と**同一ベースモデル・同一
+# アーキテクチャ**（Qwen2.5-VL-7B-Instruct）のfine-tuneで、テキスト部分のみ
+# 検閲解除・vision encoder部分は無改変（モデルカードに明記）。hidden_size・
+# tokenizer が一致するため DiT との互換性リスクは大幅に低い（ただし保証は
+# なく実機での画質確認が必須）。Apache-2.0。
+#
+# ANGLE_TEXT_ENCODER_REPO で上書き可能。既定を huihui-ai 版に設定して本番
+# 有効化した（2026-09-13、GPU実機で生成が破綻しないことを確認済み — 破綻時の
+# 切り戻しは ANGLE_TEXT_ENCODER_REPO=Qwen/Qwen-Image-Edit-2511 を明示するか、
+# 空文字を明示的に渡せない場合はこの行のデフォルトを "" に戻して再デプロイ）。
+ANGLE_TEXT_ENCODER_REPO = (
+    os.environ.get("ANGLE_TEXT_ENCODER_REPO", "").strip()
+    or "huihui-ai/Qwen2.5-VL-7B-Instruct-abliterated"
+)
+
+# 第二の手（モデル差し替えなし）: diffusers 公式実装
+# （pipeline_qwenimage_edit.py）は VLM への指示テンプレートを
+# `self.pipe.prompt_template_encode` という単なるインスタンス属性としてハード
+# コードしている（"Describe the key features of the input image..." という
+# 定型文）。モデル重みには一切触れず、この文字列を差し替えるだけの実験も
+# 独立して/組み合わせて試せる。空なら diffusers 既定のまま。
+ANGLE_PROMPT_TEMPLATE_ENCODE = os.environ.get("ANGLE_PROMPT_TEMPLATE_ENCODE", "").strip()
+
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
@@ -806,14 +841,17 @@ def probe_image_prep() -> dict:
     # GPU-less の単発プリキャッシュ。30 秒 Keep-Warm 規格の対象外なので即切り。
     scaledown_window=2,
 )
-def ensure_qwen_edit_cached(repo: str = "") -> dict:
+def ensure_qwen_edit_cached(repo: str = "", text_encoder_repo: str = "") -> dict:
     """Qwen-Image-Edit の全コンポーネントを永続 Volume の HF キャッシュに置く。
     キャッシュヒット時は snapshot_download の再検証だけで ~数秒、ミス時は
-    hf_transfer で並列 DL してから vol.commit()。GPU 側はこのあと 0s ロード。"""
+    hf_transfer で並列 DL してから vol.commit()。GPU 側はこのあと 0s ロード。
+    text_encoder_repo: CLI から ANGLE_TEXT_ENCODER_REPO を上書きしたい場合用
+    （`modal run` はローカルの環境変数をコンテナへ渡さないため）。"""
     from huggingface_hub import snapshot_download
 
     _apply_hf_cache_env()
     repo = (repo or "").strip() or QWEN_EDIT_REPO
+    text_encoder_repo = (text_encoder_repo or "").strip() or ANGLE_TEXT_ENCODER_REPO
 
     try:
         vol.reload()
@@ -845,6 +883,21 @@ def ensure_qwen_edit_cached(repo: str = "") -> dict:
     except Exception as exc:  # noqa: BLE001
         print(f"[cache] angle LoRA precache skipped: {exc}", flush=True)
 
+    # オプトインの検閲耐性 text_encoder（ANGLE_TEXT_ENCODER_REPO 参照）。
+    # 未設定なら何もしない。
+    alt_te_local = None
+    if text_encoder_repo:
+        try:
+            alt_te_local = snapshot_download(
+                text_encoder_repo,
+                cache_dir=HF_HUB_CACHE_DIR,
+                token=token,
+                ignore_patterns=["*.gguf", "*fp8*", "*onnx*", "*.pt", "*.ckpt"],
+            )
+            print(f"[cache] alt text_encoder staged -> {alt_te_local}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[cache] alt text_encoder precache failed: {exc}", flush=True)
+
     elapsed = round(time.time() - t0, 1)
 
     try:
@@ -859,6 +912,7 @@ def ensure_qwen_edit_cached(repo: str = "") -> dict:
         "elapsed_s": elapsed,
         "local_dir": str(local_dir),
         "lora": str(lora_local) if lora_local else None,
+        "alt_text_encoder": str(alt_te_local) if alt_te_local else None,
     }
 
 
@@ -940,6 +994,39 @@ class QwenImageEditWorker:
         # QwenImageEditPlus 系 / 将来の別名に追従）。失敗時のみ旧 base 版用の
         # QwenImageEditPipeline へフォールバックする。
         self.pipe = self._load_pipeline(torch.bfloat16, token)
+
+        # --- オプトイン: 検閲耐性 text_encoder への差し替え ------------------
+        # ANGLE_TEXT_ENCODER_REPO 参照。既定（未設定）なら repo 内蔵のまま、
+        # 本番の挙動は一切変わらない。.to("cuda") より前に差し替える。
+        self._text_encoder_repo = ANGLE_TEXT_ENCODER_REPO or None
+        if ANGLE_TEXT_ENCODER_REPO:
+            try:
+                from transformers import Qwen2_5_VLForConditionalGeneration
+
+                t_te0 = time.time()
+                alt_te = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    ANGLE_TEXT_ENCODER_REPO, torch_dtype=torch.bfloat16, token=token,
+                )
+                self.pipe.text_encoder = alt_te
+                print(
+                    f"[angle] alt text_encoder loaded ({ANGLE_TEXT_ENCODER_REPO}) "
+                    f"in {time.time() - t_te0:.1f}s",
+                    flush=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._text_encoder_repo = None
+                print(
+                    f"[angle] alt text_encoder load FAILED, falling back to bundled "
+                    f"encoder: {exc}",
+                    flush=True,
+                )
+
+        # 第二の手（モデル差し替えなし）: VLM への指示テンプレートの上書き。
+        # ANGLE_PROMPT_TEMPLATE_ENCODE 参照。空なら diffusers 既定のまま。
+        if ANGLE_PROMPT_TEMPLATE_ENCODE and hasattr(self.pipe, "prompt_template_encode"):
+            self.pipe.prompt_template_encode = ANGLE_PROMPT_TEMPLATE_ENCODE
+            print("[angle] prompt_template_encode overridden via ANGLE_PROMPT_TEMPLATE_ENCODE", flush=True)
+
         self.pipe.to("cuda")
         self.pipe.set_progress_bar_config(disable=True)
         # 大きめ入力での VAE デコード OOM を避ける。速度影響はごく小。
@@ -1207,7 +1294,8 @@ class QwenImageEditWorker:
             f"lora={'on@' + str(self._lora_scale) if self._lora_loaded else 'off'}, "
             f"trigger={ANGLE_LORA_TRIGGER!r}, "
             f"steps={ANGLE_STEPS_FLOOR}-{ANGLE_STEPS_CEIL}, "
-            f"cfg={ANGLE_CFG_FLOOR}-{ANGLE_CFG_CEIL}, align={ANGLE_ALIGN_MULTIPLE})",
+            f"cfg={ANGLE_CFG_FLOOR}-{ANGLE_CFG_CEIL}, align={ANGLE_ALIGN_MULTIPLE}, "
+            f"text_encoder={self._text_encoder_repo or 'bundled'})",
             flush=True,
         )
 
@@ -1262,10 +1350,38 @@ class QwenImageEditWorker:
         true_cfg_scale: float = DEFAULT_TRUE_CFG,
         negative_prompt: str = DEFAULT_NEGATIVE_PROMPT,
         images=None,
+        text_encoder_repo: str = "",
     ) -> dict:
         """`image_spec` は str（後方互換）。`images`（list, 最大 MAX_REF_IMAGES）を
-        渡すと Multi-Reference。先頭がメイン参照。"""
+        渡すと Multi-Reference。先頭がメイン参照。
+
+        text_encoder_repo: 検閲耐性 text_encoder の実機テスト用（CLI から
+        `modal run` する場合、ローカルの環境変数はコンテナへ渡らないため
+        ここに直接指定できるようにしてある）。本番の dispatch 経路は渡さない
+        —常に @modal.enter() で ANGLE_TEXT_ENCODER_REPO（デプロイ時の環境変数）
+        に基づき読み込んだものを使う。指定時、現在ロード中のものと違えば
+        ウォームコンテナ内でその場で差し替える（同じコンテナへの次リクエスト
+        以降は再ロード不要）。
+        """
         import torch
+
+        if text_encoder_repo and text_encoder_repo != (self._text_encoder_repo or ""):
+            try:
+                from transformers import Qwen2_5_VLForConditionalGeneration
+
+                t_te0 = time.time()
+                alt_te = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    text_encoder_repo, torch_dtype=torch.bfloat16,
+                ).to("cuda")
+                self.pipe.text_encoder = alt_te
+                self._text_encoder_repo = text_encoder_repo
+                print(
+                    f"[angle] run-time text_encoder swap -> {text_encoder_repo} "
+                    f"in {time.time() - t_te0:.1f}s",
+                    flush=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[angle] run-time text_encoder swap FAILED: {exc}", flush=True)
 
         if not isinstance(instructions, list) or not instructions:
             raise fastapi.HTTPException(status_code=400, detail="instructions must be a non-empty array")
@@ -1720,12 +1836,16 @@ def main(
     steps: int = DEFAULT_STEPS,
     cfg: float = DEFAULT_TRUE_CFG,
     out_dir: str = "./angle_out",
+    text_encoder_repo: str = "",
 ):
     """modal run modal_angle_worker.py --image-path ./ref.png \
            --instructions "Change to profile view || Change to low-angle shot"
 
     複数プロンプトは ` || ` 区切りで 1 つの --instructions 文字列に入れる
     （Modal の local entrypoint は list 型引数を取れないため）。
+
+    --text-encoder-repo で検閲耐性 text_encoder を実機テストできる
+    （例: huihui-ai/Qwen2.5-VL-7B-Instruct-abliterated）。
     """
     src = pathlib.Path(image_path).expanduser()
     if not src.is_file():
@@ -1737,7 +1857,7 @@ def main(
     image_b64 = base64.b64encode(src.read_bytes()).decode("ascii")
 
     # GPU を DL で遊ばせないよう、先に CPU でプリキャッシュしておく。
-    ensure_qwen_edit_cached.remote()
+    ensure_qwen_edit_cached.remote(text_encoder_repo=text_encoder_repo)
 
     result = QwenImageEditWorker().run_edit.remote(
         image_b64,
@@ -1745,6 +1865,7 @@ def main(
         seed=None if seed is None or seed < 0 else seed,
         num_inference_steps=steps,
         true_cfg_scale=cfg,
+        text_encoder_repo=text_encoder_repo,
     )
 
     dst = pathlib.Path(out_dir).expanduser()
