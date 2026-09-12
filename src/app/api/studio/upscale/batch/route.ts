@@ -6,6 +6,7 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { spawnUpscaleBatchJob, type SpawnUpscaleBatchItem } from "@/lib/modalUpscale";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { readImageDimensions } from "@/lib/imageDimensions";
+import { downloadStudioUpload, createStudioUploadSignedUrl, deleteStudioUploads } from "@/lib/studioUploads.server";
 import {
   DEFAULT_UPSCALE_MODE,
   DEFAULT_UPSCALE_MODEL,
@@ -14,7 +15,6 @@ import {
   UPSCALE_BATCH_MAX_TOTAL_BYTES,
   UPSCALE_MODELS,
   UPSCALE_MODES,
-  UPSCALE_UPLOAD_BUCKET,
   getUpscaleMode,
   getUpscaleModel,
   resolveTargetShort,
@@ -72,12 +72,6 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  for (const p of storagePaths) {
-    if (!p.startsWith(`${user.id}/`)) {
-      return NextResponse.json({ error: "不正なファイル指定です。" }, { status: 400 });
-    }
-  }
-
   const modelKeyRaw = body.modelKey ?? DEFAULT_UPSCALE_MODEL;
   const modeRaw = body.mode ?? body.preset ?? DEFAULT_UPSCALE_MODE;
   const modelKey = typeof modelKeyRaw === "string" && VALID_MODEL_KEYS.has(modelKeyRaw)
@@ -105,17 +99,15 @@ export async function POST(request: Request) {
   const prepared: PreparedItem[] = [];
   let totalBytes = 0;
   for (const storagePath of storagePaths) {
-    const { data: downloaded, error: downloadError } = await supabaseAdmin.storage
-      .from(UPSCALE_UPLOAD_BUCKET)
-      .download(storagePath);
-    if (downloadError || !downloaded) {
-      console.error("[studio/upscale/batch] storage download failed:", downloadError?.message);
+    let buffer: Buffer;
+    try {
+      buffer = await downloadStudioUpload(user.id, storagePath);
+    } catch (err) {
       return NextResponse.json(
-        { error: `「${storagePath.split("/").pop()}」の取得に失敗しました。` },
+        { error: `「${storagePath.split("/").pop()}」: ${(err as Error).message}` },
         { status: 400 },
       );
     }
-    const buffer = Buffer.from(await downloaded.arrayBuffer());
     totalBytes += buffer.length;
     if (buffer.length > MAX_INPUT_BYTES_API) {
       return NextResponse.json(
@@ -260,21 +252,20 @@ export async function POST(request: Request) {
   const items: SpawnUpscaleBatchItem[] = [];
   for (let i = 0; i < prepared.length; i++) {
     const p = prepared[i];
-    const { data: signed, error: signError } = await supabaseAdmin.storage
-      .from(UPSCALE_UPLOAD_BUCKET)
-      .createSignedUrl(p.storagePath, 60 * 60);
-    if (signError || !signed?.signedUrl) {
-      console.error("[studio/upscale/batch] failed to sign upload url:", signError?.message);
+    let signedUrl: string;
+    try {
+      signedUrl = await createStudioUploadSignedUrl(user.id, p.storagePath);
+    } catch (err) {
       await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
       return NextResponse.json(
-        { error: "アップロードされた画像の取得に失敗しました。", remainingCredits: currentCredits },
+        { error: (err as Error).message, remainingCredits: currentCredits },
         { status: 500 },
       );
     }
     items.push({
       jobId: jobIds[i],
       creditsCost: p.creditsCost,
-      image: signed.signedUrl,
+      image: signedUrl,
       modelKey,
       presetId: modeId,
       params: {
@@ -293,7 +284,7 @@ export async function POST(request: Request) {
       items,
     });
     // dispatch 成功後は一時アップロードは不要（ベストエフォート削除）。
-    void supabaseAdmin.storage.from(UPSCALE_UPLOAD_BUCKET).remove(storagePaths);
+    deleteStudioUploads(storagePaths);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[studio/upscale/batch] dispatch failed:", message);

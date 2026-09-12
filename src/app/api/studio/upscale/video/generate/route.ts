@@ -5,11 +5,11 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { spawnUpscaleVideoJob } from "@/lib/modalUpscale";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { upscaleVideoMaxAllowedTime } from "@/lib/pricing/costGuard.server";
+import { createStudioUploadSignedUrl } from "@/lib/studioUploads.server";
 import {
   DEFAULT_UPSCALE_MODEL,
   DEFAULT_UPSCALE_VIDEO_PRESET,
   UPSCALE_MODELS,
-  UPSCALE_UPLOAD_BUCKET,
   UPSCALE_VIDEO_MAX_SECONDS,
   UPSCALE_VIDEO_PRESETS,
   getUpscaleModel,
@@ -69,12 +69,6 @@ export async function POST(request: Request) {
   if (!storagePath) {
     return NextResponse.json({ error: "動画をアップロードしてください。" }, { status: 400 });
   }
-  // 自分のフォルダ配下かを念のため検証（supabaseAdmin は RLS を無視する
-  // service role のため、ここで手動チェックしないと他人の storage path を
-  // 渡されても読めてしまう）。
-  if (!storagePath.startsWith(`${user.id}/`)) {
-    return NextResponse.json({ error: "不正なファイル指定です。" }, { status: 400 });
-  }
 
   const modelKeyRaw = body.modelKey;
   const modelKey = typeof modelKeyRaw === "string" && VALID_MODEL_KEYS.has(modelKeyRaw)
@@ -127,17 +121,15 @@ export async function POST(request: Request) {
     creditsCost = upscaleVideoCreditsWorstCase(knobs);
   }
 
-  // 動画本体は Vercel 関数を経由させない — supabaseAdmin で署名付き URL を
-  // 発行し、Modal worker に直接 fetch させる（_load_input_bytes が URL を
-  // サポート済み・supabase.co は _ALLOWED_IMAGE_HOSTS 許可済み）。
-  const { data: signed, error: signError } = await supabaseAdmin.storage
-    .from(UPSCALE_UPLOAD_BUCKET)
-    .createSignedUrl(storagePath, SIGNED_URL_EXPIRES_S);
-  if (signError || !signed?.signedUrl) {
-    console.error("[studio/upscale/video/generate] failed to sign upload url:", signError?.message);
-    return NextResponse.json({ error: "アップロードされた動画の取得に失敗しました。" }, { status: 400 });
+  // 動画本体は Vercel 関数を経由させない — 署名付き URL を発行し、Modal
+  // worker に直接 fetch させる（_load_input_bytes が URL をサポート済み・
+  // supabase.co は _ALLOWED_IMAGE_HOSTS 許可済み）。
+  let videoUrl: string;
+  try {
+    videoUrl = await createStudioUploadSignedUrl(user.id, storagePath, SIGNED_URL_EXPIRES_S);
+  } catch (err) {
+    return NextResponse.json({ error: (err as Error).message }, { status: 400 });
   }
-  const videoUrl = signed.signedUrl;
 
   // --- credits ---------------------------------------------------------
   const { data: profile, error: profileError } = await getOrCreateProfile(

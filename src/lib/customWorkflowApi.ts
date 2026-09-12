@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
-import { uploadUpscaleAsset } from "@/lib/upscaleApi";
+import { uploadStudioAsset } from "@/lib/studioUploads";
 
 export type CustomWorkflowFieldValue = string | number | boolean | File | null;
 
@@ -54,7 +54,7 @@ export async function generateCustomWorkflow(
   for (const [fieldId, value] of Object.entries(params.values)) {
     if (value === null) continue;
     if (value instanceof File) {
-      const { path } = await uploadUpscaleAsset(params.userId, value);
+      const { path } = await uploadStudioAsset(params.userId, value);
       filePaths[fieldId] = path;
     } else {
       scalarValues[fieldId] = value;

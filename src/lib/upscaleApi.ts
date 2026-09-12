@@ -1,31 +1,6 @@
 import { supabase } from "@/lib/supabaseClient";
 import { normalizeUpscaleInput } from "@/lib/upscaleImage";
-import { UPSCALE_UPLOAD_BUCKET } from "@/lib/upscaleStudio";
-
-// ブラウザから直接 Supabase Storage へアップロードし、Vercel サーバーレス
-// 関数のリクエストボディ上限（約4.5MB。CLAUDE.md §6 参照）を回避する。
-// API route には storage path だけを渡し、route 側は supabaseAdmin で
-// service role として取得する（RLS 無関係・サイズ上限とも無関係）。
-// 手本: src/lib/loraApi.ts の uploadLoraDataset。
-export async function uploadUpscaleAsset(userId: string, file: File): Promise<{ path: string }> {
-  const safe = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "file";
-  const path = `${userId}/${crypto.randomUUID()}-${safe}`;
-  const { error } = await supabase.storage
-    .from(UPSCALE_UPLOAD_BUCKET)
-    .upload(path, file, { upsert: true, contentType: file.type || "application/octet-stream" });
-  if (error) throw new Error(error.message);
-  return { path };
-}
-
-// ベストエフォート削除（route が読み終わった後の後片付け）。失敗しても
-// ジョブ自体には影響させない。
-export async function deleteUpscaleAsset(path: string): Promise<void> {
-  try {
-    await supabase.storage.from(UPSCALE_UPLOAD_BUCKET).remove([path]);
-  } catch {
-    // best-effort — 消し忘れても実害はない（結果に影響しない一時ファイル）
-  }
-}
+import { uploadStudioAsset } from "@/lib/studioUploads";
 
 export type UpscaleApiError = Error & { remainingCredits?: number };
 
@@ -67,7 +42,7 @@ export async function startUpscaleJob(params: {
   const normalizedFile = new File([norm.blob], norm.filename, {
     type: norm.blob.type || params.image.type,
   });
-  const { path: storagePath } = await uploadUpscaleAsset(params.userId, normalizedFile);
+  const { path: storagePath } = await uploadStudioAsset(params.userId, normalizedFile);
 
   const res = await fetch("/api/studio/upscale/generate", {
     method: "POST",
@@ -109,7 +84,7 @@ export async function startUpscaleVideoJob(params: {
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) throw new Error("ログインが必要です。");
 
-  const { path: storagePath } = await uploadUpscaleAsset(params.userId, params.video);
+  const { path: storagePath } = await uploadStudioAsset(params.userId, params.video);
 
   const res = await fetch("/api/studio/upscale/video/generate", {
     method: "POST",
@@ -163,7 +138,7 @@ export async function startUpscaleBatchJob(params: {
     const normalizedFile = new File([norm.blob], norm.filename, {
       type: norm.blob.type || params.images[i].type,
     });
-    const { path } = await uploadUpscaleAsset(params.userId, normalizedFile);
+    const { path } = await uploadStudioAsset(params.userId, normalizedFile);
     storagePaths.push(path);
     params.onUploadProgress?.(i + 1, params.images.length);
   }

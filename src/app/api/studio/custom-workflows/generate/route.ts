@@ -19,7 +19,7 @@ import type { GpuTier } from "@/lib/gpuTier";
 import { logGenerationActivity } from "@/lib/generationLogger";
 import { startActiveJob, endActiveJob } from "@/lib/activeGenerationJobs";
 import { getAdminEmails } from "@/lib/adminAuth";
-import { UPSCALE_UPLOAD_BUCKET } from "@/lib/upscaleStudio";
+import { downloadStudioUpload, deleteStudioUploads } from "@/lib/studioUploads.server";
 
 // Same cold-start budget as /api/wan-animate/generate — see modalCustomWorkflow.ts.
 export const maxDuration = 300;
@@ -82,15 +82,7 @@ export async function POST(request: Request) {
     string,
     unknown
   >;
-  const uploadedPaths: string[] = [];
-  for (const p of Object.values(filePaths)) {
-    if (typeof p === "string") {
-      if (!p.startsWith(`${user.id}/`)) {
-        return NextResponse.json({ error: "不正なファイル指定です。" }, { status: 400 });
-      }
-      uploadedPaths.push(p);
-    }
-  }
+  const uploadedPaths = Object.values(filePaths).filter((p): p is string => typeof p === "string");
 
   // workflow_json/input_schema/credits_cost always come from the DB by
   // slug — never trusted from the client, same posture as the preset video
@@ -146,17 +138,12 @@ export async function POST(request: Request) {
         const noun = field.type === "video" ? "動画" : "画像";
         return NextResponse.json({ error: `「${field.label}」の${noun}をアップロードしてください。` }, { status: 400 });
       }
-      const { data: downloaded, error: downloadError } = await supabaseAdmin.storage
-        .from(UPSCALE_UPLOAD_BUCKET)
-        .download(storagePath);
-      if (downloadError || !downloaded) {
-        console.error("[studio/custom-workflows/generate] storage download failed:", downloadError?.message);
-        return NextResponse.json(
-          { error: `「${field.label}」の取得に失敗しました。` },
-          { status: 400 },
-        );
+      let buf: Buffer;
+      try {
+        buf = await downloadStudioUpload(user.id, storagePath);
+      } catch (err) {
+        return NextResponse.json({ error: `「${field.label}」: ${(err as Error).message}` }, { status: 400 });
       }
-      const buf = Buffer.from(await downloaded.arrayBuffer());
       const fallbackName = field.type === "video" ? "upload.mp4" : "upload.png";
       values[field.id] = { fileBuffer: buf, fileName: storagePath.split("/").pop() || fallbackName };
       continue;
@@ -186,9 +173,7 @@ export async function POST(request: Request) {
   }
 
   // 読み終えたら不要（ベストエフォート削除）。
-  if (uploadedPaths.length > 0) {
-    void supabaseAdmin.storage.from(UPSCALE_UPLOAD_BUCKET).remove(uploadedPaths);
-  }
+  deleteStudioUploads(uploadedPaths);
 
   // Custom workflows have no single canonical "prompt" field (unlike Wan
   // Animate 2's fixed prompt textarea) — logged for troubleshooting as every

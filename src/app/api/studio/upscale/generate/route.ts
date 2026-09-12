@@ -6,13 +6,13 @@ import { spawnUpscaleJob } from "@/lib/modalUpscale";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { upscaleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import { readImageDimensions } from "@/lib/imageDimensions";
+import { downloadStudioUpload, createStudioUploadSignedUrl, deleteStudioUploads } from "@/lib/studioUploads.server";
 import {
   DEFAULT_UPSCALE_MODE,
   DEFAULT_UPSCALE_MODEL,
   MAX_INPUT_BYTES_API,
   UPSCALE_MODELS,
   UPSCALE_MODES,
-  UPSCALE_UPLOAD_BUCKET,
   getUpscaleMode,
   getUpscaleModel,
   resolveTargetShort,
@@ -105,22 +105,13 @@ export async function POST(request: Request) {
   }
 
   if (storagePath) {
-    // 自分のフォルダ配下かを念のため検証（supabaseAdmin は RLS を無視する
-    // service role のため、ここで手動チェックしないと他人の storage path を
-    // 渡されても読めてしまう）。
-    if (!storagePath.startsWith(`${user.id}/`)) {
-      return NextResponse.json({ error: "不正なファイル指定です。" }, { status: 400 });
-    }
-    const { data: downloaded, error: downloadError } = await supabaseAdmin.storage
-      .from(UPSCALE_UPLOAD_BUCKET)
-      .download(storagePath);
-    if (downloadError || !downloaded) {
-      console.error("[studio/upscale/generate] storage download failed:", downloadError?.message);
-      return NextResponse.json({ error: "アップロードされた画像の取得に失敗しました。" }, { status: 400 });
-    }
     // 実寸法をサーバー側で読む（正確な課金のため）。Modal へは base64
     // 再送せず、下で発行する署名付き URL を渡す（Vercel 関数を経由させない）。
-    imageBuffer = Buffer.from(await downloaded.arrayBuffer());
+    try {
+      imageBuffer = await downloadStudioUpload(user.id, storagePath);
+    } catch (err) {
+      return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+    }
   }
 
   if (imageBuffer.length === 0) {
@@ -246,18 +237,15 @@ export async function POST(request: Request) {
   // それ以外（旧 base64/multipart 経路）は互換のためそのまま base64 で渡す。
   let imageSpec = imageBuffer.toString("base64");
   if (storagePath) {
-    const { data: signed, error: signError } = await supabaseAdmin.storage
-      .from(UPSCALE_UPLOAD_BUCKET)
-      .createSignedUrl(storagePath, 60 * 60);
-    if (signError || !signed?.signedUrl) {
-      console.error("[studio/upscale/generate] failed to sign upload url:", signError?.message);
+    try {
+      imageSpec = await createStudioUploadSignedUrl(user.id, storagePath);
+    } catch (err) {
       await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
       return NextResponse.json(
-        { error: "アップロードされた画像の取得に失敗しました。", remainingCredits: currentCredits },
+        { error: (err as Error).message, remainingCredits: currentCredits },
         { status: 500 },
       );
     }
-    imageSpec = signed.signedUrl;
   }
 
   // --- dispatch to Modal ---------------------------------------------
@@ -277,7 +265,7 @@ export async function POST(request: Request) {
       },
     });
     // dispatch 成功後は一時アップロードは不要（ベストエフォート削除）。
-    if (storagePath) void supabaseAdmin.storage.from(UPSCALE_UPLOAD_BUCKET).remove([storagePath]);
+    deleteStudioUploads([storagePath]);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[studio/upscale/generate] dispatch failed:", message);

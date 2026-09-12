@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabaseClient";
 import { normalizeAngleReferenceImage } from "@/lib/angleImage";
-import { uploadUpscaleAsset } from "@/lib/upscaleApi";
+import { uploadStudioAsset } from "@/lib/studioUploads";
 import type { AngleMode, AngleSelection } from "@/lib/angleStudio";
 
 export type AngleApiError = Error & { remainingCredits?: number };
@@ -67,13 +67,13 @@ export async function startAngleJob(params: {
   );
 
   const mainFile = new File([imageBlob], filename, { type: imageBlob.type });
-  const { path: mainPath } = await uploadUpscaleAsset(params.userId, mainFile);
+  const { path: mainPath } = await uploadStudioAsset(params.userId, mainFile);
   const subPaths: string[] = [];
   for (let i = 0; i < subs.length; i++) {
     const subFile = new File([subs[i].blob], subs[i].filename || `sub_${i}.png`, {
       type: subs[i].blob.type,
     });
-    const { path } = await uploadUpscaleAsset(params.userId, subFile);
+    const { path } = await uploadStudioAsset(params.userId, subFile);
     subPaths.push(path);
   }
 
