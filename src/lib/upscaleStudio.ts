@@ -65,14 +65,27 @@ export function upscaleBatchEstimatedSeconds(
   return Math.max(0, totalCredits) * knobs.upscale_time_per_credit_s + knobs.upscale_cold_start_grace_s;
 }
 
-export type UpscaleModelKey = "seedvr2_7b";
+export type UpscaleModelKey =
+  | "seedvr2_7b"
+  | "real_esrgan_x4plus"
+  | "real_esrgan_anime"
+  | "swinir_l";
 
 export type UpscaleModel = {
   key: UpscaleModelKey;
   label: string;
   descJa: string;
-  /** 課金のモデル係数（計算負荷連動）。SeedVR2 = 1.0、将来 ESRGAN 等は < 1。 */
+  /** 課金のモデル係数（計算負荷連動）。SeedVR2 = 1.0、軽量な ESRGAN/SwinIR 系は < 1。 */
   creditMult: number;
+  /** modal_seedvr2_worker.py の UPSCALER_REGISTRY[key].kind をミラー。動画対応可否の判定に使う。 */
+  kind: readonly ("image" | "video")[];
+  /**
+   * 固定倍率モデル（ESRGAN/SwinIR 系。worker 側は scale_by 固定で target_short
+   * を見ない）。設定時は ×2/×4/×8 モード選択を UI 上で無視し、常にこの倍率
+   * ・単発実行（カスケードなし）として扱う。SeedVR2 系は undefined のまま
+   * （倍率ラダー + カスケードが有効）。
+   */
+  fixedScale?: number;
 };
 
 export const UPSCALE_MODELS: UpscaleModel[] = [
@@ -82,8 +95,40 @@ export const UPSCALE_MODELS: UpscaleModel[] = [
     descJa:
       "AI生成・アニメ向け。線画や質感を作り直す発明的なリファイン。顔・キャラの同一性は保ったまま解像感を大きく引き上げます。",
     creditMult: 1.0,
+    kind: ["image", "video"],
+  },
+  {
+    key: "real_esrgan_x4plus",
+    label: "Real-ESRGAN x4plus",
+    descJa:
+      "実写・写真向けの素直な4倍拡大。SeedVR2と違いディテールを作り直さないので破綻せず爆速・低コスト。",
+    creditMult: 0.25,
+    kind: ["image"],
+    fixedScale: 4,
+  },
+  {
+    key: "swinir_l",
+    label: "SwinIR-L",
+    descJa:
+      "実写のノイズ・JPEGブロックを除去しながら復元する4倍拡大。劣化した写真の補正に最も強い。",
+    creditMult: 0.3,
+    kind: ["image"],
+    fixedScale: 4,
+  },
+  {
+    key: "real_esrgan_anime",
+    label: "Real-ESRGAN anime 6B",
+    descJa: "アニメ・イラスト特化の4倍拡大。線をなめらかに保ったまま、SeedVR2より軽量・高速。",
+    creditMult: 0.25,
+    kind: ["image"],
+    fixedScale: 4,
   },
 ];
+
+/** 動画アップスケール（/api/studio/upscale/video）が受け付けてよいモデルだけに絞った一覧。 */
+export const UPSCALE_VIDEO_MODELS: UpscaleModel[] = UPSCALE_MODELS.filter((m) =>
+  m.kind.includes("video"),
+);
 
 export const DEFAULT_UPSCALE_MODEL: UpscaleModelKey = "seedvr2_7b";
 
@@ -121,6 +166,23 @@ export function getUpscaleMode(id: string): UpscaleMode {
   return UPSCALE_MODES.find((m) => m.id === id) ?? UPSCALE_MODES[0];
 }
 
+/**
+ * 固定倍率モデル（ESRGAN/SwinIR 系）が選ばれている場合、×2/×4/×8 の選択を
+ * 無視して常に model.fixedScale・単発実行（カスケードなし）の合成モードを
+ * 返す。SeedVR2 系（fixedScale 未設定）は渡された mode をそのまま返す。
+ */
+export function effectiveUpscaleMode(mode: UpscaleMode, model: UpscaleModel): UpscaleMode {
+  if (!model.fixedScale) return mode;
+  return {
+    id: mode.id,
+    label: `×${model.fixedScale}`,
+    subLabel: "このモデルは固定倍率",
+    mult: model.fixedScale,
+    cascadeStages: 1,
+    maxEdge: mode.maxEdge,
+  };
+}
+
 // --- 出力寸法・課金 --------------------------------------------------------
 
 function round2(n: number): number {
@@ -128,21 +190,30 @@ function round2(n: number): number {
 }
 
 /**
- * 入力寸法 + モード → SeedVR2 へ渡す target_short（短辺目標 px）。
+ * 入力寸法 + モード + モデル → worker へ渡す target_short（短辺目標 px）。
  * 倍率モードは inputShort × mult。全モードとも「推定出力 MP ≤
  * UPSCALE_MAX_OUTPUT_MP」になるよう最後にクランプする（ノンタイル OOM 回避）。
+ * 固定倍率モデル（ESRGAN/SwinIR）では mode を effectiveUpscaleMode() で
+ * model.fixedScale に差し替えてから同じ式を通す（worker 自体は target_short
+ * を見ないが、課金額の算出はこの関数の出力に一致させる必要がある）。
  */
-export function resolveTargetShort(inW: number, inH: number, mode: UpscaleMode): number {
+export function resolveTargetShort(
+  inW: number,
+  inH: number,
+  mode: UpscaleMode,
+  model: UpscaleModel = getUpscaleModel("seedvr2_7b"),
+): number {
+  const m = effectiveUpscaleMode(mode, model);
   const w = Math.max(1, Math.round(inW || 0));
   const h = Math.max(1, Math.round(inH || 0));
   const short = Math.min(w, h);
   const long = Math.max(w, h);
   const aspect = long / short;
 
-  let target = short * mode.mult;
+  let target = short * m.mult;
 
   // 長辺 maxEdge クランプ。
-  if (target * aspect > mode.maxEdge) target = mode.maxEdge / aspect;
+  if (target * aspect > m.maxEdge) target = m.maxEdge / aspect;
   // ノンタイル安全上限（MP）クランプ。out = target × (target×aspect) = target² × aspect
   const mpCapTarget = Math.sqrt((UPSCALE_MAX_OUTPUT_MP * 1_000_000) / aspect);
   if (target > mpCapTarget) target = mpCapTarget;
@@ -156,12 +227,13 @@ export function estimateOutputSize(
   inW: number,
   inH: number,
   mode: UpscaleMode,
+  model: UpscaleModel = getUpscaleModel("seedvr2_7b"),
 ): { width: number; height: number } {
   const w = Math.max(1, Math.round(inW || 0));
   const h = Math.max(1, Math.round(inH || 0));
   if (w <= 1 || h <= 1) return { width: 0, height: 0 };
   const short = Math.min(w, h);
-  const target = resolveTargetShort(w, h, mode);
+  const target = resolveTargetShort(w, h, mode, model);
   const scale = target / short;
   return { width: round2(w * scale), height: round2(h * scale) };
 }
@@ -199,10 +271,10 @@ export function upscaleCostBreakdown(args: {
   knobs?: PricingKnobs;
 }): UpscaleCostBreakdown {
   const knobs = args.knobs ?? DEFAULT_KNOBS;
-  const mode = getUpscaleMode(args.modeId);
   const model = getUpscaleModel(args.modelKey);
+  const mode = effectiveUpscaleMode(getUpscaleMode(args.modeId), model);
 
-  const { width, height } = estimateOutputSize(args.inW, args.inH, mode);
+  const { width, height } = estimateOutputSize(args.inW, args.inH, mode, model);
   const outputMP = (width * height) / 1_000_000;
 
   if (!args.inW || !args.inH || outputMP <= 0) {

@@ -21,6 +21,7 @@ import {
   UPSCALE_BATCH_MAX_ITEMS,
   UPSCALE_MODELS,
   UPSCALE_MODES,
+  effectiveUpscaleMode,
   estimateOutputSize,
   getUpscaleMode,
   getUpscaleModel,
@@ -623,7 +624,7 @@ export function UpscaleStudioTab() {
   }, [jobId]);
 
   const model = getUpscaleModel(modelKey);
-  const mode = getUpscaleMode(modeId);
+  const mode = effectiveUpscaleMode(getUpscaleMode(modeId), model);
 
   const breakdown = useMemo(
     () =>
@@ -640,7 +641,7 @@ export function UpscaleStudioTab() {
 
   const outSize =
     inputSize && inputSize.width > 0
-      ? estimateOutputSize(inputSize.width, inputSize.height, mode)
+      ? estimateOutputSize(inputSize.width, inputSize.height, mode, model)
       : null;
 
   const insufficientCredits =
@@ -761,29 +762,38 @@ export function UpscaleStudioTab() {
         {/* 倍率 */}
         <div>
           <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">拡大倍率</p>
-          <div className="grid grid-cols-3 gap-2">
-            {UPSCALE_MODES.map((m) => (
-              <button
-                key={m.id}
-                type="button"
-                onClick={() => setModeId(m.id)}
-                className={`rounded-xl border px-3 py-2.5 text-center transition-colors ${
-                  modeId === m.id
-                    ? "border-neon-pink/40 bg-neon-pink/5 text-neon-pink"
-                    : "border-border bg-background text-muted hover:border-neon-violet/40"
-                }`}
-              >
-                <span className="block text-sm font-semibold">{m.label}</span>
-                <span className="block text-[10px]">{m.subLabel}</span>
-              </button>
-            ))}
-          </div>
-
-          {mode.cascadeStages > 1 && (
-            <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
+          {model.fixedScale ? (
+            <p className="flex items-start gap-1.5 rounded-xl border border-border bg-background px-3 py-2.5 text-[11px] leading-relaxed text-muted">
               <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-              {mode.label} は内部で {mode.cascadeStages} 段階に分けて処理し、単発より高画質に仕上げます（その分クレジットが上がります）。
+              {model.label} は ×{model.fixedScale} 固定です（倍率選択は SeedVR2 系のみ）。
             </p>
+          ) : (
+            <>
+              <div className="grid grid-cols-3 gap-2">
+                {UPSCALE_MODES.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => setModeId(m.id)}
+                    className={`rounded-xl border px-3 py-2.5 text-center transition-colors ${
+                      modeId === m.id
+                        ? "border-neon-pink/40 bg-neon-pink/5 text-neon-pink"
+                        : "border-border bg-background text-muted hover:border-neon-violet/40"
+                    }`}
+                  >
+                    <span className="block text-sm font-semibold">{m.label}</span>
+                    <span className="block text-[10px]">{m.subLabel}</span>
+                  </button>
+                ))}
+              </div>
+
+              {mode.cascadeStages > 1 && (
+                <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
+                  <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
+                  {mode.label} は内部で {mode.cascadeStages} 段階に分けて処理し、単発より高画質に仕上げます（その分クレジットが上がります）。
+                </p>
+              )}
+            </>
           )}
           <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
             <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
@@ -989,28 +999,37 @@ export function UpscaleStudioTab() {
           {/* 倍率 */}
           <div>
             <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">拡大倍率</p>
-            <div className="grid grid-cols-3 gap-2">
-              {UPSCALE_MODES.map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => setModeId(m.id)}
-                  className={`rounded-xl border px-3 py-2.5 text-center transition-colors ${
-                    modeId === m.id
-                      ? "border-neon-pink/40 bg-neon-pink/5 text-neon-pink"
-                      : "border-border bg-background text-muted hover:border-neon-violet/40"
-                  }`}
-                >
-                  <span className="block text-sm font-semibold">{m.label}</span>
-                  <span className="block text-[10px]">{m.subLabel}</span>
-                </button>
-              ))}
-            </div>
-            {mode.cascadeStages > 1 && (
-              <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
+            {model.fixedScale ? (
+              <p className="flex items-start gap-1.5 rounded-xl border border-border bg-background px-3 py-2.5 text-[11px] leading-relaxed text-muted">
                 <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-                {mode.label} は内部で {mode.cascadeStages} 段階に分けて処理し、単発より高画質に仕上げます（その分クレジットが上がります）。
+                {model.label} は ×{model.fixedScale} 固定です（倍率選択は SeedVR2 系のみ）。
               </p>
+            ) : (
+              <>
+                <div className="grid grid-cols-3 gap-2">
+                  {UPSCALE_MODES.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setModeId(m.id)}
+                      className={`rounded-xl border px-3 py-2.5 text-center transition-colors ${
+                        modeId === m.id
+                          ? "border-neon-pink/40 bg-neon-pink/5 text-neon-pink"
+                          : "border-border bg-background text-muted hover:border-neon-violet/40"
+                      }`}
+                    >
+                      <span className="block text-sm font-semibold">{m.label}</span>
+                      <span className="block text-[10px]">{m.subLabel}</span>
+                    </button>
+                  ))}
+                </div>
+                {mode.cascadeStages > 1 && (
+                  <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
+                    <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
+                    {mode.label} は内部で {mode.cascadeStages} 段階に分けて処理し、単発より高画質に仕上げます（その分クレジットが上がります）。
+                  </p>
+                )}
+              </>
             )}
           </div>
         </div>

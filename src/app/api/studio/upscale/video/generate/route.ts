@@ -9,7 +9,7 @@ import { createStudioUploadSignedUrl } from "@/lib/studioUploads.server";
 import {
   DEFAULT_UPSCALE_MODEL,
   DEFAULT_UPSCALE_VIDEO_PRESET,
-  UPSCALE_MODELS,
+  UPSCALE_VIDEO_MODELS,
   UPSCALE_VIDEO_MAX_SECONDS,
   UPSCALE_VIDEO_PRESETS,
   getUpscaleModel,
@@ -35,7 +35,7 @@ const SIGNED_URL_EXPIRES_S = 2 * 60 * 60;
 // 大きな乖離を検知したら failed + 返金する。
 export const maxDuration = 30;
 
-const VALID_MODEL_KEYS: Set<string> = new Set(UPSCALE_MODELS.map((m) => m.key));
+const VALID_MODEL_KEYS: Set<string> = new Set(UPSCALE_VIDEO_MODELS.map((m) => m.key));
 const VALID_PRESET_IDS: Set<string> = new Set(UPSCALE_VIDEO_PRESETS.map((p) => p.id));
 
 export async function POST(request: Request) {

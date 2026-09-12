@@ -137,7 +137,7 @@ export async function POST(request: Request) {
         inHeight: dims.height,
         outWidth: bd.outputWidth,
         outHeight: bd.outputHeight,
-        targetShort: resolveTargetShort(dims.width, dims.height, mode),
+        targetShort: resolveTargetShort(dims.width, dims.height, mode, model),
       });
     } else {
       // 寸法が読めない形式（HEIC 等）。worst-case 課金で受け、worker が実寸法を

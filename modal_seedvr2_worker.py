@@ -7,10 +7,17 @@ SeedVR2 / 超解像スタジオ worker on Modal — 画像・動画を Blackwell
 長尺フレームバッチ」を回すのが差別化点（24GB では不可能）。
 
 得手不得手があるので **商用可アップスケーラーを一通り常駐 → ユーザーが選ぶ** 方式。
-このファイルは骨格（モデルレジストリ + ワークフロービルダー + CPU/GPU probe +
-`@app.cls`）を確定させ、初回スコープは **SeedVR2 7B 単体**。Real-ESRGAN /
-SwinIR-L はレジストリに枠だけ用意し（`enabled=False`）、CPU probe グリーン後に
-実重みを足す。
+初回スコープは SeedVR2 7B 単体だったが、2026-09-13 に Real-ESRGAN (x4plus /
+anime_6B) と SwinIR-L を実重みで有効化（`enabled=True`）した。SeedVR2 は
+AI生成・アニメの発明的リファイン（顔・文字を作り直す）に強い一方、実写写真では
+過剰にディテールを捏造しがちなため、**実写・写真は Real-ESRGAN x4plus /
+SwinIR-L（劣化復元寄り）** を選ぶのが適する（ホストの実利用フィードバック
+「今のモデルはアニメには強いが実写に強いものも必要」に基づく）。当初この
+2モデルは HF repo 名（`ai-forever/Real-ESRGAN` / `Comfy-Org/SwinIR`）で
+指していたが実在しない組み合わせで 404/401（実測確認）。正しい配布元は
+どちらも GitHub Releases のみのため `UPSCALER_REGISTRY` の `model_files` に
+`"__url__"` センチネルを追加し、`_download_url_to()` で素の HTTP DL に切替えた
+（`ensure_upscalers_cached` 参照）。
 
 ────────────────────────────────────────────────────────────────────────────
 モデル ＆ 依存のライセンス（CLAUDE.md §5 準拠・商用リリース前提・確認日 2026-09-09）
@@ -241,6 +248,10 @@ vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
 # ---------------------------------------------------------------------------
 # model_files: (subdir, filename, hf_repo, hf_filename) のリスト。subdir は
 # MODELS_DIR 相対。ensure_upscalers_cached が hf_hub_download で Volume に置く。
+# hf_repo == "__url__" の場合は hf_filename を完全な URL として扱い、素の HTTP
+# ダウンロードで取得する（HF に無い GitHub Releases 配布のモデル用。実例:
+# Real-ESRGAN / SwinIR は公式配布が GitHub Releases のみで HF ミラーは信頼できる
+# ものがない — 2026-09-13、実測で確認）。
 UPSCALER_REGISTRY: dict = {
     "seedvr2_7b": {
         "label": "SeedVR2 7B",
@@ -303,51 +314,58 @@ UPSCALER_REGISTRY: dict = {
     },
     "real_esrgan_x4plus": {
         "label": "Real-ESRGAN x4plus",
-        "desc_ja": "すでに綺麗な絵の素直な4倍拡大。破綻せず爆速。実写・イラスト汎用。",
+        "desc_ja": "実写・写真向けの素直な4倍拡大。発明的な描き直しをせず破綻しない・爆速。",
         "license": "BSD-3-Clause",
         "node_type": "upscale_model",  # ComfyUI 標準 UpscaleModelLoader + ImageUpscaleWithModel
-        "enabled": False,  # ⚠️ PoC: 実重み未配置。CPU probe グリーン後に追加。
+        "enabled": True,
         "kind": ("image",),
+        # 2026-09-13: 当初 "ai-forever/Real-ESRGAN"（HF）を指していたが実在しない
+        # ファイル名で 404（実測確認）。公式配布元は GitHub Releases のみのため
+        # "__url__" センチネルで直接 HTTP ダウンロードする（hf_hub_download 不使用）。
         "model_files": [
             (
                 "upscale_models",
                 "RealESRGAN_x4plus.pth",
-                "ai-forever/Real-ESRGAN",
-                "RealESRGAN_x4plus.pth",
+                "__url__",
+                "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
             ),
         ],
         "default_params": {"model_name": "RealESRGAN_x4plus.pth", "scale_by": 4.0},
     },
     "real_esrgan_anime": {
         "label": "Real-ESRGAN anime 6B",
-        "desc_ja": "アニメ・イラスト特化の4倍拡大。線をなめらかに保つ。",
+        "desc_ja": "アニメ・イラスト特化の4倍拡大。線をなめらかに保つ。SeedVR2より軽量・高速。",
         "license": "BSD-3-Clause",
         "node_type": "upscale_model",
-        "enabled": False,
+        "enabled": True,
         "kind": ("image",),
         "model_files": [
             (
                 "upscale_models",
                 "RealESRGAN_x4plus_anime_6B.pth",
-                "ai-forever/Real-ESRGAN",
-                "RealESRGAN_x4plus_anime_6B.pth",
+                "__url__",
+                "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
             ),
         ],
         "default_params": {"model_name": "RealESRGAN_x4plus_anime_6B.pth", "scale_by": 4.0},
     },
     "swinir_l": {
         "label": "SwinIR-L",
-        "desc_ja": "実写のノイズ・JPEGブロックを除去しながら復元。写真の劣化補正向け。",
+        "desc_ja": "実写のノイズ・JPEGブロックを除去しながら復元する4倍拡大。写真の劣化補正に最も強い。",
         "license": "Apache-2.0",
-        "node_type": "upscale_model",  # ⚠️ PoC: SwinIR 用ノードパックが要るか要確認
-        "enabled": False,
+        "node_type": "upscale_model",  # spandrel は SwinIR 対応済み（ComfyUI 標準ノード経由）
+        "enabled": True,
         "kind": ("image",),
+        # 2026-09-13: 当初 "Comfy-Org/SwinIR"（HF）は非公開/存在せず 401（実測確認）。
+        # 公式配布元（JingyunLiang/SwinIR GitHub Releases）の実写向け SwinIR-L x4 GAN
+        # チェックポイントを直接 DL。state_dict は params_ema キー配下（実機で
+        # torch.load 確認済み・spandrel の SwinIR ローダーが自動アンラップ対応）。
         "model_files": [
             (
                 "upscale_models",
                 "SwinIR-L_x4_GAN.pth",
-                "Comfy-Org/SwinIR",
-                "SwinIR-L_x4_GAN.pth",
+                "__url__",
+                "https://github.com/JingyunLiang/SwinIR/releases/download/v0.0/003_realSR_BSRGAN_DFOWMFC_s64w8_SwinIR-L_x4_GAN.pth",
             ),
         ],
         "default_params": {"model_name": "SwinIR-L_x4_GAN.pth", "scale_by": 4.0},
@@ -1068,6 +1086,22 @@ def _refund_upscale_credits(user_id: str, amount: int) -> None:
         print(f"[upscale-job] refund failed {user_id}: {exc}", flush=True)
 
 
+def _download_url_to(url: str, dest: str, timeout_s: int = 600) -> None:
+    """HF Hub に無い（GitHub Releases 配布等の）重みを素の HTTP GET でストリーム
+    DL する。一時ファイルに書いてから rename（途中失敗で壊れたファイルを
+    "present" 扱いしないため）。"""
+    import requests
+
+    tmp = dest + ".part"
+    with requests.get(url, stream=True, timeout=timeout_s) as r:
+        r.raise_for_status()
+        with open(tmp, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+    os.replace(tmp, dest)
+
+
 # ---------------------------------------------------------------------------
 # Stage 1: CPU プリキャッシュ（GPU が要る重みを全部 CPU で Volume へ）
 # ---------------------------------------------------------------------------
@@ -1125,15 +1159,18 @@ def ensure_upscalers_cached(models=None) -> dict:
                 report["files"][f"{subdir}/{filename}"] = "present"
                 continue
             try:
-                got = hf_hub_download(
-                    repo_id=hf_repo,
-                    filename=hf_filename,
-                    local_dir=dest_dir,
-                    token=token,
-                )
-                # local_dir 直下の名前が hf_filename と違う場合は rename。
-                if os.path.basename(got) != filename:
-                    os.replace(got, dest)
+                if hf_repo == "__url__":
+                    _download_url_to(hf_filename, dest)
+                else:
+                    got = hf_hub_download(
+                        repo_id=hf_repo,
+                        filename=hf_filename,
+                        local_dir=dest_dir,
+                        token=token,
+                    )
+                    # local_dir 直下の名前が hf_filename と違う場合は rename。
+                    if os.path.basename(got) != filename:
+                        os.replace(got, dest)
                 report["files"][f"{subdir}/{filename}"] = f"downloaded ({os.path.getsize(dest)} B)"
             except Exception as exc:  # noqa: BLE001
                 model_ok = False
@@ -2389,9 +2426,12 @@ def gpu_smoke_fn(models=None) -> dict:
 
 
 @app.local_entrypoint()
-def gpu_smoke():
-    """modal run modal_seedvr2_worker.py::gpu_smoke — GPU 課金あり。CPU probe 後に。"""
-    r = gpu_smoke_fn.remote()
+def gpu_smoke(models: str = ""):
+    """modal run modal_seedvr2_worker.py::gpu_smoke — GPU 課金あり。CPU probe 後に。
+    --models seedvr2_7b,swinir_l のようにカンマ区切りで対象モデルを絞れる
+    （既定は有効モデル全部）。"""
+    keys = [k.strip() for k in models.split(",") if k.strip()] or None
+    r = gpu_smoke_fn.remote(models=keys)
     print(json.dumps(r, ensure_ascii=False, indent=2))
 
 
