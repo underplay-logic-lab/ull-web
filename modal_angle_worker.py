@@ -633,19 +633,47 @@ def _supabase_request(method: str, path: str, **kwargs):
     return requests.request(method, f"{supabase_url}{path}", headers=headers, timeout=15, **kwargs)
 
 
+def _supabase_request_checked(method: str, path: str, attempts: int = 3, backoff_s: float = 0.6, **kwargs):
+    """_supabase_request + 成功判定 + リトライ。
+
+    2026-09-13 実障害: _supabase_request は requests の生レスポンスをそのまま
+    返しており、.raise_for_status() を誰も呼んでいなかった。requests は非2xx
+    でも例外を投げないため、RPC/PATCH が失敗しても呼び出し側は「成功した」
+    まま処理を続けてしまい、Multi-Angle の1アングル分（append_angle_result）
+    が DB に記録されないまま静かに消える実害が出た（3構図課金→2枚しか
+    表示されない、返金もされない）。ここで status_code を必ずチェックし、
+    一時的な失敗はリトライ、それでも失敗したら例外を投げて呼び出し側に
+    はっきり伝える。
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            res = _supabase_request(method, path, **kwargs)
+            if res is not None and res.ok:
+                return res
+            detail = f"HTTP {res.status_code}: {res.text[:300]}" if res is not None else "no response (env not configured)"
+            last_exc = RuntimeError(detail)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+        if attempt < attempts:
+            time.sleep(backoff_s * attempt)
+    raise last_exc if last_exc is not None else RuntimeError("unknown Supabase request failure")
+
+
 def _patch_angle_job(job_id: str, fields: dict) -> None:
     if not job_id:
         return
     try:
-        _supabase_request(
+        _supabase_request_checked(
             "PATCH",
             "/rest/v1/angle_jobs",
             params={"id": f"eq.{job_id}"},
             json={**fields, "updated_at": _now_iso()},
             headers={"Prefer": "return=minimal"},
         )
-    except Exception as exc:  # noqa: BLE001 — best-effort, never propagate
-        print(f"[angle-job] failed to patch job {job_id}: {exc}", flush=True)
+    except Exception as exc:  # noqa: BLE001 — best-effort（呼び出し元は落とさない）。
+        # リトライ済みでも失敗＝この PATCH は最終的に届いていない可能性が高い。
+        print(f"[angle-job] failed to patch job {job_id} (after retries): {exc}", flush=True)
 
 
 def _get_angle_job_status(job_id: str):
@@ -669,19 +697,24 @@ def _get_angle_job_status(job_id: str):
         return None
 
 
-def _append_angle_result(job_id: str, image_url: str, label: str = "") -> None:
-    """1 アングル完了を angle_jobs にアトミックに反映（RPC）。"""
+def _append_angle_result(job_id: str, image_url: str, label: str = "") -> bool:
+    """1 アングル完了を angle_jobs にアトミックに反映（RPC）。リトライしても
+    失敗したら False を返す — 呼び出し側はこの分を「生成はできたが記録に
+    失敗した」として done にカウントせず、最終的に返金対象にする（画像
+    自体は Storage に残るが、記録できないのでユーザーには出せない）。"""
     if not job_id or not image_url:
-        return
+        return False
     try:
-        _supabase_request(
+        _supabase_request_checked(
             "POST",
             "/rest/v1/rpc/append_angle_result",
             json={"p_job_id": job_id, "p_image_url": image_url, "p_label": label or None},
             headers={"Prefer": "return=minimal"},
         )
+        return True
     except Exception as exc:  # noqa: BLE001
-        print(f"[angle-job] failed to append result for job {job_id}: {exc}", flush=True)
+        print(f"[angle-job] failed to append result for job {job_id} (after retries): {exc}", flush=True)
+        return False
 
 
 def _refund_credits(user_id: str, amount: int) -> None:
@@ -1699,11 +1732,24 @@ class QwenImageEditWorker:
                     # ストレージ不通でもフロントで表示できるよう data URI で返す。
                     url = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
                 label = str(labels[idx]) if idx < len(labels) else ""
-                _append_angle_result(job_id, url, label)
-                done += 1
+                recorded = _append_angle_result(job_id, url, label)
                 # 画像単位でも Heartbeat（デコード + アップロードの隙間を埋める）。
+                # GPU 側は生成できているので、DB 記録の成否に関わらずフリーズ
+                # 判定はリセットする。
                 last_progress_time[0] = time.time()
-                progress_box["done"] = done
+                if recorded:
+                    done += 1
+                    progress_box["done"] = done
+                else:
+                    # 2026-09-13 実障害: ここで無条件に done += 1 していたため、
+                    # DB 記録が失敗した分も「完了」扱いになり、画像が静かに
+                    # 消えるうえ返金もされなかった。記録できなかった分は
+                    # done に入れない＝最終的に _refund_remaining で返金される。
+                    print(
+                        f"[angle-job] {job_id} angle {idx} generated but NOT recorded "
+                        f"(DB write failed after retries) — will be refunded",
+                        flush=True,
+                    )
                 vram_gb = self._vram_gb()
                 # ライブ「Active VRAM」バッジ用（ネタバレ防止 — 分母・％・GPU名なし。
                 # フロントは angle_jobs.metadata.vram_used_gb を pollAngleJob で読む）。
@@ -1743,9 +1789,22 @@ class QwenImageEditWorker:
                 flush=True,
             )
             return {"ok": False, "error": "cost cap exceeded", "completed": done, "elapsed_time": elapsed}
-        _patch_angle_job(job_id, {"status": "completed"})
-        print(f"[angle-job] {job_id} completed {done} angle(s) in {elapsed}s", flush=True)
-        return {"ok": True, "completed": done, "elapsed_time": elapsed}
+        # 全 instruction をループし終えても、途中で DB 記録に失敗した分が
+        # あれば done < n_total になっている。生成はできたが表示できなかった
+        # 分として、ここで初めて返金対象になる（従来この分岐に返金ロジックが
+        # 無かったのが 2026-09-13 実障害の一因）。UI にも分かるよう
+        # error_message へ非致命的な注記を残す（status は completed のまま）。
+        completed_fields: dict = {"status": "completed"}
+        if done < n_total:
+            missing = n_total - done
+            completed_fields["error_message"] = (
+                f"{missing}件は生成後の記録に失敗したため、該当分のクレジットを返金しました。"
+            )[:500]
+        _patch_angle_job(job_id, completed_fields)
+        if done < n_total:
+            _refund_remaining("db-write-failed")
+        print(f"[angle-job] {job_id} completed {done}/{n_total} angle(s) in {elapsed}s", flush=True)
+        return {"ok": True, "completed": done, "total": n_total, "elapsed_time": elapsed}
 
     @modal.fastapi_endpoint(method="POST")
     def edit(self, item: dict, request: fastapi.Request):
