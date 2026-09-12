@@ -101,26 +101,26 @@ export const UPSCALE_MODELS: UpscaleModel[] = [
     key: "real_esrgan_x4plus",
     label: "Real-ESRGAN x4plus",
     descJa:
-      "実写・写真向けの素直な4倍拡大。SeedVR2と違いディテールを作り直さないので破綻せず爆速・低コスト。",
+      "実写・写真向けの素直な4倍拡大。SeedVR2と違いディテールを作り直さないので破綻せず爆速・低コスト。動画にも対応（フレームごとの決定的な処理で時間的チラつきが出にくい）。",
     creditMult: 0.25,
-    kind: ["image"],
+    kind: ["image", "video"],
     fixedScale: 4,
   },
   {
     key: "swinir_l",
     label: "SwinIR-L",
     descJa:
-      "実写のノイズ・JPEGブロックを除去しながら復元する4倍拡大。劣化した写真の補正に最も強い。",
+      "実写のノイズ・JPEGブロックを除去しながら復元する4倍拡大。劣化した写真の補正に最も強い。動画対応。",
     creditMult: 0.3,
-    kind: ["image"],
+    kind: ["image", "video"],
     fixedScale: 4,
   },
   {
     key: "real_esrgan_anime",
     label: "Real-ESRGAN anime 6B",
-    descJa: "アニメ・イラスト特化の4倍拡大。線をなめらかに保ったまま、SeedVR2より軽量・高速。",
+    descJa: "アニメ・イラスト特化の4倍拡大。線をなめらかに保ったまま、SeedVR2より軽量・高速。動画対応。",
     creditMult: 0.25,
-    kind: ["image"],
+    kind: ["image", "video"],
     fixedScale: 4,
   },
 ];
@@ -409,28 +409,53 @@ export function validateVideoInputResolution(inW: number, inH: number): string |
   return null;
 }
 
+/**
+ * 固定倍率モデル（ESRGAN/SwinIR 系）では HD/2K/4K プリセットは意味を持たない
+ * （常に入力 × fixedScale の出力になる）。model.fixedScale が設定されている
+ * ときは targetShort をプリセットではなくその倍率から直接算出する。
+ */
 export function estimateVideoOutputSize(
   inW: number,
   inH: number,
   presetId: string,
+  model: UpscaleModel = getUpscaleModel("seedvr2_7b"),
 ): { width: number; height: number; outputMP: number } {
   const w = Math.max(1, Math.round(inW || 0));
   const h = Math.max(1, Math.round(inH || 0));
-  const preset = getUpscaleVideoPreset(presetId);
   if (w <= 1 || h <= 1) return { width: 0, height: 0, outputMP: 0 };
   const short = Math.min(w, h);
   const long = Math.max(w, h);
   const aspect = long / short;
-  const targetShort = preset.targetShort;
+  const targetShort = model.fixedScale ? short * model.fixedScale : getUpscaleVideoPreset(presetId).targetShort;
   const targetLong = Math.round(targetShort * aspect);
   const outW = w <= h ? targetShort : targetLong;
   const outH = w <= h ? targetLong : targetShort;
   return { width: outW, height: outH, outputMP: (outW * outH) / 1_000_000 };
 }
 
+/**
+ * worker（Modal）へ渡す/job metadata に残す target_short（短辺 px）。
+ * 固定倍率モデルは入力短辺 × fixedScale、SeedVR2 系はプリセットの絶対値。
+ * API route の out-of-band チェック（_do_upscale_video の出力MP安全上限）が
+ * この値を見るため、estimateVideoOutputSize と必ず同じロジックで算出する。
+ */
+export function resolveVideoTargetShort(
+  inW: number,
+  inH: number,
+  presetId: string,
+  model: UpscaleModel,
+): number {
+  const shortEdge = Math.min(Math.max(1, Math.round(inW || 0)), Math.max(1, Math.round(inH || 0)));
+  if (model.fixedScale) return Math.round(shortEdge * model.fixedScale);
+  return getUpscaleVideoPreset(presetId).targetShort;
+}
+
 /** プリセットごとの課金係数（HD=1.0基準）。実測の処理コスト比に基づく
- * （HD 2.91MP / 2K 6.55MP / 4K 8.29MP、16:9換算）。knob で運用調整可能。 */
-function videoResolutionMultiplier(presetId: string, knobs: PricingKnobs): number {
+ * （HD 2.91MP / 2K 6.55MP / 4K 8.29MP、16:9換算）。knob で運用調整可能。
+ * 固定倍率モデル（ESRGAN/SwinIR）はプリセットを見ないので常に 1.0（modelMult
+ * 側にコストの軽さを反映済み）。 */
+function videoResolutionMultiplier(presetId: string, knobs: PricingKnobs, model: UpscaleModel): number {
+  if (model.fixedScale) return 1.0;
   if (presetId === "4k") return knobs.upscale_video_mult_res_4k;
   if (presetId === "2k") return knobs.upscale_video_mult_res_2k;
   return 1.0;
@@ -465,12 +490,13 @@ export function upscaleVideoCostBreakdown(args: {
 }): UpscaleVideoCostBreakdown {
   const knobs = args.knobs ?? DEFAULT_KNOBS;
   const model = getUpscaleModel(args.modelKey);
-  const resMult = videoResolutionMultiplier(args.presetId, knobs);
+  const resMult = videoResolutionMultiplier(args.presetId, knobs, model);
 
   const { width, height, outputMP } = estimateVideoOutputSize(
     args.inW || 0,
     args.inH || 0,
     args.presetId,
+    model,
   );
 
   const duration = Math.max(0, Math.min(args.durationSec || 0, UPSCALE_VIDEO_MAX_SECONDS));

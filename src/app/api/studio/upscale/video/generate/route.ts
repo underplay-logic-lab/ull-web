@@ -14,6 +14,7 @@ import {
   UPSCALE_VIDEO_PRESETS,
   getUpscaleModel,
   getUpscaleVideoPreset,
+  resolveVideoTargetShort,
   upscaleVideoCostBreakdown,
   upscaleVideoCreditsWorstCase,
   validateVideoInputResolution,
@@ -121,6 +122,14 @@ export async function POST(request: Request) {
     creditsCost = upscaleVideoCreditsWorstCase(knobs);
   }
 
+  // 固定倍率モデル（ESRGAN/SwinIR）は HD/2K/4K プリセットを見ず「入力短辺×
+  // fixedScale」が実際の出力になる。worker 側の出力MP安全上限チェック
+  // （_do_upscale_video）もこの値を見るため、preset.targetShort をそのまま
+  // 渡すと（固定倍率モデルなのに）チェックがズレて安全側に働かない。
+  const targetShort = hasValidMeta
+    ? resolveVideoTargetShort(width, height, presetId, model)
+    : preset.targetShort;
+
   // 動画本体は Vercel 関数を経由させない — 署名付き URL を発行し、Modal
   // worker に直接 fetch させる（_load_input_bytes が URL をサポート済み・
   // supabase.co は _ALLOWED_IMAGE_HOSTS 許可済み）。
@@ -189,7 +198,7 @@ export async function POST(request: Request) {
         in_fps_claimed: hasValidMeta ? fps : null,
         frame_count_claimed: frameCount || null,
         preset: presetId,
-        target_short: preset.targetShort,
+        target_short: targetShort,
         model_label: model.label,
         media_type: "video",
       },
@@ -218,7 +227,7 @@ export async function POST(request: Request) {
       modelKey,
       presetId,
       params: {
-        target_short: preset.targetShort,
+        target_short: targetShort,
         max_resolution: 8192,
         batch_size: 5,
       },

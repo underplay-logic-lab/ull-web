@@ -16,7 +16,7 @@ import {
 import {
   DEFAULT_UPSCALE_MODEL,
   DEFAULT_UPSCALE_VIDEO_PRESET,
-  UPSCALE_MODELS,
+  UPSCALE_VIDEO_MODELS,
   UPSCALE_VIDEO_MAX_BYTES,
   UPSCALE_VIDEO_MAX_FRAMES,
   UPSCALE_VIDEO_MAX_SECONDS,
@@ -247,7 +247,7 @@ export function UpscaleVideoStudioTab() {
   const [videoError, setVideoError] = useState<string | null>(null);
   const [videoMeta, setVideoMeta] = useState<VideoMeta | null>(null);
 
-  const [modelKey] = useState<string>(DEFAULT_UPSCALE_MODEL);
+  const [modelKey, setModelKey] = useState<string>(DEFAULT_UPSCALE_MODEL);
   const [presetId, setPresetId] = useState<UpscaleVideoPresetId>(DEFAULT_UPSCALE_VIDEO_PRESET);
 
   const resumedJobId = useMemo(
@@ -439,33 +439,55 @@ export function UpscaleVideoStudioTab() {
           )}
 
           <div>
-            <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">出力解像度</p>
-            <div className="grid grid-cols-3 gap-2">
-              {UPSCALE_VIDEO_PRESETS.map((p) => (
+            <p className="mb-2 flex items-center gap-1.5 text-xs font-mono uppercase tracking-widest text-muted">
+              <Wand2 size={12} />
+              エンジン
+            </p>
+            <div className="flex flex-col gap-2">
+              {UPSCALE_VIDEO_MODELS.map((m) => (
                 <button
-                  key={p.id}
+                  key={m.key}
                   type="button"
-                  onClick={() => setPresetId(p.id)}
-                  className={`rounded-xl border px-3 py-2.5 text-center transition-colors ${
-                    presetId === p.id
-                      ? "border-neon-pink/40 bg-neon-pink/5 text-neon-pink"
-                      : "border-border bg-background text-muted hover:border-neon-violet/40"
+                  onClick={() => setModelKey(m.key)}
+                  className={`rounded-xl border px-4 py-3 text-left transition-colors ${
+                    modelKey === m.key
+                      ? "border-neon-pink/40 bg-neon-pink/5"
+                      : "border-border bg-background hover:border-neon-violet/40"
                   }`}
                 >
-                  <span className="block text-sm font-semibold">{p.label}</span>
-                  <span className="block text-[10px]">{p.subLabel}</span>
+                  <span className="text-sm font-medium text-foreground">{m.label}</span>
+                  <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">{m.descJa}</span>
                 </button>
               ))}
             </div>
           </div>
 
-          <div className="rounded-xl border border-border bg-background px-4 py-3">
-            <p className="flex items-center gap-1.5 text-xs font-mono uppercase tracking-widest text-muted">
-              <Wand2 size={12} />
-              エンジン
-            </p>
-            <p className="mt-1 text-sm font-medium text-foreground">{model.label}</p>
-            <p className="mt-0.5 text-[11px] leading-relaxed text-muted">{model.descJa}</p>
+          <div>
+            <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">出力解像度</p>
+            {model.fixedScale ? (
+              <p className="flex items-start gap-1.5 rounded-xl border border-border bg-background px-3 py-2.5 text-[11px] leading-relaxed text-muted">
+                <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
+                {model.label} は ×{model.fixedScale} 固定です（HD/2K/4K の選択は SeedVR2 系のみ）。
+              </p>
+            ) : (
+              <div className="grid grid-cols-3 gap-2">
+                {UPSCALE_VIDEO_PRESETS.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setPresetId(p.id)}
+                    className={`rounded-xl border px-3 py-2.5 text-center transition-colors ${
+                      presetId === p.id
+                        ? "border-neon-pink/40 bg-neon-pink/5 text-neon-pink"
+                        : "border-border bg-background text-muted hover:border-neon-violet/40"
+                    }`}
+                  >
+                    <span className="block text-sm font-semibold">{p.label}</span>
+                    <span className="block text-[10px]">{p.subLabel}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">

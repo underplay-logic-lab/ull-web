@@ -318,7 +318,7 @@ UPSCALER_REGISTRY: dict = {
         "license": "BSD-3-Clause",
         "node_type": "upscale_model",  # ComfyUI 標準 UpscaleModelLoader + ImageUpscaleWithModel
         "enabled": True,
-        "kind": ("image",),
+        "kind": ("image", "video"),
         # 2026-09-13: 当初 "ai-forever/Real-ESRGAN"（HF）を指していたが実在しない
         # ファイル名で 404（実測確認）。公式配布元は GitHub Releases のみのため
         # "__url__" センチネルで直接 HTTP ダウンロードする（hf_hub_download 不使用）。
@@ -338,7 +338,7 @@ UPSCALER_REGISTRY: dict = {
         "license": "BSD-3-Clause",
         "node_type": "upscale_model",
         "enabled": True,
-        "kind": ("image",),
+        "kind": ("image", "video"),
         "model_files": [
             (
                 "upscale_models",
@@ -355,7 +355,7 @@ UPSCALER_REGISTRY: dict = {
         "license": "Apache-2.0",
         "node_type": "upscale_model",  # spandrel は SwinIR 対応済み（ComfyUI 標準ノード経由）
         "enabled": True,
-        "kind": ("image",),
+        "kind": ("image", "video"),
         # 2026-09-13: 当初 "Comfy-Org/SwinIR"（HF）は非公開/存在せず 401（実測確認）。
         # 公式配布元（JingyunLiang/SwinIR GitHub Releases）の実写向け SwinIR-L x4 GAN
         # チェックポイントを直接 DL。state_dict は params_ema キー配下（実機で
@@ -610,6 +610,61 @@ def _build_upscale_model_workflow(reg: dict, params: dict, input_filename: str) 
     }
 
 
+def _build_upscale_model_video_workflow(reg: dict, params: dict, input_filename: str) -> dict:
+    """ESRGAN/SwinIR の動画版: VHS_LoadVideo → UpscaleModelLoader+ImageUpscaleWithModel
+    → VHS_VideoCombine。画像版（_build_upscale_model_workflow）と同じ
+    UpscaleModelLoader/ImageUpscaleWithModel を使い回す — VHS_LoadVideo の
+    IMAGE 出力はフレームのバッチ画像（image 版と同じ IMAGE 型）なので、
+    ImageUpscaleWithModel はそのままバッチ全体に一括適用できる（probe_imports
+    の /object_info で ImageUpscaleWithModel の image 入力が単一画像/バッチ
+    どちらも受け付けることを確認済み）。SeedVR2 と違い決定的な CNN のため
+    フレーム間で「発明」がなく、時間的チラつきが出にくい（SeedVR2版と違い
+    DiT/VAE ローダーが無い分、グラフはむしろ単純）。
+    音声は SeedVR2 動画版と同じくワーカー側 ffmpeg で事後 mux する。
+    """
+    p = {**reg["default_params"], **(params or {})}
+    frame_cap = int(p.get("frame_load_cap", 0))  # 0 = 無制限（呼び出し側で事前に上限チェック済み）
+    source_fps = float(p.get("source_fps", 24.0)) or 24.0
+    return {
+        "load_video": {
+            "class_type": "VHS_LoadVideo",
+            "inputs": {
+                "video": input_filename,
+                "force_rate": 0,
+                "custom_width": 0,
+                "custom_height": 0,
+                "frame_load_cap": frame_cap,
+                "skip_first_frames": 0,
+                "select_every_nth": 1,
+            },
+            "_meta": {"title": "input video"},
+        },
+        "load_model": {
+            "class_type": "UpscaleModelLoader",
+            "inputs": {"model_name": p["model_name"]},
+            "_meta": {"title": "upscale model"},
+        },
+        "upscale": {
+            "class_type": "ImageUpscaleWithModel",
+            "inputs": {"upscale_model": ["load_model", 0], "image": ["load_video", 0]},
+            "_meta": {"title": "upscale"},
+        },
+        "save": {
+            "class_type": "VHS_VideoCombine",
+            "inputs": {
+                "images": ["upscale", 0],
+                "frame_rate": source_fps,
+                "loop_count": 0,
+                "filename_prefix": "ull_upscale_video",
+                "format": "video/h264-mp4",
+                "pingpong": False,
+                "save_output": True,
+            },
+            "_meta": {"title": "output"},
+        },
+    }
+
+
 def build_upscale_workflow(
     model_key: str, params: dict, input_filename: str, media_type: str = "image"
 ) -> dict:
@@ -620,9 +675,11 @@ def build_upscale_workflow(
     if media_type == "video":
         if "video" not in reg.get("kind", ()):
             raise ValueError(f"model {model_key!r} does not support video")
-        if node_type != "seedvr2":
-            raise ValueError(f"video upscale not supported for node_type {node_type!r}")
-        return _build_seedvr2_video_workflow(reg, params, input_filename)
+        if node_type == "seedvr2":
+            return _build_seedvr2_video_workflow(reg, params, input_filename)
+        if node_type == "upscale_model":
+            return _build_upscale_model_video_workflow(reg, params, input_filename)
+        raise ValueError(f"video upscale not supported for node_type {node_type!r}")
     if node_type == "seedvr2":
         return _build_seedvr2_workflow(reg, params, input_filename)
     if node_type == "upscale_model":
@@ -1319,10 +1376,22 @@ def probe_imports() -> dict:
         json.dumps(wf)
         return f"OK ({len(wf)} nodes)"
 
+    def _upscale_model_video_workflow_build():
+        wf = build_upscale_workflow(
+            "swinir_l", {"source_fps": 24.0}, "probe_input.mp4", media_type="video"
+        )
+        assert wf["load_video"]["class_type"] == "VHS_LoadVideo"
+        assert wf["upscale"]["class_type"] == "ImageUpscaleWithModel"
+        assert wf["upscale"]["inputs"]["image"] == ["load_video", 0]
+        assert wf["save"]["class_type"] == "VHS_VideoCombine"
+        json.dumps(wf)
+        return f"OK ({len(wf)} nodes)"
+
     _step("comfy_api_import", _comfy_api_import)
     _step("ull_image_prep_import", _ull_prep_import)
     _step("workflow_build", _workflow_build)
     _step("video_workflow_build", _video_workflow_build)
+    _step("upscale_model_video_workflow_build", _upscale_model_video_workflow_build)
 
     _link_volume_custom_nodes()
     proc = None
