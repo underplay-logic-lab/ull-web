@@ -86,8 +86,8 @@ Env overrides:
   SEEDVR2_BATCH_SIZE      SeedVR2 batch_size（4n+1、既定 5）
   SEEDVR2_TARGET_SHORT    出力の短辺目標 px（既定 1920）
   SEEDVR2_MAX_RESOLUTION  出力の長辺上限 px（既定 4096）
-  SEEDVR2_VIDEO_MAX_SECONDS  動画アップスケールの入力尺上限（既定 6・保守的初期値）
-  SEEDVR2_VIDEO_MAX_FRAMES   動画アップスケールの入力フレーム数上限（既定 90・保守的初期値）
+  SEEDVR2_VIDEO_MAX_SECONDS  動画アップスケールの入力尺上限（既定 60・B300実測に基づく）
+  SEEDVR2_VIDEO_MAX_FRAMES   動画アップスケールの入力フレーム数上限（既定 1800・B300実測に基づく）
 """
 
 import base64
@@ -172,11 +172,18 @@ DEFAULT_BATCH_SIZE = _env_int("SEEDVR2_BATCH_SIZE", 5)  # 4n+1
 
 # 動画アップスケール v1（最小スコープ）: 単一動画・倍率固定・カスケードなし。
 # SeedVR2 は静止画1枚と同等の計算量をフレーム数ぶん重ねる（batch_size は時間
-# 一貫性のための窓であって並列化による短縮ではない）。GPU コスト爆発防止の
-# ため、実測して緩める前提のかなり保守的な初期値にしてある。フロント
-# （upscaleStudio.ts）の同名定数と値を合わせること。
-UPSCALE_VIDEO_MAX_SECONDS = _env_int("SEEDVR2_VIDEO_MAX_SECONDS", 6)
-UPSCALE_VIDEO_MAX_FRAMES = _env_int("SEEDVR2_VIDEO_MAX_FRAMES", 90)
+# 一貫性のための窓であって並列化による短縮ではない）。
+#
+# 実測（2026-09-12, B300, 832x1024 出力・×2）: VRAM は frame_count に対して
+# ほぼフラット（48f=17.8GB / 300f=18.8GB / 900f=18.9GB / 1800f=19.2GB）—
+# frame_count は OOM の軸ではなく、時間（≈75s + 0.3s/frame）とコストの軸。
+# 1800frame(60s@30fps) は 602s で完走・Modal 関数の 45分ハードキャップにも
+# 十分収まる。旧デフォルト（6秒 / 90フレーム）は未実測の保守的仮値で、30fps
+# 動画で実質3秒・60fpsで1.5秒しか受け付けられずコンセプト（できないことを
+# やる代わり相応の対価を取る。CLAUDE.md §0）と矛盾していたため、実測値に
+# 基づき引き上げた。フロント（upscaleStudio.ts）の同名定数と値を合わせること。
+UPSCALE_VIDEO_MAX_SECONDS = _env_int("SEEDVR2_VIDEO_MAX_SECONDS", 60)
+UPSCALE_VIDEO_MAX_FRAMES = _env_int("SEEDVR2_VIDEO_MAX_FRAMES", 1800)
 
 # ---------------------------------------------------------------------------
 # 複数画像バッチジョブ — Modal 強制 timeout の動的算出（modal_angle_worker.py
@@ -1429,7 +1436,7 @@ class SeedVR2Worker:
             return False
         return r.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0
 
-    def _run_workflow(self, workflow: dict) -> tuple[bytes, str]:
+    def _run_workflow(self, workflow: dict, timeout_s: int | None = None) -> tuple[bytes, str]:
         import uuid
 
         import requests
@@ -1456,7 +1463,7 @@ class SeedVR2Worker:
         if not prompt_id:
             raise RuntimeError(f"/prompt returned no prompt_id: {resp.text[:500]}")
 
-        deadline = time.time() + _env_int("SEEDVR2_WORKFLOW_TIMEOUT_S", 15 * 60)
+        deadline = time.time() + (timeout_s if timeout_s is not None else _env_int("SEEDVR2_WORKFLOW_TIMEOUT_S", 15 * 60))
         while time.time() < deadline:
             hist = requests.get(
                 f"http://127.0.0.1:{COMFY_PORT}/history/{prompt_id}", timeout=30
@@ -1647,9 +1654,14 @@ class SeedVR2Worker:
         p["frame_load_cap"] = min(probe["frame_count"], UPSCALE_VIDEO_MAX_FRAMES)
 
         workflow = build_upscale_workflow(model_key, p, in_name, media_type="video")
+        # _run_workflow の既定 15分固定デッドラインは動画向けではない（フレーム数に
+        # 応じて実処理時間が伸びるため）。実測（2026-09-12, B300, 832x1024 出力）:
+        # 300f=161s / 900f=333s / 1800f=602s ≈ 75s + 0.3s/frame。安全マージンを
+        # 乗せた式で動的に確保する（コンテナ側 Modal timeout の余裕内に収める）。
+        workflow_timeout_s = min(2400, max(900, 200 + int(p["frame_load_cap"] * 1.0)))
         t0 = time.time()
         with _VramPeak() as vp:
-            data, filename = self._run_workflow(workflow)
+            data, filename = self._run_workflow(workflow, timeout_s=workflow_timeout_s)
         elapsed = round(time.time() - t0, 2)
 
         if has_audio:
@@ -2390,7 +2402,7 @@ def video_main(
     target_short = min(w, h) * mult
 
     b64 = base64.b64encode(src.read_bytes()).decode("ascii")
-    worker = SeedVR2Worker.with_options(timeout=45 * 60)
+    worker = SeedVR2Worker.with_options(timeout=90 * 60)
     result = worker().run_upscale_video.remote(
         b64,
         model_key=model,

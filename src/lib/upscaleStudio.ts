@@ -258,14 +258,20 @@ export function upscaleCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): nu
 // --- 動画アップスケール v1（最小スコープ） ---------------------------------
 // SeedVR2 ネイティブの動画モード（VHS_LoadVideo → SeedVR2VideoUpscaler →
 // VHS_VideoCombine、時間一貫性はモデル側が担保）。倍率は ×2 固定・カスケード
-// なし・バッチなし・単一動画のみ。値は GPU 実測前の保守的初期値
-// （modal_seedvr2_worker.py の UPSCALE_VIDEO_MAX_SECONDS / _FRAMES と一致させる
-// こと）。
+// なし・バッチなし・単一動画のみ。
+//
+// 値は B300 実測（2026-09-12・modal_seedvr2_worker.py 参照）に基づく:
+// VRAM は frame_count に対してほぼフラット（48f=17.8GB〜1800f=19.2GB）で
+// OOM の軸ではない。1800frame(30fps換算60秒)は602sで完走・Modal関数の45分
+// ハードキャップにも十分収まる。旧値（6秒/90フレーム）は未実測の保守的仮値
+// で、30fps動画で実質3秒・60fpsで1.5秒しか受け付けられずコンセプトと矛盾
+// していたため引き上げた（modal_seedvr2_worker.py の UPSCALE_VIDEO_MAX_SECONDS
+// / _FRAMES と一致させること）。
 
 /** 入力動画の尺上限（秒）。超過はアップロード前にクライアントで弾く。 */
-export const UPSCALE_VIDEO_MAX_SECONDS = 6;
+export const UPSCALE_VIDEO_MAX_SECONDS = 60;
 /** 入力動画のフレーム数上限。fps が高い動画はこちらで先に頭打ちになりうる。 */
-export const UPSCALE_VIDEO_MAX_FRAMES = 90;
+export const UPSCALE_VIDEO_MAX_FRAMES = 1800;
 /** 入力動画ファイルサイズ上限。 */
 export const UPSCALE_VIDEO_MAX_BYTES = 60 * 1024 * 1024;
 /** v1 は倍率固定（×2 のみ）。カスケード・倍率選択は将来の拡張。 */
