@@ -904,19 +904,43 @@ def _supabase_request(method: str, path: str, **kwargs):
     return requests.request(method, f"{supabase_url}{path}", headers=headers, timeout=15, **kwargs)
 
 
+def _supabase_request_checked(method: str, path: str, attempts: int = 3, backoff_s: float = 0.6, **kwargs):
+    """_supabase_request + 成功判定 + リトライ。
+
+    2026-09-13: modal_angle_worker.py の実障害（_supabase_request が非2xx
+    でも例外を投げないため、書き込み失敗が握りつぶされてジョブが completed
+    のまま止まる／返金されない）と同じバグが本ファイルにも存在していたため
+    横展開。status_code を必ずチェックし、一時的な失敗はリトライ、それでも
+    失敗したら例外を投げて呼び出し側にはっきり伝える。
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            res = _supabase_request(method, path, **kwargs)
+            if res is not None and res.ok:
+                return res
+            detail = f"HTTP {res.status_code}: {res.text[:300]}" if res is not None else "no response (env not configured)"
+            last_exc = RuntimeError(detail)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+        if attempt < attempts:
+            time.sleep(backoff_s * attempt)
+    raise last_exc if last_exc is not None else RuntimeError("unknown Supabase request failure")
+
+
 def _patch_upscale_job(job_id: str, fields: dict) -> None:
     if not job_id:
         return
     try:
-        _supabase_request(
+        _supabase_request_checked(
             "PATCH",
             "/rest/v1/upscale_jobs",
             params={"id": f"eq.{job_id}"},
             json={**fields, "updated_at": _now_iso()},
             headers={"Prefer": "return=minimal"},
         )
-    except Exception as exc:  # noqa: BLE001 — best-effort
-        print(f"[upscale-job] failed to patch job {job_id}: {exc}", flush=True)
+    except Exception as exc:  # noqa: BLE001 — best-effort（呼び出し元は落とさない）
+        print(f"[upscale-job] failed to patch job {job_id} (after retries): {exc}", flush=True)
 
 
 def _merge_upscale_metadata(job_id: str, extra: dict) -> None:

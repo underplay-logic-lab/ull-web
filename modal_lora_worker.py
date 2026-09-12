@@ -1242,6 +1242,13 @@ def _is_infra_error(exc: BaseException) -> bool:
 
 
 def _patch_job(job_id: str, fields: dict) -> None:
+    """2026-09-13: modal_angle_worker.py の実障害（_supabase_request が非2xx
+    でも例外を投げないため、書き込み失敗が握りつぶされてジョブが進捗の
+    まま止まる／completed に遷移しない）と同じバグが本ファイルにも存在して
+    いたため横展開。一時的な失敗（ネットワーク/5xx/レート制限等）はリトライ
+    し、'metadata' 列欠落（デプロイがDBより先行）だけは従来通りその場で
+    metadata 抜きにフォールバックする（リトライしても直らない schema
+    mismatch のため）。"""
     if not job_id:
         return
 
@@ -1254,19 +1261,31 @@ def _patch_job(job_id: str, fields: dict) -> None:
             headers={"Prefer": "return=minimal"},
         )
 
-    try:
-        res = _send(fields)
-        # If this deploy is ahead of the DB (no `metadata` column yet), the
-        # whole PATCH 4xxs — retry without it so progress_* still lands.
-        if res is not None and res.status_code >= 400 and "metadata" in fields:
-            body = (res.text or "").lower()
-            if "metadata" in body or "schema cache" in body or "column" in body:
-                slim = {k: v for k, v in fields.items() if k != "metadata"}
-                if slim:
-                    _send(slim)
-                print(f"[lora-worker] job {job_id}: 'metadata' column absent — patched without it")
-    except Exception as exc:  # noqa: BLE001 — best-effort, never propagate
-        print(f"[lora-worker] failed to update job {job_id}: {exc}")
+    attempts, backoff_s = 3, 0.6
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            res = _send(fields)
+            if res is not None and res.ok:
+                return
+            if res is not None and res.status_code >= 400 and "metadata" in fields:
+                body = (res.text or "").lower()
+                if "metadata" in body or "schema cache" in body or "column" in body:
+                    slim = {k: v for k, v in fields.items() if k != "metadata"}
+                    res2 = _send(slim) if slim else None
+                    if res2 is not None and res2.ok:
+                        print(f"[lora-worker] job {job_id}: 'metadata' column absent — patched without it")
+                        return
+                    last_exc = RuntimeError("metadata column absent and slim patch also failed")
+                    break  # schema mismatch won't fix itself — retrying is pointless
+            last_exc = RuntimeError(
+                f"HTTP {res.status_code}: {res.text[:300]}" if res is not None else "no response (env not configured)"
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+        if attempt < attempts:
+            time.sleep(backoff_s * attempt)
+    print(f"[lora-worker] failed to update job {job_id} (after retries): {last_exc}")
 
 
 def _claim_job(job_id: str, fields: dict) -> bool:

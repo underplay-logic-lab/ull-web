@@ -674,6 +674,29 @@ def _supabase_request(method: str, path: str, **kwargs) -> "requests.Response | 
     return requests.request(method, f"{supabase_url}{path}", headers=headers, timeout=10, **kwargs)
 
 
+def _supabase_request_checked(method: str, path: str, attempts: int = 3, backoff_s: float = 0.6, **kwargs):
+    """_supabase_request + 成功判定 + リトライ。
+
+    2026-09-13: modal_angle_worker.py の実障害（_supabase_request が非2xx
+    でも例外を投げないため、書き込み失敗が握りつぶされてジョブが進捗の
+    まま止まる／返金されない）と同じバグが本ファイルにも存在していたため
+    横展開。status_code を必ずチェックし、一時的な失敗はリトライする。
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            res = _supabase_request(method, path, **kwargs)
+            if res is not None and res.ok:
+                return res
+            detail = f"HTTP {res.status_code}: {res.text[:300]}" if res is not None else "no response (env not configured)"
+            last_exc = RuntimeError(detail)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+        if attempt < attempts:
+            time.sleep(backoff_s * attempt)
+    raise last_exc if last_exc is not None else RuntimeError("unknown Supabase request failure")
+
+
 def _supabase_patch_job(job_id: str, fields: dict) -> None:
     """Best-effort PATCH of one generation_jobs row — status/video_url/
     error_message, called from run_custom_workflow as the spawned job
@@ -681,7 +704,7 @@ def _supabase_patch_job(job_id: str, fields: dict) -> None:
     if not job_id:
         return
     try:
-        _supabase_request(
+        _supabase_request_checked(
             "PATCH",
             "/rest/v1/generation_jobs",
             params={"id": f"eq.{job_id}"},
@@ -689,7 +712,7 @@ def _supabase_patch_job(job_id: str, fields: dict) -> None:
             headers={"Prefer": "return=minimal"},
         )
     except Exception as exc:  # noqa: BLE001 — best-effort, never propagate
-        print(f"[generation_jobs] failed to update job {job_id}: {exc}")
+        print(f"[generation_jobs] failed to update job {job_id} (after retries): {exc}")
 
 
 def _current_effective_vram_gb():
@@ -729,7 +752,7 @@ def _refund_credits(user_id: str, amount: int) -> None:
         res.raise_for_status()
         rows = res.json()
         current = (rows[0].get("credits") if rows else None) or 0
-        _supabase_request(
+        _supabase_request_checked(
             "PATCH",
             "/rest/v1/profiles",
             params={"id": f"eq.{user_id}"},
@@ -737,7 +760,7 @@ def _refund_credits(user_id: str, amount: int) -> None:
             headers={"Prefer": "return=minimal"},
         )
     except Exception as exc:  # noqa: BLE001 — best-effort, never propagate
-        print(f"[generation_jobs] failed to refund {amount} credits to {user_id}: {exc}")
+        print(f"[generation_jobs] failed to refund {amount} credits to {user_id} (after retries): {exc}")
 
 
 def _clear_active_job(active_job_id: str) -> None:
