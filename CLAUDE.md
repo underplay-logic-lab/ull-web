@@ -56,6 +56,11 @@ ULL Studio の開発において、すべての AI エージェント（Claude /
     - **実機計測（2026-09-06、B300 / minimax_h3 / rank 32 / 768px）**: eager 2.6 it/s → compile **5.0-5.4 it/s（~2x）**。warmup は cold で ~599s、永続 Inductor キャッシュ（`TORCHINDUCTOR_CACHE_DIR` / `TRITON_CACHE_DIR` を Volume に、`_apply_hf_cache_env()` で実行時のみ設定）ありで ~325s。break-even（warm）~1700 step → **既定の 2000 step 以上のジョブでは compile が純増**（3000 step で -23%、5000 step で -34%）。学習は推論と違い compile が明確に効く。
     - compile 有効時は途中サンプル生成が別 shape で毎回 ~220s 再コンパイル → `_build_config` は `_compile_on` のとき `sample_every` を最終 1 回だけに落とす。
   - **ComfyUI ベースの動画ワーカー**（`scripts/modal_wan_animate.py` / `modal_wan_animate_blackwell.py` / `scripts/modal_wan_animate_stable_47s.py`）: 呼び出し側が渡すワークフロー JSON に対し、diffusion-model ローダーノードを 1 つだけ一意に特定できる場合のみ、その下流に `TorchCompileModel` ノードを挿入する後処理（`_inject_torch_compile`）を実行パスに組み込む。曖昧・既存 compile ノードあり・例外時はワークフローを無改変で返す（fail-open）。`WAN_TORCH_COMPILE=0` で完全無効化。CUDA graphs と ComfyUI のモデルオフロードが競合し得るため、本番反映前に実生成での検証を必須とする。
+- **SageAttention ビルド標準（C++20 フラグ必須）**: `thu-ml/SageAttention` を from-source ビルドする全ワーカー（`modal_seedvr2_worker.py` / `modal_wan_animate_blackwell.py` / `scripts/modal_wan_animate.py` / `scripts/modal_wan_animate_stable_47s.py`）は、SageAttention の `pip install` を行う `run_commands()` に必ず以下を付けること:
+  ```python
+  env={"CXX_APPEND_FLAGS": "-std=c++20", "NVCC_APPEND_FLAGS": "-std=c++20"}
+  ```
+  理由: SageAttention の `setup.py`（thu-ml/SageAttention commit d1a57a5 時点）は `CXX_FLAGS`/`NVCC_FLAGS` に `-std=c++17` をハードコードしているが、cu130 index が解決する現行 torch（2.14.0 系）のヘッダーは C++20 を要求し、素のままでは `#error C++20 or later compatible compiler is required` でビルドが失敗して SDPA へ fail-open する（2026-09-12 実機確認）。`CXX_APPEND_FLAGS`/`NVCC_APPEND_FLAGS` は setup.py が用意している注入口で、末尾に追記したフラグが gcc/nvcc の「複数回指定時は最後が勝つ」挙動で `-std=c++17` を上書きする。実機計測（B300・動画アップスケール、320×240・30フレーム）: warm 実行で **SDPA 25.43s → SageAttention 8.6s（~2.96倍高速化）**、cold でも 76.42s → 40.53s（~1.9倍）。GPU 課金は稼働秒数に比例するため、ビルドが通っているかは黙って劣化させず必ず確認すること（`⚡ SeedVR2 optimizations check: SageAttention ✅` のログで判定可能）。
 - **デプロイコマンド**: バッチ文字化けを防ぐため、必ず `PYTHONIOENCODING=utf-8 PYTHONUTF8=1 modal deploy ...` を使用すること。
 
 ---
@@ -108,3 +113,15 @@ ULL Studio の開発において、すべての AI エージェント（Claude /
   - **Hunyuan3D 2.1**（`tencent/Hunyuan3D-2.1`、Tencent Hunyuan 3D 2.1 Community License）: 重み＋学習コード公開だが **EU・英国・韓国では利用不可**、MAU 1 億超で別途ライセンス要、NOTICE 同梱義務。グローバル公開サービスでは原則採用しない（TRELLIS を優先）。どうしても品質面で必要なら geofence 前提でホスト承認を取る。
   - **Hunyuan3D 3.0 / 3.1**: プロプライエタリ（Tencent Cloud API のみ、重み非公開）。自ホスト不可・外部 API 依存になり「Blackwell 自ホスト」の売りと矛盾するため採用しない。
 - 採用したモデル／依存の名称・バージョン・ライセンス・確認日を、当該ワーカーファイル冒頭の docstring に明記すること（`modal_angle_worker.py` の記法に倣う）。
+
+---
+
+## 6. Studio タブ実装の標準パターン（新規タブ作成時は必ず実装。指示を待たない）
+新しい生成系 Studio タブ（画像・動画・LoRA 等、GPU ジョブを伴うもの）を作る、または既存タブのジョブ処理を触るときは、以下をホストに指示されなくても最初から実装すること。過去に何度か「後から指摘されて直す」を繰り返した経緯があるため、標準として明文化する。
+
+- **ジョブ結果はリロードしても消えない**: ジョブ送信時に `saveFormState(JOB_KEY, {jobId})`（`src/lib/studioFormPersistence.ts`）を **1 回だけ** 呼ぶ。**完了・失敗時にクリアする呼び出しを書かない**こと（`saveFormState(JOB_KEY, {jobId: ""})` のようなクリアは NG）。次に新しいジョブを送信したときだけ上書きされる、というのが唯一の更新経路。こうすることで「リロードすれば常に最後のジョブの現在状態（完了済みなら結果、実行中ならポーリング再開）が出る」という一貫した体験になる。元祖は Multi-Angle / LoRA タブ。意図的にクリアしたい特殊事情がある場合のみ例外とし、コメントで理由を明記する。
+- **「ジョブが見つからない」は専用エラーとして扱う**: ポーリング先の行が 14 日自動パージ等で本当に存在しない場合（Supabase `.single()` の `PGRST116`）と、一時的な通信エラーを **区別すること**。前者を後者と同じ「時間をおいて再読み込みしてください」で案内すると、リトライしても永久に直らない誤案内になる。`XxxJobNotFoundError` のような専用例外クラスを投げ、ポーリングループでは即座に「生成から14日以上経つと自動的に削除されます。新しく生成してください」という趣旨の案内を出して諦める（`localStorage` の参照もこのケースだけ例外的にクリアしてよい）。手本: `src/lib/upscaleApi.ts` の `UpscaleJobNotFoundError`、`src/lib/angleApi.ts` の `AngleJobNotFoundError`。
+- **Active VRAM バッジ表示**（CLAUDE.md §2 のネタバレ防止仕様に準拠）: 生成中・完了後に共有コンポーネント `src/components/studio/VramBadge.tsx`（`<VramBadge gb={...} />`、`gb == null` なら何も描画しない）を必ず使う。ワーカー側のテレメトリキーは全系統で `vram_used_gb`（GB・1桁丸め、`torch.cuda.mem_get_info()` ベース）に統一する。
+  - **非同期タブ**（ジョブ行を作ってポーリングする方式）: ワーカーは処理中スレッドから ~8秒毎に `metadata.vram_used_gb` を PATCH してライブ更新し、完了時は `vram_peak_gb`（処理中ピーク値）も書く。フロントは進行中バッジに `vram_used_gb`、完了後の結果表示に `vram_peak_gb` を出す。
+  - **同期タブ**（HTTP 応答で完結、ポーリングなし）: ワーカーの戻り値 dict に `vram_used_gb` を含め、API route がレスポンスへそのまま素通しし、完了時に一度だけ表示する。
+- これら 3 点はセットで「Studio タブとして最低限あるべき挙動」なので、新規タブのレビュー・実装時のチェックリストとして扱うこと。

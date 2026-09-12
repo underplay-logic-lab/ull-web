@@ -254,3 +254,65 @@ export function upscaleCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): nu
     knobs.upscale_per_mp * UPSCALE_MAX_OUTPUT_MP * knobs.upscale_cascade_mult_3stage,
   );
 }
+
+// --- 動画アップスケール v1（最小スコープ） ---------------------------------
+// SeedVR2 ネイティブの動画モード（VHS_LoadVideo → SeedVR2VideoUpscaler →
+// VHS_VideoCombine、時間一貫性はモデル側が担保）。倍率は ×2 固定・カスケード
+// なし・バッチなし・単一動画のみ。値は GPU 実測前の保守的初期値
+// （modal_seedvr2_worker.py の UPSCALE_VIDEO_MAX_SECONDS / _FRAMES と一致させる
+// こと）。
+
+/** 入力動画の尺上限（秒）。超過はアップロード前にクライアントで弾く。 */
+export const UPSCALE_VIDEO_MAX_SECONDS = 6;
+/** 入力動画のフレーム数上限。fps が高い動画はこちらで先に頭打ちになりうる。 */
+export const UPSCALE_VIDEO_MAX_FRAMES = 90;
+/** 入力動画ファイルサイズ上限。 */
+export const UPSCALE_VIDEO_MAX_BYTES = 60 * 1024 * 1024;
+/** v1 は倍率固定（×2 のみ）。カスケード・倍率選択は将来の拡張。 */
+export const UPSCALE_VIDEO_MULT = 2;
+
+export type UpscaleVideoCostBreakdown = {
+  credits: number;
+  frameCount: number;
+  perFrame: number;
+  modelMult: number;
+};
+
+/**
+ * 純関数: 申告された尺・fps + モデル → 消費クレジット。
+ * 動画はサーバー側で正確な寸法を読める画像と違い、クライアント申告
+ * （<video> 要素の loadedmetadata）を信用するしかない。Worker 側が ffprobe
+ * 実測で上限超過を検知したら failed + 返金する（差額調整はしない、常に
+ * 見積り以下の実測なら通す設計）。
+ */
+export function upscaleVideoCostBreakdown(args: {
+  durationSec: number;
+  fps: number;
+  modelKey: string;
+  knobs?: PricingKnobs;
+}): UpscaleVideoCostBreakdown {
+  const knobs = args.knobs ?? DEFAULT_KNOBS;
+  const model = getUpscaleModel(args.modelKey);
+
+  const duration = Math.max(0, Math.min(args.durationSec || 0, UPSCALE_VIDEO_MAX_SECONDS));
+  const fps = Math.max(0, args.fps || 0);
+  const frameCount = Math.min(UPSCALE_VIDEO_MAX_FRAMES, Math.round(duration * fps));
+
+  if (frameCount <= 0) {
+    return { credits: 0, frameCount: 0, perFrame: knobs.upscale_video_per_frame, modelMult: model.creditMult };
+  }
+
+  const raw = Math.ceil(knobs.upscale_video_per_frame * frameCount * model.creditMult);
+  const floor = Math.max(1, Math.round(knobs.upscale_video_min_credits));
+  return {
+    credits: Math.max(floor, raw),
+    frameCount,
+    perFrame: knobs.upscale_video_per_frame,
+    modelMult: model.creditMult,
+  };
+}
+
+/** 動画の寸法申告が壊れている等で見積り不能なときの上限課金。 */
+export function upscaleVideoCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): number {
+  return Math.ceil(knobs.upscale_video_per_frame * UPSCALE_VIDEO_MAX_FRAMES);
+}

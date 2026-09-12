@@ -10,7 +10,7 @@ export type UpscaleJob = {
   status: UpscaleJobStatus;
   modelKey: string;
   preset: string;
-  /** 完成画像の公開 URL（未完なら null）。 */
+  /** 完成画像/動画の公開 URL（未完なら null）。 */
   resultUrl: string | null;
   errorMessage: string | null;
   /** ライブ実効 VRAM 消費量（GB）。ネタバレ防止 — 分母・％・GPU名なし。 */
@@ -44,6 +44,52 @@ export async function startUpscaleJob(params: {
   form.append("mode", params.modeId);
 
   const res = await fetch("/api/studio/upscale/generate", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: form,
+  });
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data?.success) {
+    const error: UpscaleApiError = new Error(data?.error || "ジョブの作成に失敗しました。");
+    if (typeof data?.remainingCredits === "number") error.remainingCredits = data.remainingCredits;
+    throw error;
+  }
+
+  return {
+    jobId: data.jobId as string,
+    remainingCredits: data.remainingCredits as number,
+    creditsCost: data.creditsCost as number,
+  };
+}
+
+export type StartUpscaleVideoJobResult = {
+  jobId: string;
+  remainingCredits: number;
+  creditsCost: number;
+};
+
+export async function startUpscaleVideoJob(params: {
+  video: File;
+  modelKey: string;
+  durationSec: number;
+  fps: number;
+  width: number;
+  height: number;
+}): Promise<StartUpscaleVideoJobResult> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) throw new Error("ログインが必要です。");
+
+  const form = new FormData();
+  form.append("video", params.video, params.video.name || "input.mp4");
+  form.append("modelKey", params.modelKey);
+  form.append("durationSec", String(params.durationSec));
+  form.append("fps", String(params.fps));
+  form.append("width", String(params.width));
+  form.append("height", String(params.height));
+
+  const res = await fetch("/api/studio/upscale/video/generate", {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}` },
     body: form,

@@ -148,6 +148,16 @@ image = (
     )
     .run_commands(
         "pip install --no-build-isolation 'git+https://github.com/thu-ml/SageAttention.git'",
+        # SageAttention の setup.py は CXX_FLAGS/NVCC_FLAGS に "-std=c++17" を
+        # ハードコードしている（thu-ml/SageAttention commit d1a57a5 時点）が、
+        # cu130 index が解決する現行 torch（2.14.0 系）のヘッダーは C++20 を
+        # 要求し "#error C++20 or later compatible compiler is required" で
+        # ビルドが落ちる（modal_seedvr2_worker.py で 2026-09-12 実機確認・
+        # 同一の thu-ml/SageAttention ビルドなのでここも同様に踏む）。setup.py
+        # 側が用意する CXX_APPEND_FLAGS / NVCC_APPEND_FLAGS で末尾に
+        # -std=c++20 を追記し、複数回指定時は最後が勝つ gcc/nvcc の挙動で
+        # 上書きする。
+        env={"CXX_APPEND_FLAGS": "-std=c++20", "NVCC_APPEND_FLAGS": "-std=c++20"},
     )
     .pip_install(
         "comfy-cli",

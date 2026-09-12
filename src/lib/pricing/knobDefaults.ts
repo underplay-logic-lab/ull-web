@@ -24,6 +24,8 @@ export type KnobKey =
   | "upscale_mult_power"
   | "upscale_cascade_mult_2stage"
   | "upscale_cascade_mult_3stage"
+  | "upscale_video_per_frame"
+  | "upscale_video_min_credits"
   // --- lora_formula (public) ---
   | "lora_per_step"
   | "lora_mult_model_heavy"
@@ -38,6 +40,8 @@ export type KnobKey =
   | "upscale_time_per_credit_s"
   | "upscale_cold_start_grace_s"
   | "upscale_batch_max_seconds"
+  | "upscale_video_time_per_credit_s"
+  | "upscale_video_cold_start_grace_s"
   | "lora_cost_guard_multiplier"
   | "lora_margin_target"
   | "lora_floor_prep_s"
@@ -182,6 +186,26 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     description: "×8 モード（×2→×4→×8 の3段カスケード）に乗せる追加係数。",
     isPublic: true,
   },
+  upscale_video_per_frame: {
+    // 動画超解像 v1（最小スコープ）: SeedVR2 は静止画1枚と同等の計算量を
+    // フレーム数ぶん重ねる（batch_size は時間一貫性の窓であって並列化に
+    // よる短縮ではない）ため、画像の per-MP 課金ではなくフレーム数課金に
+    // する。値は実測前の保守的初期値。
+    value: 2,
+    label: "動画超解像（1フレームあたり）",
+    category: "feature_credits",
+    unit: "C/frame",
+    description: "出力フレーム数あたりの消費クレジット（× モデル係数）",
+    isPublic: true,
+  },
+  upscale_video_min_credits: {
+    value: 20,
+    label: "動画超解像 最低クレジット",
+    category: "feature_credits",
+    unit: "C",
+    description: "1本あたりの消費クレジット下限（コールドスタート償却）",
+    isPublic: true,
+  },
   // ------------------------------------------------------------- lora_formula
   lora_per_step: {
     value: 0.1,
@@ -289,6 +313,24 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "cost_guard",
     unit: "s",
     description: "1バッチの推定合計処理秒数がこれを超えたら受け付けない。",
+    isPublic: false,
+  },
+  upscale_video_time_per_credit_s: {
+    value: 6,
+    label: "動画超解像 損切り：1C あたり猶予秒",
+    category: "cost_guard",
+    unit: "s/C",
+    description: "max_allowed_time = 消費C × これ + コールドスタート猶予",
+    isPublic: false,
+  },
+  upscale_video_cold_start_grace_s: {
+    // ComfyUI 起動 + SeedVR2 重みロード + VHS(VideoHelperSuite) ノード初回
+    // 実行の固定猶予。実測前なので画像（180s）より余裕を見て 240s。
+    value: 240,
+    label: "動画超解像 損切り：コールドスタート猶予",
+    category: "cost_guard",
+    unit: "s",
+    description: "ComfyUI起動+SeedVR2重みロード+VHSノード初回実行の固定猶予",
     isPublic: false,
   },
   lora_cost_guard_multiplier: {

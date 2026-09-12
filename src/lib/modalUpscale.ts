@@ -31,6 +31,18 @@ export type SpawnUpscaleBatchJobParams = {
   items: SpawnUpscaleBatchItem[];
 };
 
+export type SpawnUpscaleVideoJobParams = {
+  jobId: string;
+  userId: string;
+  creditsCost: number;
+  maxAllowedTime: number;
+  /** 入力動画（base64・data URI 可）。 */
+  videoBase64: string;
+  modelKey: string;
+  presetId: string;
+  params: Record<string, number | string | boolean>;
+};
+
 const DISPATCH_TIMEOUT_MS = 25_000;
 const DISPATCH_MAX_ATTEMPTS = 3;
 
@@ -61,6 +73,16 @@ function resolveBatchDispatchUrl(): string | undefined {
   return base
     .replace("seedvr2worker-upscale", "upscale-batch-generate-dispatch")
     .replace("seedvr2worker-models", "upscale-batch-generate-dispatch");
+}
+
+function resolveVideoDispatchUrl(): string | undefined {
+  const explicit = process.env.MODAL_UPSCALE_VIDEO_DISPATCH_URL;
+  if (explicit) return explicit;
+  const base = process.env.MODAL_SEEDVR2_URL || process.env.MODAL_UPSCALE_URL;
+  if (!base) return undefined;
+  return base
+    .replace("seedvr2worker-upscale", "upscale-video-generate-dispatch")
+    .replace("seedvr2worker-models", "upscale-video-generate-dispatch");
 }
 
 /**
@@ -184,6 +206,69 @@ export async function spawnUpscaleBatchJob(
       }
       const text = (await res.text().catch(() => "")).slice(0, 500);
       lastErr = new Error(`Modal batch dispatch HTTP ${res.status}: ${text || "(empty)"}`);
+      if (res.status < 500 && res.status !== 429) break;
+    } catch (err) {
+      lastErr = err;
+    }
+    if (attempt < DISPATCH_MAX_ATTEMPTS) await sleep(400 * attempt);
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+/**
+ * modal_seedvr2_worker.py の `upscale_video_generate_dispatch` を叩き、動画
+ * アップスケール GPU ジョブを spawn させて即 return する（v1: 単一動画のみ）。
+ */
+export async function spawnUpscaleVideoJob(
+  params: SpawnUpscaleVideoJobParams,
+): Promise<{ callId: string | null }> {
+  const url = resolveVideoDispatchUrl();
+  const authToken = process.env.MODAL_AUTH_TOKEN;
+
+  if (!url) {
+    throw new Error(
+      "MODAL_SEEDVR2_URL（または MODAL_UPSCALE_VIDEO_DISPATCH_URL）が未設定です。",
+    );
+  }
+  if (!authToken) {
+    throw new Error("MODAL_AUTH_TOKEN が未設定です（modal_seedvr2_worker.py の _authorize が期待する共有シークレット）。");
+  }
+
+  const video = (params.videoBase64 ?? "").trim();
+  if (!video) throw new Error("Modal へ渡す入力動画が空です。");
+
+  const body = JSON.stringify({
+    job_id: params.jobId,
+    user_id: params.userId,
+    credits_cost: params.creditsCost,
+    max_allowed_time: params.maxAllowedTime,
+    video,
+    model_key: params.modelKey,
+    preset: params.presetId,
+    params: params.params,
+  });
+
+  const headers = {
+    "Content-Type": "application/json",
+    "x-modal-secret": authToken,
+    Authorization: `Bearer ${authToken}`,
+  };
+
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= DISPATCH_MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body,
+        signal: AbortSignal.timeout(DISPATCH_TIMEOUT_MS),
+      });
+      if (res.ok) {
+        const parsed = (await res.json().catch(() => null)) as { call_id?: string } | null;
+        return { callId: typeof parsed?.call_id === "string" ? parsed.call_id : null };
+      }
+      const text = (await res.text().catch(() => "")).slice(0, 500);
+      lastErr = new Error(`Modal video dispatch HTTP ${res.status}: ${text || "(empty)"}`);
       if (res.status < 500 && res.status !== 429) break;
     } catch (err) {
       lastErr = err;

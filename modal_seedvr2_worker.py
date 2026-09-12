@@ -24,6 +24,12 @@ SwinIR-L はレジストリに枠だけ用意し（`enabled=False`）、CPU prob
         すでに綺麗な絵の素直な拡大・破綻しない・爆速。
   ✓ SwinIR-L ........................... Apache-2.0
         実写のノイズ / JPEG 除去つき復元。
+  ✓ ComfyUI-VideoHelperSuite (Kosinkadink) .. GPLv3
+        動画アップスケールの入出力ノード（VHS_LoadVideo / VHS_VideoCombine）。
+        ComfyUI 本体と同じ扱い（セルフホストのバックエンドとして許容。配布物
+        には含めない）。実際の音声パススルーはこのノードに頼らずワーカー側
+        Python の ffmpeg で事後 mux する（VHS のオーディオソケット仕様に
+        依存しないため。確認日 2026-09-12）。
   ✗ SUPIR / StableSR ................... S-Lab **非商用** → 採用不可
   ✗ SUPIR 由来の重み・コードを含むノードパックも不可。
   △ VEnhancer / FlashVSR ............... 動画向け・別途ライセンス確認 → 後日
@@ -52,6 +58,11 @@ PoC で詰める未確定事項（この骨格は構造を確定させ、以下�
      では動かない、とメモに記録あり）。SEEDVR2_COMFYUI_REF で固定可能。
   4. batch_size は 4n+1（1,5,9,13,17…）。大きいほど時間一貫性↑＆スループット↑
      だが VRAM 線形増。B300 既定は実測で詰める（骨格は 5）。
+  5. ⚠️PoC（動画・2026-09-12 追加）: VHS_LoadVideo / VHS_VideoCombine の正確な
+     入出力ソケット名・型は未確認（node バージョン依存）。probe_imports の
+     /object_info で実見して確定させる。音声は VHS 経由でなくワーカー側
+     Python の ffmpeg 事後 mux にしたのでソケット仕様への依存を避けている。
+     VHS_LoadVideo の IMAGE 出力（index 0）だけを使う設計。
 
 ────────────────────────────────────────────────────────────────────────────
 Deploy / run:
@@ -75,6 +86,8 @@ Env overrides:
   SEEDVR2_BATCH_SIZE      SeedVR2 batch_size（4n+1、既定 5）
   SEEDVR2_TARGET_SHORT    出力の短辺目標 px（既定 1920）
   SEEDVR2_MAX_RESOLUTION  出力の長辺上限 px（既定 4096）
+  SEEDVR2_VIDEO_MAX_SECONDS  動画アップスケールの入力尺上限（既定 6・保守的初期値）
+  SEEDVR2_VIDEO_MAX_FRAMES   動画アップスケールの入力フレーム数上限（既定 90・保守的初期値）
 """
 
 import base64
@@ -156,6 +169,14 @@ SEEDVR2_NODE_REPO = _env_str(
 DEFAULT_TARGET_SHORT = _env_int("SEEDVR2_TARGET_SHORT", 1920)
 DEFAULT_MAX_RESOLUTION = _env_int("SEEDVR2_MAX_RESOLUTION", 4096)
 DEFAULT_BATCH_SIZE = _env_int("SEEDVR2_BATCH_SIZE", 5)  # 4n+1
+
+# 動画アップスケール v1（最小スコープ）: 単一動画・倍率固定・カスケードなし。
+# SeedVR2 は静止画1枚と同等の計算量をフレーム数ぶん重ねる（batch_size は時間
+# 一貫性のための窓であって並列化による短縮ではない）。GPU コスト爆発防止の
+# ため、実測して緩める前提のかなり保守的な初期値にしてある。フロント
+# （upscaleStudio.ts）の同名定数と値を合わせること。
+UPSCALE_VIDEO_MAX_SECONDS = _env_int("SEEDVR2_VIDEO_MAX_SECONDS", 6)
+UPSCALE_VIDEO_MAX_FRAMES = _env_int("SEEDVR2_VIDEO_MAX_FRAMES", 90)
 
 # ---------------------------------------------------------------------------
 # 複数画像バッチジョブ — Modal 強制 timeout の動的算出（modal_angle_worker.py
@@ -416,6 +437,105 @@ def _build_seedvr2_workflow(reg: dict, params: dict, input_filename: str) -> dic
     }
 
 
+def _build_seedvr2_video_workflow(reg: dict, params: dict, input_filename: str) -> dict:
+    """動画版 SeedVR2 グラフ:
+      VHS_LoadVideo ─┐
+      SeedVR2LoadDiTModel ─┤
+      SeedVR2LoadVAEModel ─┴→ SeedVR2VideoUpscaler → VHS_VideoCombine
+
+    DiT/VAE ローダーは画像版（_build_seedvr2_workflow）と共通。入出力だけ
+    VideoHelperSuite（VHS）のノードに差し替える。
+
+    ノード仕様（probe_imports の /object_info で実見・2026-09-12 確認、
+    ComfyUI master + Kosinkadink/ComfyUI-VideoHelperSuite）:
+      VHS_LoadVideo: video(STRING), force_rate, custom_width, custom_height,
+        frame_load_cap, skip_first_frames, select_every_nth 必須。
+        force_size は存在しない（custom_width/height で直接指定する方式）。
+        optional: meta_batch, vae, format。
+      VHS_VideoCombine: images, frame_rate, loop_count, filename_prefix,
+        format, pingpong, save_output 必須。pix_fmt/crf/save_metadata は
+        存在しない（それらは format 側のプリセットが吸収する想定）。
+        optional: audio, meta_batch, vae。
+    音声はこのグラフで扱わず（VHS の audio ソケットの型/経路は未確認のため
+    依存しない）、ワーカー側 Python の ffmpeg で無音出力に事後 mux する
+    （_do_upscale_video 参照）。frame_rate は ffprobe 実測値
+    （params["source_fps"]）をそのまま渡す。
+    """
+    p = {**reg["default_params"], **(params or {})}
+    batch = int(p.get("batch_size", DEFAULT_BATCH_SIZE))
+    if batch % 4 != 1:
+        batch = max(1, ((batch - 1) // 4) * 4 + 1)
+    short = int(p.get("target_short", DEFAULT_TARGET_SHORT))
+    frame_cap = int(p.get("frame_load_cap", 0))  # 0 = 無制限（呼び出し側で事前に上限チェック済み）
+    source_fps = float(p.get("source_fps", 24.0)) or 24.0
+
+    return {
+        "load_video": {
+            "class_type": "VHS_LoadVideo",
+            "inputs": {
+                "video": input_filename,
+                "force_rate": 0,
+                "custom_width": 0,
+                "custom_height": 0,
+                "frame_load_cap": frame_cap,
+                "skip_first_frames": 0,
+                "select_every_nth": 1,
+            },
+            "_meta": {"title": "input video"},
+        },
+        "dit_loader": {
+            "class_type": "SeedVR2LoadDiTModel",
+            "inputs": {
+                "model": p["dit"],
+                "device": p.get("device", "cuda:0"),
+                "attention_mode": p.get("attention_mode", "sdpa"),
+                "offload_device": "none",
+            },
+            "_meta": {"title": "DiT"},
+        },
+        "vae_loader": {
+            "class_type": "SeedVR2LoadVAEModel",
+            "inputs": {
+                "model": p["vae"],
+                "device": p.get("device", "cuda:0"),
+                "offload_device": "none",
+            },
+            "_meta": {"title": "VAE"},
+        },
+        "seedvr2": {
+            "class_type": "SeedVR2VideoUpscaler",
+            "inputs": {
+                "image": ["load_video", 0],
+                "dit": ["dit_loader", 0],
+                "vae": ["vae_loader", 0],
+                "seed": int(p.get("seed", 100)),
+                "resolution": short,
+                "max_resolution": int(p.get("max_resolution", DEFAULT_MAX_RESOLUTION)),
+                "batch_size": batch,
+                # 動画は静止画と違いフレーム数が batch_size で割り切れない
+                # ことが普通なので端数バッチを許容する。
+                "uniform_batch_size": bool(p.get("uniform_batch_size", False)),
+                "color_correction": p.get("color_correction", "lab"),
+                "offload_device": "none",
+            },
+            "_meta": {"title": "SeedVR2 upscale"},
+        },
+        "save": {
+            "class_type": "VHS_VideoCombine",
+            "inputs": {
+                "images": ["seedvr2", 0],
+                "frame_rate": source_fps,
+                "loop_count": 0,
+                "filename_prefix": "ull_upscale_video",
+                "format": "video/h264-mp4",
+                "pingpong": False,
+                "save_output": True,
+            },
+            "_meta": {"title": "output"},
+        },
+    }
+
+
 def _build_upscale_model_workflow(reg: dict, params: dict, input_filename: str) -> dict:
     """ComfyUI 標準の UpscaleModelLoader + ImageUpscaleWithModel 経路
     （Real-ESRGAN / SwinIR 等の ESRGAN 系 .pth）。"""
@@ -444,11 +564,19 @@ def _build_upscale_model_workflow(reg: dict, params: dict, input_filename: str) 
     }
 
 
-def build_upscale_workflow(model_key: str, params: dict, input_filename: str) -> dict:
+def build_upscale_workflow(
+    model_key: str, params: dict, input_filename: str, media_type: str = "image"
+) -> dict:
     if model_key not in UPSCALER_REGISTRY:
         raise ValueError(f"unknown model_key: {model_key!r}")
     reg = UPSCALER_REGISTRY[model_key]
     node_type = reg["node_type"]
+    if media_type == "video":
+        if "video" not in reg.get("kind", ()):
+            raise ValueError(f"model {model_key!r} does not support video")
+        if node_type != "seedvr2":
+            raise ValueError(f"video upscale not supported for node_type {node_type!r}")
+        return _build_seedvr2_video_workflow(reg, params, input_filename)
     if node_type == "seedvr2":
         return _build_seedvr2_workflow(reg, params, input_filename)
     if node_type == "upscale_model":
@@ -557,6 +685,15 @@ image = (
         "python3 /root/patch_sageattention_blackwell_ultra.py /opt/SageAttention",
         "pip install --no-build-isolation /opt/SageAttention "
         "|| echo '[image] SageAttention build failed — SDPA fallback'",
+        # SageAttention の setup.py は CXX_FLAGS/NVCC_FLAGS に "-std=c++17" を
+        # ハードコードしている（thu-ml/SageAttention commit d1a57a5 時点）が、
+        # torch 2.14.0（cu130 index が解決する現行バージョン）のヘッダーは
+        # C++20 を要求し "#error C++20 or later compatible compiler is
+        # required" でビルドが落ちる（2026-09-12 実機確認）。setup.py 側が
+        # 用意している CXX_APPEND_FLAGS / NVCC_APPEND_FLAGS で末尾に
+        # -std=c++20 を追記し、複数回指定時は最後が勝つ gcc/nvcc の挙動で
+        # 上書きする（パッチファイルを増やさずに済む）。
+        env={"CXX_APPEND_FLAGS": "-std=c++20", "NVCC_APPEND_FLAGS": "-std=c++20"},
     )
     .pip_install(
         "comfy-cli", "websockets", "requests", "aiohttp", "fastapi[standard]",
@@ -576,6 +713,13 @@ image = (
         # SeedVR2 node の依存で requirements.txt に無いことがあるもの（メモの記録）。
         "pip install rotary_embedding_torch omegaconf einops 'diffusers>=0.33.1' "
         "'peft>=0.17' opencv-python-headless gguf",
+        # 動画アップスケール用: 動画の読み込み/書き出しノード（VHS_LoadVideo /
+        # VHS_VideoCombine）。GPLv3・セルフホストのバックエンドとして許容
+        # （CLAUDE.md §5・ComfyUI 本体と同じ扱い）。
+        f"git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git"
+        f" {COMFY_DIR}/custom_nodes/ComfyUI-VideoHelperSuite",
+        f"pip install -r {COMFY_DIR}/custom_nodes/ComfyUI-VideoHelperSuite/requirements.txt "
+        f"|| echo '[image] VideoHelperSuite requirements install had issues'",
         # ComfyUI-Manager（管理者が UI からノードを足せるように）。
         f"git clone https://github.com/Comfy-Org/ComfyUI-Manager.git"
         f" {COMFY_DIR}/custom_nodes/ComfyUI-Manager",
@@ -820,6 +964,35 @@ def _upload_upscale_image(user_id: str, job_id: str, img_bytes: bytes, ext: str 
         return None
 
 
+def _upload_upscale_video(user_id: str, job_id: str, video_bytes: bytes):
+    """完成動画を upscale-results バケット（public）へ upsert し、公開 URL を返す。
+    ストレージ不通なら None。画像と同じバケットを mp4 拡張子で共用する。"""
+    import requests
+
+    supabase_url = os.environ.get("SUPABASE_URL")
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not supabase_url or not service_key:
+        return None
+    obj_path = f"{user_id or 'anon'}/{job_id}.mp4"
+    try:
+        res = requests.post(
+            f"{supabase_url}/storage/v1/object/{_UPSCALE_RESULTS_BUCKET}/{obj_path}",
+            headers={
+                "apikey": service_key,
+                "Authorization": f"Bearer {service_key}",
+                "Content-Type": "video/mp4",
+                "x-upsert": "true",
+            },
+            data=video_bytes,
+            timeout=300,
+        )
+        res.raise_for_status()
+        return f"{supabase_url}/storage/v1/object/public/{_UPSCALE_RESULTS_BUCKET}/{obj_path}"
+    except Exception as exc:  # noqa: BLE001
+        print(f"[upscale-job] video upload failed ({obj_path}): {exc}", flush=True)
+        return None
+
+
 def _refund_upscale_credits(user_id: str, amount: int) -> None:
     """失敗ジョブの返金（best-effort・最大 1 回）。profiles.credits に加算。"""
     if not user_id or not amount or amount <= 0:
@@ -1048,9 +1221,19 @@ def probe_imports() -> dict:
         json.dumps(wf)  # シリアライズ可能か
         return f"OK ({len(wf)} nodes)"
 
+    def _video_workflow_build():
+        wf = build_upscale_workflow(
+            "seedvr2_7b", {"source_fps": 24.0}, "probe_input.mp4", media_type="video"
+        )
+        assert wf["load_video"]["class_type"] == "VHS_LoadVideo"
+        assert wf["save"]["class_type"] == "VHS_VideoCombine"
+        json.dumps(wf)
+        return f"OK ({len(wf)} nodes)"
+
     _step("comfy_api_import", _comfy_api_import)
     _step("ull_image_prep_import", _ull_prep_import)
     _step("workflow_build", _workflow_build)
+    _step("video_workflow_build", _video_workflow_build)
 
     _link_volume_custom_nodes()
     proc = None
@@ -1060,7 +1243,8 @@ def probe_imports() -> dict:
 
         for ct in ("SeedVR2VideoUpscaler", "SeedVR2LoadDiTModel", "SeedVR2LoadVAEModel",
                    "LoadImage", "SaveImage",
-                   "UpscaleModelLoader", "ImageUpscaleWithModel"):
+                   "UpscaleModelLoader", "ImageUpscaleWithModel",
+                   "VHS_LoadVideo", "VHS_VideoCombine"):
             info = _object_info(ct)
             if info:
                 req = list((info.get("input", {}).get("required", {}) or {}).keys())
@@ -1125,9 +1309,12 @@ class SeedVR2Worker:
         _link_volume_custom_nodes()
         # BF16 フル精度・オフロードなし（CLAUDE.md §1）。--gpu-only で重みを VRAM に
         # ピン留め、SageAttention を使う。SeedVR2 の offload は workflow 側で "none"。
-        self._proc = _start_comfy(
-            ["--gpu-only", "--use-sage-attention"], wait_timeout=300
-        )
+        # ⚠️ SEEDVR2_FORCE_SDPA=1 は SageAttention 有効化の効果測定用の一時
+        # フラグ（2026-09-12・video_bench 参照）。恒久化する場合は削除しない。
+        argv = ["--gpu-only"]
+        if not _env_str("SEEDVR2_FORCE_SDPA", ""):
+            argv.append("--use-sage-attention")
+        self._proc = _start_comfy(argv, wait_timeout=300)
         print(f"[seedvr2] ComfyUI ready (VRAM={_vram_gb()}GB)", flush=True)
 
     def _write_input(self, raw: bytes, filename: str, max_edge: int | None = None) -> str:
@@ -1159,6 +1346,88 @@ class SeedVR2Worker:
         with open(os.path.join(input_dir, out_name), "wb") as f:
             f.write(payload)
         return out_name
+
+    def _write_input_video(self, raw: bytes, filename: str = "ull_upscale_in.mp4") -> str:
+        """動画はサイズ/コーデック正規化を挟まず ffprobe 実測で直接扱う
+        （画像の ull_image_prep 相当の共通正規化レイヤーは動画には未整備）。"""
+        input_dir = os.path.join(COMFY_DIR, "input")
+        os.makedirs(input_dir, exist_ok=True)
+        with open(os.path.join(input_dir, filename), "wb") as f:
+            f.write(raw)
+        return filename
+
+    @staticmethod
+    def _probe_video(path: str) -> dict:
+        """ffprobe で duration / fps / frame_count / width / height を実測。
+        読み取れない場合は全 0 を返す（呼び出し側でエラー扱いにする）。"""
+        try:
+            out = subprocess.run(
+                [
+                    "ffprobe", "-v", "error", "-select_streams", "v:0",
+                    "-show_entries", "stream=width,height,r_frame_rate,nb_frames",
+                    "-show_entries", "format=duration",
+                    "-of", "json", path,
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+            info = json.loads(out.stdout or "{}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[seedvr2-video] ffprobe failed: {exc}", flush=True)
+            return {"width": 0, "height": 0, "fps": 0.0, "duration": 0.0, "frame_count": 0}
+
+        stream = (info.get("streams") or [{}])[0]
+        fmt = info.get("format") or {}
+
+        def _parse_rate(s: str) -> float:
+            try:
+                num, den = str(s).split("/")
+                return float(num) / float(den) if float(den) else 0.0
+            except Exception:  # noqa: BLE001
+                return 0.0
+
+        fps = _parse_rate(stream.get("r_frame_rate", "0/1"))
+        try:
+            duration = float(fmt.get("duration") or 0)
+        except (TypeError, ValueError):
+            duration = 0.0
+        width = int(stream.get("width") or 0)
+        height = int(stream.get("height") or 0)
+        try:
+            frame_count = int(stream.get("nb_frames") or 0)
+        except (TypeError, ValueError):
+            frame_count = 0
+        if frame_count <= 0 and fps > 0 and duration > 0:
+            frame_count = int(round(fps * duration))
+        return {"width": width, "height": height, "fps": fps, "duration": duration, "frame_count": frame_count}
+
+    @staticmethod
+    def _extract_audio(video_path: str, out_path: str) -> bool:
+        """音声トラックを aac のまま抽出。無音動画/失敗なら False。"""
+        try:
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "copy", out_path],
+                capture_output=True, timeout=60,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[seedvr2-video] audio extract failed: {exc}", flush=True)
+            return False
+        return r.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0
+
+    @staticmethod
+    def _mux_audio(video_path: str, audio_path: str, out_path: str) -> bool:
+        """無音のアップスケール済み映像に、元動画から抜いた音声を事後 mux。"""
+        try:
+            r = subprocess.run(
+                [
+                    "ffmpeg", "-y", "-i", video_path, "-i", audio_path,
+                    "-c:v", "copy", "-c:a", "aac", "-shortest", out_path,
+                ],
+                capture_output=True, timeout=180,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[seedvr2-video] audio mux failed: {exc}", flush=True)
+            return False
+        return r.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0
 
     def _run_workflow(self, workflow: dict) -> tuple[bytes, str]:
         import uuid
@@ -1338,6 +1607,94 @@ class SeedVR2Worker:
             "stages_ran": len(stage_targets),
         }
 
+    def _do_upscale_video(self, video_spec: str, model_key: str, params: dict) -> dict:
+        """動画アップスケール本体（v1 最小スコープ: 単一動画・カスケードなし）。
+        画像版 _do_upscale と対になるメソッド。"""
+        if model_key not in UPSCALER_REGISTRY:
+            raise fastapi.HTTPException(status_code=400, detail=f"unknown model_key {model_key!r}")
+        if model_key not in _enabled_models():
+            raise fastapi.HTTPException(status_code=400, detail=f"model {model_key!r} not available yet")
+        reg = UPSCALER_REGISTRY[model_key]
+        if "video" not in reg.get("kind", ()):
+            raise fastapi.HTTPException(status_code=400, detail=f"model {model_key!r} does not support video")
+
+        raw = _load_input_bytes(video_spec)
+        in_name = self._write_input_video(raw)
+        in_path = os.path.join(COMFY_DIR, "input", in_name)
+
+        probe = self._probe_video(in_path)
+        if probe["duration"] <= 0 or probe["frame_count"] <= 0:
+            raise fastapi.HTTPException(status_code=400, detail="動画を読み取れませんでした。")
+        if probe["duration"] > UPSCALE_VIDEO_MAX_SECONDS + 0.5:
+            raise fastapi.HTTPException(
+                status_code=400,
+                detail=(
+                    f"動画は{UPSCALE_VIDEO_MAX_SECONDS}秒以内にしてください"
+                    f"（{probe['duration']:.1f}秒でした）。"
+                ),
+            )
+        if probe["frame_count"] > UPSCALE_VIDEO_MAX_FRAMES:
+            raise fastapi.HTTPException(
+                status_code=400,
+                detail=f"フレーム数が上限（{UPSCALE_VIDEO_MAX_FRAMES}）を超えています。",
+            )
+
+        audio_path = os.path.join(COMFY_DIR, "input", "ull_upscale_in_audio.aac")
+        has_audio = self._extract_audio(in_path, audio_path)
+
+        p = dict(params or {})
+        p["source_fps"] = probe["fps"] or 24.0
+        p["frame_load_cap"] = min(probe["frame_count"], UPSCALE_VIDEO_MAX_FRAMES)
+
+        workflow = build_upscale_workflow(model_key, p, in_name, media_type="video")
+        t0 = time.time()
+        with _VramPeak() as vp:
+            data, filename = self._run_workflow(workflow)
+        elapsed = round(time.time() - t0, 2)
+
+        if has_audio:
+            output_dir = os.path.join(COMFY_DIR, "output")
+            muted_path = os.path.join(output_dir, "_muted_" + filename)
+            with open(muted_path, "wb") as f:
+                f.write(data)
+            muxed_path = os.path.join(output_dir, "_muxed_" + filename)
+            if self._mux_audio(muted_path, audio_path, muxed_path):
+                with open(muxed_path, "rb") as f:
+                    data = f.read()
+            else:
+                print(f"[seedvr2-video] mux failed — returning muted output", flush=True)
+
+        out_probe = {"width": None, "height": None}
+        try:
+            tmp_out = os.path.join(COMFY_DIR, "output", "_probe_" + filename)
+            with open(tmp_out, "wb") as f:
+                f.write(data)
+            out_probe = self._probe_video(tmp_out)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[seedvr2-video] output probe skipped: {exc}", flush=True)
+
+        print(
+            f"[seedvr2-video] {model_key} -> {filename} "
+            f"{out_probe.get('width')}x{out_probe.get('height')} in {elapsed}s "
+            f"VRAM peak={vp.peak}GB frames={probe['frame_count']} fps={probe['fps']:.2f} "
+            f"audio={has_audio}",
+            flush=True,
+        )
+        return {
+            "data": data,
+            "filename": filename,
+            "model_key": model_key,
+            "elapsed_time": elapsed,
+            "vram_used_gb": _vram_gb(),
+            "vram_peak_gb": vp.peak,
+            "out_width": out_probe.get("width") or None,
+            "out_height": out_probe.get("height") or None,
+            "in_duration": probe["duration"],
+            "in_fps": probe["fps"],
+            "in_frame_count": probe["frame_count"],
+            "has_audio": has_audio,
+        }
+
     @modal.method()
     def run_upscale(self, image_spec: str, model_key: str = "seedvr2_7b",
                     params: dict | None = None) -> dict:
@@ -1441,6 +1798,92 @@ class SeedVR2Worker:
         _refund_upscale_credits(user_id, credits_cost)
         return {"ok": False, "error": "upload failed"}
 
+    def _process_one_upscale_video_item(
+        self,
+        job_id: str,
+        user_id: str,
+        credits_cost: int,
+        model_key: str,
+        preset: str,
+        params: dict,
+        video_spec: str,
+    ) -> dict:
+        """動画版 _process_one_upscale_item。処理本体・アップロード・PATCH・
+        返金の構造は画像版と同じ（webp再エンコード等の画像専用処理は無い）。"""
+        existing = _get_upscale_job_status(job_id)
+        if existing and existing.get("status") in ("completed", "failed"):
+            print(f"[upscale-video-job] {job_id} already {existing['status']} — no-op", flush=True)
+            return {"ok": True, "skipped": True}
+
+        if not video_spec:
+            _patch_upscale_job(job_id, {"status": "failed", "error_message": "video is required"})
+            _refund_upscale_credits(user_id, credits_cost)
+            return {"ok": False, "error": "video is required"}
+
+        _patch_upscale_job(job_id, {"status": "processing"})
+
+        import threading
+
+        _vram_stop = threading.Event()
+
+        def _poll_vram():
+            while not _vram_stop.wait(8):
+                gb = _vram_gb()
+                if gb is not None:
+                    _merge_upscale_metadata(job_id, {"vram_used_gb": gb})
+
+        _vram_thread = threading.Thread(target=_poll_vram, name="upscale-video-vram", daemon=True)
+        _vram_thread.start()
+
+        try:
+            r = self._do_upscale_video(video_spec, model_key, params)
+        except fastapi.HTTPException as exc:
+            _vram_stop.set()
+            msg = str(exc.detail)[:500]
+            print(f"[upscale-video-job] {job_id} FAILED (validation): {msg}", flush=True)
+            _patch_upscale_job(job_id, {"status": "failed", "error_message": msg})
+            _refund_upscale_credits(user_id, credits_cost)
+            return {"ok": False, "error": msg}
+        except Exception as exc:  # noqa: BLE001
+            _vram_stop.set()
+            msg = f"{type(exc).__name__}: {exc}"[:500]
+            print(f"[upscale-video-job] {job_id} FAILED: {msg}", flush=True)
+            _patch_upscale_job(job_id, {"status": "failed", "error_message": msg})
+            _refund_upscale_credits(user_id, credits_cost)
+            return {"ok": False, "error": msg}
+        _vram_stop.set()
+        _vram_thread.join(timeout=3)
+
+        url = _upload_upscale_video(user_id, job_id, r["data"])
+        meta = {
+            "vram_used_gb": r["vram_used_gb"],
+            "vram_peak_gb": r["vram_peak_gb"],
+            "elapsed_time": r["elapsed_time"],
+            "out_width": r["out_width"],
+            "out_height": r["out_height"],
+            "out_bytes": len(r["data"]),
+            "model_key": r["model_key"],
+            "preset": preset,
+            "in_duration": r["in_duration"],
+            "in_fps": r["in_fps"],
+            "in_frame_count": r["in_frame_count"],
+            "has_audio": r["has_audio"],
+            "media_type": "video",
+        }
+        if url:
+            _patch_upscale_job(job_id, {"status": "completed", "result_url": url})
+            _merge_upscale_metadata(job_id, meta)
+            print(f"[upscale-video-job] {job_id} completed -> {url}", flush=True)
+            return {"ok": True, "result_url": url}
+
+        _patch_upscale_job(
+            job_id,
+            {"status": "failed", "error_message": "結果動画の保存に失敗しました。"},
+        )
+        _merge_upscale_metadata(job_id, meta)
+        _refund_upscale_credits(user_id, credits_cost)
+        return {"ok": False, "error": "upload failed"}
+
     @modal.method()
     def run_upscale_job(self, payload: dict) -> dict:
         """完全非同期ジョブ本体（1枚）。`upscale_generate_dispatch` が .spawn() する。
@@ -1492,6 +1935,74 @@ class SeedVR2Worker:
         try:
             return self._process_one_upscale_item(
                 job_id, user_id, credits_cost, model_key, preset, params, image_spec
+            )
+        finally:
+            _wd_stop.set()
+
+    @modal.method()
+    def run_upscale_video(self, video_spec: str, model_key: str = "seedvr2_7b",
+                          params: dict | None = None) -> dict:
+        """【同期】CLI / GPU smoke 用。run_upscale（画像）の動画版。"""
+        r = self._do_upscale_video(video_spec, model_key, params or {})
+        return {
+            "video_base64": base64.b64encode(r["data"]).decode("ascii"),
+            "filename": r["filename"],
+            "model_key": r["model_key"],
+            "elapsed_time": r["elapsed_time"],
+            "vram_used_gb": r["vram_used_gb"],
+            "vram_peak_gb": r["vram_peak_gb"],
+            "out_width": r["out_width"],
+            "out_height": r["out_height"],
+            "in_duration": r["in_duration"],
+            "in_fps": r["in_fps"],
+            "in_frame_count": r["in_frame_count"],
+            "has_audio": r["has_audio"],
+        }
+
+    @modal.method()
+    def run_upscale_video_job(self, payload: dict) -> dict:
+        """完全非同期ジョブ本体（動画1本、v1）。`upscale_video_generate_dispatch`
+        が .spawn() する。run_upscale_job（画像）と同じ watchdog パターン。
+
+        入力: { job_id, user_id, credits_cost, max_allowed_time?,
+                video(base64|url), model_key?, preset?, params?{source_fps 等} }
+        """
+        job_id = str(payload.get("job_id") or "")
+        user_id = str(payload.get("user_id") or "")
+        credits_cost = int(payload.get("credits_cost") or 0)
+        model_key = payload.get("model_key") or "seedvr2_7b"
+        preset = payload.get("preset") or ""
+        params = payload.get("params") or {}
+        video_spec = payload.get("video") or payload.get("video_b64") or ""
+
+        import threading
+
+        try:
+            mat = float(payload.get("max_allowed_time") or 0)
+        except (TypeError, ValueError):
+            mat = 0.0
+        _wd_stop = threading.Event()
+
+        if mat > 0:
+            def _watchdog():
+                if _wd_stop.wait(mat):
+                    return
+                print(
+                    f"[upscale-video-job][WATCHDOG] {job_id}: 許容 {int(mat)}s 超過 → os._exit(1)",
+                    flush=True,
+                )
+                _patch_upscale_job(
+                    job_id,
+                    {"status": "failed", "error_message": "処理時間の上限を超えました。"},
+                )
+                _refund_upscale_credits(user_id, credits_cost)
+                os._exit(1)
+
+            threading.Thread(target=_watchdog, daemon=True).start()
+
+        try:
+            return self._process_one_upscale_video_item(
+                job_id, user_id, credits_cost, model_key, preset, params, video_spec
             )
         finally:
             _wd_stop.set()
@@ -1668,6 +2179,41 @@ def upscale_batch_generate_dispatch(item: dict, request: fastapi.Request):
     return {"ok": True, "batch_id": batch_id, "call_id": call.object_id}
 
 
+@app.function(
+    image=dispatch_image,
+    timeout=300,
+    scaledown_window=30,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="POST")
+def upscale_video_generate_dispatch(item: dict, request: fastapi.Request):
+    """POST 非同期ディスパッチ（動画、v1）。1 秒以内に ACK し、実処理は
+    .spawn() 側へ委譲。動画は画像よりレイテンシが長いので Modal 強制 timeout も
+    max_allowed_time から動的に確保する（_resolve_batch_timeout を流用）。
+
+    入力: { job_id, user_id, credits_cost, max_allowed_time?,
+            video(base64|url), model_key?, preset?, params? }
+    出力: { ok: true, job_id, call_id }
+    """
+    _authorize(request)
+
+    job_id = str(item.get("job_id") or "")
+    if not job_id:
+        raise fastapi.HTTPException(status_code=400, detail="job_id is required")
+    if not (item.get("video") or item.get("video_b64")):
+        raise fastapi.HTTPException(status_code=400, detail="video is required")
+
+    modal_timeout = _resolve_batch_timeout(item.get("max_allowed_time"))
+    worker = SeedVR2Worker.with_options(timeout=modal_timeout)
+    call = worker().run_upscale_video_job.spawn(item)
+    print(
+        f"[upscale-video-dispatch] {job_id}: model={item.get('model_key')} "
+        f"max_allowed_time={item.get('max_allowed_time')!r} modal_timeout={modal_timeout}s",
+        flush=True,
+    )
+    return {"ok": True, "job_id": job_id, "call_id": call.object_id}
+
+
 # ---------------------------------------------------------------------------
 # GPU smoke probe（CPU probe がグリーンになってから・別途承認のうえ実行）
 # ---------------------------------------------------------------------------
@@ -1811,6 +2357,121 @@ def main(
         f"in {result['elapsed_time']}s  VRAM peak={result.get('vram_peak_gb')}GB "
         f"end={result['vram_used_gb']}GB -> {out}"
     )
+
+
+@app.local_entrypoint()
+def video_main(
+    video_path: str,
+    model: str = "seedvr2_7b",
+    mult: int = 2,
+    color_correction: str = "lab",
+    out_dir: str = "./upscale_out",
+):
+    """modal run modal_seedvr2_worker.py::video_main --video-path ./in.mp4 --model seedvr2_7b
+
+    GPU smoke 用の動画アップスケール CLI（v1: ×mult 固定・カスケードなし）。
+    入力の短辺 × mult を target_short にする。ローカルの ffprobe で入力寸法を
+    読む（開発用 CLI なのでホストの手元に ffmpeg がある前提でよい）。
+    """
+    import subprocess as sp
+
+    src = pathlib.Path(video_path).expanduser()
+    if not src.is_file():
+        raise SystemExit(f"--video-path is not a file: {src}")
+
+    ensure_upscalers_cached.remote([model])
+
+    probe = sp.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "csv=p=0", str(src)],
+        capture_output=True, text=True,
+    )
+    w, h = (int(x) for x in probe.stdout.strip().split(","))
+    target_short = min(w, h) * mult
+
+    b64 = base64.b64encode(src.read_bytes()).decode("ascii")
+    worker = SeedVR2Worker.with_options(timeout=45 * 60)
+    result = worker().run_upscale_video.remote(
+        b64,
+        model_key=model,
+        params={
+            "target_short": target_short,
+            "max_resolution": 8192,
+            "batch_size": DEFAULT_BATCH_SIZE,
+            "color_correction": color_correction,
+        },
+    )
+    dst = pathlib.Path(out_dir).expanduser()
+    dst.mkdir(parents=True, exist_ok=True)
+    out = dst / result["filename"]
+    out.write_bytes(base64.b64decode(result["video_base64"]))
+    print(
+        f"[video_main] {model} {result.get('out_width')}x{result.get('out_height')} "
+        f"in {result['elapsed_time']}s  frames={result.get('in_frame_count')} "
+        f"fps={result.get('in_fps')} audio={result.get('has_audio')} "
+        f"VRAM peak={result.get('vram_peak_gb')}GB -> {out}"
+    )
+
+
+@app.local_entrypoint()
+def video_bench(
+    video_path: str,
+    model: str = "seedvr2_7b",
+    mult: int = 2,
+    color_correction: str = "lab",
+    runs: int = 2,
+):
+    """⚠️ 一時的な計測用エントリポイント（SageAttention 有効化の効果測定・
+    2026-09-12）。SDPA / SageAttention それぞれで cold→warm を計測して比較する
+    （with_options(env=...) は別 autoscale 設定になるため 2 系統は別コンテナ
+    プールになるが、各系統内の 1 回目=cold・2 回目=warm は同一コンテナに
+    当たる想定）。役目を終えたら削除してよい。
+
+    modal run modal_seedvr2_worker.py::video_bench --video-path ./in.mp4
+    """
+    import subprocess as sp
+
+    src = pathlib.Path(video_path).expanduser()
+    if not src.is_file():
+        raise SystemExit(f"--video-path is not a file: {src}")
+
+    ensure_upscalers_cached.remote([model])
+
+    probe = sp.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "csv=p=0", str(src)],
+        capture_output=True, text=True,
+    )
+    w, h = (int(x) for x in probe.stdout.strip().split(","))
+    target_short = min(w, h) * mult
+    b64 = base64.b64encode(src.read_bytes()).decode("ascii")
+
+    params = {
+        "target_short": target_short,
+        "max_resolution": 8192,
+        "batch_size": DEFAULT_BATCH_SIZE,
+        "color_correction": color_correction,
+    }
+
+    rows = []
+    for label, env_override in (("sdpa", {"SEEDVR2_FORCE_SDPA": "1"}), ("sageattn", None)):
+        worker_cls = SeedVR2Worker.with_options(timeout=45 * 60, env=env_override) \
+            if env_override else SeedVR2Worker.with_options(timeout=45 * 60)
+        worker = worker_cls()
+        for i in range(runs):
+            result = worker.run_upscale_video.remote(b64, model_key=model, params=params)
+            tag = f"{label}_{'cold' if i == 0 else f'warm{i}'}"
+            print(
+                f"[video_bench] {tag}: {result['elapsed_time']}s "
+                f"VRAM peak={result.get('vram_peak_gb')}GB",
+                flush=True,
+            )
+            rows.append((tag, result["elapsed_time"], result.get("vram_peak_gb")))
+
+    print("\n=== video_bench summary ===")
+    print(f"{'run':<16} {'sec':>8} {'peak GB':>9}")
+    for tag, sec, peak in rows:
+        print(f"{tag:<16} {sec:>8} {str(peak):>9}")
 
 
 @app.local_entrypoint()

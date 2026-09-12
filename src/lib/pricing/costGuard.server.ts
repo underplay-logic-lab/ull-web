@@ -96,3 +96,13 @@ export function upscaleMaxAllowedTime(args: { creditsCost: number; knobs?: Prici
       knobs.upscale_cold_start_grace_s,
   );
 }
+
+// 動画超解像 v1（最小スコープ）: 同じ素朴な式だが動画専用 knob を使う
+// （フレーム数課金なので秒/クレジットの実態が画像と異なる）。
+export function upscaleVideoMaxAllowedTime(args: { creditsCost: number; knobs?: PricingKnobs }): number {
+  const knobs = args.knobs ?? DEFAULT_KNOBS;
+  return Math.ceil(
+    Math.max(0, args.creditsCost) * knobs.upscale_video_time_per_credit_s +
+      knobs.upscale_video_cold_start_grace_s,
+  );
+}

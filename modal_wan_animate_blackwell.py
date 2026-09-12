@@ -192,6 +192,16 @@ image = (
         "git clone https://github.com/thu-ml/SageAttention.git /opt/SageAttention",
         "python3 /root/patch_sageattention_blackwell_ultra.py /opt/SageAttention",
         "pip install --no-build-isolation /opt/SageAttention",
+        # SageAttention の setup.py は CXX_FLAGS/NVCC_FLAGS に "-std=c++17" を
+        # ハードコードしている（thu-ml/SageAttention commit d1a57a5 時点）が、
+        # cu130 index が解決する現行 torch（2.14.0 系）のヘッダーは C++20 を
+        # 要求し "#error C++20 or later compatible compiler is required" で
+        # ビルドが落ちる（modal_seedvr2_worker.py で 2026-09-12 実機確認・
+        # 同一の thu-ml/SageAttention ビルドなのでここも同様に踏む）。setup.py
+        # 側が用意する CXX_APPEND_FLAGS / NVCC_APPEND_FLAGS で末尾に
+        # -std=c++20 を追記し、複数回指定時は最後が勝つ gcc/nvcc の挙動で
+        # 上書きする。
+        env={"CXX_APPEND_FLAGS": "-std=c++20", "NVCC_APPEND_FLAGS": "-std=c++20"},
     )
     # flash-attn's mainline setup.py added real Blackwell (sm_100/120)
     # support gated on CUDA >= 12.8 (see add_cuda_gencodes in its setup.py),
