@@ -9,6 +9,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  Flame,
   ImagePlus,
   Layers,
   Loader2,
@@ -55,6 +56,7 @@ import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
+import { useLocalWarmCountdown, formatWarmCountdown } from "@/hooks/useLocalWarmCountdown";
 
 type Phase = "idle" | "submitting" | "running" | "done" | "error";
 
@@ -490,6 +492,53 @@ function InsufficientCreditsModal({
   );
 }
 
+function RegenerateConfirmModal({
+  open,
+  onCancel,
+  onConfirm,
+}: {
+  open: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  if (!open || typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
+      onClick={onCancel}
+    >
+      <div className="w-full max-w-sm rounded-2xl border-gradient bg-surface p-8" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-bold">今の結果は消えます</h3>
+          <button type="button" onClick={onCancel} aria-label="閉じる" className="text-muted transition-colors hover:text-foreground">
+            <X size={20} />
+          </button>
+        </div>
+        <p className="mt-2 text-sm leading-relaxed text-muted">
+          新しく生成すると、現在表示されている結果は上書きされて見えなくなります（ダウンロード済みなら消えません）。続けますか？
+        </p>
+        <div className="mt-6 flex gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="flex-1 rounded-xl border border-border bg-background px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:border-neon-violet/40"
+          >
+            キャンセル
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="flex-1 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
+          >
+            続けて生成
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 export function MultiAngleStudioTab() {
   const { user } = useSupabaseUser();
   const { credits, loading: creditsLoading } = useProfileCredits(user);
@@ -557,8 +606,13 @@ export function MultiAngleStudioTab() {
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
+  const [regenConfirmOpen, setRegenConfirmOpen] = useState(false);
 
   const elapsedMs = useElapsedTimer(phase === "running");
+  // Angle worker の scaledown_window=30秒（CLAUDE.md §1）に合わせたローカル
+  // カウントダウン。直前の生成完了時刻だけを基準にする自分専用の表示なので、
+  // 旧 gpu_warm_status（サイト全体共有）で起きた横取り問題は原理的に起きない。
+  const { isWarm: gpuWarm, remainingMs: gpuWarmMs, markWarm: markGpuWarm } = useLocalWarmCountdown(30);
 
   useEffect(() => {
     saveFormState(FORM_ID, { mode, selection } satisfies PersistedForm);
@@ -580,6 +634,7 @@ export function MultiAngleStudioTab() {
 
           if (next.status === "completed") {
             setPhase("done");
+            markGpuWarm();
             return;
           }
           if (next.status === "failed") {
@@ -616,7 +671,7 @@ export function MultiAngleStudioTab() {
     return () => {
       cancelled = true;
     };
-  }, [jobId]);
+  }, [jobId, markGpuWarm]);
 
   // --- reroll ジョブのポーリング -------------------------------------
   useEffect(() => {
@@ -638,6 +693,7 @@ export function MultiAngleStudioTab() {
               return { ...prev, images };
             });
             setReroll(null);
+            markGpuWarm();
             return;
           }
           if (r.status === "failed") {
@@ -666,7 +722,7 @@ export function MultiAngleStudioTab() {
     return () => {
       cancelled = true;
     };
-  }, [reroll]);
+  }, [reroll, markGpuWarm]);
 
   const combos = useMemo(() => buildAngleCombos(selection), [selection]);
   const selectionWarning = useMemo(() => angleSelectionWarning(selection), [selection]);
@@ -696,11 +752,8 @@ export function MultiAngleStudioTab() {
     setSelection((prev) => ({ ...prev, [axis]: ids }));
   }, []);
 
-  const handleGenerate = async () => {
-    if (busy || missingInputs || !image) return;
-    if (!user) return setLoginOpen(true);
-    if (insufficientCredits) return setChargeOpen(true);
-
+  const doGenerate = async () => {
+    if (!user || !image) return; // handleGenerate が呼ぶ前提で確認済みだが型のため
     setPhase("submitting");
     setErrorMessage(null);
     setJob(null);
@@ -730,6 +783,20 @@ export function MultiAngleStudioTab() {
       const remaining = (err as AngleApiError)?.remainingCredits;
       if (typeof remaining === "number") broadcastCreditsUpdate(user.id, remaining);
     }
+  };
+
+  const handleGenerate = () => {
+    if (busy || missingInputs || !image) return;
+    if (!user) return setLoginOpen(true);
+    if (insufficientCredits) return setChargeOpen(true);
+    // 既に結果が表示されている状態で再生成すると、new job で即座に上書き
+    // されて消える（setJob(null) が doGenerate の先頭にある）。気づかず
+    // 前回の結果を失わないよう、表示中の結果があるときだけ一度確認する。
+    if ((job?.images?.length ?? 0) > 0) {
+      setRegenConfirmOpen(true);
+      return;
+    }
+    void doGenerate();
   };
 
   const handleReroll = async (index: number) => {
@@ -909,6 +976,13 @@ export function MultiAngleStudioTab() {
               </div>
             )}
 
+            {!busy && gpuWarm && (
+              <p className="mt-3 flex items-center justify-center gap-1.5 rounded-full border border-orange-500/40 bg-orange-500/10 px-3 py-1 font-mono text-[11px] font-medium text-orange-400">
+                <Flame size={13} />
+                今なら待たずに次を生成できます（残り{formatWarmCountdown(gpuWarmMs)}秒）
+              </p>
+            )}
+
             <button
               type="button"
               onClick={handleGenerate}
@@ -1037,14 +1111,22 @@ export function MultiAngleStudioTab() {
       {/* 結果ギャラリー */}
       {job && (phase === "running" || phase === "done" || images.length > 0) && (
         <div className="mt-8 border-t border-border pt-6">
-          <div className="mb-3 flex items-center justify-between">
-            <p className="text-xs font-medium text-muted">
-              結果ギャラリー
-              <span className="ml-2 text-muted/60">
-                {job.completedAngles} / {job.totalAngles} 枚
-              </span>
-              {phase === "done" && <span className="ml-2 text-green-400">✓ 完了</span>}
-            </p>
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-medium text-muted">
+                結果ギャラリー
+                <span className="ml-2 text-muted/60">
+                  {job.completedAngles} / {job.totalAngles} 枚
+                </span>
+                {phase === "done" && <span className="ml-2 text-green-400">✓ 完了</span>}
+              </p>
+              {phase === "done" && job.errorMessage && (
+                <p className="mt-1 flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-400">
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                  {job.errorMessage}
+                </p>
+              )}
+            </div>
             {images.length > 0 && (
               <button
                 type="button"
@@ -1150,6 +1232,14 @@ export function MultiAngleStudioTab() {
         onClose={() => setChargeOpen(false)}
         credits={credits}
         cost={cost || perAngle}
+      />
+      <RegenerateConfirmModal
+        open={regenConfirmOpen}
+        onCancel={() => setRegenConfirmOpen(false)}
+        onConfirm={() => {
+          setRegenConfirmOpen(false);
+          void doGenerate();
+        }}
       />
     </div>
   );
