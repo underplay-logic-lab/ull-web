@@ -531,7 +531,8 @@ export function UpscaleStudioTab() {
           const allDone = results.every((j) => j.status === "completed" || j.status === "failed");
           if (allDone) {
             setBatchPhase("done");
-            saveFormState(BATCH_JOB_KEY, { jobIds: [] });
+            // JOB_KEY と同じく完了後もクリアしない — リロード時に最後のバッチの
+            // 結果をそのまま再表示する（Multi-Angle/LoRAタブと同じ挙動）。
             return;
           }
           setBatchPhase("running");
@@ -571,13 +572,13 @@ export function UpscaleStudioTab() {
 
           if (next.status === "completed") {
             setPhase("done");
-            saveFormState(JOB_KEY, { jobId: "" });
+            // 完了後もクリアしない — リロード時に最後のジョブの結果をそのまま
+            // 再表示する（Multi-Angle/LoRAタブと同じ挙動）。
             return;
           }
           if (next.status === "failed") {
             setPhase("error");
             setErrorMessage(next.errorMessage || "アップスケールに失敗しました。");
-            saveFormState(JOB_KEY, { jobId: "" });
             return;
           }
           setPhase("running");
