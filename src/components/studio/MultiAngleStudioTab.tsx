@@ -623,6 +623,13 @@ export function MultiAngleStudioTab() {
     if (!jobId) return;
     let cancelled = false;
     let errorStreak = 0;
+    // タブ切り替え等で再マウントされた直後、localStorage から復元した
+    // 「とっくに完了済みのジョブID」を最初の1回だけポーリングして即座に
+    // completed を検知するケースがある。そのとき markGpuWarm() を呼ぶと、
+    // 実際には何十分も前に終わっていても毎回カウントダウンが再スタート
+    // してしまう。「このポーリングセッション中に pending/processing を
+    // 実際に経由してから completed になった」場合だけ warm 扱いにする。
+    let sawInProgress = false;
 
     (async () => {
       while (!cancelled) {
@@ -634,7 +641,7 @@ export function MultiAngleStudioTab() {
 
           if (next.status === "completed") {
             setPhase("done");
-            markGpuWarm();
+            if (sawInProgress) markGpuWarm();
             return;
           }
           if (next.status === "failed") {
@@ -642,6 +649,7 @@ export function MultiAngleStudioTab() {
             setErrorMessage(next.errorMessage || "生成に失敗しました。");
             return;
           }
+          sawInProgress = true;
           setPhase("running");
         } catch (err) {
           if (cancelled) return;
