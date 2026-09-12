@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
+import { uploadUpscaleAsset } from "@/lib/upscaleApi";
 
 export type CustomWorkflowFieldValue = string | number | boolean | File | null;
 
@@ -36,7 +37,7 @@ function mimeTypeFor(filename: string, outputKind: "image" | "video"): string {
 }
 
 export async function generateCustomWorkflow(
-  params: GenerateCustomWorkflowParams,
+  params: GenerateCustomWorkflowParams & { userId: string },
 ): Promise<GenerateCustomWorkflowResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -45,17 +46,25 @@ export async function generateCustomWorkflow(
     throw new Error("ログインが必要です。");
   }
 
-  const formData = new FormData();
-  formData.append("slug", params.slug);
+  // 画像/動画フィールドは Supabase Storage へ直接アップロードし、API route
+  // には storage path だけを渡す（Vercel の約4.5MBリクエストボディ上限を
+  // 回避 — CLAUDE.md §6）。それ以外のスカラー値は通常どおり JSON で送る。
+  const scalarValues: Record<string, string | number | boolean> = {};
+  const filePaths: Record<string, string> = {};
   for (const [fieldId, value] of Object.entries(params.values)) {
     if (value === null) continue;
-    formData.append(`field:${fieldId}`, value instanceof File ? value : String(value));
+    if (value instanceof File) {
+      const { path } = await uploadUpscaleAsset(params.userId, value);
+      filePaths[fieldId] = path;
+    } else {
+      scalarValues[fieldId] = value;
+    }
   }
 
   const res = await fetch("/api/studio/custom-workflows/generate", {
     method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}` },
-    body: formData,
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ slug: params.slug, values: scalarValues, filePaths }),
   });
 
   const data = await res.json();

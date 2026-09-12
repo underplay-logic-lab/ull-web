@@ -162,7 +162,7 @@ export function CustomWorkflowsTab() {
     });
 
     try {
-      const result = await generateCustomWorkflow({ slug: selectedWorkflow.slug, values });
+      const result = await generateCustomWorkflow({ userId: user.id, slug: selectedWorkflow.slug, values });
       setResultUrl(result.resultUrl);
       setResultKind(result.outputKind);
       setVramUsedGb(result.vramUsedGb);

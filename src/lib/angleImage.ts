@@ -2,21 +2,17 @@
 
 // Multi-Angle Studio の参照画像を「アップロード前」に正規化する。
 //
-// 生の高解像度画像をそのまま multipart で送ると、デプロイ環境のリクエスト
-// ボディ上限（Vercel は約 4.5MB）でボディが途中で打ち切られ、サーバー側の
-// `request.formData()` が壊れて「リクエストの形式が正しくありません。」という
-// 400 になる。「全 54 構図」を選ぶような本格的なターンアラウンド用途ほど
-// 高解像度の参照を上げがちで、これが表面化しやすい。
-//
 // Qwen-Image-Edit は内部でおおむね ~1MP 前後に落とすので、長辺 1536px への
-// 縮小＋WebP/JPEG 再エンコードで実質的な画質劣化はほぼなく、ペイロードは
-// 数百KB に収まる。EXIF 回転はここで焼き込む（スマホ縦写真対策）。
+// 縮小＋再エンコードでパイプライン上の劣化はない（帯域・アップロード時間の
+// 節約）。EXIF 回転はここで焼き込む（スマホ縦写真対策）。
+//
+// 2026-09-12 以前はここでさらに「Vercel の約4.5MBリクエストボディ上限」に
+// 収まるよう劣化圧縮するロジックがあったが、アップロードを Supabase Storage
+// への直アップロード方式（uploadUpscaleAsset、CLAUDE.md §6）に変更した
+// ことでその制約自体が無くなったため撤去した。
 
 const MAX_EDGE = 1536;
-// multipart のヘッダ・境界オーバーヘッドを載せてもデプロイ環境の上限に
-// 収まるよう、素の画像バイトはこの辺りを狙う。
-const TARGET_BYTES = 3.5 * 1024 * 1024;
-const QUALITY_STEPS = [0.92, 0.85, 0.78, 0.7];
+const REENCODE_QUALITY = 0.92;
 
 const PASSTHROUGH_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
@@ -47,8 +43,8 @@ export async function normalizeAngleReferenceImage(file: File): Promise<Normaliz
     const longEdge = Math.max(bitmap.width, bitmap.height);
     const scale = longEdge > 0 ? Math.min(1, MAX_EDGE / longEdge) : 1;
 
-    // 元がすでに小さく、素直に送れる形式ならそのまま。
-    if (scale === 1 && file.size <= TARGET_BYTES && PASSTHROUGH_TYPES.has(file.type)) {
+    // 元がすでに 1536px 以内でパススルー可能な形式ならそのまま。
+    if (scale === 1 && PASSTHROUGH_TYPES.has(file.type)) {
       return { blob: file, filename: file.name || pickFilename(file.type, "reference.png") };
     }
 
@@ -66,14 +62,9 @@ export async function normalizeAngleReferenceImage(file: File): Promise<Normaliz
 
     const supportsWebp = canvas.toDataURL("image/webp").startsWith("data:image/webp");
     const mime = supportsWebp ? "image/webp" : "image/jpeg";
-
-    let best: Blob | null = null;
-    for (const q of QUALITY_STEPS) {
-      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, mime, q));
-      if (!blob) continue;
-      best = blob;
-      if (blob.size <= TARGET_BYTES) break;
-    }
+    const best = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, mime, REENCODE_QUALITY),
+    );
     canvas.width = 0;
     canvas.height = 0;
 

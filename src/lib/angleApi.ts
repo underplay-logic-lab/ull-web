@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabaseClient";
 import { normalizeAngleReferenceImage } from "@/lib/angleImage";
+import { uploadUpscaleAsset } from "@/lib/upscaleApi";
 import type { AngleMode, AngleSelection } from "@/lib/angleStudio";
 
 export type AngleApiError = Error & { remainingCredits?: number };
@@ -43,6 +44,7 @@ export type StartAngleJobResult = {
  * reroll（1 構図だけ別シード再生成）も、combo 1 個ぶんの selection を渡すだけ。
  */
 export async function startAngleJob(params: {
+  userId: string;
   image: File;
   /** Multi-Reference（Pro）: 死角補完用のサブ参照画像（背面ラフ・衣装パーツ等）。
    *  最大 MAX_SUB_REFERENCE_IMAGES 枚。省略時は従来どおりの単一画像生成。 */
@@ -56,28 +58,34 @@ export async function startAngleJob(params: {
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) throw new Error("ログインが必要です。");
 
-  // 生画像をそのまま送るとデプロイ環境のボディ上限でボディが打ち切られ、
-  // サーバーの request.formData() が壊れる（=「リクエストの形式が正しく
-  // ありません。」400）。長辺 1536px へ縮小・再エンコードしてから送る。
-  // サブ参照画像も同じ正規化を通す。
+  // 長辺 1536px へ縮小・再エンコードしてから、Supabase Storage へ直接
+  // アップロードする（Vercel の約4.5MBリクエストボディ上限を回避 —
+  // CLAUDE.md §6）。サブ参照画像も同じ正規化を通す。
   const { blob: imageBlob, filename } = await normalizeAngleReferenceImage(params.image);
   const subs = await Promise.all(
     (params.subImages ?? []).map((f) => normalizeAngleReferenceImage(f)),
   );
 
-  const form = new FormData();
-  form.append("image", imageBlob, filename);
+  const mainFile = new File([imageBlob], filename, { type: imageBlob.type });
+  const { path: mainPath } = await uploadUpscaleAsset(params.userId, mainFile);
+  const subPaths: string[] = [];
   for (let i = 0; i < subs.length; i++) {
-    form.append("subImage", subs[i].blob, subs[i].filename || `sub_${i}.png`);
+    const subFile = new File([subs[i].blob], subs[i].filename || `sub_${i}.png`, {
+      type: subs[i].blob.type,
+    });
+    const { path } = await uploadUpscaleAsset(params.userId, subFile);
+    subPaths.push(path);
   }
-  form.append("selection", JSON.stringify(params.selection));
-  form.append("mode", params.mode);
-  if (typeof params.seed === "number") form.append("seed", String(params.seed));
 
   const res = await fetch("/api/studio/angle/generate", {
     method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}` },
-    body: form,
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      storagePaths: [mainPath, ...subPaths],
+      selection: params.selection,
+      mode: params.mode,
+      seed: params.seed,
+    }),
   });
 
   const data = await res.json().catch(() => null);

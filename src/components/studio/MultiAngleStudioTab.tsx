@@ -707,7 +707,7 @@ export function MultiAngleStudioTab() {
     setSubmittedCombos(combos);
 
     try {
-      const res = await startAngleJob({ image, subImages, selection, mode });
+      const res = await startAngleJob({ userId: user.id, image, subImages, selection, mode });
       broadcastCreditsUpdate(user.id, res.remainingCredits);
       saveFormState(JOB_KEY, { jobId: res.jobId });
       setJob({
@@ -739,7 +739,7 @@ export function MultiAngleStudioTab() {
     try {
       // seed を渡さない = worker が generator なしで実行 → 毎回別の結果。
       // サブ参照画像も再送して Multi-Reference の整合性を保つ。
-      const res = await startAngleJob({ image, subImages, selection: combo.selection, mode });
+      const res = await startAngleJob({ userId: user.id, image, subImages, selection: combo.selection, mode });
       broadcastCreditsUpdate(user.id, res.remainingCredits);
       setReroll({ index, jobId: res.jobId });
     } catch (err) {

@@ -5,6 +5,7 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { spawnAngleJob } from "@/lib/modalAngle";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { angleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
+import { UPSCALE_UPLOAD_BUCKET } from "@/lib/upscaleStudio";
 import {
   angleCreditsPerAngle,
   buildAngleCombos,
@@ -109,14 +110,39 @@ export async function POST(request: Request) {
     } catch {
       return NextResponse.json({ error: "リクエストの形式が正しくありません。" }, { status: 400 });
     }
-    // `images: string[]`（メイン + サブ、先頭がメイン）があれば優先。
-    // 無ければ `image` + `subImages: string[]`。
-    const imagesArr = Array.isArray(body.images) ? (body.images as unknown[]) : null;
-    if (imagesArr && imagesArr.length > 0) {
-      imageBuffers = imagesArr.map(decodeBase64Image);
+    // `storagePaths: string[]`（メイン + サブ、先頭がメイン）— Supabase
+    // Storage への直アップロード方式（本線経路。CLAUDE.md §6）。
+    const storagePathsArr = Array.isArray(body.storagePaths)
+      ? body.storagePaths.filter((p): p is string => typeof p === "string" && p.length > 0)
+      : [];
+    if (storagePathsArr.length > 0) {
+      for (const p of storagePathsArr) {
+        if (!p.startsWith(`${user.id}/`)) {
+          return NextResponse.json({ error: "不正なファイル指定です。" }, { status: 400 });
+        }
+      }
+      const downloaded: Buffer[] = [];
+      for (const p of storagePathsArr) {
+        const { data, error } = await supabaseAdmin.storage.from(UPSCALE_UPLOAD_BUCKET).download(p);
+        if (error || !data) {
+          console.error("[studio/angle/generate] storage download failed:", error?.message);
+          return NextResponse.json({ error: "アップロードされた画像の取得に失敗しました。" }, { status: 400 });
+        }
+        downloaded.push(Buffer.from(await data.arrayBuffer()));
+      }
+      imageBuffers = downloaded;
+      // ベストエフォート削除（読み終わったら不要）。
+      void supabaseAdmin.storage.from(UPSCALE_UPLOAD_BUCKET).remove(storagePathsArr);
     } else {
-      const subs = Array.isArray(body.subImages) ? (body.subImages as unknown[]) : [];
-      imageBuffers = [decodeBase64Image(body.image), ...subs.map(decodeBase64Image)];
+      // `images: string[]`（メイン + サブ、先頭がメイン）があれば優先。
+      // 無ければ `image` + `subImages: string[]`。互換のため base64 も残す。
+      const imagesArr = Array.isArray(body.images) ? (body.images as unknown[]) : null;
+      if (imagesArr && imagesArr.length > 0) {
+        imageBuffers = imagesArr.map(decodeBase64Image);
+      } else {
+        const subs = Array.isArray(body.subImages) ? (body.subImages as unknown[]) : [];
+        imageBuffers = [decodeBase64Image(body.image), ...subs.map(decodeBase64Image)];
+      }
     }
     modeRaw = body.mode;
     selectionRaw =

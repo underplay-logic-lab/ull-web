@@ -19,6 +19,7 @@ import type { GpuTier } from "@/lib/gpuTier";
 import { logGenerationActivity } from "@/lib/generationLogger";
 import { startActiveJob, endActiveJob } from "@/lib/activeGenerationJobs";
 import { getAdminEmails } from "@/lib/adminAuth";
+import { UPSCALE_UPLOAD_BUCKET } from "@/lib/upscaleStudio";
 
 // Same cold-start budget as /api/wan-animate/generate — see modalCustomWorkflow.ts.
 export const maxDuration = 300;
@@ -30,10 +31,6 @@ const MAX_TEXT_FIELD_LENGTH = 4000;
 function inferOutputKind(filename: string): "image" | "video" {
   const ext = filename.toLowerCase().split(".").pop() ?? "";
   return ext === "mp4" || ext === "webm" || ext === "mov" ? "video" : "image";
-}
-
-function fieldFormKey(fieldId: string): string {
-  return `field:${fieldId}`;
 }
 
 export async function POST(request: Request) {
@@ -64,16 +61,35 @@ export async function POST(request: Request) {
   // Storage tab.
   const isAdmin = getAdminEmails().includes((user.email ?? "").toLowerCase());
 
-  let formData: FormData;
+  // JSON 本体（画像/動画フィールドは storage path で受け取る — Vercel の
+  // 約4.5MBリクエストボディ上限を回避する本線経路。CLAUDE.md §6）。
+  let body: Record<string, unknown>;
   try {
-    formData = await request.formData();
+    body = (await request.json()) as Record<string, unknown>;
   } catch {
     return NextResponse.json({ error: "リクエストの形式が正しくありません。" }, { status: 400 });
   }
 
-  const slug = formData.get("slug");
+  const slug = body.slug;
   if (typeof slug !== "string" || !slug.trim()) {
     return NextResponse.json({ error: "ワークフローが指定されていません。" }, { status: 400 });
+  }
+  const scalarValues = (body.values && typeof body.values === "object" ? body.values : {}) as Record<
+    string,
+    unknown
+  >;
+  const filePaths = (body.filePaths && typeof body.filePaths === "object" ? body.filePaths : {}) as Record<
+    string,
+    unknown
+  >;
+  const uploadedPaths: string[] = [];
+  for (const p of Object.values(filePaths)) {
+    if (typeof p === "string") {
+      if (!p.startsWith(`${user.id}/`)) {
+        return NextResponse.json({ error: "不正なファイル指定です。" }, { status: 400 });
+      }
+      uploadedPaths.push(p);
+    }
   }
 
   // workflow_json/input_schema/credits_cost always come from the DB by
@@ -121,17 +137,28 @@ export async function POST(request: Request) {
 
   for (const field of inputSchema) {
     const locked = isFieldLocked(field);
-    const raw = locked ? null : formData.get(fieldFormKey(field.id));
+    const raw = locked ? null : scalarValues[field.id];
 
     if (field.type === "image" || field.type === "video") {
       if (locked) continue; // gated upload — run without it rather than 400
-      if (!(raw instanceof File) || raw.size === 0) {
+      const storagePath = typeof filePaths[field.id] === "string" ? (filePaths[field.id] as string) : "";
+      if (!storagePath) {
         const noun = field.type === "video" ? "動画" : "画像";
         return NextResponse.json({ error: `「${field.label}」の${noun}をアップロードしてください。` }, { status: 400 });
       }
-      const buf = Buffer.from(await raw.arrayBuffer());
+      const { data: downloaded, error: downloadError } = await supabaseAdmin.storage
+        .from(UPSCALE_UPLOAD_BUCKET)
+        .download(storagePath);
+      if (downloadError || !downloaded) {
+        console.error("[studio/custom-workflows/generate] storage download failed:", downloadError?.message);
+        return NextResponse.json(
+          { error: `「${field.label}」の取得に失敗しました。` },
+          { status: 400 },
+        );
+      }
+      const buf = Buffer.from(await downloaded.arrayBuffer());
       const fallbackName = field.type === "video" ? "upload.mp4" : "upload.png";
-      values[field.id] = { fileBuffer: buf, fileName: raw.name || fallbackName };
+      values[field.id] = { fileBuffer: buf, fileName: storagePath.split("/").pop() || fallbackName };
       continue;
     }
 
@@ -148,13 +175,19 @@ export async function POST(request: Request) {
     }
 
     if (field.type === "toggle") {
-      values[field.id] = raw === "true" || raw === "on" || (raw === null && field.default === true);
+      values[field.id] =
+        raw === true || raw === "true" || raw === "on" || (raw == null && field.default === true);
       continue;
     }
 
     // text
     const text = typeof raw === "string" ? raw : typeof field.default === "string" ? field.default : "";
     values[field.id] = text.slice(0, MAX_TEXT_FIELD_LENGTH);
+  }
+
+  // 読み終えたら不要（ベストエフォート削除）。
+  if (uploadedPaths.length > 0) {
+    void supabaseAdmin.storage.from(UPSCALE_UPLOAD_BUCKET).remove(uploadedPaths);
   }
 
   // Custom workflows have no single canonical "prompt" field (unlike Wan
@@ -170,9 +203,7 @@ export async function POST(request: Request) {
   // otherwise the workflow's saved default_gpu_tier is used. Forwarded to
   // Modal as `gpu_tier`.
   const formGpu =
-    formData.get(fieldFormKey(SYSTEM_FIELD_GPU_TIER)) ??
-    formData.get("field:gpuTier") ??
-    formData.get("field:gpu_tier");
+    scalarValues[SYSTEM_FIELD_GPU_TIER] ?? scalarValues.gpuTier ?? scalarValues.gpu_tier;
   const effectiveGpuTier: WorkflowGpuTier = isValidWorkflowGpuTier(formGpu)
     ? formGpu
     : ((workflowRow.default_gpu_tier as WorkflowGpuTier | null) ?? "l4");
