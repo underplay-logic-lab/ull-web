@@ -32,6 +32,11 @@ import {
   loraPresetById,
   type LoraBaseArchitecture,
 } from "@/lib/loraModels";
+import {
+  CONTENT_POLICY_BLOCK_MESSAGE,
+  evaluateContentPolicyMany,
+  logContentPolicyBlock,
+} from "@/lib/contentPolicy";
 
 // Auto / semi modes don't expose a Rank control — the worker builds the
 // ai-toolkit config with this default (see DEFAULT_TRAINING_CONFIG there).
@@ -342,6 +347,20 @@ async function handlePost(request: Request): Promise<NextResponse> {
     captionPrompt = buildCategoryDefaultInstruction(captionSpec.category, triggerWord).slice(0, 4000);
     captionPromptSource = "fallback";
   }
+
+  const policyResult = evaluateContentPolicyMany([
+    triggerWord,
+    captionPrompt,
+    captionSpec?.fixed,
+    captionSpec?.varying,
+    ...captions,
+    ...(customCaptions ?? []),
+  ]);
+  if (policyResult.blocked) {
+    logContentPolicyBlock("lora/train", policyResult, user.id);
+    return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
+  }
+
   const resolution = (LORA_RESOLUTIONS as readonly number[]).includes(Number(body.resolution))
     ? Number(body.resolution)
     : DEFAULT_LORA_RESOLUTION;

@@ -12,6 +12,11 @@ import { getGpuTierUltraAddon } from "@/lib/gpuTierPricing";
 import type { GpuTier } from "@/lib/gpuTier";
 import { startActiveJob, endActiveJob } from "@/lib/activeGenerationJobs";
 import { getAdminEmails } from "@/lib/adminAuth";
+import {
+  CONTENT_POLICY_BLOCK_MESSAGE,
+  evaluateContentPolicy,
+  logContentPolicyBlock,
+} from "@/lib/contentPolicy";
 
 // Cold-started GPU inference on Modal (container spin-up + model load +
 // sampling) runs ~2-3 minutes end to end — see modalWanAnimate.ts.
@@ -102,6 +107,13 @@ export async function POST(request: Request) {
   }
   if (motionMode === "custom" && !(customMotionVideo instanceof File)) {
     return NextResponse.json({ error: "カスタム動画をアップロードしてください。" }, { status: 400 });
+  }
+
+  const promptTextEarly = typeof prompt === "string" ? prompt : "";
+  const policyResult = evaluateContentPolicy(promptTextEarly);
+  if (policyResult.blocked) {
+    logContentPolicyBlock("wan-animate/generate", policyResult, user.id);
+    return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
   }
 
   const [baseGenerationCost, gpuTierAddon] = await Promise.all([

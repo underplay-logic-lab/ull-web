@@ -13,6 +13,11 @@ import {
   coerceLoraCaptionCategory,
   type ResolvedCaptionMode,
 } from "@/lib/loraCaptionSpec";
+import {
+  CONTENT_POLICY_BLOCK_MESSAGE,
+  evaluateContentPolicyMany,
+  logContentPolicyBlock,
+} from "@/lib/contentPolicy";
 
 // Fast AI-vision auto-captioning for the LoRA Studio dataset.
 //
@@ -305,6 +310,12 @@ export async function POST(request: Request): Promise<NextResponse> {
       typeof body?.caption_prompt === "string" ? body.caption_prompt.slice(0, 4000) : "";
     if (!captionPrompt.trim() && category) {
       captionPrompt = buildCategoryDefaultInstruction(category, triggerWord);
+    }
+
+    const policyResult = evaluateContentPolicyMany([triggerWord, captionPrompt]);
+    if (policyResult.blocked) {
+      logContentPolicyBlock("lora/caption", policyResult, userData.user.id);
+      return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
     }
     // Caption FORMAT. The client resolves this from the selected base model
     // (resolveCaptionMode); default 'tags' preserves the legacy behaviour for

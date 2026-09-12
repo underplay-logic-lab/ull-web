@@ -6,6 +6,11 @@ import { generateImageWithRunpod } from "@/lib/runpod";
 import { translateToEnglish } from "@/lib/translate";
 import { aspectRatios, type AspectRatio } from "@/lib/data";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
+import {
+  CONTENT_POLICY_BLOCK_MESSAGE,
+  evaluateContentPolicy,
+  logContentPolicyBlock,
+} from "@/lib/contentPolicy";
 
 // GPU cold starts + ComfyUI inference can comfortably exceed the default
 // serverless timeout, so give this route room to wait on RunPod.
@@ -54,6 +59,12 @@ export async function POST(request: Request) {
 
   if (!prompt) {
     return NextResponse.json({ error: "プロンプトを入力してください。" }, { status: 400 });
+  }
+
+  const policyResult = evaluateContentPolicy(prompt);
+  if (policyResult.blocked) {
+    logContentPolicyBlock("generate", policyResult, user.id);
+    return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
   }
 
   if (!ratio || !VALID_RATIOS.has(ratio)) {

@@ -13,6 +13,11 @@ import {
   normalizeCaptionSpec,
   tidyCaptionPrompt,
 } from "@/lib/loraCaptionSpec";
+import {
+  CONTENT_POLICY_BLOCK_MESSAGE,
+  evaluateContentPolicyMany,
+  logContentPolicyBlock,
+} from "@/lib/contentPolicy";
 
 // Category-aware Qwen-27B caption-prompt synthesis for LoRA Studio.
 //
@@ -67,6 +72,12 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     const triggerWord =
       typeof body?.trigger_word === "string" ? body.trigger_word.trim().slice(0, 60) : "";
+
+    const policyResult = evaluateContentPolicyMany([triggerWord, spec.fixed, spec.varying]);
+    if (policyResult.blocked) {
+      logContentPolicyBlock("lora/caption-prompt", policyResult, userData.user.id);
+      return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
+    }
 
     const apiKey = geminiApiKey();
     if (!apiKey) return geminiNotConfiguredResponse();

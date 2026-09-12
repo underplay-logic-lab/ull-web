@@ -20,6 +20,11 @@ import { logGenerationActivity } from "@/lib/generationLogger";
 import { startActiveJob, endActiveJob } from "@/lib/activeGenerationJobs";
 import { getAdminEmails } from "@/lib/adminAuth";
 import { downloadStudioUpload, deleteStudioUploads } from "@/lib/studioUploads.server";
+import {
+  CONTENT_POLICY_BLOCK_MESSAGE,
+  evaluateContentPolicy,
+  logContentPolicyBlock,
+} from "@/lib/contentPolicy";
 
 // Same cold-start budget as /api/wan-animate/generate — see modalCustomWorkflow.ts.
 export const maxDuration = 300;
@@ -182,6 +187,12 @@ export async function POST(request: Request) {
     .filter((f) => f.type === "text" && typeof values[f.id] === "string" && (values[f.id] as string).trim())
     .map((f) => `${f.label}: ${values[f.id] as string}`)
     .join("\n");
+
+  const policyResult = evaluateContentPolicy(promptSummary);
+  if (policyResult.blocked) {
+    logContentPolicyBlock("custom-workflows/generate", policyResult, user.id);
+    return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
+  }
 
   // GPU: the virtual __gpu_tier__ select (or a legacy gpuTier/gpu_tier form
   // field) wins if the workflow exposes one and its value is valid;
