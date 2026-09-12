@@ -865,12 +865,18 @@ export function MultiAngleStudioTab() {
       </>
     );
   } else if (phase === "running") {
-    buttonLabel = (
-      <>
-        <Loader2 size={16} className="animate-spin" />
-        生成中 {job ? `${job.completedAngles}/${job.totalAngles}` : ""}
-      </>
-    );
+    buttonLabel =
+      job?.status === "pending" ? (
+        <>
+          <Loader2 size={16} className="animate-spin" />
+          GPU起動中...
+        </>
+      ) : (
+        <>
+          <Loader2 size={16} className="animate-spin" />
+          生成中 {job ? `${job.completedAngles}/${job.totalAngles}` : ""}
+        </>
+      );
   } else if (!user) {
     buttonLabel = (
       <>
@@ -957,7 +963,18 @@ export function MultiAngleStudioTab() {
               </span>
             </div>
 
-            {phase === "running" && job && (
+            {phase === "running" && job && job.status === "pending" && (
+              <div className="mt-3">
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-hover">
+                  <div className="h-full w-full animate-pulse rounded-full bg-gradient-to-r from-neon-pink/50 to-neon-violet/50" />
+                </div>
+                <p className="mt-1.5 flex items-center justify-center gap-1.5 text-center text-[11px] text-muted">
+                  <Loader2 size={12} className="animate-spin" />
+                  生成準備中…GPUを起動しています（初回は1〜2分ほどかかります・{formatElapsedSeconds(elapsedMs)}s）
+                </p>
+              </div>
+            )}
+            {phase === "running" && job && job.status === "processing" && (
               <div className="mt-3">
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-hover">
                   <div
@@ -977,10 +994,14 @@ export function MultiAngleStudioTab() {
             )}
 
             {!busy && gpuWarm && (
-              <p className="mt-3 flex items-center justify-center gap-1.5 rounded-full border border-orange-500/40 bg-orange-500/10 px-3 py-1 font-mono text-[11px] font-medium text-orange-400">
-                <Flame size={13} />
-                今なら待たずに次を生成できます（残り{formatWarmCountdown(gpuWarmMs)}秒）
-              </p>
+              <div className="mt-3 flex items-center justify-center gap-2.5 rounded-xl border border-orange-500/50 bg-orange-500/10 px-4 py-3 shadow-[0_0_20px_-4px_rgba(249,115,22,0.6)]">
+                <Flame size={20} className="shrink-0 animate-pulse text-orange-400" />
+                <p className="text-center text-xs font-bold leading-snug text-orange-300">
+                  GPUシャットダウンまで残り{formatWarmCountdown(gpuWarmMs)}秒
+                  <br />
+                  今なら起動を待たずにすぐ生成できます！
+                </p>
+              </div>
             )}
 
             <button
