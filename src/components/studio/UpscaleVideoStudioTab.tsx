@@ -15,13 +15,16 @@ import {
 } from "lucide-react";
 import {
   DEFAULT_UPSCALE_MODEL,
+  DEFAULT_UPSCALE_VIDEO_PRESET,
   UPSCALE_MODELS,
   UPSCALE_VIDEO_MAX_BYTES,
   UPSCALE_VIDEO_MAX_FRAMES,
   UPSCALE_VIDEO_MAX_SECONDS,
-  UPSCALE_VIDEO_MULT,
+  UPSCALE_VIDEO_PRESETS,
+  type UpscaleVideoPresetId,
   getUpscaleModel,
   upscaleVideoCostBreakdown,
+  validateVideoInputResolution,
 } from "@/lib/upscaleStudio";
 import {
   downloadUpscaleImage,
@@ -245,6 +248,7 @@ export function UpscaleVideoStudioTab() {
   const [videoMeta, setVideoMeta] = useState<VideoMeta | null>(null);
 
   const [modelKey] = useState<string>(DEFAULT_UPSCALE_MODEL);
+  const [presetId, setPresetId] = useState<UpscaleVideoPresetId>(DEFAULT_UPSCALE_VIDEO_PRESET);
 
   const resumedJobId = useMemo(
     () => loadFormState<{ jobId: string }>(JOB_KEY)?.jobId || null,
@@ -282,6 +286,12 @@ export function UpscaleVideoStudioTab() {
       setVideoError(
         `この動画（約${meta.fps.toFixed(0)}fps）は${maxSec.toFixed(1)}秒以内にしてください（${meta.duration.toFixed(1)}秒でした）。`,
       );
+      setVideo(null);
+      return;
+    }
+    const resError = validateVideoInputResolution(meta.width, meta.height);
+    if (resError) {
+      setVideoError(resError);
       setVideo(null);
       return;
     }
@@ -353,10 +363,13 @@ export function UpscaleVideoStudioTab() {
       upscaleVideoCostBreakdown({
         durationSec: videoMeta?.duration ?? 0,
         fps: videoMeta?.fps ?? 0,
+        inW: videoMeta?.width ?? 0,
+        inH: videoMeta?.height ?? 0,
+        presetId,
         modelKey,
         knobs,
       }),
-    [videoMeta, modelKey, knobs],
+    [videoMeta, presetId, modelKey, knobs],
   );
   const cost = breakdown.credits;
 
@@ -378,6 +391,7 @@ export function UpscaleVideoStudioTab() {
       const res = await startUpscaleVideoJob({
         video,
         modelKey,
+        presetId,
         durationSec: videoMeta.duration,
         fps: videoMeta.fps,
         width: videoMeta.width,
@@ -395,7 +409,7 @@ export function UpscaleVideoStudioTab() {
       setErrorMessage(e.message || "ジョブの作成に失敗しました。");
       if (e.message?.includes("クレジット")) setChargeOpen(true);
     }
-  }, [user, video, videoMeta, modelKey, insufficientCredits]);
+  }, [user, video, videoMeta, modelKey, presetId, insufficientCredits]);
 
   const progressPct = phase === "running" ? (job?.status === "processing" ? 70 : 25) : 0;
 
@@ -415,9 +429,34 @@ export function UpscaleVideoStudioTab() {
             <p className="-mt-3 text-[11px] text-muted">
               入力 {videoMeta.width}×{videoMeta.height}px ・ {videoMeta.duration.toFixed(1)}秒 ・
               約{videoMeta.fps.toFixed(0)}fps（推定{breakdown.frameCount}フレーム）
-              {" → "}出力 ×{UPSCALE_VIDEO_MULT}
+              {breakdown.outputWidth > 0 && (
+                <>
+                  {" → "}出力 {breakdown.outputWidth}×{breakdown.outputHeight}px
+                </>
+              )}
             </p>
           )}
+
+          <div>
+            <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">出力解像度</p>
+            <div className="grid grid-cols-3 gap-2">
+              {UPSCALE_VIDEO_PRESETS.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setPresetId(p.id)}
+                  className={`rounded-xl border px-3 py-2.5 text-center transition-colors ${
+                    presetId === p.id
+                      ? "border-neon-pink/40 bg-neon-pink/5 text-neon-pink"
+                      : "border-border bg-background text-muted hover:border-neon-violet/40"
+                  }`}
+                >
+                  <span className="block text-sm font-semibold">{p.label}</span>
+                  <span className="block text-[10px]">{p.subLabel}</span>
+                </button>
+              ))}
+            </div>
+          </div>
 
           <div className="rounded-xl border border-border bg-background px-4 py-3">
             <p className="flex items-center gap-1.5 text-xs font-mono uppercase tracking-widest text-muted">
@@ -430,8 +469,8 @@ export function UpscaleVideoStudioTab() {
 
           <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
             <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-            動画超解像は最小構成の提供です（倍率 ×{UPSCALE_VIDEO_MULT} 固定・最大{UPSCALE_VIDEO_MAX_SECONDS}秒・
-            音声はそのまま維持されます）。フレーム数が多い動画ほど処理時間・消費クレジットが増えます。
+            動画超解像は最小構成の提供です（最大{UPSCALE_VIDEO_MAX_SECONDS}秒・音声はそのまま維持されます）。
+            解像度が高いほど、またフレーム数が多い動画ほど処理時間・消費クレジットが増えます。すでに4K相当以上の動画は対応していません。
           </p>
         </div>
 

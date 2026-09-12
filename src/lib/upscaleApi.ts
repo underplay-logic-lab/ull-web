@@ -72,6 +72,7 @@ export type StartUpscaleVideoJobResult = {
 export async function startUpscaleVideoJob(params: {
   video: File;
   modelKey: string;
+  presetId: string;
   durationSec: number;
   fps: number;
   width: number;
@@ -84,6 +85,7 @@ export async function startUpscaleVideoJob(params: {
   const form = new FormData();
   form.append("video", params.video, params.video.name || "input.mp4");
   form.append("modelKey", params.modelKey);
+  form.append("preset", params.presetId);
   form.append("durationSec", String(params.durationSec));
   form.append("fps", String(params.fps));
   form.append("width", String(params.width));

@@ -7,13 +7,16 @@ import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { upscaleVideoMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import {
   DEFAULT_UPSCALE_MODEL,
+  DEFAULT_UPSCALE_VIDEO_PRESET,
   UPSCALE_MODELS,
   UPSCALE_VIDEO_MAX_BYTES,
   UPSCALE_VIDEO_MAX_SECONDS,
-  UPSCALE_VIDEO_MULT,
+  UPSCALE_VIDEO_PRESETS,
   getUpscaleModel,
+  getUpscaleVideoPreset,
   upscaleVideoCostBreakdown,
   upscaleVideoCreditsWorstCase,
+  validateVideoInputResolution,
 } from "@/lib/upscaleStudio";
 
 // 非同期: この route は申告された尺・fps から課金額を出し、クレジットを
@@ -27,6 +30,7 @@ import {
 export const maxDuration = 30;
 
 const VALID_MODEL_KEYS: Set<string> = new Set(UPSCALE_MODELS.map((m) => m.key));
+const VALID_PRESET_IDS: Set<string> = new Set(UPSCALE_VIDEO_PRESETS.map((p) => p.id));
 
 export async function POST(request: Request) {
   const authHeader = request.headers.get("authorization");
@@ -78,6 +82,12 @@ export async function POST(request: Request) {
     : DEFAULT_UPSCALE_MODEL;
   const model = getUpscaleModel(modelKey);
 
+  const presetRaw = formData.get("preset");
+  const presetId = typeof presetRaw === "string" && VALID_PRESET_IDS.has(presetRaw)
+    ? presetRaw
+    : DEFAULT_UPSCALE_VIDEO_PRESET;
+  const preset = getUpscaleVideoPreset(presetId);
+
   const durationSec = Number(formData.get("durationSec"));
   const fps = Number(formData.get("fps"));
   const width = Number(formData.get("width"));
@@ -96,12 +106,19 @@ export async function POST(request: Request) {
     );
   }
 
+  if (hasValidMeta) {
+    const resError = validateVideoInputResolution(width, height);
+    if (resError) {
+      return NextResponse.json({ error: resError }, { status: 400 });
+    }
+  }
+
   const knobs = await getPricingKnobs();
 
   let creditsCost: number;
   let frameCount = 0;
   if (hasValidMeta) {
-    const bd = upscaleVideoCostBreakdown({ durationSec, fps, modelKey, knobs });
+    const bd = upscaleVideoCostBreakdown({ durationSec, fps, inW: width, inH: height, presetId, modelKey, knobs });
     creditsCost = bd.credits;
     frameCount = bd.frameCount;
   } else {
@@ -161,7 +178,7 @@ export async function POST(request: Request) {
       status: "pending",
       media_type: "video",
       model_key: modelKey,
-      preset: "x2",
+      preset: presetId,
       credits_cost: creditsCost,
       metadata: {
         in_width: hasValidMeta ? width : null,
@@ -169,7 +186,8 @@ export async function POST(request: Request) {
         in_duration_claimed: hasValidMeta ? durationSec : null,
         in_fps_claimed: hasValidMeta ? fps : null,
         frame_count_claimed: frameCount || null,
-        mult: UPSCALE_VIDEO_MULT,
+        preset: presetId,
+        target_short: preset.targetShort,
         model_label: model.label,
         media_type: "video",
       },
@@ -196,9 +214,9 @@ export async function POST(request: Request) {
       maxAllowedTime: upscaleVideoMaxAllowedTime({ creditsCost, knobs }),
       videoBase64: imageBuffer.toString("base64"),
       modelKey,
-      presetId: "x2",
+      presetId,
       params: {
-        target_short: hasValidMeta ? Math.round(Math.min(width, height) * UPSCALE_VIDEO_MULT) : 0,
+        target_short: preset.targetShort,
         max_resolution: 8192,
         batch_size: 5,
       },

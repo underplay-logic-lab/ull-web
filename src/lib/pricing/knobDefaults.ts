@@ -26,6 +26,8 @@ export type KnobKey =
   | "upscale_cascade_mult_3stage"
   | "upscale_video_per_frame"
   | "upscale_video_min_credits"
+  | "upscale_video_mult_res_2k"
+  | "upscale_video_mult_res_4k"
   // --- lora_formula (public) ---
   | "lora_per_step"
   | "lora_mult_model_heavy"
@@ -204,6 +206,26 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "feature_credits",
     unit: "C",
     description: "1本あたりの消費クレジット下限（コールドスタート償却）",
+    isPublic: true,
+  },
+  upscale_video_mult_res_2k: {
+    // B300実測（2026-09-12・16:9換算）: HD(1280短辺)=2.91MP / 2K(1920短辺)
+    // =6.55MP → 比率 ~2.25。処理時間もほぼMPに比例するため、解像度が上がる
+    // 分の実コスト増をここで転嫁する（旧版は解像度に関わらず同額だった欠陥）。
+    value: 2.25,
+    label: "動画超解像 2Kプリセット係数",
+    category: "feature_credits",
+    unit: "×",
+    description: "2Kプリセット選択時にper_frameへ掛ける係数（HD=1.0基準）",
+    isPublic: true,
+  },
+  upscale_video_mult_res_4k: {
+    // 4K(2160短辺)=8.29MP / HD比 ~2.85。
+    value: 2.9,
+    label: "動画超解像 4Kプリセット係数",
+    category: "feature_credits",
+    unit: "×",
+    description: "4Kプリセット選択時にper_frameへ掛ける係数（HD=1.0基準）",
     isPublic: true,
   },
   // ------------------------------------------------------------- lora_formula

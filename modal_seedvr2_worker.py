@@ -185,6 +185,22 @@ DEFAULT_BATCH_SIZE = _env_int("SEEDVR2_BATCH_SIZE", 5)  # 4n+1
 UPSCALE_VIDEO_MAX_SECONDS = _env_int("SEEDVR2_VIDEO_MAX_SECONDS", 60)
 UPSCALE_VIDEO_MAX_FRAMES = _env_int("SEEDVR2_VIDEO_MAX_FRAMES", 1800)
 
+# 2026-09-12: 「入力×倍率」から HD(短辺1280)/2K(短辺1920)/4K(短辺2160) の
+# 絶対解像度プリセットへ変更（src/lib/upscaleStudio.ts の UPSCALE_VIDEO_PRESETS
+# と一致させること）。理由と実測は upscaleStudio.ts のコメント参照。
+#
+# 入力側がすでに4K相当（短辺2160px）以上だと、選んだプリセットに関わらず
+# デコード等のオーバーヘッドが無駄に大きい上、旧×2方式では8K出力(33MP)相当に
+# なり実機で即OOMした（`workflow finished but produced no output` — 画像
+# バッチ超解像で確認済みのOOMシグネチャと同一）。そのため入力側は解像度に
+# 関わらず即座に却下する。
+UPSCALE_VIDEO_MAX_INPUT_SHORT_EDGE = _env_int("SEEDVR2_VIDEO_MAX_INPUT_SHORT_EDGE", 2160)
+# 出力の安全上限（MP）。極端なアスペクト比（超ワイド/超縦長）で長辺が暴走する
+# のを防ぐ最終防波堤。実測でVRAM安全だった8.29MP(4Kプリセット・16:9)に余裕
+# を見た値 — 12MPなら通常のアスペクト比では素通りし、パノラマ級の異常な
+# 比率だけを弾く。
+UPSCALE_VIDEO_MAX_OUTPUT_MP = _env_int("SEEDVR2_VIDEO_MAX_OUTPUT_MP", 12)
+
 # ---------------------------------------------------------------------------
 # 複数画像バッチジョブ — Modal 強制 timeout の動的算出（modal_angle_worker.py
 # の _resolve_job_timeout と同じ考え方。バッチは1コンテナで完結する単発ジョブ
@@ -195,8 +211,13 @@ UPSCALE_BATCH_TIMEOUT_HARD_CAP_S = _env_int("SEEDVR2_BATCH_TIMEOUT_HARD_CAP_S", 
 UPSCALE_BATCH_TIMEOUT_FALLBACK_S = _env_int("SEEDVR2_BATCH_TIMEOUT_FALLBACK_S", 20 * 60)
 UPSCALE_BATCH_TIMEOUT_BUCKET_S = _env_int("SEEDVR2_BATCH_TIMEOUT_BUCKET_S", 5 * 60)
 
+# 動画は画像バッチより1ジョブが重い（4Kプリセット・60秒フルで実測 ~59分相当、
+# 2026-09-12計測）ため、画像バッチと同じ45分ハードキャップだと正当なジョブが
+# 完走できない。動画専用に別枠のハードキャップを持つ。
+UPSCALE_VIDEO_TIMEOUT_HARD_CAP_S = _env_int("SEEDVR2_VIDEO_TIMEOUT_HARD_CAP_S", 90 * 60)
 
-def _resolve_batch_timeout(max_allowed_time) -> int:
+
+def _resolve_batch_timeout(max_allowed_time, hard_cap_s: int = UPSCALE_BATCH_TIMEOUT_HARD_CAP_S) -> int:
     """dispatch payload の max_allowed_time（バッチ全体の推定秒数、Next 側の
     upscaleBatchEstimatedSeconds() 由来）から Modal 強制 timeout を算出。
     5分単位に切り上げてバケット化（warm プール断片化を避ける）。"""
@@ -205,10 +226,10 @@ def _resolve_batch_timeout(max_allowed_time) -> int:
     except (TypeError, ValueError):
         mat = 0.0
     base = mat if mat > 0 else float(UPSCALE_BATCH_TIMEOUT_FALLBACK_S)
-    raw = min(UPSCALE_BATCH_TIMEOUT_HARD_CAP_S, base + UPSCALE_BATCH_TIMEOUT_MARGIN_S)
+    raw = min(hard_cap_s, base + UPSCALE_BATCH_TIMEOUT_MARGIN_S)
     bucket = max(1, UPSCALE_BATCH_TIMEOUT_BUCKET_S)
     bucketed = math.ceil(raw / bucket) * bucket
-    return int(min(UPSCALE_BATCH_TIMEOUT_HARD_CAP_S, bucketed))
+    return int(min(hard_cap_s, bucketed))
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
 
@@ -1645,6 +1666,12 @@ class SeedVR2Worker:
                 status_code=400,
                 detail=f"フレーム数が上限（{UPSCALE_VIDEO_MAX_FRAMES}）を超えています。",
             )
+        in_short = min(probe["width"], probe["height"])
+        if in_short >= UPSCALE_VIDEO_MAX_INPUT_SHORT_EDGE:
+            raise fastapi.HTTPException(
+                status_code=400,
+                detail="入力動画がすでに4K相当以上のため、このタブでは処理できません。",
+            )
 
         audio_path = os.path.join(COMFY_DIR, "input", "ull_upscale_in_audio.aac")
         has_audio = self._extract_audio(in_path, audio_path)
@@ -1653,12 +1680,29 @@ class SeedVR2Worker:
         p["source_fps"] = probe["fps"] or 24.0
         p["frame_load_cap"] = min(probe["frame_count"], UPSCALE_VIDEO_MAX_FRAMES)
 
+        # 出力MPの安全上限チェック（極端なアスペクト比対策・8Kクラスの即OOMを
+        # 未然に防ぐ最終防波堤。通常の16:9/9:16/4:3等は全プリセットで通る）。
+        target_short = float(p.get("target_short") or 0) or float(in_short or 1)
+        long_ratio = max(probe["width"], probe["height"]) / max(1, in_short)
+        out_mp = max(0.01, (target_short * target_short * long_ratio) / 1_000_000)
+        if out_mp > UPSCALE_VIDEO_MAX_OUTPUT_MP:
+            raise fastapi.HTTPException(
+                status_code=400,
+                detail=(
+                    f"この動画のアスペクト比では選択した解像度は非対応です"
+                    f"（推定出力 {out_mp:.1f}MP、上限 {UPSCALE_VIDEO_MAX_OUTPUT_MP}MP）。"
+                ),
+            )
+
         workflow = build_upscale_workflow(model_key, p, in_name, media_type="video")
-        # _run_workflow の既定 15分固定デッドラインは動画向けではない（フレーム数に
-        # 応じて実処理時間が伸びるため）。実測（2026-09-12, B300, 832x1024 出力）:
-        # 300f=161s / 900f=333s / 1800f=602s ≈ 75s + 0.3s/frame。安全マージンを
-        # 乗せた式で動的に確保する（コンテナ側 Modal timeout の余裕内に収める）。
-        workflow_timeout_s = min(2400, max(900, 200 + int(p["frame_load_cap"] * 1.0)))
+        # _run_workflow の既定 15分固定デッドラインは動画向けではない — 実処理時間は
+        # frame_count だけでなく出力解像度（MP）にほぼ比例して伸びる（実測
+        # 2026-09-12, B300: 832x1024=0.85MP で 90f=161s/1800f=602s、
+        # 2160x3840=8.29MP で 90f=333s/300f=723s ≈ 166s+frame×MP×0.224s で
+        # フィット。frame_count だけを見ていた旧式は高解像度で大幅に過小評価
+        # しており（4K出力90fで実測に対し timeout=900s しか確保できず実際に
+        # 破綻）、安全マージンを乗せた係数で動的に確保する。
+        workflow_timeout_s = min(4800, max(900, 150 + int(p["frame_load_cap"] * out_mp * 0.4)))
         t0 = time.time()
         with _VramPeak() as vp:
             data, filename = self._run_workflow(workflow, timeout_s=workflow_timeout_s)
@@ -2200,8 +2244,9 @@ def upscale_batch_generate_dispatch(item: dict, request: fastapi.Request):
 @modal.fastapi_endpoint(method="POST")
 def upscale_video_generate_dispatch(item: dict, request: fastapi.Request):
     """POST 非同期ディスパッチ（動画、v1）。1 秒以内に ACK し、実処理は
-    .spawn() 側へ委譲。動画は画像よりレイテンシが長いので Modal 強制 timeout も
-    max_allowed_time から動的に確保する（_resolve_batch_timeout を流用）。
+    .spawn() 側へ委譲。動画は画像バッチよりジョブが重い（4Kプリセット・60秒
+    フルで実測 ~59分相当）ため、画像バッチと共用の45分ハードキャップではなく
+    動画専用の UPSCALE_VIDEO_TIMEOUT_HARD_CAP_S（既定90分）を使う。
 
     入力: { job_id, user_id, credits_cost, max_allowed_time?,
             video(base64|url), model_key?, preset?, params? }
@@ -2215,7 +2260,9 @@ def upscale_video_generate_dispatch(item: dict, request: fastapi.Request):
     if not (item.get("video") or item.get("video_b64")):
         raise fastapi.HTTPException(status_code=400, detail="video is required")
 
-    modal_timeout = _resolve_batch_timeout(item.get("max_allowed_time"))
+    modal_timeout = _resolve_batch_timeout(
+        item.get("max_allowed_time"), hard_cap_s=UPSCALE_VIDEO_TIMEOUT_HARD_CAP_S
+    )
     worker = SeedVR2Worker.with_options(timeout=modal_timeout)
     call = worker().run_upscale_video_job.spawn(item)
     print(

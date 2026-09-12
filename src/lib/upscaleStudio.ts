@@ -257,16 +257,16 @@ export function upscaleCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): nu
 
 // --- 動画アップスケール v1（最小スコープ） ---------------------------------
 // SeedVR2 ネイティブの動画モード（VHS_LoadVideo → SeedVR2VideoUpscaler →
-// VHS_VideoCombine、時間一貫性はモデル側が担保）。倍率は ×2 固定・カスケード
-// なし・バッチなし・単一動画のみ。
+// VHS_VideoCombine、時間一貫性はモデル側が担保）。カスケードなし・バッチなし・
+// 単一動画のみ。
 //
 // 値は B300 実測（2026-09-12・modal_seedvr2_worker.py 参照）に基づく:
-// VRAM は frame_count に対してほぼフラット（48f=17.8GB〜1800f=19.2GB）で
-// OOM の軸ではない。1800frame(30fps換算60秒)は602sで完走・Modal関数の45分
-// ハードキャップにも十分収まる。旧値（6秒/90フレーム）は未実測の保守的仮値
-// で、30fps動画で実質3秒・60fpsで1.5秒しか受け付けられずコンセプトと矛盾
-// していたため引き上げた（modal_seedvr2_worker.py の UPSCALE_VIDEO_MAX_SECONDS
-// / _FRAMES と一致させること）。
+// VRAM は frame_count に対してほぼフラット（48f=17.8GB〜1800f=19.2GB、いずれも
+// 832x1024出力）で OOM の軸ではない。1800frame(30fps換算60秒)は602sで完走。
+// 旧値（6秒/90フレーム）は未実測の保守的仮値で、30fps動画で実質3秒・60fpsで
+// 1.5秒しか受け付けられずコンセプトと矛盾していたため引き上げた
+// （modal_seedvr2_worker.py の UPSCALE_VIDEO_MAX_SECONDS / _FRAMES と一致させる
+// こと）。
 
 /** 入力動画の尺上限（秒）。超過はアップロード前にクライアントで弾く。 */
 export const UPSCALE_VIDEO_MAX_SECONDS = 60;
@@ -274,18 +274,101 @@ export const UPSCALE_VIDEO_MAX_SECONDS = 60;
 export const UPSCALE_VIDEO_MAX_FRAMES = 1800;
 /** 入力動画ファイルサイズ上限。 */
 export const UPSCALE_VIDEO_MAX_BYTES = 60 * 1024 * 1024;
-/** v1 は倍率固定（×2 のみ）。カスケード・倍率選択は将来の拡張。 */
-export const UPSCALE_VIDEO_MULT = 2;
+
+// --- 出力解像度プリセット（倍率ではなく絶対値） -----------------------------
+// 2026-09-12: 「入力 × 倍率」から「HD/2K/4K の絶対解像度を選ぶ」方式に変更。
+// 理由: 倍率固定だと「4Kの動画は何秒までいける？」に答えられない
+// （出力サイズが入力サイズに引きずられて青天井になる）。絶対値にすることで
+// 各プリセットの実処理コスト（VRAM・時間）を固定でき、上限設計・課金の
+// 両方が成立する。
+//
+// B300 実測（2026-09-12, 1080p入力・×2相当）:
+// - 2160x3840(4Kプリセット相当・8.29MP): 90f=333s/VRAM106.6GB、
+//   300f=723s/VRAM97.8GB。VRAMはここでもフラット＝解像度軸ではOOMしない
+//   （少なくとも8.29MPまでは）。ただし真の4K素材(2160x3840)を入力に使うと
+//   出力8K(33MP)相当になり即OOM（`workflow finished but produced no output`
+//   — バッチ超解像で確認済みの同一OOMシグネチャ）。そのため「入力側」の
+//   4K以上は解像度に関わらず即座に却下する（UPSCALE_VIDEO_MAX_INPUT_SHORT_EDGE）。
+export type UpscaleVideoPresetId = "hd" | "2k" | "4k";
+
+export type UpscaleVideoPreset = {
+  id: UpscaleVideoPresetId;
+  label: string;
+  subLabel: string;
+  /** 出力の短辺目標 px（入力サイズに依存しない絶対値）。 */
+  targetShort: number;
+};
+
+export const UPSCALE_VIDEO_PRESETS: UpscaleVideoPreset[] = [
+  { id: "hd", label: "HD", subLabel: "軽量・高速", targetShort: 1280 },
+  { id: "2k", label: "2K", subLabel: "バランス", targetShort: 1920 },
+  { id: "4k", label: "4K", subLabel: "最高画質(低速)", targetShort: 2160 },
+];
+
+export const DEFAULT_UPSCALE_VIDEO_PRESET: UpscaleVideoPresetId = "hd";
+
+export function getUpscaleVideoPreset(id: string): UpscaleVideoPreset {
+  return UPSCALE_VIDEO_PRESETS.find((p) => p.id === id) ?? UPSCALE_VIDEO_PRESETS[0];
+}
+
+/** これ以上の入力（短辺基準）は解像度に関わらず即座に拒否する（実質4K以上）。
+ * B300実測でVRAM 274GBを超えて即OOMするため（modal_seedvr2_worker.py参照）。 */
+export const UPSCALE_VIDEO_MAX_INPUT_SHORT_EDGE = 2160;
+
+/** 出力の安全上限（MP）。極端なアスペクト比（超ワイド/超縦長）で長辺が
+ * 暴走するのを防ぐ。実測でVRAMが安全だった8.29MPに余裕を見た値。 */
+export const UPSCALE_VIDEO_MAX_OUTPUT_MP = 12;
+
+/** 入力動画の解像度を検証する。エラーメッセージ or 問題なければ null。 */
+export function validateVideoInputResolution(inW: number, inH: number): string | null {
+  const shortEdge = Math.min(inW || 0, inH || 0);
+  if (shortEdge <= 0) return null;
+  if (shortEdge >= UPSCALE_VIDEO_MAX_INPUT_SHORT_EDGE) {
+    return "入力動画がすでに4K相当以上のため、このタブでは処理できません。すでに高解像度なので超解像の効果もありません。";
+  }
+  return null;
+}
+
+export function estimateVideoOutputSize(
+  inW: number,
+  inH: number,
+  presetId: string,
+): { width: number; height: number; outputMP: number } {
+  const w = Math.max(1, Math.round(inW || 0));
+  const h = Math.max(1, Math.round(inH || 0));
+  const preset = getUpscaleVideoPreset(presetId);
+  if (w <= 1 || h <= 1) return { width: 0, height: 0, outputMP: 0 };
+  const short = Math.min(w, h);
+  const long = Math.max(w, h);
+  const aspect = long / short;
+  const targetShort = preset.targetShort;
+  const targetLong = Math.round(targetShort * aspect);
+  const outW = w <= h ? targetShort : targetLong;
+  const outH = w <= h ? targetLong : targetShort;
+  return { width: outW, height: outH, outputMP: (outW * outH) / 1_000_000 };
+}
+
+/** プリセットごとの課金係数（HD=1.0基準）。実測の処理コスト比に基づく
+ * （HD 2.91MP / 2K 6.55MP / 4K 8.29MP、16:9換算）。knob で運用調整可能。 */
+function videoResolutionMultiplier(presetId: string, knobs: PricingKnobs): number {
+  if (presetId === "4k") return knobs.upscale_video_mult_res_4k;
+  if (presetId === "2k") return knobs.upscale_video_mult_res_2k;
+  return 1.0;
+}
 
 export type UpscaleVideoCostBreakdown = {
   credits: number;
   frameCount: number;
   perFrame: number;
   modelMult: number;
+  resMult: number;
+  outputMP: number;
+  outputWidth: number;
+  outputHeight: number;
 };
 
 /**
- * 純関数: 申告された尺・fps + モデル → 消費クレジット。
+ * 純関数: 申告された尺・fps・寸法・プリセット + モデル → 消費クレジット。
  * 動画はサーバー側で正確な寸法を読める画像と違い、クライアント申告
  * （<video> 要素の loadedmetadata）を信用するしかない。Worker 側が ffprobe
  * 実測で上限超過を検知したら failed + 返金する（差額調整はしない、常に
@@ -294,31 +377,56 @@ export type UpscaleVideoCostBreakdown = {
 export function upscaleVideoCostBreakdown(args: {
   durationSec: number;
   fps: number;
+  inW?: number;
+  inH?: number;
+  presetId: string;
   modelKey: string;
   knobs?: PricingKnobs;
 }): UpscaleVideoCostBreakdown {
   const knobs = args.knobs ?? DEFAULT_KNOBS;
   const model = getUpscaleModel(args.modelKey);
+  const resMult = videoResolutionMultiplier(args.presetId, knobs);
+
+  const { width, height, outputMP } = estimateVideoOutputSize(
+    args.inW || 0,
+    args.inH || 0,
+    args.presetId,
+  );
 
   const duration = Math.max(0, Math.min(args.durationSec || 0, UPSCALE_VIDEO_MAX_SECONDS));
   const fps = Math.max(0, args.fps || 0);
   const frameCount = Math.min(UPSCALE_VIDEO_MAX_FRAMES, Math.round(duration * fps));
 
   if (frameCount <= 0) {
-    return { credits: 0, frameCount: 0, perFrame: knobs.upscale_video_per_frame, modelMult: model.creditMult };
+    return {
+      credits: 0,
+      frameCount: 0,
+      perFrame: knobs.upscale_video_per_frame,
+      modelMult: model.creditMult,
+      resMult,
+      outputMP,
+      outputWidth: width,
+      outputHeight: height,
+    };
   }
 
-  const raw = Math.ceil(knobs.upscale_video_per_frame * frameCount * model.creditMult);
+  const raw = Math.ceil(knobs.upscale_video_per_frame * frameCount * model.creditMult * resMult);
   const floor = Math.max(1, Math.round(knobs.upscale_video_min_credits));
   return {
     credits: Math.max(floor, raw),
     frameCount,
     perFrame: knobs.upscale_video_per_frame,
     modelMult: model.creditMult,
+    resMult,
+    outputMP,
+    outputWidth: width,
+    outputHeight: height,
   };
 }
 
-/** 動画の寸法申告が壊れている等で見積り不能なときの上限課金。 */
+/** 動画の寸法申告が壊れている等で見積り不能なときの上限課金（最も重い4K想定）。 */
 export function upscaleVideoCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): number {
-  return Math.ceil(knobs.upscale_video_per_frame * UPSCALE_VIDEO_MAX_FRAMES);
+  return Math.ceil(
+    knobs.upscale_video_per_frame * UPSCALE_VIDEO_MAX_FRAMES * knobs.upscale_video_mult_res_4k,
+  );
 }
