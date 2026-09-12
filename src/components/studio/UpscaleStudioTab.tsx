@@ -449,6 +449,7 @@ export function UpscaleStudioTab() {
     setBatchJobs({});
     try {
       const res = await startUpscaleBatchJob({
+        userId: user.id,
         images: batchItems.map((it) => it.file),
         modelKey,
         modeId,
@@ -658,7 +659,7 @@ export function UpscaleStudioTab() {
     setResultBeforeUrl(image ? URL.createObjectURL(image) : null);
 
     try {
-      const res = await startUpscaleJob({ image, modelKey, modeId });
+      const res = await startUpscaleJob({ userId: user.id, image, modelKey, modeId });
       broadcastCreditsUpdate(user.id, res.remainingCredits);
       setJobId(res.jobId);
       setPhase("running");

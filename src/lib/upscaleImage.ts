@@ -2,16 +2,19 @@
 
 // 超解像スタジオの入力画像を「アップロード前」に正規化する。
 //
-// 生の高解像度画像をそのまま送るとデプロイ環境のリクエストボディ上限
-// （Vercel 約 4.5MB）でボディが打ち切られる。SeedVR2 worker は入力を内部で
-// 長辺 2048px（ull_image_prep の INPUT_IMG_MAX_EDGE）へ落とすので、
-// クライアント側で長辺 2048px へ縮小してもパイプライン上の劣化はない。
-// すでに小さい PNG/JPEG/WebP はそのまま通す（超解像の入力なので再エンコードは
-// 最小限に）。EXIF 回転はここで焼き込む。
+// SeedVR2 worker は入力を内部で長辺 2048px（ull_image_prep の
+// INPUT_IMG_MAX_EDGE）へ落とすので、クライアント側で長辺 2048px へ縮小して
+// もパイプライン上の劣化はない（帯域・アップロード時間の節約）。
+//
+// 2026-09-12 以前はここでさらに「Vercel の約4.5MBリクエストボディ上限」に
+// 収まるよう劣化圧縮するロジックがあったが、アップロードを Supabase Storage
+// への直アップロード方式（uploadUpscaleAsset、CLAUDE.md §6）に変更した
+// ことでその制約自体が無くなったため撤去した。すでに小さい PNG/JPEG/WebP は
+// サイズに関わらずそのまま通す（超解像の入力なので不要な再エンコードは
+// しない）。EXIF 回転はここで焼き込む。
 
 const MAX_EDGE = 2048; // = modal_seedvr2_worker.py INPUT_IMG_MAX_EDGE
-const TARGET_BYTES = 3.8 * 1024 * 1024;
-const QUALITY_STEPS = [0.95, 0.9, 0.84, 0.78];
+const REENCODE_QUALITY = 0.95;
 
 const PASSTHROUGH_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
@@ -43,7 +46,9 @@ export async function normalizeUpscaleInput(file: File): Promise<NormalizedUpsca
     const w = Math.max(1, Math.round(bitmap.width * scale));
     const h = Math.max(1, Math.round(bitmap.height * scale));
 
-    if (scale === 1 && file.size <= TARGET_BYTES && PASSTHROUGH_TYPES.has(file.type)) {
+    // すでに 2048px 以内でパススルー可能な形式ならサイズに関わらずそのまま
+    // （直アップロードなのでバイト数を気にする理由がない）。
+    if (scale === 1 && PASSTHROUGH_TYPES.has(file.type)) {
       return { blob: file, filename: file.name || pickFilename(file.type), width: w, height: h };
     }
 
@@ -58,14 +63,9 @@ export async function normalizeUpscaleInput(file: File): Promise<NormalizedUpsca
 
     const supportsWebp = canvas.toDataURL("image/webp").startsWith("data:image/webp");
     const mime = supportsWebp ? "image/webp" : "image/jpeg";
-
-    let best: Blob | null = null;
-    for (const q of QUALITY_STEPS) {
-      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, mime, q));
-      if (!blob) continue;
-      best = blob;
-      if (blob.size <= TARGET_BYTES) break;
-    }
+    const best = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, mime, REENCODE_QUALITY),
+    );
     canvas.width = 0;
     canvas.height = 0;
 

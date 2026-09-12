@@ -9,7 +9,7 @@ import {
   DEFAULT_UPSCALE_MODEL,
   DEFAULT_UPSCALE_VIDEO_PRESET,
   UPSCALE_MODELS,
-  UPSCALE_VIDEO_MAX_BYTES,
+  UPSCALE_UPLOAD_BUCKET,
   UPSCALE_VIDEO_MAX_SECONDS,
   UPSCALE_VIDEO_PRESETS,
   getUpscaleModel,
@@ -18,6 +18,12 @@ import {
   upscaleVideoCreditsWorstCase,
   validateVideoInputResolution,
 } from "@/lib/upscaleStudio";
+
+// 署名付き URL の有効期限。動画は画像よりジョブが長く、GPU がコールド/
+// 混雑中だと worker が実際に fetch するまで時間が空きうるため、動画専用
+// ハードキャップ（modal_seedvr2_worker.py の UPSCALE_VIDEO_TIMEOUT_HARD_CAP_S・
+// 既定90分）より長めに取る。
+const SIGNED_URL_EXPIRES_S = 2 * 60 * 60;
 
 // 非同期: この route は申告された尺・fps から課金額を出し、クレジットを
 // 引き落とし、upscale_jobs 行（media_type='video'）を insert して Modal
@@ -52,46 +58,40 @@ export async function POST(request: Request) {
   }
   const user = userData.user;
 
-  let formData: FormData;
+  let body: Record<string, unknown>;
   try {
-    formData = await request.formData();
+    body = (await request.json()) as Record<string, unknown>;
   } catch {
-    return NextResponse.json(
-      {
-        error:
-          "動画の受信に失敗しました。ファイルサイズが大きすぎる可能性があります。別の動画でお試しください。",
-      },
-      { status: 400 },
-    );
+    return NextResponse.json({ error: "リクエストの形式が正しくありません。" }, { status: 400 });
   }
 
-  const videoFile = formData.get("video");
-  if (!(videoFile instanceof File) || videoFile.size === 0) {
+  const storagePath = typeof body.storagePath === "string" ? body.storagePath : "";
+  if (!storagePath) {
     return NextResponse.json({ error: "動画をアップロードしてください。" }, { status: 400 });
   }
-  if (videoFile.size > UPSCALE_VIDEO_MAX_BYTES) {
-    return NextResponse.json(
-      { error: `動画ファイルが大きすぎます。${Math.floor(UPSCALE_VIDEO_MAX_BYTES / 1024 / 1024)}MB 以下にしてください。` },
-      { status: 400 },
-    );
+  // 自分のフォルダ配下かを念のため検証（supabaseAdmin は RLS を無視する
+  // service role のため、ここで手動チェックしないと他人の storage path を
+  // 渡されても読めてしまう）。
+  if (!storagePath.startsWith(`${user.id}/`)) {
+    return NextResponse.json({ error: "不正なファイル指定です。" }, { status: 400 });
   }
 
-  const modelKeyRaw = formData.get("modelKey");
+  const modelKeyRaw = body.modelKey;
   const modelKey = typeof modelKeyRaw === "string" && VALID_MODEL_KEYS.has(modelKeyRaw)
     ? modelKeyRaw
     : DEFAULT_UPSCALE_MODEL;
   const model = getUpscaleModel(modelKey);
 
-  const presetRaw = formData.get("preset");
+  const presetRaw = body.preset;
   const presetId = typeof presetRaw === "string" && VALID_PRESET_IDS.has(presetRaw)
     ? presetRaw
     : DEFAULT_UPSCALE_VIDEO_PRESET;
   const preset = getUpscaleVideoPreset(presetId);
 
-  const durationSec = Number(formData.get("durationSec"));
-  const fps = Number(formData.get("fps"));
-  const width = Number(formData.get("width"));
-  const height = Number(formData.get("height"));
+  const durationSec = Number(body.durationSec);
+  const fps = Number(body.fps);
+  const width = Number(body.width);
+  const height = Number(body.height);
 
   const hasValidMeta =
     Number.isFinite(durationSec) && durationSec > 0 &&
@@ -127,7 +127,17 @@ export async function POST(request: Request) {
     creditsCost = upscaleVideoCreditsWorstCase(knobs);
   }
 
-  const imageBuffer = Buffer.from(await videoFile.arrayBuffer());
+  // 動画本体は Vercel 関数を経由させない — supabaseAdmin で署名付き URL を
+  // 発行し、Modal worker に直接 fetch させる（_load_input_bytes が URL を
+  // サポート済み・supabase.co は _ALLOWED_IMAGE_HOSTS 許可済み）。
+  const { data: signed, error: signError } = await supabaseAdmin.storage
+    .from(UPSCALE_UPLOAD_BUCKET)
+    .createSignedUrl(storagePath, SIGNED_URL_EXPIRES_S);
+  if (signError || !signed?.signedUrl) {
+    console.error("[studio/upscale/video/generate] failed to sign upload url:", signError?.message);
+    return NextResponse.json({ error: "アップロードされた動画の取得に失敗しました。" }, { status: 400 });
+  }
+  const videoUrl = signed.signedUrl;
 
   // --- credits ---------------------------------------------------------
   const { data: profile, error: profileError } = await getOrCreateProfile(
@@ -212,7 +222,7 @@ export async function POST(request: Request) {
       userId: user.id,
       creditsCost,
       maxAllowedTime: upscaleVideoMaxAllowedTime({ creditsCost, knobs }),
-      videoBase64: imageBuffer.toString("base64"),
+      video: videoUrl,
       modelKey,
       presetId,
       params: {

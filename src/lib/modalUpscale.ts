@@ -6,8 +6,12 @@ export type SpawnUpscaleJobParams = {
   creditsCost: number;
   /** 原価割れウォッチドッグへ渡す許容最大 GPU 稼働時間（秒）。 */
   maxAllowedTime: number;
-  /** 入力画像（base64・data URI 可）。 */
-  imageBase64: string;
+  /** 入力画像。base64・data URI、または worker が直接 fetch できる URL
+   * （Supabase の署名付き URL 等 — modal_seedvr2_worker.py の
+   * _load_input_bytes が両方受け付ける。_ALLOWED_IMAGE_HOSTS に
+   * supabase.co 済み）。URL 方式なら Vercel 関数がファイル本体を経由しない
+   * ので大きなファイルでも軽い（CLAUDE.md §6）。 */
+  image: string;
   modelKey: string;
   presetId: string;
   /** SeedVR2 ワークフローへ渡すパラメータ（target_short / max_resolution 等）。 */
@@ -17,7 +21,8 @@ export type SpawnUpscaleJobParams = {
 export type SpawnUpscaleBatchItem = {
   jobId: string;
   creditsCost: number;
-  imageBase64: string;
+  /** base64/data URI または URL。SpawnUpscaleJobParams.image 参照。 */
+  image: string;
   modelKey: string;
   presetId: string;
   params: Record<string, number | string | boolean>;
@@ -36,8 +41,9 @@ export type SpawnUpscaleVideoJobParams = {
   userId: string;
   creditsCost: number;
   maxAllowedTime: number;
-  /** 入力動画（base64・data URI 可）。 */
-  videoBase64: string;
+  /** 入力動画。base64/data URI、または worker が直接 fetch できる URL。
+   * SpawnUpscaleJobParams.image 参照。 */
+  video: string;
   modelKey: string;
   presetId: string;
   params: Record<string, number | string | boolean>;
@@ -105,7 +111,7 @@ export async function spawnUpscaleJob(
     throw new Error("MODAL_AUTH_TOKEN が未設定です（modal_seedvr2_worker.py の _authorize が期待する共有シークレット）。");
   }
 
-  const image = (params.imageBase64 ?? "").trim();
+  const image = (params.image ?? "").trim();
   if (!image) throw new Error("Modal へ渡す入力画像が空です。");
 
   const body = JSON.stringify({
@@ -178,7 +184,7 @@ export async function spawnUpscaleBatchJob(
     items: params.items.map((it) => ({
       job_id: it.jobId,
       credits_cost: it.creditsCost,
-      image: it.imageBase64,
+      image: it.image,
       model_key: it.modelKey,
       preset: it.presetId,
       params: it.params,
@@ -234,7 +240,7 @@ export async function spawnUpscaleVideoJob(
     throw new Error("MODAL_AUTH_TOKEN が未設定です（modal_seedvr2_worker.py の _authorize が期待する共有シークレット）。");
   }
 
-  const video = (params.videoBase64 ?? "").trim();
+  const video = (params.video ?? "").trim();
   if (!video) throw new Error("Modal へ渡す入力動画が空です。");
 
   const body = JSON.stringify({

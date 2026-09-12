@@ -389,6 +389,7 @@ export function UpscaleVideoStudioTab() {
 
     try {
       const res = await startUpscaleVideoJob({
+        userId: user.id,
         video,
         modelKey,
         presetId,

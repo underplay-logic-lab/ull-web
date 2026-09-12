@@ -28,8 +28,17 @@
 
 import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";
 
-export const MAX_INPUT_BYTES = 25 * 1024 * 1024;
-export const MAX_INPUT_BYTES_API = 20 * 1024 * 1024;
+// 画像・動画とも、ブラウザから直接ここへアップロードしてから API route へ
+// storage path だけを渡す（Vercel の約4.5MBリクエストボディ上限を回避する
+// 本線経路。CLAUDE.md §6 参照。手本: src/lib/loraApi.ts の LORA_DATASET_BUCKET）。
+export const UPSCALE_UPLOAD_BUCKET = "upscale-uploads";
+
+// 2026-09-12 以前は Vercel の約4.5MBボディ上限に収まるよう、この値も
+// クライアント側の劣化圧縮（upscaleImage.ts）とセットで小さめに抑えていた。
+// 直アップロード方式に変えたことでその制約が無くなったため、実用上十分
+// 大きい値に引き上げた（Storage バケット自体の上限は500MB）。
+export const MAX_INPUT_BYTES = 100 * 1024 * 1024;
+export const MAX_INPUT_BYTES_API = 100 * 1024 * 1024;
 
 // SeedVR2 完全ノンタイルの安全上限（MP）。上記フィット参照。
 export const UPSCALE_MAX_OUTPUT_MP = 75;

@@ -14,6 +14,7 @@ import {
   UPSCALE_BATCH_MAX_TOTAL_BYTES,
   UPSCALE_MODELS,
   UPSCALE_MODES,
+  UPSCALE_UPLOAD_BUCKET,
   getUpscaleMode,
   getUpscaleModel,
   resolveTargetShort,
@@ -50,55 +51,35 @@ export async function POST(request: Request) {
   }
   const user = userData.user;
 
-  // ── リクエストボディ（multipart のみ。複数 File を images で受ける）────
-  let formData: FormData;
+  // ── リクエストボディ（JSON。storagePaths は Vercel の約4.5MBリクエスト
+  // ボディ上限を回避する本線経路 — CLAUDE.md §6）────────────────────────
+  let body: Record<string, unknown>;
   try {
-    formData = await request.formData();
+    body = (await request.json()) as Record<string, unknown>;
   } catch {
-    return NextResponse.json(
-      {
-        error:
-          "画像の受信に失敗しました。合計サイズが大きすぎる可能性があります。枚数を減らしてお試しください。",
-      },
-      { status: 400 },
-    );
+    return NextResponse.json({ error: "リクエストの形式が正しくありません。" }, { status: 400 });
   }
 
-  const files = formData
-    .getAll("images")
-    .filter((f): f is File => f instanceof File && f.size > 0);
-  if (files.length === 0) {
+  const storagePaths = Array.isArray(body.storagePaths)
+    ? body.storagePaths.filter((p): p is string => typeof p === "string" && p.length > 0)
+    : [];
+  if (storagePaths.length === 0) {
     return NextResponse.json({ error: "画像をアップロードしてください。" }, { status: 400 });
   }
-  if (files.length > UPSCALE_BATCH_MAX_ITEMS) {
+  if (storagePaths.length > UPSCALE_BATCH_MAX_ITEMS) {
     return NextResponse.json(
       { error: `一度に処理できるのは最大 ${UPSCALE_BATCH_MAX_ITEMS} 枚です。枚数を減らしてお試しください。` },
       { status: 400 },
     );
   }
-
-  const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
-  if (totalBytes > UPSCALE_BATCH_MAX_TOTAL_BYTES) {
-    return NextResponse.json(
-      {
-        error: `合計アップロードサイズが大きすぎます（上限 ${Math.floor(
-          UPSCALE_BATCH_MAX_TOTAL_BYTES / (1024 * 1024),
-        )}MB）。枚数を減らすか、画像を圧縮してお試しください。`,
-      },
-      { status: 400 },
-    );
-  }
-  for (const f of files) {
-    if (f.size > MAX_INPUT_BYTES_API) {
-      return NextResponse.json(
-        { error: `「${f.name}」が大きすぎます。1枚 20MB 以下にしてください。` },
-        { status: 400 },
-      );
+  for (const p of storagePaths) {
+    if (!p.startsWith(`${user.id}/`)) {
+      return NextResponse.json({ error: "不正なファイル指定です。" }, { status: 400 });
     }
   }
 
-  const modelKeyRaw = formData.get("modelKey") ?? DEFAULT_UPSCALE_MODEL;
-  const modeRaw = formData.get("mode") ?? formData.get("preset") ?? DEFAULT_UPSCALE_MODE;
+  const modelKeyRaw = body.modelKey ?? DEFAULT_UPSCALE_MODEL;
+  const modeRaw = body.mode ?? body.preset ?? DEFAULT_UPSCALE_MODE;
   const modelKey = typeof modelKeyRaw === "string" && VALID_MODEL_KEYS.has(modelKeyRaw)
     ? modelKeyRaw
     : DEFAULT_UPSCALE_MODEL;
@@ -110,9 +91,9 @@ export async function POST(request: Request) {
   const mode = getUpscaleMode(modeId);
   const knobs = await getPricingKnobs();
 
-  // ── 画像ごとの寸法・課金・target_short を先に全部計算 ───────────────
+  // ── 画像ごとにストレージから取得し、寸法・課金・target_short を計算 ───
   type PreparedItem = {
-    buffer: Buffer;
+    storagePath: string;
     filename: string;
     creditsCost: number;
     inWidth: number | null;
@@ -122,14 +103,43 @@ export async function POST(request: Request) {
     targetShort: number;
   };
   const prepared: PreparedItem[] = [];
-  for (const file of files) {
-    const buffer = Buffer.from(await file.arrayBuffer());
+  let totalBytes = 0;
+  for (const storagePath of storagePaths) {
+    const { data: downloaded, error: downloadError } = await supabaseAdmin.storage
+      .from(UPSCALE_UPLOAD_BUCKET)
+      .download(storagePath);
+    if (downloadError || !downloaded) {
+      console.error("[studio/upscale/batch] storage download failed:", downloadError?.message);
+      return NextResponse.json(
+        { error: `「${storagePath.split("/").pop()}」の取得に失敗しました。` },
+        { status: 400 },
+      );
+    }
+    const buffer = Buffer.from(await downloaded.arrayBuffer());
+    totalBytes += buffer.length;
+    if (buffer.length > MAX_INPUT_BYTES_API) {
+      return NextResponse.json(
+        { error: `「${storagePath.split("/").pop()}」が大きすぎます。` },
+        { status: 400 },
+      );
+    }
+    if (totalBytes > UPSCALE_BATCH_MAX_TOTAL_BYTES) {
+      return NextResponse.json(
+        {
+          error: `合計サイズが大きすぎます（上限 ${Math.floor(
+            UPSCALE_BATCH_MAX_TOTAL_BYTES / (1024 * 1024),
+          )}MB）。枚数を減らすか、画像を圧縮してお試しください。`,
+        },
+        { status: 400 },
+      );
+    }
+    const filename = storagePath.split("/").pop() || storagePath;
     const dims = readImageDimensions(buffer);
     if (dims && dims.width > 0 && dims.height > 0) {
       const bd = upscaleCostBreakdown({ inW: dims.width, inH: dims.height, modeId, modelKey, knobs });
       prepared.push({
-        buffer,
-        filename: file.name,
+        storagePath,
+        filename,
         creditsCost: bd.credits,
         inWidth: dims.width,
         inHeight: dims.height,
@@ -141,8 +151,8 @@ export async function POST(request: Request) {
       // 寸法が読めない形式（HEIC 等）。worst-case 課金で受け、worker が実寸法を
       // metadata に書く。
       prepared.push({
-        buffer,
-        filename: file.name,
+        storagePath,
+        filename,
         creditsCost: upscaleCreditsWorstCase(knobs),
         inWidth: null,
         inHeight: null,
@@ -245,18 +255,35 @@ export async function POST(request: Request) {
   const jobIds = jobRows.map((r) => r.id as string);
 
   // --- dispatch to Modal（1回でN枚まとめて）----------------------------
-  const items: SpawnUpscaleBatchItem[] = prepared.map((p, i) => ({
-    jobId: jobIds[i],
-    creditsCost: p.creditsCost,
-    imageBase64: p.buffer.toString("base64"),
-    modelKey,
-    presetId: modeId,
-    params: {
-      target_short: p.targetShort,
-      max_resolution: mode.maxEdge,
-      batch_size: 1,
-    },
-  }));
+  // 各アイテムは Vercel 関数を経由させず、署名付き URL を worker に直接
+  // fetch させる（CLAUDE.md §6）。
+  const items: SpawnUpscaleBatchItem[] = [];
+  for (let i = 0; i < prepared.length; i++) {
+    const p = prepared[i];
+    const { data: signed, error: signError } = await supabaseAdmin.storage
+      .from(UPSCALE_UPLOAD_BUCKET)
+      .createSignedUrl(p.storagePath, 60 * 60);
+    if (signError || !signed?.signedUrl) {
+      console.error("[studio/upscale/batch] failed to sign upload url:", signError?.message);
+      await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+      return NextResponse.json(
+        { error: "アップロードされた画像の取得に失敗しました。", remainingCredits: currentCredits },
+        { status: 500 },
+      );
+    }
+    items.push({
+      jobId: jobIds[i],
+      creditsCost: p.creditsCost,
+      image: signed.signedUrl,
+      modelKey,
+      presetId: modeId,
+      params: {
+        target_short: p.targetShort,
+        max_resolution: mode.maxEdge,
+        batch_size: 1,
+      },
+    });
+  }
 
   try {
     await spawnUpscaleBatchJob({
@@ -265,6 +292,8 @@ export async function POST(request: Request) {
       maxAllowedTime: estimatedSeconds,
       items,
     });
+    // dispatch 成功後は一時アップロードは不要（ベストエフォート削除）。
+    void supabaseAdmin.storage.from(UPSCALE_UPLOAD_BUCKET).remove(storagePaths);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[studio/upscale/batch] dispatch failed:", message);

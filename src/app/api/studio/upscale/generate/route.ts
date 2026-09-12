@@ -12,6 +12,7 @@ import {
   MAX_INPUT_BYTES_API,
   UPSCALE_MODELS,
   UPSCALE_MODES,
+  UPSCALE_UPLOAD_BUCKET,
   getUpscaleMode,
   getUpscaleModel,
   resolveTargetShort,
@@ -58,11 +59,14 @@ export async function POST(request: Request) {
   }
   const user = userData.user;
 
-  // ── リクエストボディ（multipart / JSON+base64 の両方受ける）─────────
+  // ── リクエストボディ（JSON+storagePath / JSON+base64 / multipart の
+  // いずれか）── storagePath は Vercel の約4.5MBリクエストボディ上限を回避
+  // する本線経路（CLAUDE.md §6）。base64/multipart は互換のため残す。
   const contentType = request.headers.get("content-type") ?? "";
   let imageBuffer: Buffer = Buffer.alloc(0);
   let modelKeyRaw: unknown = DEFAULT_UPSCALE_MODEL;
   let modeRaw: unknown = DEFAULT_UPSCALE_MODE;
+  let storagePath: string | null = null;
 
   if (contentType.includes("application/json")) {
     let body: Record<string, unknown>;
@@ -71,7 +75,11 @@ export async function POST(request: Request) {
     } catch {
       return NextResponse.json({ error: "リクエストの形式が正しくありません。" }, { status: 400 });
     }
-    imageBuffer = decodeBase64Image(body.image ?? body.image_b64);
+    if (typeof body.storagePath === "string" && body.storagePath) {
+      storagePath = body.storagePath;
+    } else {
+      imageBuffer = decodeBase64Image(body.image ?? body.image_b64);
+    }
     modelKeyRaw = body.modelKey ?? body.model_key ?? DEFAULT_UPSCALE_MODEL;
     modeRaw = body.mode ?? body.preset ?? DEFAULT_UPSCALE_MODE;
   } else {
@@ -94,6 +102,25 @@ export async function POST(request: Request) {
     imageBuffer = Buffer.from(await imageFile.arrayBuffer());
     modelKeyRaw = formData.get("modelKey") ?? DEFAULT_UPSCALE_MODEL;
     modeRaw = formData.get("mode") ?? formData.get("preset") ?? DEFAULT_UPSCALE_MODE;
+  }
+
+  if (storagePath) {
+    // 自分のフォルダ配下かを念のため検証（supabaseAdmin は RLS を無視する
+    // service role のため、ここで手動チェックしないと他人の storage path を
+    // 渡されても読めてしまう）。
+    if (!storagePath.startsWith(`${user.id}/`)) {
+      return NextResponse.json({ error: "不正なファイル指定です。" }, { status: 400 });
+    }
+    const { data: downloaded, error: downloadError } = await supabaseAdmin.storage
+      .from(UPSCALE_UPLOAD_BUCKET)
+      .download(storagePath);
+    if (downloadError || !downloaded) {
+      console.error("[studio/upscale/generate] storage download failed:", downloadError?.message);
+      return NextResponse.json({ error: "アップロードされた画像の取得に失敗しました。" }, { status: 400 });
+    }
+    // 実寸法をサーバー側で読む（正確な課金のため）。Modal へは base64
+    // 再送せず、下で発行する署名付き URL を渡す（Vercel 関数を経由させない）。
+    imageBuffer = Buffer.from(await downloaded.arrayBuffer());
   }
 
   if (imageBuffer.length === 0) {
@@ -215,6 +242,24 @@ export async function POST(request: Request) {
   }
   const jobId = jobRow.id as string;
 
+  // Modal へは storagePath 由来なら署名付き URL（Vercel 関数を経由させない）、
+  // それ以外（旧 base64/multipart 経路）は互換のためそのまま base64 で渡す。
+  let imageSpec = imageBuffer.toString("base64");
+  if (storagePath) {
+    const { data: signed, error: signError } = await supabaseAdmin.storage
+      .from(UPSCALE_UPLOAD_BUCKET)
+      .createSignedUrl(storagePath, 60 * 60);
+    if (signError || !signed?.signedUrl) {
+      console.error("[studio/upscale/generate] failed to sign upload url:", signError?.message);
+      await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+      return NextResponse.json(
+        { error: "アップロードされた画像の取得に失敗しました。", remainingCredits: currentCredits },
+        { status: 500 },
+      );
+    }
+    imageSpec = signed.signedUrl;
+  }
+
   // --- dispatch to Modal ---------------------------------------------
   try {
     await spawnUpscaleJob({
@@ -222,7 +267,7 @@ export async function POST(request: Request) {
       userId: user.id,
       creditsCost,
       maxAllowedTime: upscaleMaxAllowedTime({ creditsCost, knobs }),
-      imageBase64: imageBuffer.toString("base64"),
+      image: imageSpec,
       modelKey,
       presetId: modeId,
       params: {
@@ -231,6 +276,8 @@ export async function POST(request: Request) {
         batch_size: 1,
       },
     });
+    // dispatch 成功後は一時アップロードは不要（ベストエフォート削除）。
+    if (storagePath) void supabaseAdmin.storage.from(UPSCALE_UPLOAD_BUCKET).remove([storagePath]);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[studio/upscale/generate] dispatch failed:", message);

@@ -1,5 +1,31 @@
 import { supabase } from "@/lib/supabaseClient";
 import { normalizeUpscaleInput } from "@/lib/upscaleImage";
+import { UPSCALE_UPLOAD_BUCKET } from "@/lib/upscaleStudio";
+
+// ブラウザから直接 Supabase Storage へアップロードし、Vercel サーバーレス
+// 関数のリクエストボディ上限（約4.5MB。CLAUDE.md §6 参照）を回避する。
+// API route には storage path だけを渡し、route 側は supabaseAdmin で
+// service role として取得する（RLS 無関係・サイズ上限とも無関係）。
+// 手本: src/lib/loraApi.ts の uploadLoraDataset。
+export async function uploadUpscaleAsset(userId: string, file: File): Promise<{ path: string }> {
+  const safe = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "file";
+  const path = `${userId}/${crypto.randomUUID()}-${safe}`;
+  const { error } = await supabase.storage
+    .from(UPSCALE_UPLOAD_BUCKET)
+    .upload(path, file, { upsert: true, contentType: file.type || "application/octet-stream" });
+  if (error) throw new Error(error.message);
+  return { path };
+}
+
+// ベストエフォート削除（route が読み終わった後の後片付け）。失敗しても
+// ジョブ自体には影響させない。
+export async function deleteUpscaleAsset(path: string): Promise<void> {
+  try {
+    await supabase.storage.from(UPSCALE_UPLOAD_BUCKET).remove([path]);
+  } catch {
+    // best-effort — 消し忘れても実害はない（結果に影響しない一時ファイル）
+  }
+}
 
 export type UpscaleApiError = Error & { remainingCredits?: number };
 
@@ -28,6 +54,7 @@ export type StartUpscaleJobResult = {
 };
 
 export async function startUpscaleJob(params: {
+  userId: string;
   image: File;
   modelKey: string;
   modeId: string;
@@ -37,16 +64,15 @@ export async function startUpscaleJob(params: {
   if (!accessToken) throw new Error("ログインが必要です。");
 
   const norm = await normalizeUpscaleInput(params.image);
-
-  const form = new FormData();
-  form.append("image", norm.blob, norm.filename);
-  form.append("modelKey", params.modelKey);
-  form.append("mode", params.modeId);
+  const normalizedFile = new File([norm.blob], norm.filename, {
+    type: norm.blob.type || params.image.type,
+  });
+  const { path: storagePath } = await uploadUpscaleAsset(params.userId, normalizedFile);
 
   const res = await fetch("/api/studio/upscale/generate", {
     method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}` },
-    body: form,
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ storagePath, modelKey: params.modelKey, mode: params.modeId }),
   });
 
   const data = await res.json().catch(() => null);
@@ -70,6 +96,7 @@ export type StartUpscaleVideoJobResult = {
 };
 
 export async function startUpscaleVideoJob(params: {
+  userId: string;
   video: File;
   modelKey: string;
   presetId: string;
@@ -82,19 +109,20 @@ export async function startUpscaleVideoJob(params: {
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) throw new Error("ログインが必要です。");
 
-  const form = new FormData();
-  form.append("video", params.video, params.video.name || "input.mp4");
-  form.append("modelKey", params.modelKey);
-  form.append("preset", params.presetId);
-  form.append("durationSec", String(params.durationSec));
-  form.append("fps", String(params.fps));
-  form.append("width", String(params.width));
-  form.append("height", String(params.height));
+  const { path: storagePath } = await uploadUpscaleAsset(params.userId, params.video);
 
   const res = await fetch("/api/studio/upscale/video/generate", {
     method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}` },
-    body: form,
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      storagePath,
+      modelKey: params.modelKey,
+      preset: params.presetId,
+      durationSec: params.durationSec,
+      fps: params.fps,
+      width: params.width,
+      height: params.height,
+    }),
   });
 
   const data = await res.json().catch(() => null);
@@ -119,26 +147,31 @@ export type StartUpscaleBatchJobResult = {
 };
 
 export async function startUpscaleBatchJob(params: {
+  userId: string;
   images: File[];
   modelKey: string;
   modeId: string;
+  onUploadProgress?: (done: number, total: number) => void;
 }): Promise<StartUpscaleBatchJobResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) throw new Error("ログインが必要です。");
 
-  const form = new FormData();
-  for (const file of params.images) {
-    const norm = await normalizeUpscaleInput(file);
-    form.append("images", norm.blob, norm.filename);
+  const storagePaths: string[] = [];
+  for (let i = 0; i < params.images.length; i++) {
+    const norm = await normalizeUpscaleInput(params.images[i]);
+    const normalizedFile = new File([norm.blob], norm.filename, {
+      type: norm.blob.type || params.images[i].type,
+    });
+    const { path } = await uploadUpscaleAsset(params.userId, normalizedFile);
+    storagePaths.push(path);
+    params.onUploadProgress?.(i + 1, params.images.length);
   }
-  form.append("modelKey", params.modelKey);
-  form.append("mode", params.modeId);
 
   const res = await fetch("/api/studio/upscale/batch", {
     method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}` },
-    body: form,
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ storagePaths, modelKey: params.modelKey, mode: params.modeId }),
   });
 
   const data = await res.json().catch(() => null);
