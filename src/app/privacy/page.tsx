@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 
 export default function PrivacyPage() {
   return (
-    <LegalPage title="プライバシーポリシー" updatedAt="2026年8月18日">
+    <LegalPage title="プライバシーポリシー" updatedAt="2026年9月13日">
       <LegalSection heading="1. 基本方針">
         <p>
           {siteConfig.name}（以下「当サイト」といいます）は、ユーザーの個人情報の重要性を認識し、適切に取得・利用・管理することをお約束します。本ポリシーは、当サイトが提供するサービスにおける個人情報の取り扱いについて定めるものです。
@@ -18,8 +18,8 @@ export default function PrivacyPage() {
       <LegalSection heading="2. 取得する情報">
         <ul className="list-disc space-y-1.5 pl-5">
           <li>お問い合わせフォームにご入力いただく氏名、メールアドレス、お問い合わせ内容</li>
-          <li>ログイン（Googleアカウント連携）時に取得するメールアドレス・表示名等の基本プロフィール情報</li>
-          <li>決済手続きに伴い決済代行事業者を通じて処理される取引情報（カード情報自体は当サイトでは保持しません）</li>
+          <li>ログイン時に取得するメールアドレス・表示名等の基本プロフィール情報（Googleアカウント連携、またはメールアドレス・パスワードによる登録のいずれか）</li>
+          <li>決済手続きに伴い決済代行事業者（Polar.sh等）を通じて処理される取引情報（カード情報自体は当サイトでは保持しません）</li>
           <li>Studio機能のご利用状況（生成回数、クレジット消費履歴等）</li>
           <li>Cookie、アクセスログ等のサービス利用状況に関する情報</li>
         </ul>
@@ -28,7 +28,7 @@ export default function PrivacyPage() {
             【生成データおよびアップロードファイルの取り扱い】
           </strong>
           <br />
-          Studio機能において生成されたメディアデータおよび入力設定は、サービス品質向上、不具合調査および不正利用防止の目的のため、一時ストレージ（最長7日間）に保持された後、自動的に安全に破棄されます。第三者への提供や公開は一切行われません。
+          Studio機能において生成されたメディアデータおよび入力設定は、サービス品質向上、不具合調査および不正利用防止の目的のため、一時ストレージ（最長14日間）に保持された後、自動的に安全に破棄されます。第三者への提供や公開は一切行われません。
         </p>
       </LegalSection>
 
@@ -43,7 +43,7 @@ export default function PrivacyPage() {
 
       <LegalSection heading="4. 第三者提供">
         <p>
-          当サイトは、法令に基づく場合を除き、ユーザーの同意なく個人情報を第三者に提供することはありません。ただし、決済処理（Stripe等）、認証（Google等）、通知（Discord Webhook等）のために必要な範囲で、業務委託先・連携先に情報を提供する場合があります。
+          当サイトは、法令に基づく場合を除き、ユーザーの同意なく個人情報を第三者に提供することはありません。ただし、決済処理（Polar.sh等）、認証（Google等）、不正アクセス対策（Cloudflare Turnstile等）、通知（Discord Webhook等）のために必要な範囲で、業務委託先・連携先に情報を提供する場合があります。
         </p>
       </LegalSection>
 
