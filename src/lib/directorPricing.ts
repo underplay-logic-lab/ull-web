@@ -33,18 +33,22 @@ export function directorCameraLabel(id: string): string {
   return DIRECTOR_CAMERA_MOVES.find((c) => c.id === id)?.en ?? "a slow, smooth camera push-in";
 }
 
-/** 2026-09-14: シーンごとに秒数（時間配分）を持てるようにした
- * （時間軸ベースのシーン制御）。以前は「1シーン=15秒固定」で、Geminiに
- * 渡すプロンプトにも各シーンの時間情報が一切乗っていなかったため、60秒
- * ×4シーンのような長尺で「指示が終わって同じ動作の繰り返しになる」実障害
- * があった。durationS を明示的に持たせ、Gemini合成プロンプトにも
- * 「0〜8秒はX、8〜15秒はY」の形で反映する（directorPrompt.ts参照）。
- * 注意: MiniMax H3自体にタイムスタンプで厳密に条件付けする仕組みは無いため、
- * これは「モデルが従いやすくなるヒント」であって100%の保証ではない。 */
+/** 2026-09-14: シーンごとに秒数（合計尺・課金計算用）を持てるようにした。
+ * 秒数自体はモデルへの厳密な時間指定ではない（directorPrompt.ts参照 —
+ * タイムスタンプ方式は実機検証前に撤回済み）。
+ *
+ * sceneChange: このシーンの直前で「明確な場面転換」をGeminiに指示するか
+ * どうか。true なら「別の瞬間・場面へ切り替わる」という強い転換として、
+ * false なら「同じ場面の中でカメラだけ動く」という滑らかな継続として
+ * 合成される。実機検証（2026-09-14）で、単純な順番リスト＋自然な繋ぎ言葉
+ * だけでも実際にシーンが切り替わることを確認済みだが、切り替えの強さを
+ * ユーザー側で明示的に制御したいというホスト要望により追加。先頭シーンは
+ * 「直前」が無いため意味を持たない（UIでは非表示）。 */
 export type DirectorScene = {
   camera: DirectorCameraMoveId;
   text: string;
   durationS: number;
+  sceneChange?: boolean;
 };
 
 /** タイムラインに追加できるシーン数。60秒の実測上限（[[cinematic-video-tab]]
@@ -172,7 +176,8 @@ export function validateDirectorScenes(scenes: unknown): { ok: true; scenes: Dir
       DIRECTOR_MAX_SCENE_DURATION_S,
       Math.max(DIRECTOR_MIN_SCENE_DURATION_S, Math.round(Number(durationRaw) || DIRECTOR_SECONDS_PER_SCENE)),
     );
-    cleaned.push({ camera, text, durationS });
+    const sceneChange = (raw as { sceneChange?: unknown })?.sceneChange !== false;
+    cleaned.push({ camera, text, durationS, sceneChange });
   }
   if (directorTotalDurationS(cleaned) < cleaned.reduce((acc, s) => acc + s.durationS, 0)) {
     return { ok: false, error: `合計尺は最大${DIRECTOR_MAX_TOTAL_SECONDS}秒までです。` };

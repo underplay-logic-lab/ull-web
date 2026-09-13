@@ -36,17 +36,26 @@ export class DirectorPromptError extends Error {
 // リストに戻した。本当に秒数を厳密に守らせたい場合は、1シーン=1回の
 // 独立した生成に分けて Motion Context 系ノードで繋ぐ方式が必要
 // （ComfyUI-H3-Motion-Context 等、コミュニティ実装あり）— 別途検討中。
+// 2026-09-14: シーンごとに「明確な場面転換」か「同じ場面内の継続」かを
+// ユーザーが選べるようにした（sceneChange フラグ、DirectorScene参照）。
+// 先頭シーンは「直前」が無いため常に継続扱い（[CONTINUE]）。
 function buildSceneDirectorPrompt(scenes: DirectorScene[]): string {
   const sceneLines = scenes
-    .map((s, i) => `Scene ${i + 1}: camera movement = ${directorCameraLabel(s.camera)}. Action: ${s.text}`)
+    .map((s, i) => {
+      const marker = i === 0 || s.sceneChange === false ? "[CONTINUE]" : "[SCENE CHANGE]";
+      return `${marker} Scene ${i + 1}: camera movement = ${directorCameraLabel(s.camera)}. Action: ${s.text}`;
+    })
     .join("\n");
   return [
     "You are an expert cinematic video director.",
     "The user has provided a sequence of scenes with specific camera movements and actions.",
     "Combine them into a SINGLE, highly detailed, continuous English prompt optimized for a text-to-video model.",
-    "Ensure the transitions between actions are smooth and cinematic, following the given order from first to last. Include lighting and atmosphere.",
+    "Each scene is marked [SCENE CHANGE] or [CONTINUE] (relative to the scene right before it):",
+    "- [SCENE CHANGE]: introduce it as a clear transition to a different moment or setting (e.g. \"Then, in a different moment,\" or \"The scene shifts to...\").",
+    "- [CONTINUE]: treat it as a smooth continuation of the same shot/setting as the previous scene — do not introduce it as a new scene, just let the camera and action flow onward (e.g. \"and then\", \"as the camera continues\").",
+    "Follow the given order from first to last. Include lighting and atmosphere.",
     "Preserve the subject's appearance, clothing, and identity exactly as shown in the reference image throughout every scene.",
-    "Output ONLY the final English prompt text — no preamble, no scene labels, no quotes.",
+    "Output ONLY the final English prompt text — no preamble, no scene labels, no [SCENE CHANGE]/[CONTINUE] markers, no quotes.",
     "",
     sceneLines,
   ].join("\n");

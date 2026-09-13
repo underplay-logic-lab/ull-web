@@ -55,7 +55,7 @@ function sleep(ms: number) {
 }
 
 function newScene(): DirectorScene {
-  return { camera: "push_in", text: "", durationS: DIRECTOR_SECONDS_PER_SCENE };
+  return { camera: "push_in", text: "", durationS: DIRECTOR_SECONDS_PER_SCENE, sceneChange: true };
 }
 
 function useObjectUrl(file: File | null): string | null {
@@ -486,6 +486,17 @@ export function DirectorStudioTab() {
                     placeholder="例: 振り返って微笑む"
                     className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted"
                   />
+                  {i > 0 && (
+                    <label className="mt-2 flex items-center gap-1.5 text-[11px] text-muted">
+                      <input
+                        type="checkbox"
+                        checked={scene.sceneChange !== false}
+                        onChange={(e) => updateScene(i, { sceneChange: e.target.checked })}
+                        className="h-3.5 w-3.5 rounded border-border"
+                      />
+                      ここで場面を切り替える（オフ＝前のシーンと同じ場面の続き）
+                    </label>
+                  )}
                 </div>
               ))}
             </div>
