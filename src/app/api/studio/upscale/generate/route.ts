@@ -6,7 +6,7 @@ import { spawnUpscaleJob } from "@/lib/modalUpscale";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { upscaleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import { readImageDimensions } from "@/lib/imageDimensions";
-import { downloadStudioUpload, createStudioUploadSignedUrl, deleteStudioUploads } from "@/lib/studioUploads.server";
+import { downloadStudioUpload, createStudioUploadSignedUrl } from "@/lib/studioUploads.server";
 import {
   DEFAULT_UPSCALE_MODE,
   DEFAULT_UPSCALE_MODEL,
@@ -264,8 +264,13 @@ export async function POST(request: Request) {
         batch_size: 1,
       },
     });
-    // dispatch 成功後は一時アップロードは不要（ベストエフォート削除）。
-    deleteStudioUploads([storagePath]);
+    // 2026-09-13 実障害で判明: ここで即座に削除すると、Modal worker が
+    // コールドスタート等でまだ署名付きURLを fetch していないタイミングで
+    // オブジェクトが消え、「HTTPError: 400 Client Error」でジョブが失敗する
+    // レース条件になる（.spawn() は非同期起動の ACK が返るだけで、worker が
+    // 実際に画像を取得するのはそれよりずっと後）。削除は行わず、
+    // upscale-uploads バケットは modal_retention_purge.py の
+    // DEFAULT_BUCKETS（14日自動パージ）に委ねる。
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[studio/upscale/generate] dispatch failed:", message);

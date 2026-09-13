@@ -6,7 +6,7 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { spawnUpscaleBatchJob, type SpawnUpscaleBatchItem } from "@/lib/modalUpscale";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { readImageDimensions } from "@/lib/imageDimensions";
-import { downloadStudioUpload, createStudioUploadSignedUrl, deleteStudioUploads } from "@/lib/studioUploads.server";
+import { downloadStudioUpload, createStudioUploadSignedUrl } from "@/lib/studioUploads.server";
 import {
   DEFAULT_UPSCALE_MODE,
   DEFAULT_UPSCALE_MODEL,
@@ -283,8 +283,10 @@ export async function POST(request: Request) {
       maxAllowedTime: estimatedSeconds,
       items,
     });
-    // dispatch 成功後は一時アップロードは不要（ベストエフォート削除）。
-    deleteStudioUploads(storagePaths);
+    // 2026-09-13 実障害で判明: 即座に削除すると Modal worker が署名付きURLを
+    // fetch する前にオブジェクトが消えるレース条件になる（upscale/generate
+    // route.ts の同種修正コメント参照）。削除はせず upscale-uploads バケット
+    // 自体の14日自動パージ（modal_retention_purge.py）に委ねる。
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[studio/upscale/batch] dispatch failed:", message);

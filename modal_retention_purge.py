@@ -47,7 +47,14 @@ RETENTION_DAYS = int(os.environ.get("ULL_RETENTION_DAYS", "14"))
 # または env ULL_RETENTION_DRY_RUN で切り替え。
 DRY_RUN = os.environ.get("ULL_RETENTION_DRY_RUN", "") in ("1", "true", "yes")
 
-DEFAULT_BUCKETS = ["angle-results", "upscale-results", "lora_datasets", "custom-workflow-results"]
+DEFAULT_BUCKETS = [
+    "angle-results", "upscale-results", "lora_datasets", "custom-workflow-results",
+    # 2026-09-13: upscale/generate・upscale/batch route.ts が一時アップロード
+    # （upscale-uploads）を dispatch 直後に即削除していたのを撤去した（Modal
+    # worker が署名付きURLを fetch する前にオブジェクトが消えるレース条件で
+    # 実障害が出た）。削除しない代わりにここで14日自動パージの対象に含める。
+    "upscale-uploads",
+]
 
 # job テーブル → 対応バケット（ストレージ側は created_at 全掃きなので、ここは
 # 行削除の対象一覧）。
