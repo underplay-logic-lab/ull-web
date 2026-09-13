@@ -81,3 +81,29 @@ export async function expandDirectorScenes(scenes: DirectorScene[]): Promise<str
     throw new DirectorPromptError("プロンプトの合成に失敗しました。", "failed");
   }
 }
+
+/** 合成済み英語プロンプトをユーザー向けに日本語訳する（コピペ用UI表示のため）。
+ * ベストエフォート — 失敗しても生成自体は止めない設計なので、呼び出し側は
+ * null を「翻訳なし」として扱い、英語原文だけ表示すればよい。 */
+export async function translateDirectorPromptToJapanese(englishPrompt: string): Promise<string | null> {
+  const apiKey = geminiApiKey();
+  if (!apiKey) return null;
+  try {
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const raw = await runGeminiText(
+      genAI,
+      [
+        "Translate the following English video-generation prompt into natural, fluent Japanese.",
+        "Output ONLY the Japanese translation — no preamble, no quotes, no English.",
+        "",
+        englishPrompt,
+      ].join("\n"),
+      false,
+    );
+    const cleaned = raw.trim().replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+    return cleaned || null;
+  } catch (err) {
+    console.error("[directorPrompt] translateDirectorPromptToJapanese failed:", err);
+    return null;
+  }
+}

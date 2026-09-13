@@ -6,12 +6,22 @@ import { downloadStudioUpload, deleteStudioUploads } from "@/lib/studioUploads.s
 import { readImageDimensions } from "@/lib/imageDimensions";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import {
+  DIRECTOR_MAX_TOTAL_SECONDS,
+  DIRECTOR_SECONDS_PER_SCENE,
   directorCostBreakdown,
+  directorCostBreakdownForDuration,
   directorCreditsWorstCase,
   directorPollDeadlineS,
+  isDirectorQualityMode,
   validateDirectorScenes,
+  type DirectorQualityMode,
+  type DirectorScene,
 } from "@/lib/directorPricing";
-import { DirectorPromptError, expandDirectorScenes } from "@/lib/directorPrompt";
+import {
+  DirectorPromptError,
+  expandDirectorScenes,
+  translateDirectorPromptToJapanese,
+} from "@/lib/directorPrompt";
 import { buildCinematicWorkflow } from "@/lib/cinematicWorkflow";
 import { CINEMATIC_MODE_BY_ID } from "@/lib/cinematicPricing";
 import { spawnDirectorJob } from "@/lib/modalDirector";
@@ -58,17 +68,36 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "参照画像をアップロードしてください。" }, { status: 400 });
   }
 
-  const validated = validateDirectorScenes(body.scenes);
-  if (!validated.ok) {
-    return NextResponse.json({ error: validated.error }, { status: 400 });
-  }
-  const scenes = validated.scenes;
+  // 画質モード（2026-09-14、VDN-H3導入に伴い旧speed固定を廃止）。
+  // fast=8step蒸留(無音・低コスト)、quality=50step非蒸留(音声あり)。
+  const qualityMode: DirectorQualityMode = isDirectorQualityMode(body.quality) ? body.quality : "fast";
 
-  // レッドライン・フィルター（他の生成系エンドポイントと同一の入口対策）。
-  const policyResult = evaluateContentPolicyMany(scenes.map((s) => s.text));
-  if (policyResult.blocked) {
-    logContentPolicyBlock("director/generate", policyResult, user.id);
-    return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
+  // プロンプトモード（結果画面に表示された合成済みプロンプトをコピペ・微修正
+  // して直接投げる経路、2026-09-14）: rawPrompt が非空文字列ならシーン
+  // ビルダーを完全に迂回し、Gemini合成もスキップしてそのまま使う。
+  const rawPromptInput = typeof body.rawPrompt === "string" ? body.rawPrompt.trim() : "";
+  const isPromptMode = rawPromptInput.length > 0;
+
+  let scenes: DirectorScene[] = [];
+  if (!isPromptMode) {
+    const validated = validateDirectorScenes(body.scenes);
+    if (!validated.ok) {
+      return NextResponse.json({ error: validated.error }, { status: 400 });
+    }
+    scenes = validated.scenes;
+
+    // レッドライン・フィルター（他の生成系エンドポイントと同一の入口対策）。
+    const policyResult = evaluateContentPolicyMany(scenes.map((s) => s.text));
+    if (policyResult.blocked) {
+      logContentPolicyBlock("director/generate", policyResult, user.id);
+      return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
+    }
+  } else {
+    const policyResult = evaluateContentPolicyMany([rawPromptInput]);
+    if (policyResult.blocked) {
+      logContentPolicyBlock("director/generate:raw_prompt", policyResult, user.id);
+      return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
+    }
   }
 
   let imageBuffer: Buffer;
@@ -82,7 +111,14 @@ export async function POST(request: Request) {
   }
 
   const knobs = await getPricingKnobs();
-  const breakdown = directorCostBreakdown({ sceneCount: scenes.length, knobs });
+  const rawDurationS = typeof body.rawDurationS === "number" ? body.rawDurationS : DIRECTOR_SECONDS_PER_SCENE;
+  const breakdown = isPromptMode
+    ? directorCostBreakdownForDuration({
+        totalDurationS: Math.min(DIRECTOR_MAX_TOTAL_SECONDS, Math.max(1, rawDurationS)),
+        mode: qualityMode,
+        knobs,
+      })
+    : directorCostBreakdown({ sceneCount: scenes.length, mode: qualityMode, knobs });
   const creditsCost = breakdown.credits || directorCreditsWorstCase(knobs);
 
   // --- credits ---------------------------------------------------------
@@ -115,21 +151,31 @@ export async function POST(request: Request) {
   }
 
   // --- Phase 1: Gemini でシーン合成（1本の連続した英語プロンプトへ） -------
+  // プロンプトモードでは既に完成した英語プロンプトが渡されるため、この
+  // 合成ステップ自体をスキップする（下の最終防波堤チェックは両モード共通）。
   let combinedPrompt: string;
-  try {
-    combinedPrompt = await expandDirectorScenes(scenes);
-  } catch (err) {
-    const e = err as DirectorPromptError;
-    const status = e.reason === "quota" ? 429 : e.reason === "busy" ? 503 : e.reason === "not_configured" ? 501 : 502;
-    return NextResponse.json({ error: e.message }, { status });
+  if (isPromptMode) {
+    combinedPrompt = rawPromptInput;
+  } else {
+    try {
+      combinedPrompt = await expandDirectorScenes(scenes);
+    } catch (err) {
+      const e = err as DirectorPromptError;
+      const status = e.reason === "quota" ? 429 : e.reason === "busy" ? 503 : e.reason === "not_configured" ? 501 : 502;
+      return NextResponse.json({ error: e.message }, { status });
+    }
   }
 
-  // 課金前の最終防波堤としてもう一度（Gemini が合成した英語文にも念のため）。
+  // 課金前の最終防波堤としてもう一度（Gemini が合成した英語文・ユーザーが
+  // 直接編集した英語文のいずれにも念のため）。
   const combinedPolicy = evaluateContentPolicyMany([combinedPrompt]);
   if (combinedPolicy.blocked) {
     logContentPolicyBlock("director/generate:combined", combinedPolicy, user.id);
     return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
   }
+
+  // 結果画面でのコピペ用日本語表示（ベストエフォート、失敗しても生成は続行）。
+  const combinedPromptJa = await translateDirectorPromptToJapanese(combinedPrompt);
 
   const debitedCredits = currentCredits - creditsCost;
   const { error: debitError } = await supabaseAdmin
@@ -149,12 +195,20 @@ export async function POST(request: Request) {
       status: "queued",
       workflow_type: "director",
       inputs: {
-        scenes,
+        scenes: scenes.length ? scenes : null,
         combined_prompt: combinedPrompt,
+        combined_prompt_ja: combinedPromptJa,
         total_duration_s: breakdown.totalDurationS,
+        prompt_mode: isPromptMode,
+        quality_mode: qualityMode,
       },
       credits_cost: creditsCost,
-      metadata: { scene_count: scenes.length, total_duration_s: breakdown.totalDurationS },
+      metadata: {
+        scene_count: scenes.length,
+        total_duration_s: breakdown.totalDurationS,
+        prompt_mode: isPromptMode,
+        quality_mode: qualityMode,
+      },
     })
     .select("id")
     .single();
@@ -170,7 +224,11 @@ export async function POST(request: Request) {
   const jobId = jobRow.id as string;
 
   // --- Phase 2: MiniMax H3 へディスパッチ ---------------------------------
-  const mode = CINEMATIC_MODE_BY_ID.speed; // v1: 4ステップ・実測済みの安全な設定に固定
+  // 2026-09-14: 旧 speed 固定(4step蒸留LoRA)を廃止。VDN-H3導入により
+  // fast(vdnFast)/quality(vdnQuality)をユーザーが選べるようにした
+  // （[[vdn-h3-speedup-integration]] 参照 — 4step蒸留LoRAは複数シーンの
+  // 複雑なプロンプトで指示追従性が崩壊する実障害があった）。
+  const mode = CINEMATIC_MODE_BY_ID[qualityMode === "quality" ? "vdnQuality" : "vdnFast"];
   const referenceImageName = storagePath.split("/").pop() || "reference.png";
   // 実画像の生の寸法を渡す（cinematicWorkflow.ts の cinematicSafeDimensions
   // が「ピクセル ≡ 16 (mod 32)」を満たす安全な width/height を計算する —
@@ -195,7 +253,7 @@ export async function POST(request: Request) {
       workflow,
       referenceImageName,
       referenceImageB64: imageBuffer.toString("base64"),
-      pollDeadlineS: directorPollDeadlineS(breakdown.totalDurationS),
+      pollDeadlineS: directorPollDeadlineS(breakdown.totalDurationS, qualityMode),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

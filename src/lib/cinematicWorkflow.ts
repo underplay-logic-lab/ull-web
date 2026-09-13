@@ -31,15 +31,24 @@ import { cinematicMegapixels, cinematicSafeDimensions } from "@/lib/cinematicPri
 // （first_frame はモデル側が内部で "disabled"＝伸縮リサイズして width/height
 // に合わせる設計なので、生の LoadImage 出力をそのまま渡してよい）。
 const WORKFLOW_TEMPLATE = {
+  // 2026-09-14: core "SaveVideo" -> ComfyUI-VideoHelperSuite の
+  // VHS_VideoCombine に差し替え（ComfyUI v0.33.3 -> v0.35.1 アップグレードに
+  // 伴う対応。v0.33.3を選んでいた理由だった「masterのSaveVideo一時バグ」を
+  // 回避する目的、CLAUDE.md §1参照）。images/audioを直接受け取れるため
+  // 旧 105:91 (CreateVideo) 経由は不要。
   "92": {
     inputs: {
+      images: ["105:10", 0],
+      audio: ["105:23", 0],
+      frame_rate: 24,
+      loop_count: 0,
       filename_prefix: "cinematic_video",
-      format: "auto",
-      codec: "auto",
-      video: ["105:91", 0],
+      format: "video/h264-mp4",
+      pingpong: false,
+      save_output: true,
     },
-    class_type: "SaveVideo",
-    _meta: { title: "Save Video" },
+    class_type: "VHS_VideoCombine",
+    _meta: { title: "Video Combine" },
   },
   "114": {
     inputs: { image: "__REFERENCE_IMAGE__" },
@@ -106,11 +115,6 @@ const WORKFLOW_TEMPLATE = {
     inputs: { noise_seed: 0 },
     class_type: "RandomNoise",
     _meta: { title: "RandomNoise" },
-  },
-  "105:91": {
-    inputs: { fps: 24, bit_depth: 8, images: ["105:10", 0], audio: ["105:23", 0] },
-    class_type: "CreateVideo",
-    _meta: { title: "Create Video" },
   },
   "105:104": {
     inputs: {
@@ -256,6 +260,33 @@ export function buildCinematicWorkflow({
   } else {
     workflow["105:124"].inputs.model = ["105:6", 0];
     delete (workflow as Record<string, unknown>)["105:125"];
+  }
+
+  // VDN-H3 (github.com/Saganaki22/ComfyUI-VDN-H3 + OpenVDN/vdn-minimax-h3,
+  // Apache-2.0、2026-09-13/14導入) — UNETLoader と PathchSageAttentionKJ の
+  // 間に差し込む。実機検証済みの設定: lora_mode="bypass"（非破壊・低VRAM
+  // オーバーヘッド、BF16フル精度のまま適用可能なことをVDN-H3実装コード
+  // 読解で確認済み）。allow_compile は VDN-H3 併用時に明確な悪化が実測され
+  // たため常に false 固定（torch.compileのブロック単位再コンパイル地獄、
+  // [[vdn-h3-speedup-integration]] 参照）。
+  if (mode.useVdn) {
+    workflow["105:130"] = {
+      inputs: {
+        model: ["105:6", 0],
+        vdn_checkpoint: mode.vdnCheckpoint ?? "stage-b-step-2000",
+        apply_turbo_adapter: Boolean(mode.vdnTurbo),
+        strength: 1.0,
+        lora_mode: "bypass",
+        branch_weights: "auto",
+        retain_buffers: "auto",
+        attention_backend: "grouped",
+        verbose: false,
+      },
+      class_type: "ApplyVDNH3",
+      _meta: { title: "Apply VDN-H3 (MiniMax-H3 Hybrid Attention)" },
+    };
+    workflow["105:124"].inputs.model = ["105:130", 0];
+    workflow["105:124"].inputs.allow_compile = false;
   }
 
   return workflow;

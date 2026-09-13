@@ -11,7 +11,7 @@
 // 不要 — 複数シーンを1本の連続プロンプトに合成し、単発の MiniMax H3 呼び出し
 // に渡すだけで成立する。
 
-import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";
+import { DEFAULT_KNOBS, type KnobKey, type PricingKnobs } from "@/lib/pricing/knobDefaults";
 
 export const DIRECTOR_CAMERA_MOVES = [
   { id: "push_in", label: "Push in（寄る）", en: "a slow, smooth camera push-in" },
@@ -44,8 +44,9 @@ export const DIRECTOR_MIN_SCENES = 1;
 export const DIRECTOR_MAX_SCENES = 4;
 export const DIRECTOR_SCENE_TEXT_MAX_LENGTH = 200;
 
-/** 1シーンあたりの尺（秒）。シーン数 × 15秒、実測済みの60秒で頭打ち。 */
-const DIRECTOR_SECONDS_PER_SCENE = 15;
+/** 1シーンあたりの尺（秒）。シーン数 × 15秒、実測済みの60秒で頭打ち。
+ * プロンプトモードの最短尺クランプにも流用するため export する。 */
+export const DIRECTOR_SECONDS_PER_SCENE = 15;
 export const DIRECTOR_MAX_TOTAL_SECONDS = 60;
 
 export function directorTotalDurationS(sceneCount: number): number {
@@ -59,27 +60,79 @@ export type DirectorCostBreakdown = {
   perSecond: number;
 };
 
+/** Director の画質モード。VDN-H3導入(2026-09-13/14)に伴い、旧 speed 固定を
+ * やめてユーザーが選べるようにした。fast=8step蒸留(無音)・quality=50step
+ * 非蒸留(音声あり) — cinematicPricing.ts の CINEMATIC_MODE_BY_ID.vdnFast /
+ * .vdnQuality に対応。 */
+export type DirectorQualityMode = "fast" | "quality";
+
+export function isDirectorQualityMode(value: unknown): value is DirectorQualityMode {
+  return value === "fast" || value === "quality";
+}
+
+const DIRECTOR_PER_SECOND_KNOB: Record<DirectorQualityMode, KnobKey> = {
+  fast: "director_per_second_fast",
+  quality: "director_per_second_quality",
+};
+
+function directorPerSecond(mode: DirectorQualityMode, knobs: PricingKnobs): number {
+  return knobs[DIRECTOR_PER_SECOND_KNOB[mode]];
+}
+
 export function directorCostBreakdown(args: {
   sceneCount: number;
+  mode?: DirectorQualityMode;
   knobs?: PricingKnobs;
 }): DirectorCostBreakdown {
   const knobs = args.knobs ?? DEFAULT_KNOBS;
+  const mode = args.mode ?? "fast";
   const totalDurationS = directorTotalDurationS(args.sceneCount);
-  const raw = Math.ceil(knobs.director_per_second * totalDurationS);
+  const perSecond = directorPerSecond(mode, knobs);
+  const raw = Math.ceil(perSecond * totalDurationS);
   const floor = Math.max(1, Math.round(knobs.director_min_credits));
-  return { credits: Math.max(floor, raw), totalDurationS, perSecond: knobs.director_per_second };
+  return { credits: Math.max(floor, raw), totalDurationS, perSecond };
 }
 
-/** 尺不明時（見積り不能）の上限課金 — 最大シーン数・最大尺で計算。 */
+/** プロンプトモード（シーンビルダーを介さず、合成済みプロンプトを直接編集して
+ * 再生成する経路）用。シーン数の概念がないため、尺(秒)を直接クランプして
+ * 計算する。式自体は directorCostBreakdown と同一。 */
+export function directorCostBreakdownForDuration(args: {
+  totalDurationS: number;
+  mode?: DirectorQualityMode;
+  knobs?: PricingKnobs;
+}): DirectorCostBreakdown {
+  const knobs = args.knobs ?? DEFAULT_KNOBS;
+  const mode = args.mode ?? "fast";
+  const totalDurationS = Math.min(
+    DIRECTOR_MAX_TOTAL_SECONDS,
+    Math.max(DIRECTOR_SECONDS_PER_SCENE, Math.round(args.totalDurationS || 0)),
+  );
+  const perSecond = directorPerSecond(mode, knobs);
+  const raw = Math.ceil(perSecond * totalDurationS);
+  const floor = Math.max(1, Math.round(knobs.director_min_credits));
+  return { credits: Math.max(floor, raw), totalDurationS, perSecond };
+}
+
+/** 尺不明時（見積り不能）の上限課金 — 最大シーン数・最大尺・最も高い
+ * quality モードで計算（過小課金を避ける）。 */
 export function directorCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): number {
-  return directorCostBreakdown({ sceneCount: DIRECTOR_MAX_SCENES, knobs }).credits;
+  return directorCostBreakdown({ sceneCount: DIRECTOR_MAX_SCENES, mode: "quality", knobs }).credits;
 }
 
 /** Modal worker 側のポーリング上限秒（_run_workflow の poll_deadline_s）。
  * 実測: 60秒動画で Prompt実行 600s・elapsed 638.6s。安全マージンを乗せて
  * 動的に算出する（固定値のままだと今回のようにタイムアウト誤検知する）。 */
-export function directorPollDeadlineS(totalDurationS: number): number {
-  return Math.min(1700, Math.max(300, Math.round(totalDurationS * 12) + 200));
+/** modal_wan_animate_blackwell.py の _run_workflow が ComfyUI の完了を待つ
+ * ポーリング上限（秒）。2026-09-14 実測（480x864・8/50step、VDN-H3）を基に
+ * 「多めに設定する」方針（CLAUDE.md §0 — 短いタイムアウトで暴走を止められた
+ * 実績が一度もない一方、正常進行中のジョブを誤って失敗判定したことは複数回
+ * ある）で、実測値の約1.7倍を秒あたり単価として尺に比例させる。
+ * fast: 実測26.4s/video-sec -> 40s/video-sec。quality: 実測45.4s/video-sec
+ * -> 68s/video-sec。Modal関数自体のハードタイムアウト(7200s)より必ず小さく
+ * 収まるよう上限3600sでクランプ。 */
+export function directorPollDeadlineS(totalDurationS: number, mode: DirectorQualityMode = "fast"): number {
+  const secPerVideoSec = mode === "quality" ? 68 : 40;
+  return Math.min(3600, Math.max(300, Math.round(totalDurationS * secPerVideoSec) + 200));
 }
 
 export function validateDirectorScenes(scenes: unknown): { ok: true; scenes: DirectorScene[] } | { ok: false; error: string } {

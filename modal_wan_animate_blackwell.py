@@ -228,11 +228,15 @@ image = (
     )
     .run_commands(
         f"git clone https://github.com/comfyanonymous/ComfyUI.git {COMFY_DIR}",
-        # Same tag scripts/modal_wan_animate.py pins — v0.31.0+ added native
-        # Wan Animate 2 node support (WanAnimate2Cache / WanAnimate2ToVideo)
-        # and comfy_extras/nodes_easycache.py (see below), and v0.33.3 is
-        # the last tag verified not to hit master's transient SaveVideo bug.
-        f"cd {COMFY_DIR} && git fetch --tags && git checkout v0.33.3",
+        # 2026-09-13: v0.33.3 -> v0.35.1 (CLAUDE.md §1 のComfyUIバージョン運用
+        # 方針に基づく事前検証済みアップグレード)。v0.35.0 で core
+        # comfy_extras/nodes_sparse_attention.py（BlockSparseAttention、
+        # MiniMax H3向けsol-attn/sla/vsa 3バックエンド）が追加されたため、
+        # VDN-H3([[cinematic-video-tab]]系の高速化調査参照)の上に重ねられる
+        # か検証するために採用。v0.33.3を選んだ理由だった「masterのSaveVideo
+        # 一時バグ」は、コアのSaveVideoノードを使わずComfyUI-VideoHelperSuite
+        # のVHS_VideoCombineに差し替えることで回避（下記ワークフロー参照）。
+        f"cd {COMFY_DIR} && git fetch --tags && git checkout v0.35.1",
         f"cd {COMFY_DIR} && pip install -r requirements.txt",
         # ComfyUI's repo ships models/ pre-populated with ~25 placeholder
         # subdirectories (checkpoints/, loras/, vae/, ...), so it's non-empty
@@ -926,12 +930,12 @@ def download_repo_async(download_id: str, repo_id: str, save_dir: str):
 @app.cls(
     image=image,
     gpu=GPU_TYPE,
-    # 30 min, not 10 — run_custom_workflow can be pointed at far larger
-    # checkpoints than the Wan Animate 2 weights this default was originally
-    # sized for (e.g. MiniMax H3's BF16 diffusion model + text encoder are
-    # ~118GB combined), and a cold container's first-ever load of those off
-    # the Volume can plausibly exceed 10 minutes on its own.
-    timeout=1800,
+    # 2026-09-14: 1800s(30分) -> 7200s(2時間)。VDN-H3 Qualityモード(50step
+    # 非蒸留)を60秒(4シーン)相当で使うと、15秒での実測681.3sから単純外挿でも
+    # 2700s超、Attentionの非線形性を考えると更に伸びうる。GPUタイムアウトは
+    # 「多めに設定する」方針（CLAUDE.md §0） — 上限を伸ばすこと自体はコスト
+    # ゼロ（実際にその時間動いた分だけ課金される）なので、ここは安全側に倒す。
+    timeout=7200,
     scaledown_window=30,
     volumes={MODELS_DIR: vol},
     # supabase-model-downloads: despite the name, this is just generic
@@ -1754,6 +1758,9 @@ def _cinematic_safe_dimensions(raw_w: float, raw_h: float, target_megapixels: fl
 def _cinematic_workflow(
     duration_s: float, reference_image_name: str, allow_compile: bool = True,
     megapixels: float = 0.262144, raw_w: float = 1.0, raw_h: float = 1.0,
+    steps: int = 4, use_turbo_lora: bool = True, prompt: str = "",
+    use_vdn: bool = False, vdn_checkpoint: str = "stage-b-step-2000",
+    use_sparse_attn: bool = False, vdn_turbo: bool = False,
 ) -> dict:
     """Python port of src/lib/cinematicWorkflow.ts's WORKFLOW_TEMPLATE +
     buildCinematicWorkflow (speed mode: steps=4, useTurboLora=True,
@@ -1773,11 +1780,16 @@ def _cinematic_workflow(
     it ("disabled" crop) to match width/height itself.
     """
     width, height = _cinematic_safe_dimensions(raw_w, raw_h, megapixels)
-    return {
+    workflow = {
+        # 2026-09-13: core "SaveVideo" -> ComfyUI-VideoHelperSuite の
+        # VHS_VideoCombine に差し替え（v0.35.1 アップグレードに伴う対応、
+        # CLAUDE.md §1 参照）。images/audio を直接受け取れるため 105:91
+        # (CreateVideo) 経由は不要になった。
         "92": {
-            "inputs": {"filename_prefix": "cinematic_smoke", "format": "auto", "codec": "auto",
-                       "video": ["105:91", 0]},
-            "class_type": "SaveVideo", "_meta": {"title": "Save Video"},
+            "inputs": {"images": ["105:10", 0], "audio": ["105:23", 0], "frame_rate": 24,
+                       "loop_count": 0, "filename_prefix": "cinematic_smoke",
+                       "format": "video/h264-mp4", "pingpong": False, "save_output": True},
+            "class_type": "VHS_VideoCombine", "_meta": {"title": "Video Combine"},
         },
         "114": {
             "inputs": {"image": reference_image_name},
@@ -1793,7 +1805,7 @@ def _cinematic_workflow(
                    "_meta": {"title": "VAE Decode"}},
         "105:17": {"inputs": {"sampler_name": "euler"}, "class_type": "KSamplerSelect",
                    "_meta": {"title": "KSamplerSelect"}},
-        "105:9": {"inputs": {"scheduler": "beta", "steps": 4, "denoise": 1, "model": ["105:121", 0]},
+        "105:9": {"inputs": {"scheduler": "beta", "steps": steps, "denoise": 1, "model": ["105:121", 0]},
                   "class_type": "BasicScheduler", "_meta": {"title": "BasicScheduler"}},
         "105:14": {"inputs": {"noise": ["105:15", 0], "guider": ["105:16", 0], "sampler": ["105:17", 0],
                                "sigmas": ["105:9", 0], "latent_image": ["105:104", 1]},
@@ -1806,15 +1818,14 @@ def _cinematic_workflow(
                                "device": "default"}, "class_type": "CLIPLoader", "_meta": {"title": "Load CLIP"}},
         "105:15": {"inputs": {"noise_seed": int(time.time() * 1000) % (2**32)}, "class_type": "RandomNoise",
                    "_meta": {"title": "RandomNoise"}},
-        "105:91": {"inputs": {"fps": 24, "bit_depth": 8, "images": ["105:10", 0], "audio": ["105:23", 0]},
-                   "class_type": "CreateVideo", "_meta": {"title": "Create Video"}},
         "105:104": {
-            "inputs": {"prompt": "Cinematic scene starting exactly from <Image 1>. Preserve the subject's "
+            "inputs": {"prompt": prompt or (
+                                  "Cinematic scene starting exactly from <Image 1>. Preserve the subject's "
                                   "appearance, clothing, and the original background exactly as shown. A slow, "
                                   "smooth camera push-in with subtle natural motion in the subject and "
                                   "environment (gentle breathing, hair and fabric moving softly, ambient light "
                                   "shifting), soft cinematic color grading, shallow depth of field. Calm, "
-                                  "atmospheric ambient sound matching the scene, no dialogue.",
+                                  "atmospheric ambient sound matching the scene, no dialogue."),
                        "width": width, "height": height, "length": ["105:107", 1],
                        "clip": ["105:13", 0], "vae": ["105:11", 0], "first_frame": ["114", 0]},
             "class_type": "MiniMaxH3ImageToVideo", "_meta": {"title": "Image to Video"},
@@ -1828,12 +1839,62 @@ def _cinematic_workflow(
                     "_meta": {"title": "Float (duration)"}},
         "105:121": {"inputs": {"reuse_threshold": 0.3, "start_percent": 0.2, "end_percent": 0.9, "verbose": False,
                                 "model": ["105:124", 0]}, "class_type": "EasyCache", "_meta": {"title": "EasyCache"}},
-        "105:124": {"inputs": {"sage_attention": "auto", "allow_compile": allow_compile, "model": ["105:125", 0]},
+        "105:124": {"inputs": {"sage_attention": "auto", "allow_compile": allow_compile,
+                                "model": ["105:131", 0] if (use_vdn and use_sparse_attn)
+                                else (["105:130", 0] if use_vdn
+                                else (["105:125", 0] if use_turbo_lora else ["105:6", 0]))},
                     "class_type": "PathchSageAttentionKJ", "_meta": {"title": "Patch Sage Attention KJ"}},
         "105:125": {"inputs": {"lora_name": "minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy.safetensors",
                                 "strength_model": 1, "model": ["105:6", 0]},
                     "class_type": "LoraLoaderModelOnly", "_meta": {"title": "Load LoRA"}},
     }
+    if use_vdn:
+        # VDN-H3 (github.com/Saganaki22/ComfyUI-VDN-H3, Apache-2.0; adapter
+        # weights github.com/OpenVDN/vdn-minimax-h3, Apache-2.0) — 2026-09-13
+        # 導入検証。apply_turbo_adapter=False は50ステップ非蒸留チェックポイント
+        # (stage-b-step-2000)を使う設定。ノードの検証コードは
+        # blocks[].attn.qkv_proj の構造とVDNチェックポイントの重み形状一致
+        # のみをチェックし量子化の有無を問わないため、BF16フルモデル
+        # (minimax_h3_fl2va_bf16.safetensors)にそのまま適用できる（実装
+        # ソース読解で確認済み）。lora_mode="bypass" が既定(非破壊・低VRAM
+        # オーバーヘッド) — B300のフルVRAMを活かすBF16常駐方針と合致する。
+        workflow["105:130"] = {
+            "inputs": {
+                "model": ["105:6", 0],
+                "vdn_checkpoint": vdn_checkpoint,
+                "apply_turbo_adapter": vdn_turbo,
+                "strength": 1.0,
+                "lora_mode": "bypass",
+                "branch_weights": "auto",
+                "retain_buffers": "auto",
+                "attention_backend": "grouped",
+                "verbose": True,
+            },
+            "class_type": "ApplyVDNH3", "_meta": {"title": "Apply VDN-H3 (MiniMax-H3 Hybrid Attention)"},
+        }
+        if use_sparse_attn:
+            # ComfyUI core BlockSparseAttention（comfy_extras/nodes_sparse_attention.py、
+            # v0.35.0で追加）— 2026-09-13、VDN-H3の上にさらに重ねられるか検証。
+            # sol-attn は学習不要・専用重み不要（sla/vsaは専用LoRA/チェックポイント
+            # が必要なため除外）。VDN-H3はQKV射影へのLoRA的差分、こちらはAttention
+            # 計算自体の疎化と別レイヤーの最適化なので理論上は直交するはずだが、
+            # 実装コードを読んだだけでは併用時の相互作用を断定できないため実機で検証する。
+            workflow["105:131"] = {
+                "inputs": {
+                    "model": ["105:130", 0],
+                    "selection": "sol-attn",
+                    "selection.tau": 1.3,
+                    "start_percent": 0.2,
+                    "end_percent": 1.0,
+                    "dense_blocks": "",
+                    "min_tokens": 12288,
+                    "extra_tokens": 256,
+                    "sink_conditioning": "exact_kv_and_rows",
+                    "verbose": True,
+                },
+                "class_type": "BlockSparseAttention", "_meta": {"title": "Model Sparse Attention"},
+            }
+    return workflow
 
 
 @app.local_entrypoint()
@@ -1846,10 +1907,153 @@ def probe_minimax_schema():
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
+@app.function(image=image, gpu="B300", timeout=180)
+def probe_vdn_h3_import() -> dict:
+    """VDN-H3(Saganaki22/ComfyUI-VDN-H3)がピン止め中のComfyUI v0.33.3に
+    importできるかだけを確認する（2026-09-13、VDN-H3導入可否調査）。
+
+    2026-09-13: 当初CPU専用(gpu=なし)で試したが、ComfyUI本体の
+    comfy.model_management がimport時点で無条件にtorch.cuda.current_device()
+    を呼ぶ設計のため、GPUドライバ無しでは RuntimeError: Found no NVIDIA driver
+    で止まることが実機で判明（VDN-H3固有の問題ではない）。そのためGPU起動は
+    必須だが、ワークフロー実行・モデルロードは一切せずimportのみ確認する
+    （フル生成に比べて課金は最小限）。"""
+    import subprocess
+    import sys as _sys
+    import traceback
+
+    dest = f"{COMFY_DIR}/custom_nodes/ComfyUI-VDN-H3"
+    clone = subprocess.run(
+        ["git", "clone", "--depth", "1", "https://github.com/Saganaki22/ComfyUI-VDN-H3.git", dest],
+        capture_output=True, text=True, timeout=60,
+    )
+    if clone.returncode != 0:
+        return {"ok": False, "stage": "git clone", "stderr": clone.stderr}
+
+    _sys.path.insert(0, COMFY_DIR)
+    _sys.path.insert(0, dest)  # vdn_h3/ is a subpackage of the cloned repo root
+    try:
+        from vdn_h3.nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+
+        return {
+            "ok": True,
+            "node_classes": list(NODE_CLASS_MAPPINGS.keys()),
+            "display_names": list(NODE_DISPLAY_NAME_MAPPINGS.values()),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False, "stage": "import",
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        }
+
+
+@app.local_entrypoint()
+def probe_v0351_nodes():
+    """modal run modal_wan_animate_blackwell.py::probe_v0351_nodes
+
+    GPU起動のみ・ワークフロー実行なしで、ComfyUI v0.35.1アップグレード後に
+    必要なノード（VHS_VideoCombine, BlockSparseAttention,
+    MiniMaxH3ImageToVideo, ApplyVDNH3）が揃っているか確認する（2026-09-13）。"""
+    result = WanAnimateBlackwell().probe_node_schema.remote(
+        ["VHS_VideoCombine", "BlockSparseAttention", "MiniMaxH3ImageToVideo", "ApplyVDNH3"]
+    )
+    for name, schema in result.items():
+        ok = isinstance(schema, dict) and "input" in schema
+        print(f"[probe_v0351_nodes] {name}: {'OK' if ok else 'MISSING/ERROR -> ' + str(schema)[:200]}")
+
+
+@app.local_entrypoint()
+def probe_vdn_advanced_schema():
+    """modal run modal_wan_animate_blackwell.py::probe_vdn_advanced_schema
+
+    GPU起動のみ・ワークフロー実行なしで ApplyVDNH3Advanced の実際の
+    /object_info を取得する（2026-09-13、fast_kernels 検証用）。"""
+    result = WanAnimateBlackwell().probe_node_schema.remote(["ApplyVDNH3Advanced"])
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+@app.local_entrypoint()
+def probe_vdn_h3():
+    """modal run modal_wan_animate_blackwell.py::probe_vdn_h3
+
+    CPU専用プローブ。GPU課金なし。"""
+    result = probe_vdn_h3_import.remote()
+    if result["ok"]:
+        print(f"[probe_vdn_h3] OK node_classes={result['node_classes']} display_names={result['display_names']}")
+    else:
+        print(f"[probe_vdn_h3] FAILED at {result['stage']}:")
+        print(result.get("stderr") or result.get("traceback") or result.get("error"))
+
+
+@app.function(image=image, volumes={MODELS_DIR: vol}, timeout=120)
+def install_vdn_h3_node() -> dict:
+    """VDN-H3ノードを(ephemeralな使い捨てクローンではなく) Volume 側の
+    custom_nodes/ へ永続インストールする（2026-09-13）。ModalStorageBlackwell.
+    _install_node と同じ仕組み・同じ格納場所を使うので、次回以降のコンテナ
+    起動時に WanAnimateBlackwell.setup() が自動でシンボリックリンクする。
+    CPU専用・GPU課金なし。"""
+    import subprocess
+
+    dest = os.path.join(MODELS_DIR, CUSTOM_NODES_SUBDIR, "ComfyUI-VDN-H3")
+    if os.path.exists(dest):
+        return {"ok": True, "already_installed": True}
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    clone = subprocess.run(
+        ["git", "clone", "--depth", "1", "https://github.com/Saganaki22/ComfyUI-VDN-H3.git", dest],
+        capture_output=True, text=True, timeout=60,
+    )
+    if clone.returncode != 0:
+        return {"ok": False, "stderr": clone.stderr}
+    vol.commit()
+    return {"ok": True, "already_installed": False}
+
+
+@app.function(image=image, volumes={MODELS_DIR: vol}, timeout=1200)
+def download_vdn_checkpoint(stage: str = "stage-b-step-2000") -> dict:
+    """OpenVDN/vdn-minimax-h3からVDNブランチの重みだけを狙ってダウンロードする
+    （2026-09-13）。Modal Volumeが既に~939GB/1TBに迫っているため（[[modal-volume-
+    storage-1tb-limit]]）、snapshot_downloadのallow_patternsでリポジトリ全体
+    ではなく指定stageディレクトリのみに絞る。既定は50ステップ非蒸留版・bf16
+    （stage-b-step-2000、約4.3GB）— 4ステップターボLoRAで学んだ「蒸留版は
+    プロンプト再現度を犠牲にする」教訓([[cinematic-video-tab]]系の投稿参照)
+    により、品質検証にはこちらを使う。CPU専用・GPU課金なし。"""
+    from huggingface_hub import snapshot_download
+
+    dest_dir = os.path.join(MODELS_DIR, "vdn")
+    os.makedirs(dest_dir, exist_ok=True)
+    snapshot_download(
+        repo_id="OpenVDN/vdn-minimax-h3",
+        local_dir=dest_dir,
+        allow_patterns=[f"{stage}/*"],
+    )
+    vol.commit()
+    stage_dir = os.path.join(dest_dir, stage)
+    files = os.listdir(stage_dir) if os.path.isdir(stage_dir) else []
+    return {"ok": True, "stage_dir": stage_dir, "files": files}
+
+
+@app.local_entrypoint()
+def setup_vdn_h3():
+    """modal run modal_wan_animate_blackwell.py::setup_vdn_h3
+
+    VDN-H3ノードのインストール + 50ステップ非蒸留版チェックポイントの
+    ダウンロードを両方まとめて行う。CPU専用・GPU課金なし。"""
+    node_result = install_vdn_h3_node.remote()
+    print(f"[setup_vdn_h3] node install: {node_result}")
+    ckpt_result = download_vdn_checkpoint.remote()
+    print(f"[setup_vdn_h3] checkpoint download: {ckpt_result}")
+
+
 @app.local_entrypoint()
 def cinematic_smoke(
     duration_s: float = 15.0, image_path: str = "", allow_compile: bool = True,
     skip_torch_compile: bool = False, megapixels: float = 0.262144,
+    steps: int = 4, use_turbo_lora: bool = True, prompt: str = "",
+    poll_deadline_s: int = 1500, modal_timeout_s: int = 1800,
+    use_vdn: bool = False, vdn_checkpoint: str = "stage-b-step-2000",
+    use_sparse_attn: bool = False, vdn_turbo: bool = False,
+    force_width: int = 0, force_height: int = 0, seed: int = 0,
 ):
     """modal run modal_wan_animate_blackwell.py::cinematic_smoke --duration-s 15 --skip-torch-compile
 
@@ -1881,8 +2085,18 @@ def cinematic_smoke(
 
     workflow = _cinematic_workflow(
         duration_s, image_name, allow_compile=allow_compile, megapixels=megapixels,
-        raw_w=raw_w, raw_h=raw_h,
+        raw_w=raw_w, raw_h=raw_h, steps=steps, use_turbo_lora=use_turbo_lora, prompt=prompt,
+        use_vdn=use_vdn, vdn_checkpoint=vdn_checkpoint, use_sparse_attn=use_sparse_attn,
+        vdn_turbo=vdn_turbo,
     )
+    if force_width and force_height:
+        # BF16 vs INT8(ローカル) の同一条件比較用（2026-09-13）: 参照画像の
+        # アスペクト比から自動計算する代わりに、両側で完全に同じ解像度を
+        # 強制する。32の倍数であることはホスト側で確認済み前提。
+        workflow["105:104"]["inputs"]["width"] = force_width
+        workflow["105:104"]["inputs"]["height"] = force_height
+    if seed:
+        workflow["105:15"]["inputs"]["noise_seed"] = seed
     workflow_json = json.dumps(workflow)
 
     print(
@@ -1891,7 +2105,8 @@ def cinematic_smoke(
     )
     started = time.time()
     try:
-        result = WanAnimateBlackwell().run_custom_workflow.remote(
+        worker_cls = WanAnimateBlackwell.with_options(timeout=modal_timeout_s)
+        result = worker_cls().run_custom_workflow.remote(
             workflow_json,
             {image_name: image_b64},
             None,
@@ -1902,7 +2117,7 @@ def cinematic_smoke(
             0,
             None,
             skip_torch_compile,
-            1500,
+            poll_deadline_s,
         )
     except Exception as exc:  # noqa: BLE001
         elapsed = time.time() - started

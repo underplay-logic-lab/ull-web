@@ -169,6 +169,14 @@ export async function GET(request: Request, { params }: RouteParams) {
     }
   }
 
+  // inputs.combined_prompt* は今のところ Director（workflow_type: 'director'）
+  // だけが書き込むが、汎用ルートなのでキー自体は他ワークフローでも安全に
+  // null になるだけにしてある（2026-09-14、結果画面でのプロンプト
+  // コピペ・日本語表示・プロンプトモード再生成用）。
+  const inputs = (effJob.inputs ?? null) as Record<string, unknown> | null;
+  const combinedPrompt = typeof inputs?.combined_prompt === "string" ? inputs.combined_prompt : null;
+  const combinedPromptJa = typeof inputs?.combined_prompt_ja === "string" ? inputs.combined_prompt_ja : null;
+
   return NextResponse.json({
     jobId: effJob.id,
     status,
@@ -181,6 +189,8 @@ export async function GET(request: Request, { params }: RouteParams) {
     progressMessage: effJob.progress_message ?? null,
     resultPath: effJob.result_path ?? null,
     metadata: effJob.metadata ?? null,
+    combinedPrompt,
+    combinedPromptJa,
     retryCount: typeof effJob.retry_count === "number" ? effJob.retry_count : 0,
     ...(queue
       ? {

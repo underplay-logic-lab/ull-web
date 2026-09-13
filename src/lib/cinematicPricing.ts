@@ -15,7 +15,7 @@ export const CINEMATIC_ASPECT_RATIOS: { id: CinematicAspectRatio; label: string;
   { id: "4:3", label: "4:3", ratio: 4 / 3 },
 ];
 
-export type CinematicModeId = "speed" | "standard" | "cinemaMaster";
+export type CinematicModeId = "speed" | "standard" | "cinemaMaster" | "vdnFast" | "vdnQuality";
 
 export type CinematicMode = {
   id: CinematicModeId;
@@ -25,12 +25,29 @@ export type CinematicMode = {
   steps: number;
   // Applies the 4-step turbo LoRA baked into the shared Modal volume — only
   // sensible for a low step count; Cinema Master's 20-step full run skips it
-  // (see buildCinematicWorkflow's loraEnabled branch).
+  // (see buildCinematicWorkflow's loraEnabled branch). Superseded by VDN-H3
+  // (useVdn) modes below — 2026-09-14.
   useTurboLora: boolean;
   // Square-equivalent edge length (px) — the actual per-aspect-ratio target
   // is derived from this via cinematicTargetDimensions, preserving this as
   // roughly the same total pixel budget across aspect ratios.
   baseEdge: number;
+  // VDN-H3 (github.com/Saganaki22/ComfyUI-VDN-H3 + OpenVDN/vdn-minimax-h3,
+  // Apache-2.0) — 2026-09-13/14 導入。旧ターボLoRA(useTurboLora)より高速・
+  // 高品質なので speed/standard/cinemaMaster の後継として追加。useVdn=false
+  // のモードでは以下3フィールドは無視される。
+  useVdn?: boolean;
+  // "stage-b-step-2000"(50step非蒸留・音声あり) または
+  // "stage-dmd-step-250"(8step蒸留・無音仕様 — チェックポイント自体の
+  // 仕様でありバグではない、2026-09-14 ホスト・ローカル両方で確認済み)。
+  vdnCheckpoint?: string;
+  // true = 8step蒸留(vdnCheckpoint="stage-dmd-step-250")、false = 50step
+  // 非蒸留(vdnCheckpoint="stage-b-step-2000")。VDN-H3自身のapply_turbo_adapter
+  // にそのまま渡る。
+  vdnTurbo?: boolean;
+  // stage-dmd-step-250 は音声モダリティ非対応（チェックポイント仕様）。
+  // UIで「無音」であることを事前に案内するためのフラグ。
+  hasAudio: boolean;
 };
 
 export const CINEMATIC_MODES: CinematicMode[] = [
@@ -42,6 +59,7 @@ export const CINEMATIC_MODES: CinematicMode[] = [
     steps: 4,
     useTurboLora: true,
     baseEdge: 512,
+    hasAudio: true,
   },
   {
     id: "standard",
@@ -51,6 +69,7 @@ export const CINEMATIC_MODES: CinematicMode[] = [
     steps: 4,
     useTurboLora: true,
     baseEdge: 768,
+    hasAudio: true,
   },
   {
     id: "cinemaMaster",
@@ -60,6 +79,39 @@ export const CINEMATIC_MODES: CinematicMode[] = [
     steps: 20,
     useTurboLora: false,
     baseEdge: 1024,
+    hasAudio: true,
+  },
+  {
+    id: "vdnFast",
+    label: "Fast",
+    tagline: "高速・低コスト（無音）",
+    // 2026-09-14: 実機 elapsed=396.1s（480x864・8step DMD蒸留）から
+    // ¥1125/h換算で原価≈¥124/15秒。原価の約3倍 ≈ ¥372 ÷ credit_to_jpy(1.66)
+    // ≈ 224C。director_per_second_fast 側が実際の課金値の SSOT（admin編集
+    // 可）— ここは knobs 未取得時のフォールバック値。
+    credits: 224,
+    steps: 8,
+    useTurboLora: false,
+    baseEdge: 1024,
+    useVdn: true,
+    vdnCheckpoint: "stage-dmd-step-250",
+    vdnTurbo: true,
+    hasAudio: false,
+  },
+  {
+    id: "vdnQuality",
+    label: "Quality",
+    tagline: "高品質・音声付き",
+    // 2026-09-13: 実機 elapsed=681.3s（1024px相当・50step非蒸留）から
+    // 原価≈¥213/15秒。原価の約3倍 ≈ ¥639 ÷ 1.66 ≈ 385C。
+    credits: 385,
+    steps: 50,
+    useTurboLora: false,
+    baseEdge: 1024,
+    useVdn: true,
+    vdnCheckpoint: "stage-b-step-2000",
+    vdnTurbo: false,
+    hasAudio: true,
   },
 ];
 
@@ -71,7 +123,11 @@ export function isCinematicModeId(value: unknown): value is CinematicModeId {
   return typeof value === "string" && value in CINEMATIC_MODE_BY_ID;
 }
 
-const CINEMATIC_MODE_KNOB: Record<CinematicModeId, KnobKey> = {
+// 旧 Cinematic Video タブ（定額課金）専用の対応表。vdnFast/vdnQuality は
+// Director が directorPricing.ts の従量課金（director_per_second_fast/
+// _quality）で別管理するため、意図的にここには含めない
+// （Partial — 未登録の id は CINEMATIC_MODES[].credits の静的値にフォールバック）。
+const CINEMATIC_MODE_KNOB: Partial<Record<CinematicModeId, KnobKey>> = {
   speed: "cinematic_speed",
   standard: "cinematic_standard",
   cinemaMaster: "cinematic_cinema_master",
@@ -84,7 +140,9 @@ export function cinematicModeCredits(
   id: CinematicModeId,
   knobs: PricingKnobs = DEFAULT_KNOBS,
 ): number {
-  return knobs[CINEMATIC_MODE_KNOB[id]];
+  const knobKey = CINEMATIC_MODE_KNOB[id];
+  if (!knobKey) return CINEMATIC_MODE_BY_ID[id].credits;
+  return knobs[knobKey];
 }
 
 export function isCinematicAspectRatio(value: unknown): value is CinematicAspectRatio {

@@ -4,26 +4,35 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   AlertTriangle,
+  Check,
   Clapperboard,
+  Copy,
   Download,
   ImagePlus,
   LogIn,
+  Pencil,
   Plus,
   Sparkles,
   Trash2,
+  Undo2,
   X,
   Zap,
 } from "lucide-react";
 import {
   DIRECTOR_CAMERA_MOVES,
   DIRECTOR_MAX_SCENES,
+  DIRECTOR_MAX_TOTAL_SECONDS,
   DIRECTOR_MIN_SCENES,
   DIRECTOR_SCENE_TEXT_MAX_LENGTH,
+  DIRECTOR_SECONDS_PER_SCENE,
   directorCostBreakdown,
+  directorCostBreakdownForDuration,
   directorTotalDurationS,
   type DirectorCameraMoveId,
+  type DirectorQualityMode,
   type DirectorScene,
 } from "@/lib/directorPricing";
+import { CINEMATIC_MODE_BY_ID } from "@/lib/cinematicPricing";
 import { pollDirectorJob, startDirectorJob, type DirectorApiError, type DirectorJobStatus } from "@/lib/directorApi";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
@@ -173,6 +182,29 @@ function InsufficientCreditsModal({
 }
 
 type PersistedJob = { jobId: string };
+type UiMode = "scenes" | "prompt";
+
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        } catch (err) {
+          console.error("[DirectorStudioTab] clipboard copy failed:", err);
+        }
+      }}
+      className="flex items-center gap-1 rounded-lg border border-border bg-surface px-2 py-1 text-[11px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+    >
+      {copied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+      {copied ? "コピーしました" : label}
+    </button>
+  );
+}
 
 export function DirectorStudioTab() {
   const { user } = useSupabaseUser();
@@ -182,6 +214,18 @@ export function DirectorStudioTab() {
   const [image, setImage] = useState<File | null>(null);
   const imagePreview = useObjectUrl(image);
   const [scenes, setScenes] = useState<DirectorScene[]>([newScene()]);
+
+  // 画質モード（2026-09-14、VDN-H3導入）。fast=8step蒸留・無音・低コスト、
+  // quality=50step非蒸留・音声あり。詳細は cinematicPricing.ts の
+  // CINEMATIC_MODE_BY_ID.vdnFast / .vdnQuality 参照。
+  const [qualityMode, setQualityMode] = useState<DirectorQualityMode>("fast");
+
+  // プロンプトモード（結果画面でコピペしたプロンプトを微修正して直接
+  // 再生成する経路、2026-09-14）。uiMode="prompt" の間はシーンビルダーの
+  // 代わりにテキストエリア＋尺セレクタを表示し、handleRun はこちらの値を送る。
+  const [uiMode, setUiMode] = useState<UiMode>("scenes");
+  const [promptDraft, setPromptDraft] = useState("");
+  const [promptDraftDurationS, setPromptDraftDurationS] = useState(DIRECTOR_SECONDS_PER_SCENE);
 
   const resumedJobId = useMemo(() => loadFormState<PersistedJob>(JOB_KEY)?.jobId || null, []);
   const [phase, setPhase] = useState<Phase>(resumedJobId ? "running" : "idle");
@@ -194,10 +238,15 @@ export function DirectorStudioTab() {
 
   const elapsedMs = useElapsedTimer(phase === "running");
 
-  const breakdown = useMemo(
-    () => directorCostBreakdown({ sceneCount: scenes.length, knobs }),
-    [scenes.length, knobs],
+  const sceneBreakdown = useMemo(
+    () => directorCostBreakdown({ sceneCount: scenes.length, mode: qualityMode, knobs }),
+    [scenes.length, qualityMode, knobs],
   );
+  const promptBreakdown = useMemo(
+    () => directorCostBreakdownForDuration({ totalDurationS: promptDraftDurationS, mode: qualityMode, knobs }),
+    [promptDraftDurationS, qualityMode, knobs],
+  );
+  const breakdown = uiMode === "prompt" ? promptBreakdown : sceneBreakdown;
   const cost = breakdown.credits;
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
   const busy = phase === "submitting" || phase === "running";
@@ -212,8 +261,20 @@ export function DirectorStudioTab() {
     setScenes((prev) => prev.map((s, i) => (i === index ? { ...s, ...patch } : s)));
   }, []);
 
+  // 完了したジョブの合成済みプロンプトを引き継いで編集モードへ入る。
+  const enterPromptMode = useCallback(() => {
+    if (!job?.combinedPrompt) return;
+    setPromptDraft(job.combinedPrompt);
+    setPromptDraftDurationS(job.totalDurationS ?? DIRECTOR_SECONDS_PER_SCENE);
+    setUiMode("prompt");
+  }, [job]);
+  const exitPromptMode = useCallback(() => setUiMode("scenes"), []);
+
   const canRun =
-    Boolean(image) && scenes.every((s) => s.text.trim().length > 0) && cost > 0 && !busy;
+    Boolean(image) &&
+    !busy &&
+    cost > 0 &&
+    (uiMode === "prompt" ? promptDraft.trim().length > 0 : scenes.every((s) => s.text.trim().length > 0));
 
   const handleRun = useCallback(async () => {
     if (!user) return setLoginOpen(true);
@@ -225,7 +286,16 @@ export function DirectorStudioTab() {
     setJob(null);
 
     try {
-      const res = await startDirectorJob({ userId: user.id, image, scenes });
+      const res =
+        uiMode === "prompt"
+          ? await startDirectorJob({
+              userId: user.id,
+              image,
+              rawPrompt: promptDraft.trim(),
+              rawDurationS: promptDraftDurationS,
+              quality: qualityMode,
+            })
+          : await startDirectorJob({ userId: user.id, image, scenes, quality: qualityMode });
       broadcastCreditsUpdate(user.id, res.remainingCredits);
       setJobId(res.jobId);
       setPhase("running");
@@ -238,7 +308,7 @@ export function DirectorStudioTab() {
       setErrorMessage(e.message || "ジョブの作成に失敗しました。");
       if (e.message?.includes("クレジット")) setChargeOpen(true);
     }
-  }, [user, image, scenes, insufficientCredits]);
+  }, [user, image, scenes, insufficientCredits, uiMode, promptDraft, promptDraftDurationS, qualityMode]);
 
   // --- ポーリングループ（画像/動画タブと同じ規約: 完了後も job key をクリアしない） --
   useEffect(() => {
@@ -284,7 +354,7 @@ export function DirectorStudioTab() {
     };
   }, [jobId]);
 
-  const totalDurationS = directorTotalDurationS(scenes.length);
+  const totalDurationS = uiMode === "prompt" ? promptBreakdown.totalDurationS : directorTotalDurationS(scenes.length);
 
   return (
     <div className="grid gap-6 lg:grid-cols-2">
@@ -300,73 +370,151 @@ export function DirectorStudioTab() {
           onClear={() => setImage(null)}
         />
 
-        <div>
-          <div className="mb-2 flex items-center justify-between">
-            <p className="flex items-center gap-1.5 text-xs font-mono uppercase tracking-widest text-muted">
-              <Clapperboard size={12} />
-              タイムライン（シーン）
+        {uiMode === "prompt" ? (
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <p className="flex items-center gap-1.5 text-xs font-mono uppercase tracking-widest text-muted">
+                <Pencil size={12} />
+                プロンプトモード（直接編集）
+              </p>
+              <button
+                type="button"
+                onClick={exitPromptMode}
+                className="flex items-center gap-1 text-[11px] text-muted transition-colors hover:text-foreground"
+              >
+                <Undo2 size={12} />
+                シーンモードに戻る
+              </button>
+            </div>
+            <textarea
+              value={promptDraft}
+              onChange={(e) => setPromptDraft(e.target.value)}
+              rows={8}
+              placeholder="英語のプロンプトを入力・編集してください"
+              className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm leading-relaxed text-foreground placeholder:text-muted"
+            />
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <label className="text-xs text-muted">尺</label>
+              <select
+                value={promptDraftDurationS}
+                onChange={(e) => setPromptDraftDurationS(Number(e.target.value))}
+                className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-foreground"
+              >
+                {Array.from(
+                  { length: Math.floor(DIRECTOR_MAX_TOTAL_SECONDS / DIRECTOR_SECONDS_PER_SCENE) },
+                  (_, i) => (i + 1) * DIRECTOR_SECONDS_PER_SCENE,
+                ).map((s) => (
+                  <option key={s} value={s}>
+                    約{s}秒
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
+              <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
+              このプロンプトはそのままモデルに渡されます（AIによる自動合成なし）。英語で入力してください。
             </p>
-            <span className="text-[11px] text-muted">合計 約{totalDurationS}秒</span>
           </div>
+        ) : (
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <p className="flex items-center gap-1.5 text-xs font-mono uppercase tracking-widest text-muted">
+                <Clapperboard size={12} />
+                タイムライン（シーン）
+              </p>
+              <span className="text-[11px] text-muted">合計 約{totalDurationS}秒</span>
+            </div>
 
-          <div className="flex flex-col gap-3">
-            {scenes.map((scene, i) => (
-              <div key={i} className="rounded-xl border border-border bg-background p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-semibold text-muted">シーン {i + 1}</span>
-                  {scenes.length > DIRECTOR_MIN_SCENES && (
-                    <button
-                      type="button"
-                      onClick={() => removeScene(i)}
-                      className="text-muted transition-colors hover:text-red-400"
-                      aria-label={`シーン${i + 1}を削除`}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  )}
+            <div className="flex flex-col gap-3">
+              {scenes.map((scene, i) => (
+                <div key={i} className="rounded-xl border border-border bg-background p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-muted">シーン {i + 1}</span>
+                    {scenes.length > DIRECTOR_MIN_SCENES && (
+                      <button
+                        type="button"
+                        onClick={() => removeScene(i)}
+                        className="text-muted transition-colors hover:text-red-400"
+                        aria-label={`シーン${i + 1}を削除`}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
+                  <select
+                    value={scene.camera}
+                    onChange={(e) => updateScene(i, { camera: e.target.value as DirectorCameraMoveId })}
+                    className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground"
+                  >
+                    {DIRECTOR_CAMERA_MOVES.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="text"
+                    value={scene.text}
+                    onChange={(e) => updateScene(i, { text: e.target.value.slice(0, DIRECTOR_SCENE_TEXT_MAX_LENGTH) })}
+                    placeholder="例: 振り返って微笑む"
+                    className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted"
+                  />
                 </div>
-                <select
-                  value={scene.camera}
-                  onChange={(e) => updateScene(i, { camera: e.target.value as DirectorCameraMoveId })}
-                  className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground"
-                >
-                  {DIRECTOR_CAMERA_MOVES.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.label}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  type="text"
-                  value={scene.text}
-                  onChange={(e) => updateScene(i, { text: e.target.value.slice(0, DIRECTOR_SCENE_TEXT_MAX_LENGTH) })}
-                  placeholder="例: 振り返って微笑む"
-                  className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted"
-                />
-              </div>
-            ))}
+              ))}
+            </div>
+
+            {scenes.length < DIRECTOR_MAX_SCENES && (
+              <button
+                type="button"
+                onClick={addScene}
+                className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border py-2.5 text-sm text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+              >
+                <Plus size={14} />
+                シーンを追加（最大{DIRECTOR_MAX_SCENES}）
+              </button>
+            )}
+
+            <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
+              <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
+              各シーンのカメラワーク・アイデアはAIが1本の連続した映像指示に自動合成します。最大60秒。
+            </p>
           </div>
-
-          {scenes.length < DIRECTOR_MAX_SCENES && (
-            <button
-              type="button"
-              onClick={addScene}
-              className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border py-2.5 text-sm text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
-            >
-              <Plus size={14} />
-              シーンを追加（最大{DIRECTOR_MAX_SCENES}）
-            </button>
-          )}
-
-          <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
-            <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-            各シーンのカメラワーク・アイデアはAIが1本の連続した映像指示に自動合成します。最大60秒。
-          </p>
-        </div>
+        )}
       </div>
 
       {/* ── 右: アクション / 結果 ───────────────────────────── */}
       <div className="flex flex-col gap-4">
+        <div className="rounded-xl border border-border bg-background p-4">
+          <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">画質モード</p>
+          <div className="grid grid-cols-2 gap-2">
+            {(["fast", "quality"] as const).map((m) => {
+              const modeInfo = CINEMATIC_MODE_BY_ID[m === "quality" ? "vdnQuality" : "vdnFast"];
+              const selected = qualityMode === m;
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setQualityMode(m)}
+                  className={`rounded-xl border px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                    selected
+                      ? "border-neon-violet/60 bg-neon-violet/10"
+                      : "border-border bg-surface hover:border-neon-violet/30"
+                  }`}
+                >
+                  <span className="block text-sm font-semibold text-foreground">{modeInfo.label}</span>
+                  <span className="block text-[11px] text-muted">{modeInfo.tagline}</span>
+                  {!modeInfo.hasAudio && (
+                    <span className="mt-1 inline-block rounded bg-background px-1.5 py-0.5 text-[10px] text-muted">
+                      無音
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         <div className="rounded-xl border border-border bg-background p-4">
           <div className="flex items-center justify-between text-sm">
             <span className="flex items-center gap-1.5 text-muted">
@@ -444,6 +592,43 @@ export function DirectorStudioTab() {
             {job.vramUsedGb != null && (
               <div className="mt-2 flex justify-center">
                 <VramBadge gb={job.vramUsedGb} />
+              </div>
+            )}
+
+            {job.combinedPrompt && (
+              <div className="mt-4 flex flex-col gap-3 border-t border-border pt-3">
+                <div>
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-[11px] font-mono uppercase tracking-widest text-muted">
+                      生成に使われたプロンプト（英語）
+                    </span>
+                    <CopyButton text={job.combinedPrompt} label="コピー" />
+                  </div>
+                  <p className="max-h-32 overflow-y-auto rounded-lg border border-border bg-surface p-2.5 text-[12px] leading-relaxed text-muted">
+                    {job.combinedPrompt}
+                  </p>
+                </div>
+
+                {job.combinedPromptJa && (
+                  <div>
+                    <div className="mb-1 flex items-center justify-between">
+                      <span className="text-[11px] font-mono uppercase tracking-widest text-muted">日本語訳</span>
+                      <CopyButton text={job.combinedPromptJa} label="コピー" />
+                    </div>
+                    <p className="max-h-32 overflow-y-auto rounded-lg border border-border bg-surface p-2.5 text-[12px] leading-relaxed text-muted">
+                      {job.combinedPromptJa}
+                    </p>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={enterPromptMode}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-neon-violet/40"
+                >
+                  <Pencil size={14} />
+                  このプロンプトを編集して再生成
+                </button>
               </div>
             )}
           </div>

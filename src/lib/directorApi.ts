@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabaseClient";
 import { uploadStudioAsset } from "@/lib/studioUploads";
-import type { DirectorScene } from "@/lib/directorPricing";
+import type { DirectorQualityMode, DirectorScene } from "@/lib/directorPricing";
 
 export type DirectorApiError = Error & { remainingCredits?: number };
 
@@ -11,21 +11,27 @@ export type DirectorStartResult = {
   totalDurationS: number;
 };
 
-export async function startDirectorJob(args: {
-  userId: string;
-  image: File;
-  scenes: DirectorScene[];
-}): Promise<DirectorStartResult> {
+export type DirectorStartArgs = (
+  | { userId: string; image: File; scenes: DirectorScene[]; rawPrompt?: undefined }
+  | { userId: string; image: File; rawPrompt: string; rawDurationS: number; scenes?: undefined }
+) & { quality: DirectorQualityMode };
+
+export async function startDirectorJob(args: DirectorStartArgs): Promise<DirectorStartResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) throw new Error("ログインが必要です。");
 
   const { path: storagePath } = await uploadStudioAsset(args.userId, args.image);
 
+  const body =
+    "rawPrompt" in args && args.rawPrompt !== undefined
+      ? { storagePath, rawPrompt: args.rawPrompt, rawDurationS: args.rawDurationS, quality: args.quality }
+      : { storagePath, scenes: args.scenes, quality: args.quality };
+
   const res = await fetch("/api/director/generate", {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ storagePath, scenes: args.scenes }),
+    body: JSON.stringify(body),
   });
   const data = await res.json();
   if (!res.ok) {
@@ -47,6 +53,9 @@ export type DirectorJobStatus = {
   videoUrl: string | null;
   errorMessage: string | null;
   vramUsedGb: number | null;
+  combinedPrompt: string | null;
+  combinedPromptJa: string | null;
+  totalDurationS: number | null;
   queue: { queuePosition: number; avgExecutionSeconds: number; estimatedWaitSeconds: number } | null;
 };
 
@@ -62,7 +71,7 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || "ジョブ状態の取得に失敗しました。");
 
-  const meta = (data.metadata ?? {}) as { vram_used_gb?: unknown };
+  const meta = (data.metadata ?? {}) as { vram_used_gb?: unknown; total_duration_s?: unknown };
   const vramUsedGb =
     typeof meta.vram_used_gb === "number" && Number.isFinite(meta.vram_used_gb) ? meta.vram_used_gb : null;
 
@@ -72,6 +81,9 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
     videoUrl: (data.videoUrl as string | null) ?? null,
     errorMessage: (data.errorMessage as string | null) ?? null,
     vramUsedGb,
+    combinedPrompt: (data.combinedPrompt as string | null) ?? null,
+    combinedPromptJa: (data.combinedPromptJa as string | null) ?? null,
+    totalDurationS: typeof meta.total_duration_s === "number" ? meta.total_duration_s : null,
     queue:
       typeof data.queuePosition === "number"
         ? {

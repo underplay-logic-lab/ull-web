@@ -19,7 +19,8 @@ export type KnobKey =
   | "cinematic_speed"
   | "cinematic_standard"
   | "cinematic_cinema_master"
-  | "director_per_second"
+  | "director_per_second_fast"
+  | "director_per_second_quality"
   | "director_min_credits"
   | "upscale_per_mp"
   | "upscale_min_credits"
@@ -136,16 +137,33 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     description: "1本あたりの消費クレジット（20ステップ / 1024px）",
     isPublic: true,
   },
-  director_per_second: {
-    // ULL Cinematic Director: 2026-09-13 B300実機（speed mode相当・4ステップ/
-    // 496px）で 60秒=elapsed 638.6s（GPU時給 ¥1125/h → 原価 ¥19.9）。credit_to_jpy
-    // 1.66 と粗利目標(他機能と同水準の~65-70%)から算出: 60秒 36C ≈ ¥59.8（原価の
-    // 約3倍）。秒課金なので合計尺（シーン数×15秒、最大60秒）にそのまま比例する。
-    value: 0.6,
-    label: "Cinematic Director（秒あたり）",
+  director_per_second_fast: {
+    // ULL Cinematic Director "Fast"モード: VDN-H3 8step蒸留(stage-dmd-step-250、
+    // 無音仕様)。2026-09-14 B300実機（480x864）で elapsed=396.1s → GPU時給
+    // ¥1125/h換算で原価≈¥124/15秒（¥8.25/秒）。原価の約3倍 ≈ ¥24.75/秒 ÷
+    // credit_to_jpy(1.66) ≈ 14.9C/秒。
+    //
+    // 旧 director_per_second(0.6)は2026-09-09〜13の間、B300実機60秒=638.6sの
+    // 原価計算を10倍誤って(¥19.9とすべきところ¥199.6)算出した値で、実際の
+    // 原価に対し大幅な過小課金だった（本番60秒生成で36C≈¥60課金 vs 実原価
+    // ¥187〜200）。2026-09-13/14のVDN-H3導入・実測し直しでこの誤りを解消。
+    value: 14.9,
+    label: "Cinematic Director Fast（秒あたり）",
     category: "feature_credits",
     unit: "C/秒",
-    description: "合計尺1秒あたりの消費クレジット（credits = ceil(これ × 合計秒数)）",
+    description: "Fastモード（8step蒸留・無音）の合計尺1秒あたり消費クレジット",
+    isPublic: true,
+  },
+  director_per_second_quality: {
+    // ULL Cinematic Director "Quality"モード: VDN-H3 50step非蒸留
+    // (stage-b-step-2000、音声あり)。2026-09-13 B300実機（1024px相当）で
+    // elapsed=681.3s → 原価≈¥213/15秒（¥14.19/秒）。原価の約3倍 ≈
+    // ¥42.6/秒 ÷ 1.66 ≈ 25.7C/秒。
+    value: 25.7,
+    label: "Cinematic Director Quality（秒あたり）",
+    category: "feature_credits",
+    unit: "C/秒",
+    description: "Qualityモード（50step非蒸留・音声あり）の合計尺1秒あたり消費クレジット",
     isPublic: true,
   },
   director_min_credits: {
