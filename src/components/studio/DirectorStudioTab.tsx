@@ -503,7 +503,7 @@ export function DirectorStudioTab() {
 
             <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
               <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-              各シーンのカメラワーク・アイデア・秒数はAIが1本の連続した映像指示に自動合成します（時間配分はヒントであり厳密な保証ではありません）。合計最大{DIRECTOR_MAX_TOTAL_SECONDS}秒。
+              各シーンのカメラワーク・アイデアはAIが1本の連続した映像指示に自動合成します（上から順番に展開されますが、厳密な秒数通りに切り替わる保証はありません）。秒数は合計尺・消費クレジットの計算に使われます。合計最大{DIRECTOR_MAX_TOTAL_SECONDS}秒。
             </p>
           </div>
         )}

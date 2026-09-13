@@ -27,29 +27,26 @@ export class DirectorPromptError extends Error {
   }
 }
 
-// 2026-09-14: 各シーンの時間配分（durationS）を明示的にプロンプトへ書き込む
-// ようにした。以前は時間情報が一切無く、Geminiが合成した1本のプロンプトから
-// 尺の情報が失われていたため、60秒のような長尺で「指示が途中で尽きて同じ
-// 動作を繰り返す」実障害があった。MiniMax H3自体にタイムスタンプで厳密に
-// 条件付けする仕組みは無いため、これは「モデルが従いやすくなるヒント」で
-// あって100%の保証ではない点に注意（ホスト報告、実測で確認）。
+// 2026-09-14: 一度「各シーンの時間配分をプロンプトへ明示的に書き込む」
+// (Scene N (0s-8s): ...) 方式を試したが、ホスト指摘により撤回した —
+// MiniMax H3（および調査した限りWan2.2等も含め、この種の単発呼び出し動画
+// 拡散モデル全般）はテキストプロンプト内のタイムスタンプを厳密に守る
+// 仕組みを持たない。「時間指定できます」という誤った期待を持たせるのは
+// 実測での不一致以上に問題（クレームの元）と判断し、単純な「順番のみ」の
+// リストに戻した。本当に秒数を厳密に守らせたい場合は、1シーン=1回の
+// 独立した生成に分けて Motion Context 系ノードで繋ぐ方式が必要
+// （ComfyUI-H3-Motion-Context 等、コミュニティ実装あり）— 別途検討中。
 function buildSceneDirectorPrompt(scenes: DirectorScene[]): string {
-  let elapsed = 0;
   const sceneLines = scenes
-    .map((s, i) => {
-      const start = elapsed;
-      elapsed += Math.max(0, Math.round(s.durationS || 0));
-      return `Scene ${i + 1} (${start}s-${elapsed}s): camera movement = ${directorCameraLabel(s.camera)}. Action: ${s.text}`;
-    })
+    .map((s, i) => `Scene ${i + 1}: camera movement = ${directorCameraLabel(s.camera)}. Action: ${s.text}`)
     .join("\n");
   return [
     "You are an expert cinematic video director.",
-    "The user has provided a timed sequence of scenes, each with a specific time range, camera movement, and action.",
+    "The user has provided a sequence of scenes with specific camera movements and actions.",
     "Combine them into a SINGLE, highly detailed, continuous English prompt optimized for a text-to-video model.",
-    "Explicitly convey the passage of time and the order of actions (e.g. \"first... then... after that... finally...\") so each scene's action occupies roughly its own share of the total duration — do not let one action bleed into or replace another scene's action.",
-    "Ensure the transitions between actions are smooth and cinematic. Include lighting and atmosphere.",
+    "Ensure the transitions between actions are smooth and cinematic, following the given order from first to last. Include lighting and atmosphere.",
     "Preserve the subject's appearance, clothing, and identity exactly as shown in the reference image throughout every scene.",
-    "Output ONLY the final English prompt text — no preamble, no scene labels, no timestamps, no quotes.",
+    "Output ONLY the final English prompt text — no preamble, no scene labels, no quotes.",
     "",
     sceneLines,
   ].join("\n");
