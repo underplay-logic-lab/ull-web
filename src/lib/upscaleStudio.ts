@@ -97,6 +97,19 @@ export const UPSCALE_MODELS: UpscaleModel[] = [
     creditMult: 1.0,
     kind: ["image", "video"],
   },
+  // real_esrgan_x4plus / swinir_l / real_esrgan_anime は 2026-09-13 に実装・
+  // GPU実機検証まで完了させたが、事業判断で非表示化した（ホスト判断）。
+  // 理由: これらは軽量（実測VRAM数GB）でローカルPC・無料ツール
+  // （Upscayl/chaiNNer/ComfyUI等）でも即座にタダで動くコモディティモデルで
+  // あり、「よそでは出来ないことをやる」というULL Studioの差別化（CLAUDE.md
+  // §0）と噛み合わない。また提供すると高付加価値なSeedVR2 7Bの利用を食う
+  // リスクがある。バックエンド（modal_seedvr2_worker.py）側もenabled=Falseに
+  // 揃えてある。需要が出たら下記 HIDDEN_UPSCALE_MODELS をこの配列へ戻すだけ
+  // で復活できる（バックエンドのenabled=Trueも忘れず戻すこと）。
+];
+
+/** 非表示化した軽量モデル（上のコメント参照）。UPSCALE_MODELS には含めない。 */
+const HIDDEN_UPSCALE_MODELS: UpscaleModel[] = [
   {
     key: "real_esrgan_x4plus",
     label: "Real-ESRGAN x4plus",
@@ -124,6 +137,7 @@ export const UPSCALE_MODELS: UpscaleModel[] = [
     fixedScale: 4,
   },
 ];
+void HIDDEN_UPSCALE_MODELS; // 非表示中は未参照（復活時にUPSCALE_MODELSへ移す）
 
 /** 動画アップスケール（/api/studio/upscale/video）が受け付けてよいモデルだけに絞った一覧。 */
 export const UPSCALE_VIDEO_MODELS: UpscaleModel[] = UPSCALE_MODELS.filter((m) =>

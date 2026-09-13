@@ -317,7 +317,15 @@ UPSCALER_REGISTRY: dict = {
         "desc_ja": "実写・写真向けの素直な4倍拡大。発明的な描き直しをせず破綻しない・爆速。",
         "license": "BSD-3-Clause",
         "node_type": "upscale_model",  # ComfyUI 標準 UpscaleModelLoader + ImageUpscaleWithModel
-        "enabled": True,
+        # 2026-09-13: 実装・実機検証まで完了させた直後、事業判断で非表示化
+        # （ホスト判断）。理由: この系統のモデルは軽量（実測 VRAM 数GB）で
+        # ローカルPC・無料ツール（Upscayl/chaiNNer/ComfyUI等）でも即座にタダで
+        # 動くコモディティ品であり、「よそでは出来ないことをやる」という
+        # ULL Studio の差別化（CLAUDE.md §0）と噛み合わない。また、これを
+        # 提供すると重い（＝高付加価値・高単価な）SeedVR2 7B の利用を食う
+        # リスクがある。重みDL・ワークフロー構築・GPU実機検証は完了済みで
+        # コードはそのまま残す — 需要が出たら enabled=True に戻すだけで復活可能。
+        "enabled": False,
         "kind": ("image", "video"),
         # 2026-09-13: 当初 "ai-forever/Real-ESRGAN"（HF）を指していたが実在しない
         # ファイル名で 404（実測確認）。公式配布元は GitHub Releases のみのため
@@ -337,7 +345,7 @@ UPSCALER_REGISTRY: dict = {
         "desc_ja": "アニメ・イラスト特化の4倍拡大。線をなめらかに保つ。SeedVR2より軽量・高速。",
         "license": "BSD-3-Clause",
         "node_type": "upscale_model",
-        "enabled": True,
+        "enabled": False,  # 2026-09-13: real_esrgan_x4plus と同じ理由で非表示化（上記コメント参照）
         "kind": ("image", "video"),
         "model_files": [
             (
@@ -354,7 +362,7 @@ UPSCALER_REGISTRY: dict = {
         "desc_ja": "実写のノイズ・JPEGブロックを除去しながら復元する4倍拡大。写真の劣化補正に最も強い。",
         "license": "Apache-2.0",
         "node_type": "upscale_model",  # spandrel は SwinIR 対応済み（ComfyUI 標準ノード経由）
-        "enabled": True,
+        "enabled": False,  # 2026-09-13: real_esrgan_x4plus と同じ理由で非表示化（上記コメント参照）
         "kind": ("image", "video"),
         # 2026-09-13: 当初 "Comfy-Org/SwinIR"（HF）は非公開/存在せず 401（実測確認）。
         # 公式配布元（JingyunLiang/SwinIR GitHub Releases）の実写向け SwinIR-L x4 GAN
