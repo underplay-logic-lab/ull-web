@@ -20,7 +20,9 @@ import {
 import {
   DirectorPromptError,
   expandDirectorScenes,
+  looksJapanese,
   translateDirectorPromptToJapanese,
+  translateJapanesePromptToEnglish,
 } from "@/lib/directorPrompt";
 import { buildCinematicWorkflow } from "@/lib/cinematicWorkflow";
 import { CINEMATIC_MODE_BY_ID } from "@/lib/cinematicPricing";
@@ -118,7 +120,7 @@ export async function POST(request: Request) {
         mode: qualityMode,
         knobs,
       })
-    : directorCostBreakdown({ sceneCount: scenes.length, mode: qualityMode, knobs });
+    : directorCostBreakdown({ scenes, mode: qualityMode, knobs });
   const creditsCost = breakdown.credits || directorCreditsWorstCase(knobs);
 
   // --- credits ---------------------------------------------------------
@@ -151,11 +153,24 @@ export async function POST(request: Request) {
   }
 
   // --- Phase 1: Gemini でシーン合成（1本の連続した英語プロンプトへ） -------
-  // プロンプトモードでは既に完成した英語プロンプトが渡されるため、この
-  // 合成ステップ自体をスキップする（下の最終防波堤チェックは両モード共通）。
+  // プロンプトモードでは既に完成した英語プロンプトが渡される想定だが、
+  // 日本語表示をそのままコピペして手直しするユーザーもいるため、日本語が
+  // 検知された場合は送信前に自動で英訳する（2026-09-14、ホスト報告により
+  // 追加 — MiniMax H3は英語プロンプト前提のため無音で日本語のまま送ると
+  // 意図通りに生成されない）。
   let combinedPrompt: string;
   if (isPromptMode) {
-    combinedPrompt = rawPromptInput;
+    if (looksJapanese(rawPromptInput)) {
+      try {
+        combinedPrompt = await translateJapanesePromptToEnglish(rawPromptInput);
+      } catch (err) {
+        const e = err as DirectorPromptError;
+        const status = e.reason === "quota" ? 429 : e.reason === "busy" ? 503 : e.reason === "not_configured" ? 501 : 502;
+        return NextResponse.json({ error: e.message }, { status });
+      }
+    } else {
+      combinedPrompt = rawPromptInput;
+    }
   } else {
     try {
       combinedPrompt = await expandDirectorScenes(scenes);

@@ -33,25 +33,39 @@ export function directorCameraLabel(id: string): string {
   return DIRECTOR_CAMERA_MOVES.find((c) => c.id === id)?.en ?? "a slow, smooth camera push-in";
 }
 
+/** 2026-09-14: シーンごとに秒数（時間配分）を持てるようにした
+ * （時間軸ベースのシーン制御）。以前は「1シーン=15秒固定」で、Geminiに
+ * 渡すプロンプトにも各シーンの時間情報が一切乗っていなかったため、60秒
+ * ×4シーンのような長尺で「指示が終わって同じ動作の繰り返しになる」実障害
+ * があった。durationS を明示的に持たせ、Gemini合成プロンプトにも
+ * 「0〜8秒はX、8〜15秒はY」の形で反映する（directorPrompt.ts参照）。
+ * 注意: MiniMax H3自体にタイムスタンプで厳密に条件付けする仕組みは無いため、
+ * これは「モデルが従いやすくなるヒント」であって100%の保証ではない。 */
 export type DirectorScene = {
   camera: DirectorCameraMoveId;
   text: string;
+  durationS: number;
 };
 
-/** タイムラインに追加できるシーン数。1本あたり15秒換算・最大60秒の実測上限
- * （[[cinematic-video-tab]] 参照）から逆算した4ブロック上限。 */
+/** タイムラインに追加できるシーン数。60秒の実測上限（[[cinematic-video-tab]]
+ * 参照）を、より細かい時間配分で埋められるよう上限を引き上げた
+ * （旧: 15秒固定×4個 -> 新: 可変秒数×最大8個）。 */
 export const DIRECTOR_MIN_SCENES = 1;
-export const DIRECTOR_MAX_SCENES = 4;
+export const DIRECTOR_MAX_SCENES = 8;
 export const DIRECTOR_SCENE_TEXT_MAX_LENGTH = 200;
 
-/** 1シーンあたりの尺（秒）。シーン数 × 15秒、実測済みの60秒で頭打ち。
- * プロンプトモードの最短尺クランプにも流用するため export する。 */
+/** 1シーンあたりの秒数の許容範囲。下限は「モデルがアクションを1つ描写する
+ * のに最低限必要な尺」の目安、上限は「1シーンに尺を寄せすぎて実質単一シーン
+ * 化するのを防ぐ」ための緩いガード。 */
+export const DIRECTOR_MIN_SCENE_DURATION_S = 3;
+export const DIRECTOR_MAX_SCENE_DURATION_S = 30;
+/** 新規シーン追加時の初期値・プロンプトモードの最短尺クランプに流用。 */
 export const DIRECTOR_SECONDS_PER_SCENE = 15;
 export const DIRECTOR_MAX_TOTAL_SECONDS = 60;
 
-export function directorTotalDurationS(sceneCount: number): number {
-  const n = Math.max(DIRECTOR_MIN_SCENES, Math.min(DIRECTOR_MAX_SCENES, Math.round(sceneCount || 0)));
-  return Math.min(DIRECTOR_MAX_TOTAL_SECONDS, n * DIRECTOR_SECONDS_PER_SCENE);
+export function directorTotalDurationS(scenes: { durationS: number }[]): number {
+  const sum = scenes.reduce((acc, s) => acc + Math.max(0, Math.round(s.durationS || 0)), 0);
+  return Math.min(DIRECTOR_MAX_TOTAL_SECONDS, Math.max(DIRECTOR_MIN_SCENE_DURATION_S, sum));
 }
 
 export type DirectorCostBreakdown = {
@@ -80,13 +94,13 @@ function directorPerSecond(mode: DirectorQualityMode, knobs: PricingKnobs): numb
 }
 
 export function directorCostBreakdown(args: {
-  sceneCount: number;
+  scenes: { durationS: number }[];
   mode?: DirectorQualityMode;
   knobs?: PricingKnobs;
 }): DirectorCostBreakdown {
   const knobs = args.knobs ?? DEFAULT_KNOBS;
   const mode = args.mode ?? "fast";
-  const totalDurationS = directorTotalDurationS(args.sceneCount);
+  const totalDurationS = directorTotalDurationS(args.scenes);
   const perSecond = directorPerSecond(mode, knobs);
   const raw = Math.ceil(perSecond * totalDurationS);
   const floor = Math.max(1, Math.round(knobs.director_min_credits));
@@ -113,15 +127,16 @@ export function directorCostBreakdownForDuration(args: {
   return { credits: Math.max(floor, raw), totalDurationS, perSecond };
 }
 
-/** 尺不明時（見積り不能）の上限課金 — 最大シーン数・最大尺・最も高い
- * quality モードで計算（過小課金を避ける）。 */
+/** 尺不明時（見積り不能）の上限課金 — 最大尺・最も高い quality モードで計算
+ * （過小課金を避ける）。 */
 export function directorCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): number {
-  return directorCostBreakdown({ sceneCount: DIRECTOR_MAX_SCENES, mode: "quality", knobs }).credits;
+  return directorCostBreakdownForDuration({
+    totalDurationS: DIRECTOR_MAX_TOTAL_SECONDS,
+    mode: "quality",
+    knobs,
+  }).credits;
 }
 
-/** Modal worker 側のポーリング上限秒（_run_workflow の poll_deadline_s）。
- * 実測: 60秒動画で Prompt実行 600s・elapsed 638.6s。安全マージンを乗せて
- * 動的に算出する（固定値のままだと今回のようにタイムアウト誤検知する）。 */
 /** modal_wan_animate_blackwell.py の _run_workflow が ComfyUI の完了を待つ
  * ポーリング上限（秒）。2026-09-14 実測（480x864・8/50step、VDN-H3）を基に
  * 「多めに設定する」方針（CLAUDE.md §0 — 短いタイムアウトで暴走を止められた
@@ -152,7 +167,15 @@ export function validateDirectorScenes(scenes: unknown): { ok: true; scenes: Dir
     if (!text) {
       return { ok: false, error: "各シーンにアイデア（テキスト）を入力してください。" };
     }
-    cleaned.push({ camera, text });
+    const durationRaw = (raw as { durationS?: unknown })?.durationS;
+    const durationS = Math.min(
+      DIRECTOR_MAX_SCENE_DURATION_S,
+      Math.max(DIRECTOR_MIN_SCENE_DURATION_S, Math.round(Number(durationRaw) || DIRECTOR_SECONDS_PER_SCENE)),
+    );
+    cleaned.push({ camera, text, durationS });
+  }
+  if (directorTotalDurationS(cleaned) < cleaned.reduce((acc, s) => acc + s.durationS, 0)) {
+    return { ok: false, error: `合計尺は最大${DIRECTOR_MAX_TOTAL_SECONDS}秒までです。` };
   }
   return { ok: true, scenes: cleaned };
 }

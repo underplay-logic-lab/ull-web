@@ -20,8 +20,10 @@ import {
 } from "lucide-react";
 import {
   DIRECTOR_CAMERA_MOVES,
+  DIRECTOR_MAX_SCENE_DURATION_S,
   DIRECTOR_MAX_SCENES,
   DIRECTOR_MAX_TOTAL_SECONDS,
+  DIRECTOR_MIN_SCENE_DURATION_S,
   DIRECTOR_MIN_SCENES,
   DIRECTOR_SCENE_TEXT_MAX_LENGTH,
   DIRECTOR_SECONDS_PER_SCENE,
@@ -53,7 +55,7 @@ function sleep(ms: number) {
 }
 
 function newScene(): DirectorScene {
-  return { camera: "push_in", text: "" };
+  return { camera: "push_in", text: "", durationS: DIRECTOR_SECONDS_PER_SCENE };
 }
 
 function useObjectUrl(file: File | null): string | null {
@@ -239,8 +241,8 @@ export function DirectorStudioTab() {
   const elapsedMs = useElapsedTimer(phase === "running");
 
   const sceneBreakdown = useMemo(
-    () => directorCostBreakdown({ sceneCount: scenes.length, mode: qualityMode, knobs }),
-    [scenes.length, qualityMode, knobs],
+    () => directorCostBreakdown({ scenes, mode: qualityMode, knobs }),
+    [scenes, qualityMode, knobs],
   );
   const promptBreakdown = useMemo(
     () => directorCostBreakdownForDuration({ totalDurationS: promptDraftDurationS, mode: qualityMode, knobs }),
@@ -251,8 +253,16 @@ export function DirectorStudioTab() {
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
   const busy = phase === "submitting" || phase === "running";
 
+  const canAddScene =
+    scenes.length < DIRECTOR_MAX_SCENES &&
+    directorTotalDurationS(scenes) + DIRECTOR_MIN_SCENE_DURATION_S <= DIRECTOR_MAX_TOTAL_SECONDS;
   const addScene = useCallback(() => {
-    setScenes((prev) => (prev.length >= DIRECTOR_MAX_SCENES ? prev : [...prev, newScene()]));
+    setScenes((prev) =>
+      prev.length >= DIRECTOR_MAX_SCENES ||
+      directorTotalDurationS(prev) + DIRECTOR_MIN_SCENE_DURATION_S > DIRECTOR_MAX_TOTAL_SECONDS
+        ? prev
+        : [...prev, newScene()],
+    );
   }, []);
   const removeScene = useCallback((index: number) => {
     setScenes((prev) => (prev.length <= DIRECTOR_MIN_SCENES ? prev : prev.filter((_, i) => i !== index)));
@@ -354,7 +364,7 @@ export function DirectorStudioTab() {
     };
   }, [jobId]);
 
-  const totalDurationS = uiMode === "prompt" ? promptBreakdown.totalDurationS : directorTotalDurationS(scenes.length);
+  const totalDurationS = uiMode === "prompt" ? promptBreakdown.totalDurationS : directorTotalDurationS(scenes);
 
   return (
     <div className="grid gap-6 lg:grid-cols-2">
@@ -390,7 +400,7 @@ export function DirectorStudioTab() {
               value={promptDraft}
               onChange={(e) => setPromptDraft(e.target.value)}
               rows={8}
-              placeholder="英語のプロンプトを入力・編集してください"
+              placeholder="英語・日本語どちらでも入力できます（日本語は送信時に自動で英訳されます）"
               className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm leading-relaxed text-foreground placeholder:text-muted"
             />
             <div className="mt-3 flex items-center justify-between gap-3">
@@ -412,7 +422,7 @@ export function DirectorStudioTab() {
             </div>
             <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
               <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-              このプロンプトはそのままモデルに渡されます（AIによる自動合成なし）。英語で入力してください。
+              このプロンプトはそのままモデルに渡されます（シーンの自動合成はスキップされますが、日本語で書いた場合は送信前に自動で英訳されます）。
             </p>
           </div>
         ) : (
@@ -441,17 +451,34 @@ export function DirectorStudioTab() {
                       </button>
                     )}
                   </div>
-                  <select
-                    value={scene.camera}
-                    onChange={(e) => updateScene(i, { camera: e.target.value as DirectorCameraMoveId })}
-                    className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground"
-                  >
-                    {DIRECTOR_CAMERA_MOVES.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.label}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="mt-2 flex gap-2">
+                    <select
+                      value={scene.camera}
+                      onChange={(e) => updateScene(i, { camera: e.target.value as DirectorCameraMoveId })}
+                      className="flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground"
+                    >
+                      {DIRECTOR_CAMERA_MOVES.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.label}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={scene.durationS}
+                      onChange={(e) => updateScene(i, { durationS: Number(e.target.value) })}
+                      className="w-24 rounded-lg border border-border bg-surface px-2 py-2 text-sm text-foreground"
+                      aria-label={`シーン${i + 1}の秒数`}
+                    >
+                      {Array.from(
+                        { length: DIRECTOR_MAX_SCENE_DURATION_S - DIRECTOR_MIN_SCENE_DURATION_S + 1 },
+                        (_, j) => DIRECTOR_MIN_SCENE_DURATION_S + j,
+                      ).map((s) => (
+                        <option key={s} value={s}>
+                          {s}秒
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                   <input
                     type="text"
                     value={scene.text}
@@ -463,20 +490,20 @@ export function DirectorStudioTab() {
               ))}
             </div>
 
-            {scenes.length < DIRECTOR_MAX_SCENES && (
+            {canAddScene && (
               <button
                 type="button"
                 onClick={addScene}
                 className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border py-2.5 text-sm text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
               >
                 <Plus size={14} />
-                シーンを追加（最大{DIRECTOR_MAX_SCENES}）
+                シーンを追加（最大{DIRECTOR_MAX_SCENES}・合計{DIRECTOR_MAX_TOTAL_SECONDS}秒まで）
               </button>
             )}
 
             <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
               <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-              各シーンのカメラワーク・アイデアはAIが1本の連続した映像指示に自動合成します。最大60秒。
+              各シーンのカメラワーク・アイデア・秒数はAIが1本の連続した映像指示に自動合成します（時間配分はヒントであり厳密な保証ではありません）。合計最大{DIRECTOR_MAX_TOTAL_SECONDS}秒。
             </p>
           </div>
         )}
