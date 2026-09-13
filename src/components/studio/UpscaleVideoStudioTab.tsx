@@ -518,12 +518,16 @@ export function UpscaleVideoStudioTab() {
               <div className="mt-3">
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-hover">
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-neon-pink to-neon-violet transition-[width] duration-500"
+                    className={`h-full rounded-full bg-gradient-to-r from-neon-pink to-neon-violet duration-500 ${
+                      job?.status === "pending" ? "animate-pulse" : "transition-[width]"
+                    }`}
                     style={{ width: `${Math.max(4, progressPct)}%` }}
                   />
                 </div>
                 <p className="mt-1.5 text-center text-[11px] text-muted">
-                  アップスケール中（{formatElapsedSeconds(elapsedMs)}s）
+                  {job?.status === "pending"
+                    ? `生成準備中…GPUを起動しています（初回は1〜2分ほどかかります・${formatElapsedSeconds(elapsedMs)}s）`
+                    : `アップスケール中（${formatElapsedSeconds(elapsedMs)}s）`}
                 </p>
                 {job?.vramUsedGb != null && (
                   <div className="mt-2 flex justify-center">
@@ -543,10 +547,15 @@ export function UpscaleVideoStudioTab() {
                   : "bg-gradient-to-r from-neon-pink to-neon-violet hover:opacity-90 glow-pink"
               }`}
             >
-              {busy ? (
+              {phase === "submitting" ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  処理中…
+                  送信中…
+                </>
+              ) : phase === "running" ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" />
+                  {job?.status === "pending" ? "GPU起動中…" : "処理中…"}
                 </>
               ) : !user ? (
                 <>

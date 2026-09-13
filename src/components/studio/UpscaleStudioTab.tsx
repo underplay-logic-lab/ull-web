@@ -439,6 +439,11 @@ export function UpscaleStudioTab() {
     );
     return processing?.vramUsedGb ?? null;
   }, [batchJobs]);
+  // コールドスタート判定: まだ1件も processing/completed/failed に進んでいない
+  // （＝コンテナがまだ起動待ち）間だけ「GPU起動中」を出す。1件でも動き出せば
+  // 以降のバッチ項目は同じ温まったコンテナで処理されるため「処理中」に切替。
+  const batchAllPending =
+    batchJobIds.length > 0 && batchJobIds.every((id) => (batchJobs[id]?.status ?? "pending") === "pending");
 
   const handleBatchRun = useCallback(async () => {
     if (!user) return setLoginOpen(true);
@@ -823,12 +828,16 @@ export function UpscaleStudioTab() {
             <div className="mt-3">
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-hover">
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-neon-pink to-neon-violet transition-[width] duration-500"
+                  className={`h-full rounded-full bg-gradient-to-r from-neon-pink to-neon-violet duration-500 ${
+                    job?.status === "pending" ? "animate-pulse" : "transition-[width]"
+                  }`}
                   style={{ width: `${Math.max(4, progressPct)}%` }}
                 />
               </div>
               <p className="mt-1.5 text-center text-[11px] text-muted">
-                アップスケール中（{formatElapsedSeconds(elapsedMs)}s）
+                {job?.status === "pending"
+                  ? `生成準備中…GPUを起動しています（初回は1〜2分ほどかかります・${formatElapsedSeconds(elapsedMs)}s）`
+                  : `アップスケール中（${formatElapsedSeconds(elapsedMs)}s）`}
               </p>
               {job?.vramUsedGb != null && (
                 <div className="mt-2 flex justify-center">
@@ -848,10 +857,15 @@ export function UpscaleStudioTab() {
                 : "bg-gradient-to-r from-neon-pink to-neon-violet hover:opacity-90 glow-pink"
             }`}
           >
-            {busy ? (
+            {phase === "submitting" ? (
               <>
                 <Loader2 size={16} className="animate-spin" />
-                処理中…
+                送信中…
+              </>
+            ) : phase === "running" ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                {job?.status === "pending" ? "GPU起動中…" : "処理中…"}
               </>
             ) : !user ? (
               <>
@@ -1055,14 +1069,18 @@ export function UpscaleStudioTab() {
               <div className="mt-3">
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-hover">
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-neon-pink to-neon-violet transition-[width] duration-500"
+                    className={`h-full rounded-full bg-gradient-to-r from-neon-pink to-neon-violet duration-500 ${
+                      batchAllPending ? "animate-pulse" : "transition-[width]"
+                    }`}
                     style={{
                       width: `${Math.max(4, (batchDoneCount / batchJobIds.length) * 100)}%`,
                     }}
                   />
                 </div>
                 <p className="mt-1.5 text-center text-[11px] text-muted">
-                  {batchDoneCount}/{batchJobIds.length} 完了
+                  {batchAllPending
+                    ? "生成準備中…GPUを起動しています（初回は1〜2分ほどかかります）"
+                    : `${batchDoneCount}/${batchJobIds.length} 完了`}
                 </p>
                 {batchProcessingVramGb != null && (
                   <div className="mt-2 flex justify-center">
@@ -1085,7 +1103,7 @@ export function UpscaleStudioTab() {
               {batchBusy ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  {batchPhase === "submitting" ? "送信中…" : "処理中…"}
+                  {batchPhase === "submitting" ? "送信中…" : batchAllPending ? "GPU起動中…" : "処理中…"}
                 </>
               ) : !user ? (
                 <>
