@@ -47,7 +47,7 @@ RETENTION_DAYS = int(os.environ.get("ULL_RETENTION_DAYS", "14"))
 # または env ULL_RETENTION_DRY_RUN で切り替え。
 DRY_RUN = os.environ.get("ULL_RETENTION_DRY_RUN", "") in ("1", "true", "yes")
 
-DEFAULT_BUCKETS = ["angle-results", "upscale-results", "lora_datasets"]
+DEFAULT_BUCKETS = ["angle-results", "upscale-results", "lora_datasets", "custom-workflow-results"]
 
 # job テーブル → 対応バケット（ストレージ側は created_at 全掃きなので、ここは
 # 行削除の対象一覧）。

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
@@ -36,6 +37,74 @@ const MAX_TEXT_FIELD_LENGTH = 4000;
 function inferOutputKind(filename: string): "image" | "video" {
   const ext = filename.toLowerCase().split(".").pop() ?? "";
   return ext === "mp4" || ext === "webm" || ext === "mov" ? "video" : "image";
+}
+
+const CUSTOM_WORKFLOW_RESULTS_BUCKET = "custom-workflow-results";
+
+function mimeForExt(ext: string): string {
+  const e = ext.toLowerCase();
+  if (e === "mp4") return "video/mp4";
+  if (e === "webm") return "video/webm";
+  if (e === "webp") return "image/webp";
+  if (e === "jpg" || e === "jpeg") return "image/jpeg";
+  return "image/png";
+}
+
+/**
+ * 生成物を custom-workflow-results バケットへ永続化し、generation_jobs に
+ * 完了済み行を1件残す（workflow_type='custom' は元々スキーマで許容されて
+ * いたが、この同期ルートは今まで一度も書き込んでいなかった）。
+ *
+ * これまでこの route は base64 をブラウザへ返すだけで、サーバー側に一切
+ * 保存していなかった — Multi-Angle/超解像と違いダウンロードし忘れると
+ * 復元不能という欠陥だった（ホスト報告、2026-09-13）。他の Studio タブと
+ * 同じ 14日自動パージ対象（modal_retention_purge.py の DEFAULT_BUCKETS）に
+ * 含める前提でバケットを新設した。失敗してもメインの生成レスポンスは
+ * 落とさない（best-effort — ユーザーはこの永続化に関係なく結果を受け取れる）。
+ */
+async function persistCustomWorkflowResult(args: {
+  userId: string;
+  base64: string;
+  filename: string;
+  workflowId: string;
+  workflowSlug: string;
+  promptSummary: string;
+  creditsCost: number;
+}): Promise<string | null> {
+  try {
+    const ext = args.filename.toLowerCase().split(".").pop() || "png";
+    const objectPath = `${args.userId}/${randomUUID()}.${ext}`;
+    const buffer = Buffer.from(args.base64, "base64");
+    const { error: uploadError } = await supabaseAdmin.storage
+      .from(CUSTOM_WORKFLOW_RESULTS_BUCKET)
+      .upload(objectPath, buffer, { contentType: mimeForExt(ext), upsert: false });
+    if (uploadError) {
+      console.error("[studio/custom-workflows/generate] persist upload failed:", uploadError.message);
+      return null;
+    }
+    const { data: pub } = supabaseAdmin.storage.from(CUSTOM_WORKFLOW_RESULTS_BUCKET).getPublicUrl(objectPath);
+    const resultUrl = pub.publicUrl;
+
+    const { error: jobInsertError } = await supabaseAdmin.from("generation_jobs").insert({
+      user_id: args.userId,
+      status: "completed",
+      workflow_type: "custom",
+      inputs: {
+        workflow_id: args.workflowId,
+        workflow_slug: args.workflowSlug,
+        prompt_summary: args.promptSummary || null,
+      },
+      credits_cost: args.creditsCost,
+      video_url: resultUrl,
+    });
+    if (jobInsertError) {
+      console.error("[studio/custom-workflows/generate] job row insert failed:", jobInsertError.message);
+    }
+    return resultUrl;
+  } catch (err) {
+    console.error("[studio/custom-workflows/generate] persist failed:", err);
+    return null;
+  }
 }
 
 export async function POST(request: Request) {
@@ -300,9 +369,20 @@ export async function POST(request: Request) {
       outputFileName: result.output_path,
     });
 
+    const resultUrl = await persistCustomWorkflowResult({
+      userId: user.id,
+      base64: result.result_base64,
+      filename: result.filename,
+      workflowId: workflowRow.id as string,
+      workflowSlug: slug,
+      promptSummary,
+      creditsCost: generationCost,
+    });
+
     return NextResponse.json({
       success: true,
       resultBase64: result.result_base64,
+      resultUrl,
       outputKind: inferOutputKind(result.filename),
       filename: result.filename,
       remainingCredits: debitedCredits,
