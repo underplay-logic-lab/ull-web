@@ -1115,7 +1115,7 @@ class WanAnimateBlackwell:
             with open(os.path.join(input_dir, filename), "wb") as f:
                 f.write(payload)
 
-    def _run_workflow(self, workflow, files, output_node_id=None, skip_torch_compile=False):
+    def _run_workflow(self, workflow, files, output_node_id=None, skip_torch_compile=False, poll_deadline_s=550):
         """
         files: list of (filename, bytes) referenced by the workflow's loader
         nodes. output_node_id: if given, that node's output in ComfyUI's
@@ -1164,7 +1164,7 @@ class WanAnimateBlackwell:
         if not prompt_id:
             raise RuntimeError(f"/prompt did not return a prompt_id: {submit_result}")
 
-        deadline = time.time() + 550
+        deadline = time.time() + poll_deadline_s
         while time.time() < deadline:
             hist = requests.get(f"http://127.0.0.1:8188/history/{prompt_id}", timeout=30).json()
             if prompt_id in hist:
@@ -1315,6 +1315,7 @@ class WanAnimateBlackwell:
         credits_cost: int = 0,
         active_job_id: str = None,
         skip_torch_compile: bool = False,
+        poll_deadline_s: int = 550,
     ) -> dict:
         """
         Generic counterpart to generate_video for admin-authored Custom
@@ -1378,6 +1379,7 @@ class WanAnimateBlackwell:
                 files,
                 output_node_id=output_node_id or None,
                 skip_torch_compile=skip_torch_compile,
+                poll_deadline_s=poll_deadline_s,
             )
         except Exception as exc:
             if _vram_stop is not None:
@@ -1477,6 +1479,7 @@ def custom_workflow_async(item: dict, request: fastapi.Request):
         item.get("credits_cost", 0),
         item.get("active_job_id"),
         item.get("skip_torch_compile", False),
+        item.get("poll_deadline_s", 550),
     )
     return {"ok": True, "job_id": job_id, "call_id": call.object_id}
 
@@ -1710,3 +1713,143 @@ def main():
     out_path.write_bytes(base64.b64decode(result["video_base64"]))
     print(f"[main] saved output -> {out_path.resolve()} ({out_path.stat().st_size} bytes)")
     print(f"[main] total wall time: {elapsed:.1f}s")
+
+
+def _cinematic_workflow(
+    duration_s: float, reference_image_name: str, allow_compile: bool = True,
+    megapixels: float = 0.262144,
+) -> dict:
+    """Python port of src/lib/cinematicWorkflow.ts's WORKFLOW_TEMPLATE +
+    buildCinematicWorkflow (speed mode: steps=4, useTurboLora=True,
+    megapixels=0.262144 / 512 baseEdge) — used only for cinematic_smoke below
+    to empirically test MiniMax H3's real duration ceiling on THIS pinned
+    ComfyUI version, independent of the 2026-09-09 postmortem's claim (which
+    may be stale — see [[cinematic-video-tab]])."""
+    return {
+        "92": {
+            "inputs": {"filename_prefix": "cinematic_smoke", "format": "auto", "codec": "auto",
+                       "video": ["105:91", 0]},
+            "class_type": "SaveVideo", "_meta": {"title": "Save Video"},
+        },
+        "114": {
+            "inputs": {"image": reference_image_name},
+            "class_type": "LoadImage", "_meta": {"title": "Load Image"},
+        },
+        "119": {
+            "inputs": {"upscale_method": "bicubic", "megapixels": megapixels, "resolution_steps": 16,
+                       "image": ["114", 0]},
+            "class_type": "ImageScaleToTotalPixels", "_meta": {"title": "Scale Image to Total Pixels"},
+        },
+        "120": {"inputs": {"image": ["119", 0]}, "class_type": "GetImageSize", "_meta": {"title": "Get Image Size"}},
+        "105:11": {"inputs": {"vae_name": "minimax_h3_video_vae_fp16.safetensors"}, "class_type": "VAELoader",
+                   "_meta": {"title": "Load VAE"}},
+        "105:24": {"inputs": {"vae_name": "minimax_h3_audio_vae_fp32.safetensors"}, "class_type": "VAELoader",
+                   "_meta": {"title": "Load VAE"}},
+        "105:23": {"inputs": {"samples": ["105:14", 0], "vae": ["105:24", 0]}, "class_type": "VAEDecodeAudio",
+                   "_meta": {"title": "VAE Decode Audio"}},
+        "105:10": {"inputs": {"samples": ["105:14", 0], "vae": ["105:11", 0]}, "class_type": "VAEDecode",
+                   "_meta": {"title": "VAE Decode"}},
+        "105:17": {"inputs": {"sampler_name": "euler"}, "class_type": "KSamplerSelect",
+                   "_meta": {"title": "KSamplerSelect"}},
+        "105:9": {"inputs": {"scheduler": "beta", "steps": 4, "denoise": 1, "model": ["105:121", 0]},
+                  "class_type": "BasicScheduler", "_meta": {"title": "BasicScheduler"}},
+        "105:14": {"inputs": {"noise": ["105:15", 0], "guider": ["105:16", 0], "sampler": ["105:17", 0],
+                               "sigmas": ["105:9", 0], "latent_image": ["105:104", 1]},
+                   "class_type": "SamplerCustomAdvanced", "_meta": {"title": "SamplerCustomAdvanced"}},
+        "105:16": {"inputs": {"model": ["105:121", 0], "conditioning": ["105:104", 0]}, "class_type": "BasicGuider",
+                   "_meta": {"title": "Basic Guider"}},
+        "105:6": {"inputs": {"unet_name": "minimax_h3_fl2va_bf16.safetensors", "weight_dtype": "default"},
+                  "class_type": "UNETLoader", "_meta": {"title": "Load Diffusion Model"}},
+        "105:13": {"inputs": {"clip_name": "qwen3vl_32b_minimax_h3_bf16.safetensors", "type": "minimax",
+                               "device": "default"}, "class_type": "CLIPLoader", "_meta": {"title": "Load CLIP"}},
+        "105:15": {"inputs": {"noise_seed": int(time.time() * 1000) % (2**32)}, "class_type": "RandomNoise",
+                   "_meta": {"title": "RandomNoise"}},
+        "105:91": {"inputs": {"fps": 24, "bit_depth": 8, "images": ["105:10", 0], "audio": ["105:23", 0]},
+                   "class_type": "CreateVideo", "_meta": {"title": "Create Video"}},
+        "105:104": {
+            "inputs": {"prompt": "Cinematic scene starting exactly from <Image 1>. Preserve the subject's "
+                                  "appearance, clothing, and the original background exactly as shown. A slow, "
+                                  "smooth camera push-in with subtle natural motion in the subject and "
+                                  "environment (gentle breathing, hair and fabric moving softly, ambient light "
+                                  "shifting), soft cinematic color grading, shallow depth of field. Calm, "
+                                  "atmospheric ambient sound matching the scene, no dialogue.",
+                       "width": ["120", 0], "height": ["120", 1], "length": ["105:107", 1],
+                       "clip": ["105:13", 0], "vae": ["105:11", 0], "first_frame": ["114", 0]},
+            "class_type": "MiniMaxH3ImageToVideo", "_meta": {"title": "Image to Video"},
+        },
+        "105:107": {
+            "inputs": {"expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17",
+                       "values.a": ["105:111", 0]},
+            "class_type": "ComfyMathExpression", "_meta": {"title": "Math Expression"},
+        },
+        "105:111": {"inputs": {"value": duration_s}, "class_type": "PrimitiveFloat",
+                    "_meta": {"title": "Float (duration)"}},
+        "105:121": {"inputs": {"reuse_threshold": 0.3, "start_percent": 0.2, "end_percent": 0.9, "verbose": False,
+                                "model": ["105:124", 0]}, "class_type": "EasyCache", "_meta": {"title": "EasyCache"}},
+        "105:124": {"inputs": {"sage_attention": "auto", "allow_compile": allow_compile, "model": ["105:125", 0]},
+                    "class_type": "PathchSageAttentionKJ", "_meta": {"title": "Patch Sage Attention KJ"}},
+        "105:125": {"inputs": {"lora_name": "minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy.safetensors",
+                                "strength_model": 1, "model": ["105:6", 0]},
+                    "class_type": "LoraLoaderModelOnly", "_meta": {"title": "Load LoRA"}},
+    }
+
+
+@app.local_entrypoint()
+def cinematic_smoke(
+    duration_s: float = 15.0, image_path: str = "", allow_compile: bool = True,
+    skip_torch_compile: bool = False, megapixels: float = 0.262144,
+):
+    """modal run modal_wan_animate_blackwell.py::cinematic_smoke --duration-s 15 --skip-torch-compile
+
+    実測用: 2026-09-09 postmortem（[[cinematic-video-tab]]）が「MiniMax H3は
+    15秒(362フレーム)でクラッシュする」とした主張を、現在ピン止め中の
+    ComfyUI v0.33.3 に対して再検証する。--duration-s を振って実際の安全な
+    上限を実測する。2026-09-13 実測: 15秒で torch.compile(Dynamo)の
+    patchify reshape が shape mismatch でクラッシュ（33x33 latentが16x2
+    パッチに割り切れない）。PathchSageAttentionKJ の allow_compile=False では
+    直らなかった — 実際にモデルを包んでいるのは _inject_torch_compile が
+    自動注入する "torch_compile_std"（TorchCompileModel、CLAUDE.md §1）の方
+    なので、run_custom_workflow の skip_torch_compile 引数で切り分ける。
+    GPU課金あり。"""
+    ref_path = image_path or os.environ.get(
+        "CINEMATIC_TEST_IMAGE",
+        "C:/Users/t-num/AppData/Local/Temp/claude/D--web/13c90d9c-d409-402f-8ce5-328f30a09797/scratchpad/cinematic_test.png",
+    )
+    with open(ref_path, "rb") as f:
+        image_b64 = base64.b64encode(f.read()).decode("ascii")
+    image_name = os.path.basename(ref_path)
+
+    workflow = _cinematic_workflow(duration_s, image_name, allow_compile=allow_compile, megapixels=megapixels)
+    workflow_json = json.dumps(workflow)
+
+    print(
+        f"[cinematic_smoke] duration_s={duration_s} image={ref_path} "
+        f"skip_torch_compile={skip_torch_compile} megapixels={megapixels}"
+    )
+    started = time.time()
+    try:
+        result = WanAnimateBlackwell().run_custom_workflow.remote(
+            workflow_json,
+            {image_name: image_b64},
+            None,
+            False,
+            None,
+            None,
+            None,
+            0,
+            None,
+            skip_torch_compile,
+            1500,
+        )
+    except Exception as exc:  # noqa: BLE001
+        elapsed = time.time() - started
+        print(f"[cinematic_smoke] FAILED after {elapsed:.1f}s: {type(exc).__name__}: {exc}")
+        raise
+    elapsed = time.time() - started
+
+    out_path = pathlib.Path(f"cinematic_smoke_{int(duration_s)}s.mp4")
+    out_path.write_bytes(base64.b64decode(result["result_base64"]))
+    print(
+        f"[cinematic_smoke] OK duration_s={duration_s} elapsed={elapsed:.1f}s "
+        f"vram={result.get('vram_used_gb')}GB -> {out_path.resolve()} ({out_path.stat().st_size} bytes)"
+    )

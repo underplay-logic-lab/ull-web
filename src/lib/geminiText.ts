@@ -108,6 +108,20 @@ export type GemErr = { kind: "quota" | "busy" | "failed"; message: string };
 export const isGemErr = (e: unknown): e is GemErr =>
   typeof e === "object" && e !== null && "kind" in e && "message" in e;
 
+// Gemini "empty response" reasons that mean the safety filter refused the
+// content (a real hard-block, distinct from a 429/503/network failure).
+// RELAXED_SAFETY above already sets every configurable category to
+// BLOCK_NONE, so this should now only fire for Google's non-configurable
+// absolute blocks — promoted here (was duplicated locally in
+// studio/lora/caption/route.ts) so any caller of runGeminiText/runGeminiVision
+// can detect "Gemini refused this" and decide how to handle it (e.g. surface
+// a clear error, or route to a different model) rather than treating it as a
+// generic failure.
+const SAFETY_REASON_RE = /safe|block|prohibited|recitation|spii|sexual|harm/i;
+export function isSafetyRefusal(e: unknown): boolean {
+  return isGemErr(e) && e.kind === "failed" && SAFETY_REASON_RE.test(e.message);
+}
+
 // Returns the Gemini API key, or null when it isn't configured.
 export function geminiApiKey(): string | null {
   return process.env.GEMINI_API_KEY?.trim() || null;

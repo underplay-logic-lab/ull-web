@@ -193,23 +193,42 @@ export type BuildCinematicWorkflowParams = {
   mode: CinematicMode;
   prompt?: string | null;
   referenceImageName: string;
+  /**
+   * 動画の尺（秒）。省略時は既定の15秒（このタブの元々の固定仕様）。
+   * 2026-09-13 実機確認: 15/30/60秒すべて成功（VRAMほぼフラット、155〜158GB）
+   * — 尺自体は問題ではなかった。クラッシュの真因は解像度側のパッチ化端数
+   * バグだった（floorTo16 のコメント参照）。ULL Cinematic Director が
+   * 複数シーン合成後の合計尺として渡す。
+   */
+  durationS?: number;
+  /** 生成物の内部プロンプトに"作り直す"余地を与えず、そのまま渡したい場合
+   * （Director が既に合成済みの完全なプロンプトを渡すケース）。true なら
+   * DEFAULT_CINEMATIC_PROMPT のベーステンプレートを重ねず prompt をそのまま使う。 */
+  promptIsComplete?: boolean;
 };
 
 export function buildCinematicWorkflow({
   mode,
   prompt,
   referenceImageName,
+  durationS,
+  promptIsComplete,
 }: BuildCinematicWorkflowParams): CinematicWorkflow {
   const workflow = structuredClone(WORKFLOW_TEMPLATE) as unknown as CinematicWorkflow;
 
   workflow["114"].inputs.image = referenceImageName;
   workflow["119"].inputs.megapixels = cinematicMegapixels(mode);
   workflow["105:9"].inputs.steps = mode.steps;
+  if (durationS && durationS > 0) {
+    workflow["105:111"].inputs.value = durationS;
+  }
 
   const trimmedPrompt = prompt?.trim();
-  workflow["105:104"].inputs.prompt = trimmedPrompt
-    ? `${DEFAULT_CINEMATIC_PROMPT}\nAdditional direction: ${trimmedPrompt}`
-    : DEFAULT_CINEMATIC_PROMPT;
+  workflow["105:104"].inputs.prompt = promptIsComplete
+    ? trimmedPrompt || DEFAULT_CINEMATIC_PROMPT
+    : trimmedPrompt
+      ? `${DEFAULT_CINEMATIC_PROMPT}\nAdditional direction: ${trimmedPrompt}`
+      : DEFAULT_CINEMATIC_PROMPT;
 
   // A fresh seed per request — an identical workflow_json (same seed +
   // same inputs) hits ComfyUI's node-level execution cache and returns a

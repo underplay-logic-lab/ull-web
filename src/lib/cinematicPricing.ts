@@ -91,11 +91,18 @@ export function isCinematicAspectRatio(value: unknown): value is CinematicAspect
   return CINEMATIC_ASPECT_RATIOS.some((a) => a.id === value);
 }
 
-// Floors to the nearest 16-multiple, never below 16 — the one hard
-// constraint the backend's diffusion model requires (see the "16の倍数"
-// requirement in cinematicWorkflow.ts).
+// 2026-09-13 実測で判明: 単純な「16の倍数」では不十分だった。MiniMax H3の
+// VAEは `潜在サイズ = ピクセル/16 + 1` という+1のオフセットが乗るため、
+// ピクセルが16の倍数でも「16の倍数/16」が偶数（＝512など）だと潜在サイズが
+// 奇数になり、patchify（2ピクセル単位のパッチ化）が失敗してクラッシュする
+// （2026-09-09 postmortemはこれを「尺(フレーム数)のせい」と誤診断していたが、
+// GPU実機で15/30/60秒すべて成立することを確認し、原因はここだと判明した）。
+// 正しい条件は「ピクセル ≡ 16 (mod 32)」（＝ピクセル/16が奇数）。512pxでは
+// 496pxまで切り下げる必要がある（496/16+1=32、偶数でOK。実機で60秒まで
+// 成功を確認済み）。
 function floorTo16(n: number): number {
-  return Math.max(16, Math.floor(n / 16) * 16);
+  const snapped = Math.floor((n - 16) / 32) * 32 + 16;
+  return Math.max(16, snapped);
 }
 
 // Target width/height for a given mode + aspect ratio: keeps the same total
@@ -117,7 +124,13 @@ export function cinematicTargetDimensions(
 }
 
 // Total-pixel budget (in megapixels) for the backend's ImageScaleToTotalPixels
-// safety-net resize — see buildCinematicWorkflow.
+// safety-net resize — see buildCinematicWorkflow. Must derive from the SAME
+// floorTo16-adjusted edge as cinematicTargetDimensions (not the raw
+// baseEdge), otherwise the frontend's pre-crop target and the backend's
+// safety-net resize target land on different pixel parities — exactly the
+// mismatch that caused the 2026-09-13 patchify crash (see floorTo16's
+// comment). Both must agree on the same "ピクセル ≡ 16 (mod 32)" edge.
 export function cinematicMegapixels(mode: CinematicMode): number {
-  return (mode.baseEdge * mode.baseEdge) / 1_000_000;
+  const edge = floorTo16(mode.baseEdge);
+  return (edge * edge) / 1_000_000;
 }

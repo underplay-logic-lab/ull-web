@@ -19,6 +19,8 @@ export type KnobKey =
   | "cinematic_speed"
   | "cinematic_standard"
   | "cinematic_cinema_master"
+  | "director_per_second"
+  | "director_min_credits"
   | "upscale_per_mp"
   | "upscale_min_credits"
   | "upscale_mult_power"
@@ -132,6 +134,26 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "feature_credits",
     unit: "C",
     description: "1本あたりの消費クレジット（20ステップ / 1024px）",
+    isPublic: true,
+  },
+  director_per_second: {
+    // ULL Cinematic Director: 2026-09-13 B300実機（speed mode相当・4ステップ/
+    // 496px）で 60秒=elapsed 638.6s（GPU時給 ¥1125/h → 原価 ¥19.9）。credit_to_jpy
+    // 1.66 と粗利目標(他機能と同水準の~65-70%)から算出: 60秒 36C ≈ ¥59.8（原価の
+    // 約3倍）。秒課金なので合計尺（シーン数×15秒、最大60秒）にそのまま比例する。
+    value: 0.6,
+    label: "Cinematic Director（秒あたり）",
+    category: "feature_credits",
+    unit: "C/秒",
+    description: "合計尺1秒あたりの消費クレジット（credits = ceil(これ × 合計秒数)）",
+    isPublic: true,
+  },
+  director_min_credits: {
+    value: 5,
+    label: "Cinematic Director 最低課金",
+    category: "feature_credits",
+    unit: "C",
+    description: "1本あたりの最低消費クレジット（秒課金の下限）",
     isPublic: true,
   },
   upscale_per_mp: {
