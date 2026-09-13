@@ -469,14 +469,26 @@ export function DirectorStudioTab() {
                       className="w-24 rounded-lg border border-border bg-surface px-2 py-2 text-sm text-foreground"
                       aria-label={`シーン${i + 1}の秒数`}
                     >
-                      {Array.from(
-                        { length: DIRECTOR_MAX_SCENE_DURATION_S - DIRECTOR_MIN_SCENE_DURATION_S + 1 },
-                        (_, j) => DIRECTOR_MIN_SCENE_DURATION_S + j,
-                      ).map((s) => (
-                        <option key={s} value={s}>
-                          {s}秒
-                        </option>
-                      ))}
+                      {(() => {
+                        // 他のシーンの合計秒数を差し引いた残りが、このシーンの
+                        // 実質的な上限（合計60秒を超える組み合わせをそもそも
+                        // 選べないようにする — 2026-09-14、サーバー側の
+                        // バリデーションだけだと送信するまで気づけなかった
+                        // 実障害への対処）。
+                        const othersSum = scenes.reduce((acc, s, j) => (j === i ? acc : acc + s.durationS), 0);
+                        const maxForThis = Math.max(
+                          DIRECTOR_MIN_SCENE_DURATION_S,
+                          Math.min(DIRECTOR_MAX_SCENE_DURATION_S, DIRECTOR_MAX_TOTAL_SECONDS - othersSum),
+                        );
+                        return Array.from(
+                          { length: maxForThis - DIRECTOR_MIN_SCENE_DURATION_S + 1 },
+                          (_, j) => DIRECTOR_MIN_SCENE_DURATION_S + j,
+                        ).map((s) => (
+                          <option key={s} value={s}>
+                            {s}秒
+                          </option>
+                        ));
+                      })()}
                     </select>
                   </div>
                   <input
