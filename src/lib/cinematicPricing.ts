@@ -91,18 +91,19 @@ export function isCinematicAspectRatio(value: unknown): value is CinematicAspect
   return CINEMATIC_ASPECT_RATIOS.some((a) => a.id === value);
 }
 
-// 2026-09-13 実測で判明: 単純な「16の倍数」では不十分だった。MiniMax H3の
-// VAEは `潜在サイズ = ピクセル/16 + 1` という+1のオフセットが乗るため、
-// ピクセルが16の倍数でも「16の倍数/16」が偶数（＝512など）だと潜在サイズが
-// 奇数になり、patchify（2ピクセル単位のパッチ化）が失敗してクラッシュする
-// （2026-09-09 postmortemはこれを「尺(フレーム数)のせい」と誤診断していたが、
-// GPU実機で15/30/60秒すべて成立することを確認し、原因はここだと判明した）。
-// 正しい条件は「ピクセル ≡ 16 (mod 32)」（＝ピクセル/16が奇数）。512pxでは
-// 496pxまで切り下げる必要がある（496/16+1=32、偶数でOK。実機で60秒まで
-// 成功を確認済み）。
+// 2026-09-13: 当初「ピクセル ≡ 16 (mod 32)」という条件だと誤って結論したが
+// （限られた実測データからの誤った逆算 — 496pxで成功した1点だけを見て
+// 「+1オフセットがある」と誤診断していた）、ComfyUI 本体のノード実装
+// （comfy_extras/nodes_minimax_h3.py、v0.33.3）のソースを直接確認した結果、
+// 実際の式は単純だった: `latent = ピクセル // 16`（整数除算のみ、+1なし）。
+// patchify（2ピクセル単位）が要求するのはこの latent が偶数であること、
+// すなわち「ピクセル ≡ 0 (mod 32)」（＝32の倍数）だけ。ノード自身も
+// width/height ウィジェットに `step: 32` を明記しており、これは単なるUI
+// ヒントではなく実際にこの制約そのものだった。ComfyUI 標準の丸め方
+// （nodes_minimax_h3.py の adapt_canvas 関数と同じ `round(n / 32) * 32`）
+// に合わせて floor ではなく round にする。
 function floorTo16(n: number): number {
-  const snapped = Math.floor((n - 16) / 32) * 32 + 16;
-  return Math.max(16, snapped);
+  return Math.max(32, Math.round(n / 32) * 32);
 }
 
 // Target width/height for a given mode + aspect ratio: keeps the same total
@@ -120,6 +121,29 @@ export function cinematicTargetDimensions(
   const targetPixels = mode.baseEdge * mode.baseEdge;
   const height = Math.sqrt(targetPixels / ratioEntry.ratio);
   const width = height * ratioEntry.ratio;
+  return { width: floorTo16(width), height: floorTo16(height) };
+}
+
+/**
+ * cinematicTargetDimensions は固定の4アスペクト比（CINEMATIC_ASPECT_RATIOS）
+ * にしか対応していない。ULL Cinematic Director はユーザーがクロップせず
+ * 任意アスペクト比の画像をそのままアップロードするため、実際の画像の
+ * 生の幅・高さから同じ「ピクセル ≡ 0 (mod 32)」を満たす安全な目標解像度を
+ * 直接計算する（2026-09-13 実障害: 正方形以外のアスペクト比で
+ * ImageScaleToTotalPixels の動的サイズ決定に任せた結果、この条件を満たさない
+ * 解像度になり patchify がクラッシュした）。width/height を個別に
+ * floorTo16（実際は round-to-32）でスナップするため、必ずどちらも
+ * 安全な値になる。
+ */
+export function cinematicSafeDimensions(
+  rawWidth: number,
+  rawHeight: number,
+  targetMegapixels: number,
+): { width: number; height: number } {
+  const aspect = Math.max(1, rawWidth) / Math.max(1, rawHeight);
+  const targetPixels = targetMegapixels * 1_000_000;
+  const height = Math.sqrt(targetPixels / aspect);
+  const width = height * aspect;
   return { width: floorTo16(width), height: floorTo16(height) };
 }
 

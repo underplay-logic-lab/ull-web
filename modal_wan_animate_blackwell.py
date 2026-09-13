@@ -33,6 +33,7 @@ Usage:
 import base64
 import hmac
 import json
+import math
 import os
 import pathlib
 import re
@@ -1303,6 +1304,24 @@ class WanAnimateBlackwell:
         )
 
     @modal.method()
+    def probe_node_schema(self, class_types: list) -> dict:
+        """デバッグ用: ComfyUI を起動するだけで実際にワークフローは実行せず、
+        指定した class_type の /object_info を取得して返す（2026-09-13、
+        MiniMaxH3ImageToVideo の width/height が宣言通り効いていない実障害の
+        原因調査用 — 起動コストのみで済むので実行に比べ大幅に安い）。"""
+        import requests
+
+        self._ensure_comfy_running(BLACKWELL_EXEC_CONFIG)
+        out: dict = {}
+        for ct in class_types:
+            try:
+                r = requests.get(f"http://127.0.0.1:8188/object_info/{ct}", timeout=10)
+                out[ct] = r.json().get(ct) if r.ok else f"HTTP {r.status_code}"
+            except Exception as exc:  # noqa: BLE001
+                out[ct] = f"ERROR: {exc}"
+        return out
+
+    @modal.method()
     def run_custom_workflow(
         self,
         workflow_json: str,
@@ -1715,16 +1734,45 @@ def main():
     print(f"[main] total wall time: {elapsed:.1f}s")
 
 
+def _cinematic_safe_dimensions(raw_w: float, raw_h: float, target_megapixels: float) -> tuple:
+    """Python port of cinematicPricing.ts's cinematicSafeDimensions/floorTo16.
+    2026-09-13: root cause confirmed by reading comfy_extras/nodes_minimax_h3.py
+    directly — _empty_av_latent does plain `// 16` (no +1 offset), so
+    patchify just needs width/height to be multiples of 32 (round, matching
+    that file's own adapt_canvas helper), not the "≡16 (mod 32)" this
+    function originally (incorrectly) assumed."""
+    def snap_to_32(n: float) -> int:
+        return max(32, round(n / 32) * 32)
+
+    aspect = max(1.0, raw_w) / max(1.0, raw_h)
+    target_pixels = target_megapixels * 1_000_000
+    h = math.sqrt(target_pixels / aspect)
+    w = h * aspect
+    return snap_to_32(w), snap_to_32(h)
+
+
 def _cinematic_workflow(
     duration_s: float, reference_image_name: str, allow_compile: bool = True,
-    megapixels: float = 0.262144,
+    megapixels: float = 0.262144, raw_w: float = 1.0, raw_h: float = 1.0,
 ) -> dict:
     """Python port of src/lib/cinematicWorkflow.ts's WORKFLOW_TEMPLATE +
     buildCinematicWorkflow (speed mode: steps=4, useTurboLora=True,
     megapixels=0.262144 / 512 baseEdge) — used only for cinematic_smoke below
     to empirically test MiniMax H3's real duration ceiling on THIS pinned
     ComfyUI version, independent of the 2026-09-09 postmortem's claim (which
-    may be stale — see [[cinematic-video-tab]])."""
+    may be stale — see [[cinematic-video-tab]]).
+
+    2026-09-13: root cause found by reading comfy_extras/nodes_minimax_h3.py
+    (v0.33.3) directly: _empty_av_latent does plain `height // 16` /
+    `width // 16` (no +1 offset). patchify just needs that to be even, i.e.
+    width/height must be multiples of 32 (the node's own widgets declare
+    step=32). Earlier "≡16 (mod 32)" theory and the "explicitly resize
+    first_frame" detour were both wrong turns chasing the same underlying
+    bug (a bad rounding formula) — first_frame can stay wired to the raw
+    "114" LoadImage output as-is, since the node internally stretch-resizes
+    it ("disabled" crop) to match width/height itself.
+    """
+    width, height = _cinematic_safe_dimensions(raw_w, raw_h, megapixels)
     return {
         "92": {
             "inputs": {"filename_prefix": "cinematic_smoke", "format": "auto", "codec": "auto",
@@ -1735,12 +1783,6 @@ def _cinematic_workflow(
             "inputs": {"image": reference_image_name},
             "class_type": "LoadImage", "_meta": {"title": "Load Image"},
         },
-        "119": {
-            "inputs": {"upscale_method": "bicubic", "megapixels": megapixels, "resolution_steps": 16,
-                       "image": ["114", 0]},
-            "class_type": "ImageScaleToTotalPixels", "_meta": {"title": "Scale Image to Total Pixels"},
-        },
-        "120": {"inputs": {"image": ["119", 0]}, "class_type": "GetImageSize", "_meta": {"title": "Get Image Size"}},
         "105:11": {"inputs": {"vae_name": "minimax_h3_video_vae_fp16.safetensors"}, "class_type": "VAELoader",
                    "_meta": {"title": "Load VAE"}},
         "105:24": {"inputs": {"vae_name": "minimax_h3_audio_vae_fp32.safetensors"}, "class_type": "VAELoader",
@@ -1773,7 +1815,7 @@ def _cinematic_workflow(
                                   "environment (gentle breathing, hair and fabric moving softly, ambient light "
                                   "shifting), soft cinematic color grading, shallow depth of field. Calm, "
                                   "atmospheric ambient sound matching the scene, no dialogue.",
-                       "width": ["120", 0], "height": ["120", 1], "length": ["105:107", 1],
+                       "width": width, "height": height, "length": ["105:107", 1],
                        "clip": ["105:13", 0], "vae": ["105:11", 0], "first_frame": ["114", 0]},
             "class_type": "MiniMaxH3ImageToVideo", "_meta": {"title": "Image to Video"},
         },
@@ -1792,6 +1834,16 @@ def _cinematic_workflow(
                                 "strength_model": 1, "model": ["105:6", 0]},
                     "class_type": "LoraLoaderModelOnly", "_meta": {"title": "Load LoRA"}},
     }
+
+
+@app.local_entrypoint()
+def probe_minimax_schema():
+    """modal run modal_wan_animate_blackwell.py::probe_minimax_schema
+
+    GPU起動のみ・ワークフロー実行なしで MiniMaxH3ImageToVideo / ImageScale の
+    実際の /object_info を取得する（2026-09-13 デバッグ用）。"""
+    result = WanAnimateBlackwell().probe_node_schema.remote(["MiniMaxH3ImageToVideo", "ImageScale"])
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 @app.local_entrypoint()
@@ -1819,7 +1871,18 @@ def cinematic_smoke(
         image_b64 = base64.b64encode(f.read()).decode("ascii")
     image_name = os.path.basename(ref_path)
 
-    workflow = _cinematic_workflow(duration_s, image_name, allow_compile=allow_compile, megapixels=megapixels)
+    # 実画像の生の寸法を読む（cinematicSafeDimensions と同じロジックで
+    # width/height を計算するため — 正方形でないアスペクト比の実障害
+    # （2026-09-13, Cinematic Director）を再現・検証する）。
+    from PIL import Image as _PILImage
+
+    with _PILImage.open(ref_path) as _im:
+        raw_w, raw_h = _im.size
+
+    workflow = _cinematic_workflow(
+        duration_s, image_name, allow_compile=allow_compile, megapixels=megapixels,
+        raw_w=raw_w, raw_h=raw_h,
+    )
     workflow_json = json.dumps(workflow)
 
     print(

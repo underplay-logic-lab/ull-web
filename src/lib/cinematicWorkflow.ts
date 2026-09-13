@@ -1,6 +1,6 @@
 import "server-only";
 import type { CinematicMode } from "@/lib/cinematicPricing";
-import { cinematicMegapixels } from "@/lib/cinematicPricing";
+import { cinematicMegapixels, cinematicSafeDimensions } from "@/lib/cinematicPricing";
 
 // The "Cinematic Video" tab's ComfyUI API-format graph — MiniMax H3 (BF16,
 // image-to-audio/video) running on the Blackwell/B300 Modal deployment (see
@@ -11,15 +11,25 @@ import { cinematicMegapixels } from "@/lib/cinematicPricing";
 // anywhere client-facing (filename_prefix included) — see the branding
 // decision behind this tab's "Cinematic Video" name.
 //
-// Two things ImageScaleToTotalPixels (node "119") does that make it worth
-// keeping in the graph even though the client already crops/resizes the
-// upload itself: it re-derives the *actual* final width/height from the
-// real uploaded image (node "120" GetImageSize reads its output, which
-// MiniMaxH3ImageToVideo's width/height wire from) rather than trusting a
-// client-declared number, and it snaps those dimensions to a multiple of
-// `resolution_steps` (set to 16 here) as a hard backend-side guarantee —
-// the client's own crop/Canvas step already targets a 16-multiple, but this
-// is what actually enforces it no matter what arrives.
+// 2026-09-13 実障害（Cinematic Director、根本原因を特定するまで2回再発）:
+// 元々は ImageScaleToTotalPixels（megapixels + resolution_steps=16 の動的
+// サイズ決定、旧 node "119"）→ GetImageSize（旧 node "120"）で
+// MiniMaxH3ImageToVideo の width/height を実画像から再導出していた。これは
+// 「resolution_steps の倍数」にしか丸めず、実際にモデルが要求する条件を
+// 満たさない場合があった。
+//
+// 途中「first_frame の実アスペクト比とズレているのでは」という誤った仮説
+// で明示的リサイズを試したが直らず、最終的に ComfyUI 本体のノード実装
+// （comfy_extras/nodes_minimax_h3.py, v0.33.3）のソースを直接確認して
+// 判明した真因: `_empty_av_latent` が単に `height // 16` / `width // 16`
+// で latent サイズを作るだけ（+1オフセット等は一切ない）。patchify
+// （2ピクセル単位）が要求するのはこの latent が偶数であること、つまり
+// 「width/height が32の倍数であること」だけ（ノード自身が widget に
+// `step: 32` と明記している通り）。cinematicPricing.ts の floorTo16 の
+// 丸め式が間違っていた（「ピクセル ≡ 16 (mod 32)」という誤った条件を実測
+// 1点から誤って逆算していた）のが真因で、first_frame 側は無関係だった
+// （first_frame はモデル側が内部で "disabled"＝伸縮リサイズして width/height
+// に合わせる設計なので、生の LoadImage 出力をそのまま渡してよい）。
 const WORKFLOW_TEMPLATE = {
   "92": {
     inputs: {
@@ -35,21 +45,6 @@ const WORKFLOW_TEMPLATE = {
     inputs: { image: "__REFERENCE_IMAGE__" },
     class_type: "LoadImage",
     _meta: { title: "Load Image" },
-  },
-  "119": {
-    inputs: {
-      upscale_method: "bicubic",
-      megapixels: 0.262144,
-      resolution_steps: 16,
-      image: ["114", 0],
-    },
-    class_type: "ImageScaleToTotalPixels",
-    _meta: { title: "Scale Image to Total Pixels" },
-  },
-  "120": {
-    inputs: { image: ["119", 0] },
-    class_type: "GetImageSize",
-    _meta: { title: "Get Image Size" },
   },
   "105:11": {
     inputs: { vae_name: "minimax_h3_video_vae_fp16.safetensors" },
@@ -120,8 +115,8 @@ const WORKFLOW_TEMPLATE = {
   "105:104": {
     inputs: {
       prompt: "__PROMPT__",
-      width: ["120", 0],
-      height: ["120", 1],
+      width: 496,
+      height: 496,
       length: ["105:107", 1],
       clip: ["105:13", 0],
       vae: ["105:11", 0],
@@ -205,6 +200,15 @@ export type BuildCinematicWorkflowParams = {
    * （Director が既に合成済みの完全なプロンプトを渡すケース）。true なら
    * DEFAULT_CINEMATIC_PROMPT のベーステンプレートを重ねず prompt をそのまま使う。 */
   promptIsComplete?: boolean;
+  /**
+   * 実際にアップロードされた画像の生の幅・高さ（px）。渡すと
+   * cinematicSafeDimensions で「ピクセル ≡ 16 (mod 32)」を満たす安全な
+   * width/height を計算し、MiniMaxH3ImageToVideo へ literal 値として渡す
+   * （2026-09-13 実障害の修正 — ファイル冒頭コメント参照）。省略時は
+   * mode.baseEdge の正方形（496px 相当）にフォールバックする。
+   */
+  rawImageWidth?: number;
+  rawImageHeight?: number;
 };
 
 export function buildCinematicWorkflow({
@@ -213,11 +217,18 @@ export function buildCinematicWorkflow({
   referenceImageName,
   durationS,
   promptIsComplete,
+  rawImageWidth,
+  rawImageHeight,
 }: BuildCinematicWorkflowParams): CinematicWorkflow {
   const workflow = structuredClone(WORKFLOW_TEMPLATE) as unknown as CinematicWorkflow;
 
   workflow["114"].inputs.image = referenceImageName;
-  workflow["119"].inputs.megapixels = cinematicMegapixels(mode);
+  const { width: safeWidth, height: safeHeight } =
+    rawImageWidth && rawImageHeight && rawImageWidth > 0 && rawImageHeight > 0
+      ? cinematicSafeDimensions(rawImageWidth, rawImageHeight, cinematicMegapixels(mode))
+      : cinematicSafeDimensions(1, 1, cinematicMegapixels(mode));
+  workflow["105:104"].inputs.width = safeWidth;
+  workflow["105:104"].inputs.height = safeHeight;
   workflow["105:9"].inputs.steps = mode.steps;
   if (durationS && durationS > 0) {
     workflow["105:111"].inputs.value = durationS;

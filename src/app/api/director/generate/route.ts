@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { downloadStudioUpload, deleteStudioUploads } from "@/lib/studioUploads.server";
+import { readImageDimensions } from "@/lib/imageDimensions";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import {
   directorCostBreakdown,
@@ -171,12 +172,19 @@ export async function POST(request: Request) {
   // --- Phase 2: MiniMax H3 へディスパッチ ---------------------------------
   const mode = CINEMATIC_MODE_BY_ID.speed; // v1: 4ステップ・実測済みの安全な設定に固定
   const referenceImageName = storagePath.split("/").pop() || "reference.png";
+  // 実画像の生の寸法を渡す（cinematicWorkflow.ts の cinematicSafeDimensions
+  // が「ピクセル ≡ 16 (mod 32)」を満たす安全な width/height を計算する —
+  // 2026-09-13 実障害の修正。渡さないと正方形前提にフォールバックし、
+  // 任意アスペクト比の入力で patchify がクラッシュしうる）。
+  const rawDims = readImageDimensions(imageBuffer);
   const workflow = buildCinematicWorkflow({
     mode,
     prompt: combinedPrompt,
     referenceImageName,
     durationS: breakdown.totalDurationS,
     promptIsComplete: true,
+    rawImageWidth: rawDims?.width,
+    rawImageHeight: rawDims?.height,
   });
 
   try {
