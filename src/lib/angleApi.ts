@@ -53,6 +53,8 @@ export async function startAngleJob(params: {
   mode: AngleMode;
   /** reroll 用: 指定すると worker が seed + index で分散させる。 */
   seed?: number;
+  /** true: 実行中のジョブを待たず並列で今すぐ実行（追加料金）。既定 false = 順番待ち。 */
+  priority?: boolean;
 }): Promise<StartAngleJobResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -85,6 +87,7 @@ export async function startAngleJob(params: {
       selection: params.selection,
       mode: params.mode,
       seed: params.seed,
+      priority: params.priority ?? false,
     }),
   });
 

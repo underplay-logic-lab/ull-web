@@ -329,6 +329,12 @@ export function angleGenerationCost(
   return angleSelectionCount(selection) * angleCreditsPerAngle(knobs, subImageCount);
 }
 
+// 実行中のジョブを待たず並列で今すぐ実行する場合の追加料金（既定の「順番待ち」
+// は無料）。knobDefaults.ts の angle_priority_parallel_surcharge 参照。
+export function anglePriorityParallelSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS): number {
+  return Math.round(knobs.angle_priority_parallel_surcharge);
+}
+
 // --- クイックプリセット -------------------------------------------------
 export type AnglePreset = { id: string; label: string; hint: string; selection: AngleSelection };
 

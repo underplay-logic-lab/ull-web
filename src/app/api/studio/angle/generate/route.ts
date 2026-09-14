@@ -102,6 +102,7 @@ export async function POST(request: Request) {
   let modeRaw: unknown;
   let selectionRaw: unknown;
   let seedRaw: unknown;
+  let priorityRaw: unknown;
 
   if (contentType.includes("application/json")) {
     let body: Record<string, unknown>;
@@ -142,6 +143,7 @@ export async function POST(request: Request) {
     selectionRaw =
       typeof body.selection === "string" ? body.selection : JSON.stringify(body.selection ?? {});
     seedRaw = body.seed;
+    priorityRaw = body.priority;
   } else {
     let formData: FormData;
     try {
@@ -167,7 +169,9 @@ export async function POST(request: Request) {
     modeRaw = formData.get("mode");
     selectionRaw = formData.get("selection");
     seedRaw = formData.get("seed");
+    priorityRaw = formData.get("priority");
   }
+  const priority = priorityRaw === true || priorityRaw === "true";
 
   // 空要素（サブスロット未使用など）を落とし、先頭がメイン参照であることを保つ。
   imageBuffers = imageBuffers.filter((b) => b.length > 0);
@@ -235,7 +239,12 @@ export async function POST(request: Request) {
   // Server-side price — never trusted from the client.
   // サブ参照ぶんの生成コスト増（B300 実測 ~3.0x @ サブ3枚）を単価へ反映。
   const knobs = await getPricingKnobs();
-  const generationCost = combos.length * angleCreditsPerAngle(knobs, subImageCount);
+  const baseCost = combos.length * angleCreditsPerAngle(knobs, subImageCount);
+  // 「実行中でも並列で今すぐ実行」を選んだ場合の追加コールドスタート分（順番
+  // 待ち=無料の既定に対するオプトインの上乗せ。knobDefaults.ts参照）。
+  const generationCost = priority
+    ? baseCost + Math.round(knobs.angle_priority_parallel_surcharge)
+    : baseCost;
   const maxAllowedTime = angleMaxAllowedTime({ creditsCost: generationCost, knobs });
 
   const { data: profile, error: profileError } = await getOrCreateProfile(
@@ -292,7 +301,7 @@ export async function POST(request: Request) {
       credits_cost: generationCost,
       // Multi-Reference のデバッグ用（既存 jsonb 列・マイグレーション不要）。
       // worker が生成中に vram_used_gb を書き込むので、それとマージされる。
-      metadata: { ref_image_count: imageBuffers.length },
+      metadata: { ref_image_count: imageBuffers.length, priority },
     })
     .select("id")
     .single();

@@ -26,6 +26,7 @@ import {
   ANGLE_PRESETS,
   angleCreditsPerAngle,
   angleEstimatedSeconds,
+  anglePriorityParallelSurcharge,
   AZIMUTH_OPTIONS,
   angleSelectionWarning,
   buildAngleCombos,
@@ -539,6 +540,65 @@ function RegenerateConfirmModal({
   );
 }
 
+function QueueChoiceModal({
+  open,
+  surcharge,
+  onCancel,
+  onQueue,
+  onParallel,
+}: {
+  open: boolean;
+  surcharge: number;
+  onCancel: () => void;
+  onQueue: () => void;
+  onParallel: () => void;
+}) {
+  if (!open || typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
+      onClick={onCancel}
+    >
+      <div className="w-full max-w-sm rounded-2xl border-gradient bg-surface p-8" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-bold">まだ生成中です</h3>
+          <button type="button" onClick={onCancel} aria-label="閉じる" className="text-muted transition-colors hover:text-foreground">
+            <X size={20} />
+          </button>
+        </div>
+        <p className="mt-2 text-sm leading-relaxed text-muted">
+          今の生成が終わり次第、自動的に次を実行できます（無料）。待たずに今すぐ並列で実行することもできます（追加料金）。
+          ※並列実行を選ぶと、今表示中の生成の進捗はこの画面では追えなくなります（生成自体は裏で完了します）。
+        </p>
+        <div className="mt-6 flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={onQueue}
+            className="rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
+          >
+            順番待ち（無料）
+          </button>
+          <button
+            type="button"
+            onClick={onParallel}
+            className="rounded-xl border border-border bg-background px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:border-neon-violet/40"
+          >
+            今すぐ並列実行（+{surcharge}C）
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-6 py-2 text-xs text-muted transition-colors hover:text-foreground"
+          >
+            キャンセル
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 export function MultiAngleStudioTab() {
   const { user } = useSupabaseUser();
   const { credits, loading: creditsLoading } = useProfileCredits(user);
@@ -607,6 +667,18 @@ export function MultiAngleStudioTab() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
   const [regenConfirmOpen, setRegenConfirmOpen] = useState(false);
+  const [queueChoiceOpen, setQueueChoiceOpen] = useState(false);
+  type QueuedSnapshot = {
+    image: File;
+    subImages: File[];
+    selection: AngleSelection;
+    combos: AngleCombo[];
+  };
+  const [queuedNext, setQueuedNext] = useState<QueuedSnapshot | null>(null);
+  // ポーリングの長寿命な useEffect から「今すぐ最新の予約」を読めるようにする
+  // ref。イベントハンドラ（予約する/取り消す）でだけ state と一緒に書き込み、
+  // effect 内では書き込まない。
+  const queuedNextRef = useRef<QueuedSnapshot | null>(null);
 
   const elapsedMs = useElapsedTimer(phase === "running");
   // Angle worker の scaledown_window=30秒（CLAUDE.md §1）に合わせたローカル
@@ -617,6 +689,57 @@ export function MultiAngleStudioTab() {
   useEffect(() => {
     saveFormState(FORM_ID, { mode, selection } satisfies PersistedForm);
   }, [mode, selection]);
+
+  // snapshot を明示的に渡す設計: キュー待ちの「次の1件」は予約した時点の
+  // image/subImages/selection を使う必要があり、発火時点の（変わっているかも
+  // しれない）現在の state を読んではいけない。ポーリングの長寿命な
+  // useEffect からも呼ぶため、参照が安定するよう useCallback にする
+  // （user 以外の依存は state setter / import で常に安定）。
+  const runGenerate = useCallback(
+    async (
+      snapshot: { image: File; subImages: File[]; selection: AngleSelection; combos: AngleCombo[] },
+      opts: { priority?: boolean } = {},
+    ) => {
+      if (!user) return;
+      setPhase("submitting");
+      setErrorMessage(null);
+      setJob(null);
+      setSubmittedCombos(snapshot.combos);
+
+      try {
+        const res = await startAngleJob({
+          userId: user.id,
+          image: snapshot.image,
+          subImages: snapshot.subImages,
+          selection: snapshot.selection,
+          mode,
+          priority: opts.priority,
+        });
+        broadcastCreditsUpdate(user.id, res.remainingCredits);
+        saveFormState(JOB_KEY, { jobId: res.jobId });
+        setJob({
+          id: res.jobId,
+          status: "pending",
+          mode,
+          totalAngles: res.totalAngles,
+          completedAngles: 0,
+          images: [],
+          labels: snapshot.combos.map((c) => c.labelJa),
+          errorMessage: null,
+          vramUsedGb: null,
+        });
+        setJobId(res.jobId);
+        setPhase("running");
+      } catch (err) {
+        console.error("[MultiAngleStudioTab] start failed:", err);
+        setErrorMessage(err instanceof Error ? err.message : "ジョブの作成に失敗しました。");
+        setPhase("error");
+        const remaining = (err as AngleApiError)?.remainingCredits;
+        if (typeof remaining === "number") broadcastCreditsUpdate(user.id, remaining);
+      }
+    },
+    [user],
+  );
 
   // --- メインポーリングループ ----------------------------------------
   useEffect(() => {
@@ -642,6 +765,17 @@ export function MultiAngleStudioTab() {
           if (next.status === "completed") {
             setPhase("done");
             if (sawInProgress) markGpuWarm();
+            // 「順番待ち」で予約されていた次の1件を、コンテナがまだ温かい
+            // うちに自動発火する。ref はイベントハンドラでのみ書かれるので
+            // ここでは読むだけ（clear は同じ非同期コールバック内で行う —
+            // ポーリング応答というイベントに対する反応であり、レンダー毎の
+            // 同期的な副作用ではない）。
+            const queued = queuedNextRef.current;
+            if (queued) {
+              queuedNextRef.current = null;
+              setQueuedNext(null);
+              void runGenerate(queued);
+            }
             return;
           }
           if (next.status === "failed") {
@@ -679,7 +813,7 @@ export function MultiAngleStudioTab() {
     return () => {
       cancelled = true;
     };
-  }, [jobId, markGpuWarm]);
+  }, [jobId, markGpuWarm, runGenerate]);
 
   // --- reroll ジョブのポーリング -------------------------------------
   useEffect(() => {
@@ -761,42 +895,20 @@ export function MultiAngleStudioTab() {
   }, []);
 
   const doGenerate = async () => {
-    if (!user || !image) return; // handleGenerate が呼ぶ前提で確認済みだが型のため
-    setPhase("submitting");
-    setErrorMessage(null);
-    setJob(null);
-    setSubmittedCombos(combos);
-
-    try {
-      const res = await startAngleJob({ userId: user.id, image, subImages, selection, mode });
-      broadcastCreditsUpdate(user.id, res.remainingCredits);
-      saveFormState(JOB_KEY, { jobId: res.jobId });
-      setJob({
-        id: res.jobId,
-        status: "pending",
-        mode,
-        totalAngles: res.totalAngles,
-        completedAngles: 0,
-        images: [],
-        labels: combos.map((c) => c.labelJa),
-        errorMessage: null,
-        vramUsedGb: null,
-      });
-      setJobId(res.jobId);
-      setPhase("running");
-    } catch (err) {
-      console.error("[MultiAngleStudioTab] start failed:", err);
-      setErrorMessage(err instanceof Error ? err.message : "ジョブの作成に失敗しました。");
-      setPhase("error");
-      const remaining = (err as AngleApiError)?.remainingCredits;
-      if (typeof remaining === "number") broadcastCreditsUpdate(user.id, remaining);
-    }
+    if (!image) return;
+    await runGenerate({ image, subImages, selection, combos });
   };
 
   const handleGenerate = () => {
-    if (busy || missingInputs || !image) return;
+    if (missingInputs || !image) return;
     if (!user) return setLoginOpen(true);
     if (insufficientCredits) return setChargeOpen(true);
+    // 実行中に押した場合は「順番待ち」か「並列実行」かを選ばせる（warm な
+    // コンテナを無駄にしないため、待てるなら無料の順番待ちを既定にする）。
+    if (busy) {
+      setQueueChoiceOpen(true);
+      return;
+    }
     // 既に結果が表示されている状態で再生成すると、new job で即座に上書き
     // されて消える（setJob(null) が doGenerate の先頭にある）。気づかず
     // 前回の結果を失わないよう、表示中の結果があるときだけ一度確認する。
@@ -805,6 +917,25 @@ export function MultiAngleStudioTab() {
       return;
     }
     void doGenerate();
+  };
+
+  const handleQueueWait = () => {
+    if (!image) return;
+    const snapshot = { image, subImages, selection, combos };
+    queuedNextRef.current = snapshot;
+    setQueuedNext(snapshot);
+    setQueueChoiceOpen(false);
+  };
+
+  const handleCancelQueue = () => {
+    queuedNextRef.current = null;
+    setQueuedNext(null);
+  };
+
+  const handleQueueParallel = () => {
+    if (!image) return;
+    setQueueChoiceOpen(false);
+    void runGenerate({ image, subImages, selection, combos }, { priority: true });
   };
 
   const handleReroll = async (index: number) => {
@@ -1015,7 +1146,7 @@ export function MultiAngleStudioTab() {
             <button
               type="button"
               onClick={handleGenerate}
-              disabled={busy || missingInputs}
+              disabled={missingInputs}
               className={`mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold text-white transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
                 overCap || insufficientCredits
                   ? "bg-amber-600/80 hover:opacity-90"
@@ -1026,10 +1157,26 @@ export function MultiAngleStudioTab() {
             </button>
           </div>
 
-          {busy && (
+          {busy && !queuedNext && (
             <p className="-mt-2 flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-xs leading-relaxed text-neon-violet">
               <Sparkles size={14} className="mt-0.5 shrink-0" />
-              バックグラウンドで生成中です。このタブを閉じたり再読み込みしても生成は継続し、次に開いたときに途中から表示されます。
+              バックグラウンドで生成中です。このタブを閉じたり再読み込みしても生成は継続し、次に開いたときに途中から表示されます。もう一度ボタンを押すと、次の生成を予約できます。
+            </p>
+          )}
+
+          {queuedNext && (
+            <p className="-mt-2 flex items-center justify-between gap-2 rounded-lg border border-neon-pink/30 bg-neon-pink/10 px-3 py-2 text-xs leading-relaxed text-neon-pink">
+              <span className="flex items-start gap-2">
+                <Sparkles size={14} className="mt-0.5 shrink-0" />
+                次の生成を予約中です。今の生成が終わり次第、自動的に始まります。
+              </span>
+              <button
+                type="button"
+                onClick={handleCancelQueue}
+                className="shrink-0 rounded-md border border-neon-pink/40 px-2 py-1 text-[11px] font-semibold text-neon-pink transition-colors hover:bg-neon-pink/20"
+              >
+                予約を取り消す
+              </button>
             </p>
           )}
 
@@ -1269,6 +1416,13 @@ export function MultiAngleStudioTab() {
           setRegenConfirmOpen(false);
           void doGenerate();
         }}
+      />
+      <QueueChoiceModal
+        open={queueChoiceOpen}
+        surcharge={anglePriorityParallelSurcharge(knobs)}
+        onCancel={() => setQueueChoiceOpen(false)}
+        onQueue={handleQueueWait}
+        onParallel={handleQueueParallel}
       />
     </div>
   );

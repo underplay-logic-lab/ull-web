@@ -16,6 +16,7 @@ export type KnobKey =
   | "angle_turbo_per_angle"
   | "angle_pro_per_angle"
   | "angle_ref_multiplier_per_sub"
+  | "angle_priority_parallel_surcharge"
   | "cinematic_speed"
   | "cinematic_standard"
   | "cinematic_cinema_master"
@@ -111,6 +112,21 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "feature_credits",
     unit: "×/枚",
     description: "サブ参照1枚ごとに 1構図単価へ乗せる係数（係数 = 1 + これ×枚数）。0で無料。",
+    isPublic: true,
+  },
+  angle_priority_parallel_surcharge: {
+    // 2026-09-14: 「実行中でも並列で今すぐ実行」を選んだ時の追加料金。
+    // 順番待ち（無料・既定）は完了済みの温かいコンテナを再利用するが、並列は
+    // 新規コンテナのコールドスタートを追加で1回発生させる。その原価を
+    // angle_cold_start_grace_s（600s、実測ベース）× gpu_jpy_per_hour_b300
+    // (¥1125/h) ÷ credit_to_jpy(1.66) ≈ 113C に、他の単価と同じ3倍markup
+    // （director系の導出と同じ慣例）を掛けた概算値。実測ではなく理論値なので
+    // 実際の並列利用が増えたら admin で調整すること。
+    value: 340,
+    label: "Multi-Angle 並列実行 追加料金",
+    category: "feature_credits",
+    unit: "C",
+    description: "実行中のジョブを待たず並列で今すぐ実行する場合の追加コールドスタート分の上乗せ。",
     isPublic: true,
   },
   cinematic_speed: {
