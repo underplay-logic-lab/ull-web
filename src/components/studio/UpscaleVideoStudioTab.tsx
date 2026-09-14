@@ -24,6 +24,7 @@ import {
   type UpscaleVideoPresetId,
   getUpscaleModel,
   upscaleVideoCostBreakdown,
+  upscalePriorityParallelSurcharge,
   validateVideoInputResolution,
 } from "@/lib/upscaleStudio";
 import {
@@ -41,6 +42,12 @@ import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
+import { useLocalWarmCountdown } from "@/hooks/useLocalWarmCountdown";
+import {
+  QueueChoiceModal,
+  QueuedNextBanner,
+  WarmCountdownBanner,
+} from "@/components/studio/QueueChoiceModal";
 
 type Phase = "idle" | "submitting" | "running" | "done" | "error";
 
@@ -263,6 +270,23 @@ export function UpscaleVideoStudioTab() {
   const [chargeOpen, setChargeOpen] = useState(false);
 
   const elapsedMs = useElapsedTimer(phase === "running");
+  const { isWarm: gpuWarm, remainingMs: gpuWarmMs, markWarm: markGpuWarm } = useLocalWarmCountdown(30);
+
+  const [queueChoiceOpen, setQueueChoiceOpen] = useState(false);
+  type QueuedSnapshot = {
+    video: File;
+    modelKey: string;
+    presetId: UpscaleVideoPresetId;
+    durationSec: number;
+    fps: number;
+    width: number;
+    height: number;
+  };
+  const [queuedNext, setQueuedNext] = useState<QueuedSnapshot | null>(null);
+  // ポーリングの長寿命な useEffect から「今すぐ最新の予約」を読めるようにする
+  // ref。イベントハンドラでだけ書き込み、effect 内では書き込まない
+  // （CLAUDE.md §6）。
+  const queuedNextRef = useRef<QueuedSnapshot | null>(null);
 
   const handleVideoSelected = useCallback(async (file: File) => {
     setVideoError(null);
@@ -304,11 +328,53 @@ export function UpscaleVideoStudioTab() {
     setVideoError(null);
   }, []);
 
+  // snapshot を明示的に渡す設計: キュー待ちの「次の1件」は予約した時点の
+  // video/modelKey/presetId 等を使う必要があり、発火時点の（変わっているかも
+  // しれない）現在の state を読んではいけない。ポーリングの長寿命な
+  // useEffect からも呼ぶため、参照が安定するよう useCallback にする。
+  const runGenerate = useCallback(
+    async (snapshot: QueuedSnapshot, opts: { priority?: boolean } = {}) => {
+      if (!user) return;
+      setPhase("submitting");
+      setErrorMessage(null);
+      setJob(null);
+
+      try {
+        const res = await startUpscaleVideoJob({
+          userId: user.id,
+          video: snapshot.video,
+          modelKey: snapshot.modelKey,
+          presetId: snapshot.presetId,
+          durationSec: snapshot.durationSec,
+          fps: snapshot.fps,
+          width: snapshot.width,
+          height: snapshot.height,
+          priority: opts.priority,
+        });
+        broadcastCreditsUpdate(user.id, res.remainingCredits);
+        setJobId(res.jobId);
+        setPhase("running");
+      } catch (err) {
+        const e = err as UpscaleApiError;
+        console.error("[UpscaleVideoStudioTab] start failed:", e);
+        const remaining = e.remainingCredits;
+        if (typeof remaining === "number") broadcastCreditsUpdate(user.id, remaining);
+        setPhase("error");
+        setErrorMessage(e.message || "ジョブの作成に失敗しました。");
+        if (e.message?.includes("クレジット")) setChargeOpen(true);
+      }
+    },
+    [user],
+  );
+
   // --- ポーリングループ（画像タブと同じ規約: 完了後も job key をクリアしない） --
   useEffect(() => {
     if (!jobId) return;
     let cancelled = false;
     let errorStreak = 0;
+    // 「このポーリングセッション中に実行中状態を実際に経由してから完了した」
+    // 場合だけ warm 扱いにする（CLAUDE.md §6、タブ再読み込み直後の誤検知防止）。
+    let sawInProgress = false;
     saveFormState(JOB_KEY, { jobId });
 
     (async () => {
@@ -321,6 +387,13 @@ export function UpscaleVideoStudioTab() {
 
           if (next.status === "completed") {
             setPhase("done");
+            if (sawInProgress) markGpuWarm();
+            const queued = queuedNextRef.current;
+            if (queued) {
+              queuedNextRef.current = null;
+              setQueuedNext(null);
+              void runGenerate(queued);
+            }
             return;
           }
           if (next.status === "failed") {
@@ -328,6 +401,7 @@ export function UpscaleVideoStudioTab() {
             setErrorMessage(next.errorMessage || "アップスケールに失敗しました。");
             return;
           }
+          sawInProgress = true;
           setPhase("running");
         } catch (err) {
           if (cancelled) return;
@@ -354,7 +428,7 @@ export function UpscaleVideoStudioTab() {
     return () => {
       cancelled = true;
     };
-  }, [jobId]);
+  }, [jobId, markGpuWarm, runGenerate]);
 
   const model = getUpscaleModel(modelKey);
 
@@ -376,41 +450,59 @@ export function UpscaleVideoStudioTab() {
   const insufficientCredits =
     Boolean(user) && !creditsLoading && cost > 0 && (credits ?? 0) < cost;
   const busy = phase === "submitting" || phase === "running";
-  const canRun = Boolean(video) && cost > 0 && !busy && !videoError;
+  const canRun = Boolean(video) && cost > 0 && !videoError;
 
-  const handleRun = useCallback(async () => {
+  const buildSnapshot = (): QueuedSnapshot | null => {
+    if (!video || !videoMeta) return null;
+    return {
+      video,
+      modelKey,
+      presetId,
+      durationSec: videoMeta.duration,
+      fps: videoMeta.fps,
+      width: videoMeta.width,
+      height: videoMeta.height,
+    };
+  };
+
+  const handleRun = () => {
     if (!user) return setLoginOpen(true);
-    if (!video || !videoMeta) return;
-    if (insufficientCredits) return setChargeOpen(true);
-
-    setPhase("submitting");
-    setErrorMessage(null);
-    setJob(null);
-
-    try {
-      const res = await startUpscaleVideoJob({
-        userId: user.id,
-        video,
-        modelKey,
-        presetId,
-        durationSec: videoMeta.duration,
-        fps: videoMeta.fps,
-        width: videoMeta.width,
-        height: videoMeta.height,
-      });
-      broadcastCreditsUpdate(user.id, res.remainingCredits);
-      setJobId(res.jobId);
-      setPhase("running");
-    } catch (err) {
-      const e = err as UpscaleApiError;
-      console.error("[UpscaleVideoStudioTab] start failed:", e);
-      const remaining = e.remainingCredits;
-      if (typeof remaining === "number") broadcastCreditsUpdate(user.id, remaining);
-      setPhase("error");
-      setErrorMessage(e.message || "ジョブの作成に失敗しました。");
-      if (e.message?.includes("クレジット")) setChargeOpen(true);
+    const snapshot = buildSnapshot();
+    if (!snapshot) return;
+    // 実行中に押した場合は「順番待ち」か「並列実行」かを選ばせる（CLAUDE.md
+    // §6）。insufficientCredits より先に置くこと。
+    if (busy) {
+      setQueueChoiceOpen(true);
+      return;
     }
-  }, [user, video, videoMeta, modelKey, presetId, insufficientCredits]);
+    if (insufficientCredits) return setChargeOpen(true);
+    void runGenerate(snapshot);
+  };
+
+  const handleQueueWait = () => {
+    const snapshot = buildSnapshot();
+    if (!snapshot) return;
+    queuedNextRef.current = snapshot;
+    setQueuedNext(snapshot);
+    setQueueChoiceOpen(false);
+  };
+
+  const handleCancelQueue = () => {
+    queuedNextRef.current = null;
+    setQueuedNext(null);
+  };
+
+  const handleQueueParallel = () => {
+    const snapshot = buildSnapshot();
+    if (!snapshot) return;
+    setQueueChoiceOpen(false);
+    const surcharge = upscalePriorityParallelSurcharge(knobs);
+    if (!creditsLoading && (credits ?? 0) < cost + surcharge) {
+      setChargeOpen(true);
+      return;
+    }
+    void runGenerate(snapshot, { priority: true });
+  };
 
   const progressPct = phase === "running" ? (job?.status === "processing" ? 70 : 25) : 0;
 
@@ -537,6 +629,21 @@ export function UpscaleVideoStudioTab() {
               </div>
             )}
 
+            {!busy && gpuWarm && <WarmCountdownBanner remainingMs={gpuWarmMs} />}
+
+            {busy && !queuedNext && (
+              <p className="mt-2 flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-xs leading-relaxed text-neon-violet">
+                <Sparkles size={14} className="mt-0.5 shrink-0" />
+                バックグラウンドで処理中です。もう一度ボタンを押すと、次の生成を予約できます。
+              </p>
+            )}
+
+            {queuedNext && (
+              <div className="mt-2">
+                <QueuedNextBanner onCancel={handleCancelQueue} />
+              </div>
+            )}
+
             <button
               type="button"
               onClick={handleRun}
@@ -635,6 +742,13 @@ export function UpscaleVideoStudioTab() {
         onClose={() => setChargeOpen(false)}
         credits={credits}
         cost={cost || 20}
+      />
+      <QueueChoiceModal
+        open={queueChoiceOpen}
+        surcharge={upscalePriorityParallelSurcharge(knobs)}
+        onCancel={() => setQueueChoiceOpen(false)}
+        onQueue={handleQueueWait}
+        onParallel={handleQueueParallel}
       />
     </div>
   );

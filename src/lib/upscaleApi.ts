@@ -86,6 +86,8 @@ export async function startUpscaleVideoJob(params: {
   fps: number;
   width: number;
   height: number;
+  /** true: 実行中のジョブを待たず並列で今すぐ実行（追加料金）。既定 false = 順番待ち。 */
+  priority?: boolean;
 }): Promise<StartUpscaleVideoJobResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -104,6 +106,7 @@ export async function startUpscaleVideoJob(params: {
       fps: params.fps,
       width: params.width,
       height: params.height,
+      priority: params.priority ?? false,
     }),
   });
 
