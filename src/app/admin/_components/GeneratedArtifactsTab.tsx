@@ -28,6 +28,32 @@ type Generation = {
   createdAt: string;
 };
 
+// 超解像ワーカーは20MB超のPNGをWebP q92へ自動再エンコードして保存する
+// （CLAUDE.md参照外・modal_seedvr2_worker.py側の仕様）。DLし忘れて後から
+// 管理画面経由で取得する時、PNG専用ツールで開きたいケースのためのクライアント
+// 側変換（サーバー側の画像ライブラリ追加なしで完結させる）。
+async function downloadImageAsPng(url: string, filename: string) {
+  const res = await fetch(url);
+  const blob = await res.blob();
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("canvas context unavailable");
+  ctx.drawImage(bitmap, 0, 0);
+  const pngBlob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!pngBlob) throw new Error("PNG変換に失敗しました");
+  const objectUrl = URL.createObjectURL(pngBlob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename.replace(/\.\w+$/, "") + ".png";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
 type StorageEntry = {
   name: string;
   path: string;
@@ -163,14 +189,30 @@ function RecentGenerations() {
                     <td className="whitespace-nowrap py-2 pr-3 text-muted">{fmtDate(r.createdAt)}</td>
                     <td className="py-2">
                       {r.thumbUrl ? (
-                        <a
-                          href={r.thumbUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-neon-violet underline decoration-dotted hover:opacity-80"
-                        >
-                          開く
-                        </a>
+                        <>
+                          <a
+                            href={r.thumbUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-neon-violet underline decoration-dotted hover:opacity-80"
+                          >
+                            開く
+                          </a>
+                          {/\.webp(\?|$)/i.test(r.thumbUrl) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void downloadImageAsPng(r.thumbUrl!, `${r.id}.webp`).catch((err) => {
+                                  console.error("[GeneratedArtifactsTab] PNG変換に失敗:", err);
+                                });
+                              }}
+                              className="ml-1.5 rounded border border-border px-1 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-neon-violet"
+                              title="PNG形式に変換してダウンロード（保存形式はWebPのため、変換後の画質はWebPのまま）"
+                            >
+                              PNG化DL
+                            </button>
+                          )}
+                        </>
                       ) : (
                         <span className="text-muted opacity-60">—</span>
                       )}
@@ -361,6 +403,20 @@ function BucketBrowser() {
                 >
                   <Download size={13} />
                 </a>
+              )}
+              {!e.isFolder && e.url && /\.webp$/i.test(e.name) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void downloadImageAsPng(e.url!, e.name).catch((err) => {
+                      console.error("[GeneratedArtifactsTab] PNG変換に失敗:", err);
+                    });
+                  }}
+                  className="shrink-0 rounded border border-border px-1 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-neon-violet"
+                  title="PNG形式に変換してダウンロード（保存形式はWebPのため、変換後の画質はWebPのまま）"
+                >
+                  PNG化DL
+                </button>
               )}
               <button
                 type="button"
