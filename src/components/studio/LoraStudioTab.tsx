@@ -341,6 +341,12 @@ type ProConfig = {
   rawYaml: string;
 };
 
+// 2026-09-14: 既定オプティマイザを adamw8bit（量子化・VRAM節約用）から
+// prodigy（フル精度・学習率フリー）へ変更（ホスト判断）。CLAUDE.md §1の
+// 「量子化は原則不使用」に反していた上、B300では節約する理由が無い。
+// learningRate はここでは AdamW 系選択時の見た目の初期値としてのみ残す
+// （prodigy選択時はUIごと非表示・サーバー側でも強制的に無視される —
+// modal_lora_worker.py の _build_config 参照）。
 const DEFAULT_PRO: ProConfig = {
   rank: 32,
   alpha: 32,
@@ -348,7 +354,7 @@ const DEFAULT_PRO: ProConfig = {
   learningRate: 1e-4,
   lrCustom: false,
   steps: 2000,
-  optimizer: "adamw8bit",
+  optimizer: "prodigy",
   useRawYaml: false,
   rawYaml: "",
 };
@@ -4632,41 +4638,51 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                     </div>
                   </div>
 
-                  {/* Learning Rate — safe presets, free entry only on カスタム */}
+                  {/* Learning Rate — safe presets, free entry only on カスタム。
+                      Prodigy は学習率フリー（内部で自己推定する）ため、この
+                      値は使われない（サーバー側で強制的に1.0扱いになる）。 */}
                   <div>
                     <label className="mb-1 block text-[10px] text-muted">Learning Rate</label>
-                    <select
-                      value={pro.lrCustom ? "custom" : String(pro.learningRate)}
-                      onChange={(e) => {
-                        if (e.target.value === "custom") {
-                          setPro((p) => ({ ...p, lrCustom: true }));
-                        } else {
-                          setPro((p) => ({ ...p, lrCustom: false, learningRate: Number(e.target.value) }));
-                        }
-                      }}
-                      disabled={busy}
-                      className={fieldCls}
-                    >
-                      {LR_PRESETS.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
-                      <option value="custom">カスタム（手動入力）</option>
-                    </select>
-                    {pro.lrCustom && (
-                      <input
-                        type="number"
-                        step="0.00001"
-                        min={0}
-                        value={pro.learningRate}
-                        onChange={(e) =>
-                          setPro((p) => ({ ...p, learningRate: Number(e.target.value) || p.learningRate }))
-                        }
-                        disabled={busy}
-                        placeholder="0.0001"
-                        className={`${fieldCls} mt-1.5`}
-                      />
+                    {pro.optimizer === "prodigy" ? (
+                      <p className="rounded-lg border border-border bg-background/60 px-3 py-2 text-[10px] leading-relaxed text-muted">
+                        Prodigy は学習率を自動推定するため、この設定は使用されません。
+                      </p>
+                    ) : (
+                      <>
+                        <select
+                          value={pro.lrCustom ? "custom" : String(pro.learningRate)}
+                          onChange={(e) => {
+                            if (e.target.value === "custom") {
+                              setPro((p) => ({ ...p, lrCustom: true }));
+                            } else {
+                              setPro((p) => ({ ...p, lrCustom: false, learningRate: Number(e.target.value) }));
+                            }
+                          }}
+                          disabled={busy}
+                          className={fieldCls}
+                        >
+                          {LR_PRESETS.map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                          <option value="custom">カスタム（手動入力）</option>
+                        </select>
+                        {pro.lrCustom && (
+                          <input
+                            type="number"
+                            step="0.00001"
+                            min={0}
+                            value={pro.learningRate}
+                            onChange={(e) =>
+                              setPro((p) => ({ ...p, learningRate: Number(e.target.value) || p.learningRate }))
+                            }
+                            disabled={busy}
+                            placeholder="0.0001"
+                            className={`${fieldCls} mt-1.5`}
+                          />
+                        )}
+                      </>
                     )}
                   </div>
 

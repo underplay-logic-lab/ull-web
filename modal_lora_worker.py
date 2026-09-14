@@ -629,9 +629,20 @@ def _is_blocked_model(value: str) -> bool:
 DEFAULT_TRAINING_CONFIG = {
     "rank": 32,
     "alpha": 32,
+    # AdamW-style rate — only used as a fallback for non-prodigy optimizers.
+    # Prodigy (the actual default below) ignores this and gets a forced
+    # lr=1.0 in _build_config (see the comment there).
     "learning_rate": 1e-4,
     "steps": 2000,
-    "optimizer": "adamw8bit",
+    # 2026-09-14: was adamw8bit (bitsandbytes 8bit-quantized optimizer states) —
+    # a VRAM-saving quantization that was never benchmarked/approved per
+    # CLAUDE.md §1 ("量子化は原則不使用、使うならホスト承認") and made no sense
+    # on Blackwell's large VRAM. Switched to prodigy: full precision (no
+    # quantization) AND learning-rate-free, which also removes another
+    # never-validated guessed constant (the fixed LR) from "オート" mode —
+    # matching its own "don't make the user tune anything" design (host
+    # decision, 2026-09-14).
+    "optimizer": "prodigy",
 }
 
 # Framing/composition tags and part-detail tags are kept in strictly
@@ -1766,9 +1777,22 @@ def _build_config(
 
     rank = int(tc.get("rank", DEFAULT_TRAINING_CONFIG["rank"]))
     alpha = int(tc.get("alpha", DEFAULT_TRAINING_CONFIG["alpha"]))
-    lr = float(tc.get("learning_rate", DEFAULT_TRAINING_CONFIG["learning_rate"]))
     steps = int(tc.get("steps", DEFAULT_TRAINING_CONFIG["steps"]))
     optimizer = str(tc.get("optimizer", DEFAULT_TRAINING_CONFIG["optimizer"]))
+    if optimizer == "prodigy":
+        # Prodigy is a learning-rate-FREE optimizer (D-adaptation): it estimates
+        # its own step size from the training trajectory and treats the `lr`
+        # argument purely as a multiplier on that estimate. The universal
+        # convention (Prodigy's own README, and every trainer that wires it up —
+        # Kohya-ss sd-scripts included) is to pass lr=1.0; an AdamW-scale value
+        # (1e-5〜2e-4, which is what this app's LR dropdown/DEFAULT_TRAINING_
+        # CONFIG historically meant) would cripple it to near-zero step size.
+        # Force this regardless of what the caller sent (GUI mode's LR control
+        # is AdamW-oriented and not wired to hide/adjust itself per optimizer
+        # server-side is the one place that's guaranteed correct either way).
+        lr = 1.0
+    else:
+        lr = float(tc.get("learning_rate", DEFAULT_TRAINING_CONFIG["learning_rate"]))
     # Intermediate checkpoints every 500 steps (or every 25% for short runs),
     # so the user can pick the least over-fit step afterward. Keep them all.
     save_every = min(500, max(100, steps // 4))
@@ -6531,7 +6555,7 @@ def main(
     rank: int = 32,
     alpha: int = 32,
     learning_rate: float = 1e-4,
-    optimizer: str = "adamw8bit",
+    optimizer: str = "prodigy",
     resolution: int = 768,
     caption: str = "",
     compile: str = "",
