@@ -50,7 +50,6 @@ import {
   LORA_PRESETS,
   LORA_PRESET_GROUP_LABELS,
   LORA_BASE_ARCHITECTURES,
-  LORA_RESOLUTIONS,
   LORA_RESOLUTION_LABELS,
   DEFAULT_LORA_RESOLUTION,
   isBlockedLoraModel,
@@ -210,9 +209,6 @@ type LoraFormDraft = {
   customModelId: string;
   baseArchitecture: LoraBaseArchitecture;
   resolution: LoraResolution;
-  // true once the user picks a resolution by hand — after that a base-model
-  // change stops snapping it to the model's recommended value.
-  resolutionTouched: boolean;
   pro: ProConfig;
 };
 
@@ -233,7 +229,6 @@ function buildFormDraft(v: {
   customModelId: string;
   baseArchitecture: LoraBaseArchitecture;
   resolution: LoraResolution;
-  resolutionTouched: boolean;
   pro: ProConfig;
 }): LoraFormDraft {
   return {
@@ -250,7 +245,6 @@ function buildFormDraft(v: {
     customModelId: v.customModelId,
     baseArchitecture: v.baseArchitecture,
     resolution: v.resolution,
-    resolutionTouched: v.resolutionTouched,
     pro: {
       rank: v.pro.rank,
       alpha: v.pro.alpha,
@@ -368,7 +362,6 @@ const DEFAULT_FORM_DRAFT: LoraFormDraft = buildFormDraft({
   customModelId: "",
   baseArchitecture: "sdxl",
   resolution: DEFAULT_LORA_RESOLUTION,
-  resolutionTouched: false,
   pro: DEFAULT_PRO,
 });
 
@@ -1541,10 +1534,16 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const [modelChoice, setModelChoice] = useState<string>("minimax_h3");
   const [customModelId, setCustomModelId] = useState("");
   const [baseArchitecture, setBaseArchitecture] = useState<LoraBaseArchitecture>("sdxl");
-  const [resolution, setResolution] = useState<LoraResolution>(DEFAULT_LORA_RESOLUTION);
-  // Set once the user picks a resolution by hand — a later base-model change
-  // then leaves it alone instead of snapping to the model's recommended value.
-  const [resolutionTouched, setResolutionTouched] = useState(false);
+  // 2026-09-14: ユーザーが手で選ぶものではなくなった。512/768/1280を選ばせて
+  // 「512だとディティールが甘い」等の混乱を招いていたため廃止し、モデルの
+  // アーキテクチャから recommendedResolution() で純粋に導出する（state では
+  // ない — pricedArch と同じ isCustom 判定をここで先に軽量に再現している。
+  // 後方（pricedArch 定義箇所）で改めて計算し直す version と重複するが、
+  // このファイル規模での並び替えリスクを避けるため意図的に重複させている）。
+  const resolution = useMemo<LoraResolution>(() => {
+    const arch = modelChoice === "__custom__" ? baseArchitecture : (loraPresetById(modelChoice)?.arch ?? "");
+    return arch ? recommendedResolution(arch as LoraBaseArchitecture) : DEFAULT_LORA_RESOLUTION;
+  }, [modelChoice, baseArchitecture]);
   const [triggerWord, setTriggerWord] = useState("");
   const [loraName, setLoraName] = useState("");
   const [pro, setPro] = useState<ProConfig>(DEFAULT_PRO);
@@ -1815,13 +1814,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         ) {
           setBaseArchitecture(d.baseArchitecture as LoraBaseArchitecture);
         }
-        if (
-          typeof d.resolution === "number" &&
-          (LORA_RESOLUTIONS as readonly number[]).includes(d.resolution)
-        ) {
-          setResolution(d.resolution as LoraResolution);
-        }
-        if (typeof d.resolutionTouched === "boolean") setResolutionTouched(d.resolutionTouched);
+        // resolution はもう手動保存/復元しない — モデル確定後に
+        // recommendedResolution() から自動で決まる（下記 useEffect 参照）。
 
         // Nested `pro` (current shape) with a fallback to the legacy top-level
         // rawYaml / useRawYaml that pre-expert-settings drafts stored.
@@ -1880,7 +1874,6 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       customModelId,
       baseArchitecture,
       resolution,
-      resolutionTouched,
       pro,
     });
     try {
@@ -1909,7 +1902,6 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     customModelId,
     baseArchitecture,
     resolution,
-    resolutionTouched,
     pro,
   ]);
 
@@ -2303,19 +2295,12 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       : LORA_CREDIT_WORST_CASE;
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < requiredCredits;
 
-  // Model dropdown change — a *partial* update: only the model-specific field
-  // (the recommended training resolution) is snapped, and only while the user
-  // hasn't set the resolution by hand. Rank / Steps / LR / optimizer are left
-  // exactly as the user tuned them.
+  // Model dropdown change — resolution はもう手動で追従させない。pricedArch
+  // が決まった直後の useEffect が recommendedResolution() から自動で同期する
+  // （下記参照）。Rank / Steps / LR / optimizer は引き続きユーザーの調整を
+  // そのまま残す。
   const handleModelChange = (value: string) => {
     setModelChoice(value);
-    if (resolutionTouched) return;
-    if (value === "__custom__") {
-      setResolution(recommendedResolution(baseArchitecture));
-    } else {
-      const preset = loraPresetById(value);
-      if (preset) setResolution(recommendedResolution(preset.arch));
-    }
   };
 
   const canSubmit =
@@ -3546,8 +3531,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     setModelChoice("minimax_h3");
     setCustomModelId("");
     setBaseArchitecture("sdxl");
-    setResolution(DEFAULT_LORA_RESOLUTION);
-    setResolutionTouched(false);
+    // resolution はもう state ではない（modelChoice/baseArchitecture から
+    // 自動導出。上の2行のリセットで自然に 1024 へ戻る）。
     setTriggerWord("");
     setLoraName("");
     setPro(DEFAULT_PRO);
@@ -4159,22 +4144,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
           <div>
             <label className="mb-1 block text-[11px] font-medium text-muted">学習解像度</label>
-            <select
-              value={resolution}
-              onChange={(e) => {
-                setResolution(Number(e.target.value) as LoraResolution);
-                setResolutionTouched(true);
-              }}
-              disabled={busy}
-              className={fieldCls}
-            >
-              {LORA_RESOLUTIONS.map((r) => (
-                <option key={r} value={r}>
-                  {LORA_RESOLUTION_LABELS[r]}
-                </option>
-              ))}
-            </select>
-            <p className="mt-1 text-[10px] text-muted">解像度が高いほど高精細ですが、学習時間と負荷が増えます。</p>
+            <p className={`${fieldCls} flex items-center text-muted`}>{LORA_RESOLUTION_LABELS[resolution]}</p>
+            <p className="mt-1 text-[10px] text-muted">
+              モデルに最適な解像度で自動的に学習します（選択の必要はありません）。
+            </p>
           </div>
 
           {/* LoRA-type-aware auto-caption spec — category + JP fixed/varying */}

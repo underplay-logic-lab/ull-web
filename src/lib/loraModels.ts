@@ -178,19 +178,19 @@ export const LORA_RESOLUTION_LABELS: Record<LoraResolution, string> = {
   1024: "1024 × 1024 — 超高精細 / 静止画 DiT 系",
 };
 
-// Recommended training resolution for an architecture — the still-image DiT
-// backbones train at 1024; every video arch trains at 768.
-const STILL_IMAGE_ARCHES: ReadonlySet<LoraBaseArchitecture> = new Set([
-  "flux2_klein_4b",
-  "qwen_image",
-  "krea2",
-  "zimage",
-  "anima",
-  "sdxl",
-]);
-
+// Recommended（＝一般ユーザー向けUIで唯一選べる）学習解像度。
+// 2026-09-14: 以前は静止画DiT系=1024・動画系=768と分けていたが、動画系
+// （MiniMax H3）で実際に1280px→768pxまで比較検証した結果「768より1024の方が
+// 良く、1280は無意味（ベースモデルのネイティブ解像度を超えるだけ）」という
+// 実測結論に至った。512/768/1280を選ばせるUIがユーザーの混乱（「512だと
+// ディティールが甘い」等、統一されない体感評価）の原因になっていたため、
+// UI側の解像度選択自体を廃止し、全アーキテクチャで1024に統一する
+// （ホスト判断）。個別モデルで異なる値が実測で正当化されたら、この関数を
+// アーキテクチャ別分岐に戻すこと。
+// シグネチャはアーキテクチャ別分岐に戻す時のために維持する。
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function recommendedResolution(arch: LoraBaseArchitecture): LoraResolution {
-  return STILL_IMAGE_ARCHES.has(arch) ? 1024 : 768;
+  return 1024;
 }
 
 // FLUX.1 [dev] block — matches "flux dev", "flux-dev", "FLUX.1-dev",

@@ -27,9 +27,9 @@ import {
   DEFAULT_LORA_RESOLUTION,
   LORA_BASE_ARCHITECTURES,
   LORA_PRESET_IDS,
-  LORA_RESOLUTIONS,
   isBlockedLoraModel,
   loraPresetById,
+  recommendedResolution,
   type LoraBaseArchitecture,
 } from "@/lib/loraModels";
 import {
@@ -361,10 +361,6 @@ async function handlePost(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
   }
 
-  const resolution = (LORA_RESOLUTIONS as readonly number[]).includes(Number(body.resolution))
-    ? Number(body.resolution)
-    : DEFAULT_LORA_RESOLUTION;
-
   // --- authoritative price -----------------------------------------------
   // Multi-dimensional: ceil(0.1 * modelMult * resMult * batchMult * rankMult
   // * steps) — computed server-side from the request's real parameters so a
@@ -374,6 +370,14 @@ async function handlePost(request: Request): Promise<NextResponse> {
   //  - a YAML that somehow reached here unparseable: the worst-case ceiling.
   const pricedPreset = targetModel === "custom" ? undefined : loraPresetById(targetModel);
   const pricedArch = targetModel === "custom" ? baseArchitecture : (pricedPreset?.arch ?? "");
+
+  // 2026-09-14: 学習解像度はもうクライアントが選ぶものではない
+  // （LoraStudioTab.tsx参照）。body.resolutionは信用せず、モデルの
+  // アーキテクチャから常にrecommendedResolution()で権威的に決める
+  // （改ざんされたクライアントが安い解像度を騙って過小課金することも防ぐ）。
+  const resolution = pricedArch
+    ? recommendedResolution(pricedArch as LoraBaseArchitecture)
+    : DEFAULT_LORA_RESOLUTION;
   const pricedConfig: unknown = hasOverride
     ? parsedOverride
     : guiLoraPricingConfig({
