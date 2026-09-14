@@ -2172,7 +2172,10 @@ _ull_h3_orig_load_transformer = MinimaxH3Model._load_transformer
 
 
 def _ull_h3_load_transformer(self):
-    if os.environ.get("ULL_H3_BAKE", "1") == "0":
+    # 2026-09-14: 既定を無効化（85.5GBのbaked bf16 2点をVolumeから削除する判断と
+    # セット）。1ジョブあたり+10分の逆量子化コストを毎回払う代わりに、baked
+    # コピーを二度と作らない。ULL_H3_BAKE=1 で明示的に再度オプトインできる。
+    if os.environ.get("ULL_H3_BAKE", "0") == "0":
         return _ull_h3_orig_load_transformer(self)  # kill switch: stock path
 
     baked = _ull_h3_baked_path(self)
@@ -2306,7 +2309,9 @@ _ULL_H3_TE_BAKE_DIR = os.environ.get("ULL_H3_BAKE_DIR", "/models/diffusion_model
 _ULL_H3_TE_BAKED = os.path.join(
     _ULL_H3_TE_BAKE_DIR, "minimax_h3_baked_te_qwen3vl32b_bf16.safetensors"
 )
-_ULL_H3_TE_DISABLED = os.environ.get("ULL_H3_TE_BAKE", "1") == "0"
+# 2026-09-14: DiT側と同じ理由で既定を無効化（baked bf16版をVolumeから削除する
+# 判断とセット）。ULL_H3_TE_BAKE=1 で明示的に再度オプトインできる。
+_ULL_H3_TE_DISABLED = os.environ.get("ULL_H3_TE_BAKE", "0") == "0"
 
 
 def _ull_te_baked_ready():
