@@ -1326,6 +1326,32 @@ class WanAnimateBlackwell:
         return out
 
     @modal.method()
+    def probe_object_info_search(self, substrings: list) -> dict:
+        """デバッグ用: ComfyUI 起動のみ・実行なしで /object_info 全体を取得し、
+        class_type 名に指定した部分文字列（大小無視）を含むものだけ返す
+        （2026-09-14、image-to-3D 検証用 — TRELLIS.2 のネイティブノードの
+        正確なクラス名が事前に分からないため、個別 class_type 指定の
+        probe_node_schema ではなく全件検索する必要がある）。"""
+        import requests
+
+        self._ensure_comfy_running(BLACKWELL_EXEC_CONFIG)
+        try:
+            r = requests.get("http://127.0.0.1:8188/object_info", timeout=30)
+            if not r.ok:
+                return {"ok": False, "error": f"HTTP {r.status_code}"}
+            all_nodes = r.json()
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        lowered = [s.lower() for s in substrings]
+        matches = {
+            name: schema
+            for name, schema in all_nodes.items()
+            if any(s in name.lower() for s in lowered)
+        }
+        return {"ok": True, "count": len(matches), "matches": matches}
+
+    @modal.method()
     def run_custom_workflow(
         self,
         workflow_json: str,
@@ -1898,6 +1924,109 @@ def _cinematic_workflow(
 
 
 @app.local_entrypoint()
+def trellis2_smoke(image_path: str = "", workflow_path: str = "", poll_deadline_s: int = 1200):
+    """modal run modal_wan_animate_blackwell.py::trellis2_smoke
+
+    ComfyUI Native TRELLIS.2の実機テスト（2026-09-14）。ComfyUI公式テンプレート
+    （Comfy-Org/workflow_templates の3d_pixal3d_trellis2_image_to_model.json）
+    からPixal3D分岐を除去しBF16化した単体TRELLIS.2グラフを実行し、.glbを
+    出力する。GPU課金あり（setup_trellis2で重み取得済みが前提）。"""
+    ref_path = image_path or "D:/web/46FF6DBB-FCAC-4CE3-BC71-82705E47926D.png"
+    wf_path = workflow_path or "D:/web/trellis2_api_final.json"
+    with open(ref_path, "rb") as f:
+        image_b64 = base64.b64encode(f.read()).decode("ascii")
+    with open(wf_path, encoding="utf-8") as f:
+        workflow_json = f.read()
+
+    started = time.time()
+    result = WanAnimateBlackwell().run_custom_workflow.remote(
+        workflow_json,
+        {"ull_ref.png": image_b64},
+        None,  # exec_config: default (BLACKWELL_EXEC_CONFIG)
+        False,  # save_to_volume
+        "322",  # output_node_id: Save3DAdvanced
+        None, None, 0, None,  # job_id, user_id, credits_cost, active_job_id
+        True,  # skip_torch_compile — no diffusion-model loader-swap heuristic needed here
+        poll_deadline_s,
+    )
+    elapsed = time.time() - started
+    out_path = f"D:/web/trellis2_result_{result['filename']}"
+    with open(out_path, "wb") as f:
+        f.write(base64.b64decode(result["result_base64"]))
+    print(
+        f"[trellis2_smoke] OK elapsed={elapsed:.1f}s vram={result.get('vram_used_gb')}GB "
+        f"-> {out_path}"
+    )
+
+
+@app.local_entrypoint()
+def pixal3d_smoke(image_path: str = "", workflow_path: str = "", poll_deadline_s: int = 1200):
+    """modal run modal_wan_animate_blackwell.py::pixal3d_smoke
+
+    Pixal3Dの社内品質確認テスト（2026-09-14、本番採用ではない — CLAUDE.md §5
+    によりライセンス未確定のため保留中）。同じ参照画像・同じ後段メッシュ
+    パイプラインでTRELLIS.2とPixal3Dを比較する。GPU課金あり
+    （setup_pixal3dで重み取得済みが前提）。"""
+    ref_path = image_path or "D:/web/46FF6DBB-FCAC-4CE3-BC71-82705E47926D.png"
+    wf_path = workflow_path or "D:/web/pixal3d_api_final.json"
+    with open(ref_path, "rb") as f:
+        image_b64 = base64.b64encode(f.read()).decode("ascii")
+    with open(wf_path, encoding="utf-8") as f:
+        workflow_json = f.read()
+
+    started = time.time()
+    result = WanAnimateBlackwell().run_custom_workflow.remote(
+        workflow_json,
+        {"ull_ref.png": image_b64},
+        None, False, "322",
+        None, None, 0, None,
+        True, poll_deadline_s,
+    )
+    elapsed = time.time() - started
+    out_path = f"D:/web/pixal3d_result_{result['filename']}"
+    with open(out_path, "wb") as f:
+        f.write(base64.b64decode(result["result_base64"]))
+    print(
+        f"[pixal3d_smoke] OK elapsed={elapsed:.1f}s vram={result.get('vram_used_gb')}GB "
+        f"-> {out_path}"
+    )
+
+
+@app.local_entrypoint()
+def probe_trellis2_nodes():
+    """modal run modal_wan_animate_blackwell.py::probe_trellis2_nodes
+
+    GPU起動のみ・ワークフロー実行なしで、ピン止め中のComfyUI v0.35.1に
+    TRELLIS.2ネイティブノード（comfy_extras/nodes_trellis2.py）が実際に
+    存在するか、正確なclass_type名と入出力スキーマを確認する
+    （2026-09-14、image-to-3D機能の実機検証の第一歩）。"""
+    result = WanAnimateBlackwell().probe_object_info_search.remote(["trellis"])
+    if not result.get("ok"):
+        print(f"[probe_trellis2_nodes] FAILED: {result.get('error')}")
+        return
+    print(f"[probe_trellis2_nodes] found {result['count']} matching node(s):")
+    for name in result["matches"]:
+        print(f"  - {name}")
+    print(json.dumps(result["matches"], ensure_ascii=False, indent=2))
+
+
+@app.local_entrypoint()
+def probe_node_search(terms: str = "trellis,glb,voxel,mesh,gltf,clip_vision,clipvision"):
+    """modal run modal_wan_animate_blackwell.py::probe_node_search --terms trellis,glb
+
+    GPU起動のみ・ワークフロー実行なしで、カンマ区切りの部分文字列に一致する
+    class_type を /object_info 全体から検索する汎用プローブ（2026-09-14）。"""
+    subs = [t.strip() for t in terms.split(",") if t.strip()]
+    result = WanAnimateBlackwell().probe_object_info_search.remote(subs)
+    if not result.get("ok"):
+        print(f"[probe_node_search] FAILED: {result.get('error')}")
+        return
+    print(f"[probe_node_search] found {result['count']} matching node(s):")
+    for name in result["matches"]:
+        print(f"  - {name}")
+
+
+@app.local_entrypoint()
 def probe_minimax_schema():
     """modal run modal_wan_animate_blackwell.py::probe_minimax_schema
 
@@ -2031,6 +2160,104 @@ def download_vdn_checkpoint(stage: str = "stage-b-step-2000") -> dict:
     stage_dir = os.path.join(dest_dir, stage)
     files = os.listdir(stage_dir) if os.path.isdir(stage_dir) else []
     return {"ok": True, "stage_dir": stage_dir, "files": files}
+
+
+@app.function(image=image, volumes={MODELS_DIR: vol}, timeout=2400)
+def download_trellis2_weights() -> dict:
+    """ComfyUI Native TRELLIS.2（comfy_extras/nodes_trellis2.py、v0.35.1で
+    存在確認済み — nvdiffrast/nvdiffrec不使用でCLAUDE.md §5準拠）の重みを
+    CPU専用でVolumeへ落とす（2026-09-14、image-to-3D機能の実機検証）。
+    Comfy-Org/TRELLIS.2 のリポジトリ内フォルダ構成
+    （clip_vision/・diffusion_models/・vae/）がComfyUIのfolder_paths.py規約と
+    一致しているため、local_dir=MODELS_DIR に直接展開できる。BF16フル精度版
+    のみ取得（int8_convrot版は量子化のためCLAUDE.md §1既定に反し取得しない）。
+    背景除去（RemoveBackground/LoadBackgroundRemovalModel）用のBiRefNetは
+    別リポジトリ（Comfy-Org/BiRefNet）。CPU専用・GPU課金なし。"""
+    from huggingface_hub import snapshot_download
+
+    snapshot_download(
+        repo_id="Comfy-Org/TRELLIS.2",
+        local_dir=MODELS_DIR,
+        allow_patterns=[
+            "clip_vision/dino_v3_vit_l.safetensors",
+            "diffusion_models/trellis_2_bf16.safetensors",
+            "vae/trellis_2_shape_vae_bf16.safetensors",
+            "vae/trellis_2_texture_vae_bf16.safetensors",
+        ],
+    )
+    snapshot_download(
+        repo_id="Comfy-Org/BiRefNet",
+        local_dir=MODELS_DIR,
+        allow_patterns=["background_removal/birefnet.safetensors"],
+    )
+    vol.commit()
+
+    staged = {}
+    for sub, fname in [
+        ("clip_vision", "dino_v3_vit_l.safetensors"),
+        ("diffusion_models", "trellis_2_bf16.safetensors"),
+        ("vae", "trellis_2_shape_vae_bf16.safetensors"),
+        ("vae", "trellis_2_texture_vae_bf16.safetensors"),
+        ("background_removal", "birefnet.safetensors"),
+    ]:
+        p = os.path.join(MODELS_DIR, sub, fname)
+        staged[f"{sub}/{fname}"] = os.path.getsize(p) if os.path.isfile(p) else None
+    return {"ok": all(v for v in staged.values()), "staged": staged}
+
+
+@app.function(image=image, volumes={MODELS_DIR: vol}, timeout=2400)
+def download_pixal3d_weights() -> dict:
+    """Pixal3D（社内品質確認限定 — ライセンス未確定・TencentARC/Pixal3D
+    Issue #33 未回答、CLAUDE.md §5により本番採用は保留）の重みをCPU専用で
+    取得する（2026-09-14）。bf16版は既知のシェイプ不一致クラッシュ
+    （Comfy-Org/ComfyUI Issue #16056）があるため、動作するint8_convrot版を
+    使う — CLAUDE.md §1のBF16既定からの一時的な逸脱だが、社内品質確認限定・
+    bf16に動く代替が無いことをホストに開示済み。VAE（trellis_2_shape/
+    texture_vae）はTRELLIS.2と共有・取得済み。CPU専用・GPU課金なし。"""
+    from huggingface_hub import snapshot_download
+
+    snapshot_download(
+        repo_id="Comfy-Org/Pixal3D",
+        local_dir=MODELS_DIR,
+        allow_patterns=[
+            "clip_vision/dino_v3_L_naf_fp32.safetensors",
+            "diffusion_models/pixal3d_int8_convrot.safetensors",
+        ],
+    )
+    snapshot_download(
+        repo_id="Comfy-Org/MoGe",
+        local_dir=MODELS_DIR,
+        allow_patterns=["geometry_estimation/moge_2_vitl_normal_fp16.safetensors"],
+    )
+    vol.commit()
+
+    staged = {}
+    for sub, fname in [
+        ("clip_vision", "dino_v3_L_naf_fp32.safetensors"),
+        ("diffusion_models", "pixal3d_int8_convrot.safetensors"),
+        ("geometry_estimation", "moge_2_vitl_normal_fp16.safetensors"),
+    ]:
+        p = os.path.join(MODELS_DIR, sub, fname)
+        staged[f"{sub}/{fname}"] = os.path.getsize(p) if os.path.isfile(p) else None
+    return {"ok": all(v for v in staged.values()), "staged": staged}
+
+
+@app.local_entrypoint()
+def setup_pixal3d():
+    """modal run modal_wan_animate_blackwell.py::setup_pixal3d
+
+    Pixal3D（社内品質確認限定）の重みダウンロードのみ。CPU専用・GPU課金なし。"""
+    result = download_pixal3d_weights.remote()
+    print(f"[setup_pixal3d] {json.dumps(result, ensure_ascii=False, indent=2)}")
+
+
+@app.local_entrypoint()
+def setup_trellis2():
+    """modal run modal_wan_animate_blackwell.py::setup_trellis2
+
+    TRELLIS.2 + BiRefNet の重みダウンロードのみ（CPU専用・GPU課金なし）。"""
+    result = download_trellis2_weights.remote()
+    print(f"[setup_trellis2] {json.dumps(result, ensure_ascii=False, indent=2)}")
 
 
 @app.local_entrypoint()

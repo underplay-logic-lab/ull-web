@@ -467,7 +467,7 @@ export function UpscaleVideoStudioTab() {
             {model.fixedScale ? (
               <p className="flex items-start gap-1.5 rounded-xl border border-border bg-background px-3 py-2.5 text-[11px] leading-relaxed text-muted">
                 <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-                {model.label} は ×{model.fixedScale} 固定です（HD/2K/4K の選択は SeedVR2 系のみ）。
+                {model.label} は ×{model.fixedScale} 固定です（HD/2K/4K の選択は一部のモデルのみ対応）。
               </p>
             ) : (
               <div className="grid grid-cols-3 gap-2">

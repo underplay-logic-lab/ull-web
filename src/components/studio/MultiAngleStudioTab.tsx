@@ -274,7 +274,7 @@ function SubReferenceSlots({
         <p className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted/80">
           <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
           サブ参照を追加すると、背面・真横の生成で死角のデザイン・丈・テクスチャを
-          そのまま維持します（Qwen-Image-Edit-2511 のマルチ画像入力）。
+          そのまま維持します。
         </p>
       )}
     </div>

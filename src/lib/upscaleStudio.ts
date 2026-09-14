@@ -67,6 +67,7 @@ export function upscaleBatchEstimatedSeconds(
 
 export type UpscaleModelKey =
   | "seedvr2_7b"
+  | "seedvr2_7b_sharp"
   | "real_esrgan_x4plus"
   | "real_esrgan_anime"
   | "swinir_l";
@@ -91,9 +92,16 @@ export type UpscaleModel = {
 export const UPSCALE_MODELS: UpscaleModel[] = [
   {
     key: "seedvr2_7b",
-    label: "SeedVR2 7B",
+    label: "AI高精細アップスケール",
     descJa:
       "AI生成・アニメ向け。線画や質感を作り直す発明的なリファイン。顔・キャラの同一性は保ったまま解像感を大きく引き上げます。",
+    creditMult: 1.0,
+    kind: ["image", "video"],
+  },
+  {
+    key: "seedvr2_7b_sharp",
+    label: "AI高精細アップスケール（シャープ）",
+    descJa: "標準版をよりくっきり寄りに。線画・エッジを強調したい素材向け。",
     creditMult: 1.0,
     kind: ["image", "video"],
   },
@@ -114,7 +122,7 @@ const HIDDEN_UPSCALE_MODELS: UpscaleModel[] = [
     key: "real_esrgan_x4plus",
     label: "Real-ESRGAN x4plus",
     descJa:
-      "実写・写真向けの素直な4倍拡大。SeedVR2と違いディテールを作り直さないので破綻せず爆速・低コスト。動画にも対応（フレームごとの決定的な処理で時間的チラつきが出にくい）。",
+      "実写・写真向けの素直な4倍拡大。AI高精細アップスケールと違いディテールを作り直さないので破綻せず爆速・低コスト。動画にも対応（フレームごとの決定的な処理で時間的チラつきが出にくい）。",
     creditMult: 0.25,
     kind: ["image", "video"],
     fixedScale: 4,
@@ -131,7 +139,7 @@ const HIDDEN_UPSCALE_MODELS: UpscaleModel[] = [
   {
     key: "real_esrgan_anime",
     label: "Real-ESRGAN anime 6B",
-    descJa: "アニメ・イラスト特化の4倍拡大。線をなめらかに保ったまま、SeedVR2より軽量・高速。動画対応。",
+    descJa: "アニメ・イラスト特化の4倍拡大。線をなめらかに保ったまま、AI高精細アップスケールより軽量・高速。動画対応。",
     creditMult: 0.25,
     kind: ["image", "video"],
     fixedScale: 4,

@@ -53,6 +53,7 @@ ULL Studio の差別化は「ローカル PC でも他の SaaS でも不可能�
   - import 連鎖の検証・依存ビルドの切り分け・PoC の配管確認 → GPU を使う前に **CPU 専用の probe 関数**（本番と同じ image を `gpu=` なしで起動）で通す。
   - 新規ワーカーの立ち上げは「CPU で import と資産準備がグリーン → はじめて GPU 実行」の順を厳守する。`modal run` で GPU クラスを直接叩くと、crash-loop 時に Modal がコンテナ起動を繰り返し **GPU 課金が垂れ流しになる**（`retries=0` では止まらない。2026-09-08 に TRELLIS worker の立ち上げで ~31分の無駄が発生）。
   - バックグラウンドで GPU ジョブを投げたら **放置しない**。最初の数分でログを確認し、crash-loop していたら即 kill する。
+  - **「GPU の存在自体は必要だが、実際の計算力は不要」なケースは最安の GPU tier を使う（2026-09-14 追加）**: ComfyUI 本体の `comfy.model_management` が import 時点で無条件に `torch.cuda.current_device()` を呼ぶため、ノードの存在確認・`/object_info` スキーマ取得のような「起動するだけでモデルロードも生成もしない」プローブでも GPU ドライバの存在自体は必須（CPU 専用コンテナでは `RuntimeError: Found no NVIDIA driver` で止まる）。ただしこの用途では Blackwell の性能は一切使わないので、本番実行用クラス（`WanAnimateBlackwell` 等）をそのまま流用して毎回 B300 を起動するのではなく、**Modal で選べる最安の GPU tier** を使うこと。実例（2026-09-14、TRELLIS.2/Pixal3Dのノード存在確認プローブ）でホストから指摘を受けて明文化。
 - **GPU コンテナ ライフサイクル標準**:
   - **動画生成系 GPU ワーカー（30秒 Keep-Warm 規格）**: `scripts/modal_wan_animate.py` の `WanAnimate` / `WanAnimateUltra`、`modal_wan_animate_blackwell.py` の `WanAnimateBlackwell` 等、`gpu=` を持つ関数・クラスには **`scaledown_window=30`（30秒）** を明示すること。値は一律 `30` で統一し、個別に変更しない。理由: コスト最適化（アイドル待機課金の抑制）と、ユーザー体験（30秒以内の連続生成でコールドスタートを回避）の両立。
     - ⚠️ **課金による延長（フロント「🔥 火をくべる」UI・`gpu_warm_status` 共有テーブル・`/api/gpu/warm-extend`）は 2026-09-12 に全廃止**: GPUウォーム状態が全ユーザー共通の1行だったため、ある人が課金して延長したウォームを別の人が無料で横取りできてしまい、有料インセンティブとして成立しなかった。scaledown_window=30 自体（無料の自然な延命）は残す。DB の `gpu_warm_status` テーブルは害がないため未削除（`supabase/migrations/20260833000000_create_gpu_warm_status.sql`）。
@@ -82,6 +83,9 @@ ULL Studio の差別化は「ローカル PC でも他の SaaS でも不可能�
 - **物理型番の完全隠蔽**: 一般ユーザー向け UI（トースト、プログレス、ツールチップ）に `B300`, `B200`, `H100`, `Modal` 等の物理型番・ベンダー名を露出させることを永久に禁止する。
 - **VRAM 表示仕様**: 分母（280GB等）や％は出さず、純粋に実効消費量のみ（`Active VRAM: ${vram_used_gb} GB`）を表示すること。
 - **管理者画面の隔離**: 物理型番や時給原価（$7.10/h等）は管理者専用の Admin 画面（`GpuCostReferenceCard`）のみに表示すること。
+- **基盤モデル名の非表示（2026-09-14 追加）**: 一般ユーザー向け UI に `TRELLIS.2`, `Pixal3D`, `MiniMax H3`, `Qwen-Image-Edit` 等、内部で使っている基盤モデルの名称を露出させることを禁止する（物理型番の完全隠蔽と同じ原則をモデル名にも適用）。理由: 今日のTRELLIS.2/Pixal3D検証（[[image-to-3d-feature-validation]]）で確認した通り、これらの基盤モデルはほぼ全て誰でも無料で入手できるオープンウェイトであり、モデル名を出すこと自体が「それなら自分でタダで動かせるのでは」という比較・離脱を招くリスクになる。「どのモデルを使っているか」ではなく「ULL Studioで何ができるか（機能・体験）」に対価を感じてもらう方針とする。
+  - これは UI 表示上の方針であり、**ライセンス遵守の実務（地域制限の geofence 対応・Community License 等が求める NOTICE 表記義務）とは別枠**で維持すること。UI で名前を隠しても、地域制限や NOTICE 同梱義務そのものは消えない。NOTICE 表記が契約上必要なモデルは、目立たない場所（利用規約ページ等）でその義務を満たせば足り、機能説明の前面に出す必要はない。
+  - **例外: LoRA Studio（`src/lib/loraModels.ts`のモデル選択）は対象外**（2026-09-14、ホスト判断）。理由: LoRA学習は「どのベースモデルに対して学習するか」自体がユーザーにとって機能そのものであり（互換性・プロンプト作法・コミュニティ知見の流用に直結する専門ツール）、モデル名を隠すと実用性が損なわれる。Multi-Angle/Director/Upscale のような「結果だけ受け取る」一般機能とは性質が異なるため、`label` フィールドは実際のモデル名のまま維持する（`id`/`arch` はそもそも変更対象外）。
 
 ---
 

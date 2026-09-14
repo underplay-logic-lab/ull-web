@@ -254,7 +254,7 @@ vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
 # ものがない — 2026-09-13、実測で確認）。
 UPSCALER_REGISTRY: dict = {
     "seedvr2_7b": {
-        "label": "SeedVR2 7B",
+        "label": "AI高精細アップスケール",
         "desc_ja": "AI生成・アニメ向け。顔や文字を作り直す発明的リファイン。画像・動画対応。",
         "license": "Apache-2.0",
         "node_type": "seedvr2",
@@ -287,11 +287,11 @@ UPSCALER_REGISTRY: dict = {
         },
     },
     "seedvr2_7b_sharp": {
-        "label": "SeedVR2 7B (sharp)",
-        "desc_ja": "SeedVR2 7B をよりくっきり寄りに。線画・エッジを強調したい素材向け。",
+        "label": "AI高精細アップスケール（シャープ）",
+        "desc_ja": "標準版をよりくっきり寄りに。線画・エッジを強調したい素材向け。",
         "license": "Apache-2.0",
         "node_type": "seedvr2",
-        "enabled": False,  # 初回スコープ外（Volume 逼迫）。sharp 重みを足したら True。
+        "enabled": True,  # 2026-09-14: sharp 重みを追加・有効化（CLAUDE.md §2: モデル名非公開）
         "kind": ("image", "video"),
         "model_files": [
             (
