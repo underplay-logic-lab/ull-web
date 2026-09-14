@@ -16,8 +16,8 @@ import { translateCaption, translateCaptionsBatch } from "@/lib/loraTranslate";
 import { buildDatasetZip, downloadBlob } from "@/lib/datasetZip";
 import { ImageLightbox } from "@/components/studio/ImageLightbox";
 import {
-  matchLeadingSubjectTrigger,
-  stripLeadingSubjectTrigger,
+  matchLeadingSubjectTriggers,
+  stripLeadingSubjectTriggers,
   type LoraSubject,
   type ResolvedCaptionMode,
 } from "@/lib/loraCaptionSpec";
@@ -226,22 +226,26 @@ export function DatasetCurationUI({
 
   // Protect the trigger token from the translator: peel a leading trigger
   // (with optional trailing comma, EN or JP) off before sending, and glue the
-  // ORIGINAL trigger back on after. Multi-subject (subjects.length >= 2):
-  // each caption may start with a DIFFERENT one of them, so detect which one
-  // THIS text actually has and preserve exactly that one — never the fixed
-  // `triggerWord` prop, which is only the primary/first subject.
+  // ORIGINAL trigger(s) back on after. Multi-subject (subjects.length >= 2):
+  // each caption may start with a DIFFERENT one — or, for a group/couple
+  // shot, MORE THAN ONE — of them, so detect exactly which ones THIS text
+  // actually has and preserve exactly those, never the fixed `triggerWord`
+  // prop (only the primary/first subject).
   const trig = triggerWord.trim();
   const subjectList: LoraSubject[] = subjects && subjects.length >= 2 ? subjects : [{ trigger: trig, description: "" }];
-  const stripTrigger = (s: string) => stripLeadingSubjectTrigger(s, subjectList);
-  // Which trigger to preserve for `text` MUST be read from the ORIGINAL
+  const stripTrigger = (s: string) => stripLeadingSubjectTriggers(s, subjectList);
+  // Which trigger(s) to preserve for `text` MUST be read from the ORIGINAL
   // (pre-translation) text — the translated body no longer starts with any
   // trigger word (it was stripped before sending), so re-detecting from the
   // output would always miss and silently fall back to the wrong subject.
-  const triggerFor = (originalText: string) => matchLeadingSubjectTrigger(originalText, subjectList) ?? trig;
-  const withTrigger = (translatedBody: string, trigger: string) => {
+  const triggerFor = (originalText: string): string => {
+    const present = matchLeadingSubjectTriggers(originalText, subjectList);
+    return present.length ? present.map((s) => s.trigger).join(", ") : trig;
+  };
+  const withTrigger = (translatedBody: string, triggerBlock: string) => {
     const body = translatedBody.trim();
-    if (!trigger) return body;
-    return body ? `${trigger}, ${body}` : trigger;
+    if (!triggerBlock) return body;
+    return body ? `${triggerBlock}, ${body}` : triggerBlock;
   };
 
   // One translation call with the trigger peeled off + re-attached. Returns
@@ -519,33 +523,46 @@ export function DatasetCurationUI({
 
               <div className="flex min-w-0 flex-1 flex-col gap-1.5">
                 {subjects && subjects.length >= 2 && (() => {
-                  const matched = matchLeadingSubjectTrigger(p.caption, subjects);
+                  const present = matchLeadingSubjectTriggers(p.caption, subjects);
+                  const presentSet = new Set(present.map((s) => s.trigger));
                   return (
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1">
                       <span
-                        className={`text-[10px] font-medium ${matched ? "text-muted" : "text-amber-400"}`}
+                        className={`text-[10px] font-medium ${present.length ? "text-muted" : "text-amber-400"}`}
                       >
-                        {matched ? "被写体:" : "⚠️ 被写体未判定:"}
+                        {present.length ? "被写体:" : "⚠️ 被写体未判定:"}
                       </span>
-                      <select
-                        value={matched ?? ""}
-                        onChange={(e) => {
-                          const trigger = e.target.value;
-                          if (!trigger) return;
-                          const body = stripLeadingSubjectTrigger(p.caption, subjects);
-                          patch(p.id, { caption: body ? `${trigger}, ${body}` : trigger });
-                        }}
-                        disabled={disabled || p.excluded || Boolean(bulk)}
-                        className="rounded-md border border-border bg-background/70 px-1.5 py-0.5 font-mono text-[10px] text-foreground outline-none focus:border-neon-violet/50 disabled:opacity-50"
-                      >
-                        {!matched && <option value="">（未選択）</option>}
-                        {subjects.map((s) => (
-                          <option key={s.trigger} value={s.trigger}>
+                      {subjects.map((s) => {
+                        const active = presentSet.has(s.trigger);
+                        return (
+                          <button
+                            key={s.trigger}
+                            type="button"
+                            title={s.description || s.trigger}
+                            disabled={disabled || p.excluded || Boolean(bulk)}
+                            onClick={() => {
+                              // 複数人物が写る画像は、写っている全員分をON
+                              // にできる（グループ/カップル写真対応）。
+                              const nextSubjects = active
+                                ? subjects.filter((x) => x.trigger !== s.trigger && presentSet.has(x.trigger))
+                                : [...present, s];
+                              const ordered = subjects.filter((x) =>
+                                nextSubjects.some((n) => n.trigger === x.trigger),
+                              );
+                              const body = stripLeadingSubjectTriggers(p.caption, subjects);
+                              const block = ordered.map((x) => x.trigger).join(", ");
+                              patch(p.id, { caption: block ? `${block}, ${body}` : body });
+                            }}
+                            className={`rounded-md border px-1.5 py-0.5 font-mono text-[10px] transition-colors disabled:opacity-50 ${
+                              active
+                                ? "border-neon-violet/50 bg-neon-violet/10 text-neon-violet"
+                                : "border-border text-muted hover:border-neon-violet/30"
+                            }`}
+                          >
                             {s.trigger}
-                            {s.description ? ` — ${s.description}` : ""}
-                          </option>
-                        ))}
-                      </select>
+                          </button>
+                        );
+                      })}
                     </div>
                   );
                 })()}

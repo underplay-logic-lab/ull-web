@@ -78,6 +78,7 @@ import {
   coerceLoraCaptionCategory,
   captionSpecHasInput,
   buildCaptionFallbackPrompt,
+  matchLeadingSubjectTriggers,
   resolveCaptionMode,
   isCaptionMode,
   type LoraCaptionCategory,
@@ -3056,6 +3057,65 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     [incompleteImages, captionErrorIds],
   );
 
+  // Locks each trigger's Danbooru gender/age tag (1girl/1boy/1man/1woman) to
+  // whichever value appears most often across its own SOLO-shot captions.
+  // Each Gemini call only sees a handful of images at a time (CAPTION_BATCH_
+  // SIZE=4 in loraCaption.ts) and has no memory of earlier calls, so its
+  // per-image guess can drift for the same recurring subject across a larger
+  // dataset — reported 2026-09-15 (the same person tagged 1girl in some
+  // photos, 1woman in others). Only SOLO shots (exactly one registered
+  // trigger present) are touched: a group shot has no reliable way to tell
+  // which of several gender tags belongs to which subject, so those are left
+  // exactly as the model wrote them. Reads/writes via a functional setCaptions
+  // updater so it always sees the freshest map regardless of this callback's
+  // own (stable, empty-deps) closure.
+  const applyGenderTagConsistency = useCallback(() => {
+    const subjects = subjectsRef.current.length ? subjectsRef.current : [{ trigger: triggerWord.trim(), description: "" }];
+    if (!subjects[0]?.trigger) return;
+    const GENDER_TAG_RE = /^(1girl|1boy|1man|1woman)$/i;
+    setCaptions((prev) => {
+      const counts = new Map<string, Map<string, number>>(); // trigger -> tag -> count
+      const solo = new Map<string, { trigger: string; tokens: string[] }>(); // id -> parsed
+      for (const [id, cap] of Object.entries(prev)) {
+        if (!cap.trim()) continue;
+        const present = matchLeadingSubjectTriggers(cap, subjects);
+        if (present.length !== 1) continue;
+        const tokens = cap.trim().split(/\s*[,、]\s*/);
+        const tag = tokens[1]?.trim();
+        if (!tag || !GENDER_TAG_RE.test(tag)) continue;
+        const trigger = present[0].trigger;
+        solo.set(id, { trigger, tokens });
+        const m = counts.get(trigger) ?? new Map<string, number>();
+        const key = tag.toLowerCase();
+        m.set(key, (m.get(key) ?? 0) + 1);
+        counts.set(trigger, m);
+      }
+      const majority = new Map<string, string>();
+      for (const [trigger, tagCounts] of counts) {
+        let bestKey = "";
+        let bestN = -1;
+        for (const [key, n] of tagCounts) {
+          if (n > bestN) {
+            bestN = n;
+            bestKey = key;
+          }
+        }
+        majority.set(trigger, bestKey);
+      }
+      let changed = false;
+      const next = { ...prev };
+      for (const [id, info] of solo) {
+        const want = majority.get(info.trigger);
+        if (!want || info.tokens[1]?.trim().toLowerCase() === want) continue;
+        const tokens = [...info.tokens];
+        tokens[1] = want;
+        next[id] = tokens.join(", ");
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [triggerWord]);
+
   // --- AI-vision auto-captioning ----------------------------------------
   // Fires on drop: downscales each new image in the browser and calls
   // /api/studio/lora/caption in batches (see src/lib/loraCaption.ts). The
@@ -3191,11 +3251,12 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                 ? `${missed} 枚は自動解析できませんでした（うち ${safetyMissed} 枚はコンテンツポリシー対象、学習時に自動補完されます）。`
                 : `${missed} 枚は自動解析できませんでした（学習時に自動補完されます）。`,
       }));
+      applyGenderTagConsistency();
       // Pass finished while still on the form — leave the user exactly where
       // they are (no forced scroll; the completion badge is inline).
       return { cap: merged.cap, ja: merged.ja };
     },
-    [markCaptionsReflect],
+    [markCaptionsReflect, applyGenderTagConsistency],
   );
 
   // Kick the vision pass for images that have no caption yet and haven't been
@@ -3285,6 +3346,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           else next.add(id);
           return next;
         });
+        applyGenderTagConsistency();
       } catch {
         setCaptionErrorIds((prev) => new Set(prev).add(id));
       } finally {
@@ -3295,7 +3357,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         });
       }
     },
-    [recaptioningIds, curationTrigger, currentCaptionPrompt],
+    [recaptioningIds, curationTrigger, currentCaptionPrompt, applyGenderTagConsistency],
   );
 
   // Re-analyze handler for the curation screen: runs the vision pass over the

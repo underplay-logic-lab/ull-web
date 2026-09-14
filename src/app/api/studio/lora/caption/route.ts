@@ -11,8 +11,8 @@ import {
 import {
   buildCategoryDefaultInstruction,
   coerceLoraCaptionCategory,
-  matchLeadingSubjectTrigger,
-  stripLeadingSubjectTrigger,
+  matchLeadingSubjectTriggers,
+  stripLeadingSubjectTriggers,
   type LoraSubject,
   type ResolvedCaptionMode,
 } from "@/lib/loraCaptionSpec";
@@ -82,9 +82,10 @@ const NOISE_RE =
 function subjectClassificationLines(subjects: LoraSubject[]): string[] {
   if (subjects.length < 2) return [];
   return [
-    "This dataset has MULTIPLE distinct subjects, each with its own trigger word. For each image, first decide which ONE of the following it depicts, using these short descriptions as the guide:",
+    "This dataset has MULTIPLE distinct subjects, each with its own trigger word. For each image, first decide which of the following it depicts — usually just one, but if TWO (or more) of these registered subjects appear TOGETHER in the same image (e.g. a couple/group shot), name ALL of them, not just one:",
     ...subjects.map((s) => `  - "${s.trigger}": ${s.description || "(no description given)"}`),
-    "Then use THAT subject's own trigger word — spelled exactly as above — and no other subject's, even if two subjects sound similar. If genuinely unclear, pick the closest match rather than omitting a trigger.",
+    "Start the caption with every matching subject's own trigger word — spelled exactly as above, one per subject actually present, each its own comma-separated tag, before anything else. Never substitute one subject's trigger for another, even if two sound similar. If genuinely unclear which subject it is, pick the closest match rather than omitting a trigger; never omit a trigger for a subject that IS visibly present just because two subjects are in frame.",
+    "Every subject's own gender/age is FIXED — it never changes between images of the same subject. Once you judge a subject's Danbooru-style count/gender tag (e.g. 1girl vs 1woman, 1boy vs 1man) from their description, use that SAME tag every time that subject appears, even if a particular photo makes them look a little older or younger.",
   ];
 }
 
@@ -120,8 +121,13 @@ function buildTagsPrompt(count: number, subjects: LoraSubject[], captionPrompt: 
       "- NEVER output quality/aesthetic words (masterpiece, best quality, ultra-detailed, 8k, beautiful, aesthetic, …).",
       "- NO markdown, NO quotes, NO numbering, NO line breaks inside a caption.",
       trigger
-        ? `- Start every caption with "${multi ? "<the matching subject's trigger word>" : trigger}, " followed immediately by a Danbooru-style subject-count/gender tag (e.g. "1girl", "1boy", "1man", "1woman", "solo", "2girls", "no humans") reflecting exactly how many people are in frame and their apparent gender. Include this even though it is not explicitly listed in the primary instructions' whitelist — it is scene-composition, not an identity/appearance detail, and Danbooru-tag-trained models expect it as the anchor tag.`
+        ? `- Start every caption with "${multi ? "<the matching subject's trigger word(s)>" : trigger}, " followed immediately by a Danbooru-style subject-count/gender tag (e.g. "1girl", "1boy", "1man", "1woman", "solo", "2girls", "no humans") reflecting exactly how many people are in frame and their apparent gender. Include this even though it is not explicitly listed in the primary instructions' whitelist — it is scene-composition, not an identity/appearance detail, and Danbooru-tag-trained models expect it as the anchor tag.`
         : "- Do not invent a trigger token.",
+      ...(trigger
+        ? [
+            "- A given trigger's gender/age tag (1girl vs 1woman, 1boy vs 1man) is a FIXED trait of that subject — decide it once and use the SAME one every time that trigger appears across this whole batch, regardless of how a particular photo makes them look.",
+          ]
+        : []),
     );
   } else {
     lines.push(
@@ -137,8 +143,13 @@ function buildTagsPrompt(count: number, subjects: LoraSubject[], captionPrompt: 
       "- NEVER output quality/aesthetic words (masterpiece, best quality, ultra-detailed, 8k, beautiful, aesthetic, …).",
       "- NO markdown, NO quotes, NO numbering, NO line breaks inside a caption.",
       trigger
-        ? `- Start every caption with "${multi ? "<the matching subject's trigger word>" : trigger}, " and nothing before it.`
+        ? `- Start every caption with "${multi ? "<the matching subject's trigger word(s)>" : trigger}, " and nothing before it.`
         : "- Do not invent a trigger token.",
+      ...(trigger
+        ? [
+            "- A given trigger's gender/age tag (1girl vs 1woman, 1boy vs 1man) is a FIXED trait of that subject — decide it once and use the SAME one every time that trigger appears across this whole batch, regardless of how a particular photo makes them look.",
+          ]
+        : []),
     );
   }
   lines.push(
@@ -250,14 +261,15 @@ function tidyCaption(raw: string, subjects: LoraSubject[], mode: ResolvedCaption
   }
   const primary = subjects[0]?.trigger.trim() ?? "";
   if (subjects.length >= 2) {
-    // Multi-subject: keep whichever trigger the model actually picked (it saw
-    // the image and the classification instruction); only fall back to the
-    // primary subject if it ignored the instruction and named none of them —
-    // a wrong-but-present trigger beats a caption with no trigger at all.
-    const matched = matchLeadingSubjectTrigger(out, subjects);
-    const trigger = matched ?? primary;
-    const body = stripLeadingSubjectTrigger(out, subjects);
-    out = trigger ? `${trigger}, ${body}` : body;
+    // Multi-subject: keep every trigger the model actually named at the front
+    // (a group/couple shot can legitimately name 2+), re-serialised in the
+    // registered subjects' own order for consistency across the dataset. Only
+    // fall back to the primary subject if it ignored the instruction and
+    // named none of them — a wrong-but-present trigger beats no trigger.
+    const present = matchLeadingSubjectTriggers(out, subjects);
+    const triggerBlock = present.length ? present.map((s) => s.trigger).join(", ") : primary;
+    const body = stripLeadingSubjectTriggers(out, subjects);
+    out = triggerBlock ? `${triggerBlock}, ${body}` : body;
   } else if (primary) {
     const re = new RegExp(`^\\s*${primary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*,?\\s*`, "i");
     out = out.replace(re, "");

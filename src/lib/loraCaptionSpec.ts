@@ -364,3 +364,48 @@ export function stripLeadingSubjectTrigger(caption: string, subjects: LoraSubjec
   const re = new RegExp(`^\\s*${escapeReSub(matched)}\\s*[,、]?\\s*`, "i");
   return caption.replace(re, "").trim();
 }
+
+function isSubjectToken(token: string, subject: LoraSubject): boolean {
+  const t = token.trim().toLowerCase();
+  const s = subject.trigger.trim().toLowerCase();
+  if (!t || !s) return false;
+  return t === s || (t.startsWith(s) && t.length - s.length <= 2);
+}
+
+/**
+ * Two+ registered subjects can appear TOGETHER in one image (a couple/group
+ * shot) — a single "which ONE subject" match silently drops everyone but the
+ * first. Walks the caption's leading comma-separated tokens and collects
+ * every one that matches a DIFFERENT registered subject, stopping at the
+ * first token that matches none (that's the start of the actual caption
+ * body). Returns them in `subjects`' own order (a stable, canonical order
+ * regardless of what order the model happened to output them in).
+ */
+export function matchLeadingSubjectTriggers(caption: string, subjects: LoraSubject[]): LoraSubject[] {
+  const tokens = caption.trim().split(/\s*[,、]\s*/);
+  const present = new Set<string>();
+  for (const tok of tokens) {
+    if (!tok.trim()) break;
+    const hit = subjects.find((s) => s.trigger.trim() && isSubjectToken(tok, s) && !present.has(s.trigger));
+    if (!hit) break;
+    present.add(hit.trigger);
+  }
+  return subjects.filter((s) => present.has(s.trigger));
+}
+
+/** Strips ALL leading subject triggers (see matchLeadingSubjectTriggers) off `caption`. */
+export function stripLeadingSubjectTriggers(caption: string, subjects: LoraSubject[]): string {
+  const tokens = caption.trim().split(/\s*[,、]\s*/);
+  const present = new Set<string>();
+  let i = 0;
+  for (; i < tokens.length; i++) {
+    if (!tokens[i].trim()) break;
+    const hit = subjects.find((s) => s.trigger.trim() && isSubjectToken(tokens[i], s) && !present.has(s.trigger));
+    if (!hit) break;
+    present.add(hit.trigger);
+  }
+  return tokens
+    .slice(i)
+    .join(", ")
+    .trim();
+}
