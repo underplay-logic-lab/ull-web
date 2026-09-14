@@ -23,6 +23,7 @@ export type KnobKey =
   | "director_per_second_fast"
   | "director_per_second_quality"
   | "director_min_credits"
+  | "director_priority_parallel_surcharge"
   | "upscale_per_mp"
   | "upscale_min_credits"
   | "upscale_priority_parallel_surcharge"
@@ -189,6 +190,20 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "feature_credits",
     unit: "C",
     description: "1本あたりの最低消費クレジット（秒課金の下限）",
+    isPublic: true,
+  },
+  director_priority_parallel_surcharge: {
+    // 2026-09-14: 「実行中でも並列で今すぐ実行」を選んだ時の追加料金。
+    // directorPollDeadlineS() の固定オーバーヘッド分（+200s、実測ベース）を
+    // 他の priority_parallel_surcharge 系と同じ導出方法で概算:
+    // 200s × gpu_jpy_per_hour_b300(¥1125/h) ÷ credit_to_jpy(1.66) ≈ 38C
+    // （原価） × 3倍markup ≈ 115C。理論値なので、実際の利用が増えたら
+    // admin で調整すること。
+    value: 115,
+    label: "Cinematic Director 並列実行 追加料金",
+    category: "feature_credits",
+    unit: "C",
+    description: "実行中のジョブを待たず並列で今すぐ実行する場合の追加コールドスタート分の上乗せ。",
     isPublic: true,
   },
   upscale_per_mp: {

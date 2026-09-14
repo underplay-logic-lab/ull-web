@@ -12,6 +12,7 @@ import {
   directorCostBreakdownForDuration,
   directorCreditsWorstCase,
   directorPollDeadlineS,
+  directorPriorityParallelSurcharge,
   isDirectorQualityMode,
   validateDirectorScenes,
   type DirectorQualityMode,
@@ -121,7 +122,13 @@ export async function POST(request: Request) {
         knobs,
       })
     : directorCostBreakdown({ scenes, mode: qualityMode, knobs });
-  const creditsCost = breakdown.credits || directorCreditsWorstCase(knobs);
+  const baseCreditsCost = breakdown.credits || directorCreditsWorstCase(knobs);
+  // 「実行中でも並列で今すぐ実行」を選んだ場合の追加コールドスタート分
+  // （順番待ち=無料の既定に対するオプトインの上乗せ。CLAUDE.md §6参照）。
+  const priority = body.priority === true || body.priority === "true";
+  const creditsCost = priority
+    ? baseCreditsCost + directorPriorityParallelSurcharge(knobs)
+    : baseCreditsCost;
 
   // --- credits ---------------------------------------------------------
   const { data: profile, error: profileError } = await getOrCreateProfile(
@@ -223,6 +230,7 @@ export async function POST(request: Request) {
         total_duration_s: breakdown.totalDurationS,
         prompt_mode: isPromptMode,
         quality_mode: qualityMode,
+        priority,
       },
     })
     .select("id")

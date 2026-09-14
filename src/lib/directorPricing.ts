@@ -149,6 +149,12 @@ export function directorCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): n
  * fast: 実測26.4s/video-sec -> 40s/video-sec。quality: 実測45.4s/video-sec
  * -> 68s/video-sec。Modal関数自体のハードタイムアウト(7200s)より必ず小さく
  * 収まるよう上限3600sでクランプ。 */
+// 実行中のジョブを待たず並列で今すぐ実行する場合の追加料金（既定の「順番待ち」
+// は無料）。knobDefaults.ts の director_priority_parallel_surcharge 参照。
+export function directorPriorityParallelSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS): number {
+  return Math.round(knobs.director_priority_parallel_surcharge);
+}
+
 export function directorPollDeadlineS(totalDurationS: number, mode: DirectorQualityMode = "fast"): number {
   const secPerVideoSec = mode === "quality" ? 68 : 40;
   return Math.min(3600, Math.max(300, Math.round(totalDurationS * secPerVideoSec) + 200));

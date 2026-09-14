@@ -14,7 +14,11 @@ export type DirectorStartResult = {
 export type DirectorStartArgs = (
   | { userId: string; image: File; scenes: DirectorScene[]; rawPrompt?: undefined }
   | { userId: string; image: File; rawPrompt: string; rawDurationS: number; scenes?: undefined }
-) & { quality: DirectorQualityMode };
+) & {
+  quality: DirectorQualityMode;
+  /** true: 実行中のジョブを待たず並列で今すぐ実行（追加料金）。既定 false = 順番待ち。 */
+  priority?: boolean;
+};
 
 export async function startDirectorJob(args: DirectorStartArgs): Promise<DirectorStartResult> {
   const { data: sessionData } = await supabase.auth.getSession();
@@ -23,10 +27,11 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
 
   const { path: storagePath } = await uploadStudioAsset(args.userId, args.image);
 
+  const priority = args.priority ?? false;
   const body =
     "rawPrompt" in args && args.rawPrompt !== undefined
-      ? { storagePath, rawPrompt: args.rawPrompt, rawDurationS: args.rawDurationS, quality: args.quality }
-      : { storagePath, scenes: args.scenes, quality: args.quality };
+      ? { storagePath, rawPrompt: args.rawPrompt, rawDurationS: args.rawDurationS, quality: args.quality, priority }
+      : { storagePath, scenes: args.scenes, quality: args.quality, priority };
 
   const res = await fetch("/api/director/generate", {
     method: "POST",
