@@ -60,7 +60,7 @@ import {
   type LoraPresetGroup,
   type LoraResolution,
 } from "@/lib/loraModels";
-import { DEFAULT_LORA_STEPS, LORA_MAX_STEPS } from "@/lib/loraCredits";
+import { LORA_MAX_STEPS, autoLoraSteps } from "@/lib/loraCredits";
 import {
   guiLoraPricingConfig,
   loraPriceBreakdown,
@@ -2361,8 +2361,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   //   ceil(0.1 * modelMult * resMult * batchMult * rankMult * steps)
   //  - エキスパート(生YAML): price the live-parsed ai-toolkit config; an
   //    unparseable / step-less YAML shows the worst-case ceiling.
-  //  - エキスパート(スライダー) / オート / セミオート: synthesise the
-  //    equivalent config from the GUI knobs (batch is always 1 in GUI mode).
+  //  - エキスパート(スライダー): pro.steps をそのまま使う。
+  //  - オート: 画像枚数に応じて動的に決まる autoLoraSteps() を使う
+  //    （2026-09-14〜。以前は画像枚数によらず一律固定値だった — ホスト指摘）。
+  //    サーバー側(/api/studio/lora/train)も同じ関数で同じ値を再計算するので
+  //    見積りと実際の課金・学習stepが食い違わない。
   const priceBreakdown = useMemo(() => {
     if (yamlMode) {
       if (yamlCheck?.ok)
@@ -2374,11 +2377,22 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         arch: pricedArch,
         resolution,
         linearRank: mode === "pro" ? pro.rank : DEFAULT_PRO.rank,
-        steps: mode === "pro" ? pro.steps : DEFAULT_LORA_STEPS,
+        steps: mode === "pro" ? pro.steps : autoLoraSteps(images.length),
       }),
       { modelMultOverride: selectedPreset?.pricingModelMult, knobs: pricingKnobs },
     );
-  }, [yamlMode, yamlCheck, pricedArch, resolution, mode, pro.rank, pro.steps, selectedPreset, pricingKnobs]);
+  }, [
+    yamlMode,
+    yamlCheck,
+    pricedArch,
+    resolution,
+    mode,
+    pro.rank,
+    pro.steps,
+    images.length,
+    selectedPreset,
+    pricingKnobs,
+  ]);
   const requiredCredits =
     priceBreakdown && priceBreakdown.credits > 0
       ? Math.min(LORA_CREDIT_WORST_CASE, priceBreakdown.credits)

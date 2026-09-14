@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { spawnLoraTrainingJob, buildLoraDispatchPayload } from "@/lib/modalLoraTrain";
-import { DEFAULT_LORA_STEPS } from "@/lib/loraCredits";
+import { DEFAULT_LORA_STEPS, autoLoraSteps } from "@/lib/loraCredits";
 import { guiLoraPricingConfig, loraPriceBreakdown } from "@/lib/loraPricing";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { loraCostCapSeconds } from "@/lib/pricing/costGuard.server";
@@ -378,14 +378,25 @@ async function handlePost(request: Request): Promise<NextResponse> {
   const resolution = pricedArch
     ? recommendedResolution(pricedArch as LoraBaseArchitecture)
     : DEFAULT_LORA_RESOLUTION;
+  // 2026-09-14: 「オート」（trainingConfig.stepsが未指定＝エキスパートの
+  // スライダーを経由していない）は、画像枚数に応じて動的にstepを決める
+  // （autoLoraSteps、src/lib/loraCredits.ts参照）。以前は画像15枚でも200枚
+  // でも一律DEFAULT_LORA_STEPSだったのを、実際の学習に渡すstepと課金額の
+  // 両方をここで一元的に決め直す（LoraStudioTab.tsxの見積り表示も同じ関数を
+  // 使って一致させている）。生YAML(hasOverride)はここを経由しない。
+  const effectiveTrainingConfig =
+    !hasOverride && typeof trainingConfig.steps !== "number"
+      ? { ...trainingConfig, steps: autoLoraSteps(storagePaths.length) }
+      : trainingConfig;
   const pricedConfig: unknown = hasOverride
     ? parsedOverride
     : guiLoraPricingConfig({
         arch: pricedArch,
         resolution,
         linearRank:
-          typeof trainingConfig.rank === "number" ? trainingConfig.rank : DEFAULT_LORA_RANK,
-        steps: typeof trainingConfig.steps === "number" ? trainingConfig.steps : DEFAULT_LORA_STEPS,
+          typeof effectiveTrainingConfig.rank === "number" ? effectiveTrainingConfig.rank : DEFAULT_LORA_RANK,
+        steps:
+          typeof effectiveTrainingConfig.steps === "number" ? effectiveTrainingConfig.steps : DEFAULT_LORA_STEPS,
       });
   const knobs = await getPricingKnobs();
   const priceBreakdown = pricedConfig
@@ -470,7 +481,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
     targetModel,
     customModelId: targetModel === "custom" ? customModelId : undefined,
     baseArchitecture: targetModel === "custom" ? (baseArchitecture as LoraBaseArchitecture) : undefined,
-    trainingConfig,
+    trainingConfig: effectiveTrainingConfig,
     resolution,
     outputLoraName,
     triggerWord: triggerWord || undefined,
@@ -489,7 +500,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
     resolution,
     trigger_word: triggerWord || null,
     training_config: {
-      ...trainingConfig,
+      ...effectiveTrainingConfig,
       custom_yaml_override: hasOverride ? "(custom)" : undefined,
       // the exact parameters + multipliers the charge was computed from —
       // recorded so a disputed debit is auditable.
