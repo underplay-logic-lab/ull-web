@@ -31,6 +31,7 @@ import {
 } from "@/lib/upscaleStudio";
 import {
   downloadUpscaleImage,
+  fetchUpscaleOriginalDownloadUrl,
   pollUpscaleJob,
   startUpscaleBatchJob,
   startUpscaleJob,
@@ -762,6 +763,20 @@ export function UpscaleStudioTab() {
     void runGenerate({ image, modelKey, modeId }, { priority: true });
   };
 
+  const [originalDownloading, setOriginalDownloading] = useState(false);
+  const handleDownloadOriginal = async () => {
+    if (!job?.id || !job.originalFilename || originalDownloading) return;
+    setOriginalDownloading(true);
+    try {
+      const url = await fetchUpscaleOriginalDownloadUrl(job.id, job.originalFilename);
+      await downloadUpscaleImage(url, job.originalFilename);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "元画質のダウンロードに失敗しました。");
+    } finally {
+      setOriginalDownloading(false);
+    }
+  };
+
   const progressPct = phase === "running" ? (job?.status === "processing" ? 70 : 25) : 0;
 
   return (
@@ -1028,6 +1043,17 @@ export function UpscaleStudioTab() {
               <Download size={16} />
               ダウンロード
             </button>
+            {job.originalAvailable && job.originalFilename && (
+              <button
+                type="button"
+                onClick={() => void handleDownloadOriginal()}
+                disabled={originalDownloading}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-neon-violet/40 bg-neon-violet/5 px-6 py-3 text-sm font-semibold text-neon-violet transition-colors hover:bg-neon-violet/10 disabled:opacity-60"
+              >
+                <Download size={16} />
+                {originalDownloading ? "準備中…" : "元画質(PNG)でダウンロード"}
+              </button>
+            )}
           </div>
         )}
 

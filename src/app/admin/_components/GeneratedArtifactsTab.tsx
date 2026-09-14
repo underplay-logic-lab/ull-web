@@ -26,12 +26,37 @@ type Generation = {
   extra: string | null;
   errorMessage: string | null;
   createdAt: string;
+  originalFilename: string | null;
 };
 
 // 超解像ワーカーは20MB超のPNGをWebP q92へ自動再エンコードして保存する
 // （CLAUDE.md参照外・modal_seedvr2_worker.py側の仕様）。DLし忘れて後から
 // 管理画面経由で取得する時、PNG専用ツールで開きたいケースのためのクライアント
 // 側変換（サーバー側の画像ライブラリ追加なしで完結させる）。
+// 20MB超のPNG出力はWebP保存に加え、劣化前の元PNGをModal Volumeへ直接退避
+// している（modal_seedvr2_worker.py _persist_upscale_original、2026-09-14〜）。
+// downloadImageAsPng と違い、こちらは本物の無劣化バイト列を復元する。
+async function downloadUpscaleOriginal(jobId: string, filename: string) {
+  const url = new URL("/api/admin/upscale-original", window.location.origin);
+  url.searchParams.set("jobId", jobId);
+  url.searchParams.set("file", filename);
+  const res = await fetch(url.toString());
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data?.downloadUrl) {
+    throw new Error(data?.error || "元画質のダウンロードURL発行に失敗しました。");
+  }
+  const fileRes = await fetch(data.downloadUrl as string);
+  const blob = await fileRes.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
 async function downloadImageAsPng(url: string, filename: string) {
   const res = await fetch(url);
   const blob = await res.blob();
@@ -210,6 +235,20 @@ function RecentGenerations() {
                               title="PNG形式に変換してダウンロード（保存形式はWebPのため、変換後の画質はWebPのまま）"
                             >
                               PNG化DL
+                            </button>
+                          )}
+                          {r.kind === "upscale" && r.originalFilename && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void downloadUpscaleOriginal(r.id, r.originalFilename!).catch((err) => {
+                                  console.error("[GeneratedArtifactsTab] 元画質DLに失敗:", err);
+                                });
+                              }}
+                              className="ml-1.5 rounded border border-neon-violet/40 px-1 text-[10px] text-neon-violet transition-colors hover:bg-neon-violet/10"
+                              title="WebP再エンコード前の無劣化オリジナルPNGをダウンロード"
+                            >
+                              元画質DL
                             </button>
                           )}
                         </>

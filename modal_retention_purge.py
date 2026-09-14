@@ -9,6 +9,7 @@ ULL データ保持ポリシー（CLAUDE.md §3）の実施 — 日次 purge。
   Modal Volume (ull-wan-models)
     loras/<lora_name>.safetensors      … 完成 LoRA の名前付きエイリアス
     loras/<user_id>/<job_id>/          … 学習ジョブごとの成果物（checkpoint 等）
+    upscale_originals/<user_id>/<job_id>/  … WebP劣化前の元PNG（超解像、2026-09-14〜）
   Supabase DB
     angle_jobs / upscale_jobs / generation_jobs の古い行
 
@@ -40,6 +41,10 @@ app = modal.App("ull-retention-purge")
 
 MODELS_DIR = "/models"
 LORA_DIR = f"{MODELS_DIR}/loras"
+# 2026-09-14: modal_seedvr2_worker.py の _persist_upscale_original が、WebP
+# 再エンコードで失われる元PNGをここへ退避する（loras/<uid>/<jobid>/ と同じ
+# per-job ディレクトリ規約・DB参照なしの純粋な mtime ベース孤児掃除）。
+UPSCALE_ORIGINALS_DIR = f"{MODELS_DIR}/upscale_originals"
 
 RETENTION_DAYS = int(os.environ.get("ULL_RETENTION_DAYS", "14"))
 # _purge() が実行時に上書きする（module import 時の env はコンテナに無いため、
@@ -291,6 +296,55 @@ def _purge_volume_loras(cutoff_epoch: float) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 2b) Modal Volume upscale_originals/: per-job ディレクトリを mtime で掃除。
+#     loras/ と違い DB の result_path 参照が無い純粋な副産物（download_upscale_
+#     original が404を返すようになるだけで、劣化版は upscale-results 側に残る
+#     ので実害なし）なので、孤児ディレクトリ掃除と同じロジックのみでよい。
+# ---------------------------------------------------------------------------
+def _purge_volume_upscale_originals(cutoff_epoch: float) -> dict:
+    import pathlib
+
+    removed_dirs = 0
+    root = pathlib.Path(UPSCALE_ORIGINALS_DIR)
+    if not root.is_dir():
+        return {"removed_dirs": 0}
+
+    for uid_dir in list(root.iterdir()):
+        if not uid_dir.is_dir():
+            continue
+        for job_dir in list(uid_dir.iterdir()):
+            try:
+                if job_dir.is_dir() and job_dir.stat().st_mtime < cutoff_epoch:
+                    if not DRY_RUN:
+                        shutil.rmtree(job_dir, ignore_errors=True)
+                    removed_dirs += 1
+                    print(
+                        f"[purge][upscale_originals] {uid_dir.name}/{job_dir.name}"
+                        f"{' (DRY)' if DRY_RUN else ''}",
+                        flush=True,
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            if not any(uid_dir.iterdir()) and not DRY_RUN:
+                uid_dir.rmdir()
+        except Exception:  # noqa: BLE001
+            pass
+
+    if removed_dirs and not DRY_RUN:
+        try:
+            vol.commit()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[purge][upscale_originals] vol.commit skipped: {exc}", flush=True)
+
+    print(
+        f"[purge][upscale_originals] dirs={removed_dirs}{' (DRY_RUN)' if DRY_RUN else ''}",
+        flush=True,
+    )
+    return {"removed_dirs": removed_dirs}
+
+
+# ---------------------------------------------------------------------------
 # 3) DB: 古いジョブ行を削除
 # ---------------------------------------------------------------------------
 def _purge_job_rows(cutoff_iso: str) -> dict:
@@ -347,10 +401,18 @@ def _purge(dry_run: bool | None = None) -> dict:
         if b.strip()
     ]
 
-    report = {"dry_run": DRY_RUN, "retention_days": RETENTION_DAYS, "buckets": [], "rows": {}, "loras": {}}
+    report = {
+        "dry_run": DRY_RUN,
+        "retention_days": RETENTION_DAYS,
+        "buckets": [],
+        "rows": {},
+        "loras": {},
+        "upscale_originals": {},
+    }
     for b in buckets:
         report["buckets"].append(_sweep_bucket(b, cutoff_epoch))
     report["loras"] = _purge_volume_loras(cutoff_epoch)
+    report["upscale_originals"] = _purge_volume_upscale_originals(cutoff_epoch)
     report["rows"] = _purge_job_rows(cutoff_iso)
     report["elapsed_s"] = round(time.time() - started, 1)
     print(f"[purge] done in {report['elapsed_s']}s: {report}", flush=True)

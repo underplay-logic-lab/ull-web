@@ -98,12 +98,14 @@ Env overrides:
 """
 
 import base64
+import hashlib
 import hmac
 import io
 import json
 import math
 import os
 import pathlib
+import re
 import subprocess
 import time
 from urllib.parse import urlparse
@@ -239,6 +241,10 @@ def _resolve_batch_timeout(max_allowed_time, hard_cap_s: int = UPSCALE_BATCH_TIM
     return int(min(hard_cap_s, bucketed))
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
+# 読み取り専用マウント（modal_lora_worker.py と同じ規約）: ダウンロード系
+# エンドポイントはファイルを読むだけなので、RWマウントの古いスナップショットが
+# 削除済みファイルを誤ってコミットし直す事故を避ける。
+vol_ro = vol.with_mount_options(read_only=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1099,6 +1105,33 @@ def _upload_upscale_image(user_id: str, job_id: str, img_bytes: bytes, ext: str 
         return None
 
 
+_UPSCALE_ORIGINALS_SUBDIR = "upscale_originals"
+
+
+def _persist_upscale_original(user_id: str, job_id: str, filename: str, data: bytes) -> str | None:
+    """WebP再エンコードで失われる前の元PNGをVolumeへ退避する
+    （modal_lora_worker.pyのloras/<user_id>/<job_id>/と同じ配置規約。
+    MODELS_DIRはこのファイルではVolumeのマウントルートそのもの —
+    lora workerの"/models"と同一Volume"ull-wan-models"の別マウント
+    パスに過ぎないので、.parentへ逃がすとVolume外＝コンテナのエフェ
+    メラルディスクに書いてしまい、次のコールドスタートで消える）。
+    LoRAチェックポイントと同じ「署名付きURL・ブラウザ↔Modal直結」方式で
+    download_upscale_original から復元できるようにする（2026-09-14）。
+    Supabase Storageのアップロード上限を経由しないので、8K級の巨大PNGでも
+    劣化なしで保存できる。失敗してもメインの生成結果は落とさないベスト
+    エフォート。"""
+    try:
+        out_dir = pathlib.Path(MODELS_DIR) / _UPSCALE_ORIGINALS_SUBDIR / (user_id or "anon") / job_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / filename
+        out_path.write_bytes(data)
+        vol.commit()
+        return filename
+    except Exception as exc:  # noqa: BLE001
+        print(f"[upscale-job] original PNG persist failed ({job_id}): {exc}", flush=True)
+        return None
+
+
 def _upload_upscale_video(user_id: str, job_id: str, video_bytes: bytes):
     """完成動画を upscale-results バケット（public）へ upsert し、公開 URL を返す。
     ストレージ不通なら None。画像と同じバケットを mp4 拡張子で共用する。"""
@@ -1735,7 +1768,13 @@ class SeedVR2Worker:
         # 大きい出力（8K PNG は ~30MB、横長だと 50MB+）は WebP q92 へ再エンコード。
         # 視覚的にほぼ無損失で、ストレージのファイル上限に安全に収まる。
         # しきい値は env で調整可（0 で無効）。
+        # 2026-09-14: 劣化版しか残らないとDLし忘れ時に救済できないため、
+        # 劣化させる場合は元のPNGバイト列を original_data として残し、
+        # 呼び出し元（run_upscale_job）が Volume へ退避する
+        # （download_upscale_original 経由でLoRAチェックポイントと同じ
+        # 署名付きURL方式で復元可能にする）。
         webp_threshold = _env_int("SEEDVR2_WEBP_ABOVE_BYTES", 20 * 1024 * 1024)
+        original_data = None
         if webp_threshold and len(data) > webp_threshold:
             try:
                 from PIL import Image
@@ -1748,9 +1787,10 @@ class SeedVR2Worker:
                 if new_data and len(new_data) < len(data):
                     print(
                         f"[seedvr2] re-encoded PNG {len(data)/1e6:.1f}MB → "
-                        f"WebP {len(new_data)/1e6:.1f}MB",
+                        f"WebP {len(new_data)/1e6:.1f}MB (original kept for recovery)",
                         flush=True,
                     )
+                    original_data = data
                     data = new_data
                     filename = filename.rsplit(".", 1)[0] + ".webp"
             except Exception as exc:  # noqa: BLE001
@@ -1763,6 +1803,7 @@ class SeedVR2Worker:
         )
         return {
             "data": data,
+            "original_data": original_data,
             "filename": filename,
             "model_key": model_key,
             "elapsed_time": elapsed,
@@ -1977,6 +2018,14 @@ class SeedVR2Worker:
             "preset": preset,
             "stages_ran": r.get("stages_ran", 1),
         }
+        original_data = r.get("original_data")
+        if original_data:
+            orig_filename = (r.get("filename") or "out.webp").rsplit(".", 1)[0] + ".png"
+            saved_name = _persist_upscale_original(user_id, job_id, orig_filename, original_data)
+            if saved_name:
+                meta["original_available"] = True
+                meta["original_filename"] = saved_name
+                meta["original_bytes"] = len(original_data)
         if url:
             _patch_upscale_job(job_id, {"status": "completed", "result_url": url})
             _merge_upscale_metadata(job_id, meta)
@@ -2409,6 +2458,118 @@ def upscale_video_generate_dispatch(item: dict, request: fastapi.Request):
         flush=True,
     )
     return {"ok": True, "job_id": job_id, "call_id": call.object_id}
+
+
+# ---------------------------------------------------------------------------
+# 元画質(PNG)復元ダウンロード — modal_lora_worker.py の download_lora_checkpoint
+# と同一方式（署名付きURL・ブラウザ↔Modal直結、Next.js/Supabase Storageを経由
+# しない）。WebP再エンコード（20MB超のPNG）で失われる元品質を、8K級の巨大
+# ファイルでもSupabase Storageの~50MBアップロード上限を経由せず復元するために
+# 導入（2026-09-14、ホスト指摘）。
+# ---------------------------------------------------------------------------
+_ORIG_DL_FILENAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}\.(?:png|webp|jpg|jpeg)$")
+_ORIG_DL_ID_RE = re.compile(r"^[0-9a-fA-F-]{1,64}$")
+
+
+def _verify_download_token(user_id: str, job_id: str, filename: str, expires: str, sig: str) -> bool:
+    secret = os.environ.get("MODAL_AUTH_TOKEN", "")
+    if not secret or not sig:
+        return False
+    try:
+        if int(expires) < time.time():
+            return False
+    except ValueError:
+        return False
+    payload = f"{user_id}:{job_id}:{filename}:{expires}"
+    expected = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
+_DL_CHUNK = 4 * 1024 * 1024  # 4 MiB
+
+
+def _stream_download(
+    file_path: pathlib.Path,
+    *,
+    download_name: str | None = None,
+    media_type: str = "application/octet-stream",
+    request: "fastapi.Request | None" = None,
+):
+    """modal_lora_worker.py の同名関数と同一実装（4 MiB チャンク・Range 対応）。"""
+    file_size = file_path.stat().st_size
+    name = (download_name or file_path.name).replace('"', "")
+    headers = {
+        "Content-Disposition": f'attachment; filename="{name}"',
+        "Content-Type": media_type,
+    }
+
+    start, end = 0, file_size - 1
+    status_code = 200
+    if request is not None:
+        headers["Accept-Ranges"] = "bytes"
+        raw_range = request.headers.get("range") or request.headers.get("Range")
+        if raw_range:
+            m = re.match(r"\s*bytes=(\d*)-(\d*)\s*$", raw_range)
+            if m and (m.group(1) or m.group(2)):
+                if m.group(1):
+                    start = int(m.group(1))
+                    end = int(m.group(2)) if m.group(2) else file_size - 1
+                else:
+                    start = max(0, file_size - int(m.group(2)))
+                    end = file_size - 1
+                end = min(end, file_size - 1)
+                if start > end or start >= file_size:
+                    return fastapi.responses.Response(
+                        status_code=416,
+                        headers={**headers, "Content-Range": f"bytes */{file_size}"},
+                    )
+                status_code = 206
+                headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+
+    length = end - start + 1
+    headers["Content-Length"] = str(length)
+
+    def _iter():
+        remaining = length
+        with open(file_path, "rb", buffering=_DL_CHUNK) as fh:
+            if start:
+                fh.seek(start)
+            while remaining > 0:
+                chunk = fh.read(min(_DL_CHUNK, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return fastapi.responses.StreamingResponse(
+        _iter(), status_code=status_code, media_type=media_type, headers=headers
+    )
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol_ro},
+    timeout=3600,
+    scaledown_window=2,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="GET")
+def download_upscale_original(
+    user_id: str, job_id: str, filename: str, expires: str, sig: str, request: fastapi.Request
+):
+    if not _verify_download_token(user_id, job_id, filename, expires, sig):
+        raise fastapi.HTTPException(status_code=403, detail="invalid or expired download link")
+    if not (_ORIG_DL_ID_RE.match(user_id) and _ORIG_DL_ID_RE.match(job_id) and _ORIG_DL_FILENAME_RE.match(filename)):
+        raise fastapi.HTTPException(status_code=400, detail="invalid parameters")
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[download] vol.reload() skipped: {exc}", flush=True)
+    file_path = pathlib.Path(MODELS_DIR) / _UPSCALE_ORIGINALS_SUBDIR / user_id / job_id / filename
+    if not file_path.is_file():
+        raise fastapi.HTTPException(status_code=404, detail="original not found")
+    media = "image/png" if filename.lower().endswith(".png") else "application/octet-stream"
+    return _stream_download(file_path, download_name=file_path.name, media_type=media, request=request)
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,9 @@ export type UpscaleJob = {
   elapsedTime: number | null;
   outWidth: number | null;
   outHeight: number | null;
+  /** true: WebP劣化前の元PNGがModal Volumeに保存済み（20MB超の出力のみ）。 */
+  originalAvailable: boolean;
+  originalFilename: string | null;
 };
 
 export type StartUpscaleJobResult = {
@@ -190,6 +193,17 @@ function metaNumber(meta: unknown, key: string): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+function metaString(meta: unknown, key: string): string | null {
+  if (!meta || typeof meta !== "object") return null;
+  const v = (meta as Record<string, unknown>)[key];
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+function metaBool(meta: unknown, key: string): boolean {
+  if (!meta || typeof meta !== "object") return false;
+  return (meta as Record<string, unknown>)[key] === true;
+}
+
 const UPSCALE_COLS =
   "id, status, model_key, preset, result_url, error_message, metadata";
 
@@ -226,7 +240,29 @@ export async function pollUpscaleJob(jobId: string): Promise<UpscaleJob> {
     elapsedTime: metaNumber(data.metadata, "elapsed_time"),
     outWidth: metaNumber(data.metadata, "out_width"),
     outHeight: metaNumber(data.metadata, "out_height"),
+    originalAvailable: metaBool(data.metadata, "original_available"),
+    originalFilename: metaString(data.metadata, "original_filename"),
   };
+}
+
+/** 元画質(PNG)の署名付きダウンロードURLを発行する（/api/studio/upscale/original）。 */
+export async function fetchUpscaleOriginalDownloadUrl(jobId: string, filename: string): Promise<string> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) throw new Error("ログインが必要です。");
+
+  const url = new URL("/api/studio/upscale/original", window.location.origin);
+  url.searchParams.set("jobId", jobId);
+  url.searchParams.set("file", filename);
+
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data?.downloadUrl) {
+    throw new Error(data?.error || "元画質のダウンロードURL発行に失敗しました。");
+  }
+  return data.downloadUrl as string;
 }
 
 /** 公開 URL を実ファイルとして保存させる（cross-origin download 対策）。 */

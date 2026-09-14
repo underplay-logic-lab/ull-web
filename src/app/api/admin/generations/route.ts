@@ -22,6 +22,8 @@ type GenRow = {
   extra: string | null;
   errorMessage: string | null;
   createdAt: string;
+  /** kind:"upscale" のみ — WebP劣化前の元PNGがModal Volumeにある場合そのファイル名。 */
+  originalFilename: string | null;
 };
 
 function firstString(v: unknown): string | null {
@@ -44,7 +46,7 @@ export async function GET() {
       .limit(PER_TABLE),
     supabaseAdmin
       .from("upscale_jobs")
-      .select("id, user_id, status, model_key, preset, result_url, credits_cost, error_message, created_at")
+      .select("id, user_id, status, model_key, preset, result_url, credits_cost, error_message, created_at, metadata")
       .order("created_at", { ascending: false })
       .limit(PER_TABLE),
     supabaseAdmin
@@ -76,10 +78,16 @@ export async function GET() {
       extra: imgs.length > 1 ? `他 ${imgs.length - 1} 枚` : null,
       errorMessage: (r.error_message as string) ?? null,
       createdAt: r.created_at as string,
+      originalFilename: null,
     });
   }
 
   for (const r of upscale.data ?? []) {
+    const meta = r.metadata as { original_available?: unknown; original_filename?: unknown } | null;
+    const originalFilename =
+      meta?.original_available === true && typeof meta.original_filename === "string"
+        ? meta.original_filename
+        : null;
     rows.push({
       id: r.id as string,
       kind: "upscale",
@@ -92,6 +100,7 @@ export async function GET() {
       extra: null,
       errorMessage: (r.error_message as string) ?? null,
       createdAt: r.created_at as string,
+      originalFilename,
     });
   }
 
@@ -110,6 +119,7 @@ export async function GET() {
       extra: isLora ? (firstString(r.result_path) ? `Volume: ${firstString(r.result_path)}` : null) : null,
       errorMessage: (r.error_message as string) ?? null,
       createdAt: r.created_at as string,
+      originalFilename: null,
     });
   }
 
