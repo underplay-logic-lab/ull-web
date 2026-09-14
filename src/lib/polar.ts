@@ -1,10 +1,23 @@
 import "server-only";
-import { Polar } from "@polar-sh/sdk";
+import { HTTPClient, Polar } from "@polar-sh/sdk";
 import { POLAR_PRODUCT_IDS } from "@/lib/polarProducts";
 
 // "production" unless explicitly overridden — POLAR_SERVER is only meant
 // for pointing this at Polar's sandbox during local/staging testing.
 const server = (process.env.POLAR_SERVER as "production" | "sandbox" | undefined) ?? "production";
+
+// 2026-09-14: Polar が日付ベースのAPIバージョニングを導入
+// （Current/Deprecated/Next の3本立て、四半期ごとにローテーション）。
+// Polar-Version ヘッダーを送らないリクエストは常に「Current」扱いになり、
+// 2026-10-01 の次回ローテーションで黙って 2026-10 契約に切り替わる
+// （このプロジェクトが使っている @polar-sh/sdk 0.49.0 は 2026-04 契約向けに
+// 生成されたもの — SDK_METADATA.openapiDocVersion で確認済み）。SDKOptions
+// にはヘッダー直指定の口が無いため、addHook("beforeRequest", ...) という
+// SDK公式の拡張ポイント（Speakeasy生成SDKの標準機能）でリクエストごとに
+// ヘッダーを注入する。決済まわりのコードなので、契約を意図せず変えないよう
+// 明示的に固定しておく。次のローテーション（2027-01）前に 2026-10 への
+// 動作確認・移行を検討すること。
+const POLAR_API_VERSION = "2026-04";
 
 let client: Polar | null = null;
 
@@ -19,7 +32,12 @@ export function getPolarClient(): Polar {
   if (!accessToken) {
     throw new Error("Missing POLAR_ACCESS_TOKEN environment variable.");
   }
-  client = new Polar({ accessToken, server });
+  const httpClient = new HTTPClient();
+  httpClient.addHook("beforeRequest", (req) => {
+    req.headers.set("Polar-Version", POLAR_API_VERSION);
+    return req;
+  });
+  client = new Polar({ accessToken, server, httpClient });
   return client;
 }
 
