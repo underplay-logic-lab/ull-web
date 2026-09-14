@@ -627,8 +627,16 @@ def _is_blocked_model(value: str) -> bool:
     )
 
 DEFAULT_TRAINING_CONFIG = {
+    # 2026-09-15: alpha を rank と同値(32)から rank/2(16) に変更。複数の外部
+    # ガイドで「alpha = rank/2 が事実上の標準」（α/rの実効スケールを一定に
+    # 保つ）という点が一致し、ホスト自身の納品実績（rank64/alpha32、同じ
+    # 0.5比率）とも独立に一致した。この rank=32/alpha=16 は「人物」タイプの
+    # 既定値（route.ts の autoLoraRankAlpha 参照）。通常の呼び出しは
+    # route.ts が rank/alpha/steps を明示的に渡すのでこの既定値は使われず、
+    # ここは Next.js を経由しない直接呼び出し（ローカルCLI等）向けの
+    # フォールバックに過ぎない。
     "rank": 32,
-    "alpha": 32,
+    "alpha": 16,
     # AdamW-style rate — only used as a fallback for non-prodigy optimizers.
     # Prodigy (the actual default below) ignores this and gets a forced
     # lr=1.0 in _build_config (see the comment there).
@@ -6553,7 +6561,7 @@ def main(
     trigger_word: str = "",
     steps: int = 2000,
     rank: int = 32,
-    alpha: int = 32,
+    alpha: int = 16,
     learning_rate: float = 1e-4,
     optimizer: str = "prodigy",
     resolution: int = 768,

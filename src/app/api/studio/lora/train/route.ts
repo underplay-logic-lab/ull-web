@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { spawnLoraTrainingJob, buildLoraDispatchPayload } from "@/lib/modalLoraTrain";
-import { DEFAULT_LORA_STEPS, autoLoraSteps } from "@/lib/loraCredits";
+import { DEFAULT_LORA_STEPS, autoLoraSteps, autoLoraRankAlpha } from "@/lib/loraCredits";
 import { guiLoraPricingConfig, loraPriceBreakdown } from "@/lib/loraPricing";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { loraCostCapSeconds } from "@/lib/pricing/costGuard.server";
@@ -378,16 +378,25 @@ async function handlePost(request: Request): Promise<NextResponse> {
   const resolution = pricedArch
     ? recommendedResolution(pricedArch as LoraBaseArchitecture)
     : DEFAULT_LORA_RESOLUTION;
-  // 2026-09-14: 「オート」（trainingConfig.stepsが未指定＝エキスパートの
-  // スライダーを経由していない）は、画像枚数に応じて動的にstepを決める
-  // （autoLoraSteps、src/lib/loraCredits.ts参照）。以前は画像15枚でも200枚
-  // でも一律DEFAULT_LORA_STEPSだったのを、実際の学習に渡すstepと課金額の
-  // 両方をここで一元的に決め直す（LoraStudioTab.tsxの見積り表示も同じ関数を
-  // 使って一致させている）。生YAML(hasOverride)はここを経由しない。
-  const effectiveTrainingConfig =
-    !hasOverride && typeof trainingConfig.steps !== "number"
-      ? { ...trainingConfig, steps: autoLoraSteps(storagePaths.length) }
-      : trainingConfig;
+  // 2026-09-14/15: 「オート」（trainingConfig.rank / .steps が未指定＝
+  // エキスパートのスライダーを経由していない）は、(a) 画像枚数に応じて
+  // 動的にstepを決め（autoLoraSteps）、(b) LoRAタイプ（人物 vs 画風寄り）に
+  // 応じてrank/alphaを決める（autoLoraRankAlpha）— どちらも
+  // src/lib/loraCredits.ts 参照、外部の一次情報・自社納品実績に基づく値。
+  // 実際の学習に渡す値と課金額の両方をここで一元的に決め直す
+  // （LoraStudioTab.tsxの見積り表示も同じ関数を使って一致させている）。
+  // 生YAML(hasOverride)はここを経由しない。
+  const effectiveTrainingConfig = hasOverride
+    ? trainingConfig
+    : {
+        ...trainingConfig,
+        ...(typeof trainingConfig.steps !== "number"
+          ? { steps: autoLoraSteps(storagePaths.length) }
+          : {}),
+        ...(typeof trainingConfig.rank !== "number"
+          ? autoLoraRankAlpha(captionSpec?.category)
+          : {}),
+      };
   const pricedConfig: unknown = hasOverride
     ? parsedOverride
     : guiLoraPricingConfig({

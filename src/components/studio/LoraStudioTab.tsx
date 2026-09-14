@@ -60,7 +60,7 @@ import {
   type LoraPresetGroup,
   type LoraResolution,
 } from "@/lib/loraModels";
-import { LORA_MAX_STEPS, autoLoraSteps } from "@/lib/loraCredits";
+import { LORA_MAX_STEPS, autoLoraSteps, autoLoraRankAlpha } from "@/lib/loraCredits";
 import {
   guiLoraPricingConfig,
   loraPriceBreakdown,
@@ -2361,11 +2361,13 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   //   ceil(0.1 * modelMult * resMult * batchMult * rankMult * steps)
   //  - エキスパート(生YAML): price the live-parsed ai-toolkit config; an
   //    unparseable / step-less YAML shows the worst-case ceiling.
-  //  - エキスパート(スライダー): pro.steps をそのまま使う。
-  //  - オート: 画像枚数に応じて動的に決まる autoLoraSteps() を使う
-  //    （2026-09-14〜。以前は画像枚数によらず一律固定値だった — ホスト指摘）。
-  //    サーバー側(/api/studio/lora/train)も同じ関数で同じ値を再計算するので
-  //    見積りと実際の課金・学習stepが食い違わない。
+  //  - エキスパート(スライダー): pro.rank / pro.steps をそのまま使う。
+  //  - オート: 画像枚数に応じて動的に決まる autoLoraSteps() と、LoRAタイプ
+  //    （人物 vs 画風寄り）で決まる autoLoraRankAlpha() を使う
+  //    （2026-09-14/15〜。以前はどちらも一律固定値だった — ホスト指摘・
+  //    外部一次情報に基づく見直し）。サーバー側(/api/studio/lora/train)も
+  //    同じ関数で同じ値を再計算するので見積りと実際の課金・学習パラメータが
+  //    食い違わない。
   const priceBreakdown = useMemo(() => {
     if (yamlMode) {
       if (yamlCheck?.ok)
@@ -2376,7 +2378,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       guiLoraPricingConfig({
         arch: pricedArch,
         resolution,
-        linearRank: mode === "pro" ? pro.rank : DEFAULT_PRO.rank,
+        linearRank: mode === "pro" ? pro.rank : autoLoraRankAlpha(captionCategory).rank,
         steps: mode === "pro" ? pro.steps : autoLoraSteps(images.length),
       }),
       { modelMultOverride: selectedPreset?.pricingModelMult, knobs: pricingKnobs },
@@ -2390,6 +2392,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     pro.rank,
     pro.steps,
     images.length,
+    captionCategory,
     selectedPreset,
     pricingKnobs,
   ]);
