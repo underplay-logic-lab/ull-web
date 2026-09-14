@@ -902,13 +902,17 @@ export function MultiAngleStudioTab() {
   const handleGenerate = () => {
     if (missingInputs || !image) return;
     if (!user) return setLoginOpen(true);
-    if (insufficientCredits) return setChargeOpen(true);
     // 実行中に押した場合は「順番待ち」か「並列実行」かを選ばせる（warm な
     // コンテナを無駄にしないため、待てるなら無料の順番待ちを既定にする）。
+    // insufficientCredits は「今の選択1回分」の判定で、1件目の課金直後は
+    // クレジットが減っていて誤って弾かれうる（順番待ちは発火時まで無料な
+    // ので、ここでは早期リターンしてはいけない）ため busy チェックより後に
+    // 回す。
     if (busy) {
       setQueueChoiceOpen(true);
       return;
     }
+    if (insufficientCredits) return setChargeOpen(true);
     // 既に結果が表示されている状態で再生成すると、new job で即座に上書き
     // されて消える（setJob(null) が doGenerate の先頭にある）。気づかず
     // 前回の結果を失わないよう、表示中の結果があるときだけ一度確認する。
@@ -935,6 +939,11 @@ export function MultiAngleStudioTab() {
   const handleQueueParallel = () => {
     if (!image) return;
     setQueueChoiceOpen(false);
+    const surcharge = anglePriorityParallelSurcharge(knobs);
+    if (!creditsLoading && (credits ?? 0) < cost + surcharge) {
+      setChargeOpen(true);
+      return;
+    }
     void runGenerate({ image, subImages, selection, combos }, { priority: true });
   };
 
