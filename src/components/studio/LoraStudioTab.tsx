@@ -17,6 +17,7 @@ import {
   LogIn,
   MessageCircle,
   RotateCcw,
+  Scissors,
   Sparkles,
   Trash2,
   Wand2,
@@ -85,6 +86,8 @@ import {
 } from "@/lib/loraCaptionSpec";
 import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
 import { generateDatasetCaptions, captionFileKey } from "@/lib/loraCaption";
+import { runSmartCrop, SMART_CROP_KIND_LABEL, type SmartCropKind } from "@/lib/smartCrop";
+import { warmSmartCropModels } from "@/lib/smartCropDetect";
 const JOB_POLL_INTERVAL_MS = 3000;
 // Consecutive transient poll failures (5xx / network) tolerated before the
 // monitor shows the "connection lost" fallback card. Each retry in between
@@ -320,7 +323,9 @@ const LR_PRESETS: { value: number; label: string }[] = [
 // /api/studio/lora/caption-prompt (Gemini) to synthesise the English
 // instruction handed to the worker's Qwen captioner as `caption_prompt`.
 
-type DatasetImage = { id: string; file: File; url: string };
+// cropKind: スマートクロップが生成した画像だけに付く（元アップロード画像は
+// undefined）。再度スマートクロップを実行する対象から除外する判定にも使う。
+type DatasetImage = { id: string; file: File; url: string; cropKind?: SmartCropKind };
 
 type ProConfig = {
   rank: number;
@@ -384,6 +389,10 @@ function ImageDropzone({
   captionState,
   recaptioningIds,
   onRecaption,
+  smartCropCandidateCount,
+  smartCropBusy,
+  smartCropProgress,
+  onSmartCrop,
 }: {
   images: DatasetImage[];
   onAdd: (files: FileList | File[]) => void;
@@ -392,6 +401,11 @@ function ImageDropzone({
   // "ok" (captioned) | "error" (retries exhausted) | "pending" (not yet done).
   captionState?: (id: string) => "ok" | "error" | "pending";
   recaptioningIds?: Set<string>;
+  // スマートクロップ未実施の元画像の枚数（0なら実行対象なし）。
+  smartCropCandidateCount?: number;
+  smartCropBusy?: boolean;
+  smartCropProgress?: { done: number; total: number } | null;
+  onSmartCrop?: () => void;
   onRecaption?: (id: string) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -450,6 +464,26 @@ function ImageDropzone({
               </button>
             )}
           </div>
+          {onSmartCrop && (
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onSmartCrop}
+                disabled={disabled || smartCropBusy || !smartCropCandidateCount}
+                title="骨格・顔の座標から「顔クローズアップ / 上半身 / 全身」の3枚を自動で切り出し、データセットに追加します。"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-neon-violet/40 bg-neon-violet/5 px-2.5 py-1 text-[11px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {smartCropBusy ? <Loader2 size={12} className="animate-spin" /> : <Scissors size={12} />}
+                ✂️ スマートクロップ
+                {smartCropCandidateCount ? `（元画像 ${smartCropCandidateCount} 枚）` : ""}
+              </button>
+              {smartCropBusy && smartCropProgress && (
+                <span className="text-[11px] text-muted">
+                  {smartCropProgress.done}/{smartCropProgress.total} 枚 処理中…
+                </span>
+              )}
+            </div>
+          )}
           <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-5">
             {images.map((img) => {
               const st = captionState?.(img.id) ?? "ok";
@@ -485,6 +519,11 @@ function ImageDropzone({
                   {!disabled && !recapping && st === "pending" && (
                     <span className="absolute left-1 top-1 rounded bg-amber-500/80 px-1 py-0.5 text-[8px] font-medium text-white">
                       未解析
+                    </span>
+                  )}
+                  {img.cropKind && (
+                    <span className="absolute bottom-1 right-1 rounded bg-neon-violet/85 px-1 py-0.5 text-[8px] font-medium text-white">
+                      ✂️ {SMART_CROP_KIND_LABEL[img.cropKind]}
                     </span>
                   )}
                   {!disabled && (
@@ -1484,6 +1523,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
   const [mode, setMode] = useState<Mode>("auto");
   const [images, setImages] = useState<DatasetImage[]>([]);
+  const [smartCropBusy, setSmartCropBusy] = useState(false);
+  const [smartCropProgress, setSmartCropProgress] = useState<{ done: number; total: number } | null>(null);
+  const smartCropWarmedRef = useRef(false);
   // English caption per image id. Filled by the AI-vision auto-caption pass on
   // drop, or straight from a .txt / ZIP the user brought.
   const [captions, setCaptions] = useState<Record<string, string>>({});
@@ -1905,7 +1947,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     pro,
   ]);
 
-  const addDatasetFiles = useCallback((entries: { file: File; caption?: string }[]) => {
+  const addDatasetFiles = useCallback((entries: { file: File; caption?: string; cropKind?: SmartCropKind }[]) => {
     // Deterministic, filename-derived id (no random UUID) so it's a stable
     // React key across every re-render / curation round-trip; a numeric
     // suffix disambiguates genuinely identical files.
@@ -1958,7 +2000,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           (oversized.length > 3 ? " ほか" : ""),
       );
     }
-    for (const { file, caption } of entries) {
+    for (const { file, caption, cropKind } of entries) {
       if (file.size > MAX_FILE_BYTES) continue;
       if (room <= 0) break;
       room--;
@@ -1966,7 +2008,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       let id = base;
       for (let n = 2; used.has(id); n++) id = `${base}::${n}`;
       used.add(id);
-      newImgs.push({ id, file, url: URL.createObjectURL(file) });
+      newImgs.push({ id, file, url: URL.createObjectURL(file), cropKind });
       if ((caption ?? "").trim()) {
         newCaps[id] = caption!.trim();
         // Brought by the user (.txt / ZIP) — not AI-generated.
@@ -2052,6 +2094,48 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     },
     [addDatasetFiles, importZip],
   );
+
+  // モデル（MediaPipe WASM + .task、計10MB前後）はユーザーがデータセットに
+  // 画像を入れた時点で一度だけバックグラウンド先読みしておく（実行ボタンを
+  // 押した瞬間の初回待ちを減らす）。失敗しても runSmartCrop 側で再試行される。
+  useEffect(() => {
+    if (images.length > 0 && !smartCropWarmedRef.current) {
+      smartCropWarmedRef.current = true;
+      warmSmartCropModels();
+    }
+  }, [images.length]);
+
+  // 未クロップの元画像（cropKind未設定）だけを対象に、1枚ずつ順番に
+  // スマートクロップを実行してデータセットへ追加する。並列実行にしない
+  // のはメモリ・進捗表示のシンプルさを優先したもの（1枚あたり数百ms程度）。
+  const runSmartCropForDataset = useCallback(async () => {
+    const candidates = imagesRef.current.filter((img) => !img.cropKind);
+    if (!candidates.length) return;
+    setSmartCropBusy(true);
+    setSmartCropProgress({ done: 0, total: candidates.length });
+    setErrorMessage(null);
+    const failures: string[] = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i];
+      try {
+        const outputs = await runSmartCrop(candidate.file);
+        addDatasetFiles(outputs.map((o) => ({ file: o.file, cropKind: o.kind })));
+      } catch (err) {
+        failures.push(candidate.file.name);
+        console.error("[LoraStudioTab] smart crop failed:", candidate.file.name, err);
+      }
+      setSmartCropProgress({ done: i + 1, total: candidates.length });
+    }
+    setSmartCropBusy(false);
+    setSmartCropProgress(null);
+    if (failures.length) {
+      setErrorMessage(
+        `${failures.length} 枚でスマートクロップに失敗しました（人物の骨格が検出できなかった可能性があります）: ` +
+          failures.slice(0, 3).join(", ") +
+          (failures.length > 3 ? " ほか" : ""),
+      );
+    }
+  }, [addDatasetFiles]);
 
   const removeImage = useCallback((id: string) => {
     setImages((prev) => {
@@ -3911,6 +3995,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                   ? "error"
                   : "pending"
             }
+            smartCropCandidateCount={images.filter((img) => !img.cropKind).length}
+            smartCropBusy={smartCropBusy}
+            smartCropProgress={smartCropProgress}
+            onSmartCrop={() => void runSmartCropForDataset()}
           />
 
           {zipBusy && (
