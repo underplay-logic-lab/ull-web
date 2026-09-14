@@ -331,6 +331,19 @@ export type LoraSubject = {
   /** Short EN/JA description used to tell subjects apart in the vision prompt
    * (and shown to the user) — e.g. "silver-haired girl", "man in a black coat". */
   description: string;
+  /**
+   * Comma-separated tags FORCED into every solo-shot caption of this subject
+   * (e.g. "1woman, solo") — 2026-09-15, host report: asking the vision model
+   * to freely judge the Danbooru count/gender tag per image drifts across a
+   * larger dataset (1girl vs 1woman for the same person) and sometimes omits
+   * it outright (8 images missing "solo" in one real run). A per-subject
+   * gender/count tag is a FIXED trait, not something that should be
+   * re-judged per image — so when set, it's spliced in deterministically
+   * (applySubjectFixedTags/normalizeSubjectTags), completely bypassing the
+   * model's own guess. Left empty, the model's guess + majority-vote
+   * normalization is used as before (legacy behaviour, unchanged).
+   */
+  fixedTags?: string;
 };
 
 function escapeReSub(s: string): string {
@@ -410,46 +423,91 @@ export function stripLeadingSubjectTriggers(caption: string, subjects: LoraSubje
     .trim();
 }
 
+// Broad match for ANY Danbooru count/gender/solo-ish tag the model may have
+// written on its own — used to STRIP a run of these right after a subject's
+// trigger before splicing in that subject's fixedTags, so we never end up
+// with both the model's guess and the fixed tags side by side
+// ("1woman, 1woman, solo, solo, ...").
+const COUNT_GENDER_TAG_RE =
+  /^(?:\d+\s*(?:girls?|boys?|man|men|woman|women)|solo|no\s*humans?|multiple\s*(?:girls?|boys?|people|views))$/i;
+// Narrower match used by the majority-vote fallback (only the 4 tags that
+// can legitimately drift for the SAME person across images — "solo" and the
+// count tags for 2+ people aren't a per-subject identity trait, so they're
+// left to the model).
 const GENDER_AGE_TAG_RE = /^(1girl|1boy|1man|1woman)$/i;
 
 /**
- * Locks each subject's Danbooru gender/age tag (1girl/1boy/1man/1woman) to
- * whichever value appears most often across its own SOLO-shot captions in
- * `entries` (2026-09-15, host report: the same recurring character tagged
- * 1girl in some photos and 1woman in others). Each vision-API call only sees
- * a handful of images at a time and has no memory of earlier calls, so a
- * per-image guess can drift across a larger dataset even with a "be
- * consistent" prompt instruction — this is the deterministic backstop.
- *
- * Only SOLO shots (exactly one registered subject present, via
- * matchLeadingSubjectTriggers) are touched: a group shot has no reliable way
- * to attribute which of several gender tags belongs to which subject.
+ * Forces `subject`'s fixedTags into `caption` — SOLO shots only (exactly one
+ * registered subject present). Strips whatever Danbooru count/gender/solo-ish
+ * tag(s) the model wrote right after the trigger (if any) and splices in the
+ * fixed tags instead, so the result is deterministic regardless of what the
+ * model guessed. A no-op when the caption isn't a solo shot, or the matched
+ * subject has no fixedTags configured (legacy AI-guess behaviour applies —
+ * see normalizeSubjectTags for that path's post-hoc consistency backstop).
+ */
+export function applySubjectFixedTags(caption: string, subjects: LoraSubject[]): string {
+  const present = matchLeadingSubjectTriggers(caption, subjects);
+  if (present.length !== 1) return caption;
+  const fixed = present[0].fixedTags?.trim();
+  if (!fixed) return caption;
+  const tokens = caption.trim().split(/\s*[,、]\s*/);
+  let i = 1; // tokens[0] is the (sole) matched trigger
+  while (i < tokens.length && COUNT_GENDER_TAG_RE.test(tokens[i]?.trim() ?? "")) i++;
+  const rest = tokens.slice(i).join(", ").trim();
+  return rest ? `${present[0].trigger}, ${fixed}, ${rest}` : `${present[0].trigger}, ${fixed}`;
+}
+
+/**
+ * Post-hoc consistency pass over a whole batch of already-generated captions
+ * (2026-09-15, host report: the same recurring character tagged 1girl in
+ * some photos and 1woman in others; separately, some images missing any
+ * count/gender tag at all — asking the vision model to freely (re-)judge
+ * this per image, across independent API calls with no shared memory,
+ * isn't reliable enough on its own). For each SOLO-shot entry (exactly one
+ * registered subject present):
+ *   - if that subject has fixedTags configured, FORCE them (deterministic,
+ *     same as applySubjectFixedTags — this is the primary fix now);
+ *   - otherwise, fall back to majority-vote among that subject's OTHER
+ *     AI-guessed 1girl/1boy/1man/1woman tags (legacy best-effort behaviour
+ *     for subjects nobody bothered to pin down explicitly).
+ * Group shots are never touched: there's no reliable way to attribute which
+ * of several tags/fixedTags belongs to which subject.
  *
  * Returns a Map of id -> corrected caption, containing ONLY the entries that
  * actually need to change — callers apply it as a sparse patch (both
  * LoraStudioTab.tsx's live `captions` state and DatasetCurationUI.tsx's
  * `CurationPair[]` reuse this one implementation).
  */
-export function normalizeSubjectGenderTags(
+export function normalizeSubjectTags(
   entries: { id: string; caption: string }[],
   subjects: LoraSubject[],
 ): Map<string, string> {
+  const fixes = new Map<string, string>();
   const counts = new Map<string, Map<string, number>>(); // trigger -> tag -> count
-  const solo = new Map<string, { trigger: string; tokens: string[] }>(); // id -> parsed
+  const soloForVote = new Map<string, { trigger: string; tokens: string[] }>(); // id -> parsed
+
   for (const { id, caption } of entries) {
     if (!caption.trim()) continue;
     const present = matchLeadingSubjectTriggers(caption, subjects);
     if (present.length !== 1) continue;
+    const subject = present[0];
+
+    if (subject.fixedTags?.trim()) {
+      const fixed = applySubjectFixedTags(caption, subjects);
+      if (fixed !== caption.trim()) fixes.set(id, fixed);
+      continue;
+    }
+
     const tokens = caption.trim().split(/\s*[,、]\s*/);
     const tag = tokens[1]?.trim();
     if (!tag || !GENDER_AGE_TAG_RE.test(tag)) continue;
-    const trigger = present[0].trigger;
-    solo.set(id, { trigger, tokens });
-    const m = counts.get(trigger) ?? new Map<string, number>();
+    soloForVote.set(id, { trigger: subject.trigger, tokens });
+    const m = counts.get(subject.trigger) ?? new Map<string, number>();
     const key = tag.toLowerCase();
     m.set(key, (m.get(key) ?? 0) + 1);
-    counts.set(trigger, m);
+    counts.set(subject.trigger, m);
   }
+
   const majority = new Map<string, string>(); // trigger -> canonical tag
   for (const [trigger, tagCounts] of counts) {
     let bestKey = "";
@@ -462,8 +520,7 @@ export function normalizeSubjectGenderTags(
     }
     majority.set(trigger, bestKey);
   }
-  const fixes = new Map<string, string>();
-  for (const [id, info] of solo) {
+  for (const [id, info] of soloForVote) {
     const want = majority.get(info.trigger);
     if (!want || info.tokens[1]?.trim().toLowerCase() === want) continue;
     const tokens = [...info.tokens];

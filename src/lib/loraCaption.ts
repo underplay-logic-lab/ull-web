@@ -300,7 +300,9 @@ export async function generateDatasetCaptions(
         body: JSON.stringify({
           images: pairs.map((p) => p.img),
           trigger_word: opts.triggerWord || undefined,
-          subjects: opts.subjects && opts.subjects.length >= 2 ? opts.subjects : undefined,
+          // A single entry is still worth sending when it carries fixedTags
+          // (the gender/count tag lock) — only a truly empty list is dropped.
+          subjects: opts.subjects && opts.subjects.length >= 1 ? opts.subjects : undefined,
           caption_prompt: opts.captionPrompt || undefined,
           caption_mode: opts.captionMode || undefined,
           category: opts.category || undefined,

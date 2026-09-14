@@ -17,7 +17,7 @@ import { buildDatasetZip, downloadBlob } from "@/lib/datasetZip";
 import { ImageLightbox } from "@/components/studio/ImageLightbox";
 import {
   matchLeadingSubjectTriggers,
-  normalizeSubjectGenderTags,
+  normalizeSubjectTags,
   stripLeadingSubjectTriggers,
   type LoraSubject,
   type ResolvedCaptionMode,
@@ -138,13 +138,13 @@ export function DatasetCurationUI({
         onChange((prev) => prev.map((p) => (updates[p.id] ? { ...p, ...updates[p.id] } : p)));
       }
       // 別state対応（2026-09-15）: LoraStudioTab.tsx側の同名処理と同じ共有
-      // ロジック（normalizeSubjectGenderTags）を、curationPairsの最新値に
+      // ロジック（normalizeSubjectTags）を、curationPairsの最新値に
       // 対して適用する。functional updater で読むので、直前のonChangeが
       // まだ反映されていない古いclosureのpairsを見てしまう心配がない。
-      const subjectList = subjects && subjects.length >= 2 ? subjects : [{ trigger: triggerWord.trim(), description: "" }];
+      const subjectList = subjects && subjects.length >= 1 ? subjects : [{ trigger: triggerWord.trim(), description: "" }];
       if (subjectList[0]?.trigger) {
         onChange((prev) => {
-          const fixes = normalizeSubjectGenderTags(
+          const fixes = normalizeSubjectTags(
             prev.map((p) => ({ id: p.id, caption: p.caption })),
             subjectList,
           );
@@ -248,7 +248,7 @@ export function DatasetCurationUI({
   // actually has and preserve exactly those, never the fixed `triggerWord`
   // prop (only the primary/first subject).
   const trig = triggerWord.trim();
-  const subjectList: LoraSubject[] = subjects && subjects.length >= 2 ? subjects : [{ trigger: trig, description: "" }];
+  const subjectList: LoraSubject[] = subjects && subjects.length >= 1 ? subjects : [{ trigger: trig, description: "" }];
   const stripTrigger = (s: string) => stripLeadingSubjectTriggers(s, subjectList);
   // Which trigger(s) to preserve for `text` MUST be read from the ORIGINAL
   // (pre-translation) text — the translated body no longer starts with any

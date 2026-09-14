@@ -9,6 +9,7 @@ import {
   runGeminiVision,
 } from "@/lib/geminiText";
 import {
+  applySubjectFixedTags,
   buildCategoryDefaultInstruction,
   coerceLoraCaptionCategory,
   matchLeadingSubjectTriggers,
@@ -365,12 +366,18 @@ export async function POST(request: Request): Promise<NextResponse> {
         return {
           trigger: typeof o.trigger === "string" ? o.trigger.trim().slice(0, 60) : "",
           description: typeof o.description === "string" ? o.description.trim().slice(0, 300) : "",
+          fixedTags: typeof o.fixedTags === "string" ? o.fixedTags.trim().slice(0, 200) : "",
         };
       })
       .filter((s: LoraSubject) => s.trigger.length > 0)
       .slice(0, 8);
+    // A single entry (not just 2+) is still meaningful — it may carry
+    // fixedTags for the one default subject — so it's never discarded here.
+    // subjectClassificationLines()/tidyCaption() key the actual
+    // "multi-subject classification" behaviour off subjects.length >= 2, not
+    // off whether this array happened to come from the client at all.
     const subjects: LoraSubject[] =
-      parsedSubjects.length >= 2 ? parsedSubjects : [{ trigger: triggerWord, description: "" }];
+      parsedSubjects.length >= 1 ? parsedSubjects : [{ trigger: triggerWord, description: "", fixedTags: "" }];
     // Explicit instruction wins (manual override or the client's synthesised
     // category+spec prompt). If none was sent but a training CATEGORY was,
     // fall back to that category's built-in blacklist/whitelist policy — never
@@ -385,7 +392,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     const policyResult = evaluateContentPolicyMany([
       triggerWord,
       captionPrompt,
-      ...subjects.flatMap((s) => [s.trigger, s.description]),
+      ...subjects.flatMap((s) => [s.trigger, s.description, s.fixedTags ?? ""]),
     ]);
     if (policyResult.blocked) {
       logContentPolicyBlock("lora/caption", policyResult, userData.user.id);
@@ -436,7 +443,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         { status: 502 },
       );
     }
-    const captions = parsed.map((p) => tidyCaption(p.en, subjects, captionMode));
+    const captions = parsed.map((p) => applySubjectFixedTags(tidyCaption(p.en, subjects, captionMode), subjects));
     const captionsJa = parsed.map((p, i) =>
       captions[i].trim()
         ? (p.ja ?? "").trim().replace(/\s*\n+\s*/g, captionMode === "dense" ? " " : "、")

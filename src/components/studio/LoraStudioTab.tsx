@@ -78,7 +78,7 @@ import {
   coerceLoraCaptionCategory,
   captionSpecHasInput,
   buildCaptionFallbackPrompt,
-  normalizeSubjectGenderTags,
+  normalizeSubjectTags,
   resolveCaptionMode,
   isCaptionMode,
   type LoraCaptionCategory,
@@ -210,8 +210,10 @@ function clearCaptionCache(): void {
 type LoraFormDraft = {
   triggerWord: string;
   // 複数被写体（2026-09-15）。primaryDescriptionはtriggerWord本人の判別用
-  // 説明（extraSubjectsが1件以上ある時だけ意味を持つ）。
+  // 説明（extraSubjectsが1件以上ある時だけ意味を持つ）。primaryFixedTagsは
+  // 性別/人数タグの固定値（例: "1girl, solo"）、空ならAI判定に任せる。
   primaryDescription: string;
+  primaryFixedTags: string;
   extraSubjects: LoraSubject[];
   loraName: string;
   captionCategory: LoraCaptionCategory;
@@ -239,6 +241,7 @@ type LoraFormDraft = {
 function buildFormDraft(v: {
   triggerWord: string;
   primaryDescription: string;
+  primaryFixedTags: string;
   extraSubjects: LoraSubject[];
   loraName: string;
   captionCategory: LoraCaptionCategory;
@@ -257,6 +260,7 @@ function buildFormDraft(v: {
   return {
     triggerWord: v.triggerWord,
     primaryDescription: v.primaryDescription,
+    primaryFixedTags: v.primaryFixedTags,
     extraSubjects: v.extraSubjects,
     loraName: v.loraName,
     captionCategory: v.captionCategory,
@@ -384,6 +388,7 @@ const DEFAULT_PRO: ProConfig = {
 const DEFAULT_FORM_DRAFT: LoraFormDraft = buildFormDraft({
   triggerWord: "",
   primaryDescription: "",
+  primaryFixedTags: "",
   extraSubjects: [],
   loraName: "",
   captionCategory: "character",
@@ -577,6 +582,64 @@ function ImageDropzone({
 }
 
 // ---------------------------------------------------------------------------
+
+// 2026-09-15: 性別/人数タグ（1girl/1boy/1man/1woman、+solo自動付与）をAI任せに
+// せず固定するピッカー。プリセット4種は選ぶだけで`"{value}, solo"`になる —
+// 単独写りの画像ならsoloは基本的に常に正しいので自動で付ける。プリセットに
+// 無い組み合わせ（性別を跨ぐ・soloを付けたくない等）は「カスタム」で自由入力。
+const GENDER_TAG_PRESETS = ["1girl", "1boy", "1man", "1woman"] as const;
+
+function presetKeyFromFixedTags(v: string): (typeof GENDER_TAG_PRESETS)[number] | "custom" | "" {
+  const t = v.trim();
+  if (!t) return "";
+  const hit = GENDER_TAG_PRESETS.find((p) => t.toLowerCase() === `${p}, solo`);
+  return hit ?? "custom";
+}
+
+function GenderTagPicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  disabled?: boolean;
+}) {
+  const preset = presetKeyFromFixedTags(value);
+  return (
+    <div className="mt-1.5 flex items-center gap-1.5">
+      <span className="shrink-0 text-[10px] text-muted">性別/人数タグ:</span>
+      <select
+        value={preset}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === "") onChange("");
+          else if (v === "custom") onChange(value.trim() || "1girl, solo");
+          else onChange(`${v}, solo`);
+        }}
+        disabled={disabled}
+        className="rounded-md border border-border bg-background/70 px-1.5 py-1 text-[11px] text-foreground outline-none focus:border-neon-violet/50 disabled:opacity-50"
+      >
+        <option value="">（AIに判定させる・非推奨）</option>
+        {GENDER_TAG_PRESETS.map((p) => (
+          <option key={p} value={p}>
+            {p} (+solo)
+          </option>
+        ))}
+        <option value="custom">カスタム入力</option>
+      </select>
+      {preset === "custom" && (
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="1girl, solo"
+          disabled={disabled}
+          className="min-w-0 flex-1 rounded-md border border-border bg-background/70 px-1.5 py-1 font-mono text-[11px] text-foreground outline-none focus:border-neon-violet/50 disabled:opacity-50"
+        />
+      )}
+    </div>
+  );
+}
 
 // Shown to non-admins in place of the raw-YAML editor. The editor itself is a
 // support / bespoke-contract feature — an unchecked YAML paste is the fastest
@@ -1622,13 +1685,24 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // 1件以上あると「複数被写体モード」になり、主trigger(triggerWord)にも
   // 説明文が要る（判定材料として全員分の説明が必要なため）。
   const [primaryDescription, setPrimaryDescription] = useState("");
+  // 性別/人数タグ（1girl/1boy/1man/1woman + solo）をAI任せにせず固定する
+  // （2026-09-15、ホスト報告: 同じ人物なのに1girl/1womanが混在・soloタグが
+  // 抜ける画像があった）。空なら従来通りAIの判定＋多数決に任せる。
+  const [primaryFixedTags, setPrimaryFixedTags] = useState("");
   const [extraSubjects, setExtraSubjects] = useState<LoraSubject[]>([]);
   const allSubjects = useMemo<LoraSubject[]>(
     () =>
-      extraSubjects.length > 0
-        ? [{ trigger: triggerWord.trim(), description: primaryDescription.trim() }, ...extraSubjects]
+      extraSubjects.length > 0 || primaryFixedTags.trim()
+        ? [
+            {
+              trigger: triggerWord.trim(),
+              description: primaryDescription.trim(),
+              fixedTags: primaryFixedTags.trim(),
+            },
+            ...extraSubjects,
+          ]
         : [],
-    [triggerWord, primaryDescription, extraSubjects],
+    [triggerWord, primaryDescription, primaryFixedTags, extraSubjects],
   );
   const [loraName, setLoraName] = useState("");
   const [pro, setPro] = useState<ProConfig>(DEFAULT_PRO);
@@ -1873,6 +1947,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       if (d) {
         if (typeof d.triggerWord === "string") setTriggerWord(d.triggerWord);
         if (typeof d.primaryDescription === "string") setPrimaryDescription(d.primaryDescription);
+        if (typeof d.primaryFixedTags === "string") setPrimaryFixedTags(d.primaryFixedTags);
         if (Array.isArray(d.extraSubjects)) {
           const restored = d.extraSubjects
             .map((s) => {
@@ -1880,6 +1955,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               return {
                 trigger: typeof o.trigger === "string" ? o.trigger : "",
                 description: typeof o.description === "string" ? o.description : "",
+                fixedTags: typeof o.fixedTags === "string" ? o.fixedTags : "",
               };
             })
             .filter((s) => s.trigger.length > 0);
@@ -1961,6 +2037,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     const draft = buildFormDraft({
       triggerWord,
       primaryDescription,
+      primaryFixedTags,
       extraSubjects,
       loraName,
       captionCategory,
@@ -1991,6 +2068,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   }, [
     triggerWord,
     primaryDescription,
+    primaryFixedTags,
     extraSubjects,
     loraName,
     captionCategory,
@@ -3059,7 +3137,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
   // Locks each trigger's Danbooru gender/age tag (1girl/1boy/1man/1woman) to
   // whichever value appears most often across its own SOLO-shot captions —
-  // see normalizeSubjectGenderTags() in loraCaptionSpec.ts for the shared
+  // see normalizeSubjectTags() in loraCaptionSpec.ts for the shared
   // logic (also reused by DatasetCurationUI.tsx's own recaption path).
   // Reads/writes via a functional setCaptions updater so it always sees the
   // freshest map regardless of this callback's own (stable) closure.
@@ -3067,7 +3145,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     const subjects = subjectsRef.current.length ? subjectsRef.current : [{ trigger: triggerWord.trim(), description: "" }];
     if (!subjects[0]?.trigger) return;
     setCaptions((prev) => {
-      const fixes = normalizeSubjectGenderTags(
+      const fixes = normalizeSubjectTags(
         Object.entries(prev).map(([id, caption]) => ({ id, caption })),
         subjects,
       );
@@ -3729,6 +3807,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     // 自動導出。上の2行のリセットで自然に 1024 へ戻る）。
     setTriggerWord("");
     setPrimaryDescription("");
+    setPrimaryFixedTags("");
     setExtraSubjects([]);
     setLoraName("");
     setPro(DEFAULT_PRO);
@@ -3902,7 +3981,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           }}
           requiredCredits={requiredCredits}
           triggerWord={curationTrigger}
-          subjects={allSubjects.length >= 2 ? allSubjects : undefined}
+          subjects={allSubjects.length >= 1 ? allSubjects : undefined}
           maxImages={MAX_IMAGES}
           maxTotalBytes={MAX_TOTAL_BYTES}
           onRecaption={recaptionForCuration}
@@ -4313,6 +4392,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                 <code className="text-neon-violet">process[0].trigger_word</code> が使われます。
               </p>
             )}
+            {!yamlMode && (
+              <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
+            )}
             {!yamlMode && extraSubjects.length > 0 && (
               <input
                 value={primaryDescription}
@@ -4324,44 +4406,55 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             )}
             {!yamlMode &&
               extraSubjects.map((s, i) => (
-                <div key={i} className="mt-1.5 flex gap-1.5">
-                  <input
-                    value={s.trigger}
-                    onChange={(e) =>
-                      setExtraSubjects((prev) =>
-                        prev.map((p, k) => (k === i ? { ...p, trigger: e.target.value } : p)),
-                      )
+                <div key={i} className="mt-1.5 rounded-lg border border-border/60 p-1.5">
+                  <div className="flex gap-1.5">
+                    <input
+                      value={s.trigger}
+                      onChange={(e) =>
+                        setExtraSubjects((prev) =>
+                          prev.map((p, k) => (k === i ? { ...p, trigger: e.target.value } : p)),
+                        )
+                      }
+                      placeholder="追加のtrigger word（例: asdf）"
+                      disabled={busy}
+                      className={`${fieldCls} font-mono`}
+                    />
+                    <input
+                      value={s.description}
+                      onChange={(e) =>
+                        setExtraSubjects((prev) =>
+                          prev.map((p, k) => (k === i ? { ...p, description: e.target.value } : p)),
+                        )
+                      }
+                      placeholder="この人物の特徴（判別用。例: 黒コートの男性）"
+                      disabled={busy}
+                      className={`${fieldCls} text-[11px]`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setExtraSubjects((prev) => prev.filter((_, k) => k !== i))}
+                      disabled={busy}
+                      title="この人物を削除"
+                      className="shrink-0 rounded-lg border border-border px-2 text-muted transition-colors hover:border-red-500/50 hover:text-red-400 disabled:opacity-50"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                  <GenderTagPicker
+                    value={s.fixedTags ?? ""}
+                    onChange={(next) =>
+                      setExtraSubjects((prev) => prev.map((p, k) => (k === i ? { ...p, fixedTags: next } : p)))
                     }
-                    placeholder="追加のtrigger word（例: asdf）"
                     disabled={busy}
-                    className={`${fieldCls} font-mono`}
                   />
-                  <input
-                    value={s.description}
-                    onChange={(e) =>
-                      setExtraSubjects((prev) =>
-                        prev.map((p, k) => (k === i ? { ...p, description: e.target.value } : p)),
-                      )
-                    }
-                    placeholder="この人物の特徴（判別用。例: 黒コートの男性）"
-                    disabled={busy}
-                    className={`${fieldCls} text-[11px]`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setExtraSubjects((prev) => prev.filter((_, k) => k !== i))}
-                    disabled={busy}
-                    title="この人物を削除"
-                    className="shrink-0 rounded-lg border border-border px-2 text-muted transition-colors hover:border-red-500/50 hover:text-red-400 disabled:opacity-50"
-                  >
-                    <Trash2 size={13} />
-                  </button>
                 </div>
               ))}
             {!yamlMode && (
               <button
                 type="button"
-                onClick={() => setExtraSubjects((prev) => [...prev, { trigger: "", description: "" }])}
+                onClick={() =>
+                  setExtraSubjects((prev) => [...prev, { trigger: "", description: "", fixedTags: "" }])
+                }
                 disabled={busy}
                 className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-muted transition-colors hover:text-neon-violet disabled:opacity-50"
               >
