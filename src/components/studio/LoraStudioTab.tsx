@@ -583,16 +583,23 @@ function ImageDropzone({
 
 // ---------------------------------------------------------------------------
 
-// 2026-09-15: 性別/人数タグ（1girl/1boy/1man/1woman、+solo自動付与）をAI任せに
-// せず固定するピッカー。プリセット4種は選ぶだけで`"{value}, solo"`になる —
-// 単独写りの画像ならsoloは基本的に常に正しいので自動で付ける。プリセットに
-// 無い組み合わせ（性別を跨ぐ・soloを付けたくない等）は「カスタム」で自由入力。
+// 2026-09-15: 性別/人数タグ（1girl/1boy/1man/1woman、+solo+性別語 自動付与）を
+// AI任せにせず固定するピッカー。keep_tokens=4（trigger+3タグ）の運用に合わせ、
+// プリセット4種は選ぶだけで`"{value}, solo, female|male"`になる。単独写りの
+// 画像ならsoloは基本的に常に正しいので自動で付ける。プリセットに無い組み合わせ
+// （性別を跨ぐ・トークン数を変えたい等）は「カスタム」で自由入力。
 const GENDER_TAG_PRESETS = ["1girl", "1boy", "1man", "1woman"] as const;
+const GENDER_TAG_SEX_WORD: Record<(typeof GENDER_TAG_PRESETS)[number], "female" | "male"> = {
+  "1girl": "female",
+  "1woman": "female",
+  "1boy": "male",
+  "1man": "male",
+};
 
 function presetKeyFromFixedTags(v: string): (typeof GENDER_TAG_PRESETS)[number] | "custom" | "" {
   const t = v.trim();
   if (!t) return "";
-  const hit = GENDER_TAG_PRESETS.find((p) => t.toLowerCase() === `${p}, solo`);
+  const hit = GENDER_TAG_PRESETS.find((p) => t.toLowerCase() === `${p}, solo, ${GENDER_TAG_SEX_WORD[p]}`);
   return hit ?? "custom";
 }
 
@@ -614,8 +621,8 @@ function GenderTagPicker({
         onChange={(e) => {
           const v = e.target.value;
           if (v === "") onChange("");
-          else if (v === "custom") onChange(value.trim() || "1girl, solo");
-          else onChange(`${v}, solo`);
+          else if (v === "custom") onChange(value.trim() || "1girl, solo, female");
+          else onChange(`${v}, solo, ${GENDER_TAG_SEX_WORD[v as (typeof GENDER_TAG_PRESETS)[number]]}`);
         }}
         disabled={disabled}
         className="rounded-md border border-border bg-background/70 px-1.5 py-1 text-[11px] text-foreground outline-none focus:border-neon-violet/50 disabled:opacity-50"
@@ -623,7 +630,7 @@ function GenderTagPicker({
         <option value="">（AIに判定させる・非推奨）</option>
         {GENDER_TAG_PRESETS.map((p) => (
           <option key={p} value={p}>
-            {p} (+solo)
+            {p} (+solo, {GENDER_TAG_SEX_WORD[p]})
           </option>
         ))}
         <option value="custom">カスタム入力</option>
@@ -632,7 +639,7 @@ function GenderTagPicker({
         <input
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="1girl, solo"
+          placeholder="1girl, solo, female"
           disabled={disabled}
           className="min-w-0 flex-1 rounded-md border border-border bg-background/70 px-1.5 py-1 font-mono text-[11px] text-foreground outline-none focus:border-neon-violet/50 disabled:opacity-50"
         />

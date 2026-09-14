@@ -333,7 +333,9 @@ export type LoraSubject = {
   description: string;
   /**
    * Comma-separated tags FORCED into every solo-shot caption of this subject
-   * (e.g. "1woman, solo") — 2026-09-15, host report: asking the vision model
+   * (e.g. "1woman, solo, female" — 4 leading tokens with the trigger,
+   * matching a kohya-ss/sd-scripts `keep_tokens=4` setup) — 2026-09-15, host
+   * report: asking the vision model
    * to freely judge the Danbooru count/gender tag per image drifts across a
    * larger dataset (1girl vs 1woman for the same person) and sometimes omits
    * it outright (8 images missing "solo" in one real run). A per-subject
@@ -424,12 +426,13 @@ export function stripLeadingSubjectTriggers(caption: string, subjects: LoraSubje
 }
 
 // Broad match for ANY Danbooru count/gender/solo-ish tag the model may have
-// written on its own — used to STRIP a run of these right after a subject's
-// trigger before splicing in that subject's fixedTags, so we never end up
-// with both the model's guess and the fixed tags side by side
-// ("1woman, 1woman, solo, solo, ...").
+// written on its own, OR that a previous applySubjectFixedTags() pass already
+// spliced in (female/male) — used to STRIP a run of these right after a
+// subject's trigger before splicing in that subject's fixedTags, so re-running
+// this on an already-fixed caption is idempotent instead of duplicating
+// ("1woman, solo, female, female, ...").
 const COUNT_GENDER_TAG_RE =
-  /^(?:\d+\s*(?:girls?|boys?|man|men|woman|women)|solo|no\s*humans?|multiple\s*(?:girls?|boys?|people|views))$/i;
+  /^(?:\d+\s*(?:girls?|boys?|man|men|woman|women)|solo|female|male|no\s*humans?|multiple\s*(?:girls?|boys?|people|views))$/i;
 // Narrower match used by the majority-vote fallback (only the 4 tags that
 // can legitimately drift for the SAME person across images — "solo" and the
 // count tags for 2+ people aren't a per-subject identity trait, so they're
