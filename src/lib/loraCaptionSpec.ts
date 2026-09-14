@@ -409,3 +409,66 @@ export function stripLeadingSubjectTriggers(caption: string, subjects: LoraSubje
     .join(", ")
     .trim();
 }
+
+const GENDER_AGE_TAG_RE = /^(1girl|1boy|1man|1woman)$/i;
+
+/**
+ * Locks each subject's Danbooru gender/age tag (1girl/1boy/1man/1woman) to
+ * whichever value appears most often across its own SOLO-shot captions in
+ * `entries` (2026-09-15, host report: the same recurring character tagged
+ * 1girl in some photos and 1woman in others). Each vision-API call only sees
+ * a handful of images at a time and has no memory of earlier calls, so a
+ * per-image guess can drift across a larger dataset even with a "be
+ * consistent" prompt instruction — this is the deterministic backstop.
+ *
+ * Only SOLO shots (exactly one registered subject present, via
+ * matchLeadingSubjectTriggers) are touched: a group shot has no reliable way
+ * to attribute which of several gender tags belongs to which subject.
+ *
+ * Returns a Map of id -> corrected caption, containing ONLY the entries that
+ * actually need to change — callers apply it as a sparse patch (both
+ * LoraStudioTab.tsx's live `captions` state and DatasetCurationUI.tsx's
+ * `CurationPair[]` reuse this one implementation).
+ */
+export function normalizeSubjectGenderTags(
+  entries: { id: string; caption: string }[],
+  subjects: LoraSubject[],
+): Map<string, string> {
+  const counts = new Map<string, Map<string, number>>(); // trigger -> tag -> count
+  const solo = new Map<string, { trigger: string; tokens: string[] }>(); // id -> parsed
+  for (const { id, caption } of entries) {
+    if (!caption.trim()) continue;
+    const present = matchLeadingSubjectTriggers(caption, subjects);
+    if (present.length !== 1) continue;
+    const tokens = caption.trim().split(/\s*[,、]\s*/);
+    const tag = tokens[1]?.trim();
+    if (!tag || !GENDER_AGE_TAG_RE.test(tag)) continue;
+    const trigger = present[0].trigger;
+    solo.set(id, { trigger, tokens });
+    const m = counts.get(trigger) ?? new Map<string, number>();
+    const key = tag.toLowerCase();
+    m.set(key, (m.get(key) ?? 0) + 1);
+    counts.set(trigger, m);
+  }
+  const majority = new Map<string, string>(); // trigger -> canonical tag
+  for (const [trigger, tagCounts] of counts) {
+    let bestKey = "";
+    let bestN = -1;
+    for (const [key, n] of tagCounts) {
+      if (n > bestN) {
+        bestN = n;
+        bestKey = key;
+      }
+    }
+    majority.set(trigger, bestKey);
+  }
+  const fixes = new Map<string, string>();
+  for (const [id, info] of solo) {
+    const want = majority.get(info.trigger);
+    if (!want || info.tokens[1]?.trim().toLowerCase() === want) continue;
+    const tokens = [...info.tokens];
+    tokens[1] = want;
+    fixes.set(id, tokens.join(", "));
+  }
+  return fixes;
+}

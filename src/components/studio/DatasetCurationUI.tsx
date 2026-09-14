@@ -17,6 +17,7 @@ import { buildDatasetZip, downloadBlob } from "@/lib/datasetZip";
 import { ImageLightbox } from "@/components/studio/ImageLightbox";
 import {
   matchLeadingSubjectTriggers,
+  normalizeSubjectGenderTags,
   stripLeadingSubjectTriggers,
   type LoraSubject,
   type ResolvedCaptionMode,
@@ -135,6 +136,21 @@ export function DatasetCurationUI({
       }
       if (Object.keys(updates).length) {
         onChange((prev) => prev.map((p) => (updates[p.id] ? { ...p, ...updates[p.id] } : p)));
+      }
+      // 別state対応（2026-09-15）: LoraStudioTab.tsx側の同名処理と同じ共有
+      // ロジック（normalizeSubjectGenderTags）を、curationPairsの最新値に
+      // 対して適用する。functional updater で読むので、直前のonChangeが
+      // まだ反映されていない古いclosureのpairsを見てしまう心配がない。
+      const subjectList = subjects && subjects.length >= 2 ? subjects : [{ trigger: triggerWord.trim(), description: "" }];
+      if (subjectList[0]?.trigger) {
+        onChange((prev) => {
+          const fixes = normalizeSubjectGenderTags(
+            prev.map((p) => ({ id: p.id, caption: p.caption })),
+            subjectList,
+          );
+          if (!fixes.size) return prev;
+          return prev.map((p) => (fixes.has(p.id) ? { ...p, caption: fixes.get(p.id)! } : p));
+        });
       }
       const stillEmpty = live.filter((t) => !out[t.id]?.en.trim() && !out[t.id]?.ja.trim());
       if (stillEmpty.length) {
