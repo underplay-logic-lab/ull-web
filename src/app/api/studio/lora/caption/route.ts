@@ -96,13 +96,14 @@ function buildTagsPrompt(count: number, trigger: string, captionPrompt: string):
       "- NEVER output quality/aesthetic words (masterpiece, best quality, ultra-detailed, 8k, beautiful, aesthetic, …).",
       "- NO markdown, NO quotes, NO numbering, NO line breaks inside a caption.",
       trigger
-        ? `- Start every caption with "${trigger}, " and nothing before it.`
+        ? `- Start every caption with "${trigger}, " followed immediately by a Danbooru-style subject-count/gender tag (e.g. "1girl", "1boy", "1man", "1woman", "solo", "2girls", "no humans") reflecting exactly how many people are in frame and their apparent gender. Include this even though it is not explicitly listed in the primary instructions' whitelist — it is scene-composition, not an identity/appearance detail, and Danbooru-tag-trained models expect it as the anchor tag.`
         : "- Do not invent a trigger token.",
     );
   } else {
     lines.push(
       "For each image, describe ONLY what is visually present, as compact comma-separated English phrases:",
-      "- the subject and shot composition (e.g. \"1girl, upper body, looking at viewer\")",
+      "- a Danbooru-style subject-count/gender tag first (e.g. \"1girl\", \"1boy\", \"1man\", \"1woman\", \"solo\", \"2girls\", \"no humans\"), reflecting exactly how many people are in frame and their apparent gender",
+      "- the shot composition (e.g. \"upper body, looking at viewer\")",
       "- facial expression, then hairstyle and exact hair colour",
       "- clothing / outfit with colours and materials, and every accessory (hair ornament, ribbon, earrings, glasses, necklace, …)",
       "- pose / action, and the background / setting / lighting",
