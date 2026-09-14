@@ -67,6 +67,7 @@ export async function POST(request: Request) {
   let modelKeyRaw: unknown = DEFAULT_UPSCALE_MODEL;
   let modeRaw: unknown = DEFAULT_UPSCALE_MODE;
   let storagePath: string | null = null;
+  let priorityRaw: unknown = false;
 
   if (contentType.includes("application/json")) {
     let body: Record<string, unknown>;
@@ -82,6 +83,7 @@ export async function POST(request: Request) {
     }
     modelKeyRaw = body.modelKey ?? body.model_key ?? DEFAULT_UPSCALE_MODEL;
     modeRaw = body.mode ?? body.preset ?? DEFAULT_UPSCALE_MODE;
+    priorityRaw = body.priority;
   } else {
     let formData: FormData;
     try {
@@ -102,7 +104,9 @@ export async function POST(request: Request) {
     imageBuffer = Buffer.from(await imageFile.arrayBuffer());
     modelKeyRaw = formData.get("modelKey") ?? DEFAULT_UPSCALE_MODEL;
     modeRaw = formData.get("mode") ?? formData.get("preset") ?? DEFAULT_UPSCALE_MODE;
+    priorityRaw = formData.get("priority");
   }
+  const priority = priorityRaw === true || priorityRaw === "true";
 
   if (storagePath) {
     // 実寸法をサーバー側で読む（正確な課金のため）。Modal へは base64
@@ -158,6 +162,12 @@ export async function POST(request: Request) {
     // 寸法が読めない形式（HEIC 等）。worst-case 課金で受け、worker が実寸法を
     // metadata に書く。
     creditsCost = upscaleCreditsWorstCase(knobs);
+  }
+
+  // 「実行中でも並列で今すぐ実行」を選んだ場合の追加コールドスタート分
+  // （順番待ち=無料の既定に対するオプトインの上乗せ。CLAUDE.md §6参照）。
+  if (priority) {
+    creditsCost += Math.round(knobs.upscale_priority_parallel_surcharge);
   }
 
   // --- credits ---------------------------------------------------------
@@ -218,6 +228,7 @@ export async function POST(request: Request) {
         target_short: targetShort,
         cascade_stages: mode.cascadeStages,
         model_label: model.label,
+        priority,
       },
     })
     .select("id")

@@ -25,6 +25,7 @@ export type KnobKey =
   | "director_min_credits"
   | "upscale_per_mp"
   | "upscale_min_credits"
+  | "upscale_priority_parallel_surcharge"
   | "upscale_mult_power"
   | "upscale_cascade_mult_2stage"
   | "upscale_cascade_mult_3stage"
@@ -209,6 +210,19 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "feature_credits",
     unit: "C",
     description: "1枚あたりの消費クレジット下限（コールドスタート償却）",
+    isPublic: true,
+  },
+  upscale_priority_parallel_surcharge: {
+    // 2026-09-14: 「実行中でも並列で今すぐ実行」を選んだ時の追加料金。
+    // angle_priority_parallel_surcharge と同じ導出方法（CLAUDE.md §6）:
+    // upscale_cold_start_grace_s(180s) × gpu_jpy_per_hour_b300(¥1125/h) ÷
+    // credit_to_jpy(1.66) ≈ 34C（原価） × 3倍markup ≈ 100C。理論値なので
+    // 実際の利用が増えたら admin で調整すること。
+    value: 100,
+    label: "超解像 並列実行 追加料金",
+    category: "feature_credits",
+    unit: "C",
+    description: "実行中のジョブを待たず並列で今すぐ実行する場合の追加コールドスタート分の上乗せ。",
     isPublic: true,
   },
   upscale_mult_power: {

@@ -357,6 +357,12 @@ export function upscaleCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): nu
   );
 }
 
+// 実行中のジョブを待たず並列で今すぐ実行する場合の追加料金（既定の「順番待ち」
+// は無料）。knobDefaults.ts の upscale_priority_parallel_surcharge 参照。
+export function upscalePriorityParallelSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS): number {
+  return Math.round(knobs.upscale_priority_parallel_surcharge);
+}
+
 // --- 動画アップスケール v1（最小スコープ） ---------------------------------
 // SeedVR2 ネイティブの動画モード（VHS_LoadVideo → SeedVR2VideoUpscaler →
 // VHS_VideoCombine、時間一貫性はモデル側が担保）。カスケードなし・バッチなし・

@@ -33,6 +33,8 @@ export async function startUpscaleJob(params: {
   image: File;
   modelKey: string;
   modeId: string;
+  /** true: 実行中のジョブを待たず並列で今すぐ実行（追加料金）。既定 false = 順番待ち。 */
+  priority?: boolean;
 }): Promise<StartUpscaleJobResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -47,7 +49,12 @@ export async function startUpscaleJob(params: {
   const res = await fetch("/api/studio/upscale/generate", {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ storagePath, modelKey: params.modelKey, mode: params.modeId }),
+    body: JSON.stringify({
+      storagePath,
+      modelKey: params.modelKey,
+      mode: params.modeId,
+      priority: params.priority ?? false,
+    }),
   });
 
   const data = await res.json().catch(() => null);

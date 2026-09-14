@@ -26,6 +26,7 @@ import {
   getUpscaleMode,
   getUpscaleModel,
   upscaleCostBreakdown,
+  upscalePriorityParallelSurcharge,
   type UpscaleModeId,
 } from "@/lib/upscaleStudio";
 import {
@@ -44,6 +45,12 @@ import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
+import { useLocalWarmCountdown } from "@/hooks/useLocalWarmCountdown";
+import {
+  QueueChoiceModal,
+  QueuedNextBanner,
+  WarmCountdownBanner,
+} from "@/components/studio/QueueChoiceModal";
 
 type Phase = "idle" | "submitting" | "running" | "done" | "error";
 
@@ -346,6 +353,15 @@ export function UpscaleStudioTab() {
   const [chargeOpen, setChargeOpen] = useState(false);
 
   const elapsedMs = useElapsedTimer(phase === "running");
+  const { isWarm: gpuWarm, remainingMs: gpuWarmMs, markWarm: markGpuWarm } = useLocalWarmCountdown(30);
+
+  const [queueChoiceOpen, setQueueChoiceOpen] = useState(false);
+  type QueuedSnapshot = { image: File; modelKey: string; modeId: UpscaleModeId };
+  const [queuedNext, setQueuedNext] = useState<QueuedSnapshot | null>(null);
+  // ポーリングの長寿命な useEffect から「今すぐ最新の予約」を読めるようにする
+  // ref。イベントハンドラ（予約する/取り消す）でだけ state と一緒に書き込み、
+  // effect 内では書き込まない（CLAUDE.md §6 参照）。
+  const queuedNextRef = useRef<QueuedSnapshot | null>(null);
 
   useEffect(() => {
     saveFormState(FORM_ID, { modeId, modelKey } satisfies PersistedForm);
@@ -571,11 +587,53 @@ export function UpscaleStudioTab() {
     };
   }, [batchJobIds]);
 
+  // snapshot を明示的に渡す設計: キュー待ちの「次の1件」は予約した時点の
+  // image/modelKey/modeId を使う必要があり、発火時点の（変わっているかも
+  // しれない）現在の state を読んではいけない。ポーリングの長寿命な
+  // useEffect からも呼ぶため、参照が安定するよう useCallback にする。
+  const runGenerate = useCallback(
+    async (snapshot: QueuedSnapshot, opts: { priority?: boolean } = {}) => {
+      if (!user) return;
+      setPhase("submitting");
+      setErrorMessage(null);
+      setJob(null);
+      setResultBeforeUrl(URL.createObjectURL(snapshot.image));
+
+      try {
+        const res = await startUpscaleJob({
+          userId: user.id,
+          image: snapshot.image,
+          modelKey: snapshot.modelKey,
+          modeId: snapshot.modeId,
+          priority: opts.priority,
+        });
+        broadcastCreditsUpdate(user.id, res.remainingCredits);
+        setJobId(res.jobId);
+        setPhase("running");
+      } catch (err) {
+        const e = err as UpscaleApiError;
+        console.error("[UpscaleStudioTab] start failed:", e);
+        const remaining = e.remainingCredits;
+        if (typeof remaining === "number") broadcastCreditsUpdate(user.id, remaining);
+        setPhase("error");
+        setErrorMessage(e.message || "ジョブの作成に失敗しました。");
+        if (e.message?.includes("クレジット")) setChargeOpen(true);
+      }
+    },
+    [user],
+  );
+
   // --- ポーリングループ ----------------------------------------------
   useEffect(() => {
     if (!jobId) return;
     let cancelled = false;
     let errorStreak = 0;
+    // タブ再読み込み直後に「とっくに完了済みのジョブ」を最初の1回だけ
+    // ポーリングして検知するケースがある。そのとき markGpuWarm() を呼ぶと、
+    // 実際には何十分も前に終わっていても誤って warm 扱いになってしまうため、
+    // 「このポーリングセッション中に実行中状態を実際に経由してから完了した」
+    // 場合だけ warm 扱いにする（CLAUDE.md §6）。
+    let sawInProgress = false;
     saveFormState(JOB_KEY, { jobId });
 
     (async () => {
@@ -590,6 +648,16 @@ export function UpscaleStudioTab() {
             setPhase("done");
             // 完了後もクリアしない — リロード時に最後のジョブの結果をそのまま
             // 再表示する（Multi-Angle/LoRAタブと同じ挙動）。
+            if (sawInProgress) markGpuWarm();
+            // 「順番待ち」で予約されていた次の1件を、コンテナがまだ温かい
+            // うちに自動発火する。ref はイベントハンドラでのみ書かれるので
+            // ここでは読むだけ（clear は同じ非同期コールバック内で行う）。
+            const queued = queuedNextRef.current;
+            if (queued) {
+              queuedNextRef.current = null;
+              setQueuedNext(null);
+              void runGenerate(queued);
+            }
             return;
           }
           if (next.status === "failed") {
@@ -597,6 +665,7 @@ export function UpscaleStudioTab() {
             setErrorMessage(next.errorMessage || "アップスケールに失敗しました。");
             return;
           }
+          sawInProgress = true;
           setPhase("running");
         } catch (err) {
           if (cancelled) return;
@@ -626,7 +695,7 @@ export function UpscaleStudioTab() {
     return () => {
       cancelled = true;
     };
-  }, [jobId]);
+  }, [jobId, markGpuWarm, runGenerate]);
 
   const model = getUpscaleModel(modelKey);
   const mode = effectiveUpscaleMode(getUpscaleMode(modeId), model);
@@ -652,33 +721,46 @@ export function UpscaleStudioTab() {
   const insufficientCredits =
     Boolean(user) && !creditsLoading && cost > 0 && (credits ?? 0) < cost;
   const busy = phase === "submitting" || phase === "running";
-  const canRun = Boolean(image) && cost > 0 && !busy;
+  const canRun = Boolean(image) && cost > 0;
 
-  const handleRun = useCallback(async () => {
+  const handleRun = () => {
     if (!user) return setLoginOpen(true);
     if (!image) return;
-    if (insufficientCredits) return setChargeOpen(true);
-
-    setPhase("submitting");
-    setErrorMessage(null);
-    setJob(null);
-    setResultBeforeUrl(image ? URL.createObjectURL(image) : null);
-
-    try {
-      const res = await startUpscaleJob({ userId: user.id, image, modelKey, modeId });
-      broadcastCreditsUpdate(user.id, res.remainingCredits);
-      setJobId(res.jobId);
-      setPhase("running");
-    } catch (err) {
-      const e = err as UpscaleApiError;
-      console.error("[UpscaleStudioTab] start failed:", e);
-      const remaining = e.remainingCredits;
-      if (typeof remaining === "number") broadcastCreditsUpdate(user.id, remaining);
-      setPhase("error");
-      setErrorMessage(e.message || "ジョブの作成に失敗しました。");
-      if (e.message?.includes("クレジット")) setChargeOpen(true);
+    // 実行中に押した場合は「順番待ち」か「並列実行」かを選ばせる（CLAUDE.md
+    // §6: scaledown_window=30 系のキュー標準パターン）。insufficientCredits
+    // より先に置くこと — 1件目の課金直後で残高が減っている状態だと、無料の
+    // はずの順番待ちにすら辿り着けなくなる。
+    if (busy) {
+      setQueueChoiceOpen(true);
+      return;
     }
-  }, [user, image, modelKey, modeId, insufficientCredits]);
+    if (insufficientCredits) return setChargeOpen(true);
+    void runGenerate({ image, modelKey, modeId });
+  };
+
+  const handleQueueWait = () => {
+    if (!image) return;
+    const snapshot: QueuedSnapshot = { image, modelKey, modeId };
+    queuedNextRef.current = snapshot;
+    setQueuedNext(snapshot);
+    setQueueChoiceOpen(false);
+  };
+
+  const handleCancelQueue = () => {
+    queuedNextRef.current = null;
+    setQueuedNext(null);
+  };
+
+  const handleQueueParallel = () => {
+    if (!image) return;
+    setQueueChoiceOpen(false);
+    const surcharge = upscalePriorityParallelSurcharge(knobs);
+    if (!creditsLoading && (credits ?? 0) < cost + surcharge) {
+      setChargeOpen(true);
+      return;
+    }
+    void runGenerate({ image, modelKey, modeId }, { priority: true });
+  };
 
   const progressPct = phase === "running" ? (job?.status === "processing" ? 70 : 25) : 0;
 
@@ -844,6 +926,21 @@ export function UpscaleStudioTab() {
                   <VramBadge gb={job.vramUsedGb} />
                 </div>
               )}
+            </div>
+          )}
+
+          {!busy && gpuWarm && <WarmCountdownBanner remainingMs={gpuWarmMs} />}
+
+          {busy && !queuedNext && (
+            <p className="mt-2 flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-xs leading-relaxed text-neon-violet">
+              <Sparkles size={14} className="mt-0.5 shrink-0" />
+              バックグラウンドで処理中です。もう一度ボタンを押すと、次の生成を予約できます。
+            </p>
+          )}
+
+          {queuedNext && (
+            <div className="mt-2">
+              <QueuedNextBanner onCancel={handleCancelQueue} />
             </div>
           )}
 
@@ -1187,6 +1284,13 @@ export function UpscaleStudioTab() {
         onClose={() => setChargeOpen(false)}
         credits={credits}
         cost={(uiMode === "batch" ? batchTotalCredits : cost) || 8}
+      />
+      <QueueChoiceModal
+        open={queueChoiceOpen}
+        surcharge={upscalePriorityParallelSurcharge(knobs)}
+        onCancel={() => setQueueChoiceOpen(false)}
+        onQueue={handleQueueWait}
+        onParallel={handleQueueParallel}
       />
     </div>
   );

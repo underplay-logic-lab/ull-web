@@ -9,7 +9,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
-  Flame,
   ImagePlus,
   Layers,
   Loader2,
@@ -53,11 +52,16 @@ import {
 } from "@/lib/angleApi";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { VramBadge } from "@/components/studio/VramBadge";
+import {
+  QueueChoiceModal,
+  QueuedNextBanner,
+  WarmCountdownBanner,
+} from "@/components/studio/QueueChoiceModal";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
-import { useLocalWarmCountdown, formatWarmCountdown } from "@/hooks/useLocalWarmCountdown";
+import { useLocalWarmCountdown } from "@/hooks/useLocalWarmCountdown";
 
 type Phase = "idle" | "submitting" | "running" | "done" | "error";
 
@@ -532,65 +536,6 @@ function RegenerateConfirmModal({
             className="flex-1 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
           >
             続けて生成
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body,
-  );
-}
-
-function QueueChoiceModal({
-  open,
-  surcharge,
-  onCancel,
-  onQueue,
-  onParallel,
-}: {
-  open: boolean;
-  surcharge: number;
-  onCancel: () => void;
-  onQueue: () => void;
-  onParallel: () => void;
-}) {
-  if (!open || typeof document === "undefined") return null;
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
-      onClick={onCancel}
-    >
-      <div className="w-full max-w-sm rounded-2xl border-gradient bg-surface p-8" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between">
-          <h3 className="text-lg font-bold">まだ生成中です</h3>
-          <button type="button" onClick={onCancel} aria-label="閉じる" className="text-muted transition-colors hover:text-foreground">
-            <X size={20} />
-          </button>
-        </div>
-        <p className="mt-2 text-sm leading-relaxed text-muted">
-          今の生成が終わり次第、自動的に次を実行できます（無料）。待たずに今すぐ並列で実行することもできます（追加料金）。
-          ※並列実行を選ぶと、今表示中の生成の進捗はこの画面では追えなくなります（生成自体は裏で完了します）。
-        </p>
-        <div className="mt-6 flex flex-col gap-2">
-          <button
-            type="button"
-            onClick={onQueue}
-            className="rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
-          >
-            順番待ち（無料）
-          </button>
-          <button
-            type="button"
-            onClick={onParallel}
-            className="rounded-xl border border-border bg-background px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:border-neon-violet/40"
-          >
-            今すぐ並列実行（+{surcharge}C）
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="px-6 py-2 text-xs text-muted transition-colors hover:text-foreground"
-          >
-            キャンセル
           </button>
         </div>
       </div>
@@ -1141,16 +1086,7 @@ export function MultiAngleStudioTab() {
               </div>
             )}
 
-            {!busy && gpuWarm && (
-              <div className="mt-3 flex items-center justify-center gap-2.5 rounded-xl border border-orange-500/50 bg-orange-500/10 px-4 py-3 shadow-[0_0_20px_-4px_rgba(249,115,22,0.6)]">
-                <Flame size={20} className="shrink-0 animate-pulse text-orange-400" />
-                <p className="text-center text-xs font-bold leading-snug text-orange-300">
-                  GPUシャットダウンまで残り{formatWarmCountdown(gpuWarmMs)}秒
-                  <br />
-                  今なら起動を待たずにすぐ生成できます！
-                </p>
-              </div>
-            )}
+            {!busy && gpuWarm && <WarmCountdownBanner remainingMs={gpuWarmMs} />}
 
             <button
               type="button"
@@ -1173,21 +1109,7 @@ export function MultiAngleStudioTab() {
             </p>
           )}
 
-          {queuedNext && (
-            <p className="-mt-2 flex items-center justify-between gap-2 rounded-lg border border-neon-pink/30 bg-neon-pink/10 px-3 py-2 text-xs leading-relaxed text-neon-pink">
-              <span className="flex items-start gap-2">
-                <Sparkles size={14} className="mt-0.5 shrink-0" />
-                次の生成を予約中です。今の生成が終わり次第、自動的に始まります。
-              </span>
-              <button
-                type="button"
-                onClick={handleCancelQueue}
-                className="shrink-0 rounded-md border border-neon-pink/40 px-2 py-1 text-[11px] font-semibold text-neon-pink transition-colors hover:bg-neon-pink/20"
-              >
-                予約を取り消す
-              </button>
-            </p>
-          )}
+          {queuedNext && <QueuedNextBanner onCancel={handleCancelQueue} />}
 
           <p className="-mt-2 flex items-start gap-2 text-xs leading-relaxed text-muted">
             <Sparkles size={14} className="mt-0.5 shrink-0 text-neon-violet" />
