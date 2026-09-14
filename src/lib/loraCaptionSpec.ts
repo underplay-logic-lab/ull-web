@@ -318,3 +318,49 @@ export function tidyCaptionPrompt(raw: string): string {
   out = out.replace(/^(?:instruction|prompt|output|caption prompt)\s*[:：]\s*/i, "").trim();
   return out;
 }
+
+// --- multi-subject trigger words (2026-09-15) ------------------------------
+// A single LoRA can teach several distinct subjects at once (e.g. two
+// characters that appear separately across a dataset) — each needs its own
+// trigger token. `subjects.length <= 1` is the original single-trigger
+// behaviour everywhere (no classification, no UI change); `>= 2` activates
+// the auto-vision classification path in /api/studio/lora/caption and the
+// curation screen's per-card badge.
+export type LoraSubject = {
+  trigger: string;
+  /** Short EN/JA description used to tell subjects apart in the vision prompt
+   * (and shown to the user) — e.g. "silver-haired girl", "man in a black coat". */
+  description: string;
+};
+
+function escapeReSub(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Finds which of `subjects` the caption's LEADING token matches (exact, or a
+ * short transliteration Gemini sometimes adds on a JA round-trip, e.g.
+ * "yukipas" -> "yukipasu"). Returns the matching trigger string, or null if
+ * the caption doesn't start with any of them (Gemini ignored the
+ * classification instruction — the curation UI flags this for manual fix).
+ */
+export function matchLeadingSubjectTrigger(caption: string, subjects: LoraSubject[]): string | null {
+  const firstToken = caption.trim().split(/\s*[,、]\s*/)[0]?.trim().toLowerCase() ?? "";
+  if (!firstToken) return null;
+  for (const s of subjects) {
+    const t = s.trigger.trim().toLowerCase();
+    if (!t) continue;
+    if (firstToken === t || (firstToken.startsWith(t) && firstToken.length - t.length <= 2)) {
+      return s.trigger.trim();
+    }
+  }
+  return null;
+}
+
+/** Strips a leading `trigger,` (any of `subjects`) off `caption`, if present. */
+export function stripLeadingSubjectTrigger(caption: string, subjects: LoraSubject[]): string {
+  const matched = matchLeadingSubjectTrigger(caption, subjects);
+  if (!matched) return caption.trim();
+  const re = new RegExp(`^\\s*${escapeReSub(matched)}\\s*[,、]?\\s*`, "i");
+  return caption.replace(re, "").trim();
+}

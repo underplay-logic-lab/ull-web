@@ -15,7 +15,12 @@ import {
 import { translateCaption, translateCaptionsBatch } from "@/lib/loraTranslate";
 import { buildDatasetZip, downloadBlob } from "@/lib/datasetZip";
 import { ImageLightbox } from "@/components/studio/ImageLightbox";
-import type { ResolvedCaptionMode } from "@/lib/loraCaptionSpec";
+import {
+  matchLeadingSubjectTrigger,
+  stripLeadingSubjectTrigger,
+  type LoraSubject,
+  type ResolvedCaptionMode,
+} from "@/lib/loraCaptionSpec";
 
 export type CurationPair = {
   id: string;
@@ -37,8 +42,6 @@ function fmtMb(bytes: number): string {
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(1)} MB`;
 }
 
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
 export function DatasetCurationUI({
   pairs,
   onChange,
@@ -46,6 +49,7 @@ export function DatasetCurationUI({
   onCancel,
   requiredCredits,
   triggerWord,
+  subjects,
   maxImages,
   maxTotalBytes,
   disabled = false,
@@ -63,6 +67,11 @@ export function DatasetCurationUI({
   // The trigger token — kept verbatim through translation (Gemini otherwise
   // transliterates it, e.g. yukipas -> yukipasu on the reverse pass).
   triggerWord: string;
+  // 2+ entries = multi-subject mode: each card shows which subject's trigger
+  // its caption starts with (derived from the caption text itself, not a
+  // separate field) and lets the user reassign it. undefined/1 entry =
+  // legacy single-trigger behaviour (triggerWord above), unchanged.
+  subjects?: LoraSubject[];
   maxImages: number;
   maxTotalBytes: number;
   disabled?: boolean;
@@ -217,36 +226,32 @@ export function DatasetCurationUI({
 
   // Protect the trigger token from the translator: peel a leading trigger
   // (with optional trailing comma, EN or JP) off before sending, and glue the
-  // ORIGINAL trigger back on after.
+  // ORIGINAL trigger back on after. Multi-subject (subjects.length >= 2):
+  // each caption may start with a DIFFERENT one of them, so detect which one
+  // THIS text actually has and preserve exactly that one — never the fixed
+  // `triggerWord` prop, which is only the primary/first subject.
   const trig = triggerWord.trim();
-  const trigRe = trig ? new RegExp(`^\\s*${escapeRe(trig)}\\s*[,、]?\\s*`, "i") : null;
-  const stripTrigger = (s: string) => (trigRe ? s.replace(trigRe, "") : s);
-  // A leading token that IS the trigger, or a transliteration of it (Gemini
-  // turns "yukipas" into "yukipasu" on the reverse pass).
-  const looksLikeTrigger = (tok: string) => {
-    const a = tok.trim().toLowerCase();
-    const b = trig.toLowerCase();
-    if (!a || !b) return false;
-    return a === b || (a.startsWith(b) && a.length > b.length && a.length - b.length <= 2);
-  };
-  const withTrigger = (s: string) => {
-    let body = s.trim();
-    if (!trig) return body;
-    const parts = body.split(/\s*[,、]\s*/);
-    if (parts.length && looksLikeTrigger(parts[0])) {
-      parts.shift();
-      body = parts.join(", ").trim();
-    }
-    return body ? `${trig}, ${body}` : trig;
+  const subjectList: LoraSubject[] = subjects && subjects.length >= 2 ? subjects : [{ trigger: trig, description: "" }];
+  const stripTrigger = (s: string) => stripLeadingSubjectTrigger(s, subjectList);
+  // Which trigger to preserve for `text` MUST be read from the ORIGINAL
+  // (pre-translation) text — the translated body no longer starts with any
+  // trigger word (it was stripped before sending), so re-detecting from the
+  // output would always miss and silently fall back to the wrong subject.
+  const triggerFor = (originalText: string) => matchLeadingSubjectTrigger(originalText, subjectList) ?? trig;
+  const withTrigger = (translatedBody: string, trigger: string) => {
+    const body = translatedBody.trim();
+    if (!trigger) return body;
+    return body ? `${trigger}, ${body}` : trigger;
   };
 
   // One translation call with the trigger peeled off + re-attached. Returns
   // null when there's nothing (but the trigger) to translate.
   const translateProtected = async (text: string, dir: "ja" | "en"): Promise<string | null> => {
+    const trigger = triggerFor(text);
     const body = stripTrigger(text).trim();
-    if (!body) return trig ? trig : null;
+    if (!body) return trigger ? trigger : null;
     const out = await translateCaption(body, dir === "ja" ? "to_ja" : "to_en", resolvedCaptionMode);
-    return withTrigger(out);
+    return withTrigger(out, trigger);
   };
 
   const runTranslate = async (id: string, dir: "ja" | "en") => {
@@ -277,7 +282,9 @@ export function DatasetCurationUI({
       const CHUNK = 12;
       for (let i = 0; i < targets.length; i += CHUNK) {
         const chunk = targets.slice(i, i + CHUNK);
-        const bodies = chunk.map((t) => stripTrigger(dir === "ja" ? t.caption : t.captionJa).trim());
+        const originals = chunk.map((t) => (dir === "ja" ? t.caption : t.captionJa));
+        const triggers = originals.map((o) => triggerFor(o));
+        const bodies = originals.map((o) => stripTrigger(o).trim());
         const sendIdx = bodies.map((b, k) => (b ? k : -1)).filter((k) => k >= 0);
 
         const outs = new Array<string>(chunk.length).fill("");
@@ -296,11 +303,11 @@ export function DatasetCurationUI({
         chunk.forEach((t, k) => {
           if (!bodies[k]) {
             // caption was only the trigger (or blank)
-            if (trig) updates[t.id] = dir === "ja" ? { captionJa: trig } : { caption: trig };
+            if (triggers[k]) updates[t.id] = dir === "ja" ? { captionJa: triggers[k] } : { caption: triggers[k] };
             return;
           }
           if (!outs[k]) return; // this item failed to translate — leave it
-          const val = withTrigger(outs[k]);
+          const val = withTrigger(outs[k], triggers[k]);
           updates[t.id] = dir === "ja" ? { captionJa: val } : { caption: val };
         });
         patchMany(updates);
@@ -511,6 +518,37 @@ export function DatasetCurationUI({
               </div>
 
               <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                {subjects && subjects.length >= 2 && (() => {
+                  const matched = matchLeadingSubjectTrigger(p.caption, subjects);
+                  return (
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`text-[10px] font-medium ${matched ? "text-muted" : "text-amber-400"}`}
+                      >
+                        {matched ? "被写体:" : "⚠️ 被写体未判定:"}
+                      </span>
+                      <select
+                        value={matched ?? ""}
+                        onChange={(e) => {
+                          const trigger = e.target.value;
+                          if (!trigger) return;
+                          const body = stripLeadingSubjectTrigger(p.caption, subjects);
+                          patch(p.id, { caption: body ? `${trigger}, ${body}` : trigger });
+                        }}
+                        disabled={disabled || p.excluded || Boolean(bulk)}
+                        className="rounded-md border border-border bg-background/70 px-1.5 py-0.5 font-mono text-[10px] text-foreground outline-none focus:border-neon-violet/50 disabled:opacity-50"
+                      >
+                        {!matched && <option value="">（未選択）</option>}
+                        {subjects.map((s) => (
+                          <option key={s.trigger} value={s.trigger}>
+                            {s.trigger}
+                            {s.description ? ` — ${s.description}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })()}
                 <div>
                   <div className="mb-1 flex items-center justify-between">
                     <label className="text-[10px] font-medium text-muted">英語タグ / English（学習に使用）</label>

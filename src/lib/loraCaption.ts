@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
-import type { LoraCaptionCategory, ResolvedCaptionMode } from "@/lib/loraCaptionSpec";
+import type { LoraCaptionCategory, LoraSubject, ResolvedCaptionMode } from "@/lib/loraCaptionSpec";
 
 // Client-side AI-vision auto-captioning for the LoRA Studio dataset.
 //
@@ -145,6 +145,11 @@ export async function generateDatasetCaptions(
   files: File[],
   opts: {
     triggerWord?: string;
+    // 2+ entries activates multi-subject vision classification server-side
+    // (each image gets whichever trigger the model judges it depicts) —
+    // see matchLeadingSubjectTrigger in loraCaptionSpec.ts. Omitted or a
+    // single entry: identical to the legacy single-trigger behaviour.
+    subjects?: LoraSubject[];
     captionPrompt?: string;
     // Selected LoRA training type. Sent alongside every request so that — when
     // no explicit `captionPrompt` was synthesised (empty feature form) — the
@@ -295,6 +300,7 @@ export async function generateDatasetCaptions(
         body: JSON.stringify({
           images: pairs.map((p) => p.img),
           trigger_word: opts.triggerWord || undefined,
+          subjects: opts.subjects && opts.subjects.length >= 2 ? opts.subjects : undefined,
           caption_prompt: opts.captionPrompt || undefined,
           caption_mode: opts.captionMode || undefined,
           category: opts.category || undefined,

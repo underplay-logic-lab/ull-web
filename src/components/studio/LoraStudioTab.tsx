@@ -16,6 +16,7 @@ import {
   Lock,
   LogIn,
   MessageCircle,
+  Plus,
   RotateCcw,
   Scissors,
   Sparkles,
@@ -81,6 +82,7 @@ import {
   isCaptionMode,
   type LoraCaptionCategory,
   type LoraCaptionSpec,
+  type LoraSubject,
   type CaptionMode,
   type ResolvedCaptionMode,
 } from "@/lib/loraCaptionSpec";
@@ -206,6 +208,10 @@ function clearCaptionCache(): void {
 
 type LoraFormDraft = {
   triggerWord: string;
+  // 複数被写体（2026-09-15）。primaryDescriptionはtriggerWord本人の判別用
+  // 説明（extraSubjectsが1件以上ある時だけ意味を持つ）。
+  primaryDescription: string;
+  extraSubjects: LoraSubject[];
   loraName: string;
   captionCategory: LoraCaptionCategory;
   captionFixed: string;
@@ -231,6 +237,8 @@ type LoraFormDraft = {
 // untouched form?" test below is a JSON string compare).
 function buildFormDraft(v: {
   triggerWord: string;
+  primaryDescription: string;
+  extraSubjects: LoraSubject[];
   loraName: string;
   captionCategory: LoraCaptionCategory;
   captionFixed: string;
@@ -247,6 +255,8 @@ function buildFormDraft(v: {
 }): LoraFormDraft {
   return {
     triggerWord: v.triggerWord,
+    primaryDescription: v.primaryDescription,
+    extraSubjects: v.extraSubjects,
     loraName: v.loraName,
     captionCategory: v.captionCategory,
     captionFixed: v.captionFixed,
@@ -372,6 +382,8 @@ const DEFAULT_PRO: ProConfig = {
 
 const DEFAULT_FORM_DRAFT: LoraFormDraft = buildFormDraft({
   triggerWord: "",
+  primaryDescription: "",
+  extraSubjects: [],
   loraName: "",
   captionCategory: "character",
   captionFixed: "",
@@ -1604,6 +1616,19 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     return arch ? recommendedResolution(arch as LoraBaseArchitecture) : DEFAULT_LORA_RESOLUTION;
   }, [modelChoice, baseArchitecture]);
   const [triggerWord, setTriggerWord] = useState("");
+  // 2026-09-15: 複数の人物/被写体をひとつのLoRAで区別する場合の追加trigger。
+  // 空配列（既定）なら完全に従来通り（単一trigger、判定ロジックなし）。
+  // 1件以上あると「複数被写体モード」になり、主trigger(triggerWord)にも
+  // 説明文が要る（判定材料として全員分の説明が必要なため）。
+  const [primaryDescription, setPrimaryDescription] = useState("");
+  const [extraSubjects, setExtraSubjects] = useState<LoraSubject[]>([]);
+  const allSubjects = useMemo<LoraSubject[]>(
+    () =>
+      extraSubjects.length > 0
+        ? [{ trigger: triggerWord.trim(), description: primaryDescription.trim() }, ...extraSubjects]
+        : [],
+    [triggerWord, primaryDescription, extraSubjects],
+  );
   const [loraName, setLoraName] = useState("");
   const [pro, setPro] = useState<ProConfig>(DEFAULT_PRO);
   // LoRA-type-aware auto-caption spec: the training TYPE + the user's JP notes
@@ -1846,6 +1871,19 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       const d = loadFormDraft();
       if (d) {
         if (typeof d.triggerWord === "string") setTriggerWord(d.triggerWord);
+        if (typeof d.primaryDescription === "string") setPrimaryDescription(d.primaryDescription);
+        if (Array.isArray(d.extraSubjects)) {
+          const restored = d.extraSubjects
+            .map((s) => {
+              const o = s && typeof s === "object" ? (s as Record<string, unknown>) : {};
+              return {
+                trigger: typeof o.trigger === "string" ? o.trigger : "",
+                description: typeof o.description === "string" ? o.description : "",
+              };
+            })
+            .filter((s) => s.trigger.length > 0);
+          if (restored.length > 0) setExtraSubjects(restored);
+        }
         if (typeof d.loraName === "string") setLoraName(d.loraName);
         {
           const migrated = coerceLoraCaptionCategory(d.captionCategory);
@@ -1921,6 +1959,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     if (typeof window === "undefined" || !draftHydratedRef.current) return;
     const draft = buildFormDraft({
       triggerWord,
+      primaryDescription,
+      extraSubjects,
       loraName,
       captionCategory,
       captionFixed,
@@ -1949,6 +1989,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     }
   }, [
     triggerWord,
+    primaryDescription,
+    extraSubjects,
     loraName,
     captionCategory,
     captionFixed,
@@ -2262,6 +2304,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   useEffect(() => {
     captionCategoryRef.current = captionCategory;
   }, [captionCategory]);
+  // 複数被写体リスト（2件以上で有効）。同じ理由で ref 経由にする。
+  const subjectsRef = useRef<LoraSubject[]>(allSubjects);
+  useEffect(() => {
+    subjectsRef.current = allSubjects;
+  }, [allSubjects]);
 
   // The English instruction to hand the vision API *right now*, with zero
   // network round-trip: a manual override wins, else the deterministic
@@ -3084,6 +3131,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           targets.map((t) => t.file),
           {
             triggerWord: trigger,
+            subjects: subjectsRef.current,
             captionPrompt: captionPrompt || undefined,
             category: captionCategoryRef.current,
             captionMode: resolvedCaptionModeRef.current,
@@ -3217,6 +3265,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       try {
         const res = await generateDatasetCaptions([img.file], {
           triggerWord: curationTrigger,
+          subjects: subjectsRef.current,
           captionPrompt: resolvedCaptionPromptRef.current.trim() || currentCaptionPrompt() || undefined,
           category: captionCategoryRef.current,
           captionMode: resolvedCaptionModeRef.current,
@@ -3263,6 +3312,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         targets.map((t) => t.file),
         {
           triggerWord: curationTrigger,
+          subjects: subjectsRef.current,
           captionPrompt: resolvedCaptionPromptRef.current.trim() || currentCaptionPrompt() || undefined,
           category: captionCategoryRef.current,
           captionMode: resolvedCaptionModeRef.current,
@@ -3652,6 +3702,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     // resolution はもう state ではない（modelChoice/baseArchitecture から
     // 自動導出。上の2行のリセットで自然に 1024 へ戻る）。
     setTriggerWord("");
+    setPrimaryDescription("");
+    setExtraSubjects([]);
     setLoraName("");
     setPro(DEFAULT_PRO);
     setCaptionCategory("character");
@@ -3824,6 +3876,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           }}
           requiredCredits={requiredCredits}
           triggerWord={curationTrigger}
+          subjects={allSubjects.length >= 2 ? allSubjects : undefined}
           maxImages={MAX_IMAGES}
           maxTotalBytes={MAX_TOTAL_BYTES}
           onRecaption={recaptionForCuration}
@@ -4233,6 +4286,62 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                 生YAML モードでは YAML内の{" "}
                 <code className="text-neon-violet">process[0].trigger_word</code> が使われます。
               </p>
+            )}
+            {!yamlMode && extraSubjects.length > 0 && (
+              <input
+                value={primaryDescription}
+                onChange={(e) => setPrimaryDescription(e.target.value)}
+                placeholder="この人物の特徴（判別用。例: 銀髪の女性）"
+                disabled={busy}
+                className={`${fieldCls} mt-1.5 text-[11px]`}
+              />
+            )}
+            {!yamlMode &&
+              extraSubjects.map((s, i) => (
+                <div key={i} className="mt-1.5 flex gap-1.5">
+                  <input
+                    value={s.trigger}
+                    onChange={(e) =>
+                      setExtraSubjects((prev) =>
+                        prev.map((p, k) => (k === i ? { ...p, trigger: e.target.value } : p)),
+                      )
+                    }
+                    placeholder="追加のtrigger word（例: asdf）"
+                    disabled={busy}
+                    className={`${fieldCls} font-mono`}
+                  />
+                  <input
+                    value={s.description}
+                    onChange={(e) =>
+                      setExtraSubjects((prev) =>
+                        prev.map((p, k) => (k === i ? { ...p, description: e.target.value } : p)),
+                      )
+                    }
+                    placeholder="この人物の特徴（判別用。例: 黒コートの男性）"
+                    disabled={busy}
+                    className={`${fieldCls} text-[11px]`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setExtraSubjects((prev) => prev.filter((_, k) => k !== i))}
+                    disabled={busy}
+                    title="この人物を削除"
+                    className="shrink-0 rounded-lg border border-border px-2 text-muted transition-colors hover:border-red-500/50 hover:text-red-400 disabled:opacity-50"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              ))}
+            {!yamlMode && (
+              <button
+                type="button"
+                onClick={() => setExtraSubjects((prev) => [...prev, { trigger: "", description: "" }])}
+                disabled={busy}
+                className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-muted transition-colors hover:text-neon-violet disabled:opacity-50"
+              >
+                <Plus size={12} />
+                別の人物を追加（複数人物・被写体を1つのLoRAで区別したい場合）
+              </button>
             )}
           </div>
 

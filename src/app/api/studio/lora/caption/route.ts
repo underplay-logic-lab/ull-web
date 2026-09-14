@@ -11,6 +11,9 @@ import {
 import {
   buildCategoryDefaultInstruction,
   coerceLoraCaptionCategory,
+  matchLeadingSubjectTrigger,
+  stripLeadingSubjectTrigger,
+  type LoraSubject,
   type ResolvedCaptionMode,
 } from "@/lib/loraCaptionSpec";
 import {
@@ -72,14 +75,35 @@ const ERR_MESSAGES = {
 const NOISE_RE =
   /\b(?:masterpiece|best quality|high quality|ultra[- ]?detailed|highly detailed|extremely detailed|8k|4k|uhd|hdr|photorealistic|hyperrealistic|award[- ]?winning|stunning|beautiful|gorgeous|aesthetic|trending on artstation|sharp focus|bokeh quality)\b/gi;
 
+// 2026-09-15: multiple distinct subjects (each with its own trigger word) in
+// one dataset — e.g. two characters trained together. Only kicks in when the
+// caller actually registered 2+ subjects; a single subject renders no block
+// and every caller keeps the original single-trigger wording exactly.
+function subjectClassificationLines(subjects: LoraSubject[]): string[] {
+  if (subjects.length < 2) return [];
+  return [
+    "This dataset has MULTIPLE distinct subjects, each with its own trigger word. For each image, first decide which ONE of the following it depicts, using these short descriptions as the guide:",
+    ...subjects.map((s) => `  - "${s.trigger}": ${s.description || "(no description given)"}`),
+    "Then use THAT subject's own trigger word — spelled exactly as above — and no other subject's, even if two subjects sound similar. If genuinely unclear, pick the closest match rather than omitting a trigger.",
+  ];
+}
+
+function primaryTrigger(subjects: LoraSubject[]): string {
+  return subjects[0]?.trigger.trim() ?? "";
+}
+
 // TAGS: compact Danbooru-style comma phrases for the 77-token CLIP encoder
 // (Illustrious / Juggernaut / SDXL). This is the historical behaviour.
-function buildTagsPrompt(count: number, trigger: string, captionPrompt: string): string {
+function buildTagsPrompt(count: number, subjects: LoraSubject[], captionPrompt: string): string {
   const instr = captionPrompt.trim();
+  const trigger = primaryTrigger(subjects);
+  const multi = subjects.length >= 2;
   const lines = [
     "You are an expert captioning engine that prepares training data for LoRA fine-tuning of image models.",
     `You are given ${count} image(s). Produce ONE caption per image.`,
     "",
+    ...subjectClassificationLines(subjects),
+    ...(multi ? [""] : []),
   ];
   if (instr) {
     // A category/spec instruction is present — it is AUTHORITATIVE. It carries
@@ -96,7 +120,7 @@ function buildTagsPrompt(count: number, trigger: string, captionPrompt: string):
       "- NEVER output quality/aesthetic words (masterpiece, best quality, ultra-detailed, 8k, beautiful, aesthetic, …).",
       "- NO markdown, NO quotes, NO numbering, NO line breaks inside a caption.",
       trigger
-        ? `- Start every caption with "${trigger}, " followed immediately by a Danbooru-style subject-count/gender tag (e.g. "1girl", "1boy", "1man", "1woman", "solo", "2girls", "no humans") reflecting exactly how many people are in frame and their apparent gender. Include this even though it is not explicitly listed in the primary instructions' whitelist — it is scene-composition, not an identity/appearance detail, and Danbooru-tag-trained models expect it as the anchor tag.`
+        ? `- Start every caption with "${multi ? "<the matching subject's trigger word>" : trigger}, " followed immediately by a Danbooru-style subject-count/gender tag (e.g. "1girl", "1boy", "1man", "1woman", "solo", "2girls", "no humans") reflecting exactly how many people are in frame and their apparent gender. Include this even though it is not explicitly listed in the primary instructions' whitelist — it is scene-composition, not an identity/appearance detail, and Danbooru-tag-trained models expect it as the anchor tag.`
         : "- Do not invent a trigger token.",
     );
   } else {
@@ -113,7 +137,7 @@ function buildTagsPrompt(count: number, trigger: string, captionPrompt: string):
       "- NEVER output quality/aesthetic words (masterpiece, best quality, ultra-detailed, 8k, beautiful, aesthetic, …).",
       "- NO markdown, NO quotes, NO numbering, NO line breaks inside a caption.",
       trigger
-        ? `- Start every caption with "${trigger}, " and nothing before it.`
+        ? `- Start every caption with "${multi ? "<the matching subject's trigger word>" : trigger}, " and nothing before it.`
         : "- Do not invent a trigger token.",
     );
   }
@@ -128,12 +152,17 @@ function buildTagsPrompt(count: number, trigger: string, captionPrompt: string):
 
 // DENSE: a natural-language English paragraph for the LLM/VLM text encoders of
 // the next-gen DiT lineup (Minimax H3, WAN 2.2, FLUX.2, Qwen-Image, LTX-2, …).
-function buildDensePrompt(count: number, trigger: string, captionPrompt: string): string {
+function buildDensePrompt(count: number, subjects: LoraSubject[], captionPrompt: string): string {
   const instr = captionPrompt.trim();
+  const trigger = primaryTrigger(subjects);
+  const multi = subjects.length >= 2;
+  const triggerPlaceholder = multi ? "<the matching subject's trigger word>" : trigger;
   const lines = [
     "You are an expert captioning engine that prepares training data for LoRA fine-tuning of modern diffusion transformers with LLM/VLM text encoders.",
     `You are given ${count} image(s). Produce ONE caption per image.`,
     "",
+    ...subjectClassificationLines(subjects),
+    ...(multi ? [""] : []),
   ];
   if (instr) {
     // A category/spec instruction is present — it is AUTHORITATIVE. It carries
@@ -146,7 +175,7 @@ function buildDensePrompt(count: number, trigger: string, captionPrompt: string)
       "",
       `For each image, write a natural English paragraph (70 to 130 words) that describes — in concrete, specific detail — ONLY the elements the primary instructions allow. Obey the blacklist even when those features are clearly visible: do not describe them, do not allude to them, do not use them to identify the subject.`,
       trigger
-        ? `Start the paragraph with "${trigger}" as the subject (e.g. "${trigger} is shown ...", "${trigger} stands ...") and nothing before it.`
+        ? `Start the paragraph with "${triggerPlaceholder}" as the subject (e.g. "${triggerPlaceholder} is shown ...", "${triggerPlaceholder} stands ...") and nothing before it.`
         : "Do not invent a trigger token.",
       "",
       "Hard rules:",
@@ -159,7 +188,7 @@ function buildDensePrompt(count: number, trigger: string, captionPrompt: string)
     lines.push(
       "For each image, write a highly detailed, natural English paragraph (100 to 150 words) describing the image. Describe character identity traits, precise clothing, accessories, pose, expression, lighting, and comprehensive background details.",
       trigger
-        ? `Start the paragraph with "${trigger}" as the subject (e.g. "${trigger} is a ...") and nothing before it.`
+        ? `Start the paragraph with "${triggerPlaceholder}" as the subject (e.g. "${triggerPlaceholder} is a ...") and nothing before it.`
         : "Do not invent a trigger token.",
       "",
       "Hard rules:",
@@ -180,16 +209,16 @@ function buildDensePrompt(count: number, trigger: string, captionPrompt: string)
 
 function buildVisionPrompt(
   count: number,
-  trigger: string,
+  subjects: LoraSubject[],
   captionPrompt: string,
   mode: ResolvedCaptionMode,
 ): string {
   return mode === "dense"
-    ? buildDensePrompt(count, trigger, captionPrompt)
-    : buildTagsPrompt(count, trigger, captionPrompt);
+    ? buildDensePrompt(count, subjects, captionPrompt)
+    : buildTagsPrompt(count, subjects, captionPrompt);
 }
 
-function tidyCaption(raw: string, trigger: string, mode: ResolvedCaptionMode = "tags"): string {
+function tidyCaption(raw: string, subjects: LoraSubject[], mode: ResolvedCaptionMode = "tags"): string {
   const dense = mode === "dense";
   // Strip code fences + markdown glyphs and drop the quality-noise vocabulary
   // in BOTH modes. Line breaks become a space in dense (keep the sentence
@@ -219,10 +248,20 @@ function tidyCaption(raw: string, trigger: string, mode: ResolvedCaptionMode = "
       .replace(/(?:^[,\s]+)|(?:[,\s]+$)/g, "")
       .trim();
   }
-  if (trigger) {
-    const re = new RegExp(`^\\s*${trigger.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*,?\\s*`, "i");
+  const primary = subjects[0]?.trigger.trim() ?? "";
+  if (subjects.length >= 2) {
+    // Multi-subject: keep whichever trigger the model actually picked (it saw
+    // the image and the classification instruction); only fall back to the
+    // primary subject if it ignored the instruction and named none of them —
+    // a wrong-but-present trigger beats a caption with no trigger at all.
+    const matched = matchLeadingSubjectTrigger(out, subjects);
+    const trigger = matched ?? primary;
+    const body = stripLeadingSubjectTrigger(out, subjects);
+    out = trigger ? `${trigger}, ${body}` : body;
+  } else if (primary) {
+    const re = new RegExp(`^\\s*${primary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*,?\\s*`, "i");
     out = out.replace(re, "");
-    out = out ? `${trigger}, ${out}` : trigger;
+    out = out ? `${primary}, ${out}` : primary;
   }
   return out;
 }
@@ -302,6 +341,24 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     const triggerWord =
       typeof body?.trigger_word === "string" ? body.trigger_word.trim().slice(0, 60) : "";
+    // Multiple distinct subjects (2026-09-15) — each with its own trigger word
+    // and a short description used to tell them apart in the vision prompt.
+    // Falls back to the single legacy `trigger_word` when absent/too short, so
+    // every existing caller (and the single-subject case, the overwhelming
+    // majority) is completely unaffected.
+    const rawSubjects = Array.isArray(body?.subjects) ? body.subjects : [];
+    const parsedSubjects: LoraSubject[] = rawSubjects
+      .map((s: unknown) => {
+        const o = s && typeof s === "object" ? (s as Record<string, unknown>) : {};
+        return {
+          trigger: typeof o.trigger === "string" ? o.trigger.trim().slice(0, 60) : "",
+          description: typeof o.description === "string" ? o.description.trim().slice(0, 300) : "",
+        };
+      })
+      .filter((s: LoraSubject) => s.trigger.length > 0)
+      .slice(0, 8);
+    const subjects: LoraSubject[] =
+      parsedSubjects.length >= 2 ? parsedSubjects : [{ trigger: triggerWord, description: "" }];
     // Explicit instruction wins (manual override or the client's synthesised
     // category+spec prompt). If none was sent but a training CATEGORY was,
     // fall back to that category's built-in blacklist/whitelist policy — never
@@ -313,7 +370,11 @@ export async function POST(request: Request): Promise<NextResponse> {
       captionPrompt = buildCategoryDefaultInstruction(category, triggerWord);
     }
 
-    const policyResult = evaluateContentPolicyMany([triggerWord, captionPrompt]);
+    const policyResult = evaluateContentPolicyMany([
+      triggerWord,
+      captionPrompt,
+      ...subjects.flatMap((s) => [s.trigger, s.description]),
+    ]);
     if (policyResult.blocked) {
       logContentPolicyBlock("lora/caption", policyResult, userData.user.id);
       return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
@@ -334,7 +395,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     try {
       raw = await runGeminiVision(
         genAI,
-        buildVisionPrompt(images.length, triggerWord, captionPrompt, captionMode),
+        buildVisionPrompt(images.length, subjects, captionPrompt, captionMode),
         images,
         "enja",
       );
@@ -363,7 +424,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         { status: 502 },
       );
     }
-    const captions = parsed.map((p) => tidyCaption(p.en, triggerWord, captionMode));
+    const captions = parsed.map((p) => tidyCaption(p.en, subjects, captionMode));
     const captionsJa = parsed.map((p, i) =>
       captions[i].trim()
         ? (p.ja ?? "").trim().replace(/\s*\n+\s*/g, captionMode === "dense" ? " " : "、")
