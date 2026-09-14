@@ -1045,8 +1045,18 @@ class QwenImageEditWorker:
                 from transformers import Qwen2_5_VLForConditionalGeneration
 
                 t_te0 = time.time()
+                # 2026-09-14: local_files_only=True — ensure_qwen_edit_cached が
+                # CPU プリキャッシュで既に Volume へ置いている前提（ローカル
+                # ComfyUI がモデルファイルを一度置いたら二度と外部に問い合わせに
+                # 行かないのと同じ挙動に揃える）。これが無いと、リビジョン確認の
+                # ためコールドスタート毎に huihui-ai の HF リポジトリへ毎回問い
+                # 合わせに行き、配布元が将来リポジトリを削除・更新した場合に
+                # 挙動が意図せず変わる/失敗するリスクがあった。
                 alt_te = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    ANGLE_TEXT_ENCODER_REPO, torch_dtype=torch.bfloat16, token=token,
+                    ANGLE_TEXT_ENCODER_REPO,
+                    torch_dtype=torch.bfloat16,
+                    token=token,
+                    local_files_only=True,
                 )
                 self.pipe.text_encoder = alt_te
                 print(
@@ -1348,9 +1358,15 @@ class QwenImageEditWorker:
         上げよ」と明示して落とす（完了条件 1 の切り分けを容易にする）。"""
         from diffusers import DiffusionPipeline
 
+        # 2026-09-14: local_files_only=True — ensure_qwen_edit_cached が CPU
+        # プリキャッシュで既に Volume へ置いている前提（GPU 側は CPU プリキャッ
+        # シュを信頼する、というこのプロジェクト全体の規約に合わせる）。無いと
+        # コールドスタート毎に Qwen 公式リポジトリへ問い合わせに行き、Qwen が
+        # 将来 main に新リビジョンを push した場合に無検閲 text_encoder と同じ
+        # 理由で挙動が意図せず変わりうる。
         try:
             return DiffusionPipeline.from_pretrained(
-                QWEN_EDIT_REPO, torch_dtype=dtype, token=token
+                QWEN_EDIT_REPO, torch_dtype=dtype, token=token, local_files_only=True
             )
         except Exception as exc:  # noqa: BLE001
             print(
@@ -1366,7 +1382,7 @@ class QwenImageEditWorker:
                     f"release — bump `diffusers` in the Modal image. Original error: {exc}"
                 ) from ie
             return QwenImageEditPipeline.from_pretrained(
-                QWEN_EDIT_REPO, torch_dtype=dtype, token=token
+                QWEN_EDIT_REPO, torch_dtype=dtype, token=token, local_files_only=True
             )
 
     def _vram_gb(self):
