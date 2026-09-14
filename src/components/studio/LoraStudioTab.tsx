@@ -99,12 +99,23 @@ const MAX_RETRY_COUNT = 6;
 // card is up. The job keeps running server-side; this tick is what catches
 // its completion without the user having to click anything.
 const POLL_KEEPALIVE_MS = 15_000;
-const MAX_IMAGES = 200;
+// 2026-09-15: 200→500に引き上げ。この上限はModal worker側のCPU前処理
+// （Smart Ingest、無料CPUコンテナ・timeout=45分）の許容枚数として決まる —
+// 実機ベンチ（16枚×46MB≒Storage側の実上限に近いworst caseサイズ、
+// 4並列ThreadPoolExecutor）で 38.5秒/16枚 を実測。この実測レートで外挿すると
+// 200枚≒8分・500枚≒20分・1000枚≒40分で、以前の200という値は45分予算に対して
+// 実測の1/5程度しか使っていない過度に保守的な仮値だった（CLAUDE.md §0）。
+// 500枚なら worst case でも20分＝予算の半分以下に収まる安全マージンを確保。
+const MAX_IMAGES = 500;
 // Raw upload budget. The worker's Smart Ingest stage downscales / re-encodes
 // every image on a free CPU container before the GPU starts, and AI-vision
 // captioning only ever sees ~640px browser thumbnails — so a large raw
 // dataset (4K crops, phone shots) is fine to accept here.
 const MAX_TOTAL_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB total
+// 2026-09-15: lora_datasetsバケットのfile_size_limitが実は50MBのままで、
+// ここが96MBと案内していても実際は50MB超で413エラーになっていたのを発見
+// （supabase/migrations/20260872000000で150MBに引き上げ済み）。96MBという
+// このアプリ側の上限自体は妥当なので変更しない。
 const MAX_FILE_BYTES = 96 * 1024 * 1024; // 96 MB per image (a ~6K PNG)
 
 // Survives a page reload mid-job (dev server restart, browser refresh,

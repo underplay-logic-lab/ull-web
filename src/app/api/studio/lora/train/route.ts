@@ -63,7 +63,9 @@ const CAPTION_SYNTH_TIMEOUT_MS = 5000;
 const LORA_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 // HF repo id ("owner/name") or an absolute/volume-relative path.
 const CUSTOM_MODEL_ID_RE = /^[A-Za-z0-9._\-/]{2,200}$/;
-const MAX_IMAGES = 200;
+// LoraStudioTab.tsxのMAX_IMAGESと同じ値・同じ根拠（2026-09-15の実機ベンチで
+// worst caseでも45分予算の半分以下と確認済み）。フロントと必ず一致させること。
+const MAX_IMAGES = 500;
 const MIN_IMAGES = 1;
 
 function sanitizeTrainingConfig(raw: unknown): Record<string, unknown> {
