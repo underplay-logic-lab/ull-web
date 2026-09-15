@@ -8,6 +8,15 @@ export const LORA_DATASET_BUCKET = "lora_datasets";
 // artificial, storm-free way to exercise the pending-timeout auto-failover.
 const TEST_STUB = process.env.LORA_TRAIN_TEST_STUB === "1";
 
+// Which Modal worker/app a job's training dispatch targets. "ai_toolkit" is
+// modal_lora_worker.py (the original, all non-SDXL archs). "sdxl" is
+// modal_sdxl_lora_worker.py — a SEPARATE app (kohya-ss/sd-scripts backend)
+// that route.ts sends arch==="sdxl" jobs to instead, because ai-toolkit's
+// SDXL results are noticeably worse than sd-scripts' (host finding,
+// 2026-09-15 — see [[sdxl-training-sd-scripts-plan]]). Default "ai_toolkit"
+// everywhere below preserves every existing call site's behavior untouched.
+export type LoraWorkerTarget = "ai_toolkit" | "sdxl";
+
 export type LoraTrainingConfig = {
   rank?: number;
   alpha?: number;
@@ -49,6 +58,19 @@ export type SpawnLoraTrainingParams = {
   captionMode?: "dense" | "tags";
   // User's own auto-caption VLM instruction (category preset / free-text).
   captionPrompt?: string;
+  // Which Modal app/worker to dispatch to. Default "ai_toolkit" (unchanged
+  // behavior for every existing caller). route.ts sets "sdxl" for
+  // arch==="sdxl" jobs.
+  worker?: LoraWorkerTarget;
+  // sdxl worker only — see modal_sdxl_lora_worker.py's _embed_metadata_tags /
+  // _parse_embed_tags: "tag:freq,tag,..." string embedded into the finished
+  // .safetensors' ss_tag_frequency/modelspec.tags/ss_trained_words. Ignored
+  // by the ai-toolkit worker (which has no such param).
+  embedTags?: string;
+  // sdxl worker only — leading fixed-token count for shuffle_caption (see
+  // DEFAULT_KEEP_TOKENS in modal_sdxl_lora_worker.py). Undefined -> worker's
+  // own default (4).
+  keepTokens?: number;
 };
 
 // The exact Modal payload — stored on the job so a pending-timeout retry can
@@ -70,6 +92,8 @@ export type LoraDispatchPayload = {
   caption_mode?: "dense" | "tags";
   caption_prompt?: string;
   cost_cap_seconds?: number;
+  embed_tags?: string;
+  keep_tokens?: number;
 };
 
 export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraDispatchPayload {
@@ -97,6 +121,10 @@ export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraD
       : {}),
     ...(typeof params.costCapSeconds === "number" && Number.isFinite(params.costCapSeconds)
       ? { cost_cap_seconds: Math.round(params.costCapSeconds) }
+      : {}),
+    ...(params.embedTags && params.embedTags.trim() ? { embed_tags: params.embedTags.trim() } : {}),
+    ...(typeof params.keepTokens === "number" && Number.isFinite(params.keepTokens)
+      ? { keep_tokens: Math.round(params.keepTokens) }
       : {}),
   };
 }
@@ -186,38 +214,61 @@ async function postModalDispatchWithRetry(
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
-// Fire-and-forget: posts to modal_lora_worker.py's train_lora_dispatch,
+// Fire-and-forget: posts to modal_lora_worker.py's train_lora_dispatch (or,
+// for worker="sdxl", modal_sdxl_lora_worker.py's train_sdxl_lora_dispatch),
 // which .spawn()s the GPU training job and returns immediately. The spawned
 // job PATCHes generation_jobs (status / progress_percent / progress_message
 // / result_path) directly via Supabase REST as it runs — this request is
 // long gone by then. Throws only if the dispatch itself failed.
+//
+// worker="sdxl" only supports kind="train": modal_sdxl_lora_worker.py has no
+// cancel_lora_job / check_call_status / salvage_lora_job endpoints of its
+// own yet (see cancelLoraTrainingCall / checkLoraCallStatus / salvageLoraJobRemote
+// below for how those 3 are actually handled for an sdxl job in the
+// meantime). Asking for one of those here is a caller bug, not a runtime
+// condition to degrade gracefully from — fail loudly.
 async function modalEnv(
   kind: "train" | "cancel" | "status" | "salvage",
+  worker: LoraWorkerTarget = "ai_toolkit",
 ): Promise<{ url: string; authToken: string; host: string }> {
-  const trainUrl = process.env.MODAL_LORA_TRAIN_URL;
   let url: string | undefined;
-  switch (kind) {
-    case "train":
-      url = trainUrl;
-      break;
-    case "cancel":
-      url = process.env.MODAL_LORA_CANCEL_URL || deriveSiblingUrl(trainUrl, "cancel-lora-job");
-      break;
-    case "status":
-      url = process.env.MODAL_LORA_STATUS_URL || deriveSiblingUrl(trainUrl, "check-call-status");
-      break;
-    case "salvage":
-      url = process.env.MODAL_LORA_SALVAGE_URL || deriveSiblingUrl(trainUrl, "salvage-lora-job");
-      break;
+  if (worker === "sdxl") {
+    if (kind !== "train") {
+      throw new Error(
+        `modal_sdxl_lora_worker.py has no '${kind}' endpoint yet — this is a caller bug, not a config issue.`,
+      );
+    }
+    url = process.env.MODAL_SDXL_LORA_TRAIN_URL;
+    if (!url) {
+      throw new Error(
+        "MODAL_SDXL_LORA_TRAIN_URL が未設定です。Vercel の環境変数に modal_sdxl_lora_worker.py の train_sdxl_lora_dispatch の URL を設定してください。",
+      );
+    }
+  } else {
+    const trainUrl = process.env.MODAL_LORA_TRAIN_URL;
+    switch (kind) {
+      case "train":
+        url = trainUrl;
+        break;
+      case "cancel":
+        url = process.env.MODAL_LORA_CANCEL_URL || deriveSiblingUrl(trainUrl, "cancel-lora-job");
+        break;
+      case "status":
+        url = process.env.MODAL_LORA_STATUS_URL || deriveSiblingUrl(trainUrl, "check-call-status");
+        break;
+      case "salvage":
+        url = process.env.MODAL_LORA_SALVAGE_URL || deriveSiblingUrl(trainUrl, "salvage-lora-job");
+        break;
+    }
+    if (!url) {
+      throw new Error(
+        "MODAL_LORA_TRAIN_URL が未設定です。Vercel の環境変数に modal_lora_worker.py の train_lora_dispatch の URL を設定してください。",
+      );
+    }
   }
   const authToken = process.env.MODAL_AUTH_TOKEN;
-  if (!url) {
-    throw new Error(
-      "MODAL_LORA_TRAIN_URL が未設定です。Vercel の環境変数に modal_lora_worker.py の train_lora_dispatch の URL を設定してください。",
-    );
-  }
   if (!authToken) {
-    throw new Error("MODAL_AUTH_TOKEN が未設定です（modal_lora_worker.py の _authorize が期待する共有シークレット）。");
+    throw new Error("MODAL_AUTH_TOKEN が未設定です（両ワーカーの _authorize が期待する共有シークレット、Secret名 wan-animate-auth）。");
   }
   let host: string;
   try {
@@ -241,7 +292,7 @@ function deriveSiblingUrl(trainUrl: string | undefined, fnDashed: string): strin
 export async function spawnLoraTrainingJob(
   params: SpawnLoraTrainingParams,
 ): Promise<{ modalCallId: string | null }> {
-  const { url, authToken, host } = await modalEnv("train");
+  const { url, authToken, host } = await modalEnv("train", params.worker ?? "ai_toolkit");
 
   const body = JSON.stringify({
     job_id: params.jobId,
@@ -299,8 +350,9 @@ export async function redispatchLoraTrainingJob(args: {
   jobId: string;
   userId: string;
   payload: LoraDispatchPayload;
+  worker?: LoraWorkerTarget;
 }): Promise<{ modalCallId: string | null }> {
-  const { url, authToken, host } = await modalEnv("train");
+  const { url, authToken, host } = await modalEnv("train", args.worker ?? "ai_toolkit");
   const res = await postModalDispatchWithRetry(
     url,
     {
@@ -332,6 +384,13 @@ export async function redispatchLoraTrainingJob(args: {
 // Best-effort physical cancel of a stuck spawned FunctionCall (hits
 // modal_lora_worker.py::cancel_lora_job -> FunctionCall.from_id().cancel()).
 // Never throws. Returns true when Modal reports success:true.
+//
+// No `worker` param needed: modal.FunctionCall ids are WORKSPACE-global, not
+// scoped to the app/endpoint that issued them (cancel_lora_job just does a
+// raw `modal.FunctionCall.from_id(call_id).cancel()`), and both
+// modal_lora_worker.py and modal_sdxl_lora_worker.py deploy into the same
+// Modal workspace — so this one endpoint already cancels an SDXL job's call
+// id too, with zero SDXL-specific code needed.
 export async function cancelLoraTrainingCall(modalCallId: string): Promise<boolean> {
   if (!modalCallId) return false;
   try {
@@ -366,6 +425,10 @@ export async function cancelLoraTrainingCall(modalCallId: string): Promise<boole
 // when the container died by SIGKILL (train_lora_job's own except-block never
 // runs in that case). Never throws — an unreachable endpoint returns
 // "unknown" so the caller leaves the job alone.
+//
+// Same workspace-global FunctionCall-id reasoning as cancelLoraTrainingCall
+// above — no `worker` param needed, this already works for an SDXL job's
+// call id too.
 export type LoraCallStatus = {
   status: "completed" | "running" | "failed" | "unknown";
   error?: string;
@@ -411,6 +474,16 @@ export type SalvagedCheckpoint = {
 // Scans the Volume for whatever a dead / cancelled run left behind (see
 // modal_lora_worker.py::salvage_lora_job) and returns the checkpoint list.
 // Throws only if the salvage call itself failed.
+//
+// KNOWN GAP (2026-09-15): ai-toolkit-only — salvage_lora_job scans
+// PERSIST_OUTPUT_ROOT/<run_key> using ai-toolkit's own output-dir layout, so
+// calling this for an SDXL job (whose files, if any survive a dead
+// container, sit under modal_sdxl_lora_worker.py's own _job_output_dir path
+// on the SAME Volume but a DIFFERENT root) finds nothing — it degrades to a
+// harmless empty result (checkpoints: [], salvaged: 0), never a crash, but a
+// dead SDXL job's partial checkpoints are NOT actually recoverable through
+// this path yet. Add an equivalent salvage endpoint to
+// modal_sdxl_lora_worker.py before this worker sees real unattended traffic.
 export async function salvageLoraJobRemote(args: {
   userId: string;
   jobId: string;

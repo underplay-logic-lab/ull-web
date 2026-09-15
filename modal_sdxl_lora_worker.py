@@ -163,6 +163,59 @@ train_image = image.pip_install("xformers==0.0.29.post3", "Pillow", "requests").
 
 SDXL_BASE_REPO = "stabilityai/stable-diffusion-xl-base-1.0"
 
+# route.ts's LoRA preset dropdown (src/lib/loraModels.ts) is the SAME
+# catalogue regardless of which worker actually trains the job — a user who
+# picks "Illustrious XL" or "Juggernaut XL" must get a LoRA trained against
+# THAT fine-tuned checkpoint, not a silent fallback to vanilla SDXL base.
+# Mirrors modal_lora_worker.py's TARGET_MODELS entries for these two ids
+# EXACTLY (same repo, same fp16-variant caveat) — kept as a separate copy
+# per this worker's zero-runtime-coupling design (see the module docstring's
+# CLAUDE.md §1 exception note), not imported.
+#
+# juggernaut_xl's mixed_precision override (2026-09-15, confirmed by reading
+# sd-scripts' own loader source — library/sdxl_train_util.py
+# _load_target_model, v0.11.1): for a HF repo id (not a local file), sd-scripts
+# derives the Diffusers `variant` to load PURELY from weight_dtype
+# (`variant = "fp16" if weight_dtype == torch.float16 else None`) — there is
+# NO separate --variant CLI flag, and no automatic retry into the fp16
+# variant when the initial (variant=None) load fails. RunDiffusion/
+# Juggernaut-XL-v9 ships ONLY *.fp16.safetensors component files (no plain-
+# variant weights — same fact ai-toolkit's own TARGET_MODELS comment
+# recorded), so training it under this project's CLAUDE.md §1 BF16-standard
+# would hard-crash at model load (EnvironmentError, file not found) — not a
+# quality/speed tradeoff, a hard constraint of what the checkpoint publisher
+# actually shipped. Forcing mixed_precision="fp16" for this ONE preset (with
+# --no_half_vae, already unconditional in _build_train_args, for the VAE
+# instability fp16 SDXL is known for) is the only way to load it at all.
+SDXL_TARGET_MODELS: dict[str, dict] = {
+    "illustrious_xl": {"repo": "OnomaAIResearch/Illustrious-xl-early-release-v0"},
+    "juggernaut_xl": {"repo": "RunDiffusion/Juggernaut-XL-v9", "mixed_precision": "fp16"},
+}
+
+
+def _resolve_base_model(params: dict) -> tuple[str, str]:
+    """Returns (pretrained_model_name_or_path, mixed_precision). `target_model`
+    is the same preset id route.ts's LoRA dropdown sends for every arch
+    (loraModels.ts) — "illustrious_xl" / "juggernaut_xl" map to their real
+    fine-tuned checkpoints via SDXL_TARGET_MODELS above; target_model=="custom"
+    (+ custom_model_id) is the universal loader (any HF repo id, or a bare
+    filename resolved against the Volume, mirroring modal_lora_worker.py's
+    own custom-model handling); anything else (missing / unrecognized, e.g. a
+    direct API test) falls back to vanilla SDXL base at the project's default
+    bf16."""
+    target_model = str(params.get("target_model") or "").strip()
+    if target_model == "custom":
+        custom_id = str(params.get("custom_model_id") or "").strip()
+        if custom_id:
+            if "/" not in custom_id and not custom_id.startswith("http"):
+                custom_id = f"{MODELS_DIR}/{custom_id}"
+            return custom_id, "bf16"
+    preset = SDXL_TARGET_MODELS.get(target_model)
+    if preset:
+        return str(preset["repo"]), str(preset.get("mixed_precision", "bf16"))
+    return SDXL_BASE_REPO, "bf16"
+
+
 # ULL Studio's LoRA caption pipeline (src/lib/loraCaptionSpec.ts,
 # applySubjectFixedTags) always writes exactly 4 fixed leading tokens for a
 # single-subject dataset: trigger, 1girl/1boy/1man/1woman, solo, female/male.
@@ -264,6 +317,8 @@ def _build_train_args(
     output_dir: str,
     tc: dict,
     resolution: int = 1024,
+    pretrained_model: str = SDXL_BASE_REPO,
+    mixed_precision: str = "bf16",
 ) -> list[str]:
     """The sd-scripts equivalent of modal_lora_worker.py's `_build_config()`
     — translates ULL Studio's job payload (`tc`: rank/alpha/learning_rate/
@@ -284,6 +339,11 @@ def _build_train_args(
       (actual resolution is baked into the dataset TOML by
       `_write_dataset_toml`, not a CLI arg here — `res` below is only used
       for the log line, to confirm what the caller asked for)
+
+    pretrained_model / mixed_precision: caller resolves these via
+    _resolve_base_model(params) — see that function's docstring for why
+    they're NOT hardcoded (illustrious_xl / juggernaut_xl need their own
+    checkpoint + juggernaut's fp16-only-repo mixed_precision override).
     """
     rank = int(tc.get("rank", DEFAULT_TRAINING_CONFIG["rank"]))
     alpha = int(tc.get("alpha", DEFAULT_TRAINING_CONFIG["alpha"]))
@@ -304,7 +364,7 @@ def _build_train_args(
     res = resolution if resolution in (512, 768, 1024, 1280) else 1024
 
     args = [
-        f"--pretrained_model_name_or_path={SDXL_BASE_REPO}",
+        f"--pretrained_model_name_or_path={pretrained_model}",
         f"--dataset_config={dataset_toml}",
         f"--output_dir={output_dir}",
         f"--output_name={lora_name}",
@@ -316,7 +376,11 @@ def _build_train_args(
         f"--learning_rate={lr}",
         f"--max_train_steps={steps}",
         f"--save_every_n_steps={save_every}",
-        "--mixed_precision=bf16",
+        f"--mixed_precision={mixed_precision}",
+        # The DELIVERED LoRA's own weight dtype — independent of
+        # mixed_precision (which only controls how the base checkpoint is
+        # loaded/trained against, forced to fp16 for the odd fp16-only-repo
+        # preset above). Stays this project's bf16 standard regardless.
         "--save_precision=bf16",
         "--cache_latents",
         "--gradient_checkpointing",
@@ -912,9 +976,17 @@ def train_sdxl_lora_job(params: dict) -> dict:
         dataset_toml = _write_dataset_toml(str(work_dir), str(dataset_dir), resolution, keep_tokens)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        pretrained_model, mixed_precision = _resolve_base_model(params)
+        print(f"[sdxl] base model -> {pretrained_model} (mixed_precision={mixed_precision})", flush=True)
         sys.path.insert(0, SD_SCRIPTS_DIR)
         args = [sys.executable, f"{SD_SCRIPTS_DIR}/sdxl_train_network.py"] + _build_train_args(
-            lora_name, dataset_toml, str(output_dir), tc, resolution=resolution
+            lora_name,
+            dataset_toml,
+            str(output_dir),
+            tc,
+            resolution=resolution,
+            pretrained_model=pretrained_model,
+            mixed_precision=mixed_precision,
         )
 
         _patch_job(job_id, {"progress_percent": 15, "progress_message": "学習開始"})

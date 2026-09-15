@@ -373,6 +373,36 @@ async function handlePost(request: Request): Promise<NextResponse> {
   const pricedPreset = targetModel === "custom" ? undefined : loraPresetById(targetModel);
   const pricedArch = targetModel === "custom" ? baseArchitecture : (pricedPreset?.arch ?? "");
 
+  // 2026-09-15: arch==="sdxl"（illustrious_xl / juggernaut_xl プリセット、
+  // または custom_model_id + base_architecture="sdxl"）は、ai-toolkitでは
+  // 品質が出ないという実測結果（ホスト、2026-09-15）に基づき
+  // modal_lora_worker.py ではなく別ワーカー modal_sdxl_lora_worker.py
+  // （kohya-ss/sd-scripts バックエンド）へルーティングする。
+  // 詳細: [[sdxl-training-sd-scripts-plan]]（メモリ）。
+  const isSdxlJob = pricedArch === "sdxl";
+  const worker: "sdxl" | "ai_toolkit" = isSdxlJob ? "sdxl" : "ai_toolkit";
+
+  // sd-scriptsワーカーはまだ生YAML（フルカスタムジョブ設定）の抜け道を
+  // 持たない — 送っても静かに無視されるのではなく、ここで明示的に拒否する。
+  if (isSdxlJob && hasOverride) {
+    return NextResponse.json(
+      { error: "SDXL系モデル（sd-scriptsワーカー）では生YAML（フルカスタム設定）はまだ利用できません。" },
+      { status: 400 },
+    );
+  }
+
+  // sd-scriptsワーカーのメタデータタグ埋め込み機能（opt-in、未指定なら
+  // sd-scripts純正メタデータはそのまま）。"tag:freq,tag,..." 形式の文字列。
+  // フロントの入力欄はまだ無いが、直接APIを叩くbespokeな使い方も見据えて
+  // ここで受け取っておく（isSdxlJob以外では常に無視）。
+  const embedTags =
+    isSdxlJob && typeof body.embed_tags === "string" ? body.embed_tags.trim().slice(0, 1000) : undefined;
+  const keepTokensRaw = isSdxlJob && typeof body.keep_tokens === "number" ? body.keep_tokens : undefined;
+  const keepTokens =
+    keepTokensRaw !== undefined && Number.isFinite(keepTokensRaw)
+      ? Math.min(20, Math.max(1, Math.round(keepTokensRaw)))
+      : undefined;
+
   // 2026-09-14: 学習解像度はもうクライアントが選ぶものではない
   // （LoraStudioTab.tsx参照）。body.resolutionは信用せず、モデルの
   // アーキテクチャから常にrecommendedResolution()で権威的に決める
@@ -496,6 +526,9 @@ async function handlePost(request: Request): Promise<NextResponse> {
     resolution,
     outputLoraName,
     triggerWord: triggerWord || undefined,
+    worker,
+    embedTags,
+    keepTokens,
   };
   // The full Modal payload is stashed on the job so a pending-timeout retry
   // can re-dispatch it verbatim (no re-debit).
@@ -510,6 +543,12 @@ async function handlePost(request: Request): Promise<NextResponse> {
     num_images: storagePaths.length,
     resolution,
     trigger_word: triggerWord || null,
+    // どのModalワーカー/appへ配送したか — 自己修復系（/api/jobs/[id]、
+    // recover/salvage route）が将来ワーカー別分岐を必要とする時のため
+    // ジョブ行に残しておく。cancel/status は workspace-global な
+    // FunctionCall id ベースなので worker 不問（modalLoraTrain.tsのコメント
+    // 参照）、salvage は現状ai-toolkit専用（既知のギャップ）。
+    worker,
     training_config: {
       ...effectiveTrainingConfig,
       custom_yaml_override: hasOverride ? "(custom)" : undefined,

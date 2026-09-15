@@ -31,7 +31,12 @@ const LORA_SPI_BASELINE: Record<string, number> = {
   krea2: 2.0,
   zimage: 1.2,
   anima: 1.4,
-  sdxl: 0.9,
+  // 2026-09-15実機計測（L40S・modal_sdxl_lora_worker.py・sd-scripts・rank16・
+  // 1024px・AdamW8bit）: 1.32s/it。旧値0.9はai-toolkit/Blackwell想定の
+  // 未検証の仮値だったが、SDXLアーキのジョブは now always sd-scripts/L40S
+  // ワーカーへルーティングされる（route.tsのisSdxlJob分岐）ため、実測値に
+  // 差し替え。多少の余裕を見て1.4に設定（既存の*1.3マージンは式側で別途適用）。
+  sdxl: 1.4,
 };
 
 function creditCoveredSeconds(creditsCost: number, knobs: PricingKnobs): number {
