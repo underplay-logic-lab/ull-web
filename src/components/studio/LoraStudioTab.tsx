@@ -2565,6 +2565,18 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // そのまま残す。
   const handleModelChange = (value: string) => {
     setModelChoice(value);
+    // 性別/人数タグ・複数人物UIはSDXL限定表示（下記JSX）。表示が消えても
+    // stateが残っていると、SDXLで設定→非SDXLへ切り替え後もキャプション
+    // 生成に古い固定タグが黙って効き続けてしまうため、SDXL以外へ切り替えた
+    // 瞬間にクリアする（同じ理由でembed_tags側は非SDXLでは送信自体を
+    // isSdxlJobでガードしているが、こちらは送信有無ではなくキャプション
+    // 生成ロジック自体が参照するのでstateごと消す必要がある）。
+    const nextArch = value === "__custom__" ? baseArchitecture : (loraPresetById(value)?.arch ?? "");
+    if (nextArch !== "sdxl") {
+      setPrimaryFixedTags("");
+      setPrimaryDescription("");
+      setExtraSubjects([]);
+    }
   };
 
   const canSubmit =
@@ -4422,10 +4434,13 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                 <code className="text-neon-violet">process[0].trigger_word</code> が使われます。
               </p>
             )}
-            {!yamlMode && (
+            {/* 性別/人数タグ・複数人物UIはSDXL（Danbooruタグ形式のkeep_tokens
+                運用）限定。それ以外のモデルはトリガーワード入力のみにする
+                （2026-09-15 ホスト指示）。 */}
+            {!yamlMode && isSdxlJob && (
               <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
             )}
-            {!yamlMode && extraSubjects.length > 0 && (
+            {!yamlMode && isSdxlJob && extraSubjects.length > 0 && (
               <input
                 value={primaryDescription}
                 onChange={(e) => setPrimaryDescription(e.target.value)}
@@ -4435,6 +4450,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               />
             )}
             {!yamlMode &&
+              isSdxlJob &&
               extraSubjects.map((s, i) => (
                 <div key={i} className="mt-1.5 rounded-lg border border-border/60 p-1.5">
                   <div className="flex gap-1.5">
@@ -4479,7 +4495,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                   />
                 </div>
               ))}
-            {!yamlMode && (
+            {!yamlMode && isSdxlJob && (
               <button
                 type="button"
                 onClick={() =>
