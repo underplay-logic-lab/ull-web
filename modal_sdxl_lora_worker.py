@@ -52,6 +52,7 @@ Env overrides:
 import base64
 import hashlib
 import hmac
+import json
 import os
 import pathlib
 import re
@@ -622,6 +623,126 @@ def _authorize(request: fastapi.Request) -> None:
         raise fastapi.HTTPException(status_code=401, detail="Unauthorized")
 
 
+# ---------------------------------------------------------------------------
+# Metadata-tag embedding — the ORIGINAL motivating ask for this whole worker
+# (host, 2026-09-15: "主要タグだと出てこない特徴を埋め込みたい"). Ported from
+# the host's own standalone tool, D:\coconala\副業ラッコ平丸\NTR校長キャラ\
+# lora_duo\fix_lora_metadata_gui.py (`clean_tag_frequency` / `clean_tag_list`
+# / `parse_tags_arg` / the metadata half of `process_file`) — same logic,
+# applied in-process right after training instead of as a manual post-hoc
+# GUI step. Deliberately OPT-IN: a job with no `embed_tags` param leaves
+# sd-scripts' own native ss_tag_frequency (real per-tag counts from the
+# actual captions) completely untouched. This is for the opposite case — the
+# host wants to REPLACE that with a small, curated, human-picked tag set
+# (trigger + a few characteristic traits invisible in the main captions) so
+# that's what shows up in ComfyUI/Civitai/A1111's "trained words" UI instead
+# of hundreds of noisy auto-tags.
+# ---------------------------------------------------------------------------
+_EMBED_TAG_FREQ_KEYS = ("ss_tag_frequency",)
+_EMBED_TAG_LIST_KEYS = ("modelspec.tags", "ss_metadata_tags")
+_EMBED_TRAINED_WORDS_KEY = "ss_trained_words"
+# The reference tool's own default — a dummy value with no real statistical
+# meaning (not an actual occurrence count); kept identical so a LoRA touched
+# by either tool looks the same to any downstream reader.
+EMBED_TAG_DEFAULT_FREQ = 21
+
+
+class TagParseError(ValueError):
+    pass
+
+
+def _parse_embed_tags(raw: str, default_freq: int = EMBED_TAG_DEFAULT_FREQ) -> dict:
+    """"tag:freq,tag:freq,..." or plain "tag,tag,..." -> {tag: freq}. Same
+    format/behavior as the reference tool's parse_tags_arg, so a host used
+    to typing tags into that GUI can type the exact same string here."""
+    tags: dict[str, int] = {}
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if ":" in chunk:
+            name, _, freq = chunk.rpartition(":")
+            name = name.strip()
+            try:
+                tags[name] = int(freq.strip())
+            except ValueError:
+                raise TagParseError(f"タグの頻度が数値ではありません: '{chunk}'")
+        else:
+            tags[chunk] = default_freq
+    if not tags:
+        raise TagParseError("有効なタグが指定されていません")
+    return tags
+
+
+def _clean_tag_frequency(raw_json: str, target_tags: dict) -> str:
+    """Rebuilds a kohya-ss ss_tag_frequency blob to contain ONLY target_tags.
+
+    Must stay a 2-level nested dict ({"<bucket>": {tag: freq}}) — any reader
+    (this project's own ComfyUI custom nodes included, per the reference
+    tool's comment) that expects that shape breaks on a flat {tag: freq}."""
+    try:
+        data = json.loads(raw_json)
+    except (json.JSONDecodeError, TypeError):
+        data = None
+    if isinstance(data, dict) and data and all(isinstance(v, dict) for v in data.values()):
+        new_data = {bucket: dict(target_tags) for bucket in data.keys()}
+    else:
+        new_data = {"dataset": dict(target_tags)}
+    return json.dumps(new_data, ensure_ascii=False)
+
+
+def _clean_tag_list(raw: str, target_tags: dict) -> str:
+    """Rebuilds a tag-list metadata string (JSON array / JSON dict / CSV) to
+    contain ONLY target_tags, preserving whichever of those 3 shapes it
+    already had."""
+    tags = list(target_tags.keys())
+    stripped = raw.strip()
+    if stripped.startswith("[") or stripped.startswith("{"):
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            return json.dumps(tags, ensure_ascii=False)
+        if isinstance(parsed, dict):
+            return json.dumps({t: target_tags[t] for t in tags}, ensure_ascii=False)
+    return ", ".join(tags)
+
+
+def _embed_metadata_tags(safetensors_path: str, target_tags: dict) -> list[str]:
+    """In-place rewrite of a .safetensors' metadata to surface ONLY
+    `target_tags` as its "trained words" (ss_tag_frequency / modelspec.tags /
+    ss_metadata_tags where already present, ss_trained_words always). Returns
+    the list of metadata keys actually changed. No-ops (returns []) if
+    target_tags is empty — callers should treat that as "skip entirely",
+    never call this with an empty dict expecting a no-op-but-logged path."""
+    if not target_tags:
+        return []
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    with safe_open(safetensors_path, framework="pt") as f:
+        metadata = dict(f.metadata() or {})
+        tensors = {key: f.get_tensor(key) for key in f.keys()}
+
+    changed_keys: list[str] = []
+    for key in _EMBED_TAG_FREQ_KEYS:
+        if key in metadata:
+            metadata[key] = _clean_tag_frequency(metadata[key], target_tags)
+            changed_keys.append(key)
+    for key in _EMBED_TAG_LIST_KEYS:
+        if key in metadata:
+            metadata[key] = _clean_tag_list(metadata[key], target_tags)
+            changed_keys.append(key)
+    # ComfyUI's own "trained words" fallback reader — set unconditionally
+    # (existing or not), same as the reference tool.
+    metadata[_EMBED_TRAINED_WORDS_KEY] = ", ".join(target_tags.keys())
+    changed_keys.append(_EMBED_TRAINED_WORDS_KEY)
+
+    save_file(tensors, safetensors_path, metadata=metadata)
+    return changed_keys
+
+
 def _stage_dataset(params: dict, dataset_dir: pathlib.Path, trigger: str) -> list[pathlib.Path]:
     """Materialises training images + same-stem .txt captions into
     `dataset_dir`. Mirrors modal_lora_worker.py's train_lora_job staging
@@ -825,6 +946,22 @@ def train_sdxl_lora_job(params: dict) -> dict:
             raise RuntimeError("sd-scripts finished with no .safetensors output")
         final_ckpt = produced[-1]
 
+        # Optional metadata-tag embedding (host-typed, e.g. "kocho, 1man, fat:21,
+        # obese, bald, glasses" — see _embed_metadata_tags docstring). Applied to
+        # final_ckpt BEFORE copying so both the model-library alias and the
+        # per-job archive inherit the same rewritten metadata. A parse failure
+        # here must never sink an otherwise-successful training run — the
+        # checkpoint still ships with sd-scripts' own native metadata intact.
+        embedded_tag_keys: list[str] = []
+        embed_tags_raw = str(params.get("embed_tags") or "").strip()
+        if embed_tags_raw:
+            try:
+                embed_tags = _parse_embed_tags(embed_tags_raw)
+                embedded_tag_keys = _embed_metadata_tags(str(final_ckpt), embed_tags)
+                print(f"[sdxl] embedded metadata tags {list(embed_tags)} -> keys {embedded_tag_keys}", flush=True)
+            except TagParseError as exc:
+                print(f"[sdxl] embed_tags parse failed ({exc!r}) — skipping metadata embed", flush=True)
+
         os.makedirs(LORA_OUTPUT_DIR, exist_ok=True)
         dest_path = pathlib.Path(LORA_OUTPUT_DIR) / f"{lora_name}.safetensors"
         shutil.copy2(final_ckpt, dest_path)
@@ -853,6 +990,8 @@ def train_sdxl_lora_job(params: dict) -> dict:
         metadata: dict = {"checkpoints": checkpoints}
         if final_vram is not None:
             metadata["vram_used_gb"] = final_vram
+        if embedded_tag_keys:
+            metadata["embedded_tag_keys"] = embedded_tag_keys
         _patch_job(
             job_id,
             {
@@ -873,6 +1012,7 @@ def train_sdxl_lora_job(params: dict) -> dict:
             "trigger_word": trigger,
             "total_seconds": round(time.time() - started, 1),
             "checkpoints": checkpoints,
+            "embedded_tag_keys": embedded_tag_keys,
         }
     except Exception as exc:  # report + refund, then re-raise
         print(f"[sdxl] FAILED: {exc}", flush=True)
