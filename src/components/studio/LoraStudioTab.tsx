@@ -20,6 +20,7 @@ import {
   RotateCcw,
   Scissors,
   Sparkles,
+  Tag,
   Trash2,
   Wand2,
   Zap,
@@ -1712,6 +1713,13 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     [triggerWord, primaryDescription, primaryFixedTags, extraSubjects],
   );
   const [loraName, setLoraName] = useState("");
+  // SDXL/sd-scriptsワーカー限定のメタデータタグ埋め込み（2026-09-15、
+  // [[sdxl-training-sd-scripts-plan]] の「フロントUI未着手」項目）。
+  // "tag:freq,tag,..." 形式の文字列。空ならopt-out（sd-scripts純正メタデータ
+  // のまま）— modal_sdxl_lora_worker.py の _parse_embed_tags と同じ書式。
+  const [embedTagsInput, setEmbedTagsInput] = useState("");
+  const [keepTokensInput, setKeepTokensInput] = useState("");
+  const [embedTagsOpen, setEmbedTagsOpen] = useState(false);
   const [pro, setPro] = useState<ProConfig>(DEFAULT_PRO);
   // LoRA-type-aware auto-caption spec: the training TYPE + the user's JP notes
   // on which features to lock into the trigger (blacklisted from captions) vs.
@@ -2459,6 +2467,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const targetModel = isCustom ? "custom" : modelChoice;
   const selectedPreset = isCustom ? undefined : loraPresetById(modelChoice);
   const pricedArch = isCustom ? baseArchitecture : (selectedPreset?.arch ?? "");
+  // sd-scriptsワーカー（Illustrious/Juggernaut等）限定のメタデータタグ
+  // 埋め込み機能。arch==="sdxl"のジョブだけ対象（route.tsのisSdxlJobと同じ
+  // 判定）。生YAMLモードは生YAML自体をsd-scriptsワーカーが受け付けないため
+  // 対象外（route.tsが400で拒否する）。
+  const isSdxlJob = pricedArch === "sdxl";
 
   // Caption FORMAT resolved for the model in the dropdown right now. The key
   // blends preset id + arch + label + (custom) base architecture so a tag
@@ -3014,6 +3027,13 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         // The structured LoRA-type spec — the server rebuilds caption_prompt
         // from this if the browser couldn't (Gemini down here).
         captionSpec: captionSpecFilled ? captionSpec : undefined,
+        // SDXL/sd-scriptsワーカー限定のメタデータタグ埋め込み。yamlMode/非SDXL
+        // では常にundefined（サーバー側isSdxlJob判定と同じくopt-out）。
+        embedTags: !yamlMode && isSdxlJob && embedTagsInput.trim() ? embedTagsInput.trim() : undefined,
+        keepTokens:
+          !yamlMode && isSdxlJob && keepTokensInput.trim() && Number.isFinite(Number(keepTokensInput))
+            ? Number(keepTokensInput)
+            : undefined,
       });
       const { jobId, remainingCredits } = startRes;
       console.log("[lora] train ->", startRes);
@@ -3817,6 +3837,9 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     setPrimaryFixedTags("");
     setExtraSubjects([]);
     setLoraName("");
+    setEmbedTagsInput("");
+    setKeepTokensInput("");
+    setEmbedTagsOpen(false);
     setPro(DEFAULT_PRO);
     setCaptionCategory("character");
     setCaptionFixed("");
@@ -4506,6 +4529,71 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               モデルに最適な解像度で自動的に学習します（選択の必要はありません）。
             </p>
           </div>
+
+          {/* SDXL/sd-scriptsワーカー限定: 完成した.safetensorsに書き込む
+              「おすすめタグ」を手動指定する任意機能（2026-09-15）。未指定なら
+              sd-scripts純正のメタデータ（実際のキャプション由来）のまま。 */}
+          {!yamlMode && isSdxlJob && (
+            <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5">
+              <button
+                type="button"
+                onClick={() => setEmbedTagsOpen((v) => !v)}
+                className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left"
+              >
+                <span className="flex items-center gap-2 text-[11px] font-medium text-neon-violet">
+                  <Tag size={13} />
+                  🏷️ メタデータタグ埋め込み（任意・SDXL限定）
+                </span>
+                <ChevronDown
+                  size={14}
+                  className={`shrink-0 text-muted transition-transform ${embedTagsOpen ? "rotate-180" : ""}`}
+                />
+              </button>
+
+              {embedTagsOpen && (
+                <div className="space-y-2 px-3 pb-3">
+                  <p className="text-[10px] leading-relaxed text-muted">
+                    学習完了後の .safetensors に、ComfyUI/Civitai/A1111 等が「Trained words」として表示する
+                    タグを手動で書き込みます。指定すると主要キャプション由来のタグ頻度情報は置き換わります
+                    （未指定なら sd-scripts が書き込む実際のキャプション由来のメタデータがそのまま使われます）。
+                  </p>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-medium text-muted">埋め込むタグ</label>
+                    <input
+                      value={embedTagsInput}
+                      onChange={(e) => setEmbedTagsInput(e.target.value)}
+                      placeholder="例: yukipas:21,silver hair,school uniform"
+                      disabled={busy}
+                      className={`${fieldCls} font-mono`}
+                    />
+                    <p className="mt-1 text-[10px] text-muted">
+                      「タグ」または「タグ:頻度」をカンマ区切りで指定します。頻度を省略すると{" "}
+                      <code className="text-neon-violet">21</code>
+                      （実際の出現回数ではない固定のダミー値）が使われます。
+                    </p>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-medium text-muted">
+                      keep_tokens（任意・既定 4）
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={keepTokensInput}
+                      onChange={(e) => setKeepTokensInput(e.target.value)}
+                      placeholder="4"
+                      disabled={busy}
+                      className={`${fieldCls} w-24`}
+                    />
+                    <p className="mt-1 text-[10px] text-muted">
+                      キャプション先頭から何トークンをシャッフル対象外にするか（trigger word 等の固定タグ数に合わせます）。
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* LoRA-type-aware auto-caption spec — category + JP fixed/varying */}
           <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5">

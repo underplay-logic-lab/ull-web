@@ -83,6 +83,11 @@ export type StartLoraTrainingParams = {
   // たい特徴の日本語). The server rebuilds captionPrompt from this when the
   // browser didn't send a generated one.
   captionSpec?: LoraCaptionSpec;
+  // SDXL/sd-scriptsワーカー限定（[[sdxl-training-sd-scripts-plan]]）:
+  // "tag:freq,tag,..." 形式の手動メタデータタグ埋め込み。サーバー側
+  // (isSdxlJob以外では常に無視)と worker の _parse_embed_tags を参照。
+  embedTags?: string;
+  keepTokens?: number;
 };
 
 export type LoraApiError = Error & { remainingCredits?: number; requiredCredits?: number };
@@ -112,6 +117,8 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
       caption_mode: params.captionMode,
       caption_prompt: params.captionPrompt,
       caption_spec: params.captionSpec,
+      embed_tags: params.embedTags,
+      keep_tokens: params.keepTokens,
     }),
   });
 
