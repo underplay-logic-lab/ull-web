@@ -65,6 +65,19 @@ function newScene(): DirectorScene {
   return { camera: "push_in", text: "", durationS: DIRECTOR_SECONDS_PER_SCENE, sceneChange: true };
 }
 
+// シーンごとの秒数セレクトに常に出す固定の選択肢（3〜30秒）。他シーンの
+// 値に応じて選択肢そのものを動的に間引く実装だと、既に選ばれている値が
+// 新しい上限からはみ出た瞬間、controlled <select> が一致する <option> を
+// 見失って一覧の先頭（最小値）を表示してしまう不具合があった
+// （2026-09-15 ホスト報告: 合計60秒に収まる組み合わせのはずが全シーン
+// 3秒表示になる／一部シーンが中途半端な秒数以上選べなくなる）。選択肢は
+// 常に固定にし、代わりに updateScene 側で「今操作した値」だけを即座に
+// クランプすることで、表示とstateの不一致を起こさないようにする。
+const DIRECTOR_SCENE_DURATION_OPTIONS = Array.from(
+  { length: DIRECTOR_MAX_SCENE_DURATION_S - DIRECTOR_MIN_SCENE_DURATION_S + 1 },
+  (_, j) => DIRECTOR_MIN_SCENE_DURATION_S + j,
+);
+
 function useObjectUrl(file: File | null): string | null {
   const url = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
   useEffect(
@@ -292,7 +305,20 @@ export function DirectorStudioTab() {
     setScenes((prev) => (prev.length <= DIRECTOR_MIN_SCENES ? prev : prev.filter((_, i) => i !== index)));
   }, []);
   const updateScene = useCallback((index: number, patch: Partial<DirectorScene>) => {
-    setScenes((prev) => prev.map((s, i) => (i === index ? { ...s, ...patch } : s)));
+    setScenes((prev) => {
+      const next = prev.map((s, i) => (i === index ? { ...s, ...patch } : s));
+      if (patch.durationS != null) {
+        // 合計60秒の上限は「今操作した値」だけをその場でクランプして守る
+        // （他シーンの選択肢を動的に間引く旧実装の不具合は上記コメント参照）。
+        const othersSum = next.reduce((acc, s, i) => (i === index ? acc : acc + s.durationS), 0);
+        const maxForThis = Math.max(
+          DIRECTOR_MIN_SCENE_DURATION_S,
+          Math.min(DIRECTOR_MAX_SCENE_DURATION_S, DIRECTOR_MAX_TOTAL_SECONDS - othersSum),
+        );
+        next[index] = { ...next[index], durationS: Math.min(next[index].durationS, maxForThis) };
+      }
+      return next;
+    });
   }, []);
 
   // 完了したジョブの合成済みプロンプトを引き継いで編集モードへ入る。
@@ -567,26 +593,11 @@ export function DirectorStudioTab() {
                       className="w-24 rounded-lg border border-border bg-surface px-2 py-2 text-sm text-foreground"
                       aria-label={`シーン${i + 1}の秒数`}
                     >
-                      {(() => {
-                        // 他のシーンの合計秒数を差し引いた残りが、このシーンの
-                        // 実質的な上限（合計60秒を超える組み合わせをそもそも
-                        // 選べないようにする — 2026-09-14、サーバー側の
-                        // バリデーションだけだと送信するまで気づけなかった
-                        // 実障害への対処）。
-                        const othersSum = scenes.reduce((acc, s, j) => (j === i ? acc : acc + s.durationS), 0);
-                        const maxForThis = Math.max(
-                          DIRECTOR_MIN_SCENE_DURATION_S,
-                          Math.min(DIRECTOR_MAX_SCENE_DURATION_S, DIRECTOR_MAX_TOTAL_SECONDS - othersSum),
-                        );
-                        return Array.from(
-                          { length: maxForThis - DIRECTOR_MIN_SCENE_DURATION_S + 1 },
-                          (_, j) => DIRECTOR_MIN_SCENE_DURATION_S + j,
-                        ).map((s) => (
-                          <option key={s} value={s}>
-                            {s}秒
-                          </option>
-                        ));
-                      })()}
+                      {DIRECTOR_SCENE_DURATION_OPTIONS.map((s) => (
+                        <option key={s} value={s}>
+                          {s}秒
+                        </option>
+                      ))}
                     </select>
                   </div>
                   <input
