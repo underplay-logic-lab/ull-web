@@ -49,8 +49,18 @@ Env overrides:
   SD_SCRIPTS_REF    sd-scripts git ref (default: a pinned release tag, see below)
 """
 
+import base64
+import hashlib
+import hmac
 import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import time
 
+import fastapi
 import modal
 
 app = modal.App("ull-sdxl-lora-worker")
@@ -136,9 +146,13 @@ def probe_imports() -> dict:
 # --- GPU training image -----------------------------------------------------
 # Same base as the probe image, plus xformers (sd-scripts' well-trodden
 # attention backend — sdpa also works but xformers is what most of the
-# ecosystem's SDXL guidance/benchmarks assume) and Pillow for the smoke
-# test's synthetic dataset generation.
-train_image = image.pip_install("xformers==0.0.29.post3", "Pillow").env(
+# ecosystem's SDXL guidance/benchmarks assume), Pillow for the smoke test's
+# synthetic dataset generation, and requests — REQUIRED by train_sdxl_lora_job's
+# _patch_job / _download_storage_object / _refund_credits (all `import
+# requests`); without it a failed/finished job silently never leaves
+# "processing" in the UI, exactly the modal_lora_worker.py pitfall its own
+# dispatch_image comment warns about.
+train_image = image.pip_install("xformers==0.0.29.post3", "Pillow", "requests").env(
     {
         # Cache HF downloads (the ~7GB SDXL base checkpoint) on the persistent
         # Volume so repeated smoke-test runs don't re-download it every time.
@@ -389,6 +403,527 @@ def smoke_test_sdxl_lora() -> dict:
         result["file_size_mb"] = round(pathlib.Path(produced[0]).stat().st_size / 1e6, 2)
     print(f"[smoke] RESULT: {result}", flush=True)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Production job plumbing — Supabase job rows, credits refund, Storage
+# download, VRAM telemetry. Duplicated from modal_lora_worker.py's own
+# copies (identical, generic HTTP/Supabase logic with zero ai-toolkit
+# coupling) rather than imported: the two workers are meant to have zero
+# runtime coupling (CLAUDE.md §1 exception note — independent images,
+# independent trainers, a crash-loop in one must never affect the other).
+# ---------------------------------------------------------------------------
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+# Same Volume (ull-wan-models) AND same path convention as modal_lora_worker.py
+# for both of these — so a job's `ingest_dir` (Smart Ingest's CPU-optimized
+# images) and the checkpoint-download signed-URL endpoint (which serves
+# loras/<user_id>/<job_id>/<filename> off this Volume) both work UNCHANGED
+# for this worker's output, with no route.ts or download-endpoint changes.
+PERSIST_ROOT = f"{MODELS_DIR}/datasets"
+LORA_OUTPUT_DIR = f"{MODELS_DIR}/loras"
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _current_effective_vram_gb():
+    """CLAUDE.md §6 Active VRAM telemetry — no denominator / GPU model name
+    (spoiler-free 'Active VRAM' badge, CLAUDE.md §2). None off-GPU."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            free_b, total_b = torch.cuda.mem_get_info()
+            return round((total_b - free_b) / (1024**3), 1)
+    except Exception:  # noqa: BLE001 — telemetry only, never fatal
+        pass
+    return None
+
+
+def _supabase_request(method: str, path: str, **kwargs):
+    import requests
+
+    supabase_url = os.environ.get("SUPABASE_URL")
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not supabase_url or not service_key:
+        print("[sdxl-worker] Supabase env not configured, skipping request.")
+        return None
+    headers = {
+        "apikey": service_key,
+        "Authorization": f"Bearer {service_key}",
+        "Content-Type": "application/json",
+        **kwargs.pop("headers", {}),
+    }
+    return requests.request(method, f"{supabase_url}{path}", headers=headers, timeout=10, **kwargs)
+
+
+class InfraError(RuntimeError):
+    """A transient infra failure (network/Storage) — always refunded."""
+
+
+_INFRA_MSG_RE = re.compile(
+    r"(read timed out|connect timed out|connection (?:reset|aborted|error|refused)|"
+    r"connectionpool|max retries exceeded|failed to establish a new connection|"
+    r"temporarily unavailable|name or service not known|"
+    r"no space left on device|502 bad gateway|\b50[234]\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_infra_error(exc: BaseException) -> bool:
+    if isinstance(exc, (InfraError, ConnectionError)):
+        return True
+    name = type(exc).__name__
+    if name in ("ConnectionError", "Timeout", "ReadTimeout", "ConnectTimeout", "ChunkedEncodingError"):
+        return True
+    return bool(_INFRA_MSG_RE.search(str(exc)))
+
+
+def _download_storage_object(bucket: str, key: str, attempts: int = 4) -> bytes:
+    """Fetches one object out of a private Supabase Storage bucket with the
+    service-role key. Retries transient network/5xx failures — a single
+    slow read must not sink a whole training job."""
+    import requests
+
+    supabase_url = os.environ.get("SUPABASE_URL")
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not supabase_url or not service_key:
+        raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not configured")
+    if ".." in key:
+        raise ValueError(f"illegal storage key: {key!r}")
+
+    url = f"{supabase_url}/storage/v1/object/{bucket}/{key.lstrip('/')}"
+    headers = {"apikey": service_key, "Authorization": f"Bearer {service_key}"}
+    last_exc: Exception | None = None
+    for i in range(attempts):
+        try:
+            res = requests.get(url, headers=headers, timeout=(10, 120))
+            if res.status_code == 200:
+                return res.content
+            if res.status_code < 500 and res.status_code != 429:
+                raise RuntimeError(
+                    f"storage download failed ({res.status_code}) for {bucket}/{key}: {res.text[:300]}"
+                )
+            last_exc = RuntimeError(f"storage {res.status_code} for {bucket}/{key}: {res.text[:200]}")
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+        if i < attempts - 1:
+            wait = min(2**i, 8)
+            print(f"[storage] {key} attempt {i + 1}/{attempts} failed ({last_exc}); retry in {wait}s", flush=True)
+            time.sleep(wait)
+    raise InfraError(f"storage download for {bucket}/{key} failed after {attempts} attempts: {last_exc}")
+
+
+def _patch_job(job_id: str, fields: dict) -> None:
+    if not job_id:
+        return
+
+    def _send(payload: dict):
+        return _supabase_request(
+            "PATCH",
+            "/rest/v1/generation_jobs",
+            params={"id": f"eq.{job_id}"},
+            json={**payload, "updated_at": _now_iso()},
+            headers={"Prefer": "return=minimal"},
+        )
+
+    attempts, backoff_s = 3, 0.6
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            res = _send(fields)
+            if res is not None and res.ok:
+                return
+            if res is not None and res.status_code >= 400 and "metadata" in fields:
+                body = (res.text or "").lower()
+                if "metadata" in body or "schema cache" in body or "column" in body:
+                    slim = {k: v for k, v in fields.items() if k != "metadata"}
+                    res2 = _send(slim) if slim else None
+                    if res2 is not None and res2.ok:
+                        print(f"[sdxl-worker] job {job_id}: 'metadata' column absent — patched without it")
+                        return
+                    last_exc = RuntimeError("metadata column absent and slim patch also failed")
+                    break
+            last_exc = RuntimeError(
+                f"HTTP {res.status_code}: {res.text[:300]}" if res is not None else "no response (env not configured)"
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+        if attempt < attempts:
+            time.sleep(backoff_s * attempt)
+    print(f"[sdxl-worker] failed to update job {job_id} (after retries): {last_exc}")
+
+
+def _claim_job(job_id: str, fields: dict) -> bool:
+    """Conditional 'queued' -> 'processing' claim. False means the row is no
+    longer 'queued' (cancelled / superseded) — abort without touching the GPU."""
+    if not job_id:
+        return True
+    try:
+        res = _supabase_request(
+            "PATCH",
+            "/rest/v1/generation_jobs",
+            params={"id": f"eq.{job_id}", "status": "eq.queued"},
+            json={**fields, "updated_at": _now_iso()},
+            headers={"Prefer": "return=representation"},
+        )
+        if res is None:
+            return True  # Supabase not configured — local CLI path
+        rows = res.json()
+        return bool(rows)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[sdxl-worker] job claim check failed for {job_id} (continuing): {exc}")
+        return True
+
+
+def _refund_credits(user_id: str, amount: int) -> None:
+    if not user_id or not amount or amount <= 0:
+        return
+    try:
+        res = _supabase_request("GET", "/rest/v1/profiles", params={"id": f"eq.{user_id}", "select": "credits"})
+        if res is None:
+            return
+        res.raise_for_status()
+        rows = res.json()
+        current = (rows[0].get("credits") if rows else None) or 0
+        _supabase_request(
+            "PATCH",
+            "/rest/v1/profiles",
+            params={"id": f"eq.{user_id}"},
+            json={"credits": current + amount},
+            headers={"Prefer": "return=minimal"},
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        print(f"[sdxl-worker] failed to refund {amount} credits to {user_id}: {exc}")
+
+
+def _derive_trigger(params: dict, lora_name: str) -> str:
+    supplied = str(params.get("trigger_word") or "").strip()
+    if supplied:
+        return supplied
+    m = re.match(r"[A-Za-z0-9]+", lora_name)
+    return m.group(0) if m else lora_name
+
+
+def _job_output_dir(run_key: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(run_key or "")).strip("_")[:120] or "job"
+    return f"{MODELS_DIR}/outputs_sdxl/{safe}"
+
+
+def _authorize(request: fastapi.Request) -> None:
+    expected = os.environ.get("MODAL_AUTH_TOKEN")
+    if not expected:
+        raise fastapi.HTTPException(status_code=500, detail="Server auth is not configured.")
+    provided = request.headers.get("x-modal-secret") or request.headers.get(
+        "authorization", ""
+    ).removeprefix("Bearer ").strip()
+    if not provided or not hmac.compare_digest(provided, expected):
+        raise fastapi.HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _stage_dataset(params: dict, dataset_dir: pathlib.Path, trigger: str) -> list[pathlib.Path]:
+    """Materialises training images + same-stem .txt captions into
+    `dataset_dir`. Mirrors modal_lora_worker.py's train_lora_job staging
+    block (ingest_dir Smart Ingest fast-path -> storage_paths ->  inline
+    images) MINUS the local-VLM captioning fallback: this worker's captions
+    always arrive pre-filled from the cloud vision API (module docstring —
+    ULL Studio's SDXL flow only ever uses this worker for training, never
+    captioning), so a blank caption here just becomes the trigger word,
+    never a 27B VLM load."""
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+    image_paths: list[pathlib.Path] = []
+    storage_paths = params.get("storage_paths") or []
+
+    ingest_rel = str(params.get("ingest_dir") or "").strip().strip("/")
+    staged_from_ingest = False
+    if ingest_rel and ".." not in ingest_rel:
+        try:
+            vol.reload()
+        except Exception:  # noqa: BLE001
+            pass
+        ingest_src = pathlib.Path(PERSIST_ROOT) / ingest_rel
+        if ingest_src.is_dir():
+            found = sorted(
+                p
+                for p in ingest_src.iterdir()
+                if p.is_file() and p.stat().st_size > 0 and p.suffix.lower() in IMAGE_EXTS
+            )
+            if found and (not storage_paths or len(found) == len(storage_paths)):
+                for i, src in enumerate(found):
+                    dest = dataset_dir / f"{i:04d}{src.suffix.lower()}"
+                    shutil.copy2(src, dest)
+                    image_paths.append(dest)
+                staged_from_ingest = True
+                print(
+                    f"[sdxl] staged {len(image_paths)} pre-optimized images from {ingest_src} "
+                    "(Smart Ingest — no Supabase download)",
+                    flush=True,
+                )
+
+    if not staged_from_ingest:
+        if storage_paths:
+            bucket = str(params.get("storage_bucket") or "lora_datasets")
+            for i, key in enumerate(storage_paths):
+                data = _download_storage_object(bucket, str(key))
+                ext = os.path.splitext(str(key))[1] or ".png"
+                dest = dataset_dir / f"{i:04d}{ext}"
+                dest.write_bytes(data)
+                image_paths.append(dest)
+        else:
+            for i, item in enumerate(params.get("images") or []):
+                if isinstance(item, str):
+                    item = {"path": item}
+                if item.get("path"):
+                    src = pathlib.Path(item["path"])
+                    if not src.is_absolute():
+                        src = pathlib.Path(MODELS_DIR) / item["path"]
+                    if not src.exists():
+                        raise FileNotFoundError(f"image path not on Volume: {src}")
+                    dest = dataset_dir / f"{i:04d}_{src.name}"
+                    shutil.copy2(src, dest)
+                else:
+                    name = os.path.basename(item.get("filename") or "img.png")
+                    dest = dataset_dir / f"{i:04d}_{name}"
+                    dest.write_bytes(base64.b64decode(item["data"]))
+                image_paths.append(dest)
+    image_paths.sort()  # the 4-digit prefix keeps this in caption order
+    if not image_paths:
+        raise ValueError("no images supplied")
+
+    supplied = list(params.get("captions") or [])
+    custom_captions = params.get("custom_captions")
+
+    def _custom_caption_for(idx: int, p: pathlib.Path) -> str:
+        cc = custom_captions
+        if isinstance(cc, list):
+            v = cc[idx] if idx < len(cc) else ""
+            return str(v).strip() if v else ""
+        if isinstance(cc, dict):
+            stem = p.stem
+            bare = stem.split("_", 1)[-1] if "_" in stem else stem
+            for k in (str(idx), f"{idx:04d}", stem, p.name, bare):
+                if cc.get(k):
+                    return str(cc[k]).strip()
+        return ""
+
+    for idx, path in enumerate(image_paths):
+        cap = _custom_caption_for(idx, path)
+        if not cap and idx < len(supplied):
+            cap = (supplied[idx] or "").strip()
+        path.with_suffix(".txt").write_text(cap or trigger, encoding="utf-8")
+
+    print(f"[sdxl] staged {len(image_paths)} images + captions for training", flush=True)
+    return image_paths
+
+
+_SDXL_STEP_RE = re.compile(r"steps:\s*\d+%\|.*?\|\s*(\d+)/(\d+)")
+
+
+@app.function(image=train_image, gpu=GPU_REQUEST, volumes={MODELS_DIR: vol}, timeout=10800, scaledown_window=2)
+def train_sdxl_lora_job(params: dict) -> dict:
+    """Production SDXL LoRA training entrypoint — the sd-scripts counterpart
+    of modal_lora_worker.py's train_lora_job. Same job-row lifecycle
+    contract (generation_jobs PATCH progress/completion, credits refund on
+    failure, same loras/<user_id>/<job_id>/<filename> output convention on
+    the SAME Volume) so the existing checkpoint-download signed-URL endpoint
+    and completed-screen UI need no changes to serve this worker's output —
+    only /api/studio/lora/train's routing (arch==="sdxl" -> this dispatcher
+    instead of modal_lora_worker.py's) remains to be wired up.
+
+    params (subset of train_lora_job's — this worker is SDXL-only and has
+    no raw-YAML/custom-config escape hatch yet):
+      storage_paths / ingest_dir / images : same shape as train_lora_job
+      captions / custom_captions          : same shape as train_lora_job
+      training_config: {rank, alpha, learning_rate, steps, optimizer}
+      keep_tokens: int, default DEFAULT_KEEP_TOKENS — see that constant's
+                   docstring for the multi-subject (duo/group) exception
+      resolution, output_lora_name, job_id, user_id, credits_cost,
+      trigger_word
+
+    KNOWN GAP (2026-09-15): no dynamic cost-guard yet (CLAUDE.md §3) — the
+    ai-toolkit worker's _cost_cap_seconds derives a live abort threshold
+    from a per-arch measured s/it baseline (LORA_SPI_BASELINE); this worker
+    has no such baseline yet (L40S sd-scripts SDXL throughput across a real
+    range of steps/resolutions hasn't been benchmarked — the smoke test is
+    a single data point: 20 steps/1024px/rank16 -> ~1.3s/it). Relies solely
+    on this function's hard `timeout=` for now. Must be measured and wired
+    before this handles unattended paying-customer jobs.
+    """
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[sdxl] vol.reload() skipped: {exc}", flush=True)
+
+    job_id = str(params.get("job_id") or "")
+    user_id = str(params.get("user_id") or "")
+    credits_cost = int(params.get("credits_cost") or 0)
+    lora_name = str(params.get("output_lora_name") or "").strip()
+    if not lora_name or not re.match(r"^[A-Za-z0-9._-]+$", lora_name):
+        raise ValueError(f"invalid output_lora_name: {lora_name!r}")
+    resolution = int(params.get("resolution") or 1024)
+    tc = dict(params.get("training_config") or {})
+    keep_tokens = int(params.get("keep_tokens") or DEFAULT_KEEP_TOKENS)
+    trigger = _derive_trigger(params, lora_name)
+    started = time.time()
+
+    try:
+        if job_id and not _claim_job(
+            job_id,
+            {
+                "status": "processing",
+                "started_at": _now_iso(),
+                "progress_percent": 1,
+                "progress_message": "preparing dataset",
+            },
+        ):
+            print(f"[sdxl] job {job_id} is no longer 'queued' (cancelled/superseded) — aborting", flush=True)
+            return {"aborted": True, "job_id": job_id}
+
+        work_dir = pathlib.Path(_job_output_dir(job_id or lora_name))
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+        dataset_dir = work_dir / "dataset"
+        output_dir = work_dir / "output"
+        image_paths = _stage_dataset(params, dataset_dir, trigger)
+        _patch_job(job_id, {"progress_percent": 10, "progress_message": f"{len(image_paths)}枚を学習準備中"})
+
+        dataset_toml = _write_dataset_toml(str(work_dir), str(dataset_dir), resolution, keep_tokens)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        sys.path.insert(0, SD_SCRIPTS_DIR)
+        args = [sys.executable, f"{SD_SCRIPTS_DIR}/sdxl_train_network.py"] + _build_train_args(
+            lora_name, dataset_toml, str(output_dir), tc, resolution=resolution
+        )
+
+        _patch_job(job_id, {"progress_percent": 15, "progress_message": "学習開始"})
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        last_progress_patch = 0.0
+        tail_lines: list[str] = []
+        for line in proc.stdout:
+            tail_lines.append(line.rstrip("\n"))
+            if len(tail_lines) > 200:
+                tail_lines = tail_lines[-200:]
+            m = _SDXL_STEP_RE.search(line)
+            now = time.time()
+            # ~8s cadence, matching CLAUDE.md §6's async-tab VRAM live-update rate.
+            if m and now - last_progress_patch > 8:
+                cur, total = int(m.group(1)), int(m.group(2))
+                pct = 15 + int(80 * cur / max(1, total))
+                vram = _current_effective_vram_gb()
+                fields: dict = {"progress_percent": min(95, pct), "progress_message": f"学習中 {cur}/{total}"}
+                if vram is not None:
+                    fields["metadata"] = {"vram_used_gb": vram}
+                _patch_job(job_id, fields)
+                last_progress_patch = now
+        returncode = proc.wait()
+        if returncode != 0:
+            raise RuntimeError(f"sd-scripts exited {returncode}:\n" + "\n".join(tail_lines[-40:]))
+
+        produced = sorted(pathlib.Path(output_dir).glob("*.safetensors"))
+        if not produced:
+            raise RuntimeError("sd-scripts finished with no .safetensors output")
+        final_ckpt = produced[-1]
+
+        os.makedirs(LORA_OUTPUT_DIR, exist_ok=True)
+        dest_path = pathlib.Path(LORA_OUTPUT_DIR) / f"{lora_name}.safetensors"
+        shutil.copy2(final_ckpt, dest_path)
+        checkpoints: list[dict] = [
+            {
+                "step": int(tc.get("steps") or 0),
+                "filename": dest_path.name,
+                "size_bytes": dest_path.stat().st_size,
+                "is_final": True,
+            }
+        ]
+        if user_id and job_id:
+            job_ckpt_dir = pathlib.Path(LORA_OUTPUT_DIR) / user_id / job_id
+            job_ckpt_dir.mkdir(parents=True, exist_ok=True)
+            fname = f"{lora_name}_final.safetensors"
+            shutil.copy2(final_ckpt, job_ckpt_dir / fname)
+            checkpoints[0]["path"] = f"loras/{user_id}/{job_id}/{fname}"
+
+        try:
+            shutil.rmtree(work_dir, ignore_errors=True)
+        except Exception as rm_exc:  # noqa: BLE001
+            print(f"[sdxl] work dir cleanup skipped: {rm_exc}", flush=True)
+        vol.commit()
+
+        final_vram = _current_effective_vram_gb()
+        metadata: dict = {"checkpoints": checkpoints}
+        if final_vram is not None:
+            metadata["vram_used_gb"] = final_vram
+        _patch_job(
+            job_id,
+            {
+                "status": "completed",
+                "progress_percent": 100,
+                "progress_message": "done",
+                "result_path": str(dest_path),
+                "video_url": str(dest_path),
+                "metadata": metadata,
+                "completed_at": _now_iso(),
+            },
+        )
+        return {
+            "lora_path": str(dest_path),
+            "lora_filename": dest_path.name,
+            "size_bytes": dest_path.stat().st_size,
+            "num_images": len(image_paths),
+            "trigger_word": trigger,
+            "total_seconds": round(time.time() - started, 1),
+            "checkpoints": checkpoints,
+        }
+    except Exception as exc:  # report + refund, then re-raise
+        print(f"[sdxl] FAILED: {exc}", flush=True)
+        infra = _is_infra_error(exc)
+        # No raw-config escape hatch in this worker yet (unlike train_lora_job's
+        # custom_yaml_override) -> every failure here is either a transient
+        # infra fault or a system-side bug, never a user-authored config crash.
+        # Always refund until a raw/advanced mode is added.
+        should_refund = True
+        _patch_job(
+            job_id,
+            {
+                "status": "failed",
+                "error_message": str(exc)[:2000],
+                "metadata": {"refunded": should_refund, "infra_error": infra},
+                "completed_at": _now_iso(),
+            },
+        )
+        if should_refund:
+            _refund_credits(user_id, credits_cost)
+            print(f"[sdxl] job {job_id} failed — refunded {credits_cost}C", flush=True)
+        raise
+
+
+# GPU-less dispatcher — the future /api/studio/lora/train route.ts branch for
+# arch==="sdxl" POSTs here; mirrors modal_lora_worker.py's train_lora_dispatch
+# shape (auth -> .spawn() -> immediate ACK) so the Next.js side can treat
+# both workers identically once wired up.
+dispatch_image = modal.Image.debian_slim(python_version="3.11").pip_install("fastapi[standard]", "modal", "requests")
+
+
+@app.function(
+    image=dispatch_image,
+    timeout=30,
+    scaledown_window=2,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="POST")
+def train_sdxl_lora_dispatch(item: dict, request: fastapi.Request):
+    _authorize(request)
+    if not item.get("output_lora_name"):
+        raise fastapi.HTTPException(status_code=400, detail="output_lora_name is required")
+    call = train_sdxl_lora_job.spawn(item)
+    return {
+        "ok": True,
+        "spawned": True,
+        "async": True,
+        "modal_call_id": call.object_id,
+        "job_id": item.get("job_id"),
+        "status": "queued",
+    }
 
 
 @app.local_entrypoint()
