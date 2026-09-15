@@ -43,12 +43,19 @@ export function directorCameraLabel(id: string): string {
  * 合成される。実機検証（2026-09-14）で、単純な順番リスト＋自然な繋ぎ言葉
  * だけでも実際にシーンが切り替わることを確認済みだが、切り替えの強さを
  * ユーザー側で明示的に制御したいというホスト要望により追加。先頭シーンは
- * 「直前」が無いため意味を持たない（UIでは非表示）。 */
+ * 「直前」が無いため意味を持たない（UIでは非表示）。
+ *
+ * dialogue: このシーンでキャラクターが話す台詞（任意、2026-09-15追加）。
+ * MiniMax H3 はプロンプト内に `<d>[言語]セリフ</d>` を埋め込むと台詞＋
+ * リップシンクをネイティブに生成できる（別モデル不要 — 調査済み）ため、
+ * シーンごとの台詞をここに持たせ directorPrompt.ts で合成時にこの構文へ
+ * 変換する。言語はテキストから自動判定（looksJapanese）。 */
 export type DirectorScene = {
   camera: DirectorCameraMoveId;
   text: string;
   durationS: number;
   sceneChange?: boolean;
+  dialogue?: string;
 };
 
 /** タイムラインに追加できるシーン数。60秒の実測上限（[[cinematic-video-tab]]
@@ -57,6 +64,12 @@ export type DirectorScene = {
 export const DIRECTOR_MIN_SCENES = 1;
 export const DIRECTOR_MAX_SCENES = 8;
 export const DIRECTOR_SCENE_TEXT_MAX_LENGTH = 200;
+/** シーンごとの台詞の文字数上限（2026-09-15追加）。短い一言〜二言程度を
+ * 想定 — 長すぎる台詞はMiniMax H3の口の動き生成が破綻しやすいため。 */
+export const DIRECTOR_DIALOGUE_MAX_LENGTH = 120;
+/** 動画全体に流す音楽・環境音の指示（任意、シーン単位ではなくグローバル
+ * 1本、2026-09-15追加）。 */
+export const DIRECTOR_MUSIC_MAX_LENGTH = 200;
 
 /** 1シーンあたりの秒数の許容範囲。下限は「モデルがアクションを1つ描写する
  * のに最低限必要な尺」の目安、上限は「1シーンに尺を寄せすぎて実質単一シーン
@@ -183,7 +196,12 @@ export function validateDirectorScenes(scenes: unknown): { ok: true; scenes: Dir
       Math.max(DIRECTOR_MIN_SCENE_DURATION_S, Math.round(Number(durationRaw) || DIRECTOR_SECONDS_PER_SCENE)),
     );
     const sceneChange = (raw as { sceneChange?: unknown })?.sceneChange !== false;
-    cleaned.push({ camera, text, durationS, sceneChange });
+    const dialogueRaw = (raw as { dialogue?: unknown })?.dialogue;
+    const dialogue =
+      typeof dialogueRaw === "string" && dialogueRaw.trim()
+        ? dialogueRaw.trim().slice(0, DIRECTOR_DIALOGUE_MAX_LENGTH)
+        : undefined;
+    cleaned.push({ camera, text, durationS, sceneChange, ...(dialogue ? { dialogue } : {}) });
   }
   if (directorTotalDurationS(cleaned) < cleaned.reduce((acc, s) => acc + s.durationS, 0)) {
     return { ok: false, error: `合計尺は最大${DIRECTOR_MAX_TOTAL_SECONDS}秒までです。` };

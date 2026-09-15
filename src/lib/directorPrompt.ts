@@ -3,6 +3,16 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { geminiApiKey, isSafetyRefusal, runGeminiText, type GemErr } from "@/lib/geminiText";
 import { directorCameraLabel, type DirectorScene } from "@/lib/directorPricing";
 
+// 2026-09-15: MiniMax H3 は音声・映像を同時生成するモデルで、プロンプト内に
+// `<d>[言語]セリフ</d>` を埋め込むと台詞＋リップシンクをネイティブに生成する
+// （GitHub上のMiniMax-AI/MiniMax-H3公式README・実例記事で確認済み — 別モデル
+// 〈LatentSync/MuseTalk等〉は不要）。言語タグは自前でテキストから判定する
+// （Geminiの自己判定に委ねず、looksJapanese() で確定させたものを明示的に
+// 指示へ渡す — 誤判定でリップシンクが無音/別言語になるのを避けるため）。
+function dialogueLanguageTag(text: string): string {
+  return looksJapanese(text) ? "Japanese" : "English";
+}
+
 // Phase 1 (プロンプト拡張): 複数シーンブロック（カメラワーク＋短いアイデア）を
 // MiniMax H3 向けの1本の連続した英語プロンプトに合成する。
 //
@@ -39,13 +49,24 @@ export class DirectorPromptError extends Error {
 // 2026-09-14: シーンごとに「明確な場面転換」か「同じ場面内の継続」かを
 // ユーザーが選べるようにした（sceneChange フラグ、DirectorScene参照）。
 // 先頭シーンは「直前」が無いため常に継続扱い（[CONTINUE]）。
-function buildSceneDirectorPrompt(scenes: DirectorScene[]): string {
+function buildSceneDirectorPrompt(scenes: DirectorScene[], musicDirection?: string): string {
   const sceneLines = scenes
     .map((s, i) => {
       const marker = i === 0 || s.sceneChange === false ? "[CONTINUE]" : "[SCENE CHANGE]";
-      return `${marker} Scene ${i + 1}: camera movement = ${directorCameraLabel(s.camera)}. Action: ${s.text}`;
+      const dialogue = s.dialogue?.trim();
+      const dialogueNote = dialogue
+        ? ` Dialogue spoken in this scene (wrap EXACTLY as <d>[${dialogueLanguageTag(dialogue)}]${dialogue}</d>, verbatim, do not translate or alter the text inside the tag): ${dialogue}`
+        : "";
+      return `${marker} Scene ${i + 1}: camera movement = ${directorCameraLabel(s.camera)}. Action: ${s.text}${dialogueNote}`;
     })
     .join("\n");
+  const musicNote = musicDirection?.trim()
+    ? [
+        "",
+        `Overall music / ambient sound direction for the whole video: ${musicDirection.trim()}`,
+        "Weave this soundtrack direction naturally into the prompt (do not just append it verbatim as a separate sentence at the end).",
+      ].join("\n")
+    : "";
   return [
     "You are an expert cinematic video director.",
     "The user has provided a sequence of scenes with specific camera movements and actions.",
@@ -55,22 +76,25 @@ function buildSceneDirectorPrompt(scenes: DirectorScene[]): string {
     "- [CONTINUE]: treat it as a smooth continuation of the same shot/setting as the previous scene — do not introduce it as a new scene, just let the camera and action flow onward (e.g. \"and then\", \"as the camera continues\").",
     "Follow the given order from first to last. Include lighting and atmosphere.",
     "Preserve the subject's appearance, clothing, and identity exactly as shown in the reference image throughout every scene.",
+    "Some scenes specify a Dialogue line: include that EXACT <d>[Language]...</d> tag (character count and all) at the natural point in that scene's description where the character speaks it — this is a literal syntax the video model requires for lip-synced speech, not a stylistic suggestion. Never invent dialogue for a scene that has none.",
     "Output ONLY the final English prompt text — no preamble, no scene labels, no [SCENE CHANGE]/[CONTINUE] markers, no quotes.",
     "",
     sceneLines,
+    musicNote,
   ].join("\n");
 }
 
 /** シーン配列 → 1本の連続した英語プロンプト。Gemini が拒否/枯渇/輻輳した場合は
- * DirectorPromptError を投げる（呼び出し側は 502/429/503 等へマップする）。 */
-export async function expandDirectorScenes(scenes: DirectorScene[]): Promise<string> {
+ * DirectorPromptError を投げる（呼び出し側は 502/429/503 等へマップする）。
+ * musicDirection: 動画全体の音楽・環境音の指示（任意、2026-09-15追加）。 */
+export async function expandDirectorScenes(scenes: DirectorScene[], musicDirection?: string): Promise<string> {
   const apiKey = geminiApiKey();
   if (!apiKey) {
     throw new DirectorPromptError("AI 機能が未設定です（GEMINI_API_KEY 未設定）。", "not_configured");
   }
   const genAI = new GoogleGenerativeAI(apiKey);
   try {
-    const raw = await runGeminiText(genAI, buildSceneDirectorPrompt(scenes), false);
+    const raw = await runGeminiText(genAI, buildSceneDirectorPrompt(scenes, musicDirection), false);
     const cleaned = raw.trim().replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
     if (!cleaned) {
       throw new DirectorPromptError("プロンプトの合成に失敗しました（空の応答）。", "failed");

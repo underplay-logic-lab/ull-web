@@ -12,8 +12,15 @@ export type DirectorStartResult = {
 };
 
 export type DirectorStartArgs = (
-  | { userId: string; image: File; scenes: DirectorScene[]; rawPrompt?: undefined }
-  | { userId: string; image: File; rawPrompt: string; rawDurationS: number; scenes?: undefined }
+  | {
+      userId: string;
+      image: File;
+      scenes: DirectorScene[];
+      rawPrompt?: undefined;
+      /** 動画全体の音楽・環境音の指示（任意、シーンビルダー限定・2026-09-15追加）。 */
+      musicDirection?: string;
+    }
+  | { userId: string; image: File; rawPrompt: string; rawDurationS: number; scenes?: undefined; musicDirection?: undefined }
 ) & {
   quality: DirectorQualityMode;
   /** true: 実行中のジョブを待たず並列で今すぐ実行（追加料金）。既定 false = 順番待ち。 */
@@ -31,7 +38,13 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
   const body =
     "rawPrompt" in args && args.rawPrompt !== undefined
       ? { storagePath, rawPrompt: args.rawPrompt, rawDurationS: args.rawDurationS, quality: args.quality, priority }
-      : { storagePath, scenes: args.scenes, quality: args.quality, priority };
+      : {
+          storagePath,
+          scenes: args.scenes,
+          musicDirection: args.musicDirection,
+          quality: args.quality,
+          priority,
+        };
 
   const res = await fetch("/api/director/generate", {
     method: "POST",

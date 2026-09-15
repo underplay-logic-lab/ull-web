@@ -20,11 +20,13 @@ import {
 } from "lucide-react";
 import {
   DIRECTOR_CAMERA_MOVES,
+  DIRECTOR_DIALOGUE_MAX_LENGTH,
   DIRECTOR_MAX_SCENE_DURATION_S,
   DIRECTOR_MAX_SCENES,
   DIRECTOR_MAX_TOTAL_SECONDS,
   DIRECTOR_MIN_SCENE_DURATION_S,
   DIRECTOR_MIN_SCENES,
+  DIRECTOR_MUSIC_MAX_LENGTH,
   DIRECTOR_SCENE_TEXT_MAX_LENGTH,
   DIRECTOR_SECONDS_PER_SCENE,
   directorCostBreakdown,
@@ -263,6 +265,9 @@ export function DirectorStudioTab() {
   // CINEMATIC_MODE_BY_ID.vdnFast / .vdnQuality 参照。
   const [qualityMode, setQualityMode] = useState<DirectorQualityMode>("fast");
 
+  // 動画全体の音楽・環境音の指示（任意・シーンビルダー限定、2026-09-15追加）。
+  const [musicDirection, setMusicDirection] = useState("");
+
   // プロンプトモード（結果画面でコピペしたプロンプトを微修正して直接
   // 再生成する経路、2026-09-14）。uiMode="prompt" の間はシーンビルダーの
   // 代わりにテキストエリア＋尺セレクタを表示し、handleRun はこちらの値を送る。
@@ -284,7 +289,13 @@ export function DirectorStudioTab() {
 
   const [queueChoiceOpen, setQueueChoiceOpen] = useState(false);
   type QueuedSnapshot =
-    | { uiMode: "scenes"; image: File; scenes: DirectorScene[]; quality: DirectorQualityMode }
+    | {
+        uiMode: "scenes";
+        image: File;
+        scenes: DirectorScene[];
+        quality: DirectorQualityMode;
+        musicDirection: string;
+      }
     | {
         uiMode: "prompt";
         image: File;
@@ -356,11 +367,17 @@ export function DirectorStudioTab() {
     cost > 0 &&
     (uiMode === "prompt" ? promptDraft.trim().length > 0 : scenes.every((s) => s.text.trim().length > 0));
 
+  // セリフ・音楽の指示はFastモード(8step蒸留・音声モダリティ非対応)では
+  // 反映されない（cinematicPricing.ts の vdnFast.hasAudio 参照）。強制切替は
+  // せず警告のみ（2026-09-15 ホスト判断）。
+  const hasAudioDirection =
+    uiMode === "scenes" && (scenes.some((s) => Boolean(s.dialogue?.trim())) || musicDirection.trim().length > 0);
+
   const buildSnapshot = (): QueuedSnapshot | null => {
     if (!image) return null;
     return uiMode === "prompt"
       ? { uiMode: "prompt", image, rawPrompt: promptDraft.trim(), rawDurationS: promptDraftDurationS, quality: qualityMode }
-      : { uiMode: "scenes", image, scenes, quality: qualityMode };
+      : { uiMode: "scenes", image, scenes, quality: qualityMode, musicDirection: musicDirection.trim() };
   };
 
   const handleRun = () => {
@@ -428,6 +445,7 @@ export function DirectorStudioTab() {
                 userId: user.id,
                 image: snapshot.image,
                 scenes: snapshot.scenes,
+                musicDirection: snapshot.musicDirection || undefined,
                 quality: snapshot.quality,
                 priority: opts.priority,
               });
@@ -628,6 +646,15 @@ export function DirectorStudioTab() {
                     placeholder="例: 振り返って微笑む"
                     className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted"
                   />
+                  <input
+                    type="text"
+                    value={scene.dialogue ?? ""}
+                    onChange={(e) =>
+                      updateScene(i, { dialogue: e.target.value.slice(0, DIRECTOR_DIALOGUE_MAX_LENGTH) || undefined })
+                    }
+                    placeholder="セリフ（任意・リップシンク対応。例: こんにちは）"
+                    className="mt-1.5 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted"
+                  />
                   {i > 0 && (
                     <label className="mt-2 flex items-center gap-1.5 text-[11px] text-muted">
                       <input
@@ -653,6 +680,19 @@ export function DirectorStudioTab() {
                 シーンを追加（最大{DIRECTOR_MAX_SCENES}・合計{DIRECTOR_MAX_TOTAL_SECONDS}秒まで）
               </button>
             )}
+
+            <div className="mt-3">
+              <label className="mb-1 block text-[11px] font-medium text-muted">
+                音楽・環境音の指示（任意・動画全体に反映）
+              </label>
+              <input
+                type="text"
+                value={musicDirection}
+                onChange={(e) => setMusicDirection(e.target.value.slice(0, DIRECTOR_MUSIC_MAX_LENGTH))}
+                placeholder="例: 明るいアコースティックギターのBGM"
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted"
+              />
+            </div>
 
             <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
               <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
@@ -693,6 +733,12 @@ export function DirectorStudioTab() {
               );
             })}
           </div>
+          {hasAudioDirection && qualityMode === "fast" && (
+            <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-400">
+              <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+              セリフ・音楽の指定はFastモードでは反映されません（音声非対応）。反映させるにはQualityモードを選んでください。
+            </p>
+          )}
         </div>
 
         <div className="rounded-xl border border-border bg-background p-4">

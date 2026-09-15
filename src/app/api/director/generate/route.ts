@@ -7,6 +7,7 @@ import { readImageDimensions } from "@/lib/imageDimensions";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import {
   DIRECTOR_MAX_TOTAL_SECONDS,
+  DIRECTOR_MUSIC_MAX_LENGTH,
   DIRECTOR_SECONDS_PER_SCENE,
   directorCostBreakdown,
   directorCostBreakdownForDuration,
@@ -81,6 +82,13 @@ export async function POST(request: Request) {
   const rawPromptInput = typeof body.rawPrompt === "string" ? body.rawPrompt.trim() : "";
   const isPromptMode = rawPromptInput.length > 0;
 
+  // 音楽・環境音の指示（任意、2026-09-15追加。シーンビルダー限定 — プロンプト
+  // モードは既に完成した英文を直接編集できるので専用欄を設けない）。
+  const musicDirectionInput =
+    !isPromptMode && typeof body.musicDirection === "string"
+      ? body.musicDirection.trim().slice(0, DIRECTOR_MUSIC_MAX_LENGTH)
+      : "";
+
   let scenes: DirectorScene[] = [];
   if (!isPromptMode) {
     const validated = validateDirectorScenes(body.scenes);
@@ -90,7 +98,12 @@ export async function POST(request: Request) {
     scenes = validated.scenes;
 
     // レッドライン・フィルター（他の生成系エンドポイントと同一の入口対策）。
-    const policyResult = evaluateContentPolicyMany(scenes.map((s) => s.text));
+    // 台詞・音楽指示もユーザー入力テキストなので同じチェックに含める。
+    const policyResult = evaluateContentPolicyMany([
+      ...scenes.map((s) => s.text),
+      ...scenes.map((s) => s.dialogue).filter((d): d is string => Boolean(d)),
+      ...(musicDirectionInput ? [musicDirectionInput] : []),
+    ]);
     if (policyResult.blocked) {
       logContentPolicyBlock("director/generate", policyResult, user.id);
       return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
@@ -180,7 +193,7 @@ export async function POST(request: Request) {
     }
   } else {
     try {
-      combinedPrompt = await expandDirectorScenes(scenes);
+      combinedPrompt = await expandDirectorScenes(scenes, musicDirectionInput || undefined);
     } catch (err) {
       const e = err as DirectorPromptError;
       const status = e.reason === "quota" ? 429 : e.reason === "busy" ? 503 : e.reason === "not_configured" ? 501 : 502;
@@ -223,6 +236,7 @@ export async function POST(request: Request) {
         total_duration_s: breakdown.totalDurationS,
         prompt_mode: isPromptMode,
         quality_mode: qualityMode,
+        music_direction: musicDirectionInput || null,
       },
       credits_cost: creditsCost,
       metadata: {
