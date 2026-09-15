@@ -440,41 +440,67 @@ const COUNT_GENDER_TAG_RE =
 const GENDER_AGE_TAG_RE = /^(1girl|1boy|1man|1woman)$/i;
 
 /**
- * Forces `subject`'s fixedTags into `caption` — SOLO shots only (exactly one
- * registered subject present). Strips whatever Danbooru count/gender/solo-ish
- * tag(s) the model wrote right after the trigger (if any) and splices in the
- * fixed tags instead, so the result is deterministic regardless of what the
- * model guessed. A no-op when the caption isn't a solo shot, or the matched
- * subject has no fixedTags configured (legacy AI-guess behaviour applies —
- * see normalizeSubjectTags for that path's post-hoc consistency backstop).
+ * Forces fixedTags into `caption`, for BOTH solo shots and group/duo shots
+ * where every present registered subject has fixedTags configured:
+ *   - SOLO (1 subject present): splices that subject's full fixedTags
+ *     verbatim (e.g. "1woman, solo, female") — unchanged from the original
+ *     design.
+ *   - GROUP (2+ subjects present, e.g. a duo photo): "solo" obviously
+ *     doesn't apply, and there's no single subject to attribute one fixed
+ *     tag set to — but each present subject's own count/gender word (the
+ *     FIRST token of their fixedTags, e.g. "1woman" out of "1woman, solo,
+ *     female") CAN be deterministically attributed, since
+ *     matchLeadingSubjectTriggers already identified exactly which
+ *     registered subjects are in the leading trigger run (2026-09-15, host
+ *     report: a duo photo of "hitozuma" (configured 1woman) and "kocho"
+ *     (configured 1man) still came out as "hitozuma, kocho, 1girl, 1man, …"
+ *     — the model's own free guess for hitozuma, never corrected, because
+ *     group shots were previously left entirely untouched). Only fires when
+ *     ALL present subjects have fixedTags — a mix of fixed/unfixed subjects
+ *     has no reliable per-person attribution, so it's left as the model
+ *     wrote it (matching the pre-2026-09-15 behaviour for that case).
+ * A no-op when the caption matches no registered subject, or (group case)
+ * when at least one present subject has no fixedTags configured.
  */
 export function applySubjectFixedTags(caption: string, subjects: LoraSubject[]): string {
   const present = matchLeadingSubjectTriggers(caption, subjects);
-  if (present.length !== 1) return caption;
-  const fixed = present[0].fixedTags?.trim();
-  if (!fixed) return caption;
+  if (present.length === 0) return caption;
+  if (!present.every((s) => s.fixedTags?.trim())) return caption;
+
   const tokens = caption.trim().split(/\s*[,、]\s*/);
-  let i = 1; // tokens[0] is the (sole) matched trigger
+  let i = present.length; // tokens[0..present.length-1] are the matched triggers
   while (i < tokens.length && COUNT_GENDER_TAG_RE.test(tokens[i]?.trim() ?? "")) i++;
   const rest = tokens.slice(i).join(", ").trim();
-  return rest ? `${present[0].trigger}, ${fixed}, ${rest}` : `${present[0].trigger}, ${fixed}`;
+
+  const triggerBlock = present.map((s) => s.trigger).join(", ");
+  const tagBlock =
+    present.length === 1
+      ? present[0].fixedTags!.trim()
+      : present.map((s) => s.fixedTags!.trim().split(/\s*,\s*/)[0]).join(", ");
+
+  return rest ? `${triggerBlock}, ${tagBlock}, ${rest}` : `${triggerBlock}, ${tagBlock}`;
 }
 
 /**
  * Post-hoc consistency pass over a whole batch of already-generated captions
  * (2026-09-15, host report: the same recurring character tagged 1girl in
  * some photos and 1woman in others; separately, some images missing any
- * count/gender tag at all — asking the vision model to freely (re-)judge
- * this per image, across independent API calls with no shared memory,
- * isn't reliable enough on its own). For each SOLO-shot entry (exactly one
- * registered subject present):
- *   - if that subject has fixedTags configured, FORCE them (deterministic,
- *     same as applySubjectFixedTags — this is the primary fix now);
- *   - otherwise, fall back to majority-vote among that subject's OTHER
- *     AI-guessed 1girl/1boy/1man/1woman tags (legacy best-effort behaviour
- *     for subjects nobody bothered to pin down explicitly).
- * Group shots are never touched: there's no reliable way to attribute which
- * of several tags/fixedTags belongs to which subject.
+ * count/gender tag at all; separately again, a duo/group photo of two
+ * registered subjects still had the model's own free-guessed gender tags —
+ * asking the vision model to freely (re-)judge this per image, across
+ * independent API calls with no shared memory, isn't reliable enough on its
+ * own). For each entry with 1+ registered subjects present:
+ *   - if EVERY present subject has fixedTags configured, FORCE them
+ *     (deterministic, same as applySubjectFixedTags — works for solo AND
+ *     group/duo shots now, since matchLeadingSubjectTriggers already
+ *     resolves exactly which subjects are in the leading trigger run);
+ *   - otherwise, for a SOLO shot (exactly one subject, no fixedTags), fall
+ *     back to majority-vote among that subject's OTHER AI-guessed
+ *     1girl/1boy/1man/1woman tags (legacy best-effort behaviour for
+ *     subjects nobody bothered to pin down explicitly);
+ *   - a group/duo shot where at least one present subject has NO fixedTags
+ *     is left untouched — there's no reliable way to attribute a tag to an
+ *     unconfigured subject.
  *
  * Returns a Map of id -> corrected caption, containing ONLY the entries that
  * actually need to change — callers apply it as a sparse patch (both
@@ -492,14 +518,15 @@ export function normalizeSubjectTags(
   for (const { id, caption } of entries) {
     if (!caption.trim()) continue;
     const present = matchLeadingSubjectTriggers(caption, subjects);
-    if (present.length !== 1) continue;
-    const subject = present[0];
+    if (present.length === 0) continue;
 
-    if (subject.fixedTags?.trim()) {
+    if (present.every((s) => s.fixedTags?.trim())) {
       const fixed = applySubjectFixedTags(caption, subjects);
       if (fixed !== caption.trim()) fixes.set(id, fixed);
       continue;
     }
+    if (present.length !== 1) continue; // group shot, not fully fixed-tagged — leave as-is
+    const subject = present[0];
 
     const tokens = caption.trim().split(/\s*[,、]\s*/);
     const tag = tokens[1]?.trim();
