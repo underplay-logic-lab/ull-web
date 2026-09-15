@@ -786,43 +786,51 @@ export function DirectorStudioTab() {
                 <VramBadge gb={job.vramUsedGb} />
               </div>
             )}
+          </div>
+        )}
 
-            {job.combinedPrompt && (
-              <div className="mt-4 flex flex-col gap-3 border-t border-border pt-3">
+        {/* プロンプト表示は動画の完成を待たない: シーン合成(Gemini)はジョブ
+            作成と同時に終わっており、動画のレンダリングより先に
+            combinedPrompt が確定している。生成中(running)の段階からここに
+            出すことで、レンダリング待ちの間に「編集して次を予約」できる
+            ようにする（2026-09-15 ホスト報告 — 完成後にしか出ないと、実行中
+            に次のジョブを編集して予約する運用ができなかった）。 */}
+        {job?.combinedPrompt && (
+          <div className="rounded-xl border border-border bg-background p-3">
+            <div className="flex flex-col gap-3">
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="text-[11px] font-mono uppercase tracking-widest text-muted">
+                    生成に使われたプロンプト（英語）
+                  </span>
+                  <CopyButton text={job.combinedPrompt} label="コピー" />
+                </div>
+                <p className="max-h-32 overflow-y-auto rounded-lg border border-border bg-surface p-2.5 text-[12px] leading-relaxed text-muted">
+                  {job.combinedPrompt}
+                </p>
+              </div>
+
+              {job.combinedPromptJa && (
                 <div>
                   <div className="mb-1 flex items-center justify-between">
-                    <span className="text-[11px] font-mono uppercase tracking-widest text-muted">
-                      生成に使われたプロンプト（英語）
-                    </span>
-                    <CopyButton text={job.combinedPrompt} label="コピー" />
+                    <span className="text-[11px] font-mono uppercase tracking-widest text-muted">日本語訳</span>
+                    <CopyButton text={job.combinedPromptJa} label="コピー" />
                   </div>
                   <p className="max-h-32 overflow-y-auto rounded-lg border border-border bg-surface p-2.5 text-[12px] leading-relaxed text-muted">
-                    {job.combinedPrompt}
+                    {job.combinedPromptJa}
                   </p>
                 </div>
+              )}
 
-                {job.combinedPromptJa && (
-                  <div>
-                    <div className="mb-1 flex items-center justify-between">
-                      <span className="text-[11px] font-mono uppercase tracking-widest text-muted">日本語訳</span>
-                      <CopyButton text={job.combinedPromptJa} label="コピー" />
-                    </div>
-                    <p className="max-h-32 overflow-y-auto rounded-lg border border-border bg-surface p-2.5 text-[12px] leading-relaxed text-muted">
-                      {job.combinedPromptJa}
-                    </p>
-                  </div>
-                )}
-
-                <button
-                  type="button"
-                  onClick={enterPromptMode}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-neon-violet/40"
-                >
-                  <Pencil size={14} />
-                  このプロンプトを編集して再生成
-                </button>
-              </div>
-            )}
+              <button
+                type="button"
+                onClick={enterPromptMode}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-neon-violet/40"
+              >
+                <Pencil size={14} />
+                {phase === "done" ? "このプロンプトを編集して再生成" : "このプロンプトを編集して次を予約"}
+              </button>
+            </div>
           </div>
         )}
       </div>

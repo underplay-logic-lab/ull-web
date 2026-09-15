@@ -252,6 +252,31 @@ image = (
     .run_commands(
         f"git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git"
         f" {COMFY_DIR}/custom_nodes/ComfyUI-VideoHelperSuite",
+        # 2026-09-15 実障害の修正: VHS_VideoCombine.combine_video()（nodes.py）
+        # は audio['waveform'] を .cpu() を挟まず直接 .numpy().tobytes() して
+        # おり、ComfyUI コア側の VAEDecodeAudio（comfy_extras/nodes_audio.py の
+        # vae_decode_audio）が waveform を GPU 上のテンソルのまま返す
+        # （.cpu() を呼んでいない）ため、この2つを繋ぐと必ず
+        # "can't convert cuda:0 device type tensor to numpy" でクラッシュする
+        # （GitHub 上の両方のソースを直接確認して特定 — CLAUDE.md §0の「読める
+        # ソースは実機再検証より先に読む」方針どおり）。ComfyUI コア純正の
+        # SaveAudio ノード（comfy_api/latest の AudioSaveHelper.save_audio）は
+        # 同じ状況で `audio["waveform"].cpu()` を明示的に呼んでおり、これが
+        # 本来あるべき挙動。VideoHelperSuite はバージョン固定していない
+        # （CLAUDE.md §1のバージョン固定方針の例外 — 元々SaveVideoの一時バグ
+        # 回避のためだけに採用した経緯があり、特定タグへの意図的な追従理由が
+        # 無かった）ため、直接パッチして `.numpy().tobytes()` の直前に
+        # `.cpu()` を挿入する。既にCPU上のテンソルに対して `.cpu()` を呼んでも
+        # 何もしない（no-op）ので、他の `.numpy().tobytes()` 呼び出し（映像
+        # フレーム側等）に副作用は無い。VideoHelperSuite が将来この関数を
+        # 書き換えて対象文字列が消えた場合は assert で気づけるようにする。
+        "python3 -c \""
+        "import pathlib; "
+        f"p = pathlib.Path('{COMFY_DIR}/custom_nodes/ComfyUI-VideoHelperSuite/videohelpersuite/nodes.py'); "
+        "s = p.read_text(); "
+        "s2 = s.replace('.numpy().tobytes()', '.cpu().numpy().tobytes()'); "
+        "assert s2 != s, 'VHS nodes.py: .numpy().tobytes() not found — patch target moved, check upstream'; "
+        "p.write_text(s2)\"",
         # kijai/ComfyUI-KJNodes ships PathchSageAttentionKJ — a per-model
         # "patch this model to route through the sageattention package
         # built above" node. Note there's no separate "ComfyUI-EasyCache"
@@ -1176,6 +1201,23 @@ class WanAnimateBlackwell:
                 entry = hist[prompt_id]
                 status = entry.get("status", {})
                 outputs = entry.get("outputs", {})
+
+                # 2026-09-15 実障害: ここが status を一切見ず outputs 追跡失敗時に
+                # 「output/ ディレクトリで一番新しいファイル」へフォールバックして
+                # いたため、途中のノードが例外で落ちても「たまたま output/ に
+                # 残っていた別ファイル（例: 音声結合前の映像のみのmp4）」を成功
+                # として返してしまっていた（VHS_VideoCombineが音声テンソルの
+                # cuda->cpu変換漏れでクラッシュ、映像は書き出し済みだったケース
+                # — 下の VideoHelperSuite パッチ参照）。ComfyUI の history
+                # エントリは ExecutionStatus（status_str: 'success'|'error'）を
+                # 持つので、'error' ならここで即座に失敗として扱う（output/ の
+                # スキャンは一切行わない — 中途半端な成果物を成功扱いしない）。
+                if status.get("status_str") == "error":
+                    raise RuntimeError(
+                        f"ComfyUI prompt execution failed.\n"
+                        f"status: {json.dumps(status, ensure_ascii=False)}\n"
+                        f"outputs so far: {json.dumps(outputs, ensure_ascii=False)}"
+                    )
 
                 ordered_node_outputs = list(outputs.values())
                 if output_node_id and output_node_id in outputs:
