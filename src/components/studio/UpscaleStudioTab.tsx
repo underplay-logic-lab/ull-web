@@ -113,9 +113,11 @@ function ImageDropzone({
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // 型チェックは親の handleImageSelected に委ねる（動画等を無言で無視する
+  // 不具合の再発防止。2026-09-15、Cinematic Directorで発覚・水平展開）。
   const handleFiles = (files: FileList | null) => {
     const picked = files?.[0];
-    if (picked && picked.type.startsWith("image/")) onFileSelected(picked);
+    if (picked) onFileSelected(picked);
   };
 
   return (
@@ -369,6 +371,14 @@ export function UpscaleStudioTab() {
   }, [modeId, modelKey]);
 
   const handleImageSelected = useCallback((file: File) => {
+    if (!file.type.startsWith("image/")) {
+      setImageError(
+        file.type.startsWith("video/")
+          ? "動画ファイルはこちらでは使えません。「動画超解像」タブをお使いください。"
+          : "画像ファイルのみ対応しています。",
+      );
+      return;
+    }
     if (file.size > MAX_INPUT_BYTES) {
       setImageError("画像ファイルが大きすぎます。25MB 以下の画像を選んでください。");
       return;
@@ -406,15 +416,30 @@ export function UpscaleStudioTab() {
 
   const addBatchFiles = useCallback((files: FileList | File[] | null) => {
     if (!files) return;
-    const incoming = Array.from(files).filter(
-      (f) => f.type.startsWith("image/") && f.size <= MAX_INPUT_BYTES,
-    );
-    if (incoming.length === 0) return;
-    setBatchError(null);
+    const all = Array.from(files);
+    const incoming = all.filter((f) => f.type.startsWith("image/") && f.size <= MAX_INPUT_BYTES);
+    // 画像以外・25MB超過は黙って無視せず、まとめて件数を報告する
+    // （2026-09-15、Cinematic Directorでの単一画像ドロップの不具合を
+    // 水平展開・バッチ版）。
+    const rejected = all.length - incoming.length;
+    if (incoming.length === 0) {
+      if (rejected > 0) {
+        setBatchError(
+          `${rejected} 件は画像ファイルとして認識できないか、25MB を超えていたため除外しました。`,
+        );
+      }
+      return;
+    }
     setBatchItems((prev) => {
       const room = Math.max(0, UPSCALE_BATCH_MAX_ITEMS - prev.length);
       if (incoming.length > room) {
         setBatchError(`一度に処理できるのは最大 ${UPSCALE_BATCH_MAX_ITEMS} 枚です。`);
+      } else if (rejected > 0) {
+        setBatchError(
+          `${rejected} 件は画像ファイルとして認識できないか、25MB を超えていたため除外しました。`,
+        );
+      } else {
+        setBatchError(null);
       }
       const toAdd = incoming.slice(0, room);
       return [...prev, ...toAdd.map((file) => ({ file, dims: null }))];

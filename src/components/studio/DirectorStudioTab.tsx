@@ -101,11 +101,26 @@ function ImageDropzone({
   onClear: () => void;
 }) {
   const [isDragging, setIsDragging] = useState(false);
+  const [rejectError, setRejectError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFiles = (files: FileList | null) => {
     const picked = files?.[0];
-    if (picked && picked.type.startsWith("image/")) onFileSelected(picked);
+    if (!picked) return;
+    if (picked.type.startsWith("image/")) {
+      setRejectError(null);
+      onFileSelected(picked);
+    } else {
+      // 2026-09-15 ホスト報告: 動画ファイル(MP4等)を誤ってドロップしても
+      // 何のフィードバックも無く無視されるだけだった（「読み込まない」と
+      // 誤解される原因）。起点画像は静止画のみ対応 — 動画入力の機能は無い
+      // ことを明示する。
+      setRejectError(
+        picked.type.startsWith("video/")
+          ? "動画ファイルは使えません。起点となる1枚の静止画（PNG/JPEG/WebP等）を選んでください。"
+          : "画像ファイルのみ対応しています。",
+      );
+    }
   };
 
   return (
@@ -157,6 +172,12 @@ function ImageDropzone({
           <span className="text-sm font-medium text-foreground">起点となる参照画像をドロップ / 選択</span>
           <span className="text-[11px] text-muted">この画像から動画が始まります（キャラ・服装・背景を維持）</span>
         </button>
+      )}
+      {rejectError && (
+        <p className="mt-2 flex items-center gap-1.5 text-[11px] text-red-400">
+          <AlertTriangle size={12} className="shrink-0" />
+          {rejectError}
+        </p>
       )}
     </div>
   );

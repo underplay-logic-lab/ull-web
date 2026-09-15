@@ -2244,6 +2244,20 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         }
       }
       zips.forEach((z) => void importZip(z));
+
+      // 画像でもZIPでも.txtでもないファイル（動画等）は、これまで何の
+      // フィードバックも無く黙って無視されていた（2026-09-15、Cinematic
+      // Directorでの同種の不具合を水平展開して修正）。
+      const recognized = new Set<File>([...imgs, ...zips, ...txts]);
+      const rejected = arr.filter((f) => !recognized.has(f));
+      if (rejected.length) {
+        setErrorMessage(
+          `${rejected.length} 件は画像/ZIP/.txt として認識できず除外しました（${rejected
+            .slice(0, 3)
+            .map((f) => f.name)
+            .join(", ")}${rejected.length > 3 ? " ほか" : ""}）。PNG/JPG/WEBP か ZIP を選んでください。`,
+        );
+      }
     },
     [addDatasetFiles, importZip],
   );

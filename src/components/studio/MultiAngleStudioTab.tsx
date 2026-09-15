@@ -111,9 +111,14 @@ function ImageDropzone({
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // 型チェックはここで弾かず onFileSelected（親の handleImageSelected）に
+  // 委ねる — 動画等を弾いても何のフィードバックも無く無視されるだけだった
+  // 不具合（2026-09-15、Cinematic Directorで発覚・水平展開）の再発防止。
+  // 親側は既にサイズ超過のエラー表示(imageError)を持っているので、そこに
+  // 型チェックも合流させる。
   const handleFiles = (files: FileList | null) => {
     const picked = files?.[0];
-    if (picked && picked.type.startsWith("image/")) onFileSelected(picked);
+    if (picked) onFileSelected(picked);
   };
 
   return (
@@ -231,7 +236,7 @@ function SubReferenceSlots({
         className="hidden"
         onChange={(e) => {
           const picked = e.target.files?.[0];
-          if (picked && picked.type.startsWith("image/")) onAdd(picked);
+          if (picked) onAdd(picked);
           e.target.value = "";
         }}
       />
@@ -265,7 +270,7 @@ function SubReferenceSlots({
             onDrop={(e) => {
               e.preventDefault();
               const picked = e.dataTransfer.files?.[0];
-              if (picked && picked.type.startsWith("image/")) onAdd(picked);
+              if (picked) onAdd(picked);
             }}
             className="flex aspect-square flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border bg-background text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
           >
@@ -556,6 +561,14 @@ export function MultiAngleStudioTab() {
   const [imageError, setImageError] = useState<string | null>(null);
 
   const handleImageSelected = useCallback((file: File) => {
+    if (!file.type.startsWith("image/")) {
+      setImageError(
+        file.type.startsWith("video/")
+          ? "動画ファイルは使えません。静止画（PNG/JPEG等）を選んでください。"
+          : "画像ファイルのみ対応しています。",
+      );
+      return;
+    }
     if (file.size > MAX_SOURCE_BYTES) {
       setImageError("画像ファイルが大きすぎます。25MB 以下の画像を選んでください。");
       return;
@@ -570,6 +583,14 @@ export function MultiAngleStudioTab() {
   const [subImageError, setSubImageError] = useState<string | null>(null);
 
   const handleAddSubImage = useCallback((file: File) => {
+    if (!file.type.startsWith("image/")) {
+      setSubImageError(
+        file.type.startsWith("video/")
+          ? "動画ファイルは使えません。静止画（PNG/JPEG等）を選んでください。"
+          : "画像ファイルのみ対応しています。",
+      );
+      return;
+    }
     if (file.size > MAX_SOURCE_BYTES) {
       setSubImageError("画像ファイルが大きすぎます。25MB 以下の画像を選んでください。");
       return;
