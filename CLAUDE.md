@@ -46,6 +46,7 @@ ULL Studio の差別化は「ローカル PC でも他の SaaS でも不可能�
 - **Python Version**: 必ず **Python 3.13**（`modal.Image.debian_slim(python_version="3.13")`）を使用すること。古い Python 3.11/3.12 へのダウングレードは永久に禁止する。
 - **CUDA / PyTorch**: 必ず **CUDA 13.0 (cu130)** を使用すること。
   - インストール元: `--index-url https://download.pytorch.org/whl/cu130 --extra-index-url https://download.pytorch.org/whl/nightly/cu130`
+  - **例外（2026-09-15、ホスト明言）**: この Python 3.13 / CUDA 13.0 統一は、**もともと ComfyUI ベースのワーカー（動画生成系）を想定して決めた基準**であり、ComfyUI を使わない新規ワーカー（例: kohya-ss/sd-scripts ベースの SDXL 専用学習ワーカー）にはこだわりが無い。そのトレーナー自身が公式に推奨・検証している Python / CUDA / PyTorch の組み合わせをそのまま使ってよい（例: sd-scripts は README 上、Python 3.10 でテスト済み・3.11/3.12 は未テスト、Blackwell（RTX 50 系）向けには PyTorch 2.8.0 + **CUDA 12.8/12.9** を明示的に推奨しており cu130 ではない）。Modal の各ワーカーはそれぞれ独立した image を持つため、あるワーカーが cu130 以外を使っても他のワーカーに影響しない。採用する場合は、そのワーカー自身の冒頭コメントに「なぜこのバージョン組み合わせにしたか（トレーナー公式の推奨に従った、等）」を明記すること。
 - **GPU Architecture**: 標準 GPU は **Blackwell（`GPU_REQUEST = ["b300", "b200"]` または `"b200"`）** を使用すること。
 - **モデル精度（量子化禁止）**: 推論・学習とも **BF16 フル精度を既定**とし、量子化（fp8 / int8 / int4 / NF4 / GGUF 等）およびモデルオフロード（CPU offload / sequential offload）は原則使用しない。Blackwell の大 VRAM を活かしてフル精度のまま常駐させるのが ULL Studio の基本方針。量子化・オフロードをどうしても使う場合は、実機計測で品質・速度の劣化がないことを示したうえでホスト承認を得ること。
 - **GPU（B300）は「GPU が必須な本番処理」でのみ使う（必須）**: 本番の推論・学習でのみ Blackwell GPU コンテナを起動する。**それ以外の目的で `gpu=` 付きコンテナを起動しない**:
