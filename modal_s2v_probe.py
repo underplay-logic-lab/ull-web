@@ -173,6 +173,58 @@ def cpu_probe() -> dict:
     return report
 
 
+def _start_gpu_monitor(interval_s: float = 8.0) -> "tuple[object, object]":
+    """CLAUDE.md §1: 時間のかかるGPUジョブはGPU使用率/VRAMを定期ログすること。
+    バックグラウンドスレッドで nvidia-smi を叩き続け、[gpu_monitor] 行を
+    print(flush=True) する。呼び出し側は返り値の (thread, stop_event) を
+    保持し、ジョブ終了時に stop_event.set(); thread.join() すること。"""
+    import subprocess
+    import threading
+    import time as _time
+
+    stop_event = threading.Event()
+    started = _time.time()
+
+    def _loop() -> None:
+        while not stop_event.is_set():
+            try:
+                out = subprocess.run(
+                    [
+                        "nvidia-smi",
+                        "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
+                        "--format=csv,noheader,nounits",
+                    ],
+                    capture_output=True, text=True, timeout=5,
+                )
+                util, mem_used, mem_total, temp = (x.strip() for x in out.stdout.strip().split(","))
+                elapsed = _time.time() - started
+                print(
+                    f"[gpu_monitor] t={elapsed:.1f}s util={util}% "
+                    f"vram={float(mem_used) / 1024:.1f}/{float(mem_total) / 1024:.1f}GB temp={temp}C",
+                    flush=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[gpu_monitor] error: {exc}", flush=True)
+            stop_event.wait(interval_s)
+
+    thread = threading.Thread(target=_loop, daemon=True)
+    thread.start()
+    return thread, stop_event
+
+
+@app.function(image=base_image, gpu="t4", volumes={MODELS_DIR: vol}, timeout=120)
+def test_gpu_monitor() -> str:
+    """CLAUDE.md §1: 監視ロジック自体の動作確認はB300ではなく最安tier(T4)で
+    先にやる。実際の生成はせず、監視スレッドが正しく動くかだけ約20秒間確認。"""
+    import time
+
+    thread, stop_event = _start_gpu_monitor(interval_s=5.0)
+    time.sleep(22)
+    stop_event.set()
+    thread.join(timeout=5)
+    return "gpu_monitor smoke test done — see [gpu_monitor] lines above"
+
+
 @app.function(image=base_image, gpu="t4", volumes={MODELS_DIR: vol}, timeout=300)
 def cheap_gpu_import_probe() -> str:
     """CLAUDE.md §1: 「GPUの存在自体は必要だが計算力は不要」なケースは最安
@@ -192,7 +244,10 @@ def cheap_gpu_import_probe() -> str:
     image=base_image,
     gpu=GPU_REQUEST,
     volumes={MODELS_DIR: vol},
-    timeout=3600,
+    # 2026-09-16: 5秒クリップの実測見積もり検証用に、ホスト指定で
+    # 15分のハード上限を設定（超えたらModal自身が強制終了しコストを
+    # 打ち止めにする）。本番ワーカーの基準ではない、この検証専用の値。
+    timeout=900,
 )
 def gpu_generate(image_bytes: bytes, audio_bytes: bytes, prompt: str) -> bytes:
     """B300実機: s2v-14B で実際に動画を生成し、mp4のバイト列を返す。
@@ -234,17 +289,24 @@ def gpu_generate(image_bytes: bytes, audio_bytes: bytes, prompt: str) -> bytes:
     # ジョブ完了まで設定ミス（offload/精度等）に気づけない。Popen で
     # 標準出力を1行ずつ即時flushし、起動直後のNamespaceログ等を数十秒以内に
     # 確認できるようにする。
+    # 併せてGPU使用率/VRAMを定期ログする監視スレッドも起動する（CLAUDE.md
+    # §1: 「GPUが遊んでいないか」を後から実測で判断できるようにするため）。
+    monitor_thread, monitor_stop = _start_gpu_monitor(interval_s=8.0)
     started = time.time()
     lines: list[str] = []
-    proc = subprocess.Popen(
-        cmd, cwd=REPO_DIR, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1,
-    )
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        print(line, end="", flush=True)
-        lines.append(line)
-    returncode = proc.wait()
+    try:
+        proc = subprocess.Popen(
+            cmd, cwd=REPO_DIR, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+            lines.append(line)
+        returncode = proc.wait()
+    finally:
+        monitor_stop.set()
+        monitor_thread.join(timeout=5)
     elapsed = time.time() - started
     print(f"[gpu_generate] elapsed {elapsed:.1f}s, returncode={returncode}", flush=True)
     if returncode != 0:
