@@ -30,6 +30,7 @@ export type KnobKey =
   | "upscale_mult_power"
   | "upscale_cascade_mult_2stage"
   | "upscale_cascade_mult_3stage"
+  | "upscale_video_base_credits"
   | "upscale_video_per_frame"
   | "upscale_video_min_credits"
   | "upscale_video_mult_res_2k"
@@ -273,16 +274,35 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     description: "×8 モード（×2→×4→×8 の3段カスケード）に乗せる追加係数。",
     isPublic: true,
   },
+  upscale_video_base_credits: {
+    // 2026-09-17 実機実測（CLAUDE.md §1）: 動画超解像はモデルロード等の
+    // 固定オーバーヘッドがコストの大半を占め、フレーム数への依存はごく
+    // わずか（48f=17.8GB〜1800f=19.2GBとVRAMはほぼ横ばい、時間も
+    // 固定+0.3s/frame程度）。HD/L40S実測(72frame・210.86s、うち固定分
+    // ~189s)から: 固定費 = 189s/3600×$1.95/h×¥150/$ ÷ credit_to_jpy(1.66)
+    // ×3倍markup ≈ 27.8C。既存の upscale_video_mult_res_2k/4k
+    // （プリセット別GPU単価込み実測係数）を掛けるとHD=28C/2K≈68C/4K≈139C
+    // となり、2K/4Kの固定費実測（68.0C/142.7C）とほぼ一致する。
+    value: 28,
+    label: "動画超解像（固定費・HD基準）",
+    category: "feature_credits",
+    unit: "C",
+    description: "モデルロード等の固定オーバーヘッド分（HD基準、他プリセットはmult_res_2k/4kが乗る）",
+    isPublic: true,
+  },
   upscale_video_per_frame: {
-    // 動画超解像 v1（最小スコープ）: SeedVR2 は静止画1枚と同等の計算量を
-    // フレーム数ぶん重ねる（batch_size は時間一貫性の窓であって並列化に
-    // よる短縮ではない）ため、画像の per-MP 課金ではなくフレーム数課金に
-    // する。値は実測前の保守的初期値。
-    value: 2,
-    label: "動画超解像（1フレームあたり）",
+    // 2026-09-17 実機実測により大幅減額（旧値2 → 0.05）。旧式は
+    // per_frame×frameCountの完全比例課金だったが、フレーム数はVRAM・時間の
+    // 軸ではない（上記 upscale_video_base_credits 参照）ため、旧値のままだと
+    // 15秒HD動画で実コスト$0.16に対し$10.00を課金する約62倍のマークアップに
+    // なっていた（2026-09-17ホスト指摘で発覚）。実測の真の限界コスト
+    // （0.3s/frame @ L40S $1.95/h）に3倍markupを乗せた0.044Cに安全マージンを
+    // 見て0.05に設定。
+    value: 0.05,
+    label: "動画超解像（1フレームあたり・限界費用分）",
     category: "feature_credits",
     unit: "C/frame",
-    description: "出力フレーム数あたりの消費クレジット（× モデル係数）",
+    description: "出力フレーム数あたりの追加消費クレジット（固定費に対するわずかな上乗せ、× モデル係数）",
     isPublic: true,
   },
   upscale_video_min_credits: {
@@ -294,23 +314,29 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     isPublic: true,
   },
   upscale_video_mult_res_2k: {
-    // B300実測（2026-09-12・16:9換算）: HD(1280短辺)=2.91MP / 2K(1920短辺)
-    // =6.55MP → 比率 ~2.25。処理時間もほぼMPに比例するため、解像度が上がる
-    // 分の実コスト増をここで転嫁する（旧版は解像度に関わらず同額だった欠陥）。
-    value: 2.25,
+    // 2026-09-16/17 実機再計測（CLAUDE.md §1）: プリセット別GPU tier導入
+    // （HD=L40S $1.95/h・2K=H200 $4.54/h・4K=B300 $7.10/h）に伴い、旧係数
+    // （MP比のみ・単一GPU前提）を「GPU単価込みの実コスト比」に更新。
+    // 同一入力（72フレーム・3秒）でHD=210.86s($0.1142)・2K=220.55s($0.2782)
+    // ・4K=288.53s(12MP上限ケース、$0.5690) → HD比: 2K=2.44 / 4K=4.98。
+    // 旧値(2.25)はMPだけを見ていたため、実際はGPU単価差も乗るこの水準まで
+    // 過小評価していた。
+    value: 2.44,
     label: "動画超解像 2Kプリセット係数",
     category: "feature_credits",
     unit: "×",
-    description: "2Kプリセット選択時にper_frameへ掛ける係数（HD=1.0基準）",
+    description: "2Kプリセット選択時にper_frameへ掛ける係数（HD=1.0基準、GPU単価差込み実測）",
     isPublic: true,
   },
   upscale_video_mult_res_4k: {
-    // 4K(2160短辺)=8.29MP / HD比 ~2.85。
-    value: 2.9,
+    // 上記2kと同時実測。旧値(2.9)はMPのみの比率で、GPU単価差
+    // （B300 $7.10/h vs HD側L40S $1.95/h）を反映しておらず原価割れに
+    // 近い水準だった。実測5.0弱まで引き上げる。
+    value: 4.98,
     label: "動画超解像 4Kプリセット係数",
     category: "feature_credits",
     unit: "×",
-    description: "4Kプリセット選択時にper_frameへ掛ける係数（HD=1.0基準）",
+    description: "4Kプリセット選択時にper_frameへ掛ける係数（HD=1.0基準、GPU単価差込み実測）",
     isPublic: true,
   },
   // ------------------------------------------------------------- lora_formula

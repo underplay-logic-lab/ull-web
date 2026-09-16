@@ -168,6 +168,35 @@ def _resolve_gpu():
 
 GPU_REQUEST = _resolve_gpu()
 
+# --- 動画超解像: プリセット別GPU tier（2026-09-16/17 実機検証、CLAUDE.md §1参照）
+# ------------------------------------------------------------------------------
+# 画像アップスケール・静止画バッチ・S2V等の他ワーカーは全てGPU_REQUEST（B300
+# 一択）のまま——ここは動画超解像プリセットに限定した実測ベースの例外。
+# VRAM実測（出力ピクセル数にほぼ比例、秒数/フレーム数は無関係):
+#   HD  (~2.95MP):  36.2GB -> L40S(48GB)で安全に収まる
+#   2K  (~6.63MP):  78.2GB -> L40S不可。H200(141GB)がB300より安く speed も
+#                    同等以上（実測: H200 220.55s vs B300 274.9s）
+#   4K  (12MP上限): 135.1GB -> H200はマージン4.2%で危険。B300(268GB)が
+#                    速度・コストとも最良（B200は同VRAMながらB300より遅く
+#                    高くつく実測結果、2026-09-16確認）
+# SEEDVR2_WORKER_GPU が明示されている場合はテスト/デバッグ優先でそちらに従う
+# （実機検証で使った env override をそのまま活かす）。
+UPSCALE_VIDEO_PRESET_GPU: dict[str, str] = {
+    "hd": _env_str("SEEDVR2_VIDEO_GPU_HD", "l40s"),
+    "2k": _env_str("SEEDVR2_VIDEO_GPU_2K", "h200"),
+    "4k": _env_str("SEEDVR2_VIDEO_GPU_4K", "b300"),
+}
+
+
+def _resolve_video_gpu_tier(preset: str) -> str:
+    """SEEDVR2_WORKER_GPU が明示されていればそれを最優先（既存の実機検証
+    フローを壊さない）。そうでなければプリセット別マッピング、未知の
+    プリセットは安全側のGPU_REQUEST（B300）にフォールバックする。"""
+    forced = os.environ.get("SEEDVR2_WORKER_GPU", "").strip()
+    if forced:
+        return forced
+    return UPSCALE_VIDEO_PRESET_GPU.get(str(preset or "").lower(), "") or list(_DEFAULT_GPU)[0]
+
 COMFYUI_REF = _env_str("SEEDVR2_COMFYUI_REF", "master")
 SEEDVR2_NODE_REPO = _env_str(
     "SEEDVR2_NODE_REPO",
@@ -2450,10 +2479,17 @@ def upscale_video_generate_dispatch(item: dict, request: fastapi.Request):
     modal_timeout = _resolve_batch_timeout(
         item.get("max_allowed_time"), hard_cap_s=UPSCALE_VIDEO_TIMEOUT_HARD_CAP_S
     )
-    worker = SeedVR2Worker.with_options(timeout=modal_timeout)
+    # 2026-09-16/17 実機検証（CLAUDE.md §1）: プリセットごとに必要VRAMが
+    # 大きく異なるため（HD~36GB/2K~78GB/4K~135GB）、B300一択ではなく
+    # プリセット別にGPU tierを選ぶ。.with_options はModalが呼び出し時の
+    # 動的configとして正式サポートしている（gpu以外にtimeoutも同時に
+    # 上書き可能）。
+    gpu_tier = _resolve_video_gpu_tier(item.get("preset") or "")
+    worker = SeedVR2Worker.with_options(timeout=modal_timeout, gpu=gpu_tier)
     call = worker().run_upscale_video_job.spawn(item)
     print(
         f"[upscale-video-dispatch] {job_id}: model={item.get('model_key')} "
+        f"preset={item.get('preset')!r} gpu_tier={gpu_tier} "
         f"max_allowed_time={item.get('max_allowed_time')!r} modal_timeout={modal_timeout}s",
         flush=True,
     )

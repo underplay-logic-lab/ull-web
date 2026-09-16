@@ -544,7 +544,18 @@ export function upscaleVideoCostBreakdown(args: {
     };
   }
 
-  const raw = Math.ceil(knobs.upscale_video_per_frame * frameCount * model.creditMult * resMult);
+  // 2026-09-17 実測修正（CLAUDE.md §1）: 動画超解像のVRAM・処理時間は
+  // フレーム数にほぼ依存しない（48f=17.8GB〜1800f=19.2GBとほぼ横ばい、時間も
+  // 固定オーバーヘッド+0.3s/frame程度）にもかかわらず、旧式は
+  // per_frame×frameCountの完全比例課金だったため、長い動画ほど実コストとの
+  // 乖離が指数的に開いていた（実例: 15秒HD動画で実コスト$0.16に対し課金
+  // $10.00、約62倍のマークアップ）。固定費（モデルロード等）+ わずかな
+  // フレーム比例分、に分離した式へ修正する。
+  const raw = Math.ceil(
+    (knobs.upscale_video_base_credits + knobs.upscale_video_per_frame * frameCount) *
+      model.creditMult *
+      resMult,
+  );
   const floor = Math.max(1, Math.round(knobs.upscale_video_min_credits));
   return {
     credits: Math.max(floor, raw),
@@ -561,6 +572,7 @@ export function upscaleVideoCostBreakdown(args: {
 /** 動画の寸法申告が壊れている等で見積り不能なときの上限課金（最も重い4K想定）。 */
 export function upscaleVideoCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): number {
   return Math.ceil(
-    knobs.upscale_video_per_frame * UPSCALE_VIDEO_MAX_FRAMES * knobs.upscale_video_mult_res_4k,
+    (knobs.upscale_video_base_credits + knobs.upscale_video_per_frame * UPSCALE_VIDEO_MAX_FRAMES) *
+      knobs.upscale_video_mult_res_4k,
   );
 }
