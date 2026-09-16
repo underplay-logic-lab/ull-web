@@ -1910,7 +1910,15 @@ class SeedVR2Worker:
         # フィット。frame_count だけを見ていた旧式は高解像度で大幅に過小評価
         # しており（4K出力90fで実測に対し timeout=900s しか確保できず実際に
         # 破綻）、安全マージンを乗せた係数で動的に確保する。
-        workflow_timeout_s = min(4800, max(900, 150 + int(p["frame_load_cap"] * out_mp * 0.4)))
+        #
+        # 2026-09-17 緊急修正（CLAUDE.md §0・§1）: 上記係数(0.4)はB300実測
+        # ベースのままで、プリセット別GPU tier導入（HD=L40S等）後の速度差を
+        # 考慮していなかった。HDプリセット(L40S, 362frame, 2.95MP)の実ジョブが
+        # 下限900sぎりぎりでタイムアウト実測失敗（"timed out waiting for
+        # ComfyUI"）。L40SはB300より遅い可能性が高く、下限・係数とも安全側に
+        # 大きく引き上げる（下限900→1800s、上限4800→9600s、固定分150→300s、
+        # 係数0.4→0.8）。
+        workflow_timeout_s = min(9600, max(1800, 300 + int(p["frame_load_cap"] * out_mp * 0.8)))
         t0 = time.time()
         with _VramPeak() as vp:
             data, filename = self._run_workflow(workflow, timeout_s=workflow_timeout_s)
