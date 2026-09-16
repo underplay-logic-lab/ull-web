@@ -118,6 +118,29 @@ base_image = (
         "|| echo '[image] flash-attn build FAILED — S2V will crash without SDPA fallback'",
     )
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+    # CosyVoice (TTS) 用の追加依存。requirements_s2v.txt に列挙されている
+    # ものをそのまま。flash-attn等の重いソースビルドとは独立した末尾の
+    # レイヤーなので、既存イメージのキャッシュはそのまま再利用される
+    # （TORCH_CUDA_ARCH_LIST等の上流を変えていないため）。
+    .pip_install(
+        "openai-whisper", "HyperPyYAML", "onnxruntime", "inflect", "wetext",
+        "omegaconf", "conformer", "hydra-core", "lightning", "rich", "gdown",
+        "matplotlib", "wget", "pyarrow", "pyworld", "librosa", "modelscope",
+        "GitPython",
+        # cosyvoice.dataset.processor が起動時に pkg_resources を素のimportで
+        # 要求する。setuptools 82.0.0（2026年2月リリース）で pkg_resources が
+        # 完全削除されたため、単に "setuptools" を入れるだけだと最新版が
+        # 解決されて同じ ModuleNotFoundError になる（2026-09-16実機確認）。
+        # pkg_resources を含む最後の系列に固定する。
+        "setuptools<82",
+        # torchaudio.load(backend='soundfile') が内部で torchcodec 経由の
+        # ロードに委譲するようになっており、torchcodec が無いと
+        # ImportError になる（2026-09-16実機確認）。
+        "torchcodec",
+    )
+    .run_commands(
+        "git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /root/CosyVoice",
+    )
 )
 
 
@@ -223,6 +246,85 @@ def test_gpu_monitor() -> str:
     stop_event.set()
     thread.join(timeout=5)
     return "gpu_monitor smoke test done — see [gpu_monitor] lines above"
+
+
+TTS_MODEL_DIR = f"{MODELS_DIR}/checkpoints/CosyVoice2-0.5B"
+
+
+@app.function(image=base_image, gpu="t4", volumes={MODELS_DIR: vol}, timeout=600)
+def tts_preview(tts_prompt_audio_bytes: bytes, tts_text: str) -> bytes:
+    """CosyVoice2-0.5B（Wan2.2 の TTS エンジン）だけを単独で動かし、音声を
+    プレビューする。14B の S2V 本体（B300必須）とは完全に独立した軽量モデル
+    なので T4 で十分——本番動画生成（B300、数ドル）の前に声質をタダ同然で
+    確認できる（ホスト要望、2026-09-16）。
+
+    tts_prompt_text は意図的に渡さない: wan/speech2video.py の tts() は
+    tts_prompt_text が None のとき CosyVoice の inference_cross_lingual を
+    使う（参照音声と異なる言語のテキストを話させるモード）。中国語の参照
+    音声で日本語テキストを話させたいので、こちらが正しい経路。
+    """
+    import sys
+    import tempfile
+
+    import torch
+    import torchaudio
+
+    dest = pathlib.Path(TTS_MODEL_DIR)
+    if not dest.exists() or not any(dest.iterdir()):
+        from modelscope import snapshot_download
+
+        dest.mkdir(parents=True, exist_ok=True)
+        print(f"[tts_preview] downloading iic/CosyVoice2-0.5B -> {dest}", flush=True)
+        snapshot_download("iic/CosyVoice2-0.5B", local_dir=str(dest))
+        vol.commit()
+    else:
+        print(f"[tts_preview] CosyVoice2-0.5B already on volume: {dest}", flush=True)
+
+    sys.path.insert(0, "/root/CosyVoice")
+    sys.path.insert(0, "/root/CosyVoice/third_party/Matcha-TTS")
+    import soundfile as sf
+
+    # cosyvoice.utils.file_utils.load_wav は torchaudio.load(backend='soundfile')
+    # を使うが、これが新しい torchcodec 経由のロードパスに委譲され
+    # `video_tensor must be kUInt8` で落ちる（2026-09-16実機確認、
+    # CosyVoiceが想定する古いtorchaudio APIとの非互換）。しかも
+    # cosyvoice.cli.frontend._extract_speech_feat が内部で
+    # load_wav(prompt_wav_tensor, 24000) と「既にロード済みのテンソル」を
+    # 再度 load_wav に渡す設計になっており、呼び出し元だけ直しても足りない。
+    # frontend モジュールが束縛している load_wav の参照自体を、str/Tensor
+    # 両方を受け付ける版に差し替える（CosyVoiceの規約でprompt tensorは常に
+    # 16kHzとして渡ってくる）。
+    def _patched_load_wav(wav, target_sr, min_sr=16000):
+        if isinstance(wav, torch.Tensor):
+            speech, sample_rate = wav, 16000
+        else:
+            data, sr = sf.read(str(wav), dtype="float32", always_2d=True)
+            speech, sample_rate = torch.from_numpy(data.T).mean(dim=0, keepdim=True), sr
+        if sample_rate != target_sr:
+            assert sample_rate >= min_sr
+            speech = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=target_sr)(speech)
+        return speech
+
+    import cosyvoice.cli.frontend as _cv_frontend
+    from cosyvoice.cli.cosyvoice import CosyVoice2
+
+    _cv_frontend.load_wav = _patched_load_wav
+
+    prompt_path = pathlib.Path(tempfile.mkdtemp()) / "prompt.wav"
+    prompt_path.write_bytes(tts_prompt_audio_bytes)
+
+    print("[tts_preview] loading CosyVoice2...", flush=True)
+    cosyvoice = CosyVoice2(str(dest))
+    prompt_speech_16k = _patched_load_wav(prompt_path, 16000)
+
+    print(f"[tts_preview] synthesizing: {tts_text!r}", flush=True)
+    speech_list = [
+        chunk["tts_speech"] for chunk in cosyvoice.inference_cross_lingual(tts_text, prompt_speech_16k)
+    ]
+    out_path = pathlib.Path(tempfile.mkdtemp()) / "tts_preview.wav"
+    torchaudio.save(str(out_path), torch.concat(speech_list, dim=1), cosyvoice.sample_rate)
+    print(f"[tts_preview] wrote {out_path} ({out_path.stat().st_size} bytes)", flush=True)
+    return out_path.read_bytes()
 
 
 @app.function(image=base_image, gpu="t4", volumes={MODELS_DIR: vol}, timeout=300)
@@ -343,3 +445,17 @@ def main(image_path: str = "", audio_path: str = "", prompt: str = "", out: str 
     video_bytes = gpu_generate.remote(img_bytes, aud_bytes, prompt or default_prompt)
     pathlib.Path(out).write_bytes(video_bytes)
     print(f"[main] wrote {out} ({len(video_bytes) / 1024**2:.2f} MB)")
+
+
+@app.local_entrypoint()
+def tts_test(prompt_audio_path: str = "", text: str = "", out: str = "tts_preview.wav"):
+    """T4のみ・B300不要。CosyVoice単体で声だけプレビューする。
+    modal run modal_s2v_probe.py::tts_test --prompt-audio-path X --text "日本語テキスト"
+    """
+    if not prompt_audio_path or not text:
+        print('usage: modal run modal_s2v_probe.py::tts_test --prompt-audio-path X --text "..."')
+        return
+    prompt_bytes = pathlib.Path(prompt_audio_path).read_bytes()
+    wav_bytes = tts_preview.remote(prompt_bytes, text)
+    pathlib.Path(out).write_bytes(wav_bytes)
+    print(f"[tts_test] wrote {out} ({len(wav_bytes) / 1024:.1f} KB)")
