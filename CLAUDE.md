@@ -114,8 +114,8 @@ ULL Studio の差別化は「ローカル PC でも他の SaaS でも不可能�
 ---
 
 ## 4. DBマイグレーション出力プロトコル（必須）
-- Supabase のマイグレーションファイル（`supabase/migrations/*.sql`）を新規作成・修正した場合、またはホストに DB マイグレーションの適用を案内する際は、**該当する SQL 全文をチャット上のコードブロックとして必ずそのまま出力すること**。
-- ファイルパスの提示だけで終わらせず、ホストがチャット画面からワンクリックでコピーして Supabase Dashboard (SQL Editor) に貼り付けられる状態を徹底すること。
+- Supabase のマイグレーションファイル（`supabase/migrations/*.sql`）を新規作成・修正したら、**ファイルパスを伝えるだけでよい。SQL全文をチャット上のコードブロックに出力しないこと**。
+- **旧ルール（SQL全文を毎回チャットに出力し、ホストがコピペして Supabase Dashboard の SQL Editor に貼る運用）は廃止**（2026-09-16、ホスト指示）。理由: チャットのコードブロックをコピペする過程で一部の文字列が欠落する事故が発生した（実例: `create or replace function public.touch_angle_jobs_updated_at()` が `create or replace funcs_updated_at()` のように壊れ、構文エラー `42601` になった）。ホストは別の適用手順を確立済みのため、チャット表示は不要かつ事故の原因になるだけ。
 
 ---
 
