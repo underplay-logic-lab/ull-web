@@ -275,15 +275,18 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     isPublic: true,
   },
   upscale_video_base_credits: {
-    // 2026-09-17 実機実測（CLAUDE.md §1）: 動画超解像はモデルロード等の
-    // 固定オーバーヘッドがコストの大半を占め、フレーム数への依存はごく
-    // わずか（48f=17.8GB〜1800f=19.2GBとVRAMはほぼ横ばい、時間も
-    // 固定+0.3s/frame程度）。HD/L40S実測(72frame・210.86s、うち固定分
-    // ~189s)から: 固定費 = 189s/3600×$1.95/h×¥150/$ ÷ credit_to_jpy(1.66)
-    // ×3倍markup ≈ 27.8C。既存の upscale_video_mult_res_2k/4k
-    // （プリセット別GPU単価込み実測係数）を掛けるとHD=28C/2K≈68C/4K≈139C
-    // となり、2K/4Kの固定費実測（68.0C/142.7C）とほぼ一致する。
-    value: 28,
+    // 2026-09-17 実機実測を2段階で修正（CLAUDE.md §0・§1）。
+    // 第1版: 72frame単発テストのみから「フレーム数はVRAM・時間にほぼ
+    // 無関係（B300ドキュメント由来の0.3s/frame）」と誤って一般化し、
+    // 固定費28C・per_frame=0.05Cとしていた。
+    // 第2版（このコメント）: 実際に本番でHD/L40S・362frameジョブを流した
+    // ところ実測941.82sとなり、72frame(210.86s)との2点から逆算すると
+    // L40Sの真の限界費用は2.52s/frame——0.3s/frame想定の**8.4倍**重かった
+    // （「フレーム数無関係」はB300のような計算力に余裕があるGPU限定の
+    // 性質で、非力なL40Sには成り立たなかった）。2点回帰: 固定費29.38s・
+    // 限界費用2.52s/frame → credit_to_jpy(1.66)/usd_jpy(150)/3倍markup換算で
+    // 固定費4.31C・per_frame 0.37C/frame。
+    value: 4.31,
     label: "動画超解像（固定費・HD基準）",
     category: "feature_credits",
     unit: "C",
@@ -291,14 +294,14 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     isPublic: true,
   },
   upscale_video_per_frame: {
-    // 2026-09-17 実機実測により大幅減額（旧値2 → 0.05）。旧式は
-    // per_frame×frameCountの完全比例課金だったが、フレーム数はVRAM・時間の
-    // 軸ではない（上記 upscale_video_base_credits 参照）ため、旧値のままだと
-    // 15秒HD動画で実コスト$0.16に対し$10.00を課金する約62倍のマークアップに
-    // なっていた（2026-09-17ホスト指摘で発覚）。実測の真の限界コスト
-    // （0.3s/frame @ L40S $1.95/h）に3倍markupを乗せた0.044Cに安全マージンを
-    // 見て0.05に設定。
-    value: 0.05,
+    // 2026-09-17 実機実測2点（72frame/210.86s, 362frame/941.82s、L40S）から
+    // 再計算。上記 upscale_video_base_credits のコメント参照——「フレーム数
+    // 無関係」はB300限定の性質で、L40Sでは限界費用2.52s/frameとかなり重い。
+    // ⚠️ 2点のみからの外挿であり、2K(H200)/4K(B300)は72frame単発データしか
+    // なく、長尺でも同様にB300の「ほぼフラット」特性が保たれるかは未検証
+    // （B300は計算力に余裕がありL40Sほど劣化しない可能性はあるが確証なし）。
+    // 実績データが増えたら再校正すること。
+    value: 0.37,
     label: "動画超解像（1フレームあたり・限界費用分）",
     category: "feature_credits",
     unit: "C/frame",
