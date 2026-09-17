@@ -31,6 +31,26 @@ export const metadata: Metadata = {
   ],
 };
 
+const SITE_URL = "https://www.ullstudio.com";
+
+// 機能一覧・価格(featureList/offers)は Director/LoRA 等の仕様が固まるまで流動的なため
+// 意図的に含めない(ローンチ判断時に SoftwareApplication/FAQPage スキーマとして追加予定
+// — [[launch-checklist-ai-seo]])。ここでは書き直しの要らない基本情報のみ先出しする。
+const organizationJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  name: "ULL Studio",
+  legalName: siteConfig.legalName,
+  url: SITE_URL,
+};
+
+const websiteJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  name: "ULL Studio",
+  url: SITE_URL,
+};
+
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
@@ -43,6 +63,14 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           process.env.NODE_ENV === "development" ? process.cwd().replace(/\\/g, "/") : undefined
         }
       >
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationJsonLd) }}
+        />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteJsonLd) }}
+        />
         <SiteContentEditorProvider>
           <Header />
           <main className="flex-1">{children}</main>
