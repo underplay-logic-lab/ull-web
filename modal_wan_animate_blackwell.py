@@ -76,7 +76,12 @@ INPUT_IMG_MULTIPLE = int(os.environ.get("ULL_INPUT_IMG_MULTIPLE", "16"))
 # it client-side (see parse_gpu_config in modal/_utils/function_utils.py) —
 # if "B300" isn't actually available on the target Modal workspace,
 # deployment still succeeds but generation requests fail at request time.
-GPU_TYPE = "B300"
+#
+# 2026-09-17: DIRECTOR_WORKER_GPU env override を追加（CLAUDE.md §1「全機能
+# 対象のB300代替洗い出し」）。VRAM実測127.7-158.5GBのためH200(141GB)は上限
+# 側で足りない可能性が高く、実質B200/B300の2択のみ候補——他ワーカー
+# （SEEDVR2_WORKER_GPU等）と同じパターンでB200との比較実測に使う。
+GPU_TYPE = os.environ.get("DIRECTOR_WORKER_GPU", "").strip() or "B300"
 
 # Same admin-only allow-lists as scripts/modal_wan_animate.py — model-
 # management endpoints only accept URLs/git remotes from known-good hosts.
