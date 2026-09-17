@@ -95,6 +95,10 @@ Env overrides:
   SEEDVR2_MAX_RESOLUTION  出力の長辺上限 px（既定 4096）
   SEEDVR2_VIDEO_MAX_SECONDS  動画アップスケールの入力尺上限（既定 60・B300実測に基づく）
   SEEDVR2_VIDEO_MAX_FRAMES   動画アップスケールの入力フレーム数上限（既定 1800・B300実測に基づく）
+  SEEDVR2_TORCH_COMPILE      DiT/VAEへのtorch.compile適用（既定 0=無効。2026-09-17実機smokeで
+                             初回コンパイルがModal timeout(20分)を超過し既定オフ化。1でオプトイン）
+  SEEDVR2_VIDEO_GPU_HD/2K/4K 動画アップスケール、プリセット別GPU tier上書き（既定 l40s/h200/b300）
+  SEEDVR2_VIDEO_BATCH_HD/2K/4K 動画アップスケール、プリセット別batch_size上書き（既定 SEEDVR2_BATCH_SIZE）
 """
 
 import base64
@@ -173,17 +177,22 @@ GPU_REQUEST = _resolve_gpu()
 # 画像アップスケール・静止画バッチ・S2V等の他ワーカーは全てGPU_REQUEST（B300
 # 一択）のまま——ここは動画超解像プリセットに限定した実測ベースの例外。
 # VRAM実測（出力ピクセル数にほぼ比例、秒数/フレーム数は無関係):
-#   HD  (~2.95MP):  36.2GB -> L40S(48GB)で安全に収まる
-#   2K  (~6.63MP):  78.2GB -> L40S不可。H200(141GB)がB300より安く speed も
-#                    同等以上（実測: H200 220.55s vs B300 274.9s）
+#   HD  (~2.95MP):  36.2GB -> RTX PRO 6000(96GB)で安全に収まる
+#   2K  (~6.63MP):  78.2GB -> RTX PRO 6000(96GB)で収まる（22%マージン）
 #   4K  (12MP上限): 135.1GB -> H200はマージン4.2%で危険。B300(268GB)が
 #                    速度・コストとも最良（B200は同VRAMながらB300より遅く
 #                    高くつく実測結果、2026-09-16確認）
+# 2026-09-17: HD/2Kとも全GPU横断比較（短尺74frame・長尺362frame両方で再現性
+# 確認済み）の結果、RTX PRO 6000（$3.03/h）が採用GPUに確定。
+#   HD: L40S($1.95/h,210.86s/72f,941.82s/362f) → RTX PRO 6000
+#       (114.92s/74f・488.84s/362f、1回あたり実コストは全機種中最安$0.0967)
+#   2K: H200($4.54/h,220.55s/72f) → RTX PRO 6000
+#       (241.2s/74f・1101.7s/362f、H200比1回あたり実コスト約27%安)
 # SEEDVR2_WORKER_GPU が明示されている場合はテスト/デバッグ優先でそちらに従う
 # （実機検証で使った env override をそのまま活かす）。
 UPSCALE_VIDEO_PRESET_GPU: dict[str, str] = {
-    "hd": _env_str("SEEDVR2_VIDEO_GPU_HD", "l40s"),
-    "2k": _env_str("SEEDVR2_VIDEO_GPU_2K", "h200"),
+    "hd": _env_str("SEEDVR2_VIDEO_GPU_HD", "RTX-PRO-6000"),
+    "2k": _env_str("SEEDVR2_VIDEO_GPU_2K", "RTX-PRO-6000"),
     "4k": _env_str("SEEDVR2_VIDEO_GPU_4K", "b300"),
 }
 
@@ -197,6 +206,7 @@ def _resolve_video_gpu_tier(preset: str) -> str:
         return forced
     return UPSCALE_VIDEO_PRESET_GPU.get(str(preset or "").lower(), "") or list(_DEFAULT_GPU)[0]
 
+
 COMFYUI_REF = _env_str("SEEDVR2_COMFYUI_REF", "master")
 SEEDVR2_NODE_REPO = _env_str(
     "SEEDVR2_NODE_REPO",
@@ -207,6 +217,53 @@ SEEDVR2_NODE_REPO = _env_str(
 DEFAULT_TARGET_SHORT = _env_int("SEEDVR2_TARGET_SHORT", 1920)
 DEFAULT_MAX_RESOLUTION = _env_int("SEEDVR2_MAX_RESOLUTION", 4096)
 DEFAULT_BATCH_SIZE = _env_int("SEEDVR2_BATCH_SIZE", 5)  # 4n+1
+
+# --- 動画超解像: batch_size のGPU tier別上書き（2026-09-17 追加）----------------
+# CLAUDE.md §1「B300が期待したほど速くない理由」参照: DEFAULT_BATCH_SIZE=5が
+# 全GPU tierで一律固定だと、VRAMに余裕のあるtier（B300/H200）でもL40Sと
+# 同じ小バッチのままになり、GPU tier比較そのものが不公平になる
+# （B300実行ログ自体が "batch_size=361 matches video length optimally" と
+# ヒントを出していたのに活かせていなかった）。
+# ⚠️ ここでの初期値はまだ実測前の保守的な仮値（= 全tier共通 DEFAULT_BATCH_SIZE）
+# のまま据え置く。SeedVR2 公式ソース（generation_utils.calculate_optimal_
+# batch_params）の "best_batch" はフレーム数から逆算した理論値でVRAM考慮が
+# 無いため、大きい値をいきなり決め打ちするとOOMの危険がある（CLAUDE.md §0:
+# 実測より先に値を決め打ちしない）。env override（SEEDVR2_VIDEO_BATCH_HD等）
+# で各tierごとに段階的に試し、安全な値が確定したらここのデフォルトを引き上げる。
+UPSCALE_VIDEO_PRESET_BATCH_SIZE: dict[str, int] = {
+    "hd": _env_int("SEEDVR2_VIDEO_BATCH_HD", DEFAULT_BATCH_SIZE),
+    "2k": _env_int("SEEDVR2_VIDEO_BATCH_2K", DEFAULT_BATCH_SIZE),
+    "4k": _env_int("SEEDVR2_VIDEO_BATCH_4K", DEFAULT_BATCH_SIZE),
+}
+
+
+def _resolve_video_batch_size(preset: str) -> int:
+    """プリセット別 batch_size 既定値。呼び出し側の params に batch_size が
+    明示されていればそちらが優先される（_process_one_upscale_video_item の
+    setdefault、および _build_seedvr2_video_workflow 内の default_params
+    マージ順）。未知のプリセットは DEFAULT_BATCH_SIZE にフォールバック。"""
+    return UPSCALE_VIDEO_PRESET_BATCH_SIZE.get(str(preset or "").lower(), DEFAULT_BATCH_SIZE)
+
+
+def _torch_compile_enabled() -> bool:
+    """CLAUDE.md §1: 全GPU推論ワーカーへの torch.compile 標準適用。SeedVR2は
+    同梱の numz/ComfyUI-SeedVR2_VideoUpscaler が SeedVR2TorchCompileSettings
+    ノードでDiT/VAE双方への接続をネイティブサポートしている（2026-09-17
+    ソース確認: src/interfaces/torch_compile_settings.py・dit_model_loader.py・
+    vae_model_loader.py）。wan_animate系のように任意ワークフローへ後付けで
+    ノードを注入する必要はなく、自前で組むワークフローに1ノード足すだけで済む。
+
+    ⚠️ 2026-09-17 実機smoke（B300・512x512・seedvr2_7b/seedvr2_7b_sharpの2モデル）
+    で既定オフに変更: DiTの初回Inductorコンパイルが極めて重く（Neighborhood
+    Attention等の特殊実装でグラフブレークが多発している疑い）、静止画1枚の
+    smokeテストが gpu_smoke_fn の Modal timeout（1200秒=20分）を超過して
+    FunctionTimeoutErrorで失敗した（1モデル目は完走、2モデル目の初回
+    コンパイル中にタイムアウト）。Qwen-Image-Edit（modal_angle_worker.py、
+    warmup 500-900秒）より深刻。超解像ワーカーは scaledown_window=30秒で
+    毎回ほぼコールドスタートするため、この規模のwarmupは差し引き大幅マイナス。
+    SEEDVR2_TORCH_COMPILE=1 でオプトイン可能（採用可否はワーカーごとに実機
+    計測で判断する、CLAUDE.md §1）。"""
+    return os.environ.get("SEEDVR2_TORCH_COMPILE", "0").strip().lower() not in ("0", "false", "no")
 
 # 動画アップスケール v1（最小スコープ）: 単一動画・倍率固定・カスケードなし。
 # SeedVR2 は静止画1枚と同等の計算量をフレーム数ぶん重ねる（batch_size は時間
@@ -446,6 +503,40 @@ def public_registry() -> list:
 # ワークフロービルダー — model_key + params → ComfyUI API 形式のグラフ JSON。
 # node_type ごとに分岐。曖昧・未対応は明示的に例外にする（fail-closed）。
 # ---------------------------------------------------------------------------
+def _inject_seedvr2_torch_compile(workflow: dict) -> None:
+    """PyTorch 最適化標準（CLAUDE.md §1）。SeedVR2LoadDiTModel /
+    SeedVR2LoadVAEModel は torch_compile_args という専用入力を持ち、
+    SeedVR2TorchCompileSettings ノードの出力（TORCH_COMPILE_ARGS 型）を
+    そのまま繋ぐだけで良い（wan_animate系のような「既存グラフへ後付けで
+    TorchCompileModel を注入する」手順は不要。2026-09-17、numz/
+    ComfyUI-SeedVR2_VideoUpscaler の src/interfaces/ 配下をソースで確認）。
+    このノードは SeedVR2 拡張にネイティブ同梱されているため、wan_animate の
+    _comfy_node_available のような可用性チェックは不要（SeedVR2LoadDiTModel
+    自体が動く時点で同じ __init__.py 経由で登録済み）。
+    CFG（pos/neg 2回呼び出し）を使わない 1-step 拡散なので、CLAUDE.md §1が
+    警告する mode="reduce-overhead"（CUDA Graphs）特有のバッファ上書き
+    クラッシュの対象ではないと考えられるが、未実機検証のため既定は安全な
+    Inductor既定 mode（"default"）にとどめる。dynamic=True はプリセット
+    ごとに解像度・batch_size が変わっても再コンパイルを抑えるため。
+    SEEDVR2_TORCH_COMPILE=0 で無効化（in-place で何もしない）。"""
+    if not _torch_compile_enabled():
+        return
+    workflow["torch_compile_settings"] = {
+        "class_type": "SeedVR2TorchCompileSettings",
+        "inputs": {
+            "backend": "inductor",
+            "mode": "default",
+            "fullgraph": False,
+            "dynamic": True,
+            "dynamo_cache_size_limit": 64,
+            "dynamo_recompile_limit": 128,
+        },
+        "_meta": {"title": "torch.compile (CLAUDE.md §1)"},
+    }
+    workflow["dit_loader"]["inputs"]["torch_compile_args"] = ["torch_compile_settings", 0]
+    workflow["vae_loader"]["inputs"]["torch_compile_args"] = ["torch_compile_settings", 0]
+
+
 def _build_seedvr2_workflow(reg: dict, params: dict, input_filename: str) -> dict:
     """SeedVR2 の 5 ノードグラフ:
       LoadImage ─┐
@@ -473,7 +564,7 @@ def _build_seedvr2_workflow(reg: dict, params: dict, input_filename: str) -> dic
         batch = max(1, ((batch - 1) // 4) * 4 + 1)  # 直近の 4n+1 に丸める
     short = int(p.get("target_short", DEFAULT_TARGET_SHORT))
 
-    return {
+    workflow = {
         "load_image": {
             "class_type": "LoadImage",
             "inputs": {"image": input_filename},
@@ -524,6 +615,8 @@ def _build_seedvr2_workflow(reg: dict, params: dict, input_filename: str) -> dic
             "_meta": {"title": "output"},
         },
     }
+    _inject_seedvr2_torch_compile(workflow)
+    return workflow
 
 
 def _build_seedvr2_video_workflow(reg: dict, params: dict, input_filename: str) -> dict:
@@ -558,7 +651,7 @@ def _build_seedvr2_video_workflow(reg: dict, params: dict, input_filename: str) 
     frame_cap = int(p.get("frame_load_cap", 0))  # 0 = 無制限（呼び出し側で事前に上限チェック済み）
     source_fps = float(p.get("source_fps", 24.0)) or 24.0
 
-    return {
+    workflow = {
         "load_video": {
             "class_type": "VHS_LoadVideo",
             "inputs": {
@@ -623,6 +716,8 @@ def _build_seedvr2_video_workflow(reg: dict, params: dict, input_filename: str) 
             "_meta": {"title": "output"},
         },
     }
+    _inject_seedvr2_torch_compile(workflow)
+    return workflow
 
 
 def _build_upscale_model_workflow(reg: dict, params: dict, input_filename: str) -> dict:
@@ -1434,6 +1529,9 @@ def probe_imports() -> dict:
     def _workflow_build():
         wf = build_upscale_workflow("seedvr2_7b", {}, "probe_input.png")
         assert wf["seedvr2"]["class_type"] == "SeedVR2VideoUpscaler"
+        if _torch_compile_enabled():
+            assert wf["torch_compile_settings"]["class_type"] == "SeedVR2TorchCompileSettings"
+            assert wf["dit_loader"]["inputs"]["torch_compile_args"] == ["torch_compile_settings", 0]
         json.dumps(wf)  # シリアライズ可能か
         return f"OK ({len(wf)} nodes)"
 
@@ -1443,6 +1541,9 @@ def probe_imports() -> dict:
         )
         assert wf["load_video"]["class_type"] == "VHS_LoadVideo"
         assert wf["save"]["class_type"] == "VHS_VideoCombine"
+        if _torch_compile_enabled():
+            assert wf["torch_compile_settings"]["class_type"] == "SeedVR2TorchCompileSettings"
+            assert wf["vae_loader"]["inputs"]["torch_compile_args"] == ["torch_compile_settings", 0]
         json.dumps(wf)
         return f"OK ({len(wf)} nodes)"
 
@@ -1470,6 +1571,7 @@ def probe_imports() -> dict:
         result["comfy_boot"] = "OK"
 
         for ct in ("SeedVR2VideoUpscaler", "SeedVR2LoadDiTModel", "SeedVR2LoadVAEModel",
+                   "SeedVR2TorchCompileSettings",
                    "LoadImage", "SaveImage",
                    "UpscaleModelLoader", "ImageUpscaleWithModel",
                    "VHS_LoadVideo", "VHS_VideoCombine"):
@@ -2114,6 +2216,11 @@ class SeedVR2Worker:
 
         _vram_thread = threading.Thread(target=_poll_vram, name="upscale-video-vram", daemon=True)
         _vram_thread.start()
+
+        # プリセット別 batch_size 既定（2026-09-17 追加、CLAUDE.md §1）。
+        # 呼び出し側が明示指定していればそちらを優先（setdefault）。
+        params = dict(params or {})
+        params.setdefault("batch_size", _resolve_video_batch_size(preset))
 
         try:
             r = self._do_upscale_video(video_spec, model_key, params)
@@ -2769,14 +2876,28 @@ def video_main(
     video_path: str,
     model: str = "seedvr2_7b",
     mult: int = 2,
+    target_short_override: int = 0,
     color_correction: str = "lab",
     out_dir: str = "./upscale_out",
+    batch_size: int = 0,
+    timeout_min: int = 10,
 ):
     """modal run modal_seedvr2_worker.py::video_main --video-path ./in.mp4 --model seedvr2_7b
 
     GPU smoke 用の動画アップスケール CLI（v1: ×mult 固定・カスケードなし）。
     入力の短辺 × mult を target_short にする。ローカルの ffprobe で入力寸法を
     読む（開発用 CLI なのでホストの手元に ffmpeg がある前提でよい）。
+
+    --batch-size: 0（既定）なら DEFAULT_BATCH_SIZE。batch_size 引き上げ実験用
+    （2026-09-17、CLAUDE.md §1「明日のメモ」ステップ2）に明示指定できる。
+    --timeout-min: Modal 関数側の timeout（既定10分）。探索的な実験なので
+    torch.compile smokeの反省（20分ハングで$2.4溶かした）を踏まえ短めに
+    絞り、ホスト側で決めた「3分でnvidia-smi確認・8分で打ち切り」の運用
+    基準と合わせている。
+    --target-short-override: 0（既定）なら入力短辺×mult。GPU tier比較実験
+    （2026-09-17、CLAUDE.md §1「全機能を対象にしたB300代替の洗い出し」）で
+    既存実測（HD=1280、2K=1920、4K=2400等）とちょうど同じ出力解像度に
+    揃えたい時に、mult計算に頼らず直接指定する。
     """
     import subprocess as sp
 
@@ -2792,17 +2913,17 @@ def video_main(
         capture_output=True, text=True,
     )
     w, h = (int(x) for x in probe.stdout.strip().split(","))
-    target_short = min(w, h) * mult
+    target_short = target_short_override or (min(w, h) * mult)
 
     b64 = base64.b64encode(src.read_bytes()).decode("ascii")
-    worker = SeedVR2Worker.with_options(timeout=90 * 60)
+    worker = SeedVR2Worker.with_options(timeout=timeout_min * 60)
     result = worker().run_upscale_video.remote(
         b64,
         model_key=model,
         params={
             "target_short": target_short,
             "max_resolution": 8192,
-            "batch_size": DEFAULT_BATCH_SIZE,
+            "batch_size": batch_size or DEFAULT_BATCH_SIZE,
             "color_correction": color_correction,
         },
     )

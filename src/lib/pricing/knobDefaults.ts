@@ -275,18 +275,14 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     isPublic: true,
   },
   upscale_video_base_credits: {
-    // 2026-09-17 実機実測を2段階で修正（CLAUDE.md §0・§1）。
-    // 第1版: 72frame単発テストのみから「フレーム数はVRAM・時間にほぼ
-    // 無関係（B300ドキュメント由来の0.3s/frame）」と誤って一般化し、
-    // 固定費28C・per_frame=0.05Cとしていた。
-    // 第2版（このコメント）: 実際に本番でHD/L40S・362frameジョブを流した
-    // ところ実測941.82sとなり、72frame(210.86s)との2点から逆算すると
-    // L40Sの真の限界費用は2.52s/frame——0.3s/frame想定の**8.4倍**重かった
-    // （「フレーム数無関係」はB300のような計算力に余裕があるGPU限定の
-    // 性質で、非力なL40Sには成り立たなかった）。2点回帰: 固定費29.38s・
-    // 限界費用2.52s/frame → credit_to_jpy(1.66)/usd_jpy(150)/3倍markup換算で
-    // 固定費4.31C・per_frame 0.37C/frame。
-    value: 4.31,
+    // 2026-09-17 GPU tier切り替え（HD: L40S→RTX PRO 6000）に伴い再計算
+    // （CLAUDE.md §1「全機能を対象にしたB300代替の洗い出し」）。
+    // RTX PRO 6000実測2点（74frame/114.92s, 362frame/488.84s、$3.03/h）から
+    // 線形回帰: 固定費18.84s・限界費用1.298s/frame →
+    // credit_to_jpy(1.66)/usd_jpy(150)/3倍markup換算で固定費4.30C
+    // （旧L40S基準の4.31Cとほぼ同値・維持）・per_frame 0.30C/frame
+    // （旧0.37Cから19%減、RTX PRO 6000がL40Sより速いため）。
+    value: 4.30,
     label: "動画超解像（固定費・HD基準）",
     category: "feature_credits",
     unit: "C",
@@ -294,14 +290,12 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     isPublic: true,
   },
   upscale_video_per_frame: {
-    // 2026-09-17 実機実測2点（72frame/210.86s, 362frame/941.82s、L40S）から
-    // 再計算。上記 upscale_video_base_credits のコメント参照——「フレーム数
-    // 無関係」はB300限定の性質で、L40Sでは限界費用2.52s/frameとかなり重い。
-    // ⚠️ 2点のみからの外挿であり、2K(H200)/4K(B300)は72frame単発データしか
-    // なく、長尺でも同様にB300の「ほぼフラット」特性が保たれるかは未検証
-    // （B300は計算力に余裕がありL40Sほど劣化しない可能性はあるが確証なし）。
-    // 実績データが増えたら再校正すること。
-    value: 0.37,
+    // 2026-09-17 GPU tier切り替え（HD: L40S→RTX PRO 6000）に伴い再計算。
+    // 上記 upscale_video_base_credits のコメント参照——RTX PRO 6000実測
+    // 2点（74frame/114.92s, 362frame/488.84s）からの線形回帰で
+    // 限界費用1.298s/frame、旧L40S基準(2.52s/frame)よりかなり軽い。
+    // ⚠️ 2点のみからの外挿である点は変わらず、実績データが増えたら再校正。
+    value: 0.30,
     label: "動画超解像（1フレームあたり・限界費用分）",
     category: "feature_credits",
     unit: "C/frame",
@@ -317,14 +311,16 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     isPublic: true,
   },
   upscale_video_mult_res_2k: {
-    // 2026-09-16/17 実機再計測（CLAUDE.md §1）: プリセット別GPU tier導入
-    // （HD=L40S $1.95/h・2K=H200 $4.54/h・4K=B300 $7.10/h）に伴い、旧係数
-    // （MP比のみ・単一GPU前提）を「GPU単価込みの実コスト比」に更新。
-    // 同一入力（72フレーム・3秒）でHD=210.86s($0.1142)・2K=220.55s($0.2782)
-    // ・4K=288.53s(12MP上限ケース、$0.5690) → HD比: 2K=2.44 / 4K=4.98。
-    // 旧値(2.25)はMPだけを見ていたため、実際はGPU単価差も乗るこの水準まで
-    // 過小評価していた。
-    value: 2.44,
+    // 2026-09-17 GPU tier切り替え（HD: L40S→RTX PRO 6000、2K: H200→RTX
+    // PRO 6000）に伴い再計算（CLAUDE.md §1）。両プリセットとも同一GPUに
+    // なったため、74フレーム同一条件でのクレジット目安比を実測: HD≈26.2C
+    // ・2K≈55.0C → 比率2.10。旧値(2.44)はHD=L40S/2K=H200という異なるGPU
+    // 前提だったため、GPU統一後の実態に合わせて引き下げる。
+    // ⚠️ 74frame基準の比率で、362frame基準では2.25とやや異なる（固定費/
+    // 限界費用の構成比がプリセットで違うため単一係数では完全には表現でき
+    // ない構造的な限界）。72-74frame基準を採用するのは旧値の算出方法との
+    // 一貫性を優先したため。
+    value: 2.10,
     label: "動画超解像 2Kプリセット係数",
     category: "feature_credits",
     unit: "×",
@@ -332,10 +328,13 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     isPublic: true,
   },
   upscale_video_mult_res_4k: {
-    // 上記2kと同時実測。旧値(2.9)はMPのみの比率で、GPU単価差
-    // （B300 $7.10/h vs HD側L40S $1.95/h）を反映しておらず原価割れに
-    // 近い水準だった。実測5.0弱まで引き上げる。
-    value: 4.98,
+    // 2026-09-17 HD側のGPU切り替え（L40S→RTX PRO 6000でHDが安くなった）
+    // に伴い再計算。4K自体はB300のまま変わらず（VRAM135.1GBでB300一択）。
+    // 72フレーム同一条件でのクレジット目安比: HD≈25.6C(新RTX PRO 6000)・
+    // 4K≈154.3C(B300) → 比率6.02。旧値(4.98)はHD側がL40Sだった頃の比率で、
+    // HDが安くなった分、相対的に4Kの倍率が上がる（4K自体の実測は変わって
+    // いない）。⚠️ 4Kは72frame単発データしかなく、長尺での再現性は未検証。
+    value: 6.02,
     label: "動画超解像 4Kプリセット係数",
     category: "feature_credits",
     unit: "×",
