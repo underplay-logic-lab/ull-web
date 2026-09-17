@@ -207,6 +207,37 @@ def _resolve_video_gpu_tier(preset: str) -> str:
     return UPSCALE_VIDEO_PRESET_GPU.get(str(preset or "").lower(), "") or list(_DEFAULT_GPU)[0]
 
 
+# --- 画像アップスケール: モデル別GPU tier（2026-09-17 実機検証、CLAUDE.md §1参照）
+# ------------------------------------------------------------------------------
+# Real-ESRGAN/SwinIR-L（node_type="upscale_model"、CNNベースの軽量モデル）は
+# SeedVR2（DiTベース拡散モデル）と計算量が桁違いに軽い。T4($0.59/h)実機実測
+# （yukipas.png 928x1152→3712x4608 x4、photo 256x256→1024x1024 x4）:
+#   real_esrgan_x4plus: VRAM 1.4-6.8GB, 4.15-30.18s
+#   real_esrgan_anime : VRAM 1.3-6.7GB, 4.12-10.17s
+#   swinir_l          : VRAM 1.4-6.0GB, 6.14-68.28s
+# 全パターンT4で無OOM。L4($0.80/h)とも比較したが、6パターン中4パターンで
+# T4の方が安く（L4は速度向上が単価上昇に見合わない）、コンテナプール分散に
+# よるコールドスタート増加リスクも避けるため、SeedVR2系（GPU_REQUEST=B300/
+# B200）とは別に全モデルT4で統一する。
+UPSCALE_IMAGE_MODEL_GPU: dict[str, str] = {
+    "real_esrgan_x4plus": _env_str("SEEDVR2_IMAGE_GPU_ESRGAN", "t4"),
+    "real_esrgan_anime": _env_str("SEEDVR2_IMAGE_GPU_ESRGAN", "t4"),
+    "swinir_l": _env_str("SEEDVR2_IMAGE_GPU_SWINIR", "t4"),
+}
+
+
+def _resolve_image_gpu_tier(model_key: str) -> str:
+    """SEEDVR2_WORKER_GPU が明示されていればそれを最優先（既存の実機検証
+    フローを壊さない）。そうでなければモデル別マッピング、未知・SeedVR2系
+    モデルは既定のGPU_REQUEST（B300）にフォールバックする。バッチ処理は
+    1リクエスト=単一model_key前提（Next側 upscale/batch/route.ts で保証済み）
+    なのでバッチ全体に同じGPU tierを適用してよい。"""
+    forced = os.environ.get("SEEDVR2_WORKER_GPU", "").strip()
+    if forced:
+        return forced
+    return UPSCALE_IMAGE_MODEL_GPU.get(str(model_key or "").lower(), "") or list(_DEFAULT_GPU)[0]
+
+
 COMFYUI_REF = _env_str("SEEDVR2_COMFYUI_REF", "master")
 SEEDVR2_NODE_REPO = _env_str(
     "SEEDVR2_NODE_REPO",
@@ -409,16 +440,15 @@ UPSCALER_REGISTRY: dict = {
         "desc_ja": "実写・写真向けの素直な4倍拡大。発明的な描き直しをせず破綻しない・爆速。",
         "license": "BSD-3-Clause",
         "node_type": "upscale_model",  # ComfyUI 標準 UpscaleModelLoader + ImageUpscaleWithModel
-        # 2026-09-13: 実装・実機検証まで完了させた直後、事業判断で非表示化
-        # （ホスト判断）。理由: この系統のモデルは軽量（実測 VRAM 数GB）で
-        # ローカルPC・無料ツール（Upscayl/chaiNNer/ComfyUI等）でも即座にタダで
-        # 動くコモディティ品であり、「よそでは出来ないことをやる」という
-        # ULL Studio の差別化（CLAUDE.md §0）と噛み合わない。また、これを
-        # 提供すると重い（＝高付加価値・高単価な）SeedVR2 7B の利用を食う
-        # リスクがある。重みDL・ワークフロー構築・GPU実機検証は完了済みで
-        # コードはそのまま残す — 需要が出たら enabled=True に戻すだけで復活可能。
-        "enabled": False,
-        "kind": ("image", "video"),
+        # 2026-09-13: 実装・実機検証まで完了させた直後、事業判断で一旦非表示化
+        # していたが、2026-09-17 に再検討・復活。実写/アニメ/劣化復元の3モデルを
+        # T4で実機比較したところ、各モデルの得意分野通りの明確な画質差が確認
+        # できた（実写はswinir_l>x4plus>anime、アニメはanime>x4plus>swinir_l）
+        # ため、「差別化にならない」という理由だけでは非表示化する根拠が弱いと
+        # 判断（ホスト判断）。GPU原価もT4で1回あたり1円未満と無視できる水準。
+        # 動画対応(kind="video")はまだ実機未検証のため画像のみ復活する。
+        "enabled": True,
+        "kind": ("image",),
         # 2026-09-13: 当初 "ai-forever/Real-ESRGAN"（HF）を指していたが実在しない
         # ファイル名で 404（実測確認）。公式配布元は GitHub Releases のみのため
         # "__url__" センチネルで直接 HTTP ダウンロードする（hf_hub_download 不使用）。
@@ -437,8 +467,8 @@ UPSCALER_REGISTRY: dict = {
         "desc_ja": "アニメ・イラスト特化の4倍拡大。線をなめらかに保つ。SeedVR2より軽量・高速。",
         "license": "BSD-3-Clause",
         "node_type": "upscale_model",
-        "enabled": False,  # 2026-09-13: real_esrgan_x4plus と同じ理由で非表示化（上記コメント参照）
-        "kind": ("image", "video"),
+        "enabled": True,  # 2026-09-17: real_esrgan_x4plus と同じ理由で復活（上記コメント参照）
+        "kind": ("image",),
         "model_files": [
             (
                 "upscale_models",
@@ -454,8 +484,8 @@ UPSCALER_REGISTRY: dict = {
         "desc_ja": "実写のノイズ・JPEGブロックを除去しながら復元する4倍拡大。写真の劣化補正に最も強い。",
         "license": "Apache-2.0",
         "node_type": "upscale_model",  # spandrel は SwinIR 対応済み（ComfyUI 標準ノード経由）
-        "enabled": False,  # 2026-09-13: real_esrgan_x4plus と同じ理由で非表示化（上記コメント参照）
-        "kind": ("image", "video"),
+        "enabled": True,  # 2026-09-17: real_esrgan_x4plus と同じ理由で復活（上記コメント参照）
+        "kind": ("image",),
         # 2026-09-13: 当初 "Comfy-Org/SwinIR"（HF）は非公開/存在せず 401（実測確認）。
         # 公式配布元（JingyunLiang/SwinIR GitHub Releases）の実写向け SwinIR-L x4 GAN
         # チェックポイントを直接 DL。state_dict は params_ema キー配下（実機で
@@ -1548,8 +1578,13 @@ def probe_imports() -> dict:
         return f"OK ({len(wf)} nodes)"
 
     def _upscale_model_video_workflow_build():
-        wf = build_upscale_workflow(
-            "swinir_l", {"source_fps": 24.0}, "probe_input.mp4", media_type="video"
+        # 2026-09-17: real_esrgan/swinir_l は kind=("image",) に絞ったため
+        # build_upscale_workflow(media_type="video") はもう通さない（意図通り
+        # 拒否される）。動画ワークフロー構築ロジック自体（_build_upscale_
+        # model_video_workflow）が壊れていないかは、kindチェックを経由しない
+        # 内部関数を直接叩いて引き続き検証する。
+        wf = _build_upscale_model_video_workflow(
+            UPSCALER_REGISTRY["swinir_l"], {"source_fps": 24.0}, "probe_input.mp4"
         )
         assert wf["load_video"]["class_type"] == "VHS_LoadVideo"
         assert wf["upscale"]["class_type"] == "ImageUpscaleWithModel"
@@ -2514,9 +2549,13 @@ def upscale_generate_dispatch(item: dict, request: fastapi.Request):
     if not (item.get("image") or item.get("image_b64")):
         raise fastapi.HTTPException(status_code=400, detail="image is required")
 
-    call = SeedVR2Worker().run_upscale_job.spawn(item)
+    # 2026-09-17（CLAUDE.md §1）: Real-ESRGAN/SwinIR-L系はT4、SeedVR2系は
+    # 既定のGPU_REQUEST（B300/B200）。モデル別に実測で決めたGPU tierへ動的切替。
+    gpu_tier = _resolve_image_gpu_tier(item.get("model_key") or "")
+    worker = SeedVR2Worker.with_options(gpu=gpu_tier)
+    call = worker().run_upscale_job.spawn(item)
     print(
-        f"[upscale-dispatch] {job_id}: model={item.get('model_key')} "
+        f"[upscale-dispatch] {job_id}: model={item.get('model_key')} gpu_tier={gpu_tier} "
         f"preset={item.get('preset')} max_allowed_time={item.get('max_allowed_time')!r}",
         flush=True,
     )
@@ -2556,10 +2595,14 @@ def upscale_batch_generate_dispatch(item: dict, request: fastapi.Request):
             )
 
     modal_timeout = _resolve_batch_timeout(item.get("max_allowed_time"))
-    worker = SeedVR2Worker.with_options(timeout=modal_timeout)
+    # 2026-09-17（CLAUDE.md §1）: バッチは1リクエスト=単一model_key前提
+    # （Next側 upscale/batch/route.ts が全itemに同じmodelKeyを書き込む）。
+    # 先頭itemのmodel_keyを代表としてGPU tierを決定する。
+    gpu_tier = _resolve_image_gpu_tier(items[0].get("model_key") or "")
+    worker = SeedVR2Worker.with_options(timeout=modal_timeout, gpu=gpu_tier)
     call = worker().run_upscale_batch_job.spawn(item)
     print(
-        f"[upscale-batch-dispatch] {batch_id}: {len(items)} items "
+        f"[upscale-batch-dispatch] {batch_id}: {len(items)} items gpu_tier={gpu_tier} "
         f"max_allowed_time={item.get('max_allowed_time')!r} modal_timeout={modal_timeout}s",
         flush=True,
     )
@@ -2835,12 +2878,22 @@ def main(
     max_edge: int = DEFAULT_MAX_RESOLUTION,
     color_correction: str = "lab",
     out_dir: str = "./upscale_out",
+    force_enable: bool = False,
+    force_png: bool = False,
+    gpu: str = "",
 ):
     """modal run modal_seedvr2_worker.py::main --image-path ./in.png --model seedvr2_7b
 
     8K/16K 実測: --target-short 4320 --max-edge 8192 等（max_resolution を上げないと
     レジストリ既定 4096 でクランプされる）。--color-correction none で LAB 転写を
     skip した時間も比較できる。
+
+    --force-enable: enabled=False のモデル（Real-ESRGAN/SwinIR等）を一時的に
+    有効化してテストする（2026-09-17、CLAUDE.md §1「ラインナップ再検討」）。
+    _do_upscale の有効モデルチェックはGPU関数（リモート）側で評価されるため、
+    ローカルシェルの SEEDVR2_ENABLE_MODELS だけでは効かない —
+    with_options(env=...) で明示的にコンテナへ渡す。
+    --gpu: GPU tier を明示（例 t4/l4/a10g）。空なら GPU_REQUEST（既定Blackwell）。
     """
     src = pathlib.Path(image_path).expanduser()
     if not src.is_file():
@@ -2849,7 +2902,20 @@ def main(
     ensure_upscalers_cached.remote([model])
     b64 = base64.b64encode(src.read_bytes()).decode("ascii")
     # 8K/16K 実測用に Modal 強制 timeout を 45 分へ（既定 20 分だと 16K が切れうる）。
-    worker = SeedVR2Worker.with_options(timeout=45 * 60)
+    options: dict = {"timeout": 45 * 60}
+    env_vars: dict = {}
+    if force_enable:
+        env_vars["SEEDVR2_ENABLE_MODELS"] = model
+    if force_png:
+        # モデル比較時、PNG>20MBだけ自動WebP再エンコードされると圧縮アーティ
+        # ファクトの有無が条件に混ざり不公平になる（2026-09-17、ホスト指摘）。
+        # 0にすると webp_threshold and ... の判定がFalseになり常にPNGのまま。
+        env_vars["SEEDVR2_WEBP_ABOVE_BYTES"] = "0"
+    if env_vars:
+        options["env"] = env_vars
+    if gpu:
+        options["gpu"] = gpu
+    worker = SeedVR2Worker.with_options(**options)
     result = worker().run_upscale.remote(
         b64,
         model_key=model,
@@ -2862,7 +2928,12 @@ def main(
     )
     dst = pathlib.Path(out_dir).expanduser()
     dst.mkdir(parents=True, exist_ok=True)
-    out = dst / result["filename"]
+    # 総当たり比較用（2026-09-17）: 全モデル共通でワークフロー側の
+    # filename_prefix="ull_upscale"固定・連番はコンテナ起動ごとにリセット
+    # されるため、モデル名だけでなく入力画像名も付与しないと「同じモデル×
+    # 別画像」で衝突し上書きしてしまう（実際に3パターン消失させた事故あり）。
+    # ワークフロー自体は無変更（本番影響なし）。
+    out = dst / f"{model}__{src.stem}__{result['filename']}"
     out.write_bytes(base64.b64decode(result["image_base64"]))
     print(
         f"[main] {model} {result.get('out_width')}x{result.get('out_height')} "

@@ -106,46 +106,40 @@ export const UPSCALE_MODELS: UpscaleModel[] = [
     kind: ["image", "video"],
   },
   // real_esrgan_x4plus / swinir_l / real_esrgan_anime は 2026-09-13 に実装・
-  // GPU実機検証まで完了させたが、事業判断で非表示化した（ホスト判断）。
-  // 理由: これらは軽量（実測VRAM数GB）でローカルPC・無料ツール
-  // （Upscayl/chaiNNer/ComfyUI等）でも即座にタダで動くコモディティモデルで
-  // あり、「よそでは出来ないことをやる」というULL Studioの差別化（CLAUDE.md
-  // §0）と噛み合わない。また提供すると高付加価値なSeedVR2 7Bの利用を食う
-  // リスクがある。バックエンド（modal_seedvr2_worker.py）側もenabled=Falseに
-  // 揃えてある。需要が出たら下記 HIDDEN_UPSCALE_MODELS をこの配列へ戻すだけ
-  // で復活できる（バックエンドのenabled=Trueも忘れず戻すこと）。
-];
-
-/** 非表示化した軽量モデル（上のコメント参照）。UPSCALE_MODELS には含めない。 */
-const HIDDEN_UPSCALE_MODELS: UpscaleModel[] = [
+  // GPU実機検証まで完了させ、事業判断で一旦非表示化していたが、2026-09-17に
+  // 復活。T4実機比較で各モデルの得意分野通りの明確な画質差（実写は
+  // swinir_l>x4plus>anime、アニメはanime>x4plus>swinir_l）を確認でき、
+  // 「差別化にならない」という理由だけでの非表示化は根拠が弱いと判断
+  // （ホスト判断）。GPU原価もT4で1回あたり1円未満。バックエンド
+  // （modal_seedvr2_worker.py）側もenabled=Trueに揃えてある。動画対応
+  // (kind="video")はまだ実機未検証のため画像のみ復活する。
   {
     key: "real_esrgan_x4plus",
     label: "Real-ESRGAN x4plus",
     descJa:
-      "実写・写真向けの素直な4倍拡大。AI高精細アップスケールと違いディテールを作り直さないので破綻せず爆速・低コスト。動画にも対応（フレームごとの決定的な処理で時間的チラつきが出にくい）。",
+      "実写・写真向けの素直な4倍拡大。AI高精細アップスケールと違いディテールを作り直さないので破綻せず爆速・低コスト。",
     creditMult: 0.25,
-    kind: ["image", "video"],
+    kind: ["image"],
     fixedScale: 4,
   },
   {
     key: "swinir_l",
     label: "SwinIR-L",
     descJa:
-      "実写のノイズ・JPEGブロックを除去しながら復元する4倍拡大。劣化した写真の補正に最も強い。動画対応。",
+      "実写のノイズ・JPEGブロックを除去しながら復元する4倍拡大。劣化した写真の補正に最も強い。",
     creditMult: 0.3,
-    kind: ["image", "video"],
+    kind: ["image"],
     fixedScale: 4,
   },
   {
     key: "real_esrgan_anime",
     label: "Real-ESRGAN anime 6B",
-    descJa: "アニメ・イラスト特化の4倍拡大。線をなめらかに保ったまま、AI高精細アップスケールより軽量・高速。動画対応。",
+    descJa: "アニメ・イラスト特化の4倍拡大。線をなめらかに保ったまま、AI高精細アップスケールより軽量・高速。",
     creditMult: 0.25,
-    kind: ["image", "video"],
+    kind: ["image"],
     fixedScale: 4,
   },
 ];
-void HIDDEN_UPSCALE_MODELS; // 非表示中は未参照（復活時にUPSCALE_MODELSへ移す）
 
 /** 動画アップスケール（/api/studio/upscale/video）が受け付けてよいモデルだけに絞った一覧。 */
 export const UPSCALE_VIDEO_MODELS: UpscaleModel[] = UPSCALE_MODELS.filter((m) =>
