@@ -65,6 +65,24 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
   };
 }
 
+/** 公開 URL を実ファイルとして保存させる（cross-origin download 対策）。
+ * 2026-09-17: videoUrl が旧 data: URI から director-results バケットの公開
+ * URL へ移行したため、plain `<a download>` はクロスオリジンで無視される
+ * ブラウザがあり得る（downloadUpscaleImage と同じ fetch→blob 方式に統一）。 */
+export async function downloadDirectorVideo(url: string, filename: string): Promise<void> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`動画の取得に失敗しました (${res.status})`);
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
 export type DirectorJobStatus = {
   jobId: string;
   status: "queued" | "processing" | "completed" | "failed";

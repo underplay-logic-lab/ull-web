@@ -12,6 +12,7 @@ export const GENERATED_BUCKETS = [
   { id: "angle-results", label: "Multi-Angle 出力", public: true },
   { id: "upscale-results", label: "超解像 出力", public: true },
   { id: "custom-workflow-results", label: "特化ワークフロー 出力", public: true },
+  { id: "director-results", label: "Cinematic Director 出力", public: true },
   { id: "lora_datasets", label: "LoRA データセット", public: false },
 ] as const;
 

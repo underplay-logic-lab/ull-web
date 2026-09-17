@@ -390,6 +390,14 @@ export function UpscaleVideoStudioTab() {
             if (sawInProgress) markGpuWarm();
             const queued = queuedNextRef.current;
             if (queued) {
+              // 次のジョブが画面を上書きする前に今の結果をブラウザへ自動
+              // 保存する（連続キュー時のUI上のギャップ対策。upscale-results
+              // バケットへは既に永続化済みなので失敗しても致命的ではない）。
+              if (next.resultUrl) {
+                downloadUpscaleImage(next.resultUrl, buildOutFilename()).catch((err) => {
+                  console.warn("[UpscaleVideoStudioTab] auto-download before next queued job failed:", err);
+                });
+              }
               queuedNextRef.current = null;
               setQueuedNext(null);
               void runGenerate(queued);

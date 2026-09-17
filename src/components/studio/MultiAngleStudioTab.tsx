@@ -92,6 +92,31 @@ function buildZipFilename() {
   )}${p(now.getMinutes())}${p(now.getSeconds())}.zip`;
 }
 
+/** 画像URL配列を1つのZIP Blobへ束ねる（handleZip・自動ダウンロード両方で共用）。 */
+async function zipAngleImages(urls: string[]): Promise<Blob> {
+  const zip = new JSZip();
+  await Promise.all(
+    urls.map(async (url, i) => {
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const buf = await res.arrayBuffer();
+      zip.file(`${String(i + 1).padStart(2, "0")}_angle.png`, buf);
+    }),
+  );
+  return zip.generateAsync({ type: "blob" });
+}
+
+function triggerBlobDownload(blob: Blob, filename: string): void {
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -738,6 +763,20 @@ export function MultiAngleStudioTab() {
             // 同期的な副作用ではない）。
             const queued = queuedNextRef.current;
             if (queued) {
+              // 次のジョブが画面を上書きする前に、今完了した全構図を1つの
+              // ZIPとしてブラウザへ自動保存する（連続キュー時、手動DLの
+              // 間もなく次の生成中表示に切り替わり過去の結果に戻れなく
+              // なるUI上のギャップへの対策。angle-results バケットへは
+              // 既に永続化済みなので失敗しても致命的ではない。1件ずつ
+              // 個別ダウンロードだと最大96件でブラウザにブロックされうる
+              // ため、既存の「ZIPで一括」導線をそのまま流用する）。
+              if (next.images.length) {
+                zipAngleImages(next.images)
+                  .then((blob) => triggerBlobDownload(blob, buildZipFilename()))
+                  .catch((err) => {
+                    console.warn("[MultiAngleStudioTab] auto-download before next queued job failed:", err);
+                  });
+              }
               queuedNextRef.current = null;
               setQueuedNext(null);
               void runGenerate(queued);
@@ -942,24 +981,8 @@ export function MultiAngleStudioTab() {
     if (!images.length || zipping) return;
     setZipping(true);
     try {
-      const zip = new JSZip();
-      await Promise.all(
-        images.map(async (url, i) => {
-          const res = await fetch(url);
-          if (!res.ok) return;
-          const buf = await res.arrayBuffer();
-          zip.file(`${String(i + 1).padStart(2, "0")}_angle.png`, buf);
-        }),
-      );
-      const blob = await zip.generateAsync({ type: "blob" });
-      const objectUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = objectUrl;
-      a.download = buildZipFilename();
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      const blob = await zipAngleImages(images);
+      triggerBlobDownload(blob, buildZipFilename());
     } catch (err) {
       console.error("[MultiAngleStudioTab] zip failed:", err);
       setErrorMessage("ZIP の作成に失敗しました。");

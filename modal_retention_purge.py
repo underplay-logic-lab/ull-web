@@ -54,6 +54,10 @@ DRY_RUN = os.environ.get("ULL_RETENTION_DRY_RUN", "") in ("1", "true", "yes")
 
 DEFAULT_BUCKETS = [
     "angle-results", "upscale-results", "lora_datasets", "custom-workflow-results",
+    # 2026-09-17: Cinematic Director を video_url への base64 直埋め込みから
+    # Storage バケット方式へ移行（[[cinematic-video-tab]] 系の旧privacy posture
+    # は現行 DirectorStudioTab.tsx には無く、CLAUDE.md §6 の標準へ統一）。
+    "director-results",
     # 2026-09-13: upscale/generate・upscale/batch route.ts が一時アップロード
     # （upscale-uploads）を dispatch 直後に即削除していたのを撤去した（Modal
     # worker が署名付きURLを fetch する前にオブジェクトが消えるレース条件で

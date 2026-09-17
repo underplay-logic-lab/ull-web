@@ -280,6 +280,7 @@ export async function POST(request: Request) {
     promptIsComplete: true,
     rawImageWidth: rawDims?.width,
     rawImageHeight: rawDims?.height,
+    jobId,
   });
 
   try {

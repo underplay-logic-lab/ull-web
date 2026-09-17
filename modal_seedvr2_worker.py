@@ -112,6 +112,7 @@ import pathlib
 import re
 import subprocess
 import time
+import uuid
 from urllib.parse import urlparse
 
 import fastapi
@@ -593,6 +594,13 @@ def _build_seedvr2_workflow(reg: dict, params: dict, input_filename: str) -> dic
     if batch % 4 != 1:
         batch = max(1, ((batch - 1) // 4) * 4 + 1)  # 直近の 4n+1 に丸める
     short = int(p.get("target_short", DEFAULT_TARGET_SHORT))
+    # filename_prefix にジョブ固有のサフィックスを付与（2026-09-17、CLAUDE.md
+    # §0: 過去に filename_prefix 固定+コンテナ再起動でのカウンタリセットに
+    # よるローカル保存名衝突・3パターン消失事故があったため全ワークフロー
+    # 共通で予防策として付与。実行時の取得自体は /history のプロンプトID
+    # キー参照で既に安全だが、ローカルCLIでの出力ディレクトリ調査・比較用
+    # ダウンロード時の衝突防止として付ける）。
+    _unique = uuid.uuid4().hex[:8]
 
     workflow = {
         "load_image": {
@@ -641,7 +649,7 @@ def _build_seedvr2_workflow(reg: dict, params: dict, input_filename: str) -> dic
         },
         "save": {
             "class_type": "SaveImage",
-            "inputs": {"images": ["seedvr2", 0], "filename_prefix": "ull_upscale"},
+            "inputs": {"images": ["seedvr2", 0], "filename_prefix": f"ull_upscale_{_unique}"},
             "_meta": {"title": "output"},
         },
     }
@@ -680,6 +688,7 @@ def _build_seedvr2_video_workflow(reg: dict, params: dict, input_filename: str) 
     short = int(p.get("target_short", DEFAULT_TARGET_SHORT))
     frame_cap = int(p.get("frame_load_cap", 0))  # 0 = 無制限（呼び出し側で事前に上限チェック済み）
     source_fps = float(p.get("source_fps", 24.0)) or 24.0
+    _unique = uuid.uuid4().hex[:8]
 
     workflow = {
         "load_video": {
@@ -738,7 +747,7 @@ def _build_seedvr2_video_workflow(reg: dict, params: dict, input_filename: str) 
                 "images": ["seedvr2", 0],
                 "frame_rate": source_fps,
                 "loop_count": 0,
-                "filename_prefix": "ull_upscale_video",
+                "filename_prefix": f"ull_upscale_video_{_unique}",
                 "format": "video/h264-mp4",
                 "pingpong": False,
                 "save_output": True,
@@ -772,7 +781,7 @@ def _build_upscale_model_workflow(reg: dict, params: dict, input_filename: str) 
         },
         "save": {
             "class_type": "SaveImage",
-            "inputs": {"images": ["upscale", 0], "filename_prefix": "ull_upscale"},
+            "inputs": {"images": ["upscale", 0], "filename_prefix": f"ull_upscale_{uuid.uuid4().hex[:8]}"},
             "_meta": {"title": "output"},
         },
     }
@@ -823,7 +832,7 @@ def _build_upscale_model_video_workflow(reg: dict, params: dict, input_filename:
                 "images": ["upscale", 0],
                 "frame_rate": source_fps,
                 "loop_count": 0,
-                "filename_prefix": "ull_upscale_video",
+                "filename_prefix": f"ull_upscale_video_{uuid.uuid4().hex[:8]}",
                 "format": "video/h264-mp4",
                 "pingpong": False,
                 "save_output": True,
@@ -2928,11 +2937,10 @@ def main(
     )
     dst = pathlib.Path(out_dir).expanduser()
     dst.mkdir(parents=True, exist_ok=True)
-    # 総当たり比較用（2026-09-17）: 全モデル共通でワークフロー側の
-    # filename_prefix="ull_upscale"固定・連番はコンテナ起動ごとにリセット
-    # されるため、モデル名だけでなく入力画像名も付与しないと「同じモデル×
-    # 別画像」で衝突し上書きしてしまう（実際に3パターン消失させた事故あり）。
-    # ワークフロー自体は無変更（本番影響なし）。
+    # 総当たり比較用（2026-09-17）: この事故を受けて filename_prefix
+    # 自体にもジョブ固有サフィックスを付与済み（_build_seedvr2_workflow等）
+    # だが、CLI側のローカル保存名にもモデル名・入力画像名を独立して付与し
+    # 二重に衝突を防ぐ（実際に3パターン消失させた事故あり）。
     out = dst / f"{model}__{src.stem}__{result['filename']}"
     out.write_bytes(base64.b64decode(result["image_base64"]))
     print(

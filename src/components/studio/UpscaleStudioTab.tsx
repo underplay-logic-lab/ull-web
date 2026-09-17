@@ -680,6 +680,16 @@ export function UpscaleStudioTab() {
             // ここでは読むだけ（clear は同じ非同期コールバック内で行う）。
             const queued = queuedNextRef.current;
             if (queued) {
+              // 次のジョブが画面を上書きする前に今の結果をブラウザへ自動
+              // 保存する（連続キュー時、手動ダウンロードの間もなく次の
+              // 生成中表示に切り替わり過去の結果に戻れなくなるUI上の
+              // ギャップへの対策。upscale-results バケットへは既に
+              // 永続化済みなので失敗しても致命的ではない）。
+              if (next.resultUrl) {
+                downloadUpscaleImage(next.resultUrl, buildOutFilename(next.resultUrl)).catch((err) => {
+                  console.warn("[UpscaleStudioTab] auto-download before next queued job failed:", err);
+                });
+              }
               queuedNextRef.current = null;
               setQueuedNext(null);
               void runGenerate(queued);

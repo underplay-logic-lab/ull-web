@@ -36,19 +36,34 @@ const WORKFLOW_TEMPLATE = {
   // 伴う対応。v0.33.3を選んでいた理由だった「masterのSaveVideo一時バグ」を
   // 回避する目的、CLAUDE.md §1参照）。images/audioを直接受け取れるため
   // 旧 105:91 (CreateVideo) 経由は不要。
-  "92": {
+  // 2026-09-18 実障害修正: VHS_VideoCombine（ComfyUI-VideoHelperSuite）が
+  // MiniMax H3 の AUDIO 出力を正しく扱えず、動画は正常でも音声トラックが
+  // 一切乗らない無音動画になっていた（実機診断で確定 — VDN-H3/EasyCache/
+  // SageAttention/チェックポイント自体はいずれも無関係と実測で切り分け
+  // 済み、この結合ノードだけが原因だった）。ComfyUI 標準の CreateVideo +
+  // SaveVideo に戻す（元々 v0.33.3 時代の SaveVideo 一時バグを避けるために
+  // VHS_VideoCombine を採用していたが、v0.35.1 の現在は解消済みと実機
+  // 確認済み）。
+  "91": {
     inputs: {
       images: ["105:10", 0],
       audio: ["105:23", 0],
-      frame_rate: 24,
-      loop_count: 0,
-      filename_prefix: "cinematic_video",
-      format: "video/h264-mp4",
-      pingpong: false,
-      save_output: true,
+      fps: 24,
+      bit_depth: "auto",
+      color_space: "sRGB",
     },
-    class_type: "VHS_VideoCombine",
-    _meta: { title: "Video Combine" },
+    class_type: "CreateVideo",
+    _meta: { title: "Create Video" },
+  },
+  "92": {
+    inputs: {
+      video: ["91", 0],
+      filename_prefix: "cinematic_video",
+      format: "mp4",
+      codec: "h264",
+    },
+    class_type: "SaveVideo",
+    _meta: { title: "Save Video" },
   },
   "114": {
     inputs: { image: "__REFERENCE_IMAGE__" },
@@ -102,7 +117,7 @@ const WORKFLOW_TEMPLATE = {
     _meta: { title: "Basic Guider" },
   },
   "105:6": {
-    inputs: { unet_name: "minimax_h3_fl2va_bf16.safetensors", weight_dtype: "default" },
+    inputs: { unet_name: "10Eros_Max_h3_hybrid_beta5.safetensors", weight_dtype: "default" },
     class_type: "UNETLoader",
     _meta: { title: "Load Diffusion Model" },
   },
@@ -213,6 +228,15 @@ export type BuildCinematicWorkflowParams = {
    */
   rawImageWidth?: number;
   rawImageHeight?: number;
+  /**
+   * ComfyUI 側 filename_prefix に埋め込むユニークキー。省略時は
+   * WORKFLOW_TEMPLATE の固定値（"cinematic_video"）のまま。同一コンテナが
+   * 複数ジョブを連続処理しても衝突しないよう、呼び出し側の generation_jobs
+   * 行の id を渡す（CLAUDE.md §0 実測の通り実害は薄いが、SeedVR2 での
+   * 実事故を踏まえた予防策として全ワークフロー共通で付与する。
+   * 2026-09-17）。
+   */
+  jobId?: string;
 };
 
 export function buildCinematicWorkflow({
@@ -223,9 +247,13 @@ export function buildCinematicWorkflow({
   promptIsComplete,
   rawImageWidth,
   rawImageHeight,
+  jobId,
 }: BuildCinematicWorkflowParams): CinematicWorkflow {
   const workflow = structuredClone(WORKFLOW_TEMPLATE) as unknown as CinematicWorkflow;
 
+  if (jobId) {
+    workflow["92"].inputs.filename_prefix = `cinematic_video_${jobId}`;
+  }
   workflow["114"].inputs.image = referenceImageName;
   const { width: safeWidth, height: safeHeight } =
     rawImageWidth && rawImageHeight && rawImageWidth > 0 && rawImageHeight > 0

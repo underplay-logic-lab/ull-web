@@ -38,7 +38,13 @@ import {
   type DirectorScene,
 } from "@/lib/directorPricing";
 import { CINEMATIC_MODE_BY_ID } from "@/lib/cinematicPricing";
-import { pollDirectorJob, startDirectorJob, type DirectorApiError, type DirectorJobStatus } from "@/lib/directorApi";
+import {
+  pollDirectorJob,
+  startDirectorJob,
+  downloadDirectorVideo,
+  type DirectorApiError,
+  type DirectorJobStatus,
+} from "@/lib/directorApi";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { VramBadge } from "@/components/studio/VramBadge";
@@ -488,6 +494,18 @@ export function DirectorStudioTab() {
             if (sawInProgress) markGpuWarm();
             const queued = queuedNextRef.current;
             if (queued) {
+              // 次のジョブが即座に画面を上書きしてしまう前に、今完了した
+              // 分をブラウザへ自動保存しておく（連続キュー時、ユーザーが
+              // 手動ダウンロードボタンを押す間もなく次の生成中表示に
+              // 切り替わってしまい、過去の結果に戻る手段が無いUI上の
+              // ギャップへの対策。失敗しても致命的ではない — サーバー側
+              // には director-results バケットへ既に永続化済みなので、
+              // ここが失敗しても「消える」わけではない）。
+              if (next.videoUrl) {
+                downloadDirectorVideo(next.videoUrl, `ull_cinematic_director_${next.jobId}.mp4`).catch((err) => {
+                  console.warn("[DirectorStudioTab] auto-download before next queued job failed:", err);
+                });
+              }
               queuedNextRef.current = null;
               setQueuedNext(null);
               void runGenerate(queued);
@@ -819,14 +837,20 @@ export function DirectorStudioTab() {
         {phase === "done" && job?.videoUrl && (
           <div className="rounded-xl border border-border bg-background p-3">
             <video src={job.videoUrl} controls className="w-full rounded-lg" />
-            <a
-              href={job.videoUrl}
-              download="ull_cinematic_director.mp4"
+            <button
+              type="button"
+              onClick={() =>
+                job.videoUrl &&
+                downloadDirectorVideo(job.videoUrl, "ull_cinematic_director.mp4").catch((err) => {
+                  console.error("[DirectorStudioTab] download failed:", err);
+                  setErrorMessage("ダウンロードに失敗しました。");
+                })
+              }
               className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-neon-violet/40"
             >
               <Download size={14} />
               ダウンロード
-            </a>
+            </button>
             {job.vramUsedGb != null && (
               <div className="mt-2 flex justify-center">
                 <VramBadge gb={job.vramUsedGb} />

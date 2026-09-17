@@ -750,6 +750,34 @@ def _supabase_patch_job(job_id: str, fields: dict) -> None:
         print(f"[generation_jobs] failed to update job {job_id} (after retries): {exc}")
 
 
+_DIRECTOR_RESULTS_BUCKET = "director-results"
+
+
+def _upload_director_video(user_id: str, job_id: str, video_bytes: bytes) -> str | None:
+    """mp4 を director-results バケット（public）へ upsert し、公開 URL を返す。
+    アップロード失敗時は None（呼び出し側で base64 data URI にフォールバック）。
+    Multi-Angle の _upload_angle_image / 超解像の _upload_upscale_video と同じ
+    パターンへ統一（CLAUDE.md §6「生成物は同期/非同期を問わず必ず永続ストレージ
+    へ保存する」— Cinematic Director だけ video_url に base64 を直接埋め込む
+    旧方式のままだったのを是正。2026-09-17）。"""
+    supabase_url = os.environ.get("SUPABASE_URL")
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not supabase_url or not service_key:
+        return None
+    obj_path = f"{user_id or 'anon'}/{job_id}.mp4"
+    try:
+        _supabase_request_checked(
+            "POST",
+            f"/storage/v1/object/{_DIRECTOR_RESULTS_BUCKET}/{obj_path}",
+            headers={"Content-Type": "video/mp4", "x-upsert": "true"},
+            data=video_bytes,
+        )
+        return f"{supabase_url}/storage/v1/object/public/{_DIRECTOR_RESULTS_BUCKET}/{obj_path}"
+    except Exception as exc:  # noqa: BLE001 — 失敗時は呼び出し側が data URI にフォールバック
+        print(f"[director-job] video upload failed ({obj_path}): {exc}", flush=True)
+        return None
+
+
 def _current_effective_vram_gb():
     """Device-global effective VRAM in use, in GB — just the one number, no
     total / denominator and no GPU model name (the client renders it as a
@@ -1505,19 +1533,21 @@ class WanAnimateBlackwell:
             "vram_used_gb": _vram_used_gb,
         }
         if is_async:
-            # Stored as a data: URI directly in generation_jobs.video_url
-            # rather than uploaded to object storage — deliberately simple
-            # for this first async-job rollout (Cinematic only), consistent
-            # with this app's existing "videos are never durably stored
-            # server-side" privacy posture (see CinematicVideoTab.tsx's own
-            # notice). Worth revisiting if/when this expands to other
-            # workflow types or job history becomes a real feature: a hot
-            # table growing multi-MB text rows isn't a great long-term fit.
+            # director-results バケットへアップロードし公開URLを永続化する
+            # （CLAUDE.md §6）。旧実装は video_url に base64 を直接埋め込む
+            # だけで Storage に一切残さなかった（"videos are never durably
+            # stored server-side" という当時のコメントは、廃止済みの旧
+            # CinematicVideoTab.tsx が持っていた「サーバーに保存されずブラウザ
+            # を閉じると消滅する」という注意書きに合わせた名残で、現行の
+            # DirectorStudioTab.tsx にはその注意書き自体がもう無い）。
+            # Multi-Angle/超解像と同じ「アップロード失敗時のみ data URI に
+            # フォールバック」方式へ統一（2026-09-17）。
             if _vram_thread is not None:
                 _vram_thread.join(timeout=3)
+            uploaded_url = _upload_director_video(user_id, job_id, result_bytes)
             _completed_fields = {
                 "status": "completed",
-                "video_url": f"data:video/mp4;base64,{result_base64}",
+                "video_url": uploaded_url or f"data:video/mp4;base64,{result_base64}",
                 "completed_at": _now_iso(),
             }
             if _vram_used_gb is not None:
