@@ -190,8 +190,7 @@ DEFAULT_LORA_SCALE = _env_float("ANGLE_LORA_SCALE", 1.0)  # 2026-09-09 チュー
 # ここで LoRA ロード時のみ前置する。空文字にすると前置しない。
 ANGLE_LORA_TRIGGER = os.environ.get("ANGLE_LORA_TRIGGER", "<sks>").strip()
 
-# GPU tier は CLAUDE.md §1 / modal_lora_worker.py（LORA_WORKER_GPU）に揃えて
-# 既定 Blackwell 固定（b300 -> b200）。`ANGLE_WORKER_GPU` を明示したときだけ
+# GPU tier は既定 Blackwell 固定。`ANGLE_WORKER_GPU` を明示したときだけ
 # それを最優先する。
 #
 # ⚠️ A100 を既定にしてはいけない。2026-09-06 計測: torch 2.14.0+cu130 +
@@ -205,7 +204,19 @@ ANGLE_LORA_TRIGGER = os.environ.get("ANGLE_LORA_TRIGGER", "<sks>").strip()
 #    抑えたいときは `ANGLE_WORKER_GPU=a100-80gb` を明示する。
 # Qwen-Image-Edit の 20B transformer は BF16 で ~40GB、TE（Qwen2.5-VL）+ VAE
 # 込みでも A100-80GB に収まる（＝明示 override 時のメモリ的な破綻はない）。
-_DEFAULT_GPU = ["b300", "b200"]
+#
+# 2026-09-17: B300 -> B200 に既定を切り替え（CLAUDE.md §1「全機能を対象に
+# したB300代替の洗い出し」）。B300/B200/H100/H200の4機種を同一条件（3構図・
+# 40step）で実機比較したところ、B200が合計時間(69.78s)・warm時$/構図
+# (=$0.0350)とも最有力と判明。B300は定常のstep時間自体は最速(450ms)だが、
+# コールドスタート(pre+TE=56.5s)が他3機種(7.7-10.3s)より7倍以上重く、
+# トータルでは最下位になった。Multi-Angleは実際3構図から使う運用なので
+# warm時の傾向がより支配的——「大量でも少量でもB200が一貫して有利」という
+# 結果になった。VRAM実測56.4-56.5GB（B200総容量192GBに対し余裕十分）。
+# ⚠️ 各GPU1回のみの実測のため確度は参考値レベル（B300のコールドスタートの
+# 重さが系統的なものか個体差/タイミングかは未確認）。フォールバックとして
+# B300を残す。
+_DEFAULT_GPU = ["b200", "b300"]
 
 
 def _resolve_angle_worker_gpu():
@@ -1408,6 +1419,8 @@ class QwenImageEditWorker:
         negative_prompt: str = DEFAULT_NEGATIVE_PROMPT,
         images=None,
         text_encoder_repo: str = "",
+        height: int | None = None,
+        width: int | None = None,
     ) -> dict:
         """`image_spec` は str（後方互換）。`images`（list, 最大 MAX_REF_IMAGES）を
         渡すと Multi-Reference。先頭がメイン参照。
@@ -1419,6 +1432,17 @@ class QwenImageEditWorker:
         に基づき読み込んだものを使う。指定時、現在ロード中のものと違えば
         ウォームコンテナ内でその場で差し替える（同じコンテナへの次リクエスト
         以降は再ロード不要）。
+
+        height/width: 2026-09-17（CLAUDE.md「速くガチャを回して良いのだけ
+        upscale」構想）の解像度引き下げ実験用。省略時（None）は
+        QwenImageEditPlusPipeline が自動計算する ~1MP（1024×1024基準、
+        `calculate_dimensions(1024*1024, アスペクト比)`。diffusers
+        pipeline_qwenimage_edit_plus.py で2026-09-17ソース確認）のまま。
+        明示指定すると自動計算をバイパスしてDiTのトークン数（≒計算コスト）
+        を面積比で削減できる——高付加価値な超解像（本ファイルとは別の
+        modal_seedvr2_worker.py）に「仕上げ」を任せ、Multi-Angle自体は
+        低解像度で高速に大量生成する分業を狙った実験。CLI専用（本番の
+        run_edit_job には未反映、実測結果を見てから判断する）。
         """
         import torch
 
@@ -1503,6 +1527,10 @@ class QwenImageEditWorker:
                     num_images_per_prompt=1,
                     generator=generator,
                 )
+                if height is not None:
+                    call_kwargs["height"] = height
+                if width is not None:
+                    call_kwargs["width"] = width
                 if self._supports_step_cb:
                     call_kwargs["callback_on_step_end"] = _prof_cb
 
@@ -1911,6 +1939,20 @@ def angle_generate_dispatch(item: dict, request: fastapi.Request):
 # ---------------------------------------------------------------------------
 # ローカル一発 CLI
 # ---------------------------------------------------------------------------
+def _calculate_dimensions(target_area: float, ratio: float, multiple: int = 32) -> tuple[int, int]:
+    """diffusers QwenImageEditPlusPipeline.calculate_dimensions と同じロジック
+    （2026-09-17、pipeline_qwenimage_edit_plus.py v0.40.0 ソース確認）。
+    target_area(px^2) と入力画像のアスペクト比から、32の倍数に丸めた
+    height/width を算出する。呼び出し側でこれを height/width に明示指定
+    すると、パイプライン既定の 1024*1024 自動計算をアスペクト比を保ったまま
+    好きな面積へ差し替えられる。"""
+    w = math.sqrt(target_area * ratio)
+    h = w / ratio
+    w = round(w / multiple) * multiple
+    h = round(h / multiple) * multiple
+    return int(h), int(w)
+
+
 @app.local_entrypoint()
 def main(
     image_path: str,
@@ -1920,6 +1962,9 @@ def main(
     cfg: float = DEFAULT_TRUE_CFG,
     out_dir: str = "./angle_out",
     text_encoder_repo: str = "",
+    height: int = 0,
+    width: int = 0,
+    target_megapixels: float = 0,
 ):
     """modal run modal_angle_worker.py --image-path ./ref.png \
            --instructions "Change to profile view || Change to low-angle shot"
@@ -1929,6 +1974,13 @@ def main(
 
     --text-encoder-repo で検閲耐性 text_encoder を実機テストできる
     （例: huihui-ai/Qwen2.5-VL-7B-Instruct-abliterated）。
+
+    --height/--width: 0（既定）なら自動計算（~1MP相当）。直接指定すると
+    入力画像のアスペクト比を無視した矩形になる（正方形入力以外では非推奨）。
+    --target-megapixels: 0（既定）以外を指定すると、入力画像の実アスペクト比
+    を保ったまま height/width を自動算出する（解像度引き下げ実験の推奨経路。
+    2026-09-17、run_edit のdocstring参照）。例: 0.5 なら約0.5MP相当。
+    height/width を明示した場合はそちらが優先される。
     """
     src = pathlib.Path(image_path).expanduser()
     if not src.is_file():
@@ -1936,6 +1988,14 @@ def main(
     instr_list = [s.strip() for s in instructions.split("||") if s.strip()]
     if not instr_list:
         raise SystemExit("pass at least one instruction in --instructions")
+
+    if target_megapixels and not (height and width):
+        from PIL import Image as _PILImage
+
+        with _PILImage.open(src) as _im:
+            _w0, _h0 = _im.size
+        height, width = _calculate_dimensions(target_megapixels * 1_000_000, _w0 / _h0)
+        print(f"[main] target_megapixels={target_megapixels} -> height={height} width={width}", flush=True)
 
     image_b64 = base64.b64encode(src.read_bytes()).decode("ascii")
 
@@ -1949,6 +2009,8 @@ def main(
         num_inference_steps=steps,
         true_cfg_scale=cfg,
         text_encoder_repo=text_encoder_repo,
+        height=height or None,
+        width=width or None,
     )
 
     dst = pathlib.Path(out_dir).expanduser()
