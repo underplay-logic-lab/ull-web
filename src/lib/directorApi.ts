@@ -256,7 +256,7 @@ export async function uploadDirectorLoraFile(
   if (existingBytes > 0) uploadUrl.searchParams.set("offset", String(existingBytes));
   const body = existingBytes > 0 ? file.slice(existingBytes) : file;
 
-  const { ok: uploadOk, json: uploadData } = await xhrPostWithProgress(
+  const { ok: uploadOk, status: uploadStatus, json: uploadData } = await xhrPostWithProgress(
     uploadUrl.toString(),
     body,
     existingBytes,
@@ -265,7 +265,13 @@ export async function uploadDirectorLoraFile(
   );
   const uploadResult = uploadData as { path?: string; detail?: string; error?: string } | null;
   if (!uploadOk || !uploadResult?.path) {
-    throw new Error(uploadResult?.detail || uploadResult?.error || "LoRAのアップロードに失敗しました。");
+    // detail/errorが無い（=サーバーがJSON以外を返した等）場合でもステータス
+    // コードだけは表示する——次回の原因調査を「LoRAのアップロードに失敗
+    // しました」だけより手掛かり付きにするため（2026-09-19、実機で
+    // detail無し失敗を確認）。
+    throw new Error(
+      uploadResult?.detail || uploadResult?.error || `LoRAのアップロードに失敗しました（HTTP ${uploadStatus}）。`,
+    );
   }
   const volumePath = uploadResult.path;
   _uploadedLoraCache.set(file, volumePath);

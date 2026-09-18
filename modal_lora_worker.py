@@ -5585,7 +5585,9 @@ async def upload_user_lora(
     dest_path = dest_dir / filename
 
     try:
-        vol.reload()
+        # async def の中で同期版 vol.reload() を呼ぶと AsyncUsageWarning が出る
+        # （2026-09-19実機ログで確認）。.aio() 版を使う。
+        await vol.reload.aio()
     except Exception as exc:  # noqa: BLE001
         print(f"[director-lora-upload] vol.reload() skipped: {exc}", flush=True)
 
@@ -5614,7 +5616,7 @@ async def upload_user_lora(
         # オーバーだけは上でファイル自体を破棄済み）。
         raise fastapi.HTTPException(status_code=500, detail=f"upload interrupted: {exc}") from exc
 
-    vol.commit()
+    await vol.commit.aio()
     rel_path = f"{DIRECTOR_USER_LORA_SUBDIR}/{user_id}/{filename}"
     print(
         f"[director-lora-upload] saved {rel_path} ({size / 1024**2:.1f} MB"
