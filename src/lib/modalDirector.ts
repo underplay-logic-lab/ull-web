@@ -32,11 +32,14 @@ export type SpawnDirectorJobParams = {
    * combined_prompt を書き戻す際、他フィールドを消さずマージするために必要 —
    * PATCHはJSONBカラム丸ごと置き換えのため）。 */
   directorInputsSnapshot?: Record<string, unknown>;
-  /** 外部アップロードLoRA（2026-09-18追加）用の署名付きダウンロードURL。
-   * 渡されると、ワーカーがComfyUI実行前にこのURLから直接ダウンロードして
-   * コンテナローカルの loras/ へ配置する（Volumeへは永続化しない）。
-   * loraFilename（workflow 側の lora_name と同じ値）とセットで渡す。 */
-  loraDownloadUrl?: string;
+  /** 外部アップロードLoRA（2026-09-18導入・同日中に設計変更）用のVolume
+   * 相対パス（modal_lora_worker.py::upload_user_lora が保存した先、
+   * "director_user_loras/<user_id>/<file>"）。渡されると、ワーカーが
+   * ComfyUI実行前にこのVolume上のファイルをローカルコピーで
+   * COMFY_DIR/models/loras/ へ配置する（Supabase Storageを経由しないので
+   * ネットワーク転送が発生しない）。loraFilename（workflow 側の lora_name
+   * と同じ値）とセットで渡す。 */
+  loraVolumePath?: string;
   loraFilename?: string;
 };
 
@@ -68,7 +71,7 @@ export async function spawnDirectorJob(params: SpawnDirectorJobParams): Promise<
       qwen_prompt_node_id: params.qwenPromptNodeId,
       qwen_duration_s: params.qwenDurationS,
       director_inputs_snapshot: params.directorInputsSnapshot,
-      lora_download_url: params.loraDownloadUrl,
+      lora_volume_path: params.loraVolumePath,
       lora_filename: params.loraFilename,
     }),
     signal: AbortSignal.timeout(30_000),

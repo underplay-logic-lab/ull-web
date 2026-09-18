@@ -65,16 +65,16 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
   const { path: storagePath } = await uploadStudioAsset(args.userId, args.image);
 
   let loraId: string | undefined;
-  let loraUploadPath: string | undefined;
+  let loraUploadVolumePath: string | undefined;
   if (args.lora?.source === "trained") {
     loraId = args.lora.loraId;
   } else if (args.lora?.source === "upload") {
     const uploaded = await uploadDirectorLoraFile(args.userId, args.lora.file);
-    loraUploadPath = uploaded.path;
+    loraUploadVolumePath = uploaded.volumePath;
   }
 
   const priority = args.priority ?? false;
-  const loraFields = { loraId, loraUploadPath };
+  const loraFields = { loraId, loraUploadVolumePath };
   const body =
     "conceptText" in args && args.conceptText !== undefined
       ? {
@@ -122,28 +122,56 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
   };
 }
 
-// 外部LoRA（.safetensors）アップロード（2026-09-18追加）。director-user-loras
-// バケット（private、"<user_id>/<uuid>-<filename>"）へブラウザから直接
-// アップロードする（lora_datasets/upscale-uploads と同じ、Vercelの4.5MB
-// リクエストボディ上限を回避するパターン）。
-const DIRECTOR_USER_LORA_BUCKET = "director-user-loras";
-const DIRECTOR_LORA_MAX_BYTES = 2 * 1024 * 1024 * 1024; // バケット側の上限（2GB）と合わせる
+// 外部LoRA（.safetensors）アップロード（2026-09-18導入・同日中に設計変更）。
+// 当初 Supabase Storage 経由だったが、Freeプランのグローバルアップロード
+// 上限（プロジェクト全体で50MB固定、バケット単位のfile_size_limitとは別物で
+// 引き上げ不可）に阻まれ、実運用サイズのLoRA（rank32のminimax_h3で約1.18GB）
+// を通せないことが実機で判明したため撤回。modal_lora_worker.py::
+// upload_user_lora へブラウザから直接アップロードする（Vercel/Supabase
+// どちらのボディサイズ上限も経由せず、Supabaseの月間転送量クォータにも
+// 一切カウントされない）。
+const DIRECTOR_LORA_MAX_BYTES = 2 * 1024 * 1024 * 1024; // Modal側エンドポイントの上限（2GB）と合わせる
 
-export async function uploadDirectorLoraFile(userId: string, file: File): Promise<{ path: string }> {
+export async function uploadDirectorLoraFile(userId: string, file: File): Promise<{ volumePath: string }> {
   if (!file.name.toLowerCase().endsWith(".safetensors")) {
     throw new Error(".safetensors ファイルを選んでください。");
   }
   if (file.size > DIRECTOR_LORA_MAX_BYTES) {
     throw new Error("ファイルサイズが大きすぎます（上限2GB）。");
   }
+
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) throw new Error("ログインが必要です。");
+
   const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-100) || "lora.safetensors";
   const uuid = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}`;
-  const path = `${userId}/${uuid}-${safeName}`;
-  const { error } = await supabase.storage
-    .from(DIRECTOR_USER_LORA_BUCKET)
-    .upload(path, file, { upsert: false, contentType: "application/octet-stream" });
-  if (error) throw new Error(error.message || "LoRAのアップロードに失敗しました。");
-  return { path };
+  const filename = `${uuid}-${safeName}`;
+
+  const ticketRes = await fetch("/api/director/loras/upload-token", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ filename }),
+  });
+  const ticket = await ticketRes.json();
+  if (!ticketRes.ok) throw new Error(ticket?.error || "アップロード準備に失敗しました。");
+
+  const url = new URL(ticket.uploadUrl);
+  url.searchParams.set("user_id", ticket.userId);
+  url.searchParams.set("filename", ticket.filename);
+  url.searchParams.set("expires", String(ticket.expiresAt));
+  url.searchParams.set("sig", ticket.sig);
+
+  const uploadRes = await fetch(url.toString(), {
+    method: "POST",
+    body: file,
+    headers: { "Content-Type": "application/octet-stream" },
+  });
+  const uploadData = await uploadRes.json().catch(() => null);
+  if (!uploadRes.ok || !uploadData?.path) {
+    throw new Error(uploadData?.detail || uploadData?.error || "LoRAのアップロードに失敗しました。");
+  }
+  return { volumePath: uploadData.path as string };
 }
 
 export type DirectorLoraOption = { id: string; label: string };

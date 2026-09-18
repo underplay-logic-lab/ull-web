@@ -5514,6 +5514,80 @@ def _verify_download_token(user_id: str, job_id: str, filename: str, expires: st
     return hmac.compare_digest(expected, sig)
 
 
+def _verify_upload_token(user_id: str, filename: str, expires: str, sig: str) -> bool:
+    """_verify_download_token と同じHMAC方式（方向が逆＝アップロード用）。
+    Next.js側の署名は src/app/api/director/loras/upload-token/route.ts。"""
+    secret = os.environ.get("MODAL_AUTH_TOKEN", "")
+    if not secret or not sig:
+        return False
+    try:
+        if int(expires) < time.time():
+            return False
+    except ValueError:
+        return False
+    payload = f"upload:{user_id}:{filename}:{expires}"
+    expected = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
+# ULL Cinematic Director: ユーザーが外部で用意したLoRA(.safetensors)を
+# Supabase Storageを一切経由せず直接Volumeへアップロードする（2026-09-18
+# 導入）。Supabaseの Free プラン グローバルアップロード上限（プロジェクト
+# 全体で50MB固定・Storageのバケット単位file_size_limitとは別物で引き上げ
+# 不可）が実運用サイズのLoRA（rank32のminimax_h3で約1.18GB、
+# download_lora_checkpointのコメント参照）を弾いてしまうため、Storageを
+# 完全に迂回する設計にした。副次効果として、Supabaseの月間転送量
+# （データベース/Storage/Realtime/Auth等を横断した合算クォータ）も一切
+# 消費しない——Director側の外部LoRA機能がSupabase側の帯域を圧迫しない。
+_UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2GB
+DIRECTOR_USER_LORA_SUBDIR = "director_user_loras"
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol},
+    # アップロードも600MB-1GB+になりうるので download_lora_checkpoint と
+    # 同じ余裕を持たせる。
+    timeout=3600,
+    scaledown_window=2,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="POST")
+async def upload_user_lora(user_id: str, filename: str, expires: str, sig: str, request: fastapi.Request):
+    if not _verify_upload_token(user_id, filename, expires, sig):
+        raise fastapi.HTTPException(status_code=403, detail="invalid or expired upload link")
+    if not (
+        _CKPT_DL_ID_RE.match(user_id)
+        and _CKPT_DL_FILENAME_RE.match(filename)
+        and filename.endswith(".safetensors")
+    ):
+        raise fastapi.HTTPException(status_code=400, detail="invalid parameters")
+
+    dest_dir = pathlib.Path(MODELS_DIR) / DIRECTOR_USER_LORA_SUBDIR / user_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / filename
+
+    size = 0
+    try:
+        with open(dest_path, "wb") as f:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > _UPLOAD_MAX_BYTES:
+                    raise fastapi.HTTPException(status_code=413, detail="file too large (max 2GB)")
+                f.write(chunk)
+    except fastapi.HTTPException:
+        dest_path.unlink(missing_ok=True)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        dest_path.unlink(missing_ok=True)
+        raise fastapi.HTTPException(status_code=500, detail=f"upload failed: {exc}") from exc
+
+    vol.commit()
+    rel_path = f"{DIRECTOR_USER_LORA_SUBDIR}/{user_id}/{filename}"
+    print(f"[director-lora-upload] saved {rel_path} ({size / 1024**2:.1f} MB)", flush=True)
+    return {"ok": True, "path": rel_path, "size_bytes": size}
+
+
 # Large downloads (a rank-32 minimax_h3 LoRA is ~1.18GB) stream in 4 MiB
 # chunks. Starlette's FileResponse reads the Modal Volume (NFS) in 64 KiB
 # slices — ~19k syscalls for a 1.18GB file — and that per-read overhead

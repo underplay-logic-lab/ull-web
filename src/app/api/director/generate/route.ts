@@ -28,7 +28,7 @@ import {
   translateJapanesePromptToEnglish,
 } from "@/lib/directorPrompt";
 import { buildCinematicWorkflow, CINEMATIC_PROMPT_NODE_ID } from "@/lib/cinematicWorkflow";
-import { assertOwnedDirectorLoraPath, createDirectorLoraSignedUrl } from "@/lib/directorLoraUpload.server";
+import { assertOwnedDirectorLoraVolumePath } from "@/lib/directorLoraUpload.server";
 import { CINEMATIC_MODE_BY_ID } from "@/lib/cinematicPricing";
 import { spawnDirectorJob } from "@/lib/modalDirector";
 import {
@@ -134,17 +134,22 @@ export async function POST(request: Request) {
   // LoRA（2026-09-18追加）: 全モード共通のオプション。2系統のどちらか一方:
   //   ①loraId: LoRA Studio で本人が学習済みの MiniMax H3 LoRA
   //     （Volume常駐・14日パージ対象。DBで所有権を確認してから使う）
-  //   ②loraUploadPath: 外部で用意した .safetensors をこの場でアップロード
-  //     したもの（director-user-loras バケット。生成物ではなく入力データ
-  //     扱いなので期限を設けない——CLAUDE.md §3の対象外という整理）
+  //   ②loraUploadVolumePath: 外部で用意した .safetensors を
+  //     modal_lora_worker.py::upload_user_lora へブラウザから直接
+  //     アップロード済みのもの（"director_user_loras/<user_id>/<file>"。
+  //     Supabase Storageは一切経由しない——Freeプランのグローバル
+  //     アップロード上限(50MB)が実運用サイズのLoRA(~1.18GB)を弾くため、
+  //     2026-09-18に撤回した。生成物ではなく入力データ扱いなので期限も
+  //     設けない——CLAUDE.md §3の対象外という整理）
   const loraIdRaw = typeof body.loraId === "string" ? body.loraId.trim() : "";
-  const loraUploadPathRaw = typeof body.loraUploadPath === "string" ? body.loraUploadPath.trim() : "";
-  if (loraIdRaw && loraUploadPathRaw) {
+  const loraUploadVolumePathRaw =
+    typeof body.loraUploadVolumePath === "string" ? body.loraUploadVolumePath.trim() : "";
+  if (loraIdRaw && loraUploadVolumePathRaw) {
     return NextResponse.json({ error: "LoRAの指定が重複しています。" }, { status: 400 });
   }
 
   let loraName: string | undefined;
-  let loraDownloadUrl: string | undefined;
+  let loraVolumePath: string | undefined;
   if (loraIdRaw) {
     if (!/^[A-Za-z0-9_-]+$/.test(loraIdRaw)) {
       return NextResponse.json({ error: "LoRAの指定が不正です。" }, { status: 400 });
@@ -169,24 +174,20 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "指定されたLoRAが見つかりません。" }, { status: 400 });
     }
     loraName = `${loraIdRaw}.safetensors`;
-  } else if (loraUploadPathRaw) {
+  } else if (loraUploadVolumePathRaw) {
     try {
-      assertOwnedDirectorLoraPath(user.id, loraUploadPathRaw);
+      assertOwnedDirectorLoraVolumePath(user.id, loraUploadVolumePathRaw);
     } catch (err) {
       return NextResponse.json({ error: (err as Error).message }, { status: 400 });
     }
-    // アップロード時のパスは "<user_id>/<uuid>-<safeName>.safetensors" なので、
-    // basename をそのまま ComfyUI 向けの一意なファイル名として使い回せる
-    // （jobId確定を待たずに済む）。
-    const uploadedFilename = loraUploadPathRaw.split("/").pop() || "";
+    // アップロード先パスは "director_user_loras/<user_id>/<uuid>-<safeName>
+    // .safetensors" なので、basename をそのまま ComfyUI 向けの一意な
+    // ファイル名として使い回せる。
+    const uploadedFilename = loraUploadVolumePathRaw.split("/").pop() || "";
     if (!/^[A-Za-z0-9_-]+\.safetensors$/.test(uploadedFilename)) {
       return NextResponse.json({ error: "LoRAファイルの指定が不正です。" }, { status: 400 });
     }
-    try {
-      loraDownloadUrl = await createDirectorLoraSignedUrl(user.id, loraUploadPathRaw);
-    } catch (err) {
-      return NextResponse.json({ error: (err as Error).message }, { status: 400 });
-    }
+    loraVolumePath = loraUploadVolumePathRaw;
     loraName = uploadedFilename;
   }
 
@@ -330,7 +331,7 @@ export async function POST(request: Request) {
     quality_mode: qualityMode,
     music_direction: musicDirectionInput || null,
     lora_name: loraName || null,
-    lora_source: loraIdRaw ? "trained" : loraUploadPathRaw ? "upload" : null,
+    lora_source: loraIdRaw ? "trained" : loraUploadVolumePathRaw ? "upload" : null,
   };
   const { data: jobRow, error: jobError } = await supabaseAdmin
     .from("generation_jobs")
@@ -400,8 +401,8 @@ export async function POST(request: Request) {
       qwenPromptNodeId: isAdvancedMode ? CINEMATIC_PROMPT_NODE_ID : undefined,
       qwenDurationS: isAdvancedMode ? breakdown.totalDurationS : undefined,
       directorInputsSnapshot: isAdvancedMode ? directorInputsSnapshot : undefined,
-      loraDownloadUrl,
-      loraFilename: loraDownloadUrl ? loraName : undefined,
+      loraVolumePath,
+      loraFilename: loraVolumePath ? loraName : undefined,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

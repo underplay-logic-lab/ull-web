@@ -31,6 +31,7 @@ Usage:
 """
 
 import base64
+import hashlib
 import hmac
 import json
 import math
@@ -1713,7 +1714,7 @@ class WanAnimateBlackwell:
         qwen_prompt_node_id: str = None,
         qwen_duration_s: float = None,
         director_inputs_snapshot: dict = None,
-        lora_download_url: str = None,
+        lora_volume_path: str = None,
         lora_filename: str = None,
     ) -> dict:
         """
@@ -1806,27 +1807,34 @@ class WanAnimateBlackwell:
                     _supabase_patch_job(job_id, {"inputs": merged_inputs, "progress_message": "動画を生成中..."})
 
             # ULL Cinematic Director: ユーザーが外部で用意したLoRA
-            # （.safetensors、2026-09-18導入）— Volumeへは永続化せず、この
-            # コンテナのローカルディスク（ComfyUIのloras検索パス）にだけ
-            # ダウンロードする。workflow側の lora_name（cinematicWorkflow.ts）
-            # と同じファイル名で保存するので、既存のLoraLoaderModelOnlyノードが
-            # そのまま解決できる。
-            _downloaded_lora_path = None
-            if lora_download_url and lora_filename:
-                import requests as _requests
+            # （.safetensors、2026-09-18導入、同日中にSupabase Storage経由
+            # から Volume直接アップロードへ設計変更 — Supabase Free プランの
+            # グローバルアップロード上限50MBが実運用サイズのLoRA(~1.18GB)を
+            # 弾くため撤回）。modal_lora_worker.py::upload_user_lora が
+            # 既にVolumeへ保存済みのファイルを、ComfyUIのloras検索パスへ
+            # ローカルコピーするだけ（同一Volumeマウント上のコピーなので
+            # ネットワーク転送は発生しない）。
+            _staged_lora_path = None
+            if lora_volume_path and lora_filename:
+                import shutil as _shutil
 
                 safe_name = os.path.basename(lora_filename)
                 if not safe_name.endswith(".safetensors"):
                     raise RuntimeError(f"unexpected lora_filename: {lora_filename!r}")
+                # 別コンテナ（upload_user_lora）が直前に書いたコミットを
+                # 確実に見るため（download_lora_checkpointと同じ理由）。
+                try:
+                    vol.reload()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[director-lora] vol.reload() skipped: {exc}", flush=True)
+                src_path = os.path.join(MODELS_DIR, lora_volume_path)
+                if not os.path.isfile(src_path):
+                    raise RuntimeError(f"uploaded LoRA not found on Volume: {lora_volume_path!r}")
                 loras_dir = os.path.join(COMFY_DIR, "models", "loras")
                 os.makedirs(loras_dir, exist_ok=True)
-                _downloaded_lora_path = os.path.join(loras_dir, safe_name)
-                resp = _requests.get(lora_download_url, timeout=180, stream=True)
-                resp.raise_for_status()
-                with open(_downloaded_lora_path, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
-                        f.write(chunk)
-                print(f"[director-lora] downloaded user LoRA -> {_downloaded_lora_path}", flush=True)
+                _staged_lora_path = os.path.join(loras_dir, safe_name)
+                _shutil.copy2(src_path, _staged_lora_path)
+                print(f"[director-lora] staged user LoRA -> {_staged_lora_path}", flush=True)
 
             self._ensure_comfy_running(exec_config)
             try:
@@ -1839,11 +1847,11 @@ class WanAnimateBlackwell:
                 )
             finally:
                 # コンテナがwarmで使い回された時に他ジョブのloras/へ残留しない
-                # よう、使い終わったら都度消す（Volumeではなくコンテナローカル
-                # ディスクなので他ジョブのファイルと衝突はしないが、掃除はする）。
-                if _downloaded_lora_path:
+                # よう、使い終わったら都度消す（ステージング元(Volume)は
+                # 消さない——保持期限なしの入力データという整理のため）。
+                if _staged_lora_path:
                     try:
-                        os.remove(_downloaded_lora_path)
+                        os.remove(_staged_lora_path)
                     except OSError:
                         pass
         except Exception as exc:
@@ -1957,7 +1965,7 @@ def custom_workflow_async(item: dict, request: fastapi.Request):
         item.get("qwen_prompt_node_id"),
         item.get("qwen_duration_s"),
         item.get("director_inputs_snapshot"),
-        item.get("lora_download_url"),
+        item.get("lora_volume_path"),
         item.get("lora_filename"),
     )
     return {"ok": True, "job_id": job_id, "call_id": call.object_id}
@@ -2842,7 +2850,7 @@ def cinematic_smoke_advanced(
             "105:104",              # qwen_prompt_node_id
             duration_s,             # qwen_duration_s
             None,                   # director_inputs_snapshot (job_id=None なのでPATCH自体が発生しない)
-            None,                   # lora_download_url
+            None,                   # lora_volume_path
             None,                   # lora_filename
         )
     except Exception as exc:  # noqa: BLE001
