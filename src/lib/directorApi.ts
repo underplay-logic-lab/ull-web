@@ -147,7 +147,49 @@ const DIRECTOR_LORA_MAX_BYTES = 2 * 1024 * 1024 * 1024; // Modal側エンドポ�
 // 選び直せば）自動的にエントリも消える。
 const _uploadedLoraCache = new WeakMap<File, string>();
 
-export async function uploadDirectorLoraFile(userId: string, file: File): Promise<{ volumePath: string }> {
+/** アップロードの進捗を伝えるコールバック。loaded/total はファイル全体
+ * バイト数基準（レジューム再開時も、既に届いている分を含めた値になる）。 */
+export type DirectorLoraUploadProgress = (loaded: number, total: number) => void;
+
+/** XMLHttpRequestでPOSTし、upload.onprogressで進捗を拾う（2026-09-19導入
+ * ——1GB級のファイルをfetchで送りっぱなしにすると進捗が一切見えず
+ * 「固まっているのか送信中なのか分からない」というホスト指摘への対応。
+ * fetchのRequestStreamでも理論上は進捗を拾えるが、ブラウザ互換性が
+ * XHRのupload.onprogressほど安定していないため採用しない）。 */
+function xhrPostWithProgress(
+  url: string,
+  body: Blob,
+  baseLoaded: number,
+  total: number,
+  onProgress?: DirectorLoraUploadProgress,
+): Promise<{ ok: boolean; status: number; json: unknown }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = (e) => {
+      if (onProgress) onProgress(baseLoaded + e.loaded, total);
+    };
+    xhr.onload = () => {
+      let json: unknown = null;
+      try {
+        json = JSON.parse(xhr.responseText);
+      } catch {
+        // ignore — 呼び出し側が !uploadData?.path でエラーメッセージを出す
+      }
+      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, json });
+    };
+    xhr.onerror = () => reject(new Error("ネットワークエラーでアップロードに失敗しました。"));
+    xhr.onabort = () => reject(new Error("アップロードが中断されました。"));
+    xhr.send(body);
+  });
+}
+
+export async function uploadDirectorLoraFile(
+  userId: string,
+  file: File,
+  onProgress?: DirectorLoraUploadProgress,
+): Promise<{ volumePath: string }> {
   const cached = _uploadedLoraCache.get(file);
   if (cached) return { volumePath: cached };
 
@@ -204,24 +246,28 @@ export async function uploadDirectorLoraFile(userId: string, file: File): Promis
   if (existingBytes >= file.size) {
     // 既に前回のアップロードで最後まで届いていた（レスポンスが返る前に
     // 切断されただけ等）。
+    if (onProgress) onProgress(file.size, file.size);
     _uploadedLoraCache.set(file, ticket.volumePath as string);
     return { volumePath: ticket.volumePath as string };
   }
+  if (onProgress) onProgress(existingBytes, file.size);
 
   const uploadUrl = buildSignedUrl(ticket.uploadUrl);
   if (existingBytes > 0) uploadUrl.searchParams.set("offset", String(existingBytes));
   const body = existingBytes > 0 ? file.slice(existingBytes) : file;
 
-  const uploadRes = await fetch(uploadUrl.toString(), {
-    method: "POST",
+  const { ok: uploadOk, json: uploadData } = await xhrPostWithProgress(
+    uploadUrl.toString(),
     body,
-    headers: { "Content-Type": "application/octet-stream" },
-  });
-  const uploadData = await uploadRes.json().catch(() => null);
-  if (!uploadRes.ok || !uploadData?.path) {
-    throw new Error(uploadData?.detail || uploadData?.error || "LoRAのアップロードに失敗しました。");
+    existingBytes,
+    file.size,
+    onProgress,
+  );
+  const uploadResult = uploadData as { path?: string; detail?: string; error?: string } | null;
+  if (!uploadOk || !uploadResult?.path) {
+    throw new Error(uploadResult?.detail || uploadResult?.error || "LoRAのアップロードに失敗しました。");
   }
-  const volumePath = uploadData.path as string;
+  const volumePath = uploadResult.path;
   _uploadedLoraCache.set(file, volumePath);
   return { volumePath };
 }

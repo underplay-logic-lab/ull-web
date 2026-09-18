@@ -311,6 +311,11 @@ export function DirectorStudioTab() {
   const [loraUploadedVolumePath, setLoraUploadedVolumePath] = useState<string | null>(null);
   const [loraUploading, setLoraUploading] = useState(false);
   const [loraUploadError, setLoraUploadError] = useState<string | null>(null);
+  // アップロード進捗（2026-09-19追加、ホスト指摘: 1GB級のファイルを
+  // 「アップロード中...」の文字だけで待たせると、固まっているのか進んで
+  // いるのか分からない）。バイト数（loaded/total）で保持し、表示側で%へ
+  // 変換する。
+  const [loraUploadBytes, setLoraUploadBytes] = useState<{ loaded: number; total: number } | null>(null);
   const loraSelection: DirectorLoraSelection =
     loraSource === "trained" && loraId
       ? { source: "trained", loraId }
@@ -329,6 +334,7 @@ export function DirectorStudioTab() {
       setLoraUploadFile(null);
       setLoraUploadedVolumePath(null);
       setLoraUploadError(null);
+      setLoraUploadBytes(null);
     }
     setLoraSource(next);
   };
@@ -337,8 +343,11 @@ export function DirectorStudioTab() {
     if (!user || !loraUploadFile || loraUploading) return;
     setLoraUploading(true);
     setLoraUploadError(null);
+    setLoraUploadBytes({ loaded: 0, total: loraUploadFile.size });
     try {
-      const { volumePath } = await uploadDirectorLoraFile(user.id, loraUploadFile);
+      const { volumePath } = await uploadDirectorLoraFile(user.id, loraUploadFile, (loaded, total) =>
+        setLoraUploadBytes({ loaded, total }),
+      );
       setLoraUploadedVolumePath(volumePath);
     } catch (err) {
       setLoraUploadError(err instanceof Error ? err.message : "アップロードに失敗しました。");
@@ -1051,6 +1060,7 @@ export function DirectorStudioTab() {
                   // Fileオブジェクトに対して改めて呼ばれる）。
                   setLoraUploadedVolumePath(null);
                   setLoraUploadError(null);
+                  setLoraUploadBytes(null);
                 }}
                 className="mt-2 w-full text-xs text-muted file:mr-3 file:rounded-lg file:border-0 file:bg-surface file:px-3 file:py-1.5 file:text-xs file:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
               />
@@ -1066,14 +1076,36 @@ export function DirectorStudioTab() {
                   disabled={busy || loraUploading}
                   className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-3 py-2 text-xs font-medium text-neon-violet transition-colors hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {loraUploading ? "アップロード中..." : "このLoRAをアップロード"}
+                  {loraUploading
+                    ? loraUploadBytes && loraUploadBytes.total > 0
+                      ? `アップロード中... ${Math.min(100, Math.round((loraUploadBytes.loaded / loraUploadBytes.total) * 100))}%`
+                      : "アップロード中..."
+                    : "このLoRAをアップロード"}
                 </button>
               )}
               {loraUploading && (
-                <p className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-300">
-                  <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-                  アップロード中はブラウザを閉じたりタブを切り替えたりしないでください。途中で中断した場合は、もう一度同じファイルを選び直せば続きから再開できます。
-                </p>
+                <>
+                  {loraUploadBytes && loraUploadBytes.total > 0 && (
+                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-surface">
+                      <div
+                        className="h-full rounded-full bg-neon-violet transition-[width]"
+                        style={{
+                          width: `${Math.min(100, Math.max(0, (loraUploadBytes.loaded / loraUploadBytes.total) * 100))}%`,
+                        }}
+                      />
+                    </div>
+                  )}
+                  {loraUploadBytes && (
+                    <p className="mt-1 text-[11px] text-muted">
+                      {(loraUploadBytes.loaded / 1024 / 1024).toFixed(1)} MB /{" "}
+                      {(loraUploadBytes.total / 1024 / 1024).toFixed(1)} MB
+                    </p>
+                  )}
+                  <p className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-300">
+                    <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                    アップロード中はブラウザを閉じたりタブを切り替えたりしないでください。途中で中断した場合は、もう一度同じファイルを選び直せば続きから再開できます。
+                  </p>
+                </>
               )}
               {loraUploadedVolumePath && (
                 <p className="mt-2 flex items-center gap-1.5 text-[11px] text-emerald-400">
