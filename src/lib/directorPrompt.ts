@@ -61,7 +61,7 @@ function buildSceneDirectorPrompt(scenes: DirectorScene[], musicDirection?: stri
       const marker = i === 0 || s.sceneChange === false ? "[CONTINUE]" : "[SCENE CHANGE]";
       const dialogue = s.dialogue?.trim();
       const dialogueNote = dialogue
-        ? ` Dialogue spoken in this scene (wrap EXACTLY as <d>[${dialogueLanguageTag(dialogue)}]${dialogue}</d>, verbatim, do not translate or alter the text inside the tag): ${dialogue}`
+        ? ` Dialogue spoken in this scene (wrap as <d>[${dialogueLanguageTag(dialogue)}]...</d> at the point where it's spoken — do not translate it; see the readability exception below for Japanese lines): ${dialogue}`
         : "";
       return `${marker} Scene ${i + 1}: camera movement = ${directorCameraLabel(s.camera)}. Action: ${s.text}${dialogueNote}`;
     })
@@ -82,7 +82,12 @@ function buildSceneDirectorPrompt(scenes: DirectorScene[], musicDirection?: stri
     "- [CONTINUE]: treat it as a smooth continuation of the same shot/setting as the previous scene — do not introduce it as a new scene, just let the camera and action flow onward (e.g. \"and then\", \"as the camera continues\").",
     "Follow the given order from first to last. Include lighting and atmosphere.",
     "Preserve the subject's appearance, clothing, and identity exactly as shown in the reference image throughout every scene.",
-    "Some scenes specify a Dialogue line: include that EXACT <d>[Language]...</d> tag (character count and all) at the natural point in that scene's description where the character speaks it — this is a literal syntax the video model requires for lip-synced speech, not a stylistic suggestion. Never invent dialogue for a scene that has none.",
+    "Some scenes specify a Dialogue line: include that <d>[Language]...</d> tag at the natural point in that scene's description where the character speaks it — this is a literal syntax the video model requires for lip-synced speech, not a stylistic suggestion. Never invent dialogue for a scene that has none, and never change the actual wording or meaning of a given dialogue line.",
+    // 2026-09-19: 「セリフの読み間違いが目立つ・全部ひらがなだとイントネーションが
+    // 崩れる」というホスト報告を受けて追加。単語ごとに判断させる（全文ひらがな化
+    // は禁止）——固有名詞・稀な漢字の読みだけを狙い撃ちする、一般的な日本語TTS
+    // の定石と同じアプローチ。
+    "Readability exception for Japanese dialogue only: within the exact words of a Japanese dialogue line, you may rewrite an individual word into hiragana if it is prone to being misread by the video model's speech engine (a rare kanji reading, an ambiguous compound, an uncommon proper noun) — but leave ordinary, easily-read words in their natural kanji form. Do NOT rewrite the whole line into hiragana (this flattens natural pitch accent and sounds worse, not better) and do NOT change the actual words or meaning — only the kanji-vs-hiragana choice for specific hard-to-read words.",
     "Output ONLY the final English prompt text — no preamble, no scene labels, no [SCENE CHANGE]/[CONTINUE] markers, no quotes.",
     "",
     sceneLines,
@@ -189,8 +194,11 @@ export async function translateJapanesePromptToEnglish(japanesePrompt: string): 
         // 気付かずまとめて英訳すると、動画モデルへ渡る時点でセリフが英語に
         // なってしまう（リップシンク自体も外れる）というバグがあったため
         // 追加（ホスト報告）。
-        "If the prompt contains a line of dialogue that a character actually speaks out loud (e.g. text quoted with 「」or otherwise clearly spoken, such as a greeting or line of speech), do NOT translate that spoken line — keep its exact original Japanese text verbatim, and wrap it exactly as <d>[Japanese]...</d> at the point in the English prompt where the character speaks it. This is a literal syntax the video model requires for lip-synced speech, not a stylistic suggestion. Translate everything else (scene description, actions, camera direction, atmosphere) into English as normal. Never invent dialogue that isn't in the original prompt.",
-        "Output ONLY the translated prompt (with any <d>[Japanese]...</d> tag embedded verbatim as described, if present) — no preamble, no extra quotes wrapping the whole output.",
+        "If the prompt contains a line of dialogue that a character actually speaks out loud (e.g. text quoted with 「」or otherwise clearly spoken, such as a greeting or line of speech), do NOT translate that spoken line — keep its original Japanese words, and wrap it exactly as <d>[Japanese]...</d> at the point in the English prompt where the character speaks it. This is a literal syntax the video model requires for lip-synced speech, not a stylistic suggestion. Translate everything else (scene description, actions, camera direction, atmosphere) into English as normal. Never invent dialogue that isn't in the original prompt, and never change the actual wording or meaning of the dialogue line.",
+        // 2026-09-19: buildSceneDirectorPromptに追加したのと同じ読みやすさの
+        // 例外（全文ひらがな化は禁止・単語単位のみ）。
+        "Readability exception: within that Japanese dialogue line's exact words, you may rewrite an individual word into hiragana if it is prone to being misread by the video model's speech engine (a rare kanji reading, an ambiguous compound, an uncommon proper noun) — but leave ordinary, easily-read words in their natural kanji form. Do NOT rewrite the whole line into hiragana (this flattens natural pitch accent and sounds worse, not better).",
+        "Output ONLY the translated prompt (with any <d>[Japanese]...</d> tag embedded as described, if present) — no preamble, no extra quotes wrapping the whole output.",
         "",
         japanesePrompt,
       ].join("\n"),
