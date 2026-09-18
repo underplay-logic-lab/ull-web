@@ -84,7 +84,7 @@ export const CINEMATIC_MODES: CinematicMode[] = [
   {
     id: "vdnFast",
     label: "Fast",
-    tagline: "高速・低コスト（無音）",
+    tagline: "高速・低コスト",
     // 2026-09-14: 実機 elapsed=396.1s（480x864・8step DMD蒸留）から
     // ¥1125/h換算で原価≈¥124/15秒。原価の約3倍 ≈ ¥372 ÷ credit_to_jpy(1.66)
     // ≈ 224C。director_per_second_fast 側が実際の課金値の SSOT（admin編集
@@ -96,7 +96,12 @@ export const CINEMATIC_MODES: CinematicMode[] = [
     useVdn: true,
     vdnCheckpoint: "stage-dmd-step-250",
     vdnTurbo: true,
-    hasAudio: false,
+    // 2026-09-14時点は「stage-dmd-step-250はチェックポイント仕様で音声
+    // 非対応」と誤診断していたが、2026-09-18のVHS_VideoCombine修正
+    // （cde819c、AUDIO出力の扱い方のバグでチェックポイント自体は無関係と
+    // 実機診断済み）後、ホストが実機で8step動画に音声が乗ることを確認
+    // （2026-09-18）。誤診断だったと判断しtrueに修正。
+    hasAudio: true,
   },
   {
     id: "vdnQuality",

@@ -273,8 +273,9 @@ export function DirectorStudioTab() {
   const imagePreview = useObjectUrl(image);
   const [scenes, setScenes] = useState<DirectorScene[]>([newScene()]);
 
-  // 画質モード（2026-09-14、VDN-H3導入）。fast=8step蒸留・無音・低コスト、
-  // quality=50step非蒸留・音声あり。詳細は cinematicPricing.ts の
+  // 画質モード（2026-09-14、VDN-H3導入）。fast=8step蒸留・低コスト、
+  // quality=50step非蒸留・高品質。両方とも音声あり（2026-09-18、fastの
+  // 「音声非対応」は誤診断と判明——cinematicPricing.ts参照）。詳細は
   // CINEMATIC_MODE_BY_ID.vdnFast / .vdnQuality 参照。
   const [qualityMode, setQualityMode] = useState<DirectorQualityMode>("fast");
 
@@ -439,12 +440,6 @@ export function DirectorStudioTab() {
       : uiMode === "advanced"
         ? conceptText.trim().length > 0
         : scenes.every((s) => s.text.trim().length > 0));
-
-  // セリフ・音楽の指示はFastモード(8step蒸留・音声モダリティ非対応)では
-  // 反映されない（cinematicPricing.ts の vdnFast.hasAudio 参照）。強制切替は
-  // せず警告のみ（2026-09-15 ホスト判断）。
-  const hasAudioDirection =
-    uiMode === "scenes" && (scenes.some((s) => Boolean(s.dialogue?.trim())) || musicDirection.trim().length > 0);
 
   const buildSnapshot = (): QueuedSnapshot | null => {
     if (!image) return null;
@@ -927,12 +922,6 @@ export function DirectorStudioTab() {
               );
             })}
           </div>
-          {hasAudioDirection && qualityMode === "fast" && (
-            <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-400">
-              <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-              セリフ・音楽の指定はFastモードでは反映されません（音声非対応）。反映させるにはQualityモードを選んでください。
-            </p>
-          )}
         </div>
 
         <div className="rounded-xl border border-border bg-background p-4">
