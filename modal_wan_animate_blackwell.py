@@ -389,10 +389,19 @@ def _build_director_script_system_prompt(duration_s: float) -> str:
         "final prompt as your very first words.\n"
         "9. After the English prompt, on its own new line, write exactly "
         "===JA=== and then, on the following line, a natural, fluent Japanese "
-        "translation of that same English prompt (for the user's reference — "
-        "this Japanese text is never sent to the video model, so translate the "
-        "<d>...</d> dialogue tag's content into natural Japanese prose rather "
-        "than keeping the literal tag syntax)."
+        "translation of that same English prompt, for the user to read and, if "
+        "they choose, edit and resubmit as a new prompt (this Japanese text is "
+        "shown to the user and can be sent back to you later as plain input — "
+        "it is not guaranteed to stay 'reference only'). Do not keep the "
+        "literal <d>[Language]...</d> tag syntax in this Japanese version — "
+        "write it as natural Japanese prose instead. However, if the tag's "
+        "dialogue content is Japanese, you MUST keep that exact spoken line "
+        "wrapped in 「」quotation marks at the point where it's spoken (e.g. "
+        "「おはよう」と静かに言う), word-for-word, not paraphrased or dissolved "
+        "into indirect/reported speech — this is required so the line can be "
+        "reliably detected and preserved if the user edits and resubmits this "
+        "Japanese text. If the dialogue was in English, translate it into "
+        "natural Japanese prose as normal (no special quoting requirement)."
     )
 
 # Same five Wan 2.1 / Wan Animate 2 weights scripts/modal_wan_animate.py
