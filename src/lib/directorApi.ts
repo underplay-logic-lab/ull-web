@@ -132,7 +132,22 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
 // 一切カウントされない）。
 const DIRECTOR_LORA_MAX_BYTES = 2 * 1024 * 1024 * 1024; // Modal側エンドポイントの上限（2GB）と合わせる
 
+// 同じFileオブジェクト（＝ユーザーがファイル選択を変えない限り、連続生成の
+// たびに呼ばれるuploadDirectorLoraFileへ渡される参照は同一）を毎回フルサイズ
+// （rank32のminimax_h3で約1.18GB）再アップロードしていた無駄を防ぐ
+// （2026-09-19、ホスト指摘）。Volume側は「入力データなので保持期限なし」
+// という当初の整理だったが、再アップロードのたびに新規UUIDファイル名で
+// 重複が無期限に積み上がる欠陥も併発していたため、こちらの重複自体を
+// 防ぐのが本筋の対策——保持期限の見直しは modal_retention_purge.py 側で
+// 別途対応（director_user_loras/を14日パージ対象に追加）。
+// WeakMapなのでFileオブジェクトがGCされれば（＝ユーザーが別ファイルを
+// 選び直せば）自動的にエントリも消える。
+const _uploadedLoraCache = new WeakMap<File, string>();
+
 export async function uploadDirectorLoraFile(userId: string, file: File): Promise<{ volumePath: string }> {
+  const cached = _uploadedLoraCache.get(file);
+  if (cached) return { volumePath: cached };
+
   if (!file.name.toLowerCase().endsWith(".safetensors")) {
     throw new Error(".safetensors ファイルを選んでください。");
   }
@@ -171,7 +186,9 @@ export async function uploadDirectorLoraFile(userId: string, file: File): Promis
   if (!uploadRes.ok || !uploadData?.path) {
     throw new Error(uploadData?.detail || uploadData?.error || "LoRAのアップロードに失敗しました。");
   }
-  return { volumePath: uploadData.path as string };
+  const volumePath = uploadData.path as string;
+  _uploadedLoraCache.set(file, volumePath);
+  return { volumePath };
 }
 
 export type DirectorLoraOption = { id: string; label: string };

@@ -1965,7 +1965,10 @@ class WanAnimateBlackwell:
             finally:
                 # コンテナがwarmで使い回された時に他ジョブのloras/へ残留しない
                 # よう、使い終わったら都度消す（ステージング元(Volume)は
-                # 消さない——保持期限なしの入力データという整理のため）。
+                # ここでは消さない——外部アップロードLoRAの場合、連続生成での
+                # 再アップロード回避キャッシュ(directorApi.ts)がこのファイルを
+                # 参照し続けるため。14日経過後の掃除は modal_retention_purge.py
+                # が一元的に行う。2026-09-19、保持期限「なし」から変更）。
                 if _staged_lora_path:
                     try:
                         os.remove(_staged_lora_path)

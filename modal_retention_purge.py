@@ -23,6 +23,10 @@ ULL データ保持ポリシー（CLAUDE.md §3）の実施 — 日次 purge。
       modal_angle_worker.py::download_angle_image が配信する実体。1ジョブ=1ディレクトリ）
     custom_workflow_results/<user_id>/<job_id>.<ext> … 特化ワークフロー 結果（同標準、2026-09-18〜。
       scripts/modal_wan_animate.py::download_custom_workflow_result が配信する実体）
+    director_user_loras/<user_id>/<filename>.safetensors … Director外部アップロードLoRA
+      （2026-09-18導入・2026-09-19〜14日パージ対象化。当初「入力データなので保持期限
+      なし」だったが、連続生成のたびに新規UUIDファイル名で重複が無期限に積み上がる
+      欠陥があったため、他の入力データ(lora_datasets等)と同じ14日ルールに揃えた）
   Supabase DB
     angle_jobs / upscale_jobs / generation_jobs の古い行
 
@@ -77,6 +81,15 @@ ANGLE_RESULTS_DIR = f"{MODELS_DIR}/angle_results"
 # custom_workflow、"標準"/L40S ティアの WanAnimate クラス）も同標準を適用。
 # 1ジョブ=1ファイルのflat配置なので _purge_volume_flat_files を使う。
 CUSTOM_WORKFLOW_RESULTS_DIR = f"{MODELS_DIR}/custom_workflow_results"
+# 2026-09-19: Cinematic Directorの外部アップロードLoRA（modal_lora_worker.py::
+# upload_user_lora、director_user_loras/<user_id>/<filename>）。導入時は
+# 「入力データなので保持期限なし」という整理で意図的にここへ入れていな
+# かったが、フロント側の再アップロード（uploadDirectorLoraFile、Fileオブ
+# ジェクトが変わるたびに新規UUIDファイル名で保存）のたびに重複が無期限に
+# 積み上がる欠陥があったと判明（ホスト指摘）。lora_datasets（LoRA学習用の
+# 入力画像）等、他の「ユーザー入力データ」も等しく14日パージ対象にして
+# いるプロジェクト全体の方針と揃え、こちらも対象に含める。
+DIRECTOR_USER_LORAS_DIR = f"{MODELS_DIR}/director_user_loras"
 
 RETENTION_DAYS = int(os.environ.get("ULL_RETENTION_DAYS", "14"))
 # _purge() が実行時に上書きする（module import 時の env はコンテナに無いため、
@@ -537,6 +550,7 @@ def _purge(dry_run: bool | None = None) -> dict:
         "upscale_image_results": {},
         "angle_results": {},
         "custom_workflow_results": {},
+        "director_user_loras": {},
     }
     for b in buckets:
         report["buckets"].append(_sweep_bucket(b, cutoff_epoch))
@@ -552,6 +566,9 @@ def _purge(dry_run: bool | None = None) -> dict:
     report["angle_results"] = _purge_volume_job_dirs(ANGLE_RESULTS_DIR, cutoff_epoch, "angle_results")
     report["custom_workflow_results"] = _purge_volume_flat_files(
         CUSTOM_WORKFLOW_RESULTS_DIR, cutoff_epoch, "custom_workflow_results"
+    )
+    report["director_user_loras"] = _purge_volume_flat_files(
+        DIRECTOR_USER_LORAS_DIR, cutoff_epoch, "director_user_loras"
     )
     report["rows"] = _purge_job_rows(cutoff_iso)
     report["elapsed_s"] = round(time.time() - started, 1)
