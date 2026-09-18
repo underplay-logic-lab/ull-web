@@ -754,7 +754,7 @@ export function DirectorStudioTab() {
             </div>
             <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
               <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-              このプロンプトはそのままモデルに渡されます（シーンの自動合成はスキップされますが、日本語で書いた場合は送信前に自動で英訳されます）。
+              このプロンプトはそのままモデルに渡されます（シーンの自動合成はスキップされますが、日本語で書いた場合は送信前に自動で英訳されます）。セリフを話させたい部分は「」で囲むと、そこだけ日本語のまま音声・リップシンクに反映されます。
             </p>
           </div>
         ) : uiMode === "advanced" ? (

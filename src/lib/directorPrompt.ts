@@ -181,7 +181,16 @@ export async function translateJapanesePromptToEnglish(japanesePrompt: string): 
       [
         "Translate the following Japanese video-generation prompt into natural, highly detailed English",
         "optimized for a text-to-video model. Preserve all specific details (camera movements, actions, timing).",
-        "Output ONLY the English translation — no preamble, no quotes, no Japanese.",
+        "",
+        // 2026-09-19: buildSceneDirectorPrompt（シーンで作るモード）と同じ
+        // <d>[Language]...</d> 規約をここにも適用する。プロンプトモードは
+        // シーンビルダーと違いセリフ専用の入力欄が無く、ユーザーはこの
+        // タグの存在を知らずに普通の日本語文としてセリフを書く——それを
+        // 気付かずまとめて英訳すると、動画モデルへ渡る時点でセリフが英語に
+        // なってしまう（リップシンク自体も外れる）というバグがあったため
+        // 追加（ホスト報告）。
+        "If the prompt contains a line of dialogue that a character actually speaks out loud (e.g. text quoted with 「」or otherwise clearly spoken, such as a greeting or line of speech), do NOT translate that spoken line — keep its exact original Japanese text verbatim, and wrap it exactly as <d>[Japanese]...</d> at the point in the English prompt where the character speaks it. This is a literal syntax the video model requires for lip-synced speech, not a stylistic suggestion. Translate everything else (scene description, actions, camera direction, atmosphere) into English as normal. Never invent dialogue that isn't in the original prompt.",
+        "Output ONLY the translated prompt (with any <d>[Japanese]...</d> tag embedded verbatim as described, if present) — no preamble, no extra quotes wrapping the whole output.",
         "",
         japanesePrompt,
       ].join("\n"),
