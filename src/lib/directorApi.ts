@@ -17,15 +17,45 @@ export type DirectorStartArgs = (
       image: File;
       scenes: DirectorScene[];
       rawPrompt?: undefined;
+      conceptText?: undefined;
       /** 動画全体の音楽・環境音の指示（任意、シーンビルダー限定・2026-09-15追加）。 */
       musicDirection?: string;
     }
-  | { userId: string; image: File; rawPrompt: string; rawDurationS: number; scenes?: undefined; musicDirection?: undefined }
+  | {
+      userId: string;
+      image: File;
+      rawPrompt: string;
+      rawDurationS: number;
+      scenes?: undefined;
+      conceptText?: undefined;
+      musicDirection?: undefined;
+    }
+  | {
+      // Advanced モード（2026-09-18追加）: 短い日本語の思いつきを渡すと、
+      // Qwen（自己ホストVLM）が参照画像を見て台本を書き起こす。
+      userId: string;
+      image: File;
+      conceptText: string;
+      rawDurationS: number;
+      scenes?: undefined;
+      rawPrompt?: undefined;
+      musicDirection?: undefined;
+    }
 ) & {
   quality: DirectorQualityMode;
   /** true: 実行中のジョブを待たず並列で今すぐ実行（追加料金）。既定 false = 順番待ち。 */
   priority?: boolean;
+  /** LoRA選択（全モード共通、2026-09-18追加）。省略/"none" はLoRAなし。 */
+  lora?: DirectorLoraSelection;
 };
+
+/** LoRAの指定方法。①trained: LoRA Studioで本人が学習済みのMiniMax H3 LoRA
+ * （14日パージ対象）。②upload: 外部で用意した .safetensors をこの場で
+ * アップロード（生成物ではなく入力データ扱いのため期限なし）。 */
+export type DirectorLoraSelection =
+  | { source: "none" }
+  | { source: "trained"; loraId: string }
+  | { source: "upload"; file: File };
 
 export async function startDirectorJob(args: DirectorStartArgs): Promise<DirectorStartResult> {
   const { data: sessionData } = await supabase.auth.getSession();
@@ -34,17 +64,44 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
 
   const { path: storagePath } = await uploadStudioAsset(args.userId, args.image);
 
+  let loraId: string | undefined;
+  let loraUploadPath: string | undefined;
+  if (args.lora?.source === "trained") {
+    loraId = args.lora.loraId;
+  } else if (args.lora?.source === "upload") {
+    const uploaded = await uploadDirectorLoraFile(args.userId, args.lora.file);
+    loraUploadPath = uploaded.path;
+  }
+
   const priority = args.priority ?? false;
+  const loraFields = { loraId, loraUploadPath };
   const body =
-    "rawPrompt" in args && args.rawPrompt !== undefined
-      ? { storagePath, rawPrompt: args.rawPrompt, rawDurationS: args.rawDurationS, quality: args.quality, priority }
-      : {
+    "conceptText" in args && args.conceptText !== undefined
+      ? {
           storagePath,
-          scenes: args.scenes,
-          musicDirection: args.musicDirection,
+          conceptText: args.conceptText,
+          rawDurationS: args.rawDurationS,
           quality: args.quality,
           priority,
-        };
+          ...loraFields,
+        }
+      : "rawPrompt" in args && args.rawPrompt !== undefined
+        ? {
+            storagePath,
+            rawPrompt: args.rawPrompt,
+            rawDurationS: args.rawDurationS,
+            quality: args.quality,
+            priority,
+            ...loraFields,
+          }
+        : {
+            storagePath,
+            scenes: args.scenes,
+            musicDirection: args.musicDirection,
+            quality: args.quality,
+            priority,
+            ...loraFields,
+          };
 
   const res = await fetch("/api/director/generate", {
     method: "POST",
@@ -63,6 +120,48 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
     remainingCredits: data.remainingCredits as number,
     totalDurationS: data.totalDurationS as number,
   };
+}
+
+// 外部LoRA（.safetensors）アップロード（2026-09-18追加）。director-user-loras
+// バケット（private、"<user_id>/<uuid>-<filename>"）へブラウザから直接
+// アップロードする（lora_datasets/upscale-uploads と同じ、Vercelの4.5MB
+// リクエストボディ上限を回避するパターン）。
+const DIRECTOR_USER_LORA_BUCKET = "director-user-loras";
+const DIRECTOR_LORA_MAX_BYTES = 2 * 1024 * 1024 * 1024; // バケット側の上限（2GB）と合わせる
+
+export async function uploadDirectorLoraFile(userId: string, file: File): Promise<{ path: string }> {
+  if (!file.name.toLowerCase().endsWith(".safetensors")) {
+    throw new Error(".safetensors ファイルを選んでください。");
+  }
+  if (file.size > DIRECTOR_LORA_MAX_BYTES) {
+    throw new Error("ファイルサイズが大きすぎます（上限2GB）。");
+  }
+  const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-100) || "lora.safetensors";
+  const uuid = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}`;
+  const path = `${userId}/${uuid}-${safeName}`;
+  const { error } = await supabase.storage
+    .from(DIRECTOR_USER_LORA_BUCKET)
+    .upload(path, file, { upsert: false, contentType: "application/octet-stream" });
+  if (error) throw new Error(error.message || "LoRAのアップロードに失敗しました。");
+  return { path };
+}
+
+export type DirectorLoraOption = { id: string; label: string };
+
+/** 現在のユーザーが LoRA Studio で学習済みの MiniMax H3 LoRA 一覧
+ * （2026-09-18追加、LoRA選択ピッカー用）。 */
+export async function listDirectorLoras(): Promise<DirectorLoraOption[]> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) return [];
+
+  const res = await fetch("/api/director/loras", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    cache: "no-store",
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data?.loras) ? (data.loras as DirectorLoraOption[]) : [];
 }
 
 /** 公開 URL を実ファイルとして保存させる（cross-origin download 対策）。

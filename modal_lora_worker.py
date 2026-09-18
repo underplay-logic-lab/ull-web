@@ -1029,6 +1029,44 @@ def _current_effective_vram_gb():
     return None
 
 
+def _gpu_tier_label() -> str:
+    """実行中コンテナが実際に割り当てられたGPUの短い正規化ラベルを返す
+    （torch.cuda.get_device_name() ベース。GPU_REQUEST=["b300","b200"]の
+    ようなフォールバックリストの場合、実際にどれが割り当てられたかは
+    これでしか分からない）。generation_logs.gpu_tier 経由で管理画面
+    「実稼働ログ & 粗利監視」タブの原価計算に使われる（2026-09-18導入。
+    src/lib/pricing/gpuRates.ts の正規化パターンと対応させること）。
+    取得できない場合は 'unknown'。canonical copy は各ワーカーファイルに
+    同一のものを複製している。"""
+    try:
+        import torch
+
+        name = torch.cuda.get_device_name(0).lower()
+    except Exception:  # noqa: BLE001 — telemetry only, never fatal
+        return "unknown"
+    if "b300" in name:
+        return "B300"
+    if "b200" in name:
+        return "B200"
+    if "h200" in name:
+        return "H200"
+    if "h100" in name:
+        return "H100"
+    if "rtx pro 6000" in name or "rtx_pro_6000" in name:
+        return "RTX-PRO-6000"
+    if "a100" in name:
+        return "A100-80GB" if "80gb" in name else "A100-40GB"
+    if "l40s" in name:
+        return "L40S"
+    if "a10g" in name or "a10" in name:
+        return "A10"
+    if "l4" in name:
+        return "L4"
+    if "t4" in name:
+        return "T4"
+    return name
+
+
 def _supabase_request(method: str, path: str, **kwargs):
     import requests
 
@@ -3971,7 +4009,7 @@ def train_lora_job(params: dict) -> dict:
         print(f"[train] persisted {len(checkpoints)} checkpoint(s) -> {job_ckpt_dir or '(local, skipped)'}")
 
         final_vram = _current_effective_vram_gb()
-        metadata = {"checkpoints": checkpoints}
+        metadata = {"checkpoints": checkpoints, "gpu_tier": _gpu_tier_label()}
         if final_vram is not None:
             metadata["vram_used_gb"] = final_vram
 
@@ -4015,7 +4053,12 @@ def train_lora_job(params: dict) -> dict:
         infra = _is_infra_error(exc)
         should_refund = safety_refund or (not is_safety_stop and ((not is_custom_yaml) or infra))
 
-        meta: dict = {"refunded": should_refund, "custom_yaml": is_custom_yaml, "infra_error": infra}
+        meta: dict = {
+            "refunded": should_refund,
+            "custom_yaml": is_custom_yaml,
+            "infra_error": infra,
+            "gpu_tier": _gpu_tier_label(),
+        }
         if is_safety_stop:
             meta["safety_stop"] = True
             meta["safety_kind"] = safety_kind

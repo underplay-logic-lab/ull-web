@@ -43,6 +43,10 @@ export type GenerationLog = {
   output_file_name: string | null;
   execution_time_ms: number | null;
   credits_consumed: number | null;
+  gpu_tier: string | null;
+  gpu_tier_label: string | null;
+  cost_jpy: number;
+  margin_percent: number | null;
   status: "success" | "failed";
   error_message: string | null;
   created_at: string;
@@ -52,8 +56,15 @@ export type LogsSummary = {
   totalCount: number;
   successRate: number;
   totalCreditsConsumed: number;
-  totalModalCostUsd: number;
+  totalModalCostJpy: number;
   scanLimited: boolean;
+};
+
+export type LogsAlert = {
+  windowHours: number;
+  thresholdPercent: number;
+  lowMarginCount: number;
+  negativeMarginCount: number;
 };
 
 export type VolumeFile = {

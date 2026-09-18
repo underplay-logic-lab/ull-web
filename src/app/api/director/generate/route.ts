@@ -14,6 +14,7 @@ import {
   directorCreditsWorstCase,
   directorPollDeadlineS,
   directorPriorityParallelSurcharge,
+  directorQwenScriptSurcharge,
   isDirectorQualityMode,
   validateDirectorScenes,
   type DirectorQualityMode,
@@ -26,7 +27,8 @@ import {
   translateDirectorPromptToJapanese,
   translateJapanesePromptToEnglish,
 } from "@/lib/directorPrompt";
-import { buildCinematicWorkflow } from "@/lib/cinematicWorkflow";
+import { buildCinematicWorkflow, CINEMATIC_PROMPT_NODE_ID } from "@/lib/cinematicWorkflow";
+import { assertOwnedDirectorLoraPath, createDirectorLoraSignedUrl } from "@/lib/directorLoraUpload.server";
 import { CINEMATIC_MODE_BY_ID } from "@/lib/cinematicPricing";
 import { spawnDirectorJob } from "@/lib/modalDirector";
 import {
@@ -76,21 +78,34 @@ export async function POST(request: Request) {
   // fast=8step蒸留(無音・低コスト)、quality=50step非蒸留(音声あり)。
   const qualityMode: DirectorQualityMode = isDirectorQualityMode(body.quality) ? body.quality : "fast";
 
+  // Advanced モード（2026-09-18追加。TODO(advanced-gate): 月額プラン限定に
+  // する場合はここで契約状態をチェックする — 今回は未実装、機能本体のみ）:
+  // conceptText が非空文字列なら、シーンビルダー/プロンプトモードいずれも
+  // 迂回し、Qwen（自己ホストVLM）が参照画像を見て台本を書き起こす。
+  const conceptTextInput = typeof body.conceptText === "string" ? body.conceptText.trim() : "";
+  const isAdvancedMode = conceptTextInput.length > 0;
+
   // プロンプトモード（結果画面に表示された合成済みプロンプトをコピペ・微修正
   // して直接投げる経路、2026-09-14）: rawPrompt が非空文字列ならシーン
   // ビルダーを完全に迂回し、Gemini合成もスキップしてそのまま使う。
   const rawPromptInput = typeof body.rawPrompt === "string" ? body.rawPrompt.trim() : "";
-  const isPromptMode = rawPromptInput.length > 0;
+  const isPromptMode = !isAdvancedMode && rawPromptInput.length > 0;
 
   // 音楽・環境音の指示（任意、2026-09-15追加。シーンビルダー限定 — プロンプト
-  // モードは既に完成した英文を直接編集できるので専用欄を設けない）。
+  // モード/Advancedモードは専用欄を設けない）。
   const musicDirectionInput =
-    !isPromptMode && typeof body.musicDirection === "string"
+    !isPromptMode && !isAdvancedMode && typeof body.musicDirection === "string"
       ? body.musicDirection.trim().slice(0, DIRECTOR_MUSIC_MAX_LENGTH)
       : "";
 
   let scenes: DirectorScene[] = [];
-  if (!isPromptMode) {
+  if (isAdvancedMode) {
+    const policyResult = evaluateContentPolicyMany([conceptTextInput]);
+    if (policyResult.blocked) {
+      logContentPolicyBlock("director/generate:advanced", policyResult, user.id);
+      return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
+    }
+  } else if (!isPromptMode) {
     const validated = validateDirectorScenes(body.scenes);
     if (!validated.ok) {
       return NextResponse.json({ error: validated.error }, { status: 400 });
@@ -116,6 +131,65 @@ export async function POST(request: Request) {
     }
   }
 
+  // LoRA（2026-09-18追加）: 全モード共通のオプション。2系統のどちらか一方:
+  //   ①loraId: LoRA Studio で本人が学習済みの MiniMax H3 LoRA
+  //     （Volume常駐・14日パージ対象。DBで所有権を確認してから使う）
+  //   ②loraUploadPath: 外部で用意した .safetensors をこの場でアップロード
+  //     したもの（director-user-loras バケット。生成物ではなく入力データ
+  //     扱いなので期限を設けない——CLAUDE.md §3の対象外という整理）
+  const loraIdRaw = typeof body.loraId === "string" ? body.loraId.trim() : "";
+  const loraUploadPathRaw = typeof body.loraUploadPath === "string" ? body.loraUploadPath.trim() : "";
+  if (loraIdRaw && loraUploadPathRaw) {
+    return NextResponse.json({ error: "LoRAの指定が重複しています。" }, { status: 400 });
+  }
+
+  let loraName: string | undefined;
+  let loraDownloadUrl: string | undefined;
+  if (loraIdRaw) {
+    if (!/^[A-Za-z0-9_-]+$/.test(loraIdRaw)) {
+      return NextResponse.json({ error: "LoRAの指定が不正です。" }, { status: 400 });
+    }
+    // CLAUDE.md §3 の14日自動パージ（modal_retention_purge.py、created_at
+    // 起点）— DB行がパージより先に消えるとは限らないため、実体ファイルが
+    // 既に消えていそうな古い行は明示的に弾く（/api/director/loras と同じ
+    // cutoff、実機確認済み — 詳細はそちらのコメント参照）。
+    const retentionCutoffIso = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+    const { data: loraJob } = await supabaseAdmin
+      .from("generation_jobs")
+      .select("id")
+      .eq("user_id", user.id)
+      .eq("workflow_type", "lora_training")
+      .eq("status", "completed")
+      .eq("inputs->>target_model", "minimax_h3")
+      .eq("inputs->>output_lora_name", loraIdRaw)
+      .gte("created_at", retentionCutoffIso)
+      .limit(1)
+      .maybeSingle();
+    if (!loraJob) {
+      return NextResponse.json({ error: "指定されたLoRAが見つかりません。" }, { status: 400 });
+    }
+    loraName = `${loraIdRaw}.safetensors`;
+  } else if (loraUploadPathRaw) {
+    try {
+      assertOwnedDirectorLoraPath(user.id, loraUploadPathRaw);
+    } catch (err) {
+      return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+    }
+    // アップロード時のパスは "<user_id>/<uuid>-<safeName>.safetensors" なので、
+    // basename をそのまま ComfyUI 向けの一意なファイル名として使い回せる
+    // （jobId確定を待たずに済む）。
+    const uploadedFilename = loraUploadPathRaw.split("/").pop() || "";
+    if (!/^[A-Za-z0-9_-]+\.safetensors$/.test(uploadedFilename)) {
+      return NextResponse.json({ error: "LoRAファイルの指定が不正です。" }, { status: 400 });
+    }
+    try {
+      loraDownloadUrl = await createDirectorLoraSignedUrl(user.id, loraUploadPathRaw);
+    } catch (err) {
+      return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+    }
+    loraName = uploadedFilename;
+  }
+
   let imageBuffer: Buffer;
   try {
     imageBuffer = await downloadStudioUpload(user.id, storagePath);
@@ -128,14 +202,17 @@ export async function POST(request: Request) {
 
   const knobs = await getPricingKnobs();
   const rawDurationS = typeof body.rawDurationS === "number" ? body.rawDurationS : DIRECTOR_SECONDS_PER_SCENE;
-  const breakdown = isPromptMode
+  const breakdown = isPromptMode || isAdvancedMode
     ? directorCostBreakdownForDuration({
         totalDurationS: Math.min(DIRECTOR_MAX_TOTAL_SECONDS, Math.max(1, rawDurationS)),
         mode: qualityMode,
         knobs,
       })
     : directorCostBreakdown({ scenes, mode: qualityMode, knobs });
-  const baseCreditsCost = breakdown.credits || directorCreditsWorstCase(knobs);
+  // Advanced（Qwen台本生成）は動画本体とは別のGPUコンテナを1回起動するので
+  // その分を上乗せする（directorPricing.ts参照）。
+  const baseCreditsCost =
+    (breakdown.credits || directorCreditsWorstCase(knobs)) + (isAdvancedMode ? directorQwenScriptSurcharge(knobs) : 0);
   // 「実行中でも並列で今すぐ実行」を選んだ場合の追加コールドスタート分
   // （順番待ち=無料の既定に対するオプトインの上乗せ。CLAUDE.md §6参照）。
   const priority = body.priority === true || body.priority === "true";
@@ -178,8 +255,18 @@ export async function POST(request: Request) {
   // 検知された場合は送信前に自動で英訳する（2026-09-14、ホスト報告により
   // 追加 — MiniMax H3は英語プロンプト前提のため無音で日本語のまま送ると
   // 意図通りに生成されない）。
+  // Advanced モード（2026-09-18追加）: ここではQwenを呼ばない。台本生成は
+  // 動画生成と同じB300ワーカーコンテナ内（modal_wan_animate_blackwell.py
+  // ::WanAnimateBlackwell._generate_director_script）で行う——別GPU
+  // （H100/A100）を新たに起動すると二重コールドスタートになるため、既に
+  // 起動済みのB300上で参照画像＋思いつきから台本を書き起こしてから
+  // ComfyUIワークフローを実行する設計にした。ここでの combinedPrompt は
+  // ワーカー側で必ず上書きされるプレースホルダー（qwenConceptText が
+  // 渡っている限りモデルには一切渡らない）。
   let combinedPrompt: string;
-  if (isPromptMode) {
+  if (isAdvancedMode) {
+    combinedPrompt = conceptTextInput;
+  } else if (isPromptMode) {
     if (looksJapanese(rawPromptInput)) {
       try {
         combinedPrompt = await translateJapanesePromptToEnglish(rawPromptInput);
@@ -202,7 +289,10 @@ export async function POST(request: Request) {
   }
 
   // 課金前の最終防波堤としてもう一度（Gemini が合成した英語文・ユーザーが
-  // 直接編集した英語文のいずれにも念のため）。
+  // 直接編集した英語文のいずれにも念のため）。Advancedモードは combinedPrompt
+  // がプレースホルダー（conceptTextInput）で、その内容自体は既に前段の
+  // isAdvancedMode 分岐で評価済みなのでここでは重複チェックのみ行う
+  // （実害はないが二重にはなる）。
   const combinedPolicy = evaluateContentPolicyMany([combinedPrompt]);
   if (combinedPolicy.blocked) {
     logContentPolicyBlock("director/generate:combined", combinedPolicy, user.id);
@@ -210,7 +300,9 @@ export async function POST(request: Request) {
   }
 
   // 結果画面でのコピペ用日本語表示（ベストエフォート、失敗しても生成は続行）。
-  const combinedPromptJa = await translateDirectorPromptToJapanese(combinedPrompt);
+  // Advancedモードはまだ本物の英語プロンプトが存在しない（ワーカー側で
+  // これから生成される）ため翻訳をスキップし、完了後の画面は英語のみ表示する。
+  const combinedPromptJa = isAdvancedMode ? null : await translateDirectorPromptToJapanese(combinedPrompt);
 
   const debitedCredits = currentCredits - creditsCost;
   const { error: debitError } = await supabaseAdmin
@@ -223,28 +315,39 @@ export async function POST(request: Request) {
   }
 
   // --- job row -----------------------------------------------------------
+  // directorInputsSnapshot をそのまま Modal ワーカーへも渡す（Advancedモード
+  // でワーカー側が combined_prompt を書き戻す際、inputs の他フィールドを
+  // 消さずマージするために必要 — PATCHはJSONBカラム丸ごと置き換えのため。
+  // modal_wan_animate_blackwell.py の該当コメント参照）。
+  const directorInputsSnapshot = {
+    scenes: scenes.length ? scenes : null,
+    combined_prompt: combinedPrompt,
+    combined_prompt_ja: combinedPromptJa,
+    total_duration_s: breakdown.totalDurationS,
+    prompt_mode: isPromptMode,
+    advanced_mode: isAdvancedMode,
+    concept_text: isAdvancedMode ? conceptTextInput : null,
+    quality_mode: qualityMode,
+    music_direction: musicDirectionInput || null,
+    lora_name: loraName || null,
+    lora_source: loraIdRaw ? "trained" : loraUploadPathRaw ? "upload" : null,
+  };
   const { data: jobRow, error: jobError } = await supabaseAdmin
     .from("generation_jobs")
     .insert({
       user_id: user.id,
       status: "queued",
       workflow_type: "director",
-      inputs: {
-        scenes: scenes.length ? scenes : null,
-        combined_prompt: combinedPrompt,
-        combined_prompt_ja: combinedPromptJa,
-        total_duration_s: breakdown.totalDurationS,
-        prompt_mode: isPromptMode,
-        quality_mode: qualityMode,
-        music_direction: musicDirectionInput || null,
-      },
+      inputs: directorInputsSnapshot,
       credits_cost: creditsCost,
       metadata: {
         scene_count: scenes.length,
         total_duration_s: breakdown.totalDurationS,
         prompt_mode: isPromptMode,
+        advanced_mode: isAdvancedMode,
         quality_mode: qualityMode,
         priority,
+        lora_name: loraName || null,
       },
     })
     .select("id")
@@ -281,6 +384,7 @@ export async function POST(request: Request) {
     rawImageWidth: rawDims?.width,
     rawImageHeight: rawDims?.height,
     jobId,
+    loraName,
   });
 
   try {
@@ -292,6 +396,12 @@ export async function POST(request: Request) {
       referenceImageName,
       referenceImageB64: imageBuffer.toString("base64"),
       pollDeadlineS: directorPollDeadlineS(breakdown.totalDurationS, qualityMode),
+      qwenConceptText: isAdvancedMode ? conceptTextInput : undefined,
+      qwenPromptNodeId: isAdvancedMode ? CINEMATIC_PROMPT_NODE_ID : undefined,
+      qwenDurationS: isAdvancedMode ? breakdown.totalDurationS : undefined,
+      directorInputsSnapshot: isAdvancedMode ? directorInputsSnapshot : undefined,
+      loraDownloadUrl,
+      loraFilename: loraDownloadUrl ? loraName : undefined,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

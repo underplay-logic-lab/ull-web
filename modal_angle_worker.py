@@ -695,6 +695,43 @@ def _patch_angle_job(job_id: str, fields: dict) -> None:
         print(f"[angle-job] failed to patch job {job_id} (after retries): {exc}", flush=True)
 
 
+def _gpu_tier_label() -> str:
+    """実行中コンテナが実際に割り当てられたGPUの短い正規化ラベルを返す
+    （torch.cuda.get_device_name() ベース。GPU_REQUEST がフォールバック
+    リストの場合、実際にどれが割り当てられたかはこれでしか分からない）。
+    generation_logs.gpu_tier 経由で管理画面「実稼働ログ & 粗利監視」タブの
+    原価計算に使われる（2026-09-18導入。src/lib/pricing/gpuRates.ts の
+    正規化パターンと対応させること）。取得できない場合は 'unknown'。
+    canonical copy は各ワーカーファイルに同一のものを複製している。"""
+    try:
+        import torch
+
+        name = torch.cuda.get_device_name(0).lower()
+    except Exception:  # noqa: BLE001 — telemetry only, never fatal
+        return "unknown"
+    if "b300" in name:
+        return "B300"
+    if "b200" in name:
+        return "B200"
+    if "h200" in name:
+        return "H200"
+    if "h100" in name:
+        return "H100"
+    if "rtx pro 6000" in name or "rtx_pro_6000" in name:
+        return "RTX-PRO-6000"
+    if "a100" in name:
+        return "A100-80GB" if "80gb" in name else "A100-40GB"
+    if "l40s" in name:
+        return "L40S"
+    if "a10g" in name or "a10" in name:
+        return "A10"
+    if "l4" in name:
+        return "L4"
+    if "t4" in name:
+        return "T4"
+    return name
+
+
 def _get_angle_job_status(job_id: str):
     """angle_jobs.status を 1 発 GET。取得不能なら None（＝判定不能、続行させる）。
     Modal のクラッシュ由来リトライを冒頭で弾く idempotency ガード用。"""
@@ -1805,8 +1842,11 @@ class QwenImageEditWorker:
                 vram_gb = self._vram_gb()
                 # ライブ「Active VRAM」バッジ用（ネタバレ防止 — 分母・％・GPU名なし。
                 # フロントは angle_jobs.metadata.vram_used_gb を pollAngleJob で読む）。
+                # gpu_tier もここで一緒に乗せる — completed_fields 側では
+                # metadata キー自体を送らない（PATCHはJSONBカラム丸ごと
+                # 置き換えのため、ここで乗せた値が完了時までそのまま残る）。
                 if vram_gb is not None:
-                    _patch_angle_job(job_id, {"metadata": {"vram_used_gb": vram_gb}})
+                    _patch_angle_job(job_id, {"metadata": {"vram_used_gb": vram_gb, "gpu_tier": _gpu_tier_label()}})
                 print(
                     f"[angle-job] {job_id} {done}/{n_total} "
                     f"({time.time() - t0:.1f}s cum) VRAM={vram_gb}GB",
@@ -1814,7 +1854,14 @@ class QwenImageEditWorker:
                 )
         except Exception as exc:  # noqa: BLE001
             print(f"[angle-job] {job_id} failed after {done}/{n_total}: {exc}", flush=True)
-            _patch_angle_job(job_id, {"status": "failed", "error_message": str(exc)[:500]})
+            _patch_angle_job(
+                job_id,
+                {
+                    "status": "failed",
+                    "error_message": str(exc)[:500],
+                    "metadata": {"gpu_tier": _gpu_tier_label()},
+                },
+            )
             _refund_remaining("exception")  # 生成できた分だけ課金、残りは返金
             return {"ok": False, "error": str(exc), "completed": done}
         finally:

@@ -24,9 +24,15 @@ function dialogueLanguageTag(text: string): string {
 // （水着・戦闘シーン等）ではなく本当に際どい入力のみのはず。
 //
 // 2026-09-13 時点: refusal を検知した場合の第2LLM（自己ホスト Qwen VLM）への
-// フォールバックは未実装（別途 GPU デプロイが必要な大きめの作業のため、
-// このリリースではスコープ外）。refusal を検知したら DirectorPromptError を
-// 投げ、呼び出し側はユーザーにその旨を案内する。
+// フォールバックは未実装だったが、2026-09-18 に「Advanced」モードとして
+// 実装した（Gemini拒否時の静かなフォールバックではなく、ユーザーが明示的に
+// 選ぶ独立モード）。ただし実装場所はこのファイルではなく
+// modal_wan_animate_blackwell.py 側（WanAnimateBlackwell._generate_director_script）
+// —— 動画生成と同じB300コンテナ内で実行し、二重コールドスタートを避けるため。
+// Next.js側は conceptText と qwenPromptNodeId を spawnDirectorJob に渡すだけで、
+// 台本そのものの生成はワーカー側が行う（route.ts参照）。
+// refusal を検知したら DirectorPromptError を投げ、呼び出し側はユーザーに
+// その旨を案内する。
 export class DirectorPromptError extends Error {
   constructor(
     message: string,

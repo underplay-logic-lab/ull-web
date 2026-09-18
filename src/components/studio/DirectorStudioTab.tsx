@@ -32,6 +32,7 @@ import {
   directorCostBreakdown,
   directorCostBreakdownForDuration,
   directorPriorityParallelSurcharge,
+  directorQwenScriptSurcharge,
   directorTotalDurationS,
   type DirectorCameraMoveId,
   type DirectorQualityMode,
@@ -42,8 +43,11 @@ import {
   pollDirectorJob,
   startDirectorJob,
   downloadDirectorVideo,
+  listDirectorLoras,
   type DirectorApiError,
   type DirectorJobStatus,
+  type DirectorLoraOption,
+  type DirectorLoraSelection,
 } from "@/lib/directorApi";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
@@ -233,7 +237,10 @@ function InsufficientCreditsModal({
 }
 
 type PersistedJob = { jobId: string };
-type UiMode = "scenes" | "prompt";
+// "advanced": Qwen3.8-27B-abliterated（自己ホストVLM）に参照画像＋短い日本語
+// の思いつきを渡し、台本を自動で書き起こしてもらうモード（2026-09-18追加）。
+// "prompt" と違い、結果画面からの遷移ではなくユーザーが最初から選ぶ。
+type UiMode = "scenes" | "prompt" | "advanced";
 
 function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
@@ -281,6 +288,37 @@ export function DirectorStudioTab() {
   const [promptDraft, setPromptDraft] = useState("");
   const [promptDraftDurationS, setPromptDraftDurationS] = useState(DIRECTOR_SECONDS_PER_SCENE);
 
+  // Advanced モード（2026-09-18追加。TODO(advanced-gate): 月額プラン限定に
+  // する場合はこのモードを選べる条件をここに追加する — 今回は未実装）。
+  const [conceptText, setConceptText] = useState("");
+  const [conceptDurationS, setConceptDurationS] = useState(DIRECTOR_SECONDS_PER_SCENE);
+
+  // LoRA（2026-09-18追加。全モード共通・任意）。①LoRA Studio学習済みから選ぶ
+  // ②外部で用意した .safetensors をこの場でアップロード、の2系統を持つ。
+  type LoraSource = "none" | "trained" | "upload";
+  const [loraSource, setLoraSource] = useState<LoraSource>("none");
+  const [loraOptions, setLoraOptions] = useState<DirectorLoraOption[]>([]);
+  const [loraId, setLoraId] = useState("");
+  const [loraUploadFile, setLoraUploadFile] = useState<File | null>(null);
+  const loraSelection: DirectorLoraSelection =
+    loraSource === "trained" && loraId
+      ? { source: "trained", loraId }
+      : loraSource === "upload" && loraUploadFile
+        ? { source: "upload", file: loraUploadFile }
+        : { source: "none" };
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    listDirectorLoras()
+      .then((loras) => {
+        if (!cancelled) setLoraOptions(loras);
+      })
+      .catch((err) => console.warn("[DirectorStudioTab] listDirectorLoras failed:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
   const resumedJobId = useMemo(() => loadFormState<PersistedJob>(JOB_KEY)?.jobId || null, []);
   const [phase, setPhase] = useState<Phase>(resumedJobId ? "running" : "idle");
   const [jobId, setJobId] = useState<string | null>(resumedJobId);
@@ -301,6 +339,7 @@ export function DirectorStudioTab() {
         scenes: DirectorScene[];
         quality: DirectorQualityMode;
         musicDirection: string;
+        lora: DirectorLoraSelection;
       }
     | {
         uiMode: "prompt";
@@ -308,6 +347,15 @@ export function DirectorStudioTab() {
         rawPrompt: string;
         rawDurationS: number;
         quality: DirectorQualityMode;
+        lora: DirectorLoraSelection;
+      }
+    | {
+        uiMode: "advanced";
+        image: File;
+        conceptText: string;
+        rawDurationS: number;
+        quality: DirectorQualityMode;
+        lora: DirectorLoraSelection;
       };
   const [queuedNext, setQueuedNext] = useState<QueuedSnapshot | null>(null);
   // ポーリングの長寿命な useEffect から「今すぐ最新の予約」を読めるようにする
@@ -323,8 +371,14 @@ export function DirectorStudioTab() {
     () => directorCostBreakdownForDuration({ totalDurationS: promptDraftDurationS, mode: qualityMode, knobs }),
     [promptDraftDurationS, qualityMode, knobs],
   );
-  const breakdown = uiMode === "prompt" ? promptBreakdown : sceneBreakdown;
-  const cost = breakdown.credits;
+  const conceptBreakdown = useMemo(
+    () => directorCostBreakdownForDuration({ totalDurationS: conceptDurationS, mode: qualityMode, knobs }),
+    [conceptDurationS, qualityMode, knobs],
+  );
+  const breakdown = uiMode === "prompt" ? promptBreakdown : uiMode === "advanced" ? conceptBreakdown : sceneBreakdown;
+  // Advanced（Qwen台本生成）は動画本体とは別のGPUコンテナを1回起動する分の
+  // 追加クレジットが乗る（directorPricing.ts::directorQwenScriptSurcharge）。
+  const cost = breakdown.credits + (uiMode === "advanced" ? directorQwenScriptSurcharge(knobs) : 0);
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
   const busy = phase === "submitting" || phase === "running";
 
@@ -368,10 +422,20 @@ export function DirectorStudioTab() {
   }, [job]);
   const exitPromptMode = useCallback(() => setUiMode("scenes"), []);
 
+  // LoRAのソースを選んだのに中身（選択/ファイル）が空のままだと、意図せず
+  // 「なし」で生成されてしまう——選んだ以上は完了させてから送信させる。
+  const loraSelectionIncomplete =
+    (loraSource === "trained" && !loraId) || (loraSource === "upload" && !loraUploadFile);
+
   const canRun =
     Boolean(image) &&
     cost > 0 &&
-    (uiMode === "prompt" ? promptDraft.trim().length > 0 : scenes.every((s) => s.text.trim().length > 0));
+    !loraSelectionIncomplete &&
+    (uiMode === "prompt"
+      ? promptDraft.trim().length > 0
+      : uiMode === "advanced"
+        ? conceptText.trim().length > 0
+        : scenes.every((s) => s.text.trim().length > 0));
 
   // セリフ・音楽の指示はFastモード(8step蒸留・音声モダリティ非対応)では
   // 反映されない（cinematicPricing.ts の vdnFast.hasAudio 参照）。強制切替は
@@ -381,9 +445,34 @@ export function DirectorStudioTab() {
 
   const buildSnapshot = (): QueuedSnapshot | null => {
     if (!image) return null;
-    return uiMode === "prompt"
-      ? { uiMode: "prompt", image, rawPrompt: promptDraft.trim(), rawDurationS: promptDraftDurationS, quality: qualityMode }
-      : { uiMode: "scenes", image, scenes, quality: qualityMode, musicDirection: musicDirection.trim() };
+    if (uiMode === "prompt") {
+      return {
+        uiMode: "prompt",
+        image,
+        rawPrompt: promptDraft.trim(),
+        rawDurationS: promptDraftDurationS,
+        quality: qualityMode,
+        lora: loraSelection,
+      };
+    }
+    if (uiMode === "advanced") {
+      return {
+        uiMode: "advanced",
+        image,
+        conceptText: conceptText.trim(),
+        rawDurationS: conceptDurationS,
+        quality: qualityMode,
+        lora: loraSelection,
+      };
+    }
+    return {
+      uiMode: "scenes",
+      image,
+      scenes,
+      quality: qualityMode,
+      musicDirection: musicDirection.trim(),
+      lora: loraSelection,
+    };
   };
 
   const handleRun = () => {
@@ -446,15 +535,27 @@ export function DirectorStudioTab() {
                 rawDurationS: snapshot.rawDurationS,
                 quality: snapshot.quality,
                 priority: opts.priority,
+                lora: snapshot.lora,
               })
-            : await startDirectorJob({
-                userId: user.id,
-                image: snapshot.image,
-                scenes: snapshot.scenes,
-                musicDirection: snapshot.musicDirection || undefined,
-                quality: snapshot.quality,
-                priority: opts.priority,
-              });
+            : snapshot.uiMode === "advanced"
+              ? await startDirectorJob({
+                  userId: user.id,
+                  image: snapshot.image,
+                  conceptText: snapshot.conceptText,
+                  rawDurationS: snapshot.rawDurationS,
+                  quality: snapshot.quality,
+                  priority: opts.priority,
+                  lora: snapshot.lora,
+                })
+              : await startDirectorJob({
+                  userId: user.id,
+                  image: snapshot.image,
+                  scenes: snapshot.scenes,
+                  musicDirection: snapshot.musicDirection || undefined,
+                  quality: snapshot.quality,
+                  priority: opts.priority,
+                  lora: snapshot.lora,
+                });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
         setJobId(res.jobId);
         setPhase("running");
@@ -538,7 +639,12 @@ export function DirectorStudioTab() {
     };
   }, [jobId, markGpuWarm, runGenerate]);
 
-  const totalDurationS = uiMode === "prompt" ? promptBreakdown.totalDurationS : directorTotalDurationS(scenes);
+  const totalDurationS =
+    uiMode === "prompt"
+      ? promptBreakdown.totalDurationS
+      : uiMode === "advanced"
+        ? conceptBreakdown.totalDurationS
+        : directorTotalDurationS(scenes);
 
   return (
     <div className="grid gap-6 lg:grid-cols-2">
@@ -560,6 +666,36 @@ export function DirectorStudioTab() {
           onFileSelected={setImage}
           onClear={() => setImage(null)}
         />
+
+        {uiMode !== "prompt" && (
+          // モード切替（2026-09-18追加）。"prompt" は結果画面の「編集して
+          // 再生成」からのみ入る特別モードなのでここには出さない。
+          // TODO(advanced-gate): Advanced を月額プラン限定にする場合は
+          // ここで契約状態を見て disabled にする／アップセル導線を出す。
+          <div className="flex items-center gap-2 rounded-xl border border-border bg-background p-1">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setUiMode("scenes")}
+              className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                uiMode === "scenes" ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
+              }`}
+            >
+              シーンで作る
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setUiMode("advanced")}
+              className={`flex flex-1 items-center justify-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                uiMode === "advanced" ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
+              }`}
+            >
+              <Sparkles size={12} />
+              Advanced（台本自動生成）
+            </button>
+          </div>
+        )}
 
         {uiMode === "prompt" ? (
           <div>
@@ -604,6 +740,43 @@ export function DirectorStudioTab() {
             <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
               <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
               このプロンプトはそのままモデルに渡されます（シーンの自動合成はスキップされますが、日本語で書いた場合は送信前に自動で英訳されます）。
+            </p>
+          </div>
+        ) : uiMode === "advanced" ? (
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <p className="flex items-center gap-1.5 text-xs font-mono uppercase tracking-widest text-muted">
+                <Sparkles size={12} />
+                Advanced（AIによる台本自動生成）
+              </p>
+            </div>
+            <textarea
+              value={conceptText}
+              onChange={(e) => setConceptText(e.target.value.slice(0, DIRECTOR_SCENE_TEXT_MAX_LENGTH))}
+              rows={4}
+              placeholder="例: 雨が降るネオンに照らされた夜の路地裏で、静かにこちらを見つめている。"
+              className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm leading-relaxed text-foreground placeholder:text-muted"
+            />
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <label className="text-xs text-muted">尺</label>
+              <select
+                value={conceptDurationS}
+                onChange={(e) => setConceptDurationS(Number(e.target.value))}
+                className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-foreground"
+              >
+                {Array.from(
+                  { length: Math.floor(DIRECTOR_MAX_TOTAL_SECONDS / DIRECTOR_SECONDS_PER_SCENE) },
+                  (_, i) => (i + 1) * DIRECTOR_SECONDS_PER_SCENE,
+                ).map((s) => (
+                  <option key={s} value={s}>
+                    約{s}秒
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
+              <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
+              参照画像を実際に見た上で、短いアイデアからAIが台本を書き起こします（検閲による生成拒否が起きにくい代わりに追加でクレジットを消費します）。
             </p>
           </div>
         ) : (
@@ -756,6 +929,82 @@ export function DirectorStudioTab() {
               <AlertTriangle size={12} className="mt-0.5 shrink-0" />
               セリフ・音楽の指定はFastモードでは反映されません（音声非対応）。反映させるにはQualityモードを選んでください。
             </p>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-border bg-background p-4">
+          <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">LoRA（任意）</p>
+          <div className="grid grid-cols-3 gap-1.5">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setLoraSource("none")}
+              className={`rounded-lg px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                loraSource === "none" ? "bg-neon-violet/15 text-foreground" : "bg-surface text-muted hover:text-foreground"
+              }`}
+            >
+              なし
+            </button>
+            <button
+              type="button"
+              disabled={busy || loraOptions.length === 0}
+              onClick={() => setLoraSource("trained")}
+              title={loraOptions.length === 0 ? "LoRA Studioで学習済みのMiniMax H3 LoRAがありません" : undefined}
+              className={`rounded-lg px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                loraSource === "trained" ? "bg-neon-violet/15 text-foreground" : "bg-surface text-muted hover:text-foreground"
+              }`}
+            >
+              学習済みから選ぶ
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setLoraSource("upload")}
+              className={`rounded-lg px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                loraSource === "upload" ? "bg-neon-violet/15 text-foreground" : "bg-surface text-muted hover:text-foreground"
+              }`}
+            >
+              アップロード
+            </button>
+          </div>
+
+          {loraSource === "trained" && (
+            <>
+              <select
+                value={loraId}
+                onChange={(e) => setLoraId(e.target.value)}
+                disabled={busy}
+                className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <option value="">選択してください</option>
+                {loraOptions.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.label}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-2 text-[11px] text-muted">LoRA Studio で学習済みの MiniMax H3 LoRA を生成に適用します。</p>
+            </>
+          )}
+
+          {loraSource === "upload" && (
+            <>
+              <input
+                type="file"
+                accept=".safetensors"
+                disabled={busy}
+                onChange={(e) => setLoraUploadFile(e.target.files?.[0] ?? null)}
+                className="mt-2 w-full text-xs text-muted file:mr-3 file:rounded-lg file:border-0 file:bg-surface file:px-3 file:py-1.5 file:text-xs file:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+              />
+              {loraUploadFile && (
+                <p className="mt-1.5 text-[11px] text-muted">
+                  {loraUploadFile.name}（{(loraUploadFile.size / 1024 / 1024).toFixed(1)} MB）
+                </p>
+              )}
+              <p className="mt-2 text-[11px] text-muted">
+                外部で用意した MiniMax H3 LoRA（.safetensors）を持ち込んで適用します。生成開始時にアップロードされます。
+              </p>
+            </>
           )}
         </div>
 

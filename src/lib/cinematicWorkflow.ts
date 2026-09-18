@@ -30,6 +30,12 @@ import { cinematicMegapixels, cinematicSafeDimensions } from "@/lib/cinematicPri
 // 1点から誤って逆算していた）のが真因で、first_frame 側は無関係だった
 // （first_frame はモデル側が内部で "disabled"＝伸縮リサイズして width/height
 // に合わせる設計なので、生の LoadImage 出力をそのまま渡してよい）。
+// Advanced モード（Qwen台本自動生成、2026-09-18追加）で、B300ワーカー側が
+// 生成した台本を差し込むノードid。route.ts と modal_wan_animate_blackwell.py
+// の両方から参照される契約値なので定数化しておく（Python側は文字列として
+// 別途 "105:104" を渡す — ここを変更したら Python 側の呼び出し元も揃える）。
+export const CINEMATIC_PROMPT_NODE_ID = "105:104";
+
 const WORKFLOW_TEMPLATE = {
   // 2026-09-14: core "SaveVideo" -> ComfyUI-VideoHelperSuite の
   // VHS_VideoCombine に差し替え（ComfyUI v0.33.3 -> v0.35.1 アップグレードに
@@ -237,6 +243,17 @@ export type BuildCinematicWorkflowParams = {
    * 2026-09-17）。
    */
   jobId?: string;
+  /**
+   * ユーザー自身が LoRA Studio で学習した MiniMax H3 LoRA のファイル名
+   * （拡張子込み、例: "yukipas_h3.safetensors"）。modal_lora_worker.py の
+   * 「Directory contract」により、完了した LoRA は必ず
+   * `loras/<lora_name>.safetensors`（Volume ルート直下のエイリアス）としても
+   * 保存され、ComfyUI の LoraLoaderModelOnly からファイル名だけで解決できる。
+   * 省略時はベースチェックポイントのみで生成する。
+   */
+  loraName?: string;
+  /** ユーザーLoRAの強度（既定1.0）。 */
+  loraStrength?: number;
 };
 
 export function buildCinematicWorkflow({
@@ -248,6 +265,8 @@ export function buildCinematicWorkflow({
   rawImageWidth,
   rawImageHeight,
   jobId,
+  loraName,
+  loraStrength,
 }: BuildCinematicWorkflowParams): CinematicWorkflow {
   const workflow = structuredClone(WORKFLOW_TEMPLATE) as unknown as CinematicWorkflow;
 
@@ -279,14 +298,34 @@ export function buildCinematicWorkflow({
   // (confirmed while benchmarking this exact graph).
   workflow["105:15"].inputs.noise_seed = Math.floor(Math.random() * 2 ** 32);
 
+  // ユーザー選択LoRA（2026-09-18導入）— UNETLoader(105:6)の直後、ターボLoRA/
+  // VDN-H3より手前に差し込む（コミュニティのComfyUIワークフロー例が使っていた
+  // LoraLoaderModelOnly → ApplyVDNH3 の重ね順を踏襲）。以降のノードが
+  // UNETLoaderの生出力を直接参照していた箇所は全てこのLoRA適用後の出力
+  // (baseModelRef) を見るように差し替える。
+  const trimmedLoraName = loraName?.trim();
+  const baseModelRef: [string, number] = trimmedLoraName ? ["105:126", 0] : ["105:6", 0];
+  if (trimmedLoraName) {
+    workflow["105:126"] = {
+      inputs: {
+        lora_name: trimmedLoraName,
+        strength_model: typeof loraStrength === "number" && loraStrength > 0 ? loraStrength : 1,
+        model: ["105:6", 0],
+      },
+      class_type: "LoraLoaderModelOnly",
+      _meta: { title: "Load LoRA (User)" },
+    };
+  }
+
   // The 4-step turbo LoRA only makes sense paired with a low step count —
   // Cinema Master's full 20-step run skips it entirely (feeds
   // PathchSageAttentionKJ straight from UNETLoader) rather than running a
   // LoRA distilled for 4 steps through 20 of them.
   if (mode.useTurboLora) {
+    workflow["105:125"].inputs.model = baseModelRef;
     workflow["105:124"].inputs.model = ["105:125", 0];
   } else {
-    workflow["105:124"].inputs.model = ["105:6", 0];
+    workflow["105:124"].inputs.model = baseModelRef;
     delete (workflow as Record<string, unknown>)["105:125"];
   }
 
@@ -300,7 +339,7 @@ export function buildCinematicWorkflow({
   if (mode.useVdn) {
     workflow["105:130"] = {
       inputs: {
-        model: ["105:6", 0],
+        model: baseModelRef,
         vdn_checkpoint: mode.vdnCheckpoint ?? "stage-b-step-2000",
         apply_turbo_adapter: Boolean(mode.vdnTurbo),
         strength: 1.0,

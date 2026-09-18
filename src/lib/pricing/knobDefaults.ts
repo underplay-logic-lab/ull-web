@@ -24,6 +24,7 @@ export type KnobKey =
   | "director_per_second_quality"
   | "director_min_credits"
   | "director_priority_parallel_surcharge"
+  | "director_qwen_script_credits"
   | "upscale_per_mp"
   | "upscale_min_credits"
   | "upscale_priority_parallel_surcharge"
@@ -56,9 +57,20 @@ export type KnobKey =
   | "lora_floor_prep_s"
   | "lora_safety_limit_s"
   | "lora_spi_baseline_default"
+  | "alert_low_margin_percent"
   // --- rates (server-only) ---
   | "credit_to_jpy"
   | "gpu_jpy_per_hour_b300"
+  | "gpu_jpy_per_hour_b200"
+  | "gpu_jpy_per_hour_h200"
+  | "gpu_jpy_per_hour_h100"
+  | "gpu_jpy_per_hour_rtx_pro_6000"
+  | "gpu_jpy_per_hour_a100_80gb"
+  | "gpu_jpy_per_hour_a100_40gb"
+  | "gpu_jpy_per_hour_l40s"
+  | "gpu_jpy_per_hour_a10"
+  | "gpu_jpy_per_hour_l4"
+  | "gpu_jpy_per_hour_t4"
   | "usd_jpy_rate";
 
 export type PricingKnobs = Record<KnobKey, number>;
@@ -205,6 +217,25 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "feature_credits",
     unit: "C",
     description: "実行中のジョブを待たず並列で今すぐ実行する場合の追加コールドスタート分の上乗せ。",
+    isPublic: true,
+  },
+  director_qwen_script_credits: {
+    // Advanced（Qwen3.8-27B-abliteratedによる台本自動生成、2026-09-18導入・
+    // 同日中に設計変更）使用時の追加課金。当初は動画生成本体（B300）とは
+    // 別のGPUコンテナ（H100/A100-80GB）を起動する設計だったが、二重
+    // コールドスタートを避けるため同一B300コンテナ内で実行する方式に変更した
+    // （modal_wan_animate_blackwell.py::_generate_director_script）。
+    // 2026-09-18 実機計測（cinematic_smoke_advanced、fastモード相当・15秒・
+    // yukipas画像）: 総所要591.7s、うちComfyUI動画生成が442.36s（ComfyUI自身の
+    // "Prompt executed"ログ） → 台本生成ぶんの追加B300稼働 ≈ 149.3s。
+    // B300 gpu_jpy_per_hour_b300(¥1125/h) × 149.3/3600 ≈ ¥46.7（原価） ×
+    // 3倍markup ≈ ¥140 ÷ credit_to_jpy(1.66) ≈ 84C。単発実測のため、実運用
+    // データが増えたら再校正すること（CLAUDE.md §0）。
+    value: 84,
+    label: "Cinematic Director Advanced（Qwen台本生成）",
+    category: "feature_credits",
+    unit: "C",
+    description: "Advancedモード（Qwenによる台本自動生成）使用時の追加消費クレジット",
     isPublic: true,
   },
   upscale_per_mp: {
@@ -519,6 +550,19 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     description: "arch 別実測テーブルに無いモデルの 1 イテレーション所要秒",
     isPublic: false,
   },
+  alert_low_margin_percent: {
+    // 実稼働ログ（管理画面「実稼働ログ & 粗利監視」タブ）で、直近24時間の
+    // ジョブのうち粗利率がこの値を下回る（原価割れ=マイナスも含む）件数を
+    // アラートバナーで表示する閾値（2026-09-18導入）。3倍markup想定なら
+    // 定常時の粗利率は概ね60〜70%台になる設計なので、30%はかなり緩め
+    // （早期警戒用）の初期値 — 運用しながら調整すること。
+    value: 30,
+    label: "粗利アラート閾値",
+    category: "cost_guard",
+    unit: "%",
+    description: "この粗利率を下回るジョブを「低粗利」として実稼働ログのアラートに表示する",
+    isPublic: false,
+  },
   // -------------------------------------------------------------------- rates
   credit_to_jpy: {
     value: 1.66,
@@ -534,6 +578,91 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "rates",
     unit: "円/h",
     description: "LoRA 損切りのクレジット按分秒の分母",
+    isPublic: false,
+  },
+  // 以下、実稼働ログの原価・粗利計算用（2026-09-18導入）。B300以外のGPUに
+  // 実ジョブを振り分けている機能（超解像HD/2K等）が正しく安く計上されるよう
+  // 追加した。値は GpuCostReferenceCard.tsx の $/h 一覧 × usd_jpy_rate(150)。
+  // B300のみ既存の実運用値(1125=$7.5/h)を維持し他は据え置き——若干の
+  // ズレ（GpuCostReferenceCardは$7.1/h）は許容し、実測が増えたら統一する。
+  gpu_jpy_per_hour_b200: {
+    value: 937.5,
+    label: "GPU 時給（B200）",
+    category: "rates",
+    unit: "円/h",
+    description: "実稼働ログの原価計算用（$6.25/h換算）",
+    isPublic: false,
+  },
+  gpu_jpy_per_hour_h200: {
+    value: 681,
+    label: "GPU 時給（H200）",
+    category: "rates",
+    unit: "円/h",
+    description: "実稼働ログの原価計算用（$4.54/h換算）",
+    isPublic: false,
+  },
+  gpu_jpy_per_hour_h100: {
+    value: 592.5,
+    label: "GPU 時給（H100）",
+    category: "rates",
+    unit: "円/h",
+    description: "実稼働ログの原価計算用（$3.95/h換算）",
+    isPublic: false,
+  },
+  gpu_jpy_per_hour_rtx_pro_6000: {
+    value: 454.5,
+    label: "GPU 時給（RTX PRO 6000）",
+    category: "rates",
+    unit: "円/h",
+    description: "実稼働ログの原価計算用（$3.03/h換算）",
+    isPublic: false,
+  },
+  gpu_jpy_per_hour_a100_80gb: {
+    value: 375,
+    label: "GPU 時給（A100 80GB）",
+    category: "rates",
+    unit: "円/h",
+    description: "実稼働ログの原価計算用（$2.5/h換算）",
+    isPublic: false,
+  },
+  gpu_jpy_per_hour_a100_40gb: {
+    value: 315,
+    label: "GPU 時給（A100 40GB）",
+    category: "rates",
+    unit: "円/h",
+    description: "実稼働ログの原価計算用（$2.1/h換算）",
+    isPublic: false,
+  },
+  gpu_jpy_per_hour_l40s: {
+    value: 292.5,
+    label: "GPU 時給（L40S）",
+    category: "rates",
+    unit: "円/h",
+    description: "実稼働ログの原価計算用（$1.95/h換算）",
+    isPublic: false,
+  },
+  gpu_jpy_per_hour_a10: {
+    value: 165,
+    label: "GPU 時給（A10）",
+    category: "rates",
+    unit: "円/h",
+    description: "実稼働ログの原価計算用（$1.1/h換算）",
+    isPublic: false,
+  },
+  gpu_jpy_per_hour_l4: {
+    value: 120,
+    label: "GPU 時給（L4）",
+    category: "rates",
+    unit: "円/h",
+    description: "実稼働ログの原価計算用（$0.8/h換算）",
+    isPublic: false,
+  },
+  gpu_jpy_per_hour_t4: {
+    value: 88.5,
+    label: "GPU 時給（T4）",
+    category: "rates",
+    unit: "円/h",
+    description: "実稼働ログの原価計算用（$0.59/h換算）",
     isPublic: false,
   },
   usd_jpy_rate: {

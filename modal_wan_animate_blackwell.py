@@ -302,8 +302,79 @@ image = (
     # 全ワーカー共通の入力画像正規化レイヤー（_write_inputs が参照画像に必ず適用）。
     # HEIC/AVIF プラグインつき。チェーン末尾に置き既存の重いビルド層を触らない。
     .pip_install("pillow-heif", "pillow-avif-plugin")
+    # ULL Cinematic Director "Advanced"（Qwen3.8-27B-abliteratedによる台本
+    # 自動生成、2026-09-18導入）用。modal_train_minimax_lora.py::_run_captioning
+    # と同じVLMをこの同一B300コンテナ内でも動かす（2つ目のGPUコンテナを
+    # 起動して二重コールドスタートになるのを避けるため）。
+    # ⚠️ 既知のリスク・未検証: ComfyUI 本体は requirements.txt で自前の
+    # transformers バージョンを既にインストール済み（上の COMFY_DIR clone
+    # 直後）。ここで transformers を後から pip install すると、バージョン
+    # 制約次第で ComfyUI 側が想定するバージョンを静かに書き換えてしまう
+    # 可能性がある（CLAUDE.md §5、CosyVoice依存追加でnumpyが意図せず
+    # 上書きされWan-S2Vの推論が悪化した実例と同型のリスク）。バージョンは
+    # 意図的に固定しない（=既存の transformers が要件を満たせばそのまま
+    # 使われることを期待）が、実機デプロイ後は必ず ①ComfyUI側の生成
+    # （Wan Animate 2 / Cinematic Director の非Advancedモード）が壊れて
+    # いないか、②このVLMが実際に正しくロード・生成できるか、の両方を
+    # 確認すること。
+    .pip_install(
+        "transformers",
+        "accelerate",
+        "qwen-vl-utils",
+        "sentencepiece",
+        "einops",
+    )
     .add_local_python_source("ull_image_prep")
 )
+
+# ULL Cinematic Director "Advanced" 用 VLM のVolume上のパス
+# （modal_train_minimax_lora.py::VLM_PATH と同一）。
+DIRECTOR_SCRIPT_VLM_PATH = f"{MODELS_DIR}/LLM/Qwen3.8-27B-abliterated"
+
+
+def _build_director_script_system_prompt(duration_s: float) -> str:
+    # directorPrompt.ts::buildSceneDirectorPrompt() の既存ルール（カメラ
+    # ワーク語彙・<d>タグの正確な要求・シーン継続性）を踏襲しつつ、
+    # 「1枚の参照画像を実際に見て短い日本語の思いつきから書き起こす」形に
+    # 書き換えたもの。出力は英語のみ（MiniMax H3は英語プロンプト前提）。
+    return (
+        "You are an expert cinematic video director and prompt engineer for the "
+        "MiniMax H3 image-to-video AI model. You are shown ONE reference image "
+        "(the exact starting frame of the video) and a short, casual idea from "
+        "the user, usually written in Japanese.\n\n"
+        "Your task:\n"
+        "1. Look carefully at the reference image and note the subject's exact "
+        "appearance — face, hair, outfit, pose, and setting/background.\n"
+        "2. Read the user's idea and understand the mood, action, and any "
+        "dialogue they want.\n"
+        "3. Write ONE single, continuous, highly detailed English prompt for "
+        "MiniMax H3 describing a smooth, natural-looking shot starting exactly "
+        "from the reference image: camera movement, the subject's motion, "
+        "lighting, atmosphere, and ambient sound.\n"
+        "4. Preserve the subject's appearance and clothing exactly as shown in "
+        "the reference image — do not change or invent new physical details "
+        "about the character. The video's first frame IS the reference image, "
+        "so the shot always starts there; but if the user's idea describes a "
+        "different setting, mood, or environment than the reference image's "
+        "background, follow the user's idea for the setting/background — do "
+        "not force the original background to stay unchanged when the user "
+        "clearly asked for a different scene. If the user's idea gives no "
+        "setting, keep the original background.\n"
+        "5. If, and only if, the user's idea contains an actual line the "
+        "character should say, include it verbatim wrapped EXACTLY as "
+        "<d>[Language]the line</d> at the natural point in the description "
+        "where it's spoken (Language is 'Japanese' or 'English', matching the "
+        "line's own language) — this is a literal syntax the video model "
+        "requires for lip-synced speech, not a stylistic suggestion. Never "
+        "invent dialogue the user didn't ask for.\n"
+        f"6. The video will be about {max(1, round(duration_s))} seconds long — "
+        "write a single flowing shot appropriate for that length. Do not write "
+        "timestamps or scene numbers.\n"
+        "7. Output ONLY the final English prompt text — no preamble, no "
+        "explanation, no quotes, no Markdown, no visible reasoning or "
+        "deliberation of any kind. Do not think out loud — go straight to the "
+        "final prompt as your very first words."
+    )
 
 # Same five Wan 2.1 / Wan Animate 2 weights scripts/modal_wan_animate.py
 # downloads, reused here so the workflow JSON's loader nodes resolve
@@ -793,6 +864,43 @@ def _current_effective_vram_gb():
     except Exception:  # noqa: BLE001 — telemetry only, never fatal
         pass
     return None
+
+
+def _gpu_tier_label() -> str:
+    """実行中コンテナが実際に割り当てられたGPUの短い正規化ラベルを返す
+    （torch.cuda.get_device_name() ベース。GPU_TYPE がフォールバックリスト
+    の場合、実際にどれが割り当てられたかはこれでしか分からない）。
+    generation_logs.gpu_tier 経由で管理画面「実稼働ログ & 粗利監視」タブの
+    原価計算に使われる（2026-09-18導入。src/lib/pricing/gpuRates.ts の
+    正規化パターンと対応させること）。取得できない場合は 'unknown'。
+    canonical copy は各ワーカーファイルに同一のものを複製している。"""
+    try:
+        import torch
+
+        name = torch.cuda.get_device_name(0).lower()
+    except Exception:  # noqa: BLE001 — telemetry only, never fatal
+        return "unknown"
+    if "b300" in name:
+        return "B300"
+    if "b200" in name:
+        return "B200"
+    if "h200" in name:
+        return "H200"
+    if "h100" in name:
+        return "H100"
+    if "rtx pro 6000" in name or "rtx_pro_6000" in name:
+        return "RTX-PRO-6000"
+    if "a100" in name:
+        return "A100-80GB" if "80gb" in name else "A100-40GB"
+    if "l40s" in name:
+        return "L40S"
+    if "a10g" in name or "a10" in name:
+        return "A10"
+    if "l4" in name:
+        return "L4"
+    if "t4" in name:
+        return "T4"
+    return name
 
 
 def _refund_credits(user_id: str, amount: int) -> None:
@@ -1426,6 +1534,141 @@ class WanAnimateBlackwell:
         }
         return {"ok": True, "count": len(matches), "matches": matches}
 
+    # --- ULL Cinematic Director "Advanced"（Qwen台本自動生成） ----------------
+    def _ensure_qwen_loaded(self):
+        """Qwen3.8-27B-abliterated を初回呼び出し時だけロードし、self に
+        キャッシュする（modal_train_minimax_lora.py::_run_captioning と同じ
+        ローダー連鎖）。warm なコンテナが同じインスタンスを使い回す限り、
+        2回目以降のAdvancedモード呼び出しは再ロードなしで済む。"""
+        if getattr(self, "_qwen_model", None) is not None:
+            return
+        import torch
+        from transformers import AutoProcessor
+
+        print(f"[director-script] loading VLM from {DIRECTOR_SCRIPT_VLM_PATH}", flush=True)
+        if not os.path.exists(DIRECTOR_SCRIPT_VLM_PATH):
+            raise FileNotFoundError(f"VLM not found on the Volume: {DIRECTOR_SCRIPT_VLM_PATH}")
+
+        model = None
+        load_errors = []
+        for loader in ("image-text-to-text", "qwen2_5_vl", "auto"):
+            try:
+                if loader == "image-text-to-text":
+                    from transformers import AutoModelForImageTextToText
+
+                    model = AutoModelForImageTextToText.from_pretrained(
+                        DIRECTOR_SCRIPT_VLM_PATH, torch_dtype=torch.bfloat16, device_map="auto", attn_implementation="sdpa"
+                    )
+                elif loader == "qwen2_5_vl":
+                    from transformers import Qwen2_5_VLForConditionalGeneration
+
+                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                        DIRECTOR_SCRIPT_VLM_PATH, torch_dtype=torch.bfloat16, device_map="auto", attn_implementation="sdpa"
+                    )
+                else:
+                    from transformers import AutoModelForCausalLM
+
+                    model = AutoModelForCausalLM.from_pretrained(
+                        DIRECTOR_SCRIPT_VLM_PATH, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True
+                    )
+                print(f"[director-script] loaded VLM via {loader}", flush=True)
+                break
+            except Exception as exc:  # noqa: BLE001 — try the next loader
+                load_errors.append(f"{loader}: {exc}")
+        if model is None:
+            raise RuntimeError("could not load the VLM with any known loader:\n" + "\n".join(load_errors))
+
+        self._qwen_model = model
+        self._qwen_processor = AutoProcessor.from_pretrained(DIRECTOR_SCRIPT_VLM_PATH, trust_remote_code=True)
+        if getattr(self._qwen_processor, "tokenizer", None) is not None:
+            self._qwen_processor.tokenizer.padding_side = "left"
+
+    def _generate_director_script(self, image_bytes: bytes, concept_text: str, duration_s: float) -> str:
+        """参照画像＋短い日本語の思いつきから MiniMax H3 向けの英語台本を
+        1本書き起こす（Qwen3.8-27B-abliterated、この同一B300コンテナ内で
+        実行 — 別GPUを新たに起動しない）。"""
+        import io
+        import tempfile
+
+        import torch
+        from PIL import Image
+
+        self._ensure_qwen_loaded()
+
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                img.save(f.name)
+                tmp_path = f.name
+
+            user_text = (
+                f"User's idea (Japanese): {concept_text.strip()}"
+                if concept_text.strip()
+                else "User's idea: (none given — just describe a natural, pleasant "
+                "continuation of the scene shown in the reference image)."
+            )
+            messages = [
+                {"role": "system", "content": _build_director_script_system_prompt(duration_s)},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": f"file://{tmp_path}"},
+                        {"type": "text", "text": user_text},
+                    ],
+                },
+            ]
+            processor = self._qwen_processor
+            # Qwen3系は既定で「thinking」モード（<think>...</think>による長い
+            # 独り言）が有効で、実機検証（2026-09-18）でmax_new_tokens=600を
+            # 使い切って最終回答を一度も出さずに終わる事象を確認した。
+            # enable_thinking=False で無効化する（このモデル/テンプレートが
+            # 未対応の場合は無視して従来通り呼ぶ）。
+            try:
+                text = processor.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+                )
+            except TypeError:
+                text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            try:
+                from qwen_vl_utils import process_vision_info
+
+                imgs, _ = process_vision_info(messages)
+                if not imgs:
+                    imgs = [img]
+            except Exception:  # noqa: BLE001
+                imgs = [img]
+
+            inputs = processor(text=[text], images=imgs, padding=True, return_tensors="pt").to(self._qwen_model.device)
+            with torch.inference_mode():
+                generated = self._qwen_model.generate(
+                    **inputs, max_new_tokens=600, do_sample=True, temperature=0.7, top_p=0.9
+                )
+            trimmed = generated[:, inputs["input_ids"].shape[1] :]
+            raw = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+            script = raw.strip().strip('"')
+            if not script:
+                raise RuntimeError("empty response from the VLM")
+            return script
+        finally:
+            if tmp_path:
+                try:
+                    pathlib.Path(tmp_path).unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    @modal.method()
+    def probe_director_script(self, image_b64: str, concept_text: str, duration_s: float = 15) -> dict:
+        """Advanced台本生成の実機検証用（2026-09-18）。_generate_director_script
+        を直接呼ぶだけ——ComfyUI/_run_workflowは一切経由しない。GPU課金あり。"""
+        started = time.time()
+        script = self._generate_director_script(base64.b64decode(image_b64), concept_text, duration_s)
+        return {
+            "script": script,
+            "elapsed_s": round(time.time() - started, 1),
+            "vram_used_gb": _current_effective_vram_gb(),
+        }
+
     @modal.method()
     def run_custom_workflow(
         self,
@@ -1440,6 +1683,12 @@ class WanAnimateBlackwell:
         active_job_id: str = None,
         skip_torch_compile: bool = False,
         poll_deadline_s: int = 550,
+        qwen_concept_text: str = None,
+        qwen_prompt_node_id: str = None,
+        qwen_duration_s: float = None,
+        director_inputs_snapshot: dict = None,
+        lora_download_url: str = None,
+        lora_filename: str = None,
     ) -> dict:
         """
         Generic counterpart to generate_video for admin-authored Custom
@@ -1495,16 +1744,75 @@ class WanAnimateBlackwell:
             _vram_thread.start()
 
         try:
-            self._ensure_comfy_running(exec_config)
             workflow = json.loads(workflow_json)
             files = [(name, base64.b64decode(b64)) for name, b64 in files_b64.items()]
-            result_bytes, filename = self._run_workflow(
-                workflow,
-                files,
-                output_node_id=output_node_id or None,
-                skip_torch_compile=skip_torch_compile,
-                poll_deadline_s=poll_deadline_s,
-            )
+
+            # ULL Cinematic Director "Advanced"（Qwen3.8-27B-abliteratedに
+            # よる台本自動生成、2026-09-18導入）: 別GPU（H100/A100）を新たに
+            # 起動する設計だと二重コールドスタートになるため、既にこの
+            # B300コンテナが起動済みであることを利用し、ComfyUI本体を動かす
+            # 前にこの同一コンテナ内でVLMを使って台本を書き起こし、
+            # workflow の該当ノードの prompt を上書きする。
+            if qwen_concept_text and qwen_prompt_node_id:
+                if is_async:
+                    _supabase_patch_job(job_id, {"progress_message": "台本を執筆中..."})
+                ref_image_bytes = files[0][1] if files else None
+                if not ref_image_bytes:
+                    raise RuntimeError("qwen_concept_text requires at least one reference file")
+                script = self._generate_director_script(ref_image_bytes, qwen_concept_text, qwen_duration_s or 15)
+                if qwen_prompt_node_id not in workflow:
+                    raise RuntimeError(f"qwen_prompt_node_id {qwen_prompt_node_id!r} not found in workflow")
+                workflow[qwen_prompt_node_id]["inputs"]["prompt"] = script
+                if is_async:
+                    # inputs は他フィールド（scenes/quality_mode/lora_name等）
+                    # も持つJSONBカラムで、PATCHは丸ごと置き換えになる
+                    # （↑のmetadataと違いinputsは他フィールドを実際に使って
+                    # いるため、Next.js側が渡したスナップショットにマージ
+                    # してから書き戻す — 丸ごと上書きすると消えてしまう）。
+                    merged_inputs = {**(director_inputs_snapshot or {}), "combined_prompt": script}
+                    _supabase_patch_job(job_id, {"inputs": merged_inputs, "progress_message": "動画を生成中..."})
+
+            # ULL Cinematic Director: ユーザーが外部で用意したLoRA
+            # （.safetensors、2026-09-18導入）— Volumeへは永続化せず、この
+            # コンテナのローカルディスク（ComfyUIのloras検索パス）にだけ
+            # ダウンロードする。workflow側の lora_name（cinematicWorkflow.ts）
+            # と同じファイル名で保存するので、既存のLoraLoaderModelOnlyノードが
+            # そのまま解決できる。
+            _downloaded_lora_path = None
+            if lora_download_url and lora_filename:
+                import requests as _requests
+
+                safe_name = os.path.basename(lora_filename)
+                if not safe_name.endswith(".safetensors"):
+                    raise RuntimeError(f"unexpected lora_filename: {lora_filename!r}")
+                loras_dir = os.path.join(COMFY_DIR, "models", "loras")
+                os.makedirs(loras_dir, exist_ok=True)
+                _downloaded_lora_path = os.path.join(loras_dir, safe_name)
+                resp = _requests.get(lora_download_url, timeout=180, stream=True)
+                resp.raise_for_status()
+                with open(_downloaded_lora_path, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
+                        f.write(chunk)
+                print(f"[director-lora] downloaded user LoRA -> {_downloaded_lora_path}", flush=True)
+
+            self._ensure_comfy_running(exec_config)
+            try:
+                result_bytes, filename = self._run_workflow(
+                    workflow,
+                    files,
+                    output_node_id=output_node_id or None,
+                    skip_torch_compile=skip_torch_compile,
+                    poll_deadline_s=poll_deadline_s,
+                )
+            finally:
+                # コンテナがwarmで使い回された時に他ジョブのloras/へ残留しない
+                # よう、使い終わったら都度消す（Volumeではなくコンテナローカル
+                # ディスクなので他ジョブのファイルと衝突はしないが、掃除はする）。
+                if _downloaded_lora_path:
+                    try:
+                        os.remove(_downloaded_lora_path)
+                    except OSError:
+                        pass
         except Exception as exc:
             if _vram_stop is not None:
                 _vram_stop.set()
@@ -1512,7 +1820,12 @@ class WanAnimateBlackwell:
             if is_async:
                 _supabase_patch_job(
                     job_id,
-                    {"status": "failed", "error_message": str(exc)[:2000], "completed_at": _now_iso()},
+                    {
+                        "status": "failed",
+                        "error_message": str(exc)[:2000],
+                        "completed_at": _now_iso(),
+                        "metadata": {"gpu_tier": _gpu_tier_label()},
+                    },
                 )
                 _refund_credits(user_id, credits_cost)
                 _clear_active_job(active_job_id)
@@ -1549,9 +1862,10 @@ class WanAnimateBlackwell:
                 "status": "completed",
                 "video_url": uploaded_url or f"data:video/mp4;base64,{result_base64}",
                 "completed_at": _now_iso(),
+                "metadata": {"gpu_tier": _gpu_tier_label()},
             }
             if _vram_used_gb is not None:
-                _completed_fields["metadata"] = {"vram_used_gb": _vram_used_gb}
+                _completed_fields["metadata"]["vram_used_gb"] = _vram_used_gb
             _supabase_patch_job(job_id, _completed_fields)
             _extend_gpu_warm(user_id)
             _clear_active_job(active_job_id)
@@ -1606,6 +1920,12 @@ def custom_workflow_async(item: dict, request: fastapi.Request):
         item.get("active_job_id"),
         item.get("skip_torch_compile", False),
         item.get("poll_deadline_s", 550),
+        item.get("qwen_concept_text"),
+        item.get("qwen_prompt_node_id"),
+        item.get("qwen_duration_s"),
+        item.get("director_inputs_snapshot"),
+        item.get("lora_download_url"),
+        item.get("lora_filename"),
     )
     return {"ok": True, "job_id": job_id, "call_id": call.object_id}
 
@@ -2435,3 +2755,94 @@ def cinematic_smoke(
         f"[cinematic_smoke] OK duration_s={duration_s} elapsed={elapsed:.1f}s "
         f"vram={result.get('vram_used_gb')}GB -> {out_path.resolve()} ({out_path.stat().st_size} bytes)"
     )
+
+
+@app.local_entrypoint()
+def cinematic_smoke_advanced(
+    image_path: str,
+    concept_text: str = "雨が降るネオンに照らされた夜の路地裏で、静かにこちらを見つめている。",
+    duration_s: float = 15.0,
+    poll_deadline_s: int = 900,
+    modal_timeout_s: int = 1800,
+):
+    """modal run modal_wan_animate_blackwell.py::cinematic_smoke_advanced --image-path <path>
+
+    Director "Advanced"の本番コードパス（run_custom_workflowのqwen_concept_text
+    分岐）をエンドツーエンドで検証する——cinematic_smokeと違い、Qwen台本生成
+    とMiniMax H3動画生成の両方を同一B300コンテナ内で1回のジョブとして実行する。
+    GPU課金あり（Qwen+動画生成の両方）。"""
+    with open(image_path, "rb") as f:
+        image_b64 = base64.b64encode(f.read()).decode("ascii")
+    image_name = os.path.basename(image_path)
+
+    from PIL import Image as _PILImage
+
+    with _PILImage.open(image_path) as _im:
+        raw_w, raw_h = _im.size
+
+    # prompt はプレースホルダー——run_custom_workflow側でQwenの出力に
+    # 上書きされる想定（本番のroute.tsと同じ契約）。
+    workflow = _cinematic_workflow(
+        duration_s, image_name, allow_compile=True, megapixels=0.262144,
+        raw_w=raw_w, raw_h=raw_h, steps=8, use_turbo_lora=False, prompt="(placeholder)",
+        use_vdn=True, vdn_checkpoint="stage-dmd-step-250", vdn_turbo=True,
+    )
+    workflow_json = json.dumps(workflow)
+
+    print(f"[cinematic_smoke_advanced] duration_s={duration_s} image={image_path} concept_text={concept_text!r}")
+    started = time.time()
+    try:
+        worker_cls = WanAnimateBlackwell.with_options(timeout=modal_timeout_s)
+        result = worker_cls().run_custom_workflow.remote(
+            workflow_json,
+            {image_name: image_b64},
+            None,       # exec_config
+            False,      # save_to_volume
+            None,       # output_node_id
+            None,       # job_id (sync path — no Supabase patching)
+            None,       # user_id
+            0,          # credits_cost
+            None,       # active_job_id
+            False,      # skip_torch_compile
+            poll_deadline_s,
+            concept_text,           # qwen_concept_text
+            "105:104",              # qwen_prompt_node_id
+            duration_s,             # qwen_duration_s
+            None,                   # director_inputs_snapshot (job_id=None なのでPATCH自体が発生しない)
+            None,                   # lora_download_url
+            None,                   # lora_filename
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[cinematic_smoke_advanced] FAILED after {time.time() - started:.1f}s: {type(exc).__name__}: {exc}")
+        raise
+    elapsed = time.time() - started
+
+    out_path = pathlib.Path(f"cinematic_smoke_advanced_{int(duration_s)}s.mp4")
+    out_path.write_bytes(base64.b64decode(result["result_base64"]))
+    print(
+        f"[cinematic_smoke_advanced] OK elapsed={elapsed:.1f}s vram={result.get('vram_used_gb')}GB "
+        f"-> {out_path.resolve()} ({out_path.stat().st_size} bytes)"
+    )
+
+
+@app.local_entrypoint()
+def probe_director_script(
+    image_path: str,
+    concept_text: str = "雨が降るネオンに照らされた夜の路地裏で、静かにこちらを見つめている。",
+    duration_s: float = 15,
+):
+    """modal run modal_wan_animate_blackwell.py::probe_director_script --image-path <path>
+
+    Director "Advanced"（Qwen3.8-27B-abliteratedによる台本自動生成、
+    2026-09-18導入）の実機検証用。ComfyUIは一切経由せず、VLMのロード・
+    生成そのものだけを検証する。GPU課金あり。"""
+    image_b64 = base64.b64encode(pathlib.Path(image_path).read_bytes()).decode("ascii")
+    started = time.time()
+    try:
+        result = WanAnimateBlackwell().probe_director_script.remote(image_b64, concept_text, duration_s)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[probe_director_script] FAILED after {time.time() - started:.1f}s: {type(exc).__name__}: {exc}")
+        raise
+    print(f"[probe_director_script] elapsed_s(remote)={result['elapsed_s']} vram_used_gb={result['vram_used_gb']}")
+    print("--- script ---")
+    print(result["script"])

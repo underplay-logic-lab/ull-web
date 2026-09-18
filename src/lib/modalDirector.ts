@@ -18,6 +18,26 @@ export type SpawnDirectorJobParams = {
   referenceImageName: string;
   referenceImageB64: string;
   pollDeadlineS: number;
+  /**
+   * Advanced モード（Qwen3.8-27B-abliteratedによる台本自動生成、
+   * 2026-09-18追加）用。3つ揃って渡されると、動画生成と同じB300コンテナ内
+   * （ComfyUI実行の直前）でこのVLMが参照画像＋思いつきから台本を書き起こし、
+   * workflow[qwenPromptNodeId].inputs.prompt を上書きしてから実行する
+   * （別GPUを新たに起動しないための設計 — 2つ目のコールドスタートを避ける）。
+   */
+  qwenConceptText?: string;
+  qwenPromptNodeId?: string;
+  qwenDurationS?: number;
+  /** generation_jobs.inputs の元スナップショット（Advancedモードでワーカー側が
+   * combined_prompt を書き戻す際、他フィールドを消さずマージするために必要 —
+   * PATCHはJSONBカラム丸ごと置き換えのため）。 */
+  directorInputsSnapshot?: Record<string, unknown>;
+  /** 外部アップロードLoRA（2026-09-18追加）用の署名付きダウンロードURL。
+   * 渡されると、ワーカーがComfyUI実行前にこのURLから直接ダウンロードして
+   * コンテナローカルの loras/ へ配置する（Volumeへは永続化しない）。
+   * loraFilename（workflow 側の lora_name と同じ値）とセットで渡す。 */
+  loraDownloadUrl?: string;
+  loraFilename?: string;
 };
 
 export async function spawnDirectorJob(params: SpawnDirectorJobParams): Promise<{ callId: string | null }> {
@@ -44,6 +64,12 @@ export async function spawnDirectorJob(params: SpawnDirectorJobParams): Promise<
       files_b64: { [params.referenceImageName]: params.referenceImageB64 },
       skip_torch_compile: true,
       poll_deadline_s: params.pollDeadlineS,
+      qwen_concept_text: params.qwenConceptText,
+      qwen_prompt_node_id: params.qwenPromptNodeId,
+      qwen_duration_s: params.qwenDurationS,
+      director_inputs_snapshot: params.directorInputsSnapshot,
+      lora_download_url: params.loraDownloadUrl,
+      lora_filename: params.loraFilename,
     }),
     signal: AbortSignal.timeout(30_000),
   });

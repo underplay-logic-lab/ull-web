@@ -1215,6 +1215,44 @@ def _merge_upscale_metadata(job_id: str, extra: dict) -> None:
         print(f"[upscale-job] metadata merge failed {job_id}: {exc}", flush=True)
 
 
+def _gpu_tier_label() -> str:
+    """実行中コンテナが実際に割り当てられたGPUの短い正規化ラベルを返す
+    （torch.cuda.get_device_name() ベース）。このワーカーはプリセット別に
+    動的GPU tier切り替え（UPSCALE_VIDEO_PRESET_GPU）を行うため、設定値
+    ではなく実機から読むことが特に重要。generation_logs.gpu_tier 経由で
+    管理画面「実稼働ログ & 粗利監視」タブの原価計算に使われる（2026-09-18
+    導入。src/lib/pricing/gpuRates.ts の正規化パターンと対応させること）。
+    取得できない場合は 'unknown'。canonical copy は各ワーカーファイルに
+    同一のものを複製している。"""
+    try:
+        import torch
+
+        name = torch.cuda.get_device_name(0).lower()
+    except Exception:  # noqa: BLE001 — telemetry only, never fatal
+        return "unknown"
+    if "b300" in name:
+        return "B300"
+    if "b200" in name:
+        return "B200"
+    if "h200" in name:
+        return "H200"
+    if "h100" in name:
+        return "H100"
+    if "rtx pro 6000" in name or "rtx_pro_6000" in name:
+        return "RTX-PRO-6000"
+    if "a100" in name:
+        return "A100-80GB" if "80gb" in name else "A100-40GB"
+    if "l40s" in name:
+        return "L40S"
+    if "a10g" in name or "a10" in name:
+        return "A10"
+    if "l4" in name:
+        return "L4"
+    if "t4" in name:
+        return "T4"
+    return name
+
+
 def _get_upscale_job_status(job_id: str):
     """upscale_jobs.status を 1 発 GET。取得不能なら None（判定不能＝続行）。
     Modal のクラッシュ由来リトライを冒頭で弾く idempotency ガード用。"""
@@ -2183,6 +2221,7 @@ class SeedVR2Worker:
             msg = f"{type(exc).__name__}: {exc}"[:500]
             print(f"[upscale-job] {job_id} FAILED: {msg}", flush=True)
             _patch_upscale_job(job_id, {"status": "failed", "error_message": msg})
+            _merge_upscale_metadata(job_id, {"gpu_tier": _gpu_tier_label()})
             _refund_upscale_credits(user_id, credits_cost)
             return {"ok": False, "error": msg}
         _vram_stop.set()
@@ -2200,6 +2239,7 @@ class SeedVR2Worker:
             "model_key": r["model_key"],
             "preset": preset,
             "stages_ran": r.get("stages_ran", 1),
+            "gpu_tier": _gpu_tier_label(),
         }
         original_data = r.get("original_data")
         if original_data:
@@ -2273,6 +2313,7 @@ class SeedVR2Worker:
             msg = str(exc.detail)[:500]
             print(f"[upscale-video-job] {job_id} FAILED (validation): {msg}", flush=True)
             _patch_upscale_job(job_id, {"status": "failed", "error_message": msg})
+            _merge_upscale_metadata(job_id, {"gpu_tier": _gpu_tier_label()})
             _refund_upscale_credits(user_id, credits_cost)
             return {"ok": False, "error": msg}
         except Exception as exc:  # noqa: BLE001
@@ -2280,6 +2321,7 @@ class SeedVR2Worker:
             msg = f"{type(exc).__name__}: {exc}"[:500]
             print(f"[upscale-video-job] {job_id} FAILED: {msg}", flush=True)
             _patch_upscale_job(job_id, {"status": "failed", "error_message": msg})
+            _merge_upscale_metadata(job_id, {"gpu_tier": _gpu_tier_label()})
             _refund_upscale_credits(user_id, credits_cost)
             return {"ok": False, "error": msg}
         _vram_stop.set()
@@ -2300,6 +2342,7 @@ class SeedVR2Worker:
             "in_frame_count": r["in_frame_count"],
             "has_audio": r["has_audio"],
             "media_type": "video",
+            "gpu_tier": _gpu_tier_label(),
         }
         if url:
             _patch_upscale_job(job_id, {"status": "completed", "result_url": url})

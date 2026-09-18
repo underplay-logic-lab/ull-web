@@ -168,6 +168,15 @@ export function directorPriorityParallelSurcharge(knobs: PricingKnobs = DEFAULT_
   return Math.round(knobs.director_priority_parallel_surcharge);
 }
 
+/** Advanced（Qwen3.8-27B-abliteratedによる台本自動生成）モード使用時に
+ * 上乗せする追加クレジット。別GPUではなく動画生成と同じB300コンテナ内で
+ * 実行するが（二重コールドスタート回避のため、2026-09-18設計変更）、それでも
+ * 台本生成ぶんのB300稼働秒数が純増するのでその分を吸収する。knobDefaults.ts
+ * 参照 — 実機計測前の暫定値。 */
+export function directorQwenScriptSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS): number {
+  return Math.round(knobs.director_qwen_script_credits);
+}
+
 export function directorPollDeadlineS(totalDurationS: number, mode: DirectorQualityMode = "fast"): number {
   const secPerVideoSec = mode === "quality" ? 68 : 40;
   return Math.min(3600, Math.max(300, Math.round(totalDurationS * secPerVideoSec) + 200));

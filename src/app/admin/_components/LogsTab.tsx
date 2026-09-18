@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   Activity,
+  AlertTriangle,
   CheckCircle2,
   Coins,
   DollarSign,
@@ -12,7 +13,23 @@ import {
   X,
   XCircle,
 } from "lucide-react";
-import type { GenerationLog, LogsSummary } from "./types";
+import type { GenerationLog, LogsAlert, LogsSummary } from "./types";
+
+function formatJpy(value: number): string {
+  return `¥${Math.round(value).toLocaleString()}`;
+}
+
+function formatMargin(percent: number | null): string {
+  if (percent === null) return "-";
+  return `${percent.toFixed(0)}%`;
+}
+
+function marginColorClass(percent: number | null, thresholdPercent: number): string {
+  if (percent === null) return "text-muted";
+  if (percent < 0) return "text-red-400 font-semibold";
+  if (percent < thresholdPercent) return "text-amber-400";
+  return "text-muted";
+}
 
 function formatDuration(ms: number | null): string {
   if (ms === null) return "-";
@@ -73,6 +90,7 @@ function OutputPreviewModal({ log, onClose }: { log: GenerationLog; onClose: () 
 export function LogsTab() {
   const [logs, setLogs] = useState<GenerationLog[]>([]);
   const [summary, setSummary] = useState<LogsSummary | null>(null);
+  const [alert, setAlert] = useState<LogsAlert | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [previewLog, setPreviewLog] = useState<GenerationLog | null>(null);
@@ -91,6 +109,7 @@ export function LogsTab() {
         if (cancelled) return;
         setLogs(data.logs as GenerationLog[]);
         setSummary(data.summary as LogsSummary);
+        setAlert(data.alert as LogsAlert);
         setError(null);
       } catch (err) {
         if (cancelled) return;
@@ -125,13 +144,22 @@ export function LogsTab() {
 
   return (
     <div>
+      {alert && (alert.negativeMarginCount > 0 || alert.lowMarginCount > 0) && (
+        <div className="mb-4 flex items-start gap-2 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <p>
+            直近{alert.windowHours}時間で、原価割れ {alert.negativeMarginCount}件 / 粗利率
+            {alert.thresholdPercent}%未満 {alert.lowMarginCount}件 のジョブがあります。
+          </p>
+        </div>
+      )}
       {summary && (
-        <div className="mb-8 grid gap-3 sm:grid-cols-4">
+        <div className="mb-8 grid gap-3 sm:grid-cols-5">
           <SummaryCard icon={<Activity size={16} />} label="総生成数" value={summary.totalCount.toLocaleString()} />
           <SummaryCard
             icon={<DollarSign size={16} />}
             label="Modal累計推定原価"
-            value={`$${summary.totalModalCostUsd.toFixed(3)}`}
+            value={formatJpy(summary.totalModalCostJpy)}
           />
           <SummaryCard
             icon={<Coins size={16} />}
@@ -142,6 +170,11 @@ export function LogsTab() {
             icon={<CheckCircle2 size={16} />}
             label="成功率"
             value={`${summary.successRate.toFixed(1)}%`}
+          />
+          <SummaryCard
+            icon={<AlertTriangle size={16} />}
+            label={`低粗利件数（直近${alert?.windowHours ?? 24}h）`}
+            value={`${alert?.lowMarginCount ?? 0}件`}
           />
         </div>
       )}
@@ -159,7 +192,7 @@ export function LogsTab() {
         </div>
       ) : (
         <div className="overflow-x-auto rounded-2xl border border-border">
-          <table className="w-full min-w-[900px] text-left text-sm">
+          <table className="w-full min-w-[1200px] text-left text-sm">
             <thead>
               <tr className="border-b border-border bg-surface/60 text-xs uppercase tracking-wide text-muted">
                 <th className="px-4 py-3 font-medium">日時</th>
@@ -167,7 +200,10 @@ export function LogsTab() {
                 <th className="px-4 py-3 font-medium">ジョブ種別</th>
                 <th className="px-4 py-3 font-medium">入力プロンプト</th>
                 <th className="px-4 py-3 font-medium">実行時間</th>
+                <th className="px-4 py-3 font-medium">GPU</th>
                 <th className="px-4 py-3 font-medium">消費クレジット</th>
+                <th className="px-4 py-3 font-medium">原価</th>
+                <th className="px-4 py-3 font-medium">粗利率</th>
                 <th className="px-4 py-3 font-medium">状態</th>
                 <th className="px-4 py-3 font-medium">エラー</th>
                 <th className="px-4 py-3 font-medium" />
@@ -187,7 +223,12 @@ export function LogsTab() {
                     {log.prompt_input ?? "-"}
                   </td>
                   <td className="px-4 py-3 text-muted">{formatDuration(log.execution_time_ms)}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-xs text-muted">{log.gpu_tier_label ?? "-"}</td>
                   <td className="px-4 py-3 text-muted">{log.credits_consumed ?? "-"}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-xs text-muted">{formatJpy(log.cost_jpy)}</td>
+                  <td className={`whitespace-nowrap px-4 py-3 text-xs ${marginColorClass(log.margin_percent, alert?.thresholdPercent ?? 30)}`}>
+                    {formatMargin(log.margin_percent)}
+                  </td>
                   <td className="px-4 py-3">
                     {log.status === "success" ? (
                       <span className="inline-flex items-center gap-1.5 text-xs font-medium text-neon-pink">
