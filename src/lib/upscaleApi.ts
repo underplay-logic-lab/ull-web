@@ -265,6 +265,42 @@ export async function fetchUpscaleOriginalDownloadUrl(jobId: string, filename: s
   return data.downloadUrl as string;
 }
 
+/** resultUrl がURLではなくVolume相対パス（超解像動画、2026-09-18〜の新方式）
+ * かどうかを判定する。画像結果は当面Supabase公開URLのまま（段階移行、
+ * CLAUDE.md §1）なので、このチェックは常にfalseになる想定。 */
+export function isUpscaleResultVolumePath(resultUrl: string): boolean {
+  return !/^https?:\/\//i.test(resultUrl) && !resultUrl.startsWith("data:");
+}
+
+/** 超解像動画の署名付きダウンロードURLを発行する
+ * （/api/studio/upscale/video/result）。job.resultUrl が
+ * isUpscaleResultVolumePath() で true と判定された場合にのみ呼ぶこと。 */
+export async function fetchUpscaleVideoResultUrl(jobId: string): Promise<string> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) throw new Error("ログインが必要です。");
+
+  const url = new URL("/api/studio/upscale/video/result", window.location.origin);
+  url.searchParams.set("jobId", jobId);
+
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data?.downloadUrl) {
+    throw new Error(data?.error || "動画のダウンロードURL発行に失敗しました。");
+  }
+  return data.downloadUrl as string;
+}
+
+/** job.resultUrl を実際に再生・ダウンロードに使えるURLへ解決する。旧方式
+ * （Supabase公開URL / data:）はそのまま返し、新方式（Volume相対パス、
+ * 超解像動画の結果、2026-09-18〜）は署名付きModal URLを発行して返す。 */
+export async function resolveUpscaleVideoUrl(jobId: string, resultUrl: string): Promise<string> {
+  if (!isUpscaleResultVolumePath(resultUrl)) return resultUrl;
+  return fetchUpscaleVideoResultUrl(jobId);
+}
+
 /** 公開 URL を実ファイルとして保存させる（cross-origin download 対策）。 */
 export async function downloadUpscaleImage(url: string, filename: string): Promise<void> {
   const res = await fetch(url);

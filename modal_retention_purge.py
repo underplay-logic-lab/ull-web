@@ -4,12 +4,17 @@ ULL データ保持ポリシー（CLAUDE.md §3）の実施 — 日次 purge。
 生成物は一律 14 日で削除する:
   Supabase Storage
     angle-results   … Multi-Angle 出力
-    upscale-results … 超解像 出力
+    upscale-results … 超解像 出力（画像。動画は2026-09-18〜Volume直接配信へ移行済み、下記参照）
     lora_datasets   … LoRA 学習用アップロード画像
   Modal Volume (ull-wan-models)
     loras/<lora_name>.safetensors      … 完成 LoRA の名前付きエイリアス
     loras/<user_id>/<job_id>/          … 学習ジョブごとの成果物（checkpoint 等）
     upscale_originals/<user_id>/<job_id>/  … WebP劣化前の元PNG（超解像、2026-09-14〜）
+    director_results/<user_id>/<job_id>.mp4      … Cinematic Director 動画結果
+      （CLAUDE.md §1「大容量バイナリはSupabaseを経由させない」標準、2026-09-18〜。
+      modal_wan_animate_blackwell.py::download_director_video が配信する実体）
+    upscale_video_results/<user_id>/<job_id>.mp4 … 超解像動画 結果（同標準、2026-09-18〜。
+      modal_seedvr2_worker.py::download_upscale_video が配信する実体）
   Supabase DB
     angle_jobs / upscale_jobs / generation_jobs の古い行
 
@@ -45,6 +50,14 @@ LORA_DIR = f"{MODELS_DIR}/loras"
 # 再エンコードで失われる元PNGをここへ退避する（loras/<uid>/<jobid>/ と同じ
 # per-job ディレクトリ規約・DB参照なしの純粋な mtime ベース孤児掃除）。
 UPSCALE_ORIGINALS_DIR = f"{MODELS_DIR}/upscale_originals"
+# 2026-09-18: CLAUDE.md §1「大容量バイナリはSupabaseを経由させない」標準の
+# 適用第1弾・第2弾。Director/超解像動画の結果はもうSupabase Storageへ
+# アップロードせず、Volumeへ直接保存して署名付きURLで配信する
+# （download_director_video / download_upscale_video）。どちらも
+# <user_id>/<job_id>.mp4 のフラットファイル（upscale_originals/のような
+# per-jobディレクトリではない）なので専用のpurgeヘルパーを使う。
+DIRECTOR_RESULTS_DIR = f"{MODELS_DIR}/director_results"
+UPSCALE_VIDEO_RESULTS_DIR = f"{MODELS_DIR}/upscale_video_results"
 
 RETENTION_DAYS = int(os.environ.get("ULL_RETENTION_DAYS", "14"))
 # _purge() が実行時に上書きする（module import 時の env はコンテナに無いため、
@@ -349,6 +362,49 @@ def _purge_volume_upscale_originals(cutoff_epoch: float) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 2c) Modal Volume の "<user_id>/<job_id>.<ext>" フラットファイル配置を mtime
+#     で掃除する汎用ヘルパー。director_results/ と upscale_video_results/ は
+#     どちらもDB参照の無い純粋な副産物（ダウンロードエンドポイントが404を
+#     返すようになるだけ）なので、upscale_originals と同じ「孤児掃除のみ」
+#     ロジックで足りる。ディレクトリではなくファイル単位である点だけが違う。
+# ---------------------------------------------------------------------------
+def _purge_volume_flat_files(root_dir: str, cutoff_epoch: float, label: str) -> dict:
+    import pathlib
+
+    removed_files = 0
+    root = pathlib.Path(root_dir)
+    if not root.is_dir():
+        return {"removed_files": 0}
+
+    for uid_dir in list(root.iterdir()):
+        if not uid_dir.is_dir():
+            continue
+        for f in list(uid_dir.iterdir()):
+            try:
+                if f.is_file() and f.stat().st_mtime < cutoff_epoch:
+                    if not DRY_RUN:
+                        f.unlink()
+                    removed_files += 1
+                    print(f"[purge][{label}] {uid_dir.name}/{f.name}{' (DRY)' if DRY_RUN else ''}", flush=True)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            if not any(uid_dir.iterdir()) and not DRY_RUN:
+                uid_dir.rmdir()
+        except Exception:  # noqa: BLE001
+            pass
+
+    if removed_files and not DRY_RUN:
+        try:
+            vol.commit()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[purge][{label}] vol.commit skipped: {exc}", flush=True)
+
+    print(f"[purge][{label}] files={removed_files}{' (DRY_RUN)' if DRY_RUN else ''}", flush=True)
+    return {"removed_files": removed_files}
+
+
+# ---------------------------------------------------------------------------
 # 3) DB: 古いジョブ行を削除
 # ---------------------------------------------------------------------------
 def _purge_job_rows(cutoff_iso: str) -> dict:
@@ -412,11 +468,17 @@ def _purge(dry_run: bool | None = None) -> dict:
         "rows": {},
         "loras": {},
         "upscale_originals": {},
+        "director_results": {},
+        "upscale_video_results": {},
     }
     for b in buckets:
         report["buckets"].append(_sweep_bucket(b, cutoff_epoch))
     report["loras"] = _purge_volume_loras(cutoff_epoch)
     report["upscale_originals"] = _purge_volume_upscale_originals(cutoff_epoch)
+    report["director_results"] = _purge_volume_flat_files(DIRECTOR_RESULTS_DIR, cutoff_epoch, "director_results")
+    report["upscale_video_results"] = _purge_volume_flat_files(
+        UPSCALE_VIDEO_RESULTS_DIR, cutoff_epoch, "upscale_video_results"
+    )
     report["rows"] = _purge_job_rows(cutoff_iso)
     report["elapsed_s"] = round(time.time() - started, 1)
     print(f"[purge] done in {report['elapsed_s']}s: {report}", flush=True)

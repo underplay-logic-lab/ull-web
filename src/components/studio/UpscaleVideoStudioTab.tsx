@@ -30,6 +30,7 @@ import {
 import {
   downloadUpscaleImage,
   pollUpscaleJob,
+  resolveUpscaleVideoUrl,
   startUpscaleVideoJob,
   UpscaleJobNotFoundError,
   type UpscaleApiError,
@@ -265,6 +266,11 @@ export function UpscaleVideoStudioTab() {
   const [jobId, setJobId] = useState<string | null>(resumedJobId);
   const [job, setJob] = useState<UpscaleJob | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // job.resultUrl は超解像動画の結果（2026-09-18〜）だとURLではなくVolume
+  // 相対パスなので、<video src>・ダウンロードで使える実URLへ都度解決する
+  // （resolveUpscaleVideoUrl、CLAUDE.md §1）。旧方式（Supabase公開URL）の
+  // 行はそのまま素通しするので即座に反映される。
+  const [playableVideoUrl, setPlayableVideoUrl] = useState<string | null>(null);
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
@@ -391,12 +397,14 @@ export function UpscaleVideoStudioTab() {
             const queued = queuedNextRef.current;
             if (queued) {
               // 次のジョブが画面を上書きする前に今の結果をブラウザへ自動
-              // 保存する（連続キュー時のUI上のギャップ対策。upscale-results
-              // バケットへは既に永続化済みなので失敗しても致命的ではない）。
+              // 保存する（連続キュー時のUI上のギャップ対策。Volumeへは既に
+              // 永続化済みなので失敗しても致命的ではない）。
               if (next.resultUrl) {
-                downloadUpscaleImage(next.resultUrl, buildOutFilename()).catch((err) => {
-                  console.warn("[UpscaleVideoStudioTab] auto-download before next queued job failed:", err);
-                });
+                resolveUpscaleVideoUrl(next.id, next.resultUrl)
+                  .then((url) => downloadUpscaleImage(url, buildOutFilename()))
+                  .catch((err) => {
+                    console.warn("[UpscaleVideoStudioTab] auto-download before next queued job failed:", err);
+                  });
               }
               queuedNextRef.current = null;
               setQueuedNext(null);
@@ -437,6 +445,28 @@ export function UpscaleVideoStudioTab() {
       cancelled = true;
     };
   }, [jobId, markGpuWarm, runGenerate]);
+
+  // job完了後、resultUrlを実際に再生・ダウンロードできるURLへ解決する
+  // （Volume相対パスなら署名付きModal URLを発行、旧方式のURLはそのまま）。
+  useEffect(() => {
+    // job未完了時はここで何もしない（setStateしない）— 表示側は
+    // phase === "done" でも既にガードしているので、前ジョブの
+    // playableVideoUrlが一瞬残っても描画には出ない。次のjob完了時に
+    // このeffectが再実行され、非同期コールバック内で正しい値に更新される。
+    if (job?.status !== "completed" || !job.resultUrl) return;
+    let cancelled = false;
+    resolveUpscaleVideoUrl(job.id, job.resultUrl)
+      .then((url) => {
+        if (!cancelled) setPlayableVideoUrl(url);
+      })
+      .catch((err) => {
+        console.warn("[UpscaleVideoStudioTab] resolveUpscaleVideoUrl failed:", err);
+        if (!cancelled) setPlayableVideoUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [job?.id, job?.status, job?.resultUrl]);
 
   const model = getUpscaleModel(modelKey);
 
@@ -708,11 +738,17 @@ export function UpscaleVideoStudioTab() {
 
           {phase === "done" && job?.resultUrl && (
             <div className="flex flex-col gap-3">
-              <video
-                src={job.resultUrl}
-                controls
-                className="w-full rounded-xl border border-border bg-background"
-              />
+              {playableVideoUrl ? (
+                <video
+                  src={playableVideoUrl}
+                  controls
+                  className="w-full rounded-xl border border-border bg-background"
+                />
+              ) : (
+                <div className="flex h-40 w-full items-center justify-center rounded-xl border border-border bg-background text-xs text-muted">
+                  読み込み中…
+                </div>
+              )}
               <div className="flex items-center justify-between text-[11px] text-muted">
                 <span>
                   {job.outWidth && job.outHeight ? `${job.outWidth}×${job.outHeight}px` : ""}
@@ -722,8 +758,9 @@ export function UpscaleVideoStudioTab() {
               </div>
               <button
                 type="button"
-                onClick={() => job.resultUrl && downloadUpscaleImage(job.resultUrl, buildOutFilename())}
-                className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-background px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:border-neon-violet/40"
+                disabled={!playableVideoUrl}
+                onClick={() => playableVideoUrl && downloadUpscaleImage(playableVideoUrl, buildOutFilename())}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-background px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:border-neon-violet/40 disabled:opacity-50"
               >
                 <Download size={16} />
                 ダウンロード

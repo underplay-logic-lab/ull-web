@@ -726,37 +726,13 @@ def cleanup_old_outputs():
     print(f"[cleanup_old_outputs] removed {removed} file(s) older than {OUTPUTS_ALL_RETENTION_DAYS} days.")
 
 
-DIRECTOR_RESULTS_RETENTION_DAYS = 14
 DIRECTOR_RESULTS_SUBDIR = "director_results"
-
-
-@app.function(image=image, volumes={MODELS_DIR: vol}, schedule=modal.Period(days=1), timeout=300)
-def cleanup_old_director_results():
-    """director_results/<user_id>/<job_id>.mp4 を14日経過後に削除する
-    （CLAUDE.md §3 の生成物14日自動パージを、Volume直接配信方式に移行した
-    Cinematic Director 側でも維持するためのスケジュール関数。
-    2026-09-18導入 — download_director_video が配信するVolume上の実体を
-    ここで一括管理する）。"""
-    root_dir = os.path.join(MODELS_DIR, DIRECTOR_RESULTS_SUBDIR)
-    if not os.path.isdir(root_dir):
-        print("[cleanup_old_director_results] director_results/ does not exist yet, nothing to do.")
-        return
-
-    cutoff = time.time() - DIRECTOR_RESULTS_RETENTION_DAYS * 24 * 60 * 60
-    removed = 0
-    for user_dir in os.listdir(root_dir):
-        full_dir = os.path.join(root_dir, user_dir)
-        if not os.path.isdir(full_dir):
-            continue
-        for name in os.listdir(full_dir):
-            path = os.path.join(full_dir, name)
-            if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
-                os.remove(path)
-                removed += 1
-
-    if removed:
-        vol.commit()
-    print(f"[cleanup_old_director_results] removed {removed} file(s) older than {DIRECTOR_RESULTS_RETENTION_DAYS} days.")
+# 14日自動パージは modal_retention_purge.py（CLAUDE.md §3の一元的な日次
+# purgeアプリ）側の _purge_volume_flat_files が director_results/ を担当する
+# （upscale_originals/等と同じ集約先 — このファイル単体にスケジュール関数を
+# 持たせない。2026-09-18、director_results導入時に一度は個別スケジュール
+# 関数として実装したが、Volume上の生成物の保持ポリシーは一箇所に集約する
+# べきと判断し撤回した）。
 
 
 def _supabase_patch_download(download_id: str, fields: dict) -> None:
