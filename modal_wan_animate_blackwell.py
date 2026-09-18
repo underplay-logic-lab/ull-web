@@ -373,7 +373,13 @@ def _build_director_script_system_prompt(duration_s: float) -> str:
         "7. Output ONLY the final English prompt text — no preamble, no "
         "explanation, no quotes, no Markdown, no visible reasoning or "
         "deliberation of any kind. Do not think out loud — go straight to the "
-        "final prompt as your very first words."
+        "final prompt as your very first words.\n"
+        "8. After the English prompt, on its own new line, write exactly "
+        "===JA=== and then, on the following line, a natural, fluent Japanese "
+        "translation of that same English prompt (for the user's reference — "
+        "this Japanese text is never sent to the video model, so translate the "
+        "<d>...</d> dialogue tag's content into natural Japanese prose rather "
+        "than keeping the literal tag syntax)."
     )
 
 # Same five Wan 2.1 / Wan Animate 2 weights scripts/modal_wan_animate.py
@@ -1583,10 +1589,13 @@ class WanAnimateBlackwell:
         if getattr(self._qwen_processor, "tokenizer", None) is not None:
             self._qwen_processor.tokenizer.padding_side = "left"
 
-    def _generate_director_script(self, image_bytes: bytes, concept_text: str, duration_s: float) -> str:
+    def _generate_director_script(self, image_bytes: bytes, concept_text: str, duration_s: float) -> dict:
         """参照画像＋短い日本語の思いつきから MiniMax H3 向けの英語台本を
         1本書き起こす（Qwen3.8-27B-abliterated、この同一B300コンテナ内で
-        実行 — 別GPUを新たに起動しない）。"""
+        実行 — 別GPUを新たに起動しない）。同じ生成の中で日本語訳も一緒に
+        書かせる（2026-09-18追加、結果画面の「日本語訳」欄と「編集して
+        再生成」をシーンモードと揃えるためのホスト要望）。
+        戻り値は {"en": 英語プロンプト, "ja": 日本語訳（取れなければ空文字）}。"""
         import io
         import tempfile
 
@@ -1642,14 +1651,23 @@ class WanAnimateBlackwell:
             inputs = processor(text=[text], images=imgs, padding=True, return_tensors="pt").to(self._qwen_model.device)
             with torch.inference_mode():
                 generated = self._qwen_model.generate(
-                    **inputs, max_new_tokens=600, do_sample=True, temperature=0.7, top_p=0.9
+                    # 英語プロンプト＋日本語訳の2本立てになった分、600だと
+                    # 日本語訳が尻切れになりうるため増量（2026-09-18）。
+                    **inputs, max_new_tokens=900, do_sample=True, temperature=0.7, top_p=0.9
                 )
             trimmed = generated[:, inputs["input_ids"].shape[1] :]
             raw = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-            script = raw.strip().strip('"')
-            if not script:
+            full = raw.strip().strip('"')
+            if not full:
                 raise RuntimeError("empty response from the VLM")
-            return script
+            if "===JA===" in full:
+                en_part, ja_part = full.split("===JA===", 1)
+            else:
+                # モデルが区切りを付け忘れた場合のフォールバック——英語だけ
+                # 使い、日本語訳は空のままにする（呼び出し側は空文字を
+                # 「翻訳なし」として扱う想定）。
+                en_part, ja_part = full, ""
+            return {"en": en_part.strip().strip('"'), "ja": ja_part.strip().strip('"')}
         finally:
             if tmp_path:
                 try:
@@ -1664,7 +1682,8 @@ class WanAnimateBlackwell:
         started = time.time()
         script = self._generate_director_script(base64.b64decode(image_b64), concept_text, duration_s)
         return {
-            "script": script,
+            "script": script["en"],
+            "script_ja": script["ja"],
             "elapsed_s": round(time.time() - started, 1),
             "vram_used_gb": _current_effective_vram_gb(),
         }
@@ -1762,14 +1781,21 @@ class WanAnimateBlackwell:
                 script = self._generate_director_script(ref_image_bytes, qwen_concept_text, qwen_duration_s or 15)
                 if qwen_prompt_node_id not in workflow:
                     raise RuntimeError(f"qwen_prompt_node_id {qwen_prompt_node_id!r} not found in workflow")
-                workflow[qwen_prompt_node_id]["inputs"]["prompt"] = script
+                workflow[qwen_prompt_node_id]["inputs"]["prompt"] = script["en"]
                 if is_async:
                     # inputs は他フィールド（scenes/quality_mode/lora_name等）
                     # も持つJSONBカラムで、PATCHは丸ごと置き換えになる
                     # （↑のmetadataと違いinputsは他フィールドを実際に使って
                     # いるため、Next.js側が渡したスナップショットにマージ
                     # してから書き戻す — 丸ごと上書きすると消えてしまう）。
-                    merged_inputs = {**(director_inputs_snapshot or {}), "combined_prompt": script}
+                    # combined_prompt_ja も一緒に書き戻す（2026-09-18追加 —
+                    # シーンモードと同じく結果画面に日本語訳を出し、「編集して
+                    # 再生成」を日本語ベースで行えるようにするホスト要望）。
+                    merged_inputs = {
+                        **(director_inputs_snapshot or {}),
+                        "combined_prompt": script["en"],
+                        "combined_prompt_ja": script["ja"] or None,
+                    }
                     _supabase_patch_job(job_id, {"inputs": merged_inputs, "progress_message": "動画を生成中..."})
 
             # ULL Cinematic Director: ユーザーが外部で用意したLoRA
@@ -2844,5 +2870,7 @@ def probe_director_script(
         print(f"[probe_director_script] FAILED after {time.time() - started:.1f}s: {type(exc).__name__}: {exc}")
         raise
     print(f"[probe_director_script] elapsed_s(remote)={result['elapsed_s']} vram_used_gb={result['vram_used_gb']}")
-    print("--- script ---")
+    print("--- script (en) ---")
     print(result["script"])
+    print("--- script (ja) ---")
+    print(result["script_ja"])

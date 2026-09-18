@@ -414,9 +414,12 @@ export function DirectorStudioTab() {
   }, []);
 
   // 完了したジョブの合成済みプロンプトを引き継いで編集モードへ入る。
+  // 日本語訳がある場合はそちらを既定で読み込む（2026-09-18、ホスト要望 —
+  // 送信時に looksJapanese() で自動検知して英訳されるので、日本語のまま
+  // 編集して再生成できる。日本語訳が無い場合は従来通り英語のまま）。
   const enterPromptMode = useCallback(() => {
     if (!job?.combinedPrompt) return;
-    setPromptDraft(job.combinedPrompt);
+    setPromptDraft(job.combinedPromptJa || job.combinedPrompt);
     setPromptDraftDurationS(job.totalDurationS ?? DIRECTOR_SECONDS_PER_SCENE);
     setUiMode("prompt");
   }, [job]);
