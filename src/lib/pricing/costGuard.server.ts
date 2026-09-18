@@ -42,7 +42,7 @@ const LORA_SPI_BASELINE: Record<string, number> = {
 function creditCoveredSeconds(creditsCost: number, knobs: PricingKnobs): number {
   const revenueJpy = Math.max(0, creditsCost) * knobs.credit_to_jpy;
   const maxCostJpy = revenueJpy * knobs.lora_margin_target;
-  const jpyPerSec = knobs.gpu_jpy_per_hour_b300 / 3600;
+  const jpyPerSec = (knobs.gpu_usd_per_hour_b300 * knobs.usd_jpy_rate) / 3600;
   const secs = jpyPerSec > 0 ? maxCostJpy / jpyPerSec : 0;
   return Math.floor(Math.max(1800, Math.min(secs, LORA_ABS_MAX_RUN_S)));
 }

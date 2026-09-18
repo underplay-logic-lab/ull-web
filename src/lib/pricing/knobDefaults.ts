@@ -60,17 +60,17 @@ export type KnobKey =
   | "alert_low_margin_percent"
   // --- rates (server-only) ---
   | "credit_to_jpy"
-  | "gpu_jpy_per_hour_b300"
-  | "gpu_jpy_per_hour_b200"
-  | "gpu_jpy_per_hour_h200"
-  | "gpu_jpy_per_hour_h100"
-  | "gpu_jpy_per_hour_rtx_pro_6000"
-  | "gpu_jpy_per_hour_a100_80gb"
-  | "gpu_jpy_per_hour_a100_40gb"
-  | "gpu_jpy_per_hour_l40s"
-  | "gpu_jpy_per_hour_a10"
-  | "gpu_jpy_per_hour_l4"
-  | "gpu_jpy_per_hour_t4"
+  | "gpu_usd_per_hour_b300"
+  | "gpu_usd_per_hour_b200"
+  | "gpu_usd_per_hour_h200"
+  | "gpu_usd_per_hour_h100"
+  | "gpu_usd_per_hour_rtx_pro_6000"
+  | "gpu_usd_per_hour_a100_80gb"
+  | "gpu_usd_per_hour_a100_40gb"
+  | "gpu_usd_per_hour_l40s"
+  | "gpu_usd_per_hour_a10"
+  | "gpu_usd_per_hour_l4"
+  | "gpu_usd_per_hour_t4"
   | "usd_jpy_rate";
 
 export type PricingKnobs = Record<KnobKey, number>;
@@ -572,97 +572,101 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     description: "最安サブスク単価。損益計算・Cost Simulator の売上換算に使用。",
     isPublic: false,
   },
-  gpu_jpy_per_hour_b300: {
-    value: 1125,
-    label: "GPU 時給（B300）",
+  // GPU時給はUSD建てで持ち、円換算は必ず usd_jpy_rate を経由して都度計算する
+  // （2026-09-18、旧設計を修正）。旧 gpu_jpy_per_hour_b300 は円を直接ハード
+  // コードしており、為替が動くたびに全GPU分の値を手で直す必要があった
+  // （ホスト指摘）。Modal自体の課金もUSD建てなので、GPU単価はUSD（Modal側の
+  // 値上げ/値下げでのみ変わる）と為替レート（市況でのみ変わる）を分離するのが
+  // 正しい——為替が動いた時に触るのは usd_jpy_rate 一箇所だけで済む。
+  gpu_usd_per_hour_b300: {
+    value: 7.5,
+    label: "GPU 時給（B300, USD）",
     category: "rates",
-    unit: "円/h",
-    description: "LoRA 損切りのクレジット按分秒の分母",
+    unit: "$/h",
+    description: "LoRA 損切りのクレジット按分秒の分母。実稼働ログの原価計算にも使用。",
     isPublic: false,
   },
   // 以下、実稼働ログの原価・粗利計算用（2026-09-18導入）。B300以外のGPUに
   // 実ジョブを振り分けている機能（超解像HD/2K等）が正しく安く計上されるよう
-  // 追加した。値は GpuCostReferenceCard.tsx の $/h 一覧 × usd_jpy_rate(150)。
-  // B300のみ既存の実運用値(1125=$7.5/h)を維持し他は据え置き——若干の
-  // ズレ（GpuCostReferenceCardは$7.1/h）は許容し、実測が増えたら統一する。
-  gpu_jpy_per_hour_b200: {
-    value: 937.5,
-    label: "GPU 時給（B200）",
+  // 追加した。値は GpuCostReferenceCard.tsx の $/h 一覧をそのまま採用。
+  gpu_usd_per_hour_b200: {
+    value: 6.25,
+    label: "GPU 時給（B200, USD）",
     category: "rates",
-    unit: "円/h",
-    description: "実稼働ログの原価計算用（$6.25/h換算）",
+    unit: "$/h",
+    description: "実稼働ログの原価計算用",
     isPublic: false,
   },
-  gpu_jpy_per_hour_h200: {
-    value: 681,
-    label: "GPU 時給（H200）",
+  gpu_usd_per_hour_h200: {
+    value: 4.54,
+    label: "GPU 時給（H200, USD）",
     category: "rates",
-    unit: "円/h",
-    description: "実稼働ログの原価計算用（$4.54/h換算）",
+    unit: "$/h",
+    description: "実稼働ログの原価計算用",
     isPublic: false,
   },
-  gpu_jpy_per_hour_h100: {
-    value: 592.5,
-    label: "GPU 時給（H100）",
+  gpu_usd_per_hour_h100: {
+    value: 3.95,
+    label: "GPU 時給（H100, USD）",
     category: "rates",
-    unit: "円/h",
-    description: "実稼働ログの原価計算用（$3.95/h換算）",
+    unit: "$/h",
+    description: "実稼働ログの原価計算用",
     isPublic: false,
   },
-  gpu_jpy_per_hour_rtx_pro_6000: {
-    value: 454.5,
-    label: "GPU 時給（RTX PRO 6000）",
+  gpu_usd_per_hour_rtx_pro_6000: {
+    value: 3.03,
+    label: "GPU 時給（RTX PRO 6000, USD）",
     category: "rates",
-    unit: "円/h",
-    description: "実稼働ログの原価計算用（$3.03/h換算）",
+    unit: "$/h",
+    description: "実稼働ログの原価計算用",
     isPublic: false,
   },
-  gpu_jpy_per_hour_a100_80gb: {
-    value: 375,
-    label: "GPU 時給（A100 80GB）",
+  gpu_usd_per_hour_a100_80gb: {
+    value: 2.5,
+    label: "GPU 時給（A100 80GB, USD）",
     category: "rates",
-    unit: "円/h",
-    description: "実稼働ログの原価計算用（$2.5/h換算）",
+    unit: "$/h",
+    description: "実稼働ログの原価計算用",
     isPublic: false,
   },
-  gpu_jpy_per_hour_a100_40gb: {
-    value: 315,
-    label: "GPU 時給（A100 40GB）",
+  gpu_usd_per_hour_a100_40gb: {
+    value: 2.1,
+    label: "GPU 時給（A100 40GB, USD）",
     category: "rates",
-    unit: "円/h",
-    description: "実稼働ログの原価計算用（$2.1/h換算）",
+    unit: "$/h",
+    description: "実稼働ログの原価計算用",
     isPublic: false,
   },
-  gpu_jpy_per_hour_l40s: {
-    value: 292.5,
-    label: "GPU 時給（L40S）",
+  gpu_usd_per_hour_l40s: {
+    value: 1.95,
+    label: "GPU 時給（L40S, USD）",
     category: "rates",
-    unit: "円/h",
-    description: "実稼働ログの原価計算用（$1.95/h換算）",
+    unit: "$/h",
+    description: "実稼働ログの原価計算用",
     isPublic: false,
   },
-  gpu_jpy_per_hour_a10: {
-    value: 165,
-    label: "GPU 時給（A10）",
+  gpu_usd_per_hour_a10: {
+    value: 1.1,
+    label: "GPU 時給（A10, USD）",
     category: "rates",
-    unit: "円/h",
-    description: "実稼働ログの原価計算用（$1.1/h換算）",
+    unit: "$/h",
+    description: "実稼働ログの原価計算用",
     isPublic: false,
   },
-  gpu_jpy_per_hour_l4: {
-    value: 120,
-    label: "GPU 時給（L4）",
+  gpu_usd_per_hour_l4: {
+    value: 0.8,
+    label: "GPU 時給（L4, USD）",
     category: "rates",
-    unit: "円/h",
-    description: "実稼働ログの原価計算用（$0.8/h換算）",
+    unit: "$/h",
+    description: "実稼働ログの原価計算用",
     isPublic: false,
   },
-  gpu_jpy_per_hour_t4: {
-    value: 88.5,
-    label: "GPU 時給（T4）",
+  gpu_usd_per_hour_t4: {
+    value: 0.59,
+    label: "GPU 時給（T4, USD）",
     category: "rates",
-    unit: "円/h",
-    description: "実稼働ログの原価計算用（$0.59/h換算）",
+    unit: "$/h",
+    description: "実稼働ログの原価計算用",
     isPublic: false,
   },
   usd_jpy_rate: {
