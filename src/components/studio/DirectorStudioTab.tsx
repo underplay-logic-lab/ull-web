@@ -44,6 +44,7 @@ import {
   startDirectorJob,
   downloadDirectorVideo,
   listDirectorLoras,
+  uploadDirectorLoraFile,
   type DirectorApiError,
   type DirectorJobStatus,
   type DirectorLoraOption,
@@ -301,12 +302,35 @@ export function DirectorStudioTab() {
   const [loraOptions, setLoraOptions] = useState<DirectorLoraOption[]>([]);
   const [loraId, setLoraId] = useState("");
   const [loraUploadFile, setLoraUploadFile] = useState<File | null>(null);
+  // 2026-09-19: 「アップロード」と「生成」を別操作に分離した（1GB級の
+  // アップロード中にブラウザを閉じるとジョブが一度も作られないまま止まる
+  // 問題への対策、ホスト指摘）。ファイルを選んだだけでは生成できず、この
+  // アップロードが成功して volumePath を得るまでは loraSelection が
+  // "none" 扱いになり canRun が false のまま——ユーザーは必ず「アップロード」
+  // →完了確認→「生成」の順で操作することになる。
+  const [loraUploadedVolumePath, setLoraUploadedVolumePath] = useState<string | null>(null);
+  const [loraUploading, setLoraUploading] = useState(false);
+  const [loraUploadError, setLoraUploadError] = useState<string | null>(null);
   const loraSelection: DirectorLoraSelection =
     loraSource === "trained" && loraId
       ? { source: "trained", loraId }
-      : loraSource === "upload" && loraUploadFile
-        ? { source: "upload", file: loraUploadFile }
+      : loraSource === "upload" && loraUploadedVolumePath
+        ? { source: "upload", volumePath: loraUploadedVolumePath }
         : { source: "none" };
+
+  const handleUploadLora = async () => {
+    if (!user || !loraUploadFile || loraUploading) return;
+    setLoraUploading(true);
+    setLoraUploadError(null);
+    try {
+      const { volumePath } = await uploadDirectorLoraFile(user.id, loraUploadFile);
+      setLoraUploadedVolumePath(volumePath);
+    } catch (err) {
+      setLoraUploadError(err instanceof Error ? err.message : "アップロードに失敗しました。");
+    } finally {
+      setLoraUploading(false);
+    }
+  };
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
@@ -426,10 +450,13 @@ export function DirectorStudioTab() {
   }, [job]);
   const exitPromptMode = useCallback(() => setUiMode("scenes"), []);
 
-  // LoRAのソースを選んだのに中身（選択/ファイル）が空のままだと、意図せず
-  // 「なし」で生成されてしまう——選んだ以上は完了させてから送信させる。
+  // LoRAのソースを選んだのに中身（選択/アップロード完了）が無いままだと、
+  // 意図せず「なし」で生成されてしまう——選んだ以上は完了させてから送信
+  // させる。アップロードはファイルを選んだだけでは不十分で、
+  // handleUploadLora が成功してvolumePathを得るまで未完了扱いにする
+  // （2026-09-19、アップロードと生成を別操作に分離）。
   const loraSelectionIncomplete =
-    (loraSource === "trained" && !loraId) || (loraSource === "upload" && !loraUploadFile);
+    (loraSource === "trained" && !loraId) || (loraSource === "upload" && !loraUploadedVolumePath);
 
   const canRun =
     Boolean(image) &&
@@ -1001,8 +1028,15 @@ export function DirectorStudioTab() {
               <input
                 type="file"
                 accept=".safetensors"
-                disabled={busy}
-                onChange={(e) => setLoraUploadFile(e.target.files?.[0] ?? null)}
+                disabled={busy || loraUploading}
+                onChange={(e) => {
+                  setLoraUploadFile(e.target.files?.[0] ?? null);
+                  // 別のファイルを選び直したら、前回のアップロード済み状態は
+                  // 無効——再アップロードが必要（handleUploadLoraが新しい
+                  // Fileオブジェクトに対して改めて呼ばれる）。
+                  setLoraUploadedVolumePath(null);
+                  setLoraUploadError(null);
+                }}
                 className="mt-2 w-full text-xs text-muted file:mr-3 file:rounded-lg file:border-0 file:bg-surface file:px-3 file:py-1.5 file:text-xs file:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
               />
               {loraUploadFile && (
@@ -1010,8 +1044,36 @@ export function DirectorStudioTab() {
                   {loraUploadFile.name}（{(loraUploadFile.size / 1024 / 1024).toFixed(1)} MB）
                 </p>
               )}
+              {loraUploadFile && !loraUploadedVolumePath && (
+                <button
+                  type="button"
+                  onClick={() => void handleUploadLora()}
+                  disabled={busy || loraUploading}
+                  className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-3 py-2 text-xs font-medium text-neon-violet transition-colors hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {loraUploading ? "アップロード中..." : "このLoRAをアップロード"}
+                </button>
+              )}
+              {loraUploading && (
+                <p className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-300">
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                  アップロード中はブラウザを閉じたりタブを切り替えたりしないでください。途中で中断した場合は、もう一度同じファイルを選び直せば続きから再開できます。
+                </p>
+              )}
+              {loraUploadedVolumePath && (
+                <p className="mt-2 flex items-center gap-1.5 text-[11px] text-emerald-400">
+                  <Check size={12} />
+                  アップロード完了。このLoRAを使って生成できます。
+                </p>
+              )}
+              {loraUploadError && (
+                <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-red-400">
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                  {loraUploadError}
+                </p>
+              )}
               <p className="mt-2 text-[11px] text-muted">
-                外部で用意した MiniMax H3 LoRA（.safetensors）を持ち込んで適用します。生成開始時にアップロードされます。
+                外部で用意した MiniMax H3 LoRA（.safetensors）を持ち込んで適用します。先にアップロードを完了させてから生成してください。
               </p>
             </>
           )}
@@ -1062,22 +1124,13 @@ export function DirectorStudioTab() {
           )}
           {!busy && gpuWarm && <WarmCountdownBanner remainingMs={gpuWarmMs} />}
           {busy && !queuedNext && (
-            phase === "submitting" && loraSource === "upload" ? (
-              // LoRAアップロード中（startDirectorJob内、/api/director/generate
-              // を叩く前）だけはブラウザを閉じると本当に止まる特別な窓——
-              // ジョブがまだサーバー側に一切存在しないため（2026-09-19、
-              // ホスト指摘で追加）。ジョブ発行後(phase==="running")は
-              // 通常どおり閉じても継続する。
-              <p className="mt-2 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-300">
-                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                LoRAファイルをアップロード中です。完了して生成が始まるまではブラウザを閉じたりタブを切り替えたりしないでください。途中で中断した場合は、もう一度同じファイルを選び直せば続きから再開できます。
-              </p>
-            ) : (
-              <p className="mt-2 flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-xs leading-relaxed text-neon-violet">
-                <Sparkles size={14} className="mt-0.5 shrink-0" />
-                バックグラウンドで生成中です。もう一度ボタンを押すと、次の生成を予約できます。
-              </p>
-            )
+            // 2026-09-19: LoRAアップロードは生成ボタンを押す前の別操作
+            // （handleUploadLora）に分離済みなので、ここに来る時点では
+            // ジョブは既にサーバー側へ発行済み——ブラウザを閉じても継続する。
+            <p className="mt-2 flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-xs leading-relaxed text-neon-violet">
+              <Sparkles size={14} className="mt-0.5 shrink-0" />
+              バックグラウンドで生成中です。もう一度ボタンを押すと、次の生成を予約できます。
+            </p>
           )}
           {queuedNext && (
             <div className="mt-2">

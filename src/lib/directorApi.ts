@@ -50,12 +50,16 @@ export type DirectorStartArgs = (
 };
 
 /** LoRAの指定方法。①trained: LoRA Studioで本人が学習済みのMiniMax H3 LoRA
- * （14日パージ対象）。②upload: 外部で用意した .safetensors をこの場で
- * アップロード（生成物ではなく入力データ扱いのため期限なし）。 */
+ * （14日パージ対象）。②upload: 外部で用意した .safetensors——2026-09-19〜、
+ * 生成ボタンを押す前に別途アップロードを完了させ、Volume相対パスとして
+ * 渡す方式に変更（それまではfileを渡して生成開始時にアップロードして
+ * いたが、1GB級のアップロード中にブラウザを閉じるとジョブ自体が一度も
+ * 作られないまま止まってしまう問題があり、「アップロード」と「生成」を
+ * 明確に別々の操作に分離した——ホスト指摘）。 */
 export type DirectorLoraSelection =
   | { source: "none" }
   | { source: "trained"; loraId: string }
-  | { source: "upload"; file: File };
+  | { source: "upload"; volumePath: string };
 
 export async function startDirectorJob(args: DirectorStartArgs): Promise<DirectorStartResult> {
   const { data: sessionData } = await supabase.auth.getSession();
@@ -69,8 +73,7 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
   if (args.lora?.source === "trained") {
     loraId = args.lora.loraId;
   } else if (args.lora?.source === "upload") {
-    const uploaded = await uploadDirectorLoraFile(args.userId, args.lora.file);
-    loraUploadVolumePath = uploaded.volumePath;
+    loraUploadVolumePath = args.lora.volumePath;
   }
 
   const priority = args.priority ?? false;
