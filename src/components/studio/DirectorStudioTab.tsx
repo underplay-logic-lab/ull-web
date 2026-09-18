@@ -318,6 +318,21 @@ export function DirectorStudioTab() {
         ? { source: "upload", volumePath: loraUploadedVolumePath }
         : { source: "none" };
 
+  // LoRAソースを切り替える。「アップロード」から他のソースへ離れる時は
+  // 選択中ファイル・アップロード状態を破棄する——破棄しないと、後で
+  // 「アップロード」に戻った際に前回選んだファイル名とアップロード
+  // 完了チェックだけが残り、確認ボタンが出ない（loraUploadedVolumePath
+  // が真のまま）ため選び直しができなくなるバグがあった
+  // （2026-09-19、ホスト報告）。
+  const selectLoraSource = (next: LoraSource) => {
+    if (loraSource === "upload" && next !== "upload") {
+      setLoraUploadFile(null);
+      setLoraUploadedVolumePath(null);
+      setLoraUploadError(null);
+    }
+    setLoraSource(next);
+  };
+
   const handleUploadLora = async () => {
     if (!user || !loraUploadFile || loraUploading) return;
     setLoraUploading(true);
@@ -974,7 +989,7 @@ export function DirectorStudioTab() {
             <button
               type="button"
               disabled={busy}
-              onClick={() => setLoraSource("none")}
+              onClick={() => selectLoraSource("none")}
               className={`rounded-lg px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                 loraSource === "none" ? "bg-neon-violet/15 text-foreground" : "bg-surface text-muted hover:text-foreground"
               }`}
@@ -984,7 +999,7 @@ export function DirectorStudioTab() {
             <button
               type="button"
               disabled={busy || loraOptions.length === 0}
-              onClick={() => setLoraSource("trained")}
+              onClick={() => selectLoraSource("trained")}
               title={loraOptions.length === 0 ? "LoRA Studioで学習済みのMiniMax H3 LoRAがありません" : undefined}
               className={`rounded-lg px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                 loraSource === "trained" ? "bg-neon-violet/15 text-foreground" : "bg-surface text-muted hover:text-foreground"
@@ -995,7 +1010,7 @@ export function DirectorStudioTab() {
             <button
               type="button"
               disabled={busy}
-              onClick={() => setLoraSource("upload")}
+              onClick={() => selectLoraSource("upload")}
               className={`rounded-lg px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                 loraSource === "upload" ? "bg-neon-violet/15 text-foreground" : "bg-surface text-muted hover:text-foreground"
               }`}
