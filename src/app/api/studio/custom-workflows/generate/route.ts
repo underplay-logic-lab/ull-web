@@ -39,53 +39,39 @@ function inferOutputKind(filename: string): "image" | "video" {
   return ext === "mp4" || ext === "webm" || ext === "mov" ? "video" : "image";
 }
 
-const CUSTOM_WORKFLOW_RESULTS_BUCKET = "custom-workflow-results";
-
-function mimeForExt(ext: string): string {
-  const e = ext.toLowerCase();
-  if (e === "mp4") return "video/mp4";
-  if (e === "webm") return "video/webm";
-  if (e === "webp") return "image/webp";
-  if (e === "jpg" || e === "jpeg") return "image/jpeg";
-  return "image/png";
-}
-
 /**
- * 生成物を custom-workflow-results バケットへ永続化し、generation_jobs に
- * 完了済み行を1件残す（workflow_type='custom' は元々スキーマで許容されて
- * いたが、この同期ルートは今まで一度も書き込んでいなかった）。
+ * generation_jobs に完了済み行を1件残す（workflow_type='custom' は元々
+ * スキーマで許容されていたが、この同期ルートは今まで一度も書き込んで
+ * いなかった）。
  *
  * これまでこの route は base64 をブラウザへ返すだけで、サーバー側に一切
  * 保存していなかった — Multi-Angle/超解像と違いダウンロードし忘れると
- * 復元不能という欠陥だった（ホスト報告、2026-09-13）。他の Studio タブと
- * 同じ 14日自動パージ対象（modal_retention_purge.py の DEFAULT_BUCKETS）に
- * 含める前提でバケットを新設した。失敗してもメインの生成レスポンスは
- * 落とさない（best-effort — ユーザーはこの永続化に関係なく結果を受け取れる）。
+ * 復元不能という欠陥だった（ホスト報告、2026-09-13）。当初は
+ * custom-workflow-results という Supabase Storage の公開バケットへ
+ * アップロードしていたが、CLAUDE.md §1「大容量バイナリはSupabaseを経由
+ * させない」標準に合わせ、scripts/modal_wan_animate.py::run_custom_workflow
+ * が既に同じ同期呼び出しの中で Volume（custom_workflow_results/<user_id>/
+ * <job_id>.<ext>）へ保存済みの結果（resultVolumePath）をそのまま
+ * video_url カラムへ記録する方式に変更した（2026-09-18）。これで
+ * アップロード用の2回目のModal/Supabaseラウンドトリップが不要になる。
+ * jobId はここで生成し、Modal呼び出し時に渡す（呼び出し元
+ * customWorkflowGeneratePost 側で先に発行し、このinsertにも渡す）。
+ * 失敗してもメインの生成レスポンスは落とさない（best-effort — ユーザーは
+ * この永続化に関係なく resultBase64 で結果を受け取れる）。
  */
 async function persistCustomWorkflowResult(args: {
+  jobId: string;
   userId: string;
-  base64: string;
-  filename: string;
+  resultVolumePath: string | null;
   workflowId: string;
   workflowSlug: string;
   promptSummary: string;
   creditsCost: number;
-}): Promise<string | null> {
+}): Promise<void> {
+  if (!args.resultVolumePath) return;
   try {
-    const ext = args.filename.toLowerCase().split(".").pop() || "png";
-    const objectPath = `${args.userId}/${randomUUID()}.${ext}`;
-    const buffer = Buffer.from(args.base64, "base64");
-    const { error: uploadError } = await supabaseAdmin.storage
-      .from(CUSTOM_WORKFLOW_RESULTS_BUCKET)
-      .upload(objectPath, buffer, { contentType: mimeForExt(ext), upsert: false });
-    if (uploadError) {
-      console.error("[studio/custom-workflows/generate] persist upload failed:", uploadError.message);
-      return null;
-    }
-    const { data: pub } = supabaseAdmin.storage.from(CUSTOM_WORKFLOW_RESULTS_BUCKET).getPublicUrl(objectPath);
-    const resultUrl = pub.publicUrl;
-
     const { error: jobInsertError } = await supabaseAdmin.from("generation_jobs").insert({
+      id: args.jobId,
       user_id: args.userId,
       status: "completed",
       workflow_type: "custom",
@@ -95,15 +81,13 @@ async function persistCustomWorkflowResult(args: {
         prompt_summary: args.promptSummary || null,
       },
       credits_cost: args.creditsCost,
-      video_url: resultUrl,
+      video_url: args.resultVolumePath,
     });
     if (jobInsertError) {
       console.error("[studio/custom-workflows/generate] job row insert failed:", jobInsertError.message);
     }
-    return resultUrl;
   } catch (err) {
     console.error("[studio/custom-workflows/generate] persist failed:", err);
-    return null;
   }
 }
 
@@ -340,6 +324,11 @@ export async function POST(request: Request) {
       values,
     );
 
+    // Volume保存パスのキーとして先に発行しておき、Modal呼び出しへそのまま
+    // 渡す（同じ同期呼び出しの中で run_custom_workflow が保存まで完結させる
+    // ため — CLAUDE.md §1、persistCustomWorkflowResultのコメント参照）。
+    const jobId = randomUUID();
+
     const result = await runCustomWorkflowOnModal({
       workflow,
       files,
@@ -355,6 +344,8 @@ export async function POST(request: Request) {
       },
       saveToVolume: isAdmin,
       outputNodeId: (workflowRow.output_node_id as string | null) ?? "",
+      userId: user.id,
+      jobId,
     });
     const executionTimeMs = Date.now() - startedAt;
 
@@ -369,10 +360,10 @@ export async function POST(request: Request) {
       outputFileName: result.output_path,
     });
 
-    const resultUrl = await persistCustomWorkflowResult({
+    await persistCustomWorkflowResult({
+      jobId,
       userId: user.id,
-      base64: result.result_base64,
-      filename: result.filename,
+      resultVolumePath: result.result_volume_path ?? null,
       workflowId: workflowRow.id as string,
       workflowSlug: slug,
       promptSummary,
@@ -382,7 +373,6 @@ export async function POST(request: Request) {
     return NextResponse.json({
       success: true,
       resultBase64: result.result_base64,
-      resultUrl,
       outputKind: inferOutputKind(result.filename),
       filename: result.filename,
       remainingCredits: debitedCredits,

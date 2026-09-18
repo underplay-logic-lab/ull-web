@@ -11,6 +11,10 @@ export type CustomWorkflowResult = {
   /** 生成完了時点の実効 VRAM 消費量（GB）。ネタバレ防止 — 分母・％・GPU名なし。
    *  worker 未デプロイ／CUDA 無しなら欠落 or null。 */
   vram_used_gb?: number | null;
+  /** custom_workflow_results/<user_id>/<job_id>.<ext> のVolume相対パス
+   *  （2026-09-18導入、CLAUDE.md §1）。userId/jobIdを渡さなかった場合や
+   *  保存に失敗した場合は null。 */
+  result_volume_path?: string | null;
 };
 
 export type CustomWorkflowExecConfig = {
@@ -41,6 +45,12 @@ export type RunCustomWorkflowParams = {
   // workflow's configured fallbacks). Forwarded to Modal as
   // `gpu_fallback_list` so its scheduler can hop past a congested GPU.
   gpuFallbackChain?: WorkflowGpuTier[];
+  /** custom_workflow_results/<user_id>/<job_id>.<ext> への直接保存
+   *  （2026-09-18導入、CLAUDE.md §1）に使う id。両方渡すと Modal が同じ
+   *  同期呼び出しの中でVolumeへ保存し、CustomWorkflowResult.result_volume_path
+   *  にそのパスを返す。 */
+  userId?: string;
+  jobId?: string;
 };
 
 // Same cold-start budget as generateWithModal (modalWanAnimate.ts) — a
@@ -79,6 +89,8 @@ export async function runCustomWorkflowOnModal(params: RunCustomWorkflowParams):
         params.gpuFallbackChain && params.gpuFallbackChain.length > 0
           ? params.gpuFallbackChain
           : [params.gpuTier ?? DEFAULT_WORKFLOW_GPU_TIER],
+      user_id: params.userId,
+      job_id: params.jobId,
     }),
     signal: AbortSignal.timeout(MODAL_TIMEOUT_MS),
   });

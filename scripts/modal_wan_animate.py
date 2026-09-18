@@ -33,6 +33,7 @@ Env overrides (mirrors scripts/test-wan-animate.ts):
 """
 
 import base64
+import hashlib
 import hmac
 import json
 import os
@@ -63,6 +64,9 @@ ALLOWED_DOWNLOAD_HOSTS = ("huggingface.co", "civitai.com")
 ALLOWED_GIT_HOSTS = ("github.com",)
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
+# download_custom_workflow_result 専用の read-only マウント（他ワーカーの
+# vol_ro と同じ理由・同じパターン）。
+vol_ro = vol.with_mount_options(read_only=True)
 
 
 def _current_effective_vram_gb():
@@ -269,6 +273,154 @@ def _authorize(request: fastapi.Request) -> None:
 
     if not provided or not hmac.compare_digest(provided, expected):
         raise fastapi.HTTPException(status_code=401, detail="Unauthorized")
+
+
+CUSTOM_WORKFLOW_RESULTS_SUBDIR = "custom_workflow_results"
+
+
+def _custom_workflow_result_rel_path(user_id: str, job_id: str, filename: str) -> str:
+    """Volume相対パス（custom_workflow_results/<user_id>/<job_id>.<ext>）を
+    返す。generation_jobs.video_url にはURLではなくこの相対パスを保存し、
+    配信時に download_custom_workflow_result が同じ規則で実ファイルへ
+    解決する。"""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "png"
+    return f"{CUSTOM_WORKFLOW_RESULTS_SUBDIR}/{user_id or 'anon'}/{job_id}.{ext}"
+
+
+def _save_custom_workflow_result(user_id: str, job_id: str, filename: str, data: bytes) -> str | None:
+    """特化ワークフローの生成結果を Volume（custom_workflow_results/
+    <user_id>/<job_id>.<ext>）へ直接保存する。Supabase Storage を一切経由
+    しない（2026-09-18、CLAUDE.md §1「大容量バイナリはSupabaseを経由させ
+    ない」標準）。配信は download_custom_workflow_result が署名付きURL・
+    ブラウザ↔Modal直結方式で行う。user_id/job_id が渡されない（Next.js側の
+    generation_jobs行 insert に失敗した等）場合や保存失敗時は None —
+    呼び出し側のメインのbase64レスポンスはこれと無関係に返るため、
+    admin一覧からの再閲覧ができなくなるだけで生成自体は失敗しない。"""
+    if not user_id or not job_id:
+        return None
+    rel_path = _custom_workflow_result_rel_path(user_id, job_id, filename)
+    try:
+        full_path = pathlib.Path(MODELS_DIR) / rel_path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_bytes(data)
+        vol.commit()
+        return rel_path
+    except Exception as exc:  # noqa: BLE001 — best-effort, never fails the main response
+        print(f"[custom-workflow] result save to volume failed ({rel_path}): {exc}", flush=True)
+        return None
+
+
+def _verify_custom_workflow_download_token(user_id: str, job_id: str, filename: str, expires: str, sig: str) -> bool:
+    """他ワーカーの _verify_download_token と同じHMAC方式。Next.js側の署名は
+    src/app/api/admin/generations/route.ts（admin専用の再閲覧リンク）。"""
+    secret = os.environ.get("MODAL_AUTH_TOKEN", "")
+    if not secret or not sig:
+        return False
+    try:
+        if int(expires) < time.time():
+            return False
+    except ValueError:
+        return False
+    payload = f"{user_id}:{job_id}:{filename}:{expires}"
+    expected = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
+_CUSTOM_WORKFLOW_DL_ID_RE = re.compile(r"^[0-9a-fA-F-]{1,64}$")
+_CUSTOM_WORKFLOW_DL_FILENAME_RE = re.compile(r"^[0-9a-fA-F-]{1,64}\.[A-Za-z0-9]{1,10}$")
+_CUSTOM_WORKFLOW_DL_CHUNK = 4 * 1024 * 1024  # 4 MiB
+
+
+def _stream_custom_workflow_download(file_path: pathlib.Path, *, media_type: str, request: fastapi.Request):
+    """他ワーカーの _stream_download と同一実装（4 MiB チャンク・Range 対応）
+    のcanonical copy。"""
+    file_size = file_path.stat().st_size
+    headers = {
+        "Content-Disposition": f'inline; filename="{file_path.name}"',
+        "Content-Type": media_type,
+        "Accept-Ranges": "bytes",
+    }
+
+    start, end = 0, file_size - 1
+    status_code = 200
+    raw_range = request.headers.get("range") or request.headers.get("Range")
+    if raw_range:
+        m = re.match(r"\s*bytes=(\d*)-(\d*)\s*$", raw_range)
+        if m and (m.group(1) or m.group(2)):
+            if m.group(1):
+                start = int(m.group(1))
+                end = int(m.group(2)) if m.group(2) else file_size - 1
+            else:
+                start = max(0, file_size - int(m.group(2)))
+                end = file_size - 1
+            end = min(end, file_size - 1)
+            if start > end or start >= file_size:
+                return fastapi.responses.Response(
+                    status_code=416,
+                    headers={**headers, "Content-Range": f"bytes */{file_size}"},
+                )
+            status_code = 206
+            headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+
+    length = end - start + 1
+    headers["Content-Length"] = str(length)
+
+    def _iter():
+        remaining = length
+        with open(file_path, "rb", buffering=_CUSTOM_WORKFLOW_DL_CHUNK) as fh:
+            if start:
+                fh.seek(start)
+            while remaining > 0:
+                chunk = fh.read(min(_CUSTOM_WORKFLOW_DL_CHUNK, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return fastapi.responses.StreamingResponse(
+        _iter(), status_code=status_code, media_type=media_type, headers=headers
+    )
+
+
+_CUSTOM_WORKFLOW_MIME_BY_EXT = {
+    "png": "image/png",
+    "webp": "image/webp",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "mp4": "video/mp4",
+    "webm": "video/webm",
+}
+
+
+@app.function(
+    image=image,
+    volumes={MODELS_DIR: vol_ro},
+    timeout=1800,
+    scaledown_window=2,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="GET")
+def download_custom_workflow_result(
+    user_id: str, job_id: str, filename: str, expires: str, sig: str, request: fastapi.Request
+):
+    if not _verify_custom_workflow_download_token(user_id, job_id, filename, expires, sig):
+        raise fastapi.HTTPException(status_code=403, detail="invalid or expired download link")
+    if not (
+        _CUSTOM_WORKFLOW_DL_ID_RE.match(user_id)
+        and _CUSTOM_WORKFLOW_DL_ID_RE.match(job_id)
+        and _CUSTOM_WORKFLOW_DL_FILENAME_RE.match(filename)
+    ):
+        raise fastapi.HTTPException(status_code=400, detail="invalid parameters")
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[download_custom_workflow_result] vol.reload() skipped: {exc}", flush=True)
+    file_path = pathlib.Path(MODELS_DIR) / CUSTOM_WORKFLOW_RESULTS_SUBDIR / user_id / filename
+    if not file_path.is_file():
+        raise fastapi.HTTPException(status_code=404, detail="result not found (may have been auto-purged after 14 days)")
+    ext = filename.rsplit(".", 1)[-1].lower()
+    media = _CUSTOM_WORKFLOW_MIME_BY_EXT.get(ext, "application/octet-stream")
+    return _stream_custom_workflow_download(file_path, media_type=media, request=request)
 
 
 def _validate_host(url: str, allowed_hosts: tuple, label: str) -> None:
@@ -1003,6 +1155,8 @@ class _WanAnimateBase:
         exec_config: dict = None,
         save_to_volume: bool = False,
         output_node_id: str = None,
+        user_id: str = None,
+        job_id: str = None,
     ) -> dict:
         """
         Generic counterpart to generate_video for admin-authored Custom
@@ -1011,6 +1165,12 @@ class _WanAnimateBase:
         workflow_json by the caller (see src/lib/customWorkflowExecution.ts)
         — this method just ensures ComfyUI is running with the workflow's
         exec_config, writes the referenced files, and runs the graph.
+
+        user_id/job_id (2026-09-18導入、CLAUDE.md §1標準): 渡されると、生成物を
+        custom_workflow_results/<user_id>/<job_id>.<ext> へも保存する。
+        Next.js側（persistCustomWorkflowResult）はこの結果を Supabase
+        Storageへアップロードする代わりに使う——同じ同期呼び出しの中で
+        完結させ、二重のModal呼び出しを避けるための設計。
         """
         self._ensure_comfy_running(exec_config)
         workflow = json.loads(workflow_json)
@@ -1026,12 +1186,14 @@ class _WanAnimateBase:
         if save_to_volume:
             self._save_output_to_volume(filename, result_bytes)
         output_path = self._save_output_temp(filename, result_bytes)
+        result_volume_path = _save_custom_workflow_result(user_id, job_id, filename, result_bytes)
         return {
             "filename": filename,
             "result_base64": base64.b64encode(result_bytes).decode("ascii"),
             "gpu_tier": self.GPU_TIER,
             "output_path": output_path,
             "vram_used_gb": vram_used_gb,
+            "result_volume_path": result_volume_path,
         }
 
     @modal.fastapi_endpoint(method="POST")
@@ -1043,6 +1205,8 @@ class _WanAnimateBase:
             item.get("exec_config"),
             item.get("save_to_volume", False),
             item.get("output_node_id"),
+            item.get("user_id"),
+            item.get("job_id"),
         )
 
 

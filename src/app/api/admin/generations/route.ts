@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/adminApiGuard";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
@@ -8,6 +9,95 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 const PER_TABLE = 60;
 const RETURN_LIMIT = 100;
+
+// 2026-09-18〜: Director/超解像(画像・動画)/Multi-Angleの結果はSupabase
+// Storageの公開URLではなく、Volume相対パスをDBに保存するようになった
+// （CLAUDE.md §1）。admin一覧の「開く」リンクもそのままでは404になるため、
+// ここで各ワーカーの署名スキームに合わせてModal直リンクへ変換する。
+// 既にこの一覧はrequireAdmin済み・行データも既にメモリ上にあるので、
+// 追加のDBラウンドトリップ無しでHMAC計算だけで済む。
+const RESULT_TOKEN_TTL_SECONDS = 900;
+
+function isVolumePath(v: string): boolean {
+  return !/^https?:\/\//i.test(v) && !v.startsWith("data:");
+}
+
+function signAngleImageUrl(userId: string, jobId: string, rawPath: string): string | null {
+  const modalUrl = process.env.MODAL_ANGLE_IMAGE_DOWNLOAD_URL;
+  const authToken = process.env.MODAL_AUTH_TOKEN;
+  const filename = rawPath.split("/").pop() ?? "";
+  if (!modalUrl || !authToken || !/^[0-9]{2}\.png$/.test(filename)) return null;
+  const expiresAt = Math.floor(Date.now() / 1000) + RESULT_TOKEN_TTL_SECONDS;
+  const sig = crypto
+    .createHmac("sha256", authToken)
+    .update(`${userId}:${jobId}:${filename}:${expiresAt}`)
+    .digest("hex");
+  const target = new URL(modalUrl);
+  target.searchParams.set("user_id", userId);
+  target.searchParams.set("job_id", jobId);
+  target.searchParams.set("filename", filename);
+  target.searchParams.set("expires", String(expiresAt));
+  target.searchParams.set("sig", sig);
+  return target.toString();
+}
+
+function signUpscaleResultUrl(userId: string, jobId: string, rawPath: string): string | null {
+  const isVideo = rawPath.startsWith("upscale_video_results/");
+  const modalUrl = isVideo
+    ? process.env.MODAL_SEEDVR2_VIDEO_RESULT_DOWNLOAD_URL
+    : process.env.MODAL_SEEDVR2_IMAGE_RESULT_DOWNLOAD_URL;
+  const authToken = process.env.MODAL_AUTH_TOKEN;
+  if (!modalUrl || !authToken) return null;
+  const filename = isVideo ? `${jobId}.mp4` : (rawPath.split("/").pop() ?? "");
+  const expiresAt = Math.floor(Date.now() / 1000) + RESULT_TOKEN_TTL_SECONDS;
+  const sig = crypto
+    .createHmac("sha256", authToken)
+    .update(`${userId}:${jobId}:${filename}:${expiresAt}`)
+    .digest("hex");
+  const target = new URL(modalUrl);
+  target.searchParams.set("user_id", userId);
+  target.searchParams.set("job_id", jobId);
+  if (!isVideo) target.searchParams.set("filename", filename);
+  target.searchParams.set("expires", String(expiresAt));
+  target.searchParams.set("sig", sig);
+  return target.toString();
+}
+
+function signDirectorVideoUrl(userId: string, jobId: string): string | null {
+  const modalUrl = process.env.MODAL_DIRECTOR_VIDEO_DOWNLOAD_URL;
+  const authToken = process.env.MODAL_AUTH_TOKEN;
+  if (!modalUrl || !authToken) return null;
+  const expiresAt = Math.floor(Date.now() / 1000) + RESULT_TOKEN_TTL_SECONDS;
+  const sig = crypto
+    .createHmac("sha256", authToken)
+    .update(`director-video:${userId}:${jobId}:${expiresAt}`)
+    .digest("hex");
+  const target = new URL(modalUrl);
+  target.searchParams.set("user_id", userId);
+  target.searchParams.set("job_id", jobId);
+  target.searchParams.set("expires", String(expiresAt));
+  target.searchParams.set("sig", sig);
+  return target.toString();
+}
+
+function signCustomWorkflowResultUrl(userId: string, jobId: string, rawPath: string): string | null {
+  const modalUrl = process.env.MODAL_CUSTOM_WORKFLOW_RESULT_DOWNLOAD_URL;
+  const authToken = process.env.MODAL_AUTH_TOKEN;
+  const filename = rawPath.split("/").pop() ?? "";
+  if (!modalUrl || !authToken || !filename) return null;
+  const expiresAt = Math.floor(Date.now() / 1000) + RESULT_TOKEN_TTL_SECONDS;
+  const sig = crypto
+    .createHmac("sha256", authToken)
+    .update(`${userId}:${jobId}:${filename}:${expiresAt}`)
+    .digest("hex");
+  const target = new URL(modalUrl);
+  target.searchParams.set("user_id", userId);
+  target.searchParams.set("job_id", jobId);
+  target.searchParams.set("filename", filename);
+  target.searchParams.set("expires", String(expiresAt));
+  target.searchParams.set("sig", sig);
+  return target.toString();
+}
 
 type GenRow = {
   id: string;
@@ -66,6 +156,11 @@ export async function GET() {
 
   for (const r of angle.data ?? []) {
     const imgs = Array.isArray(r.images) ? (r.images as unknown[]).filter((x): x is string => typeof x === "string") : [];
+    const rawThumb = imgs[0] ?? null;
+    const thumbUrl =
+      rawThumb && isVolumePath(rawThumb)
+        ? signAngleImageUrl(r.user_id as string, r.id as string, rawThumb) ?? rawThumb
+        : rawThumb;
     rows.push({
       id: r.id as string,
       kind: "angle",
@@ -74,7 +169,7 @@ export async function GET() {
       userEmail: null,
       status: r.status as string,
       creditsCost: (r.credits_cost as number) ?? 0,
-      thumbUrl: imgs[0] ?? null,
+      thumbUrl,
       extra: imgs.length > 1 ? `他 ${imgs.length - 1} 枚` : null,
       errorMessage: (r.error_message as string) ?? null,
       createdAt: r.created_at as string,
@@ -88,6 +183,11 @@ export async function GET() {
       meta?.original_available === true && typeof meta.original_filename === "string"
         ? meta.original_filename
         : null;
+    const rawResult = firstString(r.result_url);
+    const thumbUrl =
+      rawResult && isVolumePath(rawResult)
+        ? signUpscaleResultUrl(r.user_id as string, r.id as string, rawResult) ?? rawResult
+        : rawResult;
     rows.push({
       id: r.id as string,
       kind: "upscale",
@@ -96,7 +196,7 @@ export async function GET() {
       userEmail: null,
       status: r.status as string,
       creditsCost: (r.credits_cost as number) ?? 0,
-      thumbUrl: firstString(r.result_url),
+      thumbUrl,
       extra: null,
       errorMessage: (r.error_message as string) ?? null,
       createdAt: r.created_at as string,
@@ -107,6 +207,15 @@ export async function GET() {
   for (const r of gen.data ?? []) {
     const wt = (r.workflow_type as string) ?? "";
     const isLora = wt === "lora_training";
+    const rawVideo = isLora ? null : firstString(r.video_url);
+    let thumbUrl = rawVideo;
+    if (rawVideo && isVolumePath(rawVideo)) {
+      if (wt === "director") {
+        thumbUrl = signDirectorVideoUrl(r.user_id as string, r.id as string) ?? rawVideo;
+      } else if (wt === "custom") {
+        thumbUrl = signCustomWorkflowResultUrl(r.user_id as string, r.id as string, rawVideo) ?? rawVideo;
+      }
+    }
     rows.push({
       id: r.id as string,
       kind: isLora ? "lora" : "video",
@@ -115,7 +224,7 @@ export async function GET() {
       userEmail: null,
       status: r.status as string,
       creditsCost: (r.credits_cost as number) ?? 0,
-      thumbUrl: isLora ? null : firstString(r.video_url),
+      thumbUrl,
       extra: isLora ? (firstString(r.result_path) ? `Volume: ${firstString(r.result_path)}` : null) : null,
       errorMessage: (r.error_message as string) ?? null,
       createdAt: r.created_at as string,

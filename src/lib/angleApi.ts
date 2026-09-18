@@ -121,6 +121,60 @@ function toStringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
+// images配列の要素がURLではなくVolume相対パス（Multi-Angle結果、
+// 2026-09-18〜の新方式）かどうかを判定する。移行前の旧行（Supabase公開
+// URL）やDB書き込み失敗時のdata URIフォールバックはそのままfalseになる。
+function isAngleImageVolumePath(v: string): boolean {
+  return !/^https?:\/\//i.test(v) && !v.startsWith("data:");
+}
+
+// Volume相対パス文字列 -> 署名付きModal URL のキャッシュ。署名は15分間
+// 有効で、Multi-Angleジョブは通常その範囲内に完了するため、同じ画像を
+// ポーリングのたびに毎回再署名しにいくのを避ける（CLAUDE.md §1）。
+const _angleImageUrlCache = new Map<string, string>();
+
+/** /api/studio/angle/images でジョブ1件ぶんのimages配列を丸ごと解決する。 */
+async function fetchAngleImageUrls(jobId: string): Promise<string[]> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) throw new Error("ログインが必要です。");
+
+  const url = new URL("/api/studio/angle/images", window.location.origin);
+  url.searchParams.set("jobId", jobId);
+
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !Array.isArray(data?.images)) {
+    throw new Error(data?.error || "画像URLの発行に失敗しました。");
+  }
+  return data.images as string[];
+}
+
+/** rawImages（DBから読んだそのままの値、Volume相対パスを含みうる）を、
+ * 表示・ダウンロードに使える実URLの配列へ解決する。未解決の要素が1つも
+ * 無ければAPIを呼ばずそのまま返す（ポーリングのたびの無駄な呼び出しを
+ * 避ける）。 */
+async function resolveAngleImages(jobId: string, rawImages: string[]): Promise<string[]> {
+  if (rawImages.length === 0) return rawImages;
+  const needsResolve = rawImages.some(
+    (v) => isAngleImageVolumePath(v) && !_angleImageUrlCache.has(v),
+  );
+  if (needsResolve) {
+    try {
+      const resolved = await fetchAngleImageUrls(jobId);
+      resolved.forEach((url, i) => {
+        const raw = rawImages[i];
+        if (raw && isAngleImageVolumePath(raw)) _angleImageUrlCache.set(raw, url);
+      });
+    } catch (err) {
+      console.warn("[angleApi] resolveAngleImages failed:", err);
+    }
+  }
+  return rawImages.map((v) => (isAngleImageVolumePath(v) ? (_angleImageUrlCache.get(v) ?? v) : v));
+}
+
 function metaNumber(meta: unknown, key: string): number | null {
   if (!meta || typeof meta !== "object") return null;
   const v = (meta as Record<string, unknown>)[key];
@@ -157,13 +211,16 @@ export async function pollAngleJob(jobId: string): Promise<AngleJob> {
   if (error) throw new Error(error.message);
   if (!data) throw new AngleJobNotFoundError();
 
+  const rawImages = toStringArray(data.images);
+  const images = await resolveAngleImages(jobId, rawImages);
+
   return {
     id: data.id,
     status: data.status,
     mode: "standard",
     totalAngles: data.total_angles ?? 0,
     completedAngles: data.completed_angles ?? 0,
-    images: toStringArray(data.images),
+    images,
     labels: toStringArray(data.labels),
     errorMessage: data.error_message,
     vramUsedGb: metaNumber(data.metadata, "vram_used_gb"),

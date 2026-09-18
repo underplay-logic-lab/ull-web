@@ -33,6 +33,7 @@ import {
   downloadUpscaleImage,
   fetchUpscaleOriginalDownloadUrl,
   pollUpscaleJob,
+  resolveUpscaleImageUrl,
   startUpscaleBatchJob,
   startUpscaleJob,
   UpscaleJobNotFoundError,
@@ -285,17 +286,41 @@ function BatchThumb({ file, onRemove }: { file: File; onRemove: () => void }) {
 }
 
 function BatchResultCard({ job }: { job: UpscaleJob | undefined }) {
+  // job.resultUrl は超解像画像の結果（2026-09-18〜）だとURLではなくVolume
+  // 相対パスなので、<img src>・ダウンロードで使える実URLへ都度解決する
+  // （resolveUpscaleImageUrl、CLAUDE.md §1）。旧方式の行はそのまま素通し。
+  const [displayUrl, setDisplayUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (job?.status !== "completed" || !job.resultUrl) return;
+    let cancelled = false;
+    resolveUpscaleImageUrl(job.id, job.resultUrl)
+      .then((url) => {
+        if (!cancelled) setDisplayUrl(url);
+      })
+      .catch((err) => console.warn("[BatchResultCard] resolveUpscaleImageUrl failed:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, [job?.id, job?.status, job?.resultUrl]);
+
   if (job?.status === "completed" && job.resultUrl) {
-    const url = job.resultUrl;
+    const rawUrl = job.resultUrl;
+    if (!displayUrl) {
+      return (
+        <div className="flex aspect-square items-center justify-center rounded-lg border border-border bg-background text-muted">
+          <Loader2 size={14} className="animate-spin" />
+        </div>
+      );
+    }
     return (
       <button
         type="button"
-        onClick={() => downloadUpscaleImage(url, buildOutFilename(url))}
+        onClick={() => downloadUpscaleImage(displayUrl, buildOutFilename(rawUrl))}
         className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-background"
         title="ダウンロード"
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={url} alt="結果" className="h-full w-full object-cover" />
+        <img src={displayUrl} alt="結果" className="h-full w-full object-cover" />
         <span className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-black/60 py-1 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
           <Download size={11} /> 保存
         </span>
@@ -351,6 +376,10 @@ export function UpscaleStudioTab() {
   const [job, setJob] = useState<UpscaleJob | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [resultBeforeUrl, setResultBeforeUrl] = useState<string | null>(null);
+  // job.resultUrl は超解像画像の結果（2026-09-18〜）だとURLではなくVolume
+  // 相対パスなので、表示・ダウンロードで使える実URLへ都度解決する
+  // （resolveUpscaleImageUrl、CLAUDE.md §1）。旧方式の行はそのまま素通し。
+  const [playableImageUrl, setPlayableImageUrl] = useState<string | null>(null);
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
@@ -517,13 +546,19 @@ export function UpscaleStudioTab() {
     }
   }, [user, batchItems, batchInsufficientCredits, modelKey, modeId]);
 
-  const batchCompletedUrls = useMemo(
+  // job.resultUrl は署名前の生の値（Volume相対パスの場合あり）。実フェッチ
+  // 直前に resolveUpscaleImageUrl で実URLへ解決する（CLAUDE.md §1）。
+  const batchCompletedResults = useMemo(
     () =>
       batchJobIds
         .map((id) => batchJobs[id])
         .filter((j): j is UpscaleJob => Boolean(j?.resultUrl && j.status === "completed"))
-        .map((j) => j.resultUrl as string),
+        .map((j) => ({ id: j.id, resultUrl: j.resultUrl as string })),
     [batchJobIds, batchJobs],
+  );
+  const batchCompletedUrls = useMemo(
+    () => batchCompletedResults.map((r) => r.resultUrl),
+    [batchCompletedResults],
   );
   const [downloadingAll, setDownloadingAll] = useState(false);
 
@@ -531,16 +566,17 @@ export function UpscaleStudioTab() {
   // として2つ目以降を黙ってブロックすることがある（Chrome等）。MultiAngleStudioTab
   // と同じく ZIP に固めて1回のダウンロードにする。
   const handleDownloadAll = useCallback(async () => {
-    if (batchCompletedUrls.length === 0 || downloadingAll) return;
+    if (batchCompletedResults.length === 0 || downloadingAll) return;
     setDownloadingAll(true);
     try {
       const zip = new JSZip();
       await Promise.all(
-        batchCompletedUrls.map(async (url, i) => {
+        batchCompletedResults.map(async ({ id, resultUrl }, i) => {
+          const url = await resolveUpscaleImageUrl(id, resultUrl);
           const res = await fetch(url);
           if (!res.ok) return;
           const buf = await res.arrayBuffer();
-          const ext = /\.webp(\?|$)/i.test(url) ? "webp" : /\.jpe?g(\?|$)/i.test(url) ? "jpg" : "png";
+          const ext = /\.webp(\?|$)/i.test(resultUrl) ? "webp" : /\.jpe?g(\?|$)/i.test(resultUrl) ? "jpg" : "png";
           zip.file(`${String(i + 1).padStart(2, "0")}_upscale.${ext}`, buf);
         }),
       );
@@ -561,7 +597,7 @@ export function UpscaleStudioTab() {
     } finally {
       setDownloadingAll(false);
     }
-  }, [batchCompletedUrls, downloadingAll]);
+  }, [batchCompletedResults, downloadingAll]);
 
   // タブを閉じても続行 — batchJobIds をローカルに永続化してポーリングで復元。
   useEffect(() => {
@@ -683,12 +719,14 @@ export function UpscaleStudioTab() {
               // 次のジョブが画面を上書きする前に今の結果をブラウザへ自動
               // 保存する（連続キュー時、手動ダウンロードの間もなく次の
               // 生成中表示に切り替わり過去の結果に戻れなくなるUI上の
-              // ギャップへの対策。upscale-results バケットへは既に
-              // 永続化済みなので失敗しても致命的ではない）。
+              // ギャップへの対策。Volumeへは既に永続化済みなので失敗しても
+              // 致命的ではない）。
               if (next.resultUrl) {
-                downloadUpscaleImage(next.resultUrl, buildOutFilename(next.resultUrl)).catch((err) => {
-                  console.warn("[UpscaleStudioTab] auto-download before next queued job failed:", err);
-                });
+                resolveUpscaleImageUrl(next.id, next.resultUrl)
+                  .then((url) => downloadUpscaleImage(url, buildOutFilename(next.resultUrl as string)))
+                  .catch((err) => {
+                    console.warn("[UpscaleStudioTab] auto-download before next queued job failed:", err);
+                  });
               }
               queuedNextRef.current = null;
               setQueuedNext(null);
@@ -732,6 +770,23 @@ export function UpscaleStudioTab() {
       cancelled = true;
     };
   }, [jobId, markGpuWarm, runGenerate]);
+
+  // job完了後、resultUrlを実際に表示・ダウンロードできるURLへ解決する
+  // （Volume相対パスなら署名付きModal URLを発行、旧方式のURLはそのまま）。
+  useEffect(() => {
+    if (job?.status !== "completed" || !job.resultUrl) return;
+    let cancelled = false;
+    resolveUpscaleImageUrl(job.id, job.resultUrl)
+      .then((url) => {
+        if (!cancelled) setPlayableImageUrl(url);
+      })
+      .catch((err) => {
+        console.warn("[UpscaleStudioTab] resolveUpscaleImageUrl failed:", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [job?.id, job?.status, job?.resultUrl]);
 
   const model = getUpscaleModel(modelKey);
   const mode = effectiveUpscaleMode(getUpscaleMode(modeId), model);
@@ -1049,12 +1104,16 @@ export function UpscaleStudioTab() {
 
         {phase === "done" && job?.resultUrl && (
           <div className="flex flex-col gap-3">
-            {resultBeforeUrl ? (
-              <CompareSlider before={resultBeforeUrl} after={job.resultUrl} />
+            {!playableImageUrl ? (
+              <div className="flex h-40 w-full items-center justify-center rounded-xl border border-border bg-background text-xs text-muted">
+                読み込み中…
+              </div>
+            ) : resultBeforeUrl ? (
+              <CompareSlider before={resultBeforeUrl} after={playableImageUrl} />
             ) : (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={job.resultUrl}
+                src={playableImageUrl}
                 alt="アップスケール結果"
                 className="w-full rounded-xl border border-border bg-background"
               />
@@ -1070,10 +1129,11 @@ export function UpscaleStudioTab() {
             </div>
             <button
               type="button"
+              disabled={!playableImageUrl}
               onClick={() =>
-                job.resultUrl && downloadUpscaleImage(job.resultUrl, buildOutFilename(job.resultUrl))
+                playableImageUrl && downloadUpscaleImage(playableImageUrl, buildOutFilename(job.resultUrl as string))
               }
-              className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-background px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:border-neon-violet/40"
+              className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-background px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:border-neon-violet/40 disabled:opacity-50"
             >
               <Download size={16} />
               ダウンロード

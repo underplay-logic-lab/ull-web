@@ -75,10 +75,12 @@ Env overrides:
 import base64
 import gc
 import glob
+import hashlib
 import io
 import math
 import os
 import pathlib
+import re
 import threading
 import time
 from urllib.parse import urlparse
@@ -397,6 +399,9 @@ def _resolve_job_timeout(max_allowed_time) -> int:
     return int(min(ANGLE_JOB_TIMEOUT_HARD_CAP_S, bucketed))
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
+# download_angle_image 専用の read-only マウント（modal_seedvr2_worker.py::
+# vol_ro / modal_lora_worker.py::vol_ro と同じ理由・同じパターン）。
+vol_ro = vol.with_mount_options(read_only=True)
 
 
 def _hf_cache_env() -> dict:
@@ -797,33 +802,129 @@ def _refund_credits(user_id: str, amount: int) -> None:
         print(f"[angle-job] failed to refund {amount} credits to {user_id}: {exc}", flush=True)
 
 
-def _upload_angle_image(user_id: str, job_id: str, index: int, png_bytes: bytes):
-    """PNG を angle-results バケット（public）へ upsert し、公開 URL を返す。
-    ストレージ不通なら None（呼び出し側で data URI にフォールバック）。"""
-    import requests
+ANGLE_RESULTS_SUBDIR = "angle_results"
 
-    supabase_url = os.environ.get("SUPABASE_URL")
-    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-    if not supabase_url or not service_key:
-        return None
-    obj_path = f"{user_id or 'anon'}/{job_id}/{index:02d}.png"
+
+def _angle_image_rel_path(user_id: str, job_id: str, index: int) -> str:
+    """Volume相対パス（angle_results/<user_id>/<job_id>/<index>.png）を返す。
+    angle_jobs.images 配列にはURLではなくこの相対パスを保存し、配信時に
+    download_angle_image が同じ規則で実ファイルへ解決する。"""
+    return f"{ANGLE_RESULTS_SUBDIR}/{user_id or 'anon'}/{job_id}/{index:02d}.png"
+
+
+def _save_angle_image(user_id: str, job_id: str, index: int, png_bytes: bytes):
+    """PNG を Volume（angle_results/<user_id>/<job_id>/<index>.png）へ直接
+    保存する。Supabase Storage を一切経由しない（2026-09-18、CLAUDE.md §1
+    「大容量バイナリはSupabaseを経由させない」標準）。配信は
+    download_angle_image が署名付きURL・ブラウザ↔Modal直結方式で行う。
+    保存失敗時は None（呼び出し側は既存どおり data URI にフォールバック—
+    1アングル分の失敗でジョブ全体を落とさないため）。"""
+    rel_path = _angle_image_rel_path(user_id, job_id, index)
     try:
-        res = requests.post(
-            f"{supabase_url}/storage/v1/object/{_ANGLE_RESULTS_BUCKET}/{obj_path}",
-            headers={
-                "apikey": service_key,
-                "Authorization": f"Bearer {service_key}",
-                "Content-Type": "image/png",
-                "x-upsert": "true",
-            },
-            data=png_bytes,
-            timeout=60,
-        )
-        res.raise_for_status()
-        return f"{supabase_url}/storage/v1/object/public/{_ANGLE_RESULTS_BUCKET}/{obj_path}"
+        full_path = pathlib.Path(MODELS_DIR) / rel_path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_bytes(png_bytes)
+        vol.commit()
+        return rel_path
     except Exception as exc:  # noqa: BLE001
-        print(f"[angle-job] image upload failed ({obj_path}): {exc}", flush=True)
+        print(f"[angle-job] image save to volume failed ({rel_path}): {exc}", flush=True)
         return None
+
+
+# ブラウザから直接 download_angle_image を叩くための短命HMACトークン。
+# 他ワーカーの _verify_download_token と同じ方式——Next.js側の署名は
+# src/app/api/studio/angle/images/route.ts。
+def _verify_angle_download_token(user_id: str, job_id: str, filename: str, expires: str, sig: str) -> bool:
+    secret = os.environ.get("MODAL_AUTH_TOKEN", "")
+    if not secret or not sig:
+        return False
+    try:
+        if int(expires) < time.time():
+            return False
+    except ValueError:
+        return False
+    payload = f"{user_id}:{job_id}:{filename}:{expires}"
+    expected = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
+_ANGLE_DL_ID_RE = re.compile(r"^[0-9a-fA-F-]{1,64}$")
+_ANGLE_DL_FILENAME_RE = re.compile(r"^[0-9]{2}\.png$")
+_ANGLE_DL_CHUNK = 4 * 1024 * 1024  # 4 MiB
+
+
+def _stream_angle_download(file_path: pathlib.Path, *, request: fastapi.Request):
+    """他ワーカーの _stream_download と同一実装（4 MiB チャンク・Range 対応）
+    のcanonical copy。"""
+    file_size = file_path.stat().st_size
+    headers = {
+        "Content-Disposition": f'inline; filename="{file_path.name}"',
+        "Content-Type": "image/png",
+        "Accept-Ranges": "bytes",
+    }
+
+    start, end = 0, file_size - 1
+    status_code = 200
+    raw_range = request.headers.get("range") or request.headers.get("Range")
+    if raw_range:
+        m = re.match(r"\s*bytes=(\d*)-(\d*)\s*$", raw_range)
+        if m and (m.group(1) or m.group(2)):
+            if m.group(1):
+                start = int(m.group(1))
+                end = int(m.group(2)) if m.group(2) else file_size - 1
+            else:
+                start = max(0, file_size - int(m.group(2)))
+                end = file_size - 1
+            end = min(end, file_size - 1)
+            if start > end or start >= file_size:
+                return fastapi.responses.Response(
+                    status_code=416,
+                    headers={**headers, "Content-Range": f"bytes */{file_size}"},
+                )
+            status_code = 206
+            headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+
+    length = end - start + 1
+    headers["Content-Length"] = str(length)
+
+    def _iter():
+        remaining = length
+        with open(file_path, "rb", buffering=_ANGLE_DL_CHUNK) as fh:
+            if start:
+                fh.seek(start)
+            while remaining > 0:
+                chunk = fh.read(min(_ANGLE_DL_CHUNK, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return fastapi.responses.StreamingResponse(
+        _iter(), status_code=status_code, media_type="image/png", headers=headers
+    )
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol_ro},
+    timeout=1800,
+    scaledown_window=2,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="GET")
+def download_angle_image(user_id: str, job_id: str, filename: str, expires: str, sig: str, request: fastapi.Request):
+    if not _verify_angle_download_token(user_id, job_id, filename, expires, sig):
+        raise fastapi.HTTPException(status_code=403, detail="invalid or expired download link")
+    if not (_ANGLE_DL_ID_RE.match(user_id) and _ANGLE_DL_ID_RE.match(job_id) and _ANGLE_DL_FILENAME_RE.match(filename)):
+        raise fastapi.HTTPException(status_code=400, detail="invalid parameters")
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[download_angle_image] vol.reload() skipped: {exc}", flush=True)
+    file_path = pathlib.Path(MODELS_DIR) / ANGLE_RESULTS_SUBDIR / user_id / job_id / filename
+    if not file_path.is_file():
+        raise fastapi.HTTPException(status_code=404, detail="image not found (may have been auto-purged after 14 days)")
+    return _stream_angle_download(file_path, request=request)
 
 
 # ---------------------------------------------------------------------------
@@ -1816,7 +1917,7 @@ class QwenImageEditWorker:
                 result.images[0].save(buf, format="PNG")
                 png = buf.getvalue()
 
-                url = _upload_angle_image(user_id, job_id, idx, png)
+                url = _save_angle_image(user_id, job_id, idx, png)
                 if url is None:
                     # ストレージ不通でもフロントで表示できるよう data URI で返す。
                     url = "data:image/png;base64," + base64.b64encode(png).decode("ascii")

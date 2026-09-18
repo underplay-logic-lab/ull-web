@@ -1273,36 +1273,33 @@ def _get_upscale_job_status(job_id: str):
     return None
 
 
-def _upload_upscale_image(user_id: str, job_id: str, img_bytes: bytes, ext: str = "png"):
-    """完成画像を upscale-results バケット（public）へ upsert し、公開 URL を返す。
-    ストレージ不通なら None。ext は "png" / "webp" / "jpeg"。"""
-    import requests
+_UPSCALE_IMAGE_RESULTS_SUBDIR = "upscale_image_results"
 
-    supabase_url = os.environ.get("SUPABASE_URL")
-    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-    if not supabase_url or not service_key:
-        return None
+
+def _upscale_image_result_rel_path(user_id: str, job_id: str, ext: str) -> str:
+    """Volume相対パス（upscale_image_results/<user_id>/<job_id>.<ext>）を返す。
+    result_url カラムにはURLではなくこの相対パスを保存し、配信時に
+    download_upscale_image が同じ規則で実ファイルへ解決する。"""
     ext = (ext or "png").lstrip(".").lower()
-    mime = {"png": "image/png", "webp": "image/webp", "jpg": "image/jpeg", "jpeg": "image/jpeg"}.get(
-        ext, "image/png"
-    )
-    obj_path = f"{user_id or 'anon'}/{job_id}.{ext}"
+    return f"{_UPSCALE_IMAGE_RESULTS_SUBDIR}/{user_id or 'anon'}/{job_id}.{ext}"
+
+
+def _save_upscale_image(user_id: str, job_id: str, img_bytes: bytes, ext: str = "png"):
+    """完成画像を Volume（upscale_image_results/<user_id>/<job_id>.<ext>）へ
+    直接保存する。Supabase Storage を一切経由しない（2026-09-18、CLAUDE.md
+    §1「大容量バイナリはSupabaseを経由させない」標準・動画に続く適用）。
+    配信は download_upscale_image が download_upscale_original と同じ
+    署名付きURL・ブラウザ↔Modal直結方式で行う。保存失敗時は None（呼び出し
+    側は既存どおりジョブ失敗・返金）。ext は "png" / "webp" / "jpeg"。"""
+    rel_path = _upscale_image_result_rel_path(user_id, job_id, ext)
     try:
-        res = requests.post(
-            f"{supabase_url}/storage/v1/object/{_UPSCALE_RESULTS_BUCKET}/{obj_path}",
-            headers={
-                "apikey": service_key,
-                "Authorization": f"Bearer {service_key}",
-                "Content-Type": mime,
-                "x-upsert": "true",
-            },
-            data=img_bytes,
-            timeout=180,
-        )
-        res.raise_for_status()
-        return f"{supabase_url}/storage/v1/object/public/{_UPSCALE_RESULTS_BUCKET}/{obj_path}"
+        full_path = pathlib.Path(MODELS_DIR) / rel_path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_bytes(img_bytes)
+        vol.commit()
+        return rel_path
     except Exception as exc:  # noqa: BLE001
-        print(f"[upscale-job] image upload failed ({obj_path}): {exc}", flush=True)
+        print(f"[upscale-job] image save to volume failed ({rel_path}): {exc}", flush=True)
         return None
 
 
@@ -2232,7 +2229,7 @@ class SeedVR2Worker:
         _vram_thread.join(timeout=3)
 
         _ext = (r.get("filename") or "out.png").rsplit(".", 1)[-1].lower()
-        url = _upload_upscale_image(user_id, job_id, r["data"], _ext)
+        url = _save_upscale_image(user_id, job_id, r["data"], _ext)
         meta = {
             "vram_used_gb": r["vram_used_gb"],
             "vram_peak_gb": r["vram_peak_gb"],
@@ -2852,6 +2849,47 @@ def download_upscale_video(user_id: str, job_id: str, expires: str, sig: str, re
     if not file_path.is_file():
         raise fastapi.HTTPException(status_code=404, detail="video not found (may have been auto-purged after 14 days)")
     return _stream_download(file_path, download_name=filename, media_type="video/mp4", request=request)
+
+
+# ---------------------------------------------------------------------------
+# 超解像画像の結果配信 — download_upscale_video と同じ設計（2026-09-18導入、
+# CLAUDE.md §1標準）。拡張子（png/webp/jpg/jpeg）がジョブごとに変わるため、
+# filenameはNext.js側が result_url（保存時のVolume相対パス）から拡張子を
+# 読み取って組み立てる。
+# ---------------------------------------------------------------------------
+def _upscale_image_ext_from_rel_path(rel_path: str) -> str:
+    return rel_path.rsplit(".", 1)[-1].lower() if "." in rel_path else "png"
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol_ro},
+    timeout=3600,
+    scaledown_window=2,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="GET")
+def download_upscale_image(user_id: str, job_id: str, filename: str, expires: str, sig: str, request: fastapi.Request):
+    if not _verify_download_token(user_id, job_id, filename, expires, sig):
+        raise fastapi.HTTPException(status_code=403, detail="invalid or expired download link")
+    if not (
+        _ORIG_DL_ID_RE.match(user_id)
+        and _ORIG_DL_ID_RE.match(job_id)
+        and _ORIG_DL_FILENAME_RE.match(filename)
+    ):
+        raise fastapi.HTTPException(status_code=400, detail="invalid parameters")
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[download] vol.reload() skipped: {exc}", flush=True)
+    file_path = pathlib.Path(MODELS_DIR) / _UPSCALE_IMAGE_RESULTS_SUBDIR / user_id / filename
+    if not file_path.is_file():
+        raise fastapi.HTTPException(status_code=404, detail="image not found (may have been auto-purged after 14 days)")
+    ext = _upscale_image_ext_from_rel_path(filename)
+    media = {"png": "image/png", "webp": "image/webp", "jpg": "image/jpeg", "jpeg": "image/jpeg"}.get(
+        ext, "application/octet-stream"
+    )
+    return _stream_download(file_path, download_name=filename, media_type=media, request=request)
 
 
 # ---------------------------------------------------------------------------

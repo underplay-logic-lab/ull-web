@@ -3,8 +3,10 @@ ULL データ保持ポリシー（CLAUDE.md §3）の実施 — 日次 purge。
 
 生成物は一律 14 日で削除する:
   Supabase Storage
-    angle-results   … Multi-Angle 出力
-    upscale-results … 超解像 出力（画像。動画は2026-09-18〜Volume直接配信へ移行済み、下記参照）
+    angle-results   … Multi-Angle 出力（旧方式で保存済みの行のみ。2026-09-18〜、
+      新規生成分はVolume直接配信へ移行済み、下記参照。移行前の行が14日経過するまでの経過措置）
+    upscale-results … 超解像 出力（旧方式で保存済みの行のみ。2026-09-18〜、画像・動画とも
+      新規生成分はVolume直接配信へ移行済み、下記参照。移行前の行が14日経過するまでの経過措置）
     lora_datasets   … LoRA 学習用アップロード画像
   Modal Volume (ull-wan-models)
     loras/<lora_name>.safetensors      … 完成 LoRA の名前付きエイリアス
@@ -15,6 +17,12 @@ ULL データ保持ポリシー（CLAUDE.md §3）の実施 — 日次 purge。
       modal_wan_animate_blackwell.py::download_director_video が配信する実体）
     upscale_video_results/<user_id>/<job_id>.mp4 … 超解像動画 結果（同標準、2026-09-18〜。
       modal_seedvr2_worker.py::download_upscale_video が配信する実体）
+    upscale_image_results/<user_id>/<job_id>.<ext> … 超解像画像 結果（同標準、2026-09-18〜。
+      modal_seedvr2_worker.py::download_upscale_image が配信する実体）
+    angle_results/<user_id>/<job_id>/<index>.png … Multi-Angle 結果（同標準、2026-09-18〜。
+      modal_angle_worker.py::download_angle_image が配信する実体。1ジョブ=1ディレクトリ）
+    custom_workflow_results/<user_id>/<job_id>.<ext> … 特化ワークフロー 結果（同標準、2026-09-18〜。
+      scripts/modal_wan_animate.py::download_custom_workflow_result が配信する実体）
   Supabase DB
     angle_jobs / upscale_jobs / generation_jobs の古い行
 
@@ -58,6 +66,17 @@ UPSCALE_ORIGINALS_DIR = f"{MODELS_DIR}/upscale_originals"
 # per-jobディレクトリではない）なので専用のpurgeヘルパーを使う。
 DIRECTOR_RESULTS_DIR = f"{MODELS_DIR}/director_results"
 UPSCALE_VIDEO_RESULTS_DIR = f"{MODELS_DIR}/upscale_video_results"
+UPSCALE_IMAGE_RESULTS_DIR = f"{MODELS_DIR}/upscale_image_results"
+# 2026-09-18: Multi-Angle も同標準を適用。angle_results/<uid>/<jobid>/ は
+# 1ジョブにつき複数PNG（8〜96構図）を持つ per-job ディレクトリなので、
+# upscale_originals と同じ「ディレクトリ単位のmtime孤児掃除」ロジックを使う
+# （flatファイル用の _purge_volume_flat_files ではなく後述の
+# _purge_volume_job_dirs を再利用）。
+ANGLE_RESULTS_DIR = f"{MODELS_DIR}/angle_results"
+# 2026-09-18: 特化ワークフロー（scripts/modal_wan_animate.py の
+# custom_workflow、"標準"/L40S ティアの WanAnimate クラス）も同標準を適用。
+# 1ジョブ=1ファイルのflat配置なので _purge_volume_flat_files を使う。
+CUSTOM_WORKFLOW_RESULTS_DIR = f"{MODELS_DIR}/custom_workflow_results"
 
 RETENTION_DAYS = int(os.environ.get("ULL_RETENTION_DAYS", "14"))
 # _purge() が実行時に上書きする（module import 時の env はコンテナに無いため、
@@ -362,6 +381,51 @@ def _purge_volume_upscale_originals(cutoff_epoch: float) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 2b-2) upscale_originals と同じ「per-job ディレクトリを mtime で掃除」ロジック
+#     の汎用版。angle_results/<uid>/<jobid>/ のように1ジョブ=1ディレクトリ・
+#     複数ファイルの配置に使う（flatファイル用の _purge_volume_flat_files とは
+#     区別する）。
+# ---------------------------------------------------------------------------
+def _purge_volume_job_dirs(root_dir: str, cutoff_epoch: float, label: str) -> dict:
+    import pathlib
+
+    removed_dirs = 0
+    root = pathlib.Path(root_dir)
+    if not root.is_dir():
+        return {"removed_dirs": 0}
+
+    for uid_dir in list(root.iterdir()):
+        if not uid_dir.is_dir():
+            continue
+        for job_dir in list(uid_dir.iterdir()):
+            try:
+                if job_dir.is_dir() and job_dir.stat().st_mtime < cutoff_epoch:
+                    if not DRY_RUN:
+                        shutil.rmtree(job_dir, ignore_errors=True)
+                    removed_dirs += 1
+                    print(
+                        f"[purge][{label}] {uid_dir.name}/{job_dir.name}{' (DRY)' if DRY_RUN else ''}",
+                        flush=True,
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            if not any(uid_dir.iterdir()) and not DRY_RUN:
+                uid_dir.rmdir()
+        except Exception:  # noqa: BLE001
+            pass
+
+    if removed_dirs and not DRY_RUN:
+        try:
+            vol.commit()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[purge][{label}] vol.commit skipped: {exc}", flush=True)
+
+    print(f"[purge][{label}] dirs={removed_dirs}{' (DRY_RUN)' if DRY_RUN else ''}", flush=True)
+    return {"removed_dirs": removed_dirs}
+
+
+# ---------------------------------------------------------------------------
 # 2c) Modal Volume の "<user_id>/<job_id>.<ext>" フラットファイル配置を mtime
 #     で掃除する汎用ヘルパー。director_results/ と upscale_video_results/ は
 #     どちらもDB参照の無い純粋な副産物（ダウンロードエンドポイントが404を
@@ -470,6 +534,9 @@ def _purge(dry_run: bool | None = None) -> dict:
         "upscale_originals": {},
         "director_results": {},
         "upscale_video_results": {},
+        "upscale_image_results": {},
+        "angle_results": {},
+        "custom_workflow_results": {},
     }
     for b in buckets:
         report["buckets"].append(_sweep_bucket(b, cutoff_epoch))
@@ -478,6 +545,13 @@ def _purge(dry_run: bool | None = None) -> dict:
     report["director_results"] = _purge_volume_flat_files(DIRECTOR_RESULTS_DIR, cutoff_epoch, "director_results")
     report["upscale_video_results"] = _purge_volume_flat_files(
         UPSCALE_VIDEO_RESULTS_DIR, cutoff_epoch, "upscale_video_results"
+    )
+    report["upscale_image_results"] = _purge_volume_flat_files(
+        UPSCALE_IMAGE_RESULTS_DIR, cutoff_epoch, "upscale_image_results"
+    )
+    report["angle_results"] = _purge_volume_job_dirs(ANGLE_RESULTS_DIR, cutoff_epoch, "angle_results")
+    report["custom_workflow_results"] = _purge_volume_flat_files(
+        CUSTOM_WORKFLOW_RESULTS_DIR, cutoff_epoch, "custom_workflow_results"
     )
     report["rows"] = _purge_job_rows(cutoff_iso)
     report["elapsed_s"] = round(time.time() - started, 1)
