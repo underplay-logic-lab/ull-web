@@ -7,6 +7,7 @@ import {
   markLoraJobContainerDead,
   markLoraJobCompletedFromModal,
 } from "@/lib/loraJobHealth";
+import { isDirectorVideoVolumePath, signDirectorVideoUrl } from "@/lib/directorVideoDownload.server";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -177,11 +178,28 @@ export async function GET(request: Request, { params }: RouteParams) {
   const combinedPrompt = typeof inputs?.combined_prompt === "string" ? inputs.combined_prompt : null;
   const combinedPromptJa = typeof inputs?.combined_prompt_ja === "string" ? inputs.combined_prompt_ja : null;
 
+  // Director（2026-09-18〜）は video_url にSupabase公開URLではなく
+  // Volume相対パス（director_results/<user_id>/<job_id>.mp4）を保存する
+  // ようになった（CLAUDE.md §1「大容量バイナリはSupabaseを経由させない」
+  // 標準）。ポーリングのたびにここで短命の署名付きModal URLへ差し替えて
+  // 返す——ブラウザはそのURLへ直接アクセスし、Supabase/Vercelどちらの
+  // 帯域も経由しない。旧方式で既に保存済みの行（http(s) URL）はそのまま
+  // 素通しする（14日パージで自然に無くなるまでの経過措置）。
+  let videoUrl = (effJob.video_url as string | null) ?? null;
+  if (
+    videoUrl &&
+    effJob.workflow_type === "director" &&
+    !videoUrl.startsWith("data:") &&
+    isDirectorVideoVolumePath(videoUrl)
+  ) {
+    videoUrl = signDirectorVideoUrl(userData.user.id, String(effJob.id)) ?? videoUrl;
+  }
+
   return NextResponse.json({
     jobId: effJob.id,
     status,
     workflowType: effJob.workflow_type ?? null,
-    videoUrl: effJob.video_url ?? null,
+    videoUrl,
     errorMessage: effJob.error_message ?? null,
     createdAt: effJob.created_at ?? null,
     updatedAt: effJob.updated_at ?? null,

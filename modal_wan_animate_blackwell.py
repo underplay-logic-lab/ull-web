@@ -90,6 +90,11 @@ ALLOWED_DOWNLOAD_HOSTS = ("huggingface.co", "civitai.com")
 ALLOWED_GIT_HOSTS = ("github.com",)
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
+# Director の動画配信エンドポイント（download_director_video）専用の
+# read-only マウント。書き込み権限を持たせると、別コンテナが直後に書いた
+# ファイルを古いスナップショットのまま自動コミットで巻き戻しかねないため
+# 分離する（modal_lora_worker.py::vol_ro と同じ理由・同じパターン）。
+vol_ro = vol.with_mount_options(read_only=True)
 
 
 def _reload_volume(tag: str) -> None:
@@ -721,6 +726,39 @@ def cleanup_old_outputs():
     print(f"[cleanup_old_outputs] removed {removed} file(s) older than {OUTPUTS_ALL_RETENTION_DAYS} days.")
 
 
+DIRECTOR_RESULTS_RETENTION_DAYS = 14
+DIRECTOR_RESULTS_SUBDIR = "director_results"
+
+
+@app.function(image=image, volumes={MODELS_DIR: vol}, schedule=modal.Period(days=1), timeout=300)
+def cleanup_old_director_results():
+    """director_results/<user_id>/<job_id>.mp4 を14日経過後に削除する
+    （CLAUDE.md §3 の生成物14日自動パージを、Volume直接配信方式に移行した
+    Cinematic Director 側でも維持するためのスケジュール関数。
+    2026-09-18導入 — download_director_video が配信するVolume上の実体を
+    ここで一括管理する）。"""
+    root_dir = os.path.join(MODELS_DIR, DIRECTOR_RESULTS_SUBDIR)
+    if not os.path.isdir(root_dir):
+        print("[cleanup_old_director_results] director_results/ does not exist yet, nothing to do.")
+        return
+
+    cutoff = time.time() - DIRECTOR_RESULTS_RETENTION_DAYS * 24 * 60 * 60
+    removed = 0
+    for user_dir in os.listdir(root_dir):
+        full_dir = os.path.join(root_dir, user_dir)
+        if not os.path.isdir(full_dir):
+            continue
+        for name in os.listdir(full_dir):
+            path = os.path.join(full_dir, name)
+            if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                removed += 1
+
+    if removed:
+        vol.commit()
+    print(f"[cleanup_old_director_results] removed {removed} file(s) older than {DIRECTOR_RESULTS_RETENTION_DAYS} days.")
+
+
 def _supabase_patch_download(download_id: str, fields: dict) -> None:
     """
     Best-effort PATCH of one model_downloads row (progress reporting for the
@@ -835,32 +873,118 @@ def _supabase_patch_job(job_id: str, fields: dict) -> None:
         print(f"[generation_jobs] failed to update job {job_id} (after retries): {exc}")
 
 
-_DIRECTOR_RESULTS_BUCKET = "director-results"
+_DIRECTOR_VIDEO_ID_RE = re.compile(r"^[0-9a-fA-F-]{1,64}$")
 
 
-def _upload_director_video(user_id: str, job_id: str, video_bytes: bytes) -> str | None:
-    """mp4 を director-results バケット（public）へ upsert し、公開 URL を返す。
-    アップロード失敗時は None（呼び出し側で base64 data URI にフォールバック）。
-    Multi-Angle の _upload_angle_image / 超解像の _upload_upscale_video と同じ
-    パターンへ統一（CLAUDE.md §6「生成物は同期/非同期を問わず必ず永続ストレージ
-    へ保存する」— Cinematic Director だけ video_url に base64 を直接埋め込む
-    旧方式のままだったのを是正。2026-09-17）。"""
-    supabase_url = os.environ.get("SUPABASE_URL")
-    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-    if not supabase_url or not service_key:
-        return None
-    obj_path = f"{user_id or 'anon'}/{job_id}.mp4"
+def _director_video_rel_path(user_id: str, job_id: str) -> str:
+    """Volume相対パス（director_results/<user_id>/<job_id>.mp4）を返す。
+    video_url カラムにはURLではなくこの相対パスを保存し、配信時に
+    download_director_video が同じ規則で実ファイルへ解決する。"""
+    return f"{DIRECTOR_RESULTS_SUBDIR}/{user_id or 'anon'}/{job_id}.mp4"
+
+
+def _save_director_video(user_id: str, job_id: str, video_bytes: bytes) -> str | None:
+    """mp4 を Volume（director_results/<user_id>/<job_id>.mp4）へ直接保存する。
+    Supabase Storage を一切経由しない（2026-09-18、CLAUDE.md §1 新設の
+    「大容量バイナリはSupabaseを経由させない」標準の第一号適用——
+    download_lora_checkpoint と同じ「ブラウザ⇔Modal直結・単一ホップ配信」
+    パターンをDirectorの動画結果にも適用する）。保存失敗時は None（呼び出し
+    側で base64 data URI にフォールバック）。
+    旧実装（2026-09-17〜18の間だけ存在）は director-results という Supabase
+    Storage の公開バケットへ upsert していたが、Storageからの配信自体が
+    Supabase Freeプランの月間送信量クォータ（5GB）を消費する主因の一つだった
+    ため撤回した。"""
+    rel_path = _director_video_rel_path(user_id, job_id)
     try:
-        _supabase_request_checked(
-            "POST",
-            f"/storage/v1/object/{_DIRECTOR_RESULTS_BUCKET}/{obj_path}",
-            headers={"Content-Type": "video/mp4", "x-upsert": "true"},
-            data=video_bytes,
-        )
-        return f"{supabase_url}/storage/v1/object/public/{_DIRECTOR_RESULTS_BUCKET}/{obj_path}"
+        full_path = os.path.join(MODELS_DIR, rel_path)
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, "wb") as f:
+            f.write(video_bytes)
+        vol.commit()
+        return rel_path
     except Exception as exc:  # noqa: BLE001 — 失敗時は呼び出し側が data URI にフォールバック
-        print(f"[director-job] video upload failed ({obj_path}): {exc}", flush=True)
+        print(f"[director-job] video save to volume failed ({rel_path}): {exc}", flush=True)
         return None
+
+
+# ブラウザから直接 download_director_video を叩くための短命HMACトークン。
+# _verify_download_token（modal_lora_worker.py、LoRAチェックポイント配信）と
+# 同じ方式——Next.js側の署名は src/lib/directorVideoDownload.server.ts。
+def _verify_director_video_token(user_id: str, job_id: str, expires: str, sig: str) -> bool:
+    secret = os.environ.get("MODAL_AUTH_TOKEN", "")
+    if not secret or not sig:
+        return False
+    try:
+        if int(expires) < time.time():
+            return False
+    except ValueError:
+        return False
+    payload = f"director-video:{user_id}:{job_id}:{expires}"
+    expected = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
+# download_lora_checkpoint（modal_lora_worker.py）の _stream_download と
+# 挙動を合わせたcanonical copy — Range対応で7GB級の動画でも途切れた
+# ダウンロードが先頭からやり直しにならないようにする。
+_DIRECTOR_DL_CHUNK = 4 * 1024 * 1024  # 4 MiB
+
+
+def _stream_director_video(file_path: str, *, request: fastapi.Request):
+    file_size = os.path.getsize(file_path)
+    headers = {
+        "Content-Disposition": 'inline; filename="director-video.mp4"',
+        "Content-Type": "video/mp4",
+        "Accept-Ranges": "bytes",
+        # directorApi.ts::downloadDirectorVideo は fetch()+blob でダウンロード
+        # する実装（クロスオリジンの <a download> がブラウザによっては無視
+        # される問題への対策として2026-09-17に導入済み）なので、単純GET・
+        # 追加ヘッダなしの「CORSシンプルリクエスト」がプリフライト無しで
+        # 読めるよう Access-Control-Allow-Origin を返す。URL自体が短命HMAC
+        # トークンで保護されているため、オリジンを絞らなくても漏洩しない
+        # （署名付きURLを知らない第三者はそもそも到達できない）。
+        "Access-Control-Allow-Origin": "*",
+    }
+
+    start, end = 0, file_size - 1
+    status_code = 200
+    raw_range = request.headers.get("range") or request.headers.get("Range")
+    if raw_range:
+        m = re.match(r"\s*bytes=(\d*)-(\d*)\s*$", raw_range)
+        if m and (m.group(1) or m.group(2)):
+            if m.group(1):
+                start = int(m.group(1))
+                end = int(m.group(2)) if m.group(2) else file_size - 1
+            else:  # suffix range: bytes=-N -> 末尾Nバイト
+                start = max(0, file_size - int(m.group(2)))
+                end = file_size - 1
+            end = min(end, file_size - 1)
+            if start > end or start >= file_size:
+                return fastapi.responses.Response(
+                    status_code=416,
+                    headers={**headers, "Content-Range": f"bytes */{file_size}"},
+                )
+            status_code = 206
+            headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+
+    length = end - start + 1
+    headers["Content-Length"] = str(length)
+
+    def _iter():
+        remaining = length
+        with open(file_path, "rb", buffering=_DIRECTOR_DL_CHUNK) as fh:
+            if start:
+                fh.seek(start)
+            while remaining > 0:
+                chunk = fh.read(min(_DIRECTOR_DL_CHUNK, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return fastapi.responses.StreamingResponse(
+        _iter(), status_code=status_code, media_type="video/mp4", headers=headers
+    )
 
 
 def _current_effective_vram_gb():
@@ -1887,21 +2011,21 @@ class WanAnimateBlackwell:
             "vram_used_gb": _vram_used_gb,
         }
         if is_async:
-            # director-results バケットへアップロードし公開URLを永続化する
-            # （CLAUDE.md §6）。旧実装は video_url に base64 を直接埋め込む
-            # だけで Storage に一切残さなかった（"videos are never durably
-            # stored server-side" という当時のコメントは、廃止済みの旧
-            # CinematicVideoTab.tsx が持っていた「サーバーに保存されずブラウザ
-            # を閉じると消滅する」という注意書きに合わせた名残で、現行の
-            # DirectorStudioTab.tsx にはその注意書き自体がもう無い）。
-            # Multi-Angle/超解像と同じ「アップロード失敗時のみ data URI に
-            # フォールバック」方式へ統一（2026-09-17）。
+            # Volume（director_results/<user_id>/<job_id>.mp4）へ直接保存し、
+            # video_url にはURLではなくそのVolume相対パスを永続化する
+            # （CLAUDE.md §1「大容量バイナリはSupabaseを経由させない」標準・
+            # 2026-09-18。配信はdownload_director_videoがブラウザへ直接
+            # ストリームする——Supabase Storageの公開バケット/storageに
+            # 一切のバイト列を通さない。/api/jobs/[id]がこのパスを見て
+            # 署名付きModal URLへ都度差し替える）。旧実装（director-results
+            # バケットへupsertする方式）はSupabase Freeプランの月間送信量
+            # クォータを消費する主因の一つだったため撤回した。
             if _vram_thread is not None:
                 _vram_thread.join(timeout=3)
-            uploaded_url = _upload_director_video(user_id, job_id, result_bytes)
+            saved_rel_path = _save_director_video(user_id, job_id, result_bytes)
             _completed_fields = {
                 "status": "completed",
-                "video_url": uploaded_url or f"data:video/mp4;base64,{result_base64}",
+                "video_url": saved_rel_path or f"data:video/mp4;base64,{result_base64}",
                 "completed_at": _now_iso(),
                 "metadata": {"gpu_tier": _gpu_tier_label()},
             }
@@ -1969,6 +2093,45 @@ def custom_workflow_async(item: dict, request: fastapi.Request):
         item.get("lora_filename"),
     )
     return {"ok": True, "job_id": job_id, "call_id": call.object_id}
+
+
+# ブラウザに直接叩かせるDirector動画配信エンドポイント（2026-09-18導入）。
+# download_lora_checkpoint と同じ設計——Next.jsは署名だけ発行し
+# （src/lib/directorVideoDownload.server.ts）、実バイト列は
+# ブラウザ⇔Modal間を1ホップで流れる（Supabase/Vercelいずれの帯域・
+# ボディサイズ上限も経由しない）。GPUレス・読み取り専用マウントで、
+# run_custom_workflow が書き込む director_results/ を都度最新化して読む。
+@app.function(
+    image=image,
+    volumes={MODELS_DIR: vol_ro},
+    timeout=3600,
+    scaledown_window=2,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="GET")
+def download_director_video(user_id: str, job_id: str, expires: str, sig: str, request: fastapi.Request):
+    # 403/400/404もCORSヘッダ付きで返す — directorApi.ts::downloadDirectorVideo
+    # は fetch() で呼ぶため、Access-Control-Allow-Origin の無いレスポンスは
+    # JS側からステータスコードすら読めず TypeError("Failed to fetch") に
+    # なってしまう（成功時の200/206だけ付けても不十分）。
+    _cors_headers = {"Access-Control-Allow-Origin": "*"}
+    if not _verify_director_video_token(user_id, job_id, expires, sig):
+        raise fastapi.HTTPException(status_code=403, detail="invalid or expired download link", headers=_cors_headers)
+    if not (_DIRECTOR_VIDEO_ID_RE.match(user_id) and _DIRECTOR_VIDEO_ID_RE.match(job_id)):
+        raise fastapi.HTTPException(status_code=400, detail="invalid parameters", headers=_cors_headers)
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001 — stale-but-present read is still better than a hard fail
+        print(f"[download_director_video] vol.reload() skipped: {exc}", flush=True)
+    rel_path = _director_video_rel_path(user_id, job_id)
+    full_path = os.path.join(MODELS_DIR, rel_path)
+    if not os.path.isfile(full_path):
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail="video not found (may have been auto-purged after 14 days)",
+            headers=_cors_headers,
+        )
+    return _stream_director_video(full_path, request=request)
 
 
 @app.cls(
