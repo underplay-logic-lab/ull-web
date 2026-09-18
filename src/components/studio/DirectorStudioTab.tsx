@@ -1062,10 +1062,22 @@ export function DirectorStudioTab() {
           )}
           {!busy && gpuWarm && <WarmCountdownBanner remainingMs={gpuWarmMs} />}
           {busy && !queuedNext && (
-            <p className="mt-2 flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-xs leading-relaxed text-neon-violet">
-              <Sparkles size={14} className="mt-0.5 shrink-0" />
-              バックグラウンドで生成中です。もう一度ボタンを押すと、次の生成を予約できます。
-            </p>
+            phase === "submitting" && loraSource === "upload" ? (
+              // LoRAアップロード中（startDirectorJob内、/api/director/generate
+              // を叩く前）だけはブラウザを閉じると本当に止まる特別な窓——
+              // ジョブがまだサーバー側に一切存在しないため（2026-09-19、
+              // ホスト指摘で追加）。ジョブ発行後(phase==="running")は
+              // 通常どおり閉じても継続する。
+              <p className="mt-2 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-300">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                LoRAファイルをアップロード中です。完了して生成が始まるまではブラウザを閉じたりタブを切り替えたりしないでください。途中で中断した場合は、もう一度同じファイルを選び直せば続きから再開できます。
+              </p>
+            ) : (
+              <p className="mt-2 flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-xs leading-relaxed text-neon-violet">
+                <Sparkles size={14} className="mt-0.5 shrink-0" />
+                バックグラウンドで生成中です。もう一度ボタンを押すと、次の生成を予約できます。
+              </p>
+            )
           )}
           {queuedNext && (
             <div className="mt-2">
