@@ -665,9 +665,15 @@ export function DirectorStudioTab() {
           onClear={() => setImage(null)}
         />
 
-        {uiMode !== "prompt" && (
-          // モード切替（2026-09-18追加）。"prompt" は結果画面の「編集して
-          // 再生成」からのみ入る特別モードなのでここには出さない。
+        {
+          // モード切替（2026-09-18追加、同日「プロンプトで作る」を追加）。
+          // "prompt" は元々「結果画面の編集して再生成」経由でしか入れない
+          // 特別モードだったが、Advanced（台本自動生成）はQwenが立ち上がる
+          // うえ文字数制限もあり「そのまま普通の日本語プロンプトを打ちたい」
+          // 用途には向かない——かつAdvanced自体は将来サブスク限定にする
+          // 可能性がある（TODO(advanced-gate)）ため、その中にチェックボックス
+          // で逃げ道を作るのではなく、シーンビルダーと対等な3つ目のタブとして
+          // 独立させた（ホストとの相談で決定）。
           // TODO(advanced-gate): Advanced を月額プラン限定にする場合は
           // ここで契約状態を見て disabled にする／アップセル導線を出す。
           <div className="flex items-center gap-2 rounded-xl border border-border bg-background p-1">
@@ -684,6 +690,17 @@ export function DirectorStudioTab() {
             <button
               type="button"
               disabled={busy}
+              onClick={() => setUiMode("prompt")}
+              className={`flex flex-1 items-center justify-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                uiMode === "prompt" ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
+              }`}
+            >
+              <Pencil size={12} />
+              プロンプトで作る
+            </button>
+            <button
+              type="button"
+              disabled={busy}
               onClick={() => setUiMode("advanced")}
               className={`flex flex-1 items-center justify-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                 uiMode === "advanced" ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
@@ -693,7 +710,7 @@ export function DirectorStudioTab() {
               Advanced（台本自動生成）
             </button>
           </div>
-        )}
+        }
 
         {uiMode === "prompt" ? (
           <div>
