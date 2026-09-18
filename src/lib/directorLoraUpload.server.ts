@@ -24,6 +24,9 @@ const SAFE_FILENAME_RE = /^[A-Za-z0-9._-]{1,120}\.safetensors$/;
 
 export type DirectorLoraUploadTicket = {
   uploadUrl: string;
+  /** 中断からの再開用ステータス確認エンドポイント（2026-09-19導入）。
+   * upload_user_loraと同じ署名を使い回せる（HTTPメソッドは署名対象外）。 */
+  statusUrl: string;
   userId: string;
   filename: string;
   volumePath: string;
@@ -32,16 +35,23 @@ export type DirectorLoraUploadTicket = {
 };
 
 /** アップロード先ファイル名を発行し、署名付きアップロードチケットを返す。
- * filename は呼び出し側（クライアント）が生成した "<uuid>-<safeName>.safetensors"
- * をそのまま受け取る想定——一意性はクライアント側のUUID生成に依存する。 */
+ * filename は呼び出し側（クライアント）が生成した決定的な名前
+ * "<size>-<lastModified>-<safeName>.safetensors" をそのまま受け取る想定
+ * （2026-09-19、乱数UUIDから変更 — 同じファイルを選び直せば毎回同じ名前に
+ * なるため、ブラウザを閉じて再開しても director_lora_upload_status で
+ * 前回の続きを検出できる）。 */
 export function createDirectorLoraUploadTicket(userId: string, filename: string): DirectorLoraUploadTicket {
   if (!SAFE_FILENAME_RE.test(filename)) {
     throw new Error("不正なファイル名です。");
   }
   const uploadUrl = process.env.MODAL_LORA_UPLOAD_URL;
+  const statusUrl = process.env.MODAL_LORA_UPLOAD_STATUS_URL;
   const authToken = process.env.MODAL_AUTH_TOKEN;
   if (!uploadUrl) {
     throw new Error("MODAL_LORA_UPLOAD_URL が未設定です（modal_lora_worker.py の upload_user_lora のURL）。");
+  }
+  if (!statusUrl) {
+    throw new Error("MODAL_LORA_UPLOAD_STATUS_URL が未設定です（modal_lora_worker.py の director_lora_upload_status のURL）。");
   }
   if (!authToken) {
     throw new Error("MODAL_AUTH_TOKEN が未設定です。");
@@ -53,6 +63,7 @@ export function createDirectorLoraUploadTicket(userId: string, filename: string)
     .digest("hex");
   return {
     uploadUrl,
+    statusUrl,
     userId,
     filename,
     volumePath: `director_user_loras/${userId}/${filename}`,

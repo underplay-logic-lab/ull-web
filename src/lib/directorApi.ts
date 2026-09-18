@@ -159,9 +159,14 @@ export async function uploadDirectorLoraFile(userId: string, file: File): Promis
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) throw new Error("ログインが必要です。");
 
-  const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-100) || "lora.safetensors";
-  const uuid = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}`;
-  const filename = `${uuid}-${safeName}`;
+  // ファイルサイズ＋更新日時から決定的な名前を作る（2026-09-19、乱数UUID
+  // から変更）。同じファイルを選び直せば毎回同じVolumeパスに解決するので、
+  // ブラウザがバックグラウンドタブの切断・スリープ・ネットワーク断で
+  // 1GB級のアップロード中に落ちても、下のステータス確認で前回の続きを
+  // 検出して再開できる（ホスト指摘: 「仕掛けたらブラウザを落として良い」
+  // という使い方が前提なら、単発送りっぱなしは脆すぎる）。
+  const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "lora.safetensors";
+  const filename = `${file.size}-${file.lastModified}-${safeName}`;
 
   const ticketRes = await fetch("/api/director/loras/upload-token", {
     method: "POST",
@@ -171,15 +176,42 @@ export async function uploadDirectorLoraFile(userId: string, file: File): Promis
   const ticket = await ticketRes.json();
   if (!ticketRes.ok) throw new Error(ticket?.error || "アップロード準備に失敗しました。");
 
-  const url = new URL(ticket.uploadUrl);
-  url.searchParams.set("user_id", ticket.userId);
-  url.searchParams.set("filename", ticket.filename);
-  url.searchParams.set("expires", String(ticket.expiresAt));
-  url.searchParams.set("sig", ticket.sig);
+  const buildSignedUrl = (base: string): URL => {
+    const u = new URL(base);
+    u.searchParams.set("user_id", ticket.userId);
+    u.searchParams.set("filename", ticket.filename);
+    u.searchParams.set("expires", String(ticket.expiresAt));
+    u.searchParams.set("sig", ticket.sig);
+    return u;
+  };
 
-  const uploadRes = await fetch(url.toString(), {
+  // 前回どこまで届いているか確認する（失敗しても致命的ではない——確認
+  // できなければ existingBytes=0 のまま、つまり最初から送るだけ）。
+  let existingBytes = 0;
+  try {
+    const statusRes = await fetch(buildSignedUrl(ticket.statusUrl).toString());
+    if (statusRes.ok) {
+      const statusData = await statusRes.json();
+      if (typeof statusData?.size_bytes === "number") existingBytes = statusData.size_bytes;
+    }
+  } catch (err) {
+    console.warn("[directorApi] upload status check failed, uploading from scratch:", err);
+  }
+
+  if (existingBytes >= file.size) {
+    // 既に前回のアップロードで最後まで届いていた（レスポンスが返る前に
+    // 切断されただけ等）。
+    _uploadedLoraCache.set(file, ticket.volumePath as string);
+    return { volumePath: ticket.volumePath as string };
+  }
+
+  const uploadUrl = buildSignedUrl(ticket.uploadUrl);
+  if (existingBytes > 0) uploadUrl.searchParams.set("offset", String(existingBytes));
+  const body = existingBytes > 0 ? file.slice(existingBytes) : file;
+
+  const uploadRes = await fetch(uploadUrl.toString(), {
     method: "POST",
-    body: file,
+    body,
     headers: { "Content-Type": "application/octet-stream" },
   });
   const uploadData = await uploadRes.json().catch(() => null);

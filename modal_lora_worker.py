@@ -5553,7 +5553,18 @@ DIRECTOR_USER_LORA_SUBDIR = "director_user_loras"
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="POST")
-async def upload_user_lora(user_id: str, filename: str, expires: str, sig: str, request: fastapi.Request):
+async def upload_user_lora(
+    user_id: str, filename: str, expires: str, sig: str, request: fastapi.Request, offset: str = "0"
+):
+    """外部LoRAの直接アップロード。offset>0 のときは末尾追記で再開する
+    （2026-09-19導入 — ブラウザがタブのバックグラウンド化・スリープ・
+    ネットワーク切断等で1GB級のアップロード中に落ちても、ゼロから送り
+    直さず続きから送れるようにするため。ホスト指摘: 「仕掛けたらブラウザ
+    を落として良い」という使い方が前提なら、単発fetchで送りっぱなしは
+    脆すぎる）。offsetはクライアントが director_lora_upload_status で
+    事前に確認した値をそのまま渡す想定——サーバー側で実際のファイルサイズ
+    と一致するか必ず検証し、食い違っていれば409で弾いて再確認を促す
+    （並行アップロードや古い部分ファイルからの誤った継続を防ぐ）。"""
     if not _verify_upload_token(user_id, filename, expires, sig):
         raise fastapi.HTTPException(status_code=403, detail="invalid or expired upload link")
     if not (
@@ -5562,30 +5573,85 @@ async def upload_user_lora(user_id: str, filename: str, expires: str, sig: str, 
         and filename.endswith(".safetensors")
     ):
         raise fastapi.HTTPException(status_code=400, detail="invalid parameters")
+    try:
+        start_offset = int(offset)
+        if start_offset < 0:
+            raise ValueError
+    except ValueError:
+        raise fastapi.HTTPException(status_code=400, detail="invalid offset") from None
 
     dest_dir = pathlib.Path(MODELS_DIR) / DIRECTOR_USER_LORA_SUBDIR / user_id
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / filename
 
-    size = 0
     try:
-        with open(dest_path, "wb") as f:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[director-lora-upload] vol.reload() skipped: {exc}", flush=True)
+
+    current_size = dest_path.stat().st_size if dest_path.is_file() else 0
+    if start_offset != current_size:
+        raise fastapi.HTTPException(
+            status_code=409,
+            detail=f"offset mismatch (client={start_offset}, server has={current_size}) — re-check status and retry",
+        )
+
+    mode = "ab" if start_offset > 0 else "wb"
+    size = start_offset
+    try:
+        with open(dest_path, mode) as f:
             async for chunk in request.stream():
                 size += len(chunk)
                 if size > _UPLOAD_MAX_BYTES:
+                    dest_path.unlink(missing_ok=True)
                     raise fastapi.HTTPException(status_code=413, detail="file too large (max 2GB)")
                 f.write(chunk)
     except fastapi.HTTPException:
-        dest_path.unlink(missing_ok=True)
         raise
     except Exception as exc:  # noqa: BLE001
-        dest_path.unlink(missing_ok=True)
-        raise fastapi.HTTPException(status_code=500, detail=f"upload failed: {exc}") from exc
+        # ネットワーク切断等の中断——部分ファイルは消さない。次回のステータス
+        # 確認・レジュームでこの続きから送れるようにするため（413の桁違い
+        # オーバーだけは上でファイル自体を破棄済み）。
+        raise fastapi.HTTPException(status_code=500, detail=f"upload interrupted: {exc}") from exc
 
     vol.commit()
     rel_path = f"{DIRECTOR_USER_LORA_SUBDIR}/{user_id}/{filename}"
-    print(f"[director-lora-upload] saved {rel_path} ({size / 1024**2:.1f} MB)", flush=True)
+    print(
+        f"[director-lora-upload] saved {rel_path} ({size / 1024**2:.1f} MB"
+        f"{f', resumed from {start_offset / 1024**2:.1f} MB' if start_offset else ''})",
+        flush=True,
+    )
     return {"ok": True, "path": rel_path, "size_bytes": size}
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol_ro},
+    timeout=60,
+    scaledown_window=2,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="GET")
+def director_lora_upload_status(user_id: str, filename: str, expires: str, sig: str):
+    """upload_user_loraと同じ署名付きトークンで認証する、レジューム用の
+    「どこまで届いているか」確認エンドポイント（2026-09-19導入）。
+    _verify_upload_tokenのペイロードはHTTPメソッドを含まないため、
+    アップロード用に発行した1枚のチケットをこちらにもそのまま使い回せる。"""
+    if not _verify_upload_token(user_id, filename, expires, sig):
+        raise fastapi.HTTPException(status_code=403, detail="invalid or expired upload link")
+    if not (
+        _CKPT_DL_ID_RE.match(user_id)
+        and _CKPT_DL_FILENAME_RE.match(filename)
+        and filename.endswith(".safetensors")
+    ):
+        raise fastapi.HTTPException(status_code=400, detail="invalid parameters")
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[director-lora-upload-status] vol.reload() skipped: {exc}", flush=True)
+    dest_path = pathlib.Path(MODELS_DIR) / DIRECTOR_USER_LORA_SUBDIR / user_id / filename
+    size = dest_path.stat().st_size if dest_path.is_file() else 0
+    return {"exists": size > 0, "size_bytes": size}
 
 
 # Large downloads (a rank-32 minimax_h3 LoRA is ~1.18GB) stream in 4 MiB
