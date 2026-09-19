@@ -5601,7 +5601,15 @@ async def upload_user_lora(
     mode = "ab" if start_offset > 0 else "wb"
     size = start_offset
     try:
-        with open(dest_path, mode) as f:
+        # buffering=_DL_CHUNK: request.stream() から来る小さいチャンク
+        # （ASGIサーバー由来で数十KB程度）をそのまま f.write() すると、
+        # download 側で経験済みの「Modal Volume (NFS) への書き込みは
+        # 1回あたりのオーバーヘッドが大きく、小さい書き込みを大量に行うと
+        # 実効速度が数KB/秒まで落ち込む」現象がアップロード側でも起きる
+        # （_stream_download の 4 MiB バッファ読み込みと同じ問題の書き込み版）。
+        # BufferedWriter に 4 MiB のバッファを持たせ、実際の書き込み
+        # syscall を 4 MiB 単位にまとめて解決する。
+        with open(dest_path, mode, buffering=_DL_CHUNK) as f:
             async for chunk in request.stream():
                 size += len(chunk)
                 if size > _UPLOAD_MAX_BYTES:
