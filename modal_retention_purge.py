@@ -91,6 +91,17 @@ CUSTOM_WORKFLOW_RESULTS_DIR = f"{MODELS_DIR}/custom_workflow_results"
 # いるプロジェクト全体の方針と揃え、こちらも対象に含める。
 DIRECTOR_USER_LORAS_DIR = f"{MODELS_DIR}/director_user_loras"
 
+# 2026-09-19（ホスト指示）: 管理者アカウント（ADMIN_EMAILS）の生成物は自動削除
+# 対象外にする。ADMIN_EMAILS 自体は Next.js 側の管理画面ログイン許可リストで
+# ここ（独立した Modal 日次バッチ）からは参照できないため、対応する
+# auth.users.id を直接ハードコードしている。admin を追加/削除したら
+# ここも合わせて更新すること。
+ADMIN_USER_IDS = {
+    "e1e2ddb2-fd73-4feb-b789-76640d999b4b",  # underplay.project@gmail.com
+    "726453dc-7c51-4be3-94ef-5df97a7a2075",  # axelbh5@gmail.com
+    "696f4941-b97e-4096-85a6-c78c72c82173",  # t-numazaki@mud.biglobe.ne.jp
+}
+
 RETENTION_DAYS = int(os.environ.get("ULL_RETENTION_DAYS", "14"))
 # _purge() が実行時に上書きする（module import 時の env はコンテナに無いため、
 # ここでの評価はスケジュール実行の既定値でしかない）。run_once の DRY 引数、
@@ -226,6 +237,10 @@ def _sweep_bucket(bucket: str, cutoff_epoch: float) -> dict:
                 name = e.get("name")
                 if not name:
                     continue
+                # トップレベル（prefix=="")はユーザーフォルダ = user_id。admin
+                # フォルダはサブツリーごとスキャン対象から外す(=削除しない)。
+                if prefix == "" and name in ADMIN_USER_IDS:
+                    continue
                 full = f"{prefix}/{name}" if prefix else name
                 if e.get("id") is None:
                     stack.append(full)
@@ -281,6 +296,8 @@ def _purge_volume_loras(cutoff_epoch: float) -> dict:
         rows = []
 
     for row in rows:
+        if row.get("user_id") in ADMIN_USER_IDS:
+            continue
         rp = (row.get("result_path") or "").strip()
         # 名前付きエイリアス（loras/ 直下のフラットファイルのみ）。
         if rp.endswith(".safetensors"):
@@ -310,6 +327,8 @@ def _purge_volume_loras(cutoff_epoch: float) -> dict:
     # ユーザー削除ケースを拾う。ベース LoRA はフラットファイルなので無傷。
     for uid_dir in lora_root.iterdir():
         if not uid_dir.is_dir() or not _UUID_RE.match(uid_dir.name):
+            continue
+        if uid_dir.name in ADMIN_USER_IDS:
             continue
         for job_dir in list(uid_dir.iterdir()):
             try:
@@ -359,7 +378,7 @@ def _purge_volume_upscale_originals(cutoff_epoch: float) -> dict:
         return {"removed_dirs": 0}
 
     for uid_dir in list(root.iterdir()):
-        if not uid_dir.is_dir():
+        if not uid_dir.is_dir() or uid_dir.name in ADMIN_USER_IDS:
             continue
         for job_dir in list(uid_dir.iterdir()):
             try:
@@ -408,7 +427,7 @@ def _purge_volume_job_dirs(root_dir: str, cutoff_epoch: float, label: str) -> di
         return {"removed_dirs": 0}
 
     for uid_dir in list(root.iterdir()):
-        if not uid_dir.is_dir():
+        if not uid_dir.is_dir() or uid_dir.name in ADMIN_USER_IDS:
             continue
         for job_dir in list(uid_dir.iterdir()):
             try:
@@ -454,7 +473,7 @@ def _purge_volume_flat_files(root_dir: str, cutoff_epoch: float, label: str) -> 
         return {"removed_files": 0}
 
     for uid_dir in list(root.iterdir()):
-        if not uid_dir.is_dir():
+        if not uid_dir.is_dir() or uid_dir.name in ADMIN_USER_IDS:
             continue
         for f in list(uid_dir.iterdir()):
             try:
@@ -485,13 +504,19 @@ def _purge_volume_flat_files(root_dir: str, cutoff_epoch: float, label: str) -> 
 # 3) DB: 古いジョブ行を削除
 # ---------------------------------------------------------------------------
 def _purge_job_rows(cutoff_iso: str) -> dict:
+    # PostgREST の not.in.(...) フィルタで admin の user_id を除外する。
+    admin_filter = "(" + ",".join(sorted(ADMIN_USER_IDS)) + ")"
     out = {}
     for table in JOB_TABLES:
         try:
             if DRY_RUN:
                 res = _rest(
                     "GET", f"/rest/v1/{table}",
-                    params={"select": "id", "created_at": f"lt.{cutoff_iso}"},
+                    params={
+                        "select": "id",
+                        "created_at": f"lt.{cutoff_iso}",
+                        "user_id": f"not.in.{admin_filter}",
+                    },
                     headers={"Prefer": "count=exact", "Range": "0-0"},
                 )
                 cnt = res.headers.get("content-range", "*/0").split("/")[-1]
@@ -500,7 +525,10 @@ def _purge_job_rows(cutoff_iso: str) -> dict:
                 continue
             res = _rest(
                 "DELETE", f"/rest/v1/{table}",
-                params={"created_at": f"lt.{cutoff_iso}"},
+                params={
+                    "created_at": f"lt.{cutoff_iso}",
+                    "user_id": f"not.in.{admin_filter}",
+                },
                 headers={"Prefer": "return=representation"},
             )
             deleted = len(res.json()) if res.ok else 0
