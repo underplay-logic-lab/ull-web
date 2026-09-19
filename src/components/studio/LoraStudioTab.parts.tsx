@@ -279,7 +279,12 @@ export const MODES: { id: Mode; label: string; desc: string }[] = [
 
 export const PRESET_GROUPS: LoraPresetGroup[] = ["video", "photo", "anime"];
 
-export const OPTIMIZERS = ["adamw8bit", "adamw", "prodigy", "adafactor", "lion8bit"];
+// 2026-09-20: 並び順を変更。8bit 系（adamw8bit / lion8bit）は bitsandbytes の
+// int8 量子化オプティマイザで、VRAM を節約する代わりに CLAUDE.md §1 の量子化
+// 禁止方針に抵触する。上級者が明示的に選べるよう**選択肢としては残す**が、
+// 先頭（＝ドロップダウンで最初に目に入る位置）から末尾へ移し、既定
+// （DEFAULT_PRO.optimizer）は prodigy のままとする。
+export const OPTIMIZERS = ["prodigy", "adamw", "adafactor", "adamw8bit", "lion8bit"];
 export const LORA_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 
 // Safe, discrete hyperparameter choices — no free-form number entry (a

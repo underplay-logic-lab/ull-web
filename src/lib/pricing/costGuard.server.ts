@@ -1,5 +1,6 @@
 import "server-only";
 import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";
+import { LORA_ABS_MAX_RUN_S, loraEstimatedSeconds } from "@/lib/pricing/loraRuntime";
 
 // Central computation of the "原価割れ損切り" (cost-guard) seconds handed to the
 // Modal workers. Ported from modal_lora_worker.py's _credit_covered_seconds /
@@ -11,33 +12,12 @@ import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";
 // ceiling as a last-resort safety net; when a payload carries the value
 // computed here they use it directly.
 
-// 12h Modal container timeout minus a 20-min graceful-stop margin. Must match
-// LORA_ABS_MAX_RUN_S in modal_lora_worker.py.
-export const LORA_ABS_MAX_RUN_S = 12 * 60 * 60 - 20 * 60;
-
-// Measured seconds/iteration per ai-toolkit arch — floors the cost cap so a
-// correctly-priced-but-slow heavy model always has runway to finish its
-// declared step count. Mirrors LORA_SPI_BASELINE in modal_lora_worker.py.
-// Unlisted arch -> knobs.lora_spi_baseline_default.
-const LORA_SPI_BASELINE: Record<string, number> = {
-  minimax_h3: 5.0,
-  wan22_14b: 4.0,
-  wan21: 3.5,
-  ltx2: 3.5,
-  hunyuan: 4.0,
-  cogvideox: 4.0,
-  flux2_klein_4b: 1.1,
-  qwen_image: 2.0,
-  krea2: 2.0,
-  zimage: 1.2,
-  anima: 1.4,
-  // 2026-09-15実機計測（L40S・modal_sdxl_lora_worker.py・sd-scripts・rank16・
-  // 1024px・AdamW8bit）: 1.32s/it。旧値0.9はai-toolkit/Blackwell想定の
-  // 未検証の仮値だったが、SDXLアーキのジョブは now always sd-scripts/L40S
-  // ワーカーへルーティングされる（route.tsのisSdxlJob分岐）ため、実測値に
-  // 差し替え。多少の余裕を見て1.4に設定（既存の*1.3マージンは式側で別途適用）。
-  sdxl: 1.4,
-};
+// 2026-09-20: LORA_ABS_MAX_RUN_S と arch 別 s/it テーブル（LORA_SPI_BASELINE）は
+// src/lib/pricing/loraRuntime.ts へ移した。課金側（loraPricing.ts）と損切り側
+// （このファイル）が別々に同じ表を持っていた状態を解消するため — 実際 sdxl の
+// 値が課金側 1.4 / ワーカー側 0.9 で食い違っていた。再エクスポートは既存の
+// import 元を壊さないため。
+export { LORA_ABS_MAX_RUN_S } from "@/lib/pricing/loraRuntime";
 
 function creditCoveredSeconds(creditsCost: number, knobs: PricingKnobs): number {
   const revenueJpy = Math.max(0, creditsCost) * knobs.credit_to_jpy;
@@ -47,11 +27,18 @@ function creditCoveredSeconds(creditsCost: number, knobs: PricingKnobs): number 
   return Math.floor(Math.max(1800, Math.min(secs, LORA_ABS_MAX_RUN_S)));
 }
 
-function expectedRunFloorSeconds(arch: string, totalSteps: number, knobs: PricingKnobs): number {
-  if (totalSteps <= 0) return 0;
-  const spi = LORA_SPI_BASELINE[arch] ?? knobs.lora_spi_baseline_default;
-  const floor = knobs.lora_floor_prep_s + totalSteps * spi * 1.3;
-  return Math.floor(Math.min(floor, LORA_ABS_MAX_RUN_S));
+// 正しく課金されているが遅いジョブが、生成の途中で損切りに撃ち落とされない
+// ようにするための下限。課金額の算出に使ったのと **同じ見積もり関数** を通す
+// ので、価格と損切りが別々の想定にズレることが構造的に起きない。
+// 見積もりに対する 1.3 倍は、実測のばらつきぶんの余裕（CLAUDE.md §0
+// 「タイムアウトは多めに」）。
+function expectedRunFloorSeconds(
+  args: { arch: string; steps: number; resolution?: number; effectiveBatch?: number; imageCount?: number },
+  knobs: PricingKnobs,
+): number {
+  if (args.steps <= 0) return 0;
+  const estimate = loraEstimatedSeconds({ ...args, knobs });
+  return Math.floor(Math.min(estimate.totalSeconds * 1.3, LORA_ABS_MAX_RUN_S));
 }
 
 export type LoraCostCap = { seconds: number; reason: string };
@@ -60,6 +47,10 @@ export function loraCostCapSeconds(args: {
   creditsCost: number;
   arch: string;
   steps: number;
+  /** 課金時と同じ値を渡すこと（loraPriceBreakdown() の戻り値がそのまま使える）。 */
+  resolution?: number;
+  effectiveBatch?: number;
+  imageCount?: number;
   knobs?: PricingKnobs;
 }): LoraCostCap {
   const knobs = args.knobs ?? DEFAULT_KNOBS;
@@ -70,7 +61,16 @@ export function loraCostCapSeconds(args: {
   const base =
     args.creditsCost > 0 ? creditCoveredSeconds(args.creditsCost, knobs) : knobs.lora_safety_limit_s;
   const withMargin = base * multiplier;
-  const archFloor = expectedRunFloorSeconds(arch, steps, knobs);
+  const archFloor = expectedRunFloorSeconds(
+    {
+      arch,
+      steps,
+      resolution: args.resolution,
+      effectiveBatch: args.effectiveBatch,
+      imageCount: args.imageCount,
+    },
+    knobs,
+  );
   const capped = Math.floor(Math.min(Math.max(withMargin, archFloor), LORA_ABS_MAX_RUN_S));
 
   const reason =

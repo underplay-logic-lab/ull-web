@@ -288,9 +288,19 @@ def _write_ai_toolkit_config(
                         "gradient_accumulation_steps": 1,
                         "train_unet": True,
                         "train_text_encoder": False,
-                        "gradient_checkpointing": True,
+                        # 2026-09-20: VRAM を節約して速度を捨てる設定は既定で
+                        # 使わない方針に統一（modal_lora_worker.py の
+                        # LORA_GRADIENT_CHECKPOINTING のコメント参照）。
+                        "gradient_checkpointing": False,
                         "noise_scheduler": "flowmatch",
-                        "optimizer": "adamw8bit",
+                        # 2026-09-20: adamw8bit（bitsandbytes の int8 量子化
+                        # オプティマイザ）から変更。CLAUDE.md §1 の量子化禁止に
+                        # 抵触し、どの既定経路でも選ばれてはいけない。
+                        # 本番ワーカーの既定は prodigy だが、あちらは lr=1.0 の
+                        # 強制とセットで成立している。この一発実行スクリプトは
+                        # lr を CLI 引数で受ける作りなので、LR の意味が変わらない
+                        # adamw（full precision）にしてある。
+                        "optimizer": "adamw",
                         "lr": lr,
                         "dtype": "bf16",
                     },

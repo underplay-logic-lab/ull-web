@@ -155,14 +155,16 @@ Modalジョブを完全に止めたい時は `modal container stop` ではなく
   - 全工程のクレジット単価・課金係数・原価割れ損切り閾値・レートを集約。admin で編集 → 約1分で反映、Modal 再デプロイ不要。
   - コード側の SSOT は `src/lib/pricing/knobDefaults.ts` の `DEFAULT_KNOBS`。DB 読み取り失敗時はこの既定値で動作し、生成は止めない。
   - サーバーは `getPricingKnobs()`（`knobs.server.ts`）、クライアントは `usePricingKnobs()` で公開knob（`is_public`）を取得し純関数へ渡す。損切り閾値・レートは非公開（サーバーのみ）。
-- **多次元動的クレジット課金**（式の実体は `src/lib/loraPricing.ts`、係数は knob）:
-  - モデル種別・解像度・バッチ・rank の各係数をステップ数に掛ける方式。旧「ステップ数のみの固定課金」は**廃止**（原価割れ防止のため計算負荷連動に刷新）。
-  - **フロント表示と API 検証は、同一のパース済み config ＋ 同一の knob を `loraPriceBreakdown()` に渡し、絶対に食い違わないようにする。** GUIモードは `guiLoraPricingConfig()` で等価configを合成して同じ関数に通す。
-  - 生YAMLがパース不能で API まで到達した場合は上限 `loraCreditWorstCase(knobs)` を課金。
+- **LoRA 学習は「推定GPU秒 × クレジット単価」で課金**（SSOT は `src/lib/pricing/loraRuntime.ts`、入口は `loraPricing.ts`）:
+  - `credits = ceil( (固定prep + prep/枚×枚数 + steps × s/it × 解像度係数 × 実効バッチ) × 単価 )`。設定が変われば推定秒が動き価格が自動追従するので、**設定値の確定を待たずに価格を運用できる**。
+  - **課金と損切りは同じ見積もり関数を通すこと。** 係数の掛け算方式は 2026-09-20 廃止。**rank は課金に効かない**（所要秒を動かさないため）。arch `sdxl` のみ sd-scripts ワーカーで単価 knob が別（判定は `isSdxlJob` と揃える）。
+  - **フロント表示と API 検証は、同一config ＋ 同一knob ＋ 同一の画像枚数を `loraPriceBreakdown()` に渡す。** 枚数はサーバーの実データを使い、クライアント申告を信用しない。GUIモードは `guiLoraPricingConfig()` で等価configを合成して同じ関数へ。
+  - 生YAMLがパース不能なら上限 `loraCreditWorstCase(knobs)`（＝コンテナのハード上限秒 × 単価）を課金。
+  - **実測が出たら `LORA_SPI_BASELINE`、価格水準を動かすなら単価 knob を触る。係数の手校正はもう不要。**
 - **原価割れ損切り（cost-guard）**: `src/lib/pricing/costGuard.server.ts` が knob からジョブの許容GPU秒を算出し、Next API が payload で Modal ワーカーへ渡す（LoRA: `cost_cap_seconds`、Angle: `max_allowed_time`）。ワーカー側の env override と `LORA_ABS_MAX_RUN_S` ハード上限は不変で残す。
 - **LoRA 中間チェックポイント**: `save_every: 500`（または25%刻み）で中間 `.safetensors` を永続化し、完了画面で個別ダウンロードを可能にする。
 
-> ⚠️ **クレジット計算式を変更するときは、それを参照している全ての cost-guard / timeout 計算に影響が及んでいないか必ず確認すること。** 課金式とタイムアウト式が消費クレジット経由で密結合しており、片方を変えてもう片方が壊れた事故がある（`docs/gpu-benchmarks.md` §8）。
+> ⚠️ **クレジット計算式を変更するときは、それを参照している全ての cost-guard / timeout 計算に影響が及んでいないか必ず確認すること。** 課金式とタイムアウト式が消費クレジット経由で密結合しており、片方を変えてもう片方が壊れた事故がある（`docs/gpu-benchmarks.md` §8）。LoRA については両者が同じ見積もり関数を共有するよう作り直して、この事故クラスを構造的に潰してある（2026-09-20）。
 
 ---
 

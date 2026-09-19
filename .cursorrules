@@ -27,18 +27,19 @@ ULL Studio の開発において、すべての AI エージェント（Claude /
 ## 3. データ保持 ＆ 課金ポリシー
 - **14日間完全自動パージ**: 生成された LoRA（.safetensors）、画像、動画、素材画像、キャプションはすべて一律 **14日間保持** 後に自動削除する。
 - **単価は DB knob（`pricing_knobs` / `/admin`「Pricing」タブ）で一元管理**。全工程のクレジット単価・課金係数・原価割れ損切り閾値・レートを集約し、admin 編集で約1分反映・Modal 再デプロイ不要。コード側 SSOT は `src/lib/pricing/knobDefaults.ts` の `DEFAULT_KNOBS`（DB 断のフォールバック）。サーバー=`getPricingKnobs()`、クライアント=`usePricingKnobs()`。公開 knob は `GET /api/studio/pricing` 経由。損切り閾値・レートは非公開。
-- **多次元動的クレジット課金（`src/lib/loraPricing.ts`）**:
-  - 計算式: `credits = ceil(lora_per_step * modelMult * resolutionMult * batchMult * rankMult * steps)`（各値は knob。既定 `0.1 / 3.0 / 1.5・2.0 / 1.5・2.0 / 1.2`）
-  - `modelMult`: 動画系 arch（`minimax_h3` 等）→ `lora_mult_model_heavy` / それ以外 → `1.0`
-  - `resolutionMult`: `resolution` 最大値 `1280+`→`lora_mult_res_1280` / `1024+`→`lora_mult_res_1024` / それ未満→`1.0`
-  - `batchMult`: `batch_size * gradient_accumulation_steps` `4+`→`lora_mult_batch_4` / `2+`→`lora_mult_batch_2` / それ未満→`1.0`
-  - `rankMult`: `network.linear` `64+`→`lora_mult_rank_64` / それ未満→`1.0`
-  - 旧「ステップ数のみの固定課金」は廃止。フロント表示（`LoraStudioTab.tsx`）と API 検証（`/api/studio/lora/train`）は同一ロジック（`loraPriceBreakdown()`）＋同一 knob で算出すること。
-  - 原価割れ損切り閾値も `src/lib/pricing/costGuard.server.ts` が knob から算出し、Modal へ payload（`cost_cap_seconds` / `max_allowed_time`）で渡す。
+- **LoRA 学習は「推定GPU秒 × クレジット単価」で課金（`src/lib/loraPricing.ts`）**:
+  - 計算式: `credits = ceil( (lora_prep_load_s + lora_prep_per_image_s × 枚数 + steps × s/it × 解像度係数 × 実効バッチ) × lora_credits_per_gpu_second )`
+  - 見積もりの実体・arch 別実測 s/it テーブルは `src/lib/pricing/loraRuntime.ts`（SSOT）。**課金と損切りが同じ関数を呼ぶ**ので、片方を変えてもう片方が壊れる事故は構造的に起きない。
+  - arch `sdxl` のみ sd-scripts ワーカー（別 GPU tier）なので単価 knob が別（`lora_credits_per_gpu_second_sdxl`）。ルーティング条件は `/api/studio/lora/train` の `isSdxlJob` と必ず揃える。
+  - **rank は課金に効かない**（LoRA アダプタは基盤モデルに対して十分小さく所要秒を動かさない）。旧「係数の掛け算」方式（`lora_per_step` ×モデル×解像度×バッチ×rank）は 2026-09-20 に廃止（knob 行は残置・非公開）。
+  - 実測値を更新したら `LORA_SPI_BASELINE` を、価格水準を動かしたいときは単価 knob を触る。**係数を人手で校正し直す必要はもう無い。**
+  - フロント表示（`LoraStudioTab.tsx`）と API 検証（`/api/studio/lora/train`）は同一ロジック（`loraPriceBreakdown()`）＋同一 knob ＋**同一の画像枚数**で算出すること（枚数はサーバーが握る実データを使い、クライアント申告を信用しない）。
+  - 原価割れ損切り閾値も `src/lib/pricing/costGuard.server.ts` が同じ見積もりから算出し、Modal へ payload（`cost_cap_seconds` / `max_allowed_time`）で渡す。
 - **LoRA 中間チェックポイント**: `save_every: 500`（または25%刻み）で中間 `.safetensors` を永続化し、完了画面で個別ダウンロードを可能にすること。
 
 ---
 
 ## 4. DBマイグレーション出力プロトコル（必須）
-- Supabase のマイグレーションファイル（`supabase/migrations/*.sql`）を新規作成・修正した場合、またはホストに DB マイグレーションの適用を案内する際は、**該当する SQL 全文をチャット上のコードブロックとして必ずそのまま出力すること**。
-- ファイルパスの提示だけで終わらせず、ホストがチャット画面からワンクリックでコピーして Supabase Dashboard (SQL Editor) に貼り付けられる状態を徹底すること。
+- Supabase のマイグレーションファイル（`supabase/migrations/*.sql`）を新規作成・修正したら、**ファイルパスを伝えるだけでよい。SQL 全文をチャット上のコードブロックに出力しないこと**。
+- 理由: チャットのコードブロックをコピペする過程で文字列が欠落する事故が発生したため（`create or replace function public.touch_angle_jobs_updated_at()` が `create or replace funcs_updated_at()` に壊れ構文エラー `42601`）。ホストは別の適用手順を確立済みのため、チャット表示は不要かつ事故の原因になるだけ。
+- パスは**単独の行**に書き、直後に `（説明）` 等を続けないこと。コピー時に括弧の一部まで拾われ、その名前で空ファイルが作られる事故が起きた（2026-09-20）。
