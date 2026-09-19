@@ -49,16 +49,46 @@ export async function PATCH(request: Request) {
 
   const updatedAt = new Date().toISOString();
   const results = await Promise.all(
-    updates.map(({ key, value }) =>
-      supabaseAdmin.from("site_contents").update({ value, updated_at: updatedAt }).eq("key", key).select().single(),
-    ),
+    updates.map(async ({ key, value }) => {
+      const { data, error } = await supabaseAdmin
+        .from("site_contents")
+        .update({ value, updated_at: updatedAt })
+        .eq("key", key)
+        .select()
+        .single();
+      return { key, data, error };
+    }),
   );
 
-  const failed = results.find((r) => r.error);
-  if (failed?.error) {
-    console.error("[admin/site-contents] bulk update failed:", failed.error.message);
-    return NextResponse.json({ error: "コンテンツの一括更新に失敗しました。" }, { status: 500 });
+  // updatesはUPDATEのみ（UPSERTではない）ので、site_contentsにまだ行が
+  // 無いkeyを含む下書きが混ざっていると、そのkeyの.single()が0件ヒットで
+  // エラーになる。Promise.allで全キーを同時実行しているため、一部のkeyが
+  // 失敗しても他のkeyは既にDBへ書き込み済み——以前はここで「1件でも失敗
+  // したら全体を失敗扱い」にしていたが、それだと実際には成功している
+  // ものまで「失敗した」とadminに誤って伝わり、下書きの状態と食い違って
+  // いた。成功/失敗をkeyごとに分けて返すことで、クライアント側が成功分
+  // だけ下書きから確実に消せるようにする。
+  const succeeded = results.filter((r) => !r.error);
+  const failed = results.filter((r) => r.error);
+
+  if (failed.length > 0) {
+    console.error(
+      "[admin/site-contents] bulk update failed for:",
+      failed.map((f) => `${f.key}: ${f.error?.message}`).join("; "),
+    );
+    const allFailed = failed.length === updates.length;
+    return NextResponse.json(
+      {
+        error: allFailed
+          ? `コンテンツの一括更新に失敗しました（${failed.map((f) => `"${f.key}"`).join(", ")}）。site_contentsテーブルにこのkeyの行が存在しない可能性があります。`
+          : `一部のコンテンツの更新に失敗しました（${failed.length}/${updates.length}件: ${failed.map((f) => `"${f.key}"`).join(", ")}）。他の変更は公開済みです。`,
+        detail: failed.map((f) => `${f.key}: ${f.error?.message}`).join("; "),
+        succeededKeys: succeeded.map((r) => r.key),
+        failedKeys: failed.map((r) => r.key),
+      },
+      { status: allFailed ? 500 : 207 },
+    );
   }
 
-  return NextResponse.json({ contents: results.map((r) => r.data) });
+  return NextResponse.json({ contents: succeeded.map((r) => r.data), succeededKeys: succeeded.map((r) => r.key) });
 }

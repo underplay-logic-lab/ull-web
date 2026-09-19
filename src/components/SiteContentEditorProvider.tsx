@@ -120,10 +120,27 @@ export function SiteContentEditorProvider({ children }: { children: ReactNode })
         body: JSON.stringify({ updates }),
       });
       const data = await res.json();
+
+      // 一部のkeyだけ失敗するケース（site_contentsにまだ無いkey等）でも、
+      // 成功したkeyは既にDBへ書き込み済み——それらは下書きから確実に
+      // 消す（そのまま残すと次回もう一度送られ、成功しているのに変な
+      // 状態になる）。207/500どちらでもsucceededKeysがあれば同じ処理。
+      const succeededKeys: string[] = Array.isArray(data?.succeededKeys) ? data.succeededKeys : [];
+      if (succeededKeys.length > 0) {
+        const succeededUpdates = updates.filter((u) => succeededKeys.includes(u.key));
+        setContents((prev) => ({
+          ...prev,
+          ...Object.fromEntries(succeededUpdates.map((u) => [u.key, u.value])),
+        }));
+        setDrafts((prev) => {
+          const next = { ...prev };
+          for (const k of succeededKeys) delete next[k];
+          return next;
+        });
+      }
+
       if (!res.ok) throw new Error(data?.error ?? "公開に失敗しました。");
 
-      setContents((prev) => ({ ...prev, ...Object.fromEntries(updates.map((u) => [u.key, u.value])) }));
-      setDrafts({});
       pushToast("success", `✅ ${updates.length}件の変更を本番公開しました`);
     } catch (err) {
       pushToast("error", err instanceof Error ? err.message : "公開に失敗しました。");
