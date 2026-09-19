@@ -405,6 +405,19 @@ LORA_COMPILE_ENABLED = os.environ.get("LORA_DISABLE_COMPILE", "").strip().lower(
     "yes",
 )
 
+# torch.compile（Inductor）が確実に失敗する arch。ここに入れた arch は最初から
+# compile せず eager で回す。
+#
+# 2026-09-20: flux2_klein_4b を追加。modal_lora_benchmark.py の image_tier 計測で
+# 学習開始前に必ず落ちることを確認:
+#   torch._inductor.exc.InductorError:
+#     CantSplit: 3072*s27 + 3072*s97 not divisible by s27 + s97
+# compile_dynamic=True の動的 shape に対して Inductor がコード生成に失敗する。
+# ⚠️ これは既定 ON の compile が原因で、**FLUX.2 Klein 4B を選んだユーザーの
+# LoRA ジョブが100%失敗していた**（3分ほど GPU を回してから死ぬ）。
+# torch / ai-toolkit の更新で直る可能性があるので、上げたときは外して再検証する。
+COMPILE_UNSUPPORTED_ARCHES: frozenset[str] = frozenset({"flux2_klein_4b"})
+
 # --- GPU-cost defence / watchdogs ----------------------------------------
 # The container timeout is 12h; the only earlier stops are:
 #   PREP  — a TRUE deadlock: no stdout/stderr/tqdm output AT ALL for
@@ -1005,6 +1018,20 @@ image = (
             **_hf_cache_env(),
             "PYTHONUNBUFFERED": "1",
             "PYTHONPATH": SHIM_DIR,
+            # CLAUDE.md §1 が torch.compile に要求しているガード
+            # （「try/except と torch._dynamo.config.suppress_errors = True で
+            # 必ずガードし、環境変数で ON/OFF できるようにする」）。LoRA ワーカー
+            # だけこれが入っておらず、2026-09-20 に実害が出た — flux2_klein_4b で
+            # Inductor のコード生成が落ちると、eager へフォールバックせず
+            # **学習ジョブごと死んでいた**。
+            #
+            # 学習は run.py の別プロセスで走るので、こちら側で
+            # torch._dynamo.config を書いても届かない。torch が同じ設定を読む
+            # 環境変数（torch/_dynamo/config.py の suppress_errors）で入れる。
+            # これで compile 失敗は eager フォールバックになり、遅くはなっても
+            # ジョブは完走する。
+            # LORA_COMPILE_STRICT=1 を渡せば従来どおり落として原因を見られる。
+            "TORCHDYNAMO_SUPPRESS_ERRORS": "1",
             # Deliberately NOT setting CUDA_FORCE_PTX_JIT / TORCH_CUDA_ARCH_LIST.
             # Confirmed by direct probe: torch==2.7.0+cu128's arch_list already
             # includes sm_100 (native cubin, ships with both B200 sm_100 and
@@ -1812,6 +1839,16 @@ def _build_config(
     # 未指定なら LORA_COMPILE_ENABLED（= LORA_DISABLE_COMPILE!=1、既定 ON）。
     _compile_explicit = tc.get("compile")
     _compile_on = bool(_compile_explicit) if _compile_explicit is not None else LORA_COMPILE_ENABLED
+    # 既知の compile 非対応 arch は、明示指定が無ければ最初から compile しない。
+    # 下の TORCHDYNAMO_SUPPRESS_ERRORS があれば eager へ落ちて学習自体は通るが、
+    # 失敗すると分かっているコンパイルに数分の GPU 時間を捨てることになるため。
+    if _compile_explicit is None and target["arch"] in COMPILE_UNSUPPORTED_ARCHES:
+        print(
+            f"[stage2] torch.compile skipped: arch={target['arch']} は既知の "
+            f"Inductor 非対応（COMPILE_UNSUPPORTED_ARCHES 参照）",
+            flush=True,
+        )
+        _compile_on = False
     if _compile_on:
         # torch.compile 標準（CLAUDE.md §1）。compile_dynamic は ai-toolkit 既定
         # で true なので明示不要だが、意図を残すため書いておく。
@@ -2041,6 +2078,13 @@ def _run_ai_toolkit_with_progress(
     child_env.pop("HF_HUB_OFFLINE", None)
     child_env.pop("TRANSFORMERS_OFFLINE", None)
     child_env.pop("HF_DATASETS_OFFLINE", None)
+
+    # image 側で TORCHDYNAMO_SUPPRESS_ERRORS=1 を焼いてあり（compile 失敗を
+    # eager フォールバックにしてジョブを完走させる。CLAUDE.md §1）、それを
+    # 一時的に外して原因を見たいときの逃げ道。デバッグ用なので既定は無効。
+    if os.environ.get("LORA_COMPILE_STRICT", "").strip().lower() in ("1", "true", "yes"):
+        child_env.pop("TORCHDYNAMO_SUPPRESS_ERRORS", None)
+        print("[stage2] LORA_COMPILE_STRICT=1 — compile 失敗を握り潰さず落とす", flush=True)
 
     # Runtime quant_api shim (no image rebuild): written fresh on every run
     # so a fix here lands on the next deploy without rebuilding the (slow)
