@@ -41,10 +41,18 @@ function escapeRegExp(s: string): string {
 // ない」誤検知になる。oldText内の空白ランをすべて「任意の空白ランにマッチする
 // \s+」に緩めた正規表現で探すことで、複数行ソースでも正しく1箇所に特定できる
 // ようにする（空白以外は引き続き完全一致——安全性は変えない）。
+// 短いテキスト（例:「秒単位」）が、同じファイル内の別の文字列（コメントや
+// 別のEditableTextのfallback文言等）の「部分文字列」として偶然出現し、
+// 無関係の箇所まで1箇所としてカウントされてしまうケースがある（実例:
+// Hero.tsx内の統計値「秒単位」が、同ファイルのバッジ文言fallback「...
+// クラウドの手軽さ × 秒単位の適正価格」の一部にもマッチしてしまう）。
+// 前後が「文字・数字（Unicode全般。漢字・かな・カナ含む）」で連続していない
+// ——つまり引用符・JSXタグ境界・空白・句読点など、独立した語/文字列の
+// 境界になっている——場合だけを候補にすることで、単語の途中への誤爆を防ぐ。
 function buildLooseWhitespaceRegex(oldText: string): RegExp {
   const parts = oldText.split(/(\s+)/);
   const pattern = parts.map((part) => (/^\s+$/.test(part) ? "\\s+" : escapeRegExp(part))).join("");
-  return new RegExp(pattern, "g");
+  return new RegExp(`(?<![\\p{L}\\p{N}])${pattern}(?![\\p{L}\\p{N}])`, "gu");
 }
 
 // data-source-file が指すのは「クリックした要素を囲むJSXがあるファイル」
