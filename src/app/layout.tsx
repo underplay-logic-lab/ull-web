@@ -5,6 +5,7 @@ import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
 import { AdminEditBar } from "@/components/AdminEditBar";
 import { LiveInspector } from "@/components/LiveInspector";
+import { SourceTextEditor } from "@/components/SourceTextEditor";
 import { SiteContentEditorProvider } from "@/components/SiteContentEditorProvider";
 import { siteConfig } from "@/lib/data";
 
@@ -77,6 +78,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           <Footer />
           <AdminEditBar />
           <LiveInspector />
+          <SourceTextEditor />
         </SiteContentEditorProvider>
       </body>
     </html>

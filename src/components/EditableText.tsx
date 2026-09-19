@@ -65,6 +65,10 @@ export function EditableText({ siteKey, fallback, as = "span", className }: Edit
       ref={(node: HTMLElement | null) => {
         elRef.current = node;
       }}
+      // 新設のSourceTextEditor（ローカルdev専用、ソースファイル直接書き換え
+      // 版の編集）が、既にDB連携済みのこの要素を誤って対象にしないための
+      // 目印。
+      data-cms-managed="true"
       className={`${className ?? ""} cursor-text rounded border border-dashed border-transparent transition-colors hover:border-neon-pink/60 hover:bg-neon-pink/5 focus:border-neon-pink focus:bg-neon-pink/5 focus:outline-none`}
       contentEditable={!publishing}
       suppressContentEditableWarning

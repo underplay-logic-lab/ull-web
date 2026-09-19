@@ -42,7 +42,9 @@ export function EditableLink({ siteKey, fallback, className, children }: Editabl
   };
 
   return (
-    <span className="relative inline-block">
+    // data-cms-managed: SourceTextEditor（ローカルdev専用のソース直接編集）
+    // が、既にDB連携済みのこの要素を誤って対象にしないための目印。
+    <span className="relative inline-block" data-cms-managed="true">
       <a href={href} className={className} onClick={(e) => e.preventDefault()}>
         {children}
       </a>
