@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(node_modules/**)",
+      "Read(.next/**)",
+      "Read(dist/**)",
+      "Read(**/*.safetensors)",
+      "Read(**/*.mp4)",
+      "Read(**/*.png)",
+      "Read(**/*.wav)",
+      "Read(**/*.mp3)"
+    ]
+  }
+}

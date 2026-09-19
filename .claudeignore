@@ -1,8 +1,0 @@
-# .claudeignore の中身
-node_modules/
-.next/
-dist/
-public/
-*.safetensors
-*.mp4
-*.png

@@ -61,3 +61,6 @@ ai_toolkit-*.whl
 trellis_out/
 angle_test_tuned/
 angle_test_tuned2/
+
+# ローカル生成物の退避先（テスト出力・スクリーンショット等の雑多なファイル）
+/_artifacts/
