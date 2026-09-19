@@ -306,6 +306,26 @@ _TQDM_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s*\[[^\]]*?,\s*([\d.]+)\s*(s/it|it/s)"
 # latent キャッシュ中の tqdm は「Caching latents」等のラベルを伴う。
 _CACHE_RE = re.compile(r"cach\w*\s+latent|caching", re.IGNORECASE)
 
+# ⚠️ 学習ステップ行の判別子（2026-09-20 に追加。これが無くて実際に事故った）。
+#
+# ai-toolkit は学習以外にも tqdm を大量に出す — モデル重みのロード
+# （`Loading weights: 12/398 [00:00<00:04, 86.26it/s]`）、latent キャッシュ、
+# サンプル生成など。_TQDM_RE だけだとそれらも「学習ステップ」として拾ってしまい、
+# flux2_klein_4b の計測では重みロードのバー(398項目)を総ステップ(50)到達と誤認して
+# 15秒で kill し、別の条件では `s/it=0.005 / VRAM 0.0GB` という無意味な値を
+# **ok=true** で返していた。
+#
+# 本番ワーカー（modal_lora_worker.py の _run_ai_toolkit_with_progress）は
+# 同じ問題に対して「分母がtotal_stepsと一致」「lr: を含む」等の複合条件で
+# 判別している。ここでも同じ厳しさにする: 分母が total_steps と一致し、かつ
+# lr / loss を伴う行だけを学習ステップとみなす。
+# 条件を満たす行が1つも無ければ spi は None になり ok=false で落ちる —
+# 黙って嘘の数字を返すより、失敗として見えた方が良い。
+#
+# `loss` は単語境界を付けない: sd-scripts は `avr_loss=0.00101` と出すので
+# `\bloss\b` だと直前の `_` が単語文字になりマッチしない。
+_TRAIN_HINT_RE = re.compile(r"lr\s*:|loss", re.IGNORECASE)
+
 
 def _trimmed_mean(xs: list[float], trim: float = 0.15) -> float | None:
     """上下 trim を落とした平均。本番の _trimmed_spi と同じ考え方。"""
@@ -473,6 +493,9 @@ def _run_benchmark(spec: dict) -> dict:
             m = _TQDM_RE.search(line)
             if not m:
                 continue
+            # 学習ステップ行だけを採る（上の _TRAIN_HINT_RE のコメント参照）。
+            if int(m.group(2)) != total_steps or not _TRAIN_HINT_RE.search(line):
+                continue
             step = int(m.group(1))
             rate = float(m.group(3))
             unit = m.group(4)
@@ -515,11 +538,32 @@ def _run_benchmark(spec: dict) -> dict:
                 ),
                 "wall_s": round(time.time() - launch_ts, 1),
                 "returncode": proc.returncode,
-                "ok": bool(spi) and not timed_out,
             }
         )
-        if not result["ok"] and "error" not in result:
-            result["error"] = "定常 s/it を算出できなかった（tail 参照）"
+
+        # 健全性チェック。「s/it が出た」だけを成功条件にしていたため、重みロードの
+        # 進捗バーを拾って `s/it=0.005 / VRAM 0.0GB` を ok=true で返す事故があった
+        # （2026-09-20）。値付けの根拠になる数字なので、明らかにおかしい結果は
+        # 成功として通さない。
+        sanity: list[str] = []
+        if timed_out:
+            sanity.append(f"max_seconds({max_seconds}s) 超過")
+        if not spi:
+            sanity.append("定常 s/it を算出できなかった")
+        elif not (0.001 <= spi <= 120):
+            sanity.append(f"s/it={spi:.4f} が現実的な範囲(0.001〜120)の外")
+        if len(intervals) < 5:
+            sanity.append(f"学習ステップのサンプルが {len(intervals)} 点しかない")
+        observed = measured[-1][1] if measured else 0
+        if observed < total_steps * 0.8:
+            sanity.append(f"到達ステップ {observed} が宣言値 {total_steps} に届いていない")
+        peak = sampler.samples and max(s[1] for s in sampler.samples) or 0
+        if peak <= 0.5:
+            sanity.append(f"peak VRAM {peak:.2f}GB — GPU で学習していない疑い")
+
+        result["ok"] = not sanity
+        if sanity:
+            result["error"] = " / ".join(sanity)
         if not result["ok"]:
             result["tail"] = tail[-40:]
 
@@ -661,6 +705,9 @@ def cpu_probe() -> dict:
     # 読む）。存在しないキーを本番 config に入れると全 LoRA ジョブが落ちる。
     out["checks"]["sampling_opts"] = _probe_sampling_options()
 
+    # 多概念 LoRA（概念ごとに学習量を変える）を ai-toolkit で出せるかの調査。
+    out["checks"]["dataset_opts"] = _probe_dataset_options()
+
     out["ok"] = (
         out["checks"]["ai_toolkit_dir"]
         and out["checks"]["dataset"]
@@ -710,6 +757,57 @@ def _probe_sampling_options() -> dict:
         out["config_modules_py"] = hits
     except Exception as exc:
         out["config_modules_py"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+def _probe_dataset_options() -> dict:
+    """ai-toolkit が「複数データセット × サブセットごとの繰り返し回数」に
+    対応しているかを、ソースを読んで確認する。
+
+    sd-scripts は `[[datasets.subsets]]` + `num_repeats` で概念ごとに学習量を
+    変えられる（多概念 LoRA の定番手法）。ai-toolkit 側に同等の口があるかで、
+    この機能を全 arch で出せるか SDXL 限定になるかが決まる。
+    """
+    out: dict = {}
+    src_dir = pathlib.Path(W.AI_TOOLKIT_DIR)
+
+    # 1) DatasetConfig のフィールド一覧（設定ファイルから何を受けるか）
+    cfg = src_dir / "toolkit" / "config_modules.py"
+    try:
+        text = cfg.read_text(encoding="utf-8", errors="replace")
+        i = text.find("class DatasetConfig")
+        if i < 0:
+            out["DatasetConfig"] = "クラスが見つからない"
+        else:
+            # 次の class 定義までを切り出して self.<field> = を拾う
+            j = text.find("\nclass ", i + 1)
+            body = text[i : j if j > 0 else len(text)]
+            fields = sorted(set(re.findall(r"self\.([a-z0-9_]+)\s*[:=]", body)))
+            out["DatasetConfig"] = fields
+            out["DatasetConfig_lines"] = body.count("\n")
+    except Exception as exc:
+        out["DatasetConfig"] = f"{type(exc).__name__}: {exc}"
+
+    # 2) 繰り返し回数に相当するキーワードの出現箇所（リポジトリ全体）
+    hits: dict[str, list[str]] = {}
+    for kw in ("num_repeats", "repeats", "subsets", "num_frames"):
+        found: list[str] = []
+        try:
+            for p in src_dir.rglob("*.py"):
+                if ".git" in p.parts:
+                    continue
+                try:
+                    t = p.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    continue
+                if kw in t:
+                    found.append(f"{p.relative_to(src_dir)}:{t.count(kw)}")
+                if len(found) >= 8:
+                    break
+        except Exception as exc:
+            found.append(f"走査失敗: {type(exc).__name__}: {exc}")
+        hits[kw] = found
+    out["keyword_hits"] = hits
     return out
 
 
