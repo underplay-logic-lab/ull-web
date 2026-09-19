@@ -88,6 +88,15 @@ SD_SCRIPTS_REF = os.environ.get("SD_SCRIPTS_REF", "v0.11.1")
 # option here.
 GPU_REQUEST = os.environ.get("SDXL_WORKER_GPU", "").strip() or "L40S"
 
+# 2026-09-20: 既定 False（無効）。理由は _build_train_args() 内のコメント参照。
+# このワーカーは L40S(48GB) なので、OOM 時の逃げ道として env を残してある。
+SDXL_GRADIENT_CHECKPOINTING = os.environ.get("SDXL_GRADIENT_CHECKPOINTING", "0").strip() not in (
+    "",
+    "0",
+    "false",
+    "False",
+)
+
 # --- CPU-only probe image ---------------------------------------------------
 # sd-scripts' own README baseline: PyTorch 2.6.0+, CUDA 12.4 (cu124). Not
 # Blackwell-specific guidance (that's cu128/129) since GPU_REQUEST above is
@@ -101,7 +110,19 @@ image = (
         "torchvision==0.21.0",
         extra_index_url="https://download.pytorch.org/whl/cu124",
     )
-    .pip_install("modal")
+    # fastapi はこのファイルが **モジュールトップレベル**で import している
+    # （64行目）。web エンドポイント用の dispatch_image にしか入れていなかった
+    # ため、`image` / `train_image` で動く全関数——CPU probe もスモークも、
+    # **本番の train_sdxl_lora_job も**——がモジュール import の時点で
+    # `ModuleNotFoundError: No module named 'fastapi'` で落ちていた（2026-09-20
+    # 発見）。`import fastapi` は feb4112「本番ジョブライフサイクルを追加」で
+    # 入ったもので、それ以前（雛形の 0bbebd0 時点）はスモークが通っていた。
+    #
+    # 遅延 import では直せない: 1202行目の `request: fastapi.Request` は
+    # `@modal.fastapi_endpoint` がシグネチャを検査する際に評価されるため、
+    # モジュールトップレベルで解決できている必要がある。よってベース image に
+    # 入れる。
+    .pip_install("modal", "fastapi[standard]")
     .run_commands(
         f"git clone --depth 1 --branch {SD_SCRIPTS_REF} https://github.com/kohya-ss/sd-scripts.git {SD_SCRIPTS_DIR}",
         f"cd {SD_SCRIPTS_DIR} && pip install -r requirements.txt",
@@ -238,6 +259,13 @@ SD_SCRIPTS_OPTIMIZER_MAP = {
     "lion8bit": "Lion8bit",
 }
 
+# 未知のオプティマイザ名が来たときのフォールバック。2026-09-20 に AdamW8bit
+# から変更（ホスト判断）: 8bit 系（bitsandbytes の int8 量子化オプティマイザ）は
+# UI の選択肢としては残すが、**どの既定経路でも黙って選ばれてはいけない**
+# （CLAUDE.md §1 量子化は原則不使用・使うならホスト承認）。ユーザーが明示的に
+# adamw8bit / lion8bit を選んだときだけ上の表を通って使われる。
+SD_SCRIPTS_OPTIMIZER_FALLBACK = "AdamW"
+
 
 def _write_dataset_toml(root: str, image_dir: str, resolution: int, keep_tokens: int = DEFAULT_KEEP_TOKENS) -> str:
     """Writes an sd-scripts "general method" dataset TOML pointing at an
@@ -349,7 +377,7 @@ def _build_train_args(
     alpha = int(tc.get("alpha", DEFAULT_TRAINING_CONFIG["alpha"]))
     steps = int(tc.get("steps", DEFAULT_TRAINING_CONFIG["steps"]))
     optimizer_key = str(tc.get("optimizer", DEFAULT_TRAINING_CONFIG["optimizer"])).lower()
-    optimizer_type = SD_SCRIPTS_OPTIMIZER_MAP.get(optimizer_key, "AdamW8bit")
+    optimizer_type = SD_SCRIPTS_OPTIMIZER_MAP.get(optimizer_key, SD_SCRIPTS_OPTIMIZER_FALLBACK)
     if optimizer_key == "prodigy":
         # Same rationale as modal_lora_worker.py's _build_config: Prodigy
         # self-estimates step size and treats `lr` as a multiplier on that
@@ -383,12 +411,21 @@ def _build_train_args(
         # preset above). Stays this project's bf16 standard regardless.
         "--save_precision=bf16",
         "--cache_latents",
-        "--gradient_checkpointing",
         "--sdpa",
         "--min_snr_gamma=5",
         "--seed=42",
         "--no_half_vae",
     ]
+    # 2026-09-20: --gradient_checkpointing を既定で外した（ホスト判断、
+    # modal_lora_worker.py の LORA_GRADIENT_CHECKPOINTING と同じ理由 — VRAM を
+    # 節約して速度を捨てる設定は使わない）。
+    # ⚠️ ただしこのワーカーだけは GPU_REQUEST が L40S(48GB) で、ai-toolkit 側の
+    # Blackwell(288GB) と違って余裕が薄い。1024px/batch1 の SDXL LoRA なら
+    # 収まる見込みだが **未検証**。OOM が出たら SDXL_GRADIENT_CHECKPOINTING=1 で
+    # 即座に従来挙動へ戻せる（この経路だけ env の逃げ道を残しているのはそのため）。
+    # 本筋は modal_lora_benchmark.py で L40S の peak VRAM を実測してから確定する。
+    if SDXL_GRADIENT_CHECKPOINTING:
+        args.append("--gradient_checkpointing")
     if optimizer_key == "prodigy":
         # sd-scripts' own Prodigy guidance (README / --help): decouple +
         # safeguard_warmup is the standard pairing, same as most Prodigy
@@ -419,8 +456,10 @@ DEFAULT_TRAINING_CONFIG = {
 }
 
 
-@app.function(image=train_image, gpu=GPU_REQUEST, volumes={MODELS_DIR: vol}, timeout=1800)
-def smoke_test_sdxl_lora() -> dict:
+@app.function(image=train_image, gpu=GPU_REQUEST, volumes={MODELS_DIR: vol}, timeout=3600)
+def smoke_test_sdxl_lora(
+    steps: int = 20, rank: int = 16, resolution: int = 1024, images: int = 5
+) -> dict:
     """Minimal REAL end-to-end proof: tiny synthetic dataset -> a handful of
     training steps -> a valid .safetensors LoRA out the other end, on the
     actual chosen GPU tier (L40S by default). Not a production job — no
@@ -431,31 +470,98 @@ def smoke_test_sdxl_lora() -> dict:
     import pathlib
     import subprocess
     import sys
+    import threading
     import time
 
     sys.path.insert(0, SD_SCRIPTS_DIR)
 
     work = pathlib.Path("/root/smoke")
     work.mkdir(parents=True, exist_ok=True)
-    dataset_toml = _write_smoke_dataset(str(work))
+    dataset_toml = _write_smoke_dataset(str(work), n=images)
     output_dir = work / "output"
     output_dir.mkdir(exist_ok=True)
 
     # Exercises the REAL _build_config-equivalent (rank 16/alpha 8, 20 steps,
-    # AdamW8bit @ 1e-4, 1024px) rather than a separately hand-maintained arg
-    # list, so this smoke test also proves _build_train_args itself works.
-    tc = {"rank": 16, "alpha": 8, "steps": 20, "optimizer": "adamw8bit", "learning_rate": 1e-4}
+    # 1024px) rather than a separately hand-maintained arg list, so this smoke
+    # test also proves _build_train_args itself works.
+    #
+    # 2026-09-20: optimizer を adamw8bit から本番既定の prodigy へ変更。
+    # スモークは「本番と同じ設定が通ること」を確かめるものなので、本番が使わない
+    # 量子化オプティマイザで測っていては意味がない。
+    # ⚠️ さらに重要: costGuard.server.ts / loraRuntime.ts の
+    # LORA_SPI_BASELINE["sdxl"] = 1.4 は、**このスモークを旧設定
+    # （AdamW8bit + gradient_checkpointing 有効）で回したときの 1.32s/it** が
+    # 出所だった。どちらも既定から外れたので、あの値はもう本番条件を表して
+    # いない。modal_lora_benchmark.py で測り直すまで暫定値として扱うこと。
+    # 2026-09-20: steps/rank/resolution/images を引数化した。値付けのために
+    # 「prep（枚数・step数に依らない固定費）」と「s/it」を分離する必要があり、
+    # step 数だけ変えた2回の実行の差分から解くのが一番確実なため:
+    #   elapsed(N1) = prep + N1 × spi
+    #   elapsed(N2) = prep + N2 × spi
+    tc = {
+        "rank": rank,
+        "alpha": max(1, rank // 2),
+        "steps": steps,
+        "optimizer": "prodigy",
+        "learning_rate": 1e-4,
+    }
     args = [sys.executable, f"{SD_SCRIPTS_DIR}/sdxl_train_network.py"] + _build_train_args(
-        "smoke_test", dataset_toml, str(output_dir), tc, resolution=1024
+        "smoke_test", dataset_toml, str(output_dir), tc, resolution=resolution
     )
 
-    t0 = time.time()
-    proc = subprocess.run(args, capture_output=True, text=True)
-    elapsed = time.time() - t0
-    print("[smoke] STDOUT tail:\n" + "\n".join(proc.stdout.splitlines()[-60:]), flush=True)
-    print("[smoke] STDERR tail:\n" + "\n".join(proc.stderr.splitlines()[-60:]), flush=True)
+    # gradient_checkpointing を既定OFFにした（2026-09-20）影響で、L40S(48GB)
+    # に収まるかが未検証。peak VRAM を必ず記録する。
+    vram: list[float] = []
+    stop_evt = threading.Event()
 
-    result: dict = {"returncode": proc.returncode, "elapsed_s": round(elapsed, 1)}
+    def _sample_vram() -> None:
+        while not stop_evt.is_set():
+            try:
+                out = subprocess.run(
+                    ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                mb = sum(float(x.strip()) for x in out.stdout.split() if x.strip())
+                vram.append(mb / 1024.0)
+            except Exception:
+                pass
+            stop_evt.wait(5.0)
+
+    sampler = threading.Thread(target=_sample_vram, daemon=True)
+    sampler.start()
+
+    # CLAUDE.md §1: subprocess の標準出力は溜め込まず1行ずつ流す。
+    # capture_output=True だと crash-loop の早期発見（「最初の数分でログを
+    # 確認する」）が原理的に不可能になる。
+    t0 = time.time()
+    proc = subprocess.Popen(
+        args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+    )
+    tail: list[str] = []
+    for line in proc.stdout:  # type: ignore[union-attr]
+        line = line.rstrip("\n")
+        print(line, flush=True)
+        tail.append(line)
+        if len(tail) > 80:
+            tail.pop(0)
+    returncode = proc.wait()
+    elapsed = time.time() - t0
+    stop_evt.set()
+    sampler.join(timeout=15)
+
+    result: dict = {
+        "returncode": returncode,
+        "elapsed_s": round(elapsed, 1),
+        "steps": steps,
+        "rank": rank,
+        "resolution": resolution,
+        "images": images,
+        "gpu": GPU_REQUEST,
+        "gradient_checkpointing": SDXL_GRADIENT_CHECKPOINTING,
+        "vram_peak_gb": round(max(vram), 2) if vram else None,
+        "vram_samples": len(vram),
+        "tail": tail[-25:] if returncode != 0 else None,
+    }
     produced = glob.glob(str(output_dir / "*.safetensors"))
     result["produced_files"] = produced
     if produced:
