@@ -285,8 +285,8 @@ export async function POST(request: Request) {
     });
     // 2026-09-13 実障害で判明: 即座に削除すると Modal worker が署名付きURLを
     // fetch する前にオブジェクトが消えるレース条件になる（upscale/generate
-    // route.ts の同種修正コメント参照）。削除はせず upscale-uploads バケット
-    // 自体の14日自動パージ（modal_retention_purge.py）に委ねる。
+    // route.ts の同種修正コメント参照）。削除はせず studio_uploads/（Modal
+    // Volume）自体の14日自動パージ（modal_retention_purge.py）に委ねる。
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[studio/upscale/batch] dispatch failed:", message);

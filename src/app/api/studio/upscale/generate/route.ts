@@ -280,8 +280,8 @@ export async function POST(request: Request) {
     // オブジェクトが消え、「HTTPError: 400 Client Error」でジョブが失敗する
     // レース条件になる（.spawn() は非同期起動の ACK が返るだけで、worker が
     // 実際に画像を取得するのはそれよりずっと後）。削除は行わず、
-    // upscale-uploads バケットは modal_retention_purge.py の
-    // DEFAULT_BUCKETS（14日自動パージ）に委ねる。
+    // studio_uploads/（Modal Volume）は modal_retention_purge.py の
+    // 14日自動パージに委ねる（2026-09-19、Supabaseバケットから移行）。
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[studio/upscale/generate] dispatch failed:", message);
