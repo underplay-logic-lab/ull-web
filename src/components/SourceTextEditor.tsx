@@ -26,7 +26,14 @@ const EXCLUDED_ANCESTOR_SELECTOR = "a, button, input, textarea, select, [content
 
 function isEditableLeaf(el: Element): el is HTMLElement {
   if (!(el instanceof HTMLElement)) return false;
-  if (el.children.length > 0) return false; // 子要素を持つものは対象外（混在コンテンツ）
+  // アイコン・箇条書きのドットのような「テキストを持たない装飾用の子要素」
+  // は許容する（例: <li><span className="dot" />{service}</li> — bulletは
+  // textContentに何も寄与しないので oldText/newText の一意性判定には影響
+  // しない）。テキストを持つ子要素が混ざる場合だけ対象外にする——別々の
+  // 意味を持つテキストが混在している可能性が高く、まとめて編集すると
+  // 壊れるリスクがあるため。
+  const hasTextBearingChildElement = Array.from(el.children).some((child) => child.textContent?.trim());
+  if (hasTextBearingChildElement) return false;
   if (!el.textContent?.trim()) return false;
   if (el.closest(EXCLUDED_ANCESTOR_SELECTOR)) return false;
   if (!el.closest("[data-source-file]")) return false;
