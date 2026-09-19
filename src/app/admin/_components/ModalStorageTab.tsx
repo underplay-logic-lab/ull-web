@@ -582,10 +582,82 @@ export function ModalStorageTab() {
 
   return (
     <div className="flex flex-col gap-8">
-      {/* 0. GPU selection reference — static, collapsed by default */}
+      {/* 0. File explorer — collapsed by default; model folders sort first, custom_nodes last */}
+      <div className="rounded-2xl border-gradient bg-surface/40 p-6">
+        <button
+          type="button"
+          onClick={() => setFilesOpen((v) => !v)}
+          className="flex w-full items-center justify-between text-left"
+        >
+          <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
+            <HardDrive size={16} className="text-neon-violet" />
+            ファイルエクスプローラー（Volume: ull-wan-models）
+          </h3>
+          <ChevronDown
+            size={16}
+            className={`shrink-0 text-muted transition-transform ${filesOpen ? "rotate-180" : ""}`}
+          />
+        </button>
+
+        {filesOpen && (
+          <div className="mt-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              {!filesLoading && files.length > 0 ? (
+                <div className="flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-1.5 text-xs">
+                  <HardDrive size={13} className="text-neon-violet" />
+                  <span className="text-muted">保存・使用容量</span>
+                  <span className="font-mono font-semibold text-foreground">{formatSize(totalBytes)}</span>
+                  <span className="text-muted opacity-70">/ {files.length} ファイル</span>
+                </div>
+              ) : (
+                <span />
+              )}
+              <button
+                type="button"
+                onClick={loadFiles}
+                className="shrink-0 text-xs text-muted transition-colors hover:text-foreground"
+              >
+                再読み込み
+              </button>
+            </div>
+
+            {filesError && (
+              <p className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+                {filesError}
+              </p>
+            )}
+
+            {filesLoading ? (
+              <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted">
+                <Loader2 size={18} className="animate-spin" />
+                読み込み中...
+              </div>
+            ) : files.length === 0 ? (
+              <div className="rounded-lg border border-border bg-background py-12 text-center text-xs text-muted">
+                ファイルがありません。
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {topLevelFolders.map((folder) => (
+                  <FolderRow
+                    key={folder.path}
+                    node={folder}
+                    depth={0}
+                    onDeleteFile={handleDeleteFile}
+                    onDeleteFolder={handleDeleteFolder}
+                    deletingPath={deletingPath}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 1. GPU selection reference — static, collapsed by default */}
       <GpuCostReferenceCard />
 
-      {/* 1. Remote downloader */}
+      {/* 2. Remote downloader */}
       <div className="rounded-2xl border-gradient bg-surface/40 p-6">
         <h3 className="mb-4 flex items-center gap-2 text-sm font-bold text-foreground">
           <Download size={16} className="text-neon-violet" />
@@ -712,10 +784,10 @@ export function ModalStorageTab() {
         )}
       </div>
 
-      {/* 2. Download task progress panel */}
+      {/* 3. Download task progress panel */}
       <DownloadTasksPanel refreshSignal={downloadTasksRefresh} />
 
-      {/* 3. Custom node management */}
+      {/* 4. Custom node management */}
       <div className="rounded-2xl border-gradient bg-surface/40 p-6">
         <h3 className="mb-4 flex items-center gap-2 text-sm font-bold text-foreground">
           <GitBranch size={16} className="text-neon-violet" />
@@ -752,78 +824,6 @@ export function ModalStorageTab() {
           >
             {installNotice.text}
           </p>
-        )}
-      </div>
-
-      {/* 4. File explorer — collapsed by default; model folders sort first, custom_nodes last */}
-      <div className="rounded-2xl border-gradient bg-surface/40 p-6">
-        <button
-          type="button"
-          onClick={() => setFilesOpen((v) => !v)}
-          className="flex w-full items-center justify-between text-left"
-        >
-          <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
-            <HardDrive size={16} className="text-neon-violet" />
-            ファイルエクスプローラー（Volume: ull-wan-models）
-          </h3>
-          <ChevronDown
-            size={16}
-            className={`shrink-0 text-muted transition-transform ${filesOpen ? "rotate-180" : ""}`}
-          />
-        </button>
-
-        {filesOpen && (
-          <div className="mt-4">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              {!filesLoading && files.length > 0 ? (
-                <div className="flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-1.5 text-xs">
-                  <HardDrive size={13} className="text-neon-violet" />
-                  <span className="text-muted">保存・使用容量</span>
-                  <span className="font-mono font-semibold text-foreground">{formatSize(totalBytes)}</span>
-                  <span className="text-muted opacity-70">/ {files.length} ファイル</span>
-                </div>
-              ) : (
-                <span />
-              )}
-              <button
-                type="button"
-                onClick={loadFiles}
-                className="shrink-0 text-xs text-muted transition-colors hover:text-foreground"
-              >
-                再読み込み
-              </button>
-            </div>
-
-            {filesError && (
-              <p className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
-                {filesError}
-              </p>
-            )}
-
-            {filesLoading ? (
-              <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted">
-                <Loader2 size={18} className="animate-spin" />
-                読み込み中...
-              </div>
-            ) : files.length === 0 ? (
-              <div className="rounded-lg border border-border bg-background py-12 text-center text-xs text-muted">
-                ファイルがありません。
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {topLevelFolders.map((folder) => (
-                  <FolderRow
-                    key={folder.path}
-                    node={folder}
-                    depth={0}
-                    onDeleteFile={handleDeleteFile}
-                    onDeleteFolder={handleDeleteFolder}
-                    deletingPath={deletingPath}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
         )}
       </div>
     </div>
