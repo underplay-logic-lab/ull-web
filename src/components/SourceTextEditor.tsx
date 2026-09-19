@@ -22,7 +22,14 @@ import { useSiteContentEditor } from "@/components/SiteContentEditorProvider";
 // data-cms-managed を持つ要素（EditableText/EditableLink配下）は対象外
 // ——DB連携の編集ロジックと衝突させないため。
 
-const EXCLUDED_ANCESTOR_SELECTOR = "a, button, input, textarea, select, [contenteditable], [data-cms-managed]";
+// a/buttonは意図的に除外しない——EditableLinkが既にedit mode中は全リンクの
+// 遷移を止める設計（onClick={(e) => e.preventDefault()}）なので、それに
+// 合わせてリンク/ボタン内のテキストも編集対象にする（例: カード全体が
+// <a>なCTA）。leaf判定（children.length===0 または装飾要素のみ）が既に
+// 「複数の意味を持つテキストが混在する大きな塊」を弾くので、a/button丸ごと
+// を対象外にしなくても安全性は保たれる。input/textarea/selectはcontentEditable
+// と根本的に相性が悪い実フォームコントロールなので引き続き除外する。
+const EXCLUDED_ANCESTOR_SELECTOR = "input, textarea, select, [contenteditable], [data-cms-managed]";
 
 function isEditableLeaf(el: Element): el is HTMLElement {
   if (!(el instanceof HTMLElement)) return false;
