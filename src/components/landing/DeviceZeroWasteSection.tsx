@@ -69,7 +69,7 @@ function UllMeter() {
         ¥0.00
       </p>
       <p className="mt-1 font-mono text-[11px] text-emerald-400/70">
-        停止中 — 生成していない時間の課金は永久にゼロ（Scale-to-Zero）
+        停止中 — 生成していない時間の課金は永久にゼロ
       </p>
     </div>
   );

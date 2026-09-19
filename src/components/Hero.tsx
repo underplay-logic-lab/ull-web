@@ -86,9 +86,9 @@ export function Hero() {
 
         <div className="mt-16 flex flex-wrap items-center justify-center gap-8 text-center">
           {[
-            { value: "¥0", label: "月額固定費" },
-            { value: "0円", label: "待機中コスト（Scale-to-Zero）" },
-            { value: "秒単位", label: "従量課金" },
+            { value: "¥0", label: "維持費" },
+            { value: "0円", label: "待機中コスト" },
+            { value: "従量課金", label: "使った分だけ" },
             { value: "スマホ可", label: "必要な端末" },
           ].map((stat) => (
             <div key={stat.label}>

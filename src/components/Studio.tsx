@@ -22,9 +22,9 @@ const STUDIO_TABS: { id: StudioTab; label: string }[] = [
   // behind it is mid-swap and ImageGenMaintenancePlaceholder is the only
   // thing it currently renders. Re-add here once the new engine ships.
   { id: "custom", label: "特化ワークフロー" },
-  { id: "angle", label: "🎭 Multi-Angle" },
-  { id: "upscale", label: "✨ 超解像" },
-  { id: "upscale_video", label: "🎬 動画超解像" },
+  { id: "angle", label: "🎭 マルチアングル" },
+  { id: "upscale", label: "✨ 4K/8K超解像" },
+  { id: "upscale_video", label: "🎬 4K動画超解像" },
   { id: "director", label: "🎥 Cinematic Director" },
   { id: "lora", label: "🎨 LoRA Studio" },
 ];
