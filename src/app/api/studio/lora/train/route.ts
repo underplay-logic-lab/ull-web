@@ -7,7 +7,7 @@ import { DEFAULT_LORA_STEPS, autoLoraSteps, autoLoraRankAlpha } from "@/lib/lora
 import { guiLoraPricingConfig, loraPriceBreakdown } from "@/lib/loraPricing";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { loraCostCapSeconds } from "@/lib/pricing/costGuard.server";
-import { loraCreditWorstCase } from "@/lib/pricing/knobDefaults";
+import { loraCreditWorstCase } from "@/lib/pricing/loraRuntime";
 import { validateLoraYaml, loraYamlIdentity, collectLoraYamlStructureErrors } from "@/lib/loraYaml";
 import { getAdminEmails } from "@/lib/adminAuth";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -364,9 +364,10 @@ async function handlePost(request: Request): Promise<NextResponse> {
   }
 
   // --- authoritative price -----------------------------------------------
-  // Multi-dimensional: ceil(0.1 * modelMult * resMult * batchMult * rankMult
-  // * steps) — computed server-side from the request's real parameters so a
-  // tampered client body can't under-pay (see src/lib/loraPricing.ts).
+  // 推定GPU秒ベース: ceil( (prep(枚数) + steps × s/it(arch, 解像度, バッチ))
+  // × クレジット単価 ) — computed server-side from the request's real
+  // parameters so a tampered client body can't under-pay
+  // (see src/lib/loraPricing.ts / src/lib/pricing/loraRuntime.ts).
   //  - raw-YAML expert: price the parsed ai-toolkit config directly.
   //  - GUI expert (slider) / auto / semi: synthesise the equivalent config.
   //  - a YAML that somehow reached here unparseable: the worst-case ceiling.
@@ -445,7 +446,12 @@ async function handlePost(request: Request): Promise<NextResponse> {
         archFallback: pricedArch,
         // Raw-YAML (hasOverride) prices purely off the YAML's own arch — a
         // preset's per-model override only applies to the GUI-synthesised path.
-        modelMultOverride: hasOverride ? undefined : pricedPreset?.pricingModelMult,
+        spiOverride: hasOverride ? undefined : pricedPreset?.spiOverride,
+        // 準備時間（latent キャッシュ）は枚数に比例するので課金の入力になる。
+        // 生 YAML にはこの情報が無いため、必ずサーバーが握っている実データ
+        // （アップロード済みのファイル数）から渡す — クライアント申告は信用
+        // しない（過小申告で安く上げられてしまう）。
+        imageCount: storagePaths.length,
         knobs,
       })
     : null;
@@ -465,6 +471,11 @@ async function handlePost(request: Request): Promise<NextResponse> {
     creditsCost: requiredCredits,
     arch: priceBreakdown?.arch || pricedArch,
     steps: priceBreakdown?.steps ?? 0,
+    // 課金に使ったのと同じ入力を渡す（loraCostCapSeconds は内部で同じ見積もり
+    // 関数を通すので、これで価格と損切りが同じ前提で動く）。
+    resolution: priceBreakdown?.maxResolution,
+    effectiveBatch: priceBreakdown?.effectiveBatch,
+    imageCount: priceBreakdown?.imageCount,
     knobs,
   });
 

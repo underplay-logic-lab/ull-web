@@ -367,6 +367,32 @@ LORA_OUTPUT_DIR = f"{MODELS_DIR}/loras"
 GPU_REQUEST = os.environ.get("LORA_WORKER_GPU", "").strip() or ["b300", "b200"]
 AI_TOOLKIT_REF = os.environ.get("AI_TOOLKIT_REF", "main")
 
+# 2026-09-20: 既定を False（無効）に変更（ホスト判断）。
+# gradient checkpointing は activation を捨てて backward で再計算する VRAM
+# 節約策で、一般に 20〜40% 遅くなる。LoRA はアダプタしか学習しないのに
+# Blackwell の 288GB に対してこれを効かせているのは、CLAUDE.md §1 の
+# 「量子化・オフロードで VRAM をケチらない」方針と同じ理由で筋が悪い。
+# 遅い = GPU 秒が伸びる = 原価が上がる（課金は推定GPU秒ベース、
+# src/lib/pricing/loraRuntime.ts）ので、切れるならそのまま値下げ余地になる。
+# 効き幅の実測は modal_lora_benchmark.py の "settings" プラン（on/off の A/B）。
+# OOM が出たら 1 に戻せば従来挙動。
+LORA_GRADIENT_CHECKPOINTING = os.environ.get("LORA_GRADIENT_CHECKPOINTING", "0").strip() not in (
+    "",
+    "0",
+    "false",
+    "False",
+)
+
+# 2026-09-20: 学習中のサンプル画像生成を既定で全面停止（ホスト判断）。
+# 詳細は _build_config の train.disable_sampling のコメント参照。
+# LORA_ENABLE_SAMPLING=1 で従来どおりの挙動に戻せる。
+_LORA_SAMPLING_ON = os.environ.get("LORA_ENABLE_SAMPLING", "0").strip() not in (
+    "",
+    "0",
+    "false",
+    "False",
+)
+
 # PyTorch 最適化標準（CLAUDE.md §1）: ai-toolkit の model ブロックに
 # `compile: true` を付けて DiT/UNet を torch.compile（Inductor）し、学習
 # ステップループを高速化する。ai-toolkit `ModelConfig` のネイティブ
@@ -415,23 +441,38 @@ LORA_SAFETY_LIMIT_S = int(os.environ.get("LORA_SAFETY_LIMIT_S", str(5 * 60 * 60)
 ULL_COST_GUARD_MULTIPLIER = max(
     1.0, min(float(os.environ.get("ULL_COST_GUARD_MULTIPLIER", "1.4")), 3.0)
 )
-# Measured seconds/iteration baseline per arch — floors the cost cap so a
-# correctly-priced-but-slow heavy model (MiniMax H3 measures ~5s/it at 1024)
-# always has enough runway to finish its declared step count even when its
-# credit price underprices the wall time. Unlisted arch -> _DEFAULT.
+# arch 別の s/it（秒/イテレーション）。cost cap の下限を作り、正しく課金されて
+# いるが遅いジョブが宣言した step 数を終える前に損切りで撃ち落とされないように
+# する。未収載の arch -> _DEFAULT。
+#
+# ⚠️ src/lib/pricing/loraRuntime.ts の同名テーブルと必ず同じ値にすること。
+# あちらが課金側の SSOT で、ジョブ payload の cost_cap_seconds として降りて
+# くる。この表はその payload が無い場合のフォールバック。
+#
+# 2026-09-20: 実測に合わせて総入れ替え（modal_lora_benchmark.py smoke /
+# minimax_h3 / B300 / 1024px / rank32 / batch1 / prodigy /
+# gradient_checkpointing 無効 / torch.compile 有効 → 0.2329 s/it）。
+# 旧値 5.0 は **it/s を s/it と取り違えた値**で 21 倍の過大評価だった
+# （docs/gpu-benchmarks.md §5 の「compile 5.0-5.4 it/s」が正しかった）。
+# 実測は minimax_h3 の1点のみで、他の ai-toolkit arch は旧テーブルの相対順序を
+# 保ったまま実測点でアンカーして一律 0.04658 倍した未検証値。
+# sdxl は別ワーカー（sd-scripts / 別 tier）で桁が違うため別扱い。旧値 0.9 は
+# 実測前の仮値だったので、2026-09-15 スモーク実測(1.32s/it)由来の 1.4 へ揃える。
 LORA_SPI_BASELINE: dict[str, float] = {
-    "minimax_h3": 5.0,
-    "wan22_14b": 4.0,
-    "wan21": 3.5,
-    "ltx2": 3.5,
-    "hunyuan": 4.0,
-    "cogvideox": 4.0,
-    "flux2_klein_4b": 1.1,
-    "qwen_image": 2.0,
-    "krea2": 2.0,
-    "zimage": 1.2,
-    "anima": 1.4,
-    "sdxl": 0.9,
+    # --- ai-toolkit ---
+    "minimax_h3": 0.213,  # ← 唯一の実測値（2026-09-20, B300）
+    "wan22_14b": 0.17,
+    "wan21": 0.149,
+    "ltx2": 0.149,
+    "hunyuan": 0.17,
+    "cogvideox": 0.17,
+    "qwen_image": 0.085,
+    "krea2": 0.085,
+    "anima": 0.06,
+    "zimage": 0.051,
+    "flux2_klein_4b": 0.047,
+    # --- sd-scripts ---
+    "sdxl": 1.4,
 }
 LORA_SPI_BASELINE_DEFAULT = float(os.environ.get("LORA_SPI_BASELINE_DEFAULT", "2.5"))
 # Prep / latent-caching / checkpoint headroom added on top of pure training
@@ -1830,20 +1871,43 @@ def _build_config(
                         "gradient_accumulation_steps": 1,
                         "train_unet": True,
                         "train_text_encoder": False,
-                        "gradient_checkpointing": True,
+                        # 既定 False。LORA_GRADIENT_CHECKPOINTING のコメント参照。
+                        "gradient_checkpointing": LORA_GRADIENT_CHECKPOINTING,
                         "noise_scheduler": "flowmatch",
                         "optimizer": optimizer,
                         "lr": lr,
                         "dtype": "bf16",
+                        # 2026-09-20: サンプル生成を全面的に止めた（ホスト判断
+                        # 「sample生成は不要。使ったことがない」）。
+                        #
+                        # 学習前のベースライン1枚と学習後の最終1枚が生成されて
+                        # いたが、どちらもユーザーには渡らない中間生成物で、
+                        # 実測（modal_lora_benchmark.py smoke, B300）では両方
+                        # 合わせて1ジョブあたり10分以上・約¥200を消費していた。
+                        # torch.compile 有効時はサンプルが学習と別 shape なので
+                        # 専用のコンパイルまで余計に引いていたのが効いている。
+                        #
+                        # disable_sampling / skip_first_sample はこの ai-toolkit
+                        # リビジョンの toolkit/config_modules.py に実在すること
+                        # をソースで確認済み（2026-09-20）。存在しないキーを
+                        # 渡すと全ジョブが落ちるので、変更する際は必ず同じ確認を
+                        # してから。LORA_ENABLE_SAMPLING=1 で元に戻せる。
+                        "disable_sampling": not _LORA_SAMPLING_ON,
+                        "skip_first_sample": not _LORA_SAMPLING_ON,
                     },
                     "model": model_block,
                     "sample": {
                         "sampler": "flowmatch",
-                        # torch.compile 有効時: サンプル生成は学習と別 shape なので
-                        # 毎回 ~220s の再コンパイルが走る（B300 実測、2026-09-06）。
-                        # 途中サンプルを止めて最終 1 回だけにし、compile の利得を
-                        # 食い潰さないようにする。eager 時は従来どおり save_every。
-                        "sample_every": (steps if _compile_on else save_every),
+                        # サンプリングは上の disable_sampling で止めているので、
+                        # このブロックは基本的に使われない。念のため
+                        # sample_every も絶対に発火しない値にしておく
+                        # （LORA_ENABLE_SAMPLING=1 で戻したときは、compile 有効
+                        # なら最終1回だけ・eager なら save_every ごと）。
+                        "sample_every": (
+                            (steps if _compile_on else save_every)
+                            if _LORA_SAMPLING_ON
+                            else steps + 1
+                        ),
                         "width": res,
                         "height": res,
                         "prompts": [f"{trigger}, full-body standing view, studio lighting"],

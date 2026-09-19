@@ -1037,8 +1037,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // "フォームに戻る" — only resetForm() / a fresh dispatch drops it.
   const completedJob = job && job.status === "completed" ? job : null;
 
-  // Multi-dimensional dynamic price, live (src/lib/loraPricing.ts):
-  //   ceil(0.1 * modelMult * resMult * batchMult * rankMult * steps)
+  // 推定GPU秒ベースの動的価格、live (src/lib/loraPricing.ts):
+  //   ceil( (prep(枚数) + steps × s/it(arch, 解像度, バッチ)) × クレジット単価 )
   //  - エキスパート(生YAML): price the live-parsed ai-toolkit config; an
   //    unparseable / step-less YAML shows the worst-case ceiling.
   //  - エキスパート(スライダー): pro.rank / pro.steps をそのまま使う。
@@ -1051,7 +1051,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   const priceBreakdown = useMemo(() => {
     if (yamlMode) {
       if (yamlCheck?.ok)
-        return loraPriceBreakdown(yamlCheck.data, { archFallback: pricedArch, knobs: pricingKnobs });
+        return loraPriceBreakdown(yamlCheck.data, {
+          archFallback: pricedArch,
+          imageCount: images.length,
+          knobs: pricingKnobs,
+        });
       return null; // worst-case shown below
     }
     return loraPriceBreakdown(
@@ -1061,7 +1065,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         linearRank: mode === "pro" ? pro.rank : autoLoraRankAlpha(captionCategory).rank,
         steps: mode === "pro" ? pro.steps : autoLoraSteps(images.length),
       }),
-      { modelMultOverride: selectedPreset?.pricingModelMult, knobs: pricingKnobs },
+      {
+        spiOverride: selectedPreset?.spiOverride,
+        imageCount: images.length,
+        knobs: pricingKnobs,
+      },
     );
   }, [
     yamlMode,

@@ -37,6 +37,15 @@ export type KnobKey =
   | "upscale_video_mult_res_2k"
   | "upscale_video_mult_res_4k"
   // --- lora_formula (public) ---
+  | "lora_credits_per_gpu_second"
+  | "lora_credits_per_gpu_second_sdxl"
+  | "lora_prep_load_s"
+  | "lora_prep_load_s_sdxl"
+  | "lora_prep_dequant_s"
+  | "lora_prep_per_image_s"
+  | "lora_res_scale_exponent"
+  | "lora_spi_baseline_default"
+  // 旧「係数の掛け算」方式の残骸（2026-09-20 廃止・未使用。DB 行は残置）
   | "lora_per_step"
   | "lora_mult_model_heavy"
   | "lora_mult_res_1024"
@@ -56,7 +65,6 @@ export type KnobKey =
   | "lora_margin_target"
   | "lora_floor_prep_s"
   | "lora_safety_limit_s"
-  | "lora_spi_baseline_default"
   | "alert_low_margin_percent"
   // --- rates (server-only) ---
   | "credit_to_jpy"
@@ -373,61 +381,234 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     isPublic: true,
   },
   // ------------------------------------------------------------- lora_formula
+  //
+  // 2026-09-20: 「係数の掛け算」方式（lora_per_step × モデル × 解像度 ×
+  // バッチ × rank × steps）を廃止し、「推定GPU秒 × クレジット単価」方式へ
+  // 移行した。式の実体と arch 別 s/it は src/lib/pricing/loraRuntime.ts。
+  //   消費C = ceil( (prep_load + prep_per_image×枚数 + steps×s/it×解像度×バッチ)
+  //                 × credits_per_gpu_second )
+  lora_credits_per_gpu_second: {
+    // ai-toolkit ワーカー（modal_lora_worker.py）で回る arch の単価。
+    //
+    // 2026-09-20: **原価ベース（3倍markup）に統一**（ホスト判断）。
+    //   B300 $7.5/h × usd_jpy 150 = ¥1,125/h = ¥0.3125/GPU秒
+    //   × 3.0 markup ÷ credit_to_jpy 1.66 = 0.5648 C/GPU秒
+    //
+    // それまでは「計測の修正が黙って価格を動かさない」ため据え置き点を採って
+    // いたが、サンプル生成の停止で固定費を 60% 削れた（1,395秒 → 551秒）ので、
+    // その分を値下げとして出す形に切り替えた。代表ジョブ（minimax_h3 /
+    // 1024px / 画像30枚 / 1210step）は 545C → 459C。
+    //
+    // この単価で fal の Wan2.2 動画LoRA trainer（$0.004/step）と比べると、
+    // 2000step で ¥920 対 ¥1,200（-23%）、3000step で ¥1,120 対 ¥1,800
+    // （-38%）。step 数が増えるほど有利になるのは、うちが固定費主体で
+    // 限界費用が小さいため。
+    //
+    // ⚠️ markup を動かすときは credit_to_jpy（= クレジットの実売単価）も
+    // 見直すこと。1.66 は最上位サブスクの額面単価で、日次ログインボーナスと
+    // Polar の決済手数料を織り込んだ実質単価はこれより2割ほど低い。
+    value: 0.5648,
+    label: "LoRA クレジット単価（ai-toolkit）",
+    category: "lora_formula",
+    unit: "C/GPU秒",
+    description:
+      "推定GPU秒に掛けて消費クレジットを出す単価。ai-toolkit ワーカーで回る全 arch（SDXL以外）。",
+    isPublic: true,
+  },
+  lora_credits_per_gpu_second_sdxl: {
+    // sd-scripts ワーカー（modal_sdxl_lora_worker.py）で回る arch="sdxl"
+    // （illustrious_xl / juggernaut_xl）の単価。ai-toolkit では品質が出ない
+    // という実測でこちらへ分けてあり、結果として一段安い GPU tier で回る。
+    //
+    // 0.0911 は価格据え置き点（1024px・画像30枚・1210step で推定 1,998秒
+    // × 0.0911 ≒ 182C、旧「係数の掛け算」方式も 182C）。原価ベース
+    // （L40S の時間単価・3倍markup）なら 0.1468 で、現在は markup 約1.9倍。
+    // ⚠️ sdxl の s/it も prep も未実測なので、この据え置き点自体が未検証の
+    // 入力に乗っている。SDXL は LoRA 学習で唯一はっきり黒字の系統であり
+    // 競合比でも安いと言えるので、実測してから詰めるのが良い。
+    value: 0.0911,
+    label: "LoRA クレジット単価（sd-scripts / SDXL）",
+    category: "lora_formula",
+    unit: "C/GPU秒",
+    description: "同上。SDXL系（illustrious / juggernaut）は sd-scripts ワーカーで回るため別単価。",
+    isPublic: true,
+  },
+  lora_prep_load_s: {
+    // ai-toolkit ワーカーの、枚数に依らない固定準備時間。
+    //
+    // 2026-09-20 実測（modal_lora_benchmark.py smoke / minimax_h3 / B300 /
+    // 1024px / 画像8枚 / 40step）: 全体 1,404.5秒 のうち、学習ステップ本体は
+    // 40 × 0.2329 ≒ 9秒。残り **約1,395秒がすべて固定費**だった。内訳は
+    //   - int8(DiT) + nvfp4(TE) の逆量子化 … 約570秒（毎回。bake は
+    //     2026-09-14 にホスト判断で無効化済み）
+    //   - torch.compile のウォームアップ
+    //   - 学習前のベースラインサンプル生成（+ 別 shape の専用コンパイル）
+    //   - 学習後の最終サンプル生成（sample_every = steps）… 約460秒と推定
+    //   - コンテナ起動・モデルロード・VAE ロード
+    //
+    // 2026-09-20 の2回目の smoke（サンプル生成を止めた後＝現行の本番設定）で
+    // 再計測。全体 559.9秒 のうち学習本体は 40 × 0.2135 ≒ 8.5秒で、固定費は
+    // 551秒。1回目（サンプル生成あり）の 1,395秒 から **844秒・60%削減**された。
+    // その551秒を、逆量子化ぶん（lora_prep_dequant_s = 270）とそれ以外
+    // （モデル/VAE ロード + torch.compile ウォームアップ + 保存処理 = 280）に
+    // 分けてある。
+    //
+    // ⚠️ 実測は minimax_h3 のみ。compile ウォームアップはモデルの大きさに依存
+    // するので、軽い arch（flux2_klein_4b 等）では 280 より小さいはず＝それら
+    // を過大請求している可能性が残る。arch 別に実測したら分割すること。
+    // ⚠️ 270/280 の切り分けは、1回目のログのタイムスタンプから逆量子化を
+    // 約270秒と見積もった上での配分で、2回目単独では両者を分離できていない。
+    // 合計 550秒 の方が実測として確か。
+    value: 280,
+    label: "LoRA 準備時間（固定分・ai-toolkit）",
+    category: "lora_formula",
+    unit: "s",
+    description:
+      "compile ウォームアップ・サンプル生成・モデルロード等、枚数にも step 数にも依らない固定オーバーヘッド。",
+    isPublic: true,
+  },
+  lora_prep_dequant_s: {
+    // 配布重みが量子化されている arch（現状 minimax_h3 のみ）が、ロードの
+    // たびに払う full precision への逆量子化コスト。DiT(int8 convrot) と
+    // text encoder(nvfp4 AWQ) の2回ぶん。
+    //
+    // 恒久的な固定費として扱う。非量子化版への差し替えは調査済みで断念
+    // （ai-toolkit が量子化版しかロードできない）、逆量子化結果の bake も
+    // 2026-09-14 に無効化済み（85.5GB の Volume 容量に対し 1ジョブ10分の
+    // 短縮では見合わないとのホスト判断）。
+    //
+    // ⚠️ この 270 は lora_prep_load_s との配分値であって、単独で実測した値
+    // ではない（そちらのコメント参照）。両方を足した 550秒 が実測。
+    value: 270,
+    label: "LoRA 準備時間（逆量子化ぶん）",
+    category: "lora_formula",
+    unit: "s",
+    description:
+      "量子化配布された重み（現状 minimax_h3 のみ）をロード時に full precision へ戻すコスト。該当 arch にのみ加算。",
+    isPublic: true,
+  },
+  lora_prep_load_s_sdxl: {
+    // sd-scripts ワーカー（SDXL）の固定準備時間。こちらは逆量子化も
+    // torch.compile も無いので ai-toolkit 側より大幅に小さいはず。
+    // ⚠️ 完全に未実測の暫定値。ai-toolkit 側の 1390 をそのまま当てると SDXL
+    // ジョブを数倍に過大請求してしまうため、分離だけ先に入れてある。
+    value: 300,
+    label: "LoRA 準備時間（固定分・sd-scripts / SDXL）",
+    category: "lora_formula",
+    unit: "s",
+    description: "SDXL系（sd-scripts ワーカー）の固定オーバーヘッド。⚠️未実測の暫定値。",
+    isPublic: true,
+  },
+  lora_prep_per_image_s: {
+    // latent キャッシュのうち、枚数に比例する分（限界費用）。
+    //
+    // 2026-09-20 実測: 8枚の latent キャッシュ合計が 51.1秒。ただし経過時間の
+    // 推移を見ると 1枚目に約50秒（VAE ロードとウォームアップ）が集中し、
+    // 2〜8枚目の7枚は合計約1秒。つまり **限界費用は 0.14秒/枚程度**で、
+    // 見かけの平均 6.38s/it は固定費を頭割りしただけの数字だった。
+    // 50秒側は lora_prep_load_s に含めてある。
+    //
+    // ⚠️ 合成データ（全て 1024×1024 = 1バケット）での実測。実データは
+    // アスペクト比が混ざりバケットが増えるので、これより大きくなり得る。
+    // なお画像のリサイズ・再エンコードは CPU 関数
+    // （ingest_and_optimize_dataset_cpu）で GPU 起動前に済むため、ここには
+    // 乗らない。
+    value: 0.15,
+    label: "LoRA 準備時間（1枚あたり）",
+    category: "lora_formula",
+    unit: "s/枚",
+    description: "latent キャッシュのうちデータセット枚数に比例する分（限界費用）",
+    isPublic: true,
+  },
+  lora_res_scale_exponent: {
+    // s/it は画素数（辺の2乗）に比例するのを基本とし、実測とのズレをこの
+    // 指数で吸収する。1.0 = 画素数に正比例。attention が トークン数に対して
+    // 二次で効く分、実測では 1.0 より大きくなる可能性がある。
+    // ⚠️ Stage 1 で 768 / 1024 / 1280 の3点を測って回帰で確定させること。
+    value: 1.0,
+    label: "LoRA 解像度スケール指数",
+    category: "lora_formula",
+    unit: "×",
+    description: "s/it = 基準値 × (解像度²/1024²)^これ。1.0 で画素数に正比例。",
+    isPublic: true,
+  },
+  lora_spi_baseline_default: {
+    // 2026-09-20: cost_guard から lora_formula へ移動し公開化した。旧方式では
+    // 損切り計算だけが使っていたが、新方式では課金式そのものの入力なので
+    // クライアント（見積り表示）にも渡す必要がある。
+    //
+    // 同日さらに 2.5 → 0.3 へ修正。2.5 は LORA_SPI_BASELINE が旧スケール
+    // （it/s を s/it と取り違えた値）だった頃のフォールバックで、テーブルを
+    // 実測値（0.051〜0.233）へ入れ替えた際に取り残されていた。そのままだと
+    // 未知 arch（＝ユーザーのカスタムモデル）が、最も重い minimax_h3 の
+    // 10倍の s/it で見積もられる。
+    // 0.3 は既知で最も重い minimax_h3(0.233) をやや上回る値。未知のモデルは
+    // 重い可能性があるので、過小請求・損切りの早撃ちより過大側へ倒す。
+    value: 0.3,
+    label: "LoRA 未知 arch の s/it",
+    category: "lora_formula",
+    unit: "s/it",
+    description: "loraRuntime.ts の arch 別実測テーブルに無いモデルの 1 イテレーション所要秒",
+    isPublic: true,
+  },
+  // --- 以下は旧「係数の掛け算」方式の残骸。2026-09-20 に廃止・未使用。
+  //     admin から消すと DB 行との対応が崩れるので残置し、非公開にしてある。
   lora_per_step: {
     value: 0.1,
-    label: "LoRA 基本単価",
+    label: "LoRA 基本単価（廃止・未使用）",
     category: "lora_formula",
     unit: "C/step",
-    description: "ceil(単価 × 各係数 × steps) の基本単価",
-    isPublic: true,
+    description: "（廃止）推定GPU秒ベースへ移行。loraRuntime.ts 参照。",
+    isPublic: false,
   },
   lora_mult_model_heavy: {
     value: 3.0,
-    label: "LoRA モデル係数（動画系）",
+    label: "LoRA モデル係数（廃止・未使用）",
     category: "lora_formula",
     unit: "×",
-    description: "minimax_h3 / wan21 / hunyuan など動画 DiT の倍率。それ以外は 1.0。",
-    isPublic: true,
+    description: "（廃止）arch 別の実測 s/it テーブル（loraRuntime.ts）に置き換え。",
+    isPublic: false,
   },
   lora_mult_res_1024: {
     value: 1.5,
-    label: "LoRA 解像度係数（≥1024px）",
+    label: "LoRA 解像度係数 ≥1024px（廃止・未使用）",
     category: "lora_formula",
     unit: "×",
-    description: "データセット最大解像度が 1024〜1279px のときの倍率",
-    isPublic: true,
+    description: "（廃止）lora_res_scale_exponent による連続式に置き換え。",
+    isPublic: false,
   },
   lora_mult_res_1280: {
     value: 2.0,
-    label: "LoRA 解像度係数（≥1280px）",
+    label: "LoRA 解像度係数 ≥1280px（廃止・未使用）",
     category: "lora_formula",
     unit: "×",
-    description: "データセット最大解像度が 1280px 以上のときの倍率",
-    isPublic: true,
+    description: "（廃止）lora_res_scale_exponent による連続式に置き換え。",
+    isPublic: false,
   },
   lora_mult_batch_2: {
     value: 1.5,
-    label: "LoRA バッチ係数（実効≥2）",
+    label: "LoRA バッチ係数 ≥2（廃止・未使用）",
     category: "lora_formula",
     unit: "×",
-    description: "batch_size × grad_accum が 2〜3 のときの倍率",
-    isPublic: true,
+    description: "（廃止）実効バッチは所要秒に正比例するものとして直接掛ける。",
+    isPublic: false,
   },
   lora_mult_batch_4: {
     value: 2.0,
-    label: "LoRA バッチ係数（実効≥4）",
+    label: "LoRA バッチ係数 ≥4（廃止・未使用）",
     category: "lora_formula",
     unit: "×",
-    description: "batch_size × grad_accum が 4 以上のときの倍率",
-    isPublic: true,
+    description: "（廃止）実効バッチは所要秒に正比例するものとして直接掛ける。",
+    isPublic: false,
   },
   lora_mult_rank_64: {
     value: 1.2,
-    label: "LoRA Rank 係数（≥64）",
+    label: "LoRA Rank 係数（廃止・未使用）",
     category: "lora_formula",
     unit: "×",
-    description: "network.linear（LoRA dim）が 64 以上のときの倍率",
-    isPublic: true,
+    description:
+      "（廃止）LoRA アダプタは基盤モデルに対して十分小さく、rank は所要秒をほとんど動かさないため課金要素から外した。",
+    isPublic: false,
   },
   // -------------------------------------------------------------- cost_guard
   angle_time_per_credit_s: {
@@ -527,11 +708,16 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     isPublic: false,
   },
   lora_floor_prep_s: {
+    // 2026-09-20 廃止・未使用。損切りの arch-floor が、課金と同じ
+    // loraEstimatedSeconds()（prep を lora_prep_load_s / _sdxl /
+    // _dequant / _per_image で明示的に積む）を通すようになったため、
+    // 「純学習時間に一律で足す下駄」という概念自体が無くなった。
+    // DB 行は残置。
     value: 2700,
-    label: "LoRA 損切り：prep 下駄秒",
+    label: "LoRA 損切り：prep 下駄秒（廃止・未使用）",
     category: "cost_guard",
     unit: "s",
-    description: "純学習時間に加算する latent キャッシュ / チェックポイント余裕",
+    description: "（廃止）prep は lora_prep_* knob で明示的に見積もるようになった。",
     isPublic: false,
   },
   lora_safety_limit_s: {
@@ -540,14 +726,6 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "cost_guard",
     unit: "s",
     description: "クレジット 0（生 YAML パース不能）ジョブの絶対上限秒",
-    isPublic: false,
-  },
-  lora_spi_baseline_default: {
-    value: 2.5,
-    label: "LoRA 損切り：未知 arch の s/it",
-    category: "cost_guard",
-    unit: "s/it",
-    description: "arch 別実測テーブルに無いモデルの 1 イテレーション所要秒",
     isPublic: false,
   },
   alert_low_margin_percent: {
@@ -701,16 +879,7 @@ export function resolveKnobs(overrides?: Partial<Record<string, number>> | null)
   return out;
 }
 
-// Worst-case LoRA credit ceiling — recomputed from the defaults so it tracks
-// any change to the seed values (0.1 * 3.0 * 2.0 * 2.0 * 1.2 * 5000 = 7200).
-export function loraCreditWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): number {
-  const LORA_MAX_STEPS = 5000;
-  return Math.ceil(
-    knobs.lora_per_step *
-      knobs.lora_mult_model_heavy *
-      knobs.lora_mult_res_1280 *
-      knobs.lora_mult_batch_4 *
-      knobs.lora_mult_rank_64 *
-      LORA_MAX_STEPS,
-  );
-}
+// loraCreditWorstCase() は 2026-09-20 に src/lib/pricing/loraRuntime.ts へ移動
+// した（新方式では「コンテナのハード上限秒 × クレジット単価」という、見積もり
+// 式と同じ土台から導かれる値になったため）。このファイルは loraRuntime.ts から
+// import される側なので、ここに置くと循環参照になる。

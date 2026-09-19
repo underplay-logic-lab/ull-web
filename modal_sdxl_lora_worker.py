@@ -88,6 +88,15 @@ SD_SCRIPTS_REF = os.environ.get("SD_SCRIPTS_REF", "v0.11.1")
 # option here.
 GPU_REQUEST = os.environ.get("SDXL_WORKER_GPU", "").strip() or "L40S"
 
+# 2026-09-20: 既定 False（無効）。理由は _build_train_args() 内のコメント参照。
+# このワーカーは L40S(48GB) なので、OOM 時の逃げ道として env を残してある。
+SDXL_GRADIENT_CHECKPOINTING = os.environ.get("SDXL_GRADIENT_CHECKPOINTING", "0").strip() not in (
+    "",
+    "0",
+    "false",
+    "False",
+)
+
 # --- CPU-only probe image ---------------------------------------------------
 # sd-scripts' own README baseline: PyTorch 2.6.0+, CUDA 12.4 (cu124). Not
 # Blackwell-specific guidance (that's cu128/129) since GPU_REQUEST above is
@@ -238,6 +247,13 @@ SD_SCRIPTS_OPTIMIZER_MAP = {
     "lion8bit": "Lion8bit",
 }
 
+# 未知のオプティマイザ名が来たときのフォールバック。2026-09-20 に AdamW8bit
+# から変更（ホスト判断）: 8bit 系（bitsandbytes の int8 量子化オプティマイザ）は
+# UI の選択肢としては残すが、**どの既定経路でも黙って選ばれてはいけない**
+# （CLAUDE.md §1 量子化は原則不使用・使うならホスト承認）。ユーザーが明示的に
+# adamw8bit / lion8bit を選んだときだけ上の表を通って使われる。
+SD_SCRIPTS_OPTIMIZER_FALLBACK = "AdamW"
+
 
 def _write_dataset_toml(root: str, image_dir: str, resolution: int, keep_tokens: int = DEFAULT_KEEP_TOKENS) -> str:
     """Writes an sd-scripts "general method" dataset TOML pointing at an
@@ -349,7 +365,7 @@ def _build_train_args(
     alpha = int(tc.get("alpha", DEFAULT_TRAINING_CONFIG["alpha"]))
     steps = int(tc.get("steps", DEFAULT_TRAINING_CONFIG["steps"]))
     optimizer_key = str(tc.get("optimizer", DEFAULT_TRAINING_CONFIG["optimizer"])).lower()
-    optimizer_type = SD_SCRIPTS_OPTIMIZER_MAP.get(optimizer_key, "AdamW8bit")
+    optimizer_type = SD_SCRIPTS_OPTIMIZER_MAP.get(optimizer_key, SD_SCRIPTS_OPTIMIZER_FALLBACK)
     if optimizer_key == "prodigy":
         # Same rationale as modal_lora_worker.py's _build_config: Prodigy
         # self-estimates step size and treats `lr` as a multiplier on that
@@ -383,12 +399,21 @@ def _build_train_args(
         # preset above). Stays this project's bf16 standard regardless.
         "--save_precision=bf16",
         "--cache_latents",
-        "--gradient_checkpointing",
         "--sdpa",
         "--min_snr_gamma=5",
         "--seed=42",
         "--no_half_vae",
     ]
+    # 2026-09-20: --gradient_checkpointing を既定で外した（ホスト判断、
+    # modal_lora_worker.py の LORA_GRADIENT_CHECKPOINTING と同じ理由 — VRAM を
+    # 節約して速度を捨てる設定は使わない）。
+    # ⚠️ ただしこのワーカーだけは GPU_REQUEST が L40S(48GB) で、ai-toolkit 側の
+    # Blackwell(288GB) と違って余裕が薄い。1024px/batch1 の SDXL LoRA なら
+    # 収まる見込みだが **未検証**。OOM が出たら SDXL_GRADIENT_CHECKPOINTING=1 で
+    # 即座に従来挙動へ戻せる（この経路だけ env の逃げ道を残しているのはそのため）。
+    # 本筋は modal_lora_benchmark.py で L40S の peak VRAM を実測してから確定する。
+    if SDXL_GRADIENT_CHECKPOINTING:
+        args.append("--gradient_checkpointing")
     if optimizer_key == "prodigy":
         # sd-scripts' own Prodigy guidance (README / --help): decouple +
         # safeguard_warmup is the standard pairing, same as most Prodigy
@@ -442,9 +467,18 @@ def smoke_test_sdxl_lora() -> dict:
     output_dir.mkdir(exist_ok=True)
 
     # Exercises the REAL _build_config-equivalent (rank 16/alpha 8, 20 steps,
-    # AdamW8bit @ 1e-4, 1024px) rather than a separately hand-maintained arg
-    # list, so this smoke test also proves _build_train_args itself works.
-    tc = {"rank": 16, "alpha": 8, "steps": 20, "optimizer": "adamw8bit", "learning_rate": 1e-4}
+    # 1024px) rather than a separately hand-maintained arg list, so this smoke
+    # test also proves _build_train_args itself works.
+    #
+    # 2026-09-20: optimizer を adamw8bit から本番既定の prodigy へ変更。
+    # スモークは「本番と同じ設定が通ること」を確かめるものなので、本番が使わない
+    # 量子化オプティマイザで測っていては意味がない。
+    # ⚠️ さらに重要: costGuard.server.ts / loraRuntime.ts の
+    # LORA_SPI_BASELINE["sdxl"] = 1.4 は、**このスモークを旧設定
+    # （AdamW8bit + gradient_checkpointing 有効）で回したときの 1.32s/it** が
+    # 出所だった。どちらも既定から外れたので、あの値はもう本番条件を表して
+    # いない。modal_lora_benchmark.py で測り直すまで暫定値として扱うこと。
+    tc = {"rank": 16, "alpha": 8, "steps": 20, "optimizer": "prodigy", "learning_rate": 1e-4}
     args = [sys.executable, f"{SD_SCRIPTS_DIR}/sdxl_train_network.py"] + _build_train_args(
         "smoke_test", dataset_toml, str(output_dir), tc, resolution=1024
     )

@@ -1,60 +1,67 @@
-// Multi-dimensional dynamic price for one LoRA training run.
+// Dynamic price for one LoRA training run.
 //
-// The old model charged by step count alone (200→50C … 5000→500C). That
-// under-priced heavy configs badly — a 3000-step MiniMax H3 run at 1280px
-// with batch 4 and rank 64 costs multiples of a 3000-step SDXL run at 512px
-// but paid the same flat rate. This computes credits from the parameters
-// that actually drive GPU-seconds:
+// 2026-09-20: 「係数の掛け算」から「推定GPU秒 × クレジット単価」へ作り直した。
 //
-//   credits = ceil( 0.1 * modelMult * resolutionMult * batchMult * rankMult * steps )
+//   消費C = ceil( 推定GPU秒 × クレジット単価(ワーカー) )
+//   推定GPU秒 = prep(枚数) + steps × s/it(arch, 解像度, 実効バッチ)
+//
+// 見積もりの実体は src/lib/pricing/loraRuntime.ts にあり、損切り
+// （src/lib/pricing/costGuard.server.ts）も同じ関数を呼ぶ。課金式と損切り式が
+// 別々に存在していた頃の「片方を変えてもう片方が壊れる」事故クラスはこれで
+// 構造的に消えている。
+//
+// 旧方式（0.1 C/step × モデル × 解像度 × バッチ × rank × steps）を捨てた理由:
+//   - 学習設定を変えるたびに係数を人手で校正し直す必要があり、設定が固まる
+//     まで価格を決められなかった
+//   - arch 間の実原価差（最大16倍）をモデル係数 1.0 / 3.0 の2段では表現
+//     できず、SDXL 以外のほぼ全 arch が原価割れしていた
+//   - データセット枚数に比例する準備時間（latent キャッシュ）を一切課金
+//     できておらず、step 数の小さいジョブほど赤字が深くなっていた
 //
 // Used by BOTH the LoRA Studio UI (live "消費クレジット" label) and
 // /api/studio/lora/train (the authoritative debit), fed the same parsed
 // ai-toolkit config object so the two can never disagree.
-//
-// The base rate and the four multipliers are admin-editable knobs
-// (pricing_knobs table). Callers pass the live values via `opts.knobs`; when
-// omitted the hardcoded DEFAULT_KNOBS are used, so a DB outage never breaks
-// pricing.
 
-import { DEFAULT_KNOBS, loraCreditWorstCase, type PricingKnobs } from "@/lib/pricing/knobDefaults";
+import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";
+import {
+  loraCreditsPerGpuSecond,
+  loraCreditWorstCase,
+  loraEstimatedSeconds,
+  type LoraWorkerBackend,
+} from "@/lib/pricing/loraRuntime";
 
-// Per-step base rate, in credits (DEFAULT_KNOBS.lora_per_step).
-export const LORA_CREDIT_PER_STEP = DEFAULT_KNOBS.lora_per_step;
-
-// Model archs whose per-step compute is materially higher — the video DiT
-// backbones. Everything else (SDXL / FLUX / SD3 / SD1.5 …) is 1.0x.
-export const HEAVY_LORA_ARCHES: ReadonlySet<string> = new Set([
-  "minimax_h3",
-  "wan21",
-  "wan2_1",
-  "wan22",
-  "wan22_14b",
-  "hunyuan",
-  "hunyuan_video",
-  "cogvideox",
-  "ltxv",
-  "ltx2",
-  "mochi",
-]);
+export {
+  LORA_SPI_BASELINE,
+  loraCreditWorstCase,
+  loraEstimatedSeconds,
+  loraWorkerBackend,
+} from "@/lib/pricing/loraRuntime";
 
 // Absolute ceiling — charged server-side when a raw YAML can't be parsed at
 // all (the UI already blocks submit in that case, so this is pure defence).
-// Derived from the default knobs (0.1 * 3.0 * 2.0 * 2.0 * 1.2 * 5000 = 7200)
-// so it tracks any change to the seed coefficients.
+// Derived from the container's hard run limit: a job physically cannot burn
+// more GPU seconds than that, so it cannot cost more than this.
 export const LORA_CREDIT_WORST_CASE = loraCreditWorstCase();
 
 export type LoraPriceBreakdown = {
   steps: number;
-  perStep: number;
-  modelMult: number;
-  resolutionMult: number;
-  batchMult: number;
-  rankMult: number;
   maxResolution: number;
   effectiveBatch: number;
   linearRank: number;
+  imageCount: number;
   arch: string;
+  backend: LoraWorkerBackend;
+  /** 採用した arch 別 s/it（基準解像度・バッチ1）。 */
+  spi: number;
+  /** 実際の1ステップ所要秒（解像度・実効バッチ込み）。 */
+  secondsPerStep: number;
+  prepSeconds: number;
+  trainSeconds: number;
+  /** 課金の元になる推定GPU秒。 */
+  totalSeconds: number;
+  /** 推定がコンテナのハード上限に当たったか（= 本来完走しない設定）。 */
+  cappedByAbsMax: boolean;
+  creditsPerGpuSecond: number;
   credits: number;
 };
 
@@ -75,7 +82,17 @@ export function loraPriceBreakdown(
   yamlObj: unknown,
   opts: {
     archFallback?: string;
-    modelMultOverride?: number;
+    /**
+     * arch の s/it を直接上書きする（秒/it）。同じ ai-toolkit の arch 文字列を
+     * 共有しつつ実体がずっと軽いプリセット向け。loraModels.ts の
+     * LoraPreset.spiOverride から渡る。
+     */
+    spiOverride?: number;
+    /**
+     * データセットの画像枚数。準備時間（latent キャッシュ）の可変分に効く。
+     * 生 YAML にはこの情報が無いので、必ず呼び出し側が実データから渡すこと。
+     */
+    imageCount?: number;
     /** Live admin-edited knobs; falls back to DEFAULT_KNOBS when omitted. */
     knobs?: PricingKnobs;
   } = {},
@@ -90,24 +107,13 @@ export function loraPriceBreakdown(
   // steps — train.steps, or a bare process-level steps as a fallback.
   const steps = Math.max(0, Math.round(asNumber(train.steps) ?? asNumber(proc.steps) ?? 0));
 
-  // model coefficient — the YAML's own arch, else the caller's fallback
-  // (the dropdown pick — the worker resolves arch from it when the YAML's
-  // model block omits it, so pricing must too or heavy runs under-pay).
-  // `modelMultOverride` (from the selected preset's `pricingModelMult`) wins
-  // outright — it exists for a preset that shares its real ai-toolkit
-  // `arch` (the loader class, which must stay correct for training) with a
-  // materially cheaper sibling, e.g. WAN 2.1 1.3B sharing arch:"wan21" with
-  // the 3x-priced 14B.
+  // arch — the YAML's own arch, else the caller's fallback (the dropdown pick;
+  // the worker resolves arch from it when the YAML's model block omits it, so
+  // pricing must too or heavy runs under-pay).
   const arch = (String(model.arch ?? "").trim() || (opts.archFallback ?? "")).toLowerCase();
-  const modelMult =
-    typeof opts.modelMultOverride === "number"
-      ? opts.modelMultOverride
-      : HEAVY_LORA_ARCHES.has(arch)
-        ? knobs.lora_mult_model_heavy
-        : 1.0;
 
-  // resolution coefficient — the largest edge requested across every dataset
-  // (resolution is usually a list like [512, 768, 1024], sometimes a scalar).
+  // resolution — the largest edge requested across every dataset (resolution
+  // is usually a list like [512, 768, 1024], sometimes a scalar).
   let maxResolution = 0;
   for (const ds of datasets) {
     const r = asObject(ds).resolution;
@@ -116,44 +122,49 @@ export function loraPriceBreakdown(
       if (n !== null && n > maxResolution) maxResolution = n;
     }
   }
-  const resolutionMult =
-    maxResolution >= 1280
-      ? knobs.lora_mult_res_1280
-      : maxResolution >= 1024
-        ? knobs.lora_mult_res_1024
-        : 1.0;
 
-  // batch coefficient — effective batch = batch_size * grad-accum
+  // effective batch = batch_size * grad-accum（1オプティマイザステップあたりの
+  // forward/backward 回数なので所要秒に正比例する）
   const effectiveBatch =
     Math.max(1, asNumber(train.batch_size) ?? 1) *
     Math.max(1, asNumber(train.gradient_accumulation_steps) ?? 1);
-  const batchMult =
-    effectiveBatch >= 4
-      ? knobs.lora_mult_batch_4
-      : effectiveBatch >= 2
-        ? knobs.lora_mult_batch_2
-        : 1.0;
 
-  // rank coefficient — network.linear (LoRA dim)
+  // rank は課金には効かない（LoRA アダプタは基盤モデルに対して十分小さく、
+  // 所要秒をほとんど動かさない）。表示と将来の実測用に拾うだけ。
   const linearRank = asNumber(network.linear) ?? 0;
-  const rankMult = linearRank >= 64 ? knobs.lora_mult_rank_64 : 1.0;
 
-  // Round away IEEE-754 noise (0.1 * 3 * 2000 === 600.0000000000001) before
-  // the ceil so a clean 600 doesn't become 601.
-  const raw = knobs.lora_per_step * modelMult * resolutionMult * batchMult * rankMult * steps;
+  const imageCount = Math.max(0, Math.round(opts.imageCount ?? 0));
+
+  const estimate = loraEstimatedSeconds({
+    arch,
+    steps,
+    resolution: maxResolution,
+    effectiveBatch,
+    imageCount,
+    spiOverride: opts.spiOverride,
+    knobs,
+  });
+
+  const creditsPerGpuSecond = loraCreditsPerGpuSecond(arch, knobs);
+  // Round away IEEE-754 noise before the ceil so a clean 600 doesn't become 601.
+  const raw = estimate.totalSeconds * creditsPerGpuSecond;
   const credits = Math.ceil(Math.round(raw * 1e6) / 1e6);
 
   return {
     steps,
-    perStep: knobs.lora_per_step,
-    modelMult,
-    resolutionMult,
-    batchMult,
-    rankMult,
     maxResolution,
     effectiveBatch,
     linearRank,
+    imageCount,
     arch,
+    backend: estimate.backend,
+    spi: estimate.spi,
+    secondsPerStep: estimate.secondsPerStep,
+    prepSeconds: estimate.prepSeconds,
+    trainSeconds: estimate.trainSeconds,
+    totalSeconds: estimate.totalSeconds,
+    cappedByAbsMax: estimate.cappedByAbsMax,
+    creditsPerGpuSecond,
     credits,
   };
 }
@@ -161,7 +172,7 @@ export function loraPriceBreakdown(
 // The one number both the UI and the debit use.
 export function calculateLoraCredits(
   yamlObj: unknown,
-  opts?: { archFallback?: string; modelMultOverride?: number; knobs?: PricingKnobs },
+  opts?: { archFallback?: string; spiOverride?: number; imageCount?: number; knobs?: PricingKnobs },
 ): number {
   return loraPriceBreakdown(yamlObj, opts).credits;
 }
@@ -195,12 +206,19 @@ export function guiLoraPricingConfig(input: {
   };
 }
 
-// Human-readable one-liner of the multipliers, for the UI hint.
+function formatMinutes(seconds: number): string {
+  const m = seconds / 60;
+  if (m < 60) return `約${Math.max(1, Math.round(m))}分`;
+  return `約${(m / 60).toFixed(1)}時間`;
+}
+
+// Human-readable one-liner for the UI hint. 物理型番・原価は出さない
+// （CLAUDE.md §2）— ユーザーに見せるのは「何にどれだけ時間がかかるか」だけ。
 export function loraPriceMultiplierSummary(b: LoraPriceBreakdown): string {
-  const parts = [`${b.perStep} C/step`, `${b.steps} steps`];
-  if (b.modelMult !== 1) parts.push(`モデル ×${b.modelMult}`);
-  if (b.resolutionMult !== 1) parts.push(`解像度 ×${b.resolutionMult}`);
-  if (b.batchMult !== 1) parts.push(`バッチ ×${b.batchMult}`);
-  if (b.rankMult !== 1) parts.push(`Rank ×${b.rankMult}`);
+  const parts = [`${b.steps} steps`];
+  if (b.maxResolution > 0) parts.push(`${b.maxResolution}px`);
+  if (b.effectiveBatch !== 1) parts.push(`バッチ ×${b.effectiveBatch}`);
+  if (b.imageCount > 0) parts.push(`画像 ${b.imageCount}枚`);
+  parts.push(`推定処理時間 ${formatMinutes(b.totalSeconds)}`);
   return parts.join(" ・ ");
 }

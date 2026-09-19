@@ -44,13 +44,15 @@ export type LoraPreset = {
   group: LoraPresetGroup;
   arch: LoraBaseArchitecture;
   note: string;
-  // Pricing-only override for loraPriceBreakdown()'s modelMult — used when a
-  // preset shares its real ai-toolkit `arch` (the loader class; must stay
-  // correct for training) with a materially cheaper sibling. Currently only
-  // WAN 2.1 1.3B needs this: it shares arch:"wan21" with the 14B (which prices
-  // 3.0x as a HEAVY_LORA_ARCHES member) but is priced 1.0x. Omit to price
-  // purely from `arch` membership in HEAVY_LORA_ARCHES (the normal case).
-  pricingModelMult?: number;
+  // Pricing-only override for the arch's measured s/it (秒/イテレーション、
+  // 基準解像度1024・実効バッチ1) — used when a preset shares its real
+  // ai-toolkit `arch` (the loader class; must stay correct for training) with a
+  // materially heavier sibling. Currently only WAN 2.1 1.3B would need this:
+  // it shares arch:"wan21" with the 14B, whose 3.5 s/it it obviously doesn't
+  // match. Omit to price from LORA_SPI_BASELINE[arch] (the normal case).
+  // 2026-09-20: 旧 `pricingModelMult`（課金係数の直接指定）から置き換え。
+  // 新方式では価格は所要秒から導くので、上書きすべき値も係数ではなく秒。
+  spiOverride?: number;
   // The exact HuggingFace repo id the Modal worker resolves for this preset
   // (mirrors TARGET_MODELS[<id>].unet in modal_lora_worker.py). Informational
   // on the client; the worker is the source of truth.
@@ -75,7 +77,7 @@ export const LORA_PRESET_GROUP_LABELS: Record<LoraPresetGroup, string> = {
 // be hosted by a commercial SaaS (same as FLUX.1 [dev] / FLUX.2 [klein] 9B).
 // arch string, TARGET_MODELS entry and HF cache all deleted; blocked below.
 export const LORA_PRESETS: LoraPreset[] = [
-  // --- video (HEAVY_LORA_ARCHES -> 3.0x) ---
+  // --- video（重い arch。s/it は loraRuntime.ts の LORA_SPI_BASELINE 参照）---
   // WAN 2.1 RETIRED — superseded by WAN 2.2 below. Kept commented for history.
   // { id: "wan21_14b", label: "WAN 2.1 (14B Video)", group: "video", arch: "wan21", note: "動画 T2V 大" },
   // {
@@ -84,7 +86,8 @@ export const LORA_PRESETS: LoraPreset[] = [
   //   group: "video",
   //   arch: "wan21",
   //   note: "動画 T2V 軽量",
-  //   pricingModelMult: 1.0,
+  //   // 14B と arch を共有するので、復活させるなら実測した s/it を入れること。
+  //   spiOverride: 0.5,
   // },
   {
     id: "wan22_14b",
@@ -149,7 +152,9 @@ export const LORA_PRESETS: LoraPreset[] = [
     note: "写実・実写系に強い定番SDXLファインチューン。",
     repo: "RunDiffusion/Juggernaut-XL-v9",
     recommendedResolution: 1024,
-    pricingModelMult: 1.0,
+    // pricingModelMult: 1.0 was here — redundant under the seconds-based model
+    // (arch "sdxl" already prices from its own measured s/it on the sd-scripts
+    // worker, and was never a "heavy" arch to begin with). Dropped 2026-09-20.
   },
   // --- anime / illustration (1.0x) ---
   {

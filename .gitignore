@@ -68,3 +68,7 @@ angle_test_tuned2/
 # Google Drive デスクトップ同期のステージング用一時フォルダ（D:\web が同期対象
 # フォルダになっているため生成される。プロジェクトの成果物ではない）
 /.tmp.driveupload/
+
+# LoRA ベンチマークの生ログ（modal_lora_benchmark.py の出力）。
+# 結果の要約は docs/gpu-benchmarks.md 側に残す（CLAUDE.md: 記録は docs へ）。
+/bench_results/
