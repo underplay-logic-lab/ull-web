@@ -30,6 +30,23 @@ function isSameOriginRequest(request: Request): boolean {
   }
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// JSXは、テキスト内の改行+インデントを表示上は空白1つに潰す（HTMLの空白折り
+// 畳みと同じ）。そのためブラウザから届く oldText（el.textContent。単一空白）
+// は、複数行にまたがって書かれたソースの生テキスト（実際の改行+インデント）
+// とバイト単位では一致しない——単純な文字列一致だとこのケースだけ「見つから
+// ない」誤検知になる。oldText内の空白ランをすべて「任意の空白ランにマッチする
+// \s+」に緩めた正規表現で探すことで、複数行ソースでも正しく1箇所に特定できる
+// ようにする（空白以外は引き続き完全一致——安全性は変えない）。
+function buildLooseWhitespaceRegex(oldText: string): RegExp {
+  const parts = oldText.split(/(\s+)/);
+  const pattern = parts.map((part) => (/^\s+$/.test(part) ? "\\s+" : escapeRegExp(part))).join("");
+  return new RegExp(pattern, "g");
+}
+
 export async function POST(request: Request) {
   if (process.env.NODE_ENV !== "development") {
     return NextResponse.json({ error: "この機能は開発環境専用です。" }, { status: 404 });
@@ -64,8 +81,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "ファイルを読み込めませんでした。" }, { status: 404 });
   }
 
-  const occurrences = content.split(oldText).length - 1;
-  if (occurrences === 0) {
+  const regex = buildLooseWhitespaceRegex(oldText);
+  const matches = content.match(regex) ?? [];
+  if (matches.length === 0) {
     return NextResponse.json(
       {
         error:
@@ -74,14 +92,14 @@ export async function POST(request: Request) {
       { status: 409 },
     );
   }
-  if (occurrences > 1) {
+  if (matches.length > 1) {
     return NextResponse.json(
-      { error: `同じ文言がこのファイル内に${occurrences}箇所あり、一意に特定できません。Alt+クリックでエディタを開いて手動編集してください。` },
+      { error: `同じ文言がこのファイル内に${matches.length}箇所あり、一意に特定できません。Alt+クリックでエディタを開いて手動編集してください。` },
       { status: 409 },
     );
   }
 
-  const updated = content.replace(oldText, newText);
+  const updated = content.replace(regex, () => newText);
   try {
     await fs.writeFile(abs, updated, "utf-8");
   } catch (err) {
