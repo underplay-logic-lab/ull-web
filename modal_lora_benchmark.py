@@ -95,6 +95,7 @@ TIER_USD_PER_HOUR = {
     "b200": 6.25,
     "h200": 4.54,
     "rtx_pro_6000": 3.03,
+    "l40s": 1.95,
     "t4": 0.59,
 }
 
@@ -104,6 +105,7 @@ TIER_GPU = {
     "b200": "b200",
     "h200": "h200",
     "rtx_pro_6000": "rtx-pro-6000",
+    "l40s": "l40s",
     "t4": "t4",
 }
 
@@ -180,6 +182,25 @@ PLANS: dict[str, list[dict]] = {
          "gradient_checkpointing": False},
     ],
 }
+# 軽い画像系 arch を B300 から降ろせるかの判定。見るのは peak VRAM（その tier に
+# 載るか）と s/it（どれだけ遅くなるか）の2つだけ。B300 ¥1,125/h に対し
+# L40S は ¥292.5/h なので、VRAM さえ足りれば原価が約4分の1になる。
+# flux2_klein_4b(4B) は現行ラインナップで最軽量＝一番降ろせる見込みが高い。
+#
+# ⚠️ 「sd-scripts の方が安い」は誤った因果（2026-09-20）。sd-scripts(SDXL) の
+# prep 43秒 と ai-toolkit の 550秒 の差は、trainer ではなく (a) GPU tier
+# （L40S vs B300 で 3.8倍）、(b) torch.compile ウォームアップ、(c) minimax_h3
+# 固有の逆量子化、から来ている。trainer を乗り換えるのではなく tier を下げる
+# のが正しい打ち手で、それを確かめるのがこのプラン。
+PLANS["image_tier"] = [
+    {"tier": "b300", "target_model": "flux2_klein_4b", "resolution": 1024, "images": 8,
+     "warmup_steps": 10, "measure_steps": 40},
+    {"tier": "rtx_pro_6000", "target_model": "flux2_klein_4b", "resolution": 1024, "images": 8,
+     "warmup_steps": 10, "measure_steps": 40},
+    {"tier": "l40s", "target_model": "flux2_klein_4b", "resolution": 1024, "images": 8,
+     "warmup_steps": 10, "measure_steps": 40},
+]
+
 # 本番プランへ行く前の1条件だけの通し確認。config 生成 → データセット →
 # ai-toolkit 起動 → tqdm パース → VRAM 記録 までが実際の学習で通ることを、
 # 最小の課金（$3前後）で確かめるためのもの。CLAUDE.md §0「まず最小条件で」。
@@ -619,9 +640,13 @@ def cpu_probe() -> dict:
             cfg_ok[tm] = f"{type(exc).__name__}: {exc}"
     out["checks"]["build_config"] = cfg_ok
 
-    # ベース重みが Volume にあるか（GPU は絶対にダウンロードしない方針）
+    # ベース重みが Volume にあるか（GPU は絶対にダウンロードしない方針）。
+    # 画像系 arch の tier 実測に進むため、対象を全プリセットへ広げた。
     missing = {}
-    for tm in ("minimax_h3", "qwen_image"):
+    for tm in (
+        "minimax_h3", "qwen_image", "flux2_klein_4b", "zimage", "anima", "krea2",
+        "wan22_14b", "ltx_video",
+    ):
         try:
             missing[tm] = W._missing_base_artifacts(tm)
         except Exception as exc:
@@ -787,11 +812,17 @@ def bench_h200(spec: dict) -> dict:
 def bench_rtx_pro_6000(spec: dict) -> dict:
     return _run_benchmark({**spec, "tier": "rtx_pro_6000"})
 
+
+@app.function(gpu=TIER_GPU["l40s"], **_BENCH_KW)
+def bench_l40s(spec: dict) -> dict:
+    return _run_benchmark({**spec, "tier": "l40s"})
+
 BENCH_BY_TIER = {
     "b300": bench_b300,
     "b200": bench_b200,
     "h200": bench_h200,
     "rtx_pro_6000": bench_rtx_pro_6000,
+    "l40s": bench_l40s,
 }
 
 
