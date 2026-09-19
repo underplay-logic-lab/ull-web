@@ -1249,10 +1249,33 @@ class WanAnimateUltra(_WanAnimateBase):
     }
 
 
+# 2026-09-19: ModalStorage は元々GPUワーカーと同じ`image`（CUDA toolkit +
+# torch + ソースビルドのSageAttentionを含む、数GB級）を共有していた。この
+# クラスの実処理はファイルシステム操作とgit clone（_install_node）だけで
+# CUDA/torchは一切使わないのに、scaledown_window=2（2秒アイドルで即終了）
+# と組み合わさることで、admin ファイルエクスプローラーをちょっと操作する
+# たびに巨大イメージのコールドスタートを引いていた——list_dir化で1階層
+# だけ返すようにしても体感速度が変わらなかった実機報告の真因はこちら
+# （ホスト指摘、2026-09-19）。実際に必要なのは git（_install_node の
+# `git clone`用）とfastapiだけなので、専用の軽量imageに切り出す。
+admin_storage_image = modal.Image.debian_slim(python_version="3.13").apt_install("git").pip_install(
+    "fastapi[standard]"
+)
+
+
 @app.cls(
-    image=image,
+    image=admin_storage_image,
     timeout=300,
-    scaledown_window=2,
+    # CLAUDE.md §1の「動画生成系GPUワーカー=30秒」「LoRA worker=2秒」の
+    # どちらの規格もgpu=持ちクラス限定（前者）/ modal_lora_worker.py限定
+    # （後者）で、このクラスはどちらにも該当しない——CPU専用・admin一人だけ
+    # が使う対話的ブラウジング用途。軽量image化後もコールドスタートは
+    # 7秒程度かかる実測があり、2秒即切りだと「次に何を開くか考えている」
+    # 普通の操作間隔でも毎回引いてしまう。CPU課金は$0.0473/コア時間と
+    # GPUの1/100以下（2026-09-19実測: このクラスへのテスト一式でも合計
+    # 約$0.002）なので、60秒（クリック間の通常の間隔をカバーしつつ
+    # アイドル課金は最小限）に設定する。
+    scaledown_window=60,
     volumes={MODELS_DIR: vol},
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
@@ -1318,6 +1341,86 @@ class ModalStorage:
                     }
                 )
         return {"files": files}
+
+    def _list_dir(self, item: dict) -> dict:
+        """1階層ぶんだけを返す遅延読み込み版（2026-09-19導入）。_list()は
+        Volume全体をos.walkするため、数万ファイル規模になった実運用では
+        admin ファイルエクスプローラーを開くだけで数秒〜十数秒かかっていた。
+        こちらはos.scandir()で指定ディレクトリの直下だけを見るので、
+        コストは「そのフォルダの直下エントリ数」だけに比例する。
+
+        ⚠️ _list()と違い、シンボリックリンク/HF-cacheのsnapshots重複排除は
+        しない（全量集計ではなく1階層の表示用なので、シンボリックリンクは
+        素直にstat()で実体サイズを見せる方が個々のファイル表示としては
+        直感的）。合計容量の正確な値が要る場合は total_usage を使うこと。
+        """
+        _reload_volume("admin-list-dir")
+        rel = str(item.get("path") or "").strip().strip("/")
+        if ".." in rel.split("/"):
+            raise fastapi.HTTPException(status_code=400, detail="invalid path")
+        target = os.path.join(MODELS_DIR, rel) if rel else MODELS_DIR
+        if not os.path.isdir(target):
+            raise fastapi.HTTPException(status_code=404, detail="directory not found")
+
+        dirs: list = []
+        files: list = []
+        try:
+            with os.scandir(target) as it:
+                for entry in it:
+                    entry_rel = f"{rel}/{entry.name}" if rel else entry.name
+                    try:
+                        if entry.is_dir(follow_symlinks=True):
+                            dirs.append({"name": entry.name, "path": entry_rel})
+                        else:
+                            st = entry.stat(follow_symlinks=True)
+                            files.append(
+                                {
+                                    "name": entry.name,
+                                    "path": entry_rel,
+                                    "size_bytes": st.st_size,
+                                    "modified_at": time.strftime(
+                                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime)
+                                    ),
+                                }
+                            )
+                    except OSError:
+                        continue  # broken symlink / raced deletion — skip, not fatal
+        except OSError as exc:
+            raise fastapi.HTTPException(status_code=500, detail=str(exc)) from exc
+
+        dirs.sort(key=lambda d: d["name"])
+        files.sort(key=lambda f: f["name"])
+        return {"path": rel, "dirs": dirs, "files": files}
+
+    def _total_usage(self) -> dict:
+        """Volume全体の実使用量（opt-in・重い）。_list()と同じ重複排除
+        ロジックだが、ファイル1件ごとのdictを組み立てず合計だけ返すので、
+        レスポンスのシリアライズ/転送コストは避けられる（os.walk自体の
+        コストは同じ——admin が明示的に「容量を計算」を押した時だけ
+        呼ばれる想定）。"""
+        _reload_volume("admin-total-usage")
+        total_bytes = 0
+        total_files = 0
+        seen_inodes: set = set()
+        for root, dirs, filenames in os.walk(MODELS_DIR):
+            dirs.sort()
+            if "snapshots" in dirs:
+                dirs.remove("snapshots")
+            for name in filenames:
+                full = os.path.join(root, name)
+                try:
+                    st = os.lstat(full)
+                except OSError:
+                    continue
+                total_files += 1
+                is_link = os.path.islink(full)
+                key = (st.st_dev, st.st_ino)
+                dup = bool(st.st_ino) and key in seen_inodes
+                if st.st_ino and not is_link:
+                    seen_inodes.add(key)
+                if not (is_link or dup):
+                    total_bytes += st.st_size
+        return {"total_bytes": total_bytes, "total_files": total_files}
 
     def _download_async(self, item: dict) -> dict:
         """
@@ -1458,6 +1561,10 @@ class ModalStorage:
         action = item.get("action")
         if action == "list":
             return self._list()
+        if action == "list_dir":
+            return self._list_dir(item)
+        if action == "total_usage":
+            return self._total_usage()
         if action == "download_async":
             return self._download_async(item)
         if action == "download_repo_async":

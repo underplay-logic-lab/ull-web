@@ -75,6 +75,8 @@ export type VolumeFile = {
   modified_at: string;
 };
 
+export type VolumeDirEntry = { name: string; path: string };
+
 export type ModelDownload = {
   id: string;
   url: string;

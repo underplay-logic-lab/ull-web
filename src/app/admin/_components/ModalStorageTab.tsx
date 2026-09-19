@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ChevronDown, Download, Folder, GitBranch, HardDrive, Loader2, Trash2, XCircle } from "lucide-react";
+import { useEffect, useState } from "react";
+import { CheckCircle2, ChevronDown, Download, Folder, GitBranch, HardDrive, Loader2, RefreshCw, Trash2, XCircle } from "lucide-react";
 import { GpuCostReferenceCard } from "@/components/admin/GpuCostReferenceCard";
-import type { ModelDownload, VolumeFile } from "./types";
+import type { ModelDownload, VolumeDirEntry, VolumeFile } from "./types";
 
 // Mirrors MODEL_SUBFOLDERS in src/lib/modalStorage.ts / scripts/modal_wan_animate.py.
 const MODEL_SUBFOLDERS = ["diffusion_models", "text_encoders", "clip_vision", "vae", "loras"] as const;
@@ -88,73 +88,153 @@ const STATUS_LABEL: Record<ModelDownload["status"], string> = {
   failed: "失敗",
 };
 
-type FolderNode = {
-  name: string;
-  path: string;
-  files: VolumeFile[];
-  subfolders: Map<string, FolderNode>;
-};
-
-function buildFolderTree(files: VolumeFile[]): FolderNode {
-  const root: FolderNode = { name: "", path: "", files: [], subfolders: new Map() };
-  for (const file of files) {
-    const segments = file.path.split("/");
-    const fileName = segments.pop();
-    if (!fileName) continue;
-
-    let node = root;
-    let currentPath = "";
-    for (const segment of segments) {
-      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
-      let child = node.subfolders.get(segment);
-      if (!child) {
-        child = { name: segment, path: currentPath, files: [], subfolders: new Map() };
-        node.subfolders.set(segment, child);
-      }
-      node = child;
-    }
-    node.files.push(file);
-  }
-  return root;
-}
-
-function countFilesRecursive(node: FolderNode): number {
-  let count = node.files.length;
-  for (const child of node.subfolders.values()) {
-    count += countFilesRecursive(child);
-  }
-  return count;
-}
-
-function sumSizeRecursive(node: FolderNode): number {
-  let total = node.files.reduce((sum, f) => sum + (f.size_bytes || 0), 0);
-  for (const child of node.subfolders.values()) {
-    total += sumSizeRecursive(child);
-  }
-  return total;
-}
-
-function sortedSubfolders(node: FolderNode): FolderNode[] {
-  return Array.from(node.subfolders.values()).sort((a, b) => {
+function sortedDirEntries(dirs: VolumeDirEntry[]): VolumeDirEntry[] {
+  return [...dirs].sort((a, b) => {
     const rankDiff = folderSortRank(a.name) - folderSortRank(b.name);
     return rankDiff !== 0 ? rankDiff : a.name.localeCompare(b.name);
   });
 }
 
-function FolderRow({
-  node,
-  depth,
-  onDeleteFile,
-  onDeleteFolder,
+// Deletes one file via the shared DELETE route and reports ok/error — used
+// by both FileTable (called from the owning level's own handler) so the
+// network call itself isn't duplicated per call site.
+async function deleteVolumePath(path: string, isDir: boolean): Promise<void> {
+  const res = await fetch("/api/admin/modal/storage", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file_path: path, is_dir: isDir }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error ?? "削除に失敗しました。");
+}
+
+function FileTable({
+  files,
   deletingPath,
+  onDeleteFile,
 }: {
-  node: FolderNode;
-  depth: number;
-  onDeleteFile: (path: string) => void;
-  onDeleteFolder: (path: string) => void;
+  files: VolumeFile[];
   deletingPath: string | null;
+  onDeleteFile: (path: string) => void;
 }) {
+  return (
+    <div className="overflow-x-auto rounded-xl border border-border" style={{ marginLeft: 16 }}>
+      <table className="w-full min-w-[520px] text-left text-sm">
+        <thead>
+          <tr className="border-b border-border bg-surface/60 text-xs uppercase tracking-wide text-muted">
+            <th className="px-4 py-2.5 font-medium">ファイル名</th>
+            <th className="px-4 py-2.5 font-medium">サイズ</th>
+            <th className="px-4 py-2.5 font-medium">更新日時</th>
+            <th className="px-4 py-2.5 font-medium" />
+          </tr>
+        </thead>
+        <tbody>
+          {files.map((file) => (
+            <tr key={file.path} className="border-b border-border/60 last:border-0 hover:bg-surface-hover/40">
+              <td className="max-w-[280px] truncate px-4 py-2.5 font-mono text-xs text-foreground" title={file.path}>
+                {file.path.split("/").pop()}
+              </td>
+              <td className="px-4 py-2.5 text-muted">{formatSize(file.size_bytes)}</td>
+              <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-muted">
+                {formatDateTime(file.modified_at)}
+              </td>
+              <td className="px-4 py-2.5 text-right">
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      iframeDownload(`/api/admin/modal/storage/download?file_path=${encodeURIComponent(file.path)}`)
+                    }
+                    className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+                  >
+                    <Download size={12} />
+                    ダウンロード
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDeleteFile(file.path)}
+                    disabled={deletingPath === file.path}
+                    className="inline-flex items-center gap-1 rounded-lg border border-red-500/30 px-2.5 py-1 text-xs text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {deletingPath === file.path ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                    削除
+                  </button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// 2026-09-19: 遅延読み込み版。開いた時点で自分の直下（1階層）だけを
+// /api/admin/modal/storage?path=... で取得する — 実運用規模（数千ファイル）
+// でVolume全体を毎回os.walkしていた旧実装の遅さを解消するため、フォルダ
+// ごとに独立して自分の中身を持つ構造に作り替えた（以前は起動時に全ファイル
+// を取得しクライアント側でツリーを構築していた）。
+function FolderRow({ path, name, depth, onRemoved }: { path: string; name: string; depth: number; onRemoved: (path: string) => void }) {
   const [open, setOpen] = useState(false);
+  const [dirs, setDirs] = useState<VolumeDirEntry[] | null>(null);
+  const [files, setFiles] = useState<VolumeFile[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [deletingSelf, setDeletingSelf] = useState(false);
+  const [deletingFilePath, setDeletingFilePath] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/admin/modal/storage?path=${encodeURIComponent(path)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? "取得に失敗しました。");
+      setDirs((data.dirs ?? []) as VolumeDirEntry[]);
+      setFiles((data.files ?? []) as VolumeFile[]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "取得に失敗しました。");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (open && dirs === null && !loading) {
+      // setState is behind an await inside load() — not a synchronous cascading render.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      load();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const handleChildRemoved = (childPath: string) => {
+    setDirs((prev) => (prev ? prev.filter((d) => d.path !== childPath) : prev));
+  };
+
+  const handleDeleteFile = async (filePath: string) => {
+    setDeletingFilePath(filePath);
+    try {
+      await deleteVolumePath(filePath, false);
+      setFiles((prev) => (prev ? prev.filter((f) => f.path !== filePath) : prev));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "削除に失敗しました。");
+    } finally {
+      setDeletingFilePath(null);
+    }
+  };
+
+  const handleDeleteSelf = async () => {
+    if (!window.confirm(`「${path}/」フォルダ内のファイルをすべて削除します。よろしいですか？`)) return;
+    setDeletingSelf(true);
+    try {
+      await deleteVolumePath(path, true);
+      onRemoved(path);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "削除に失敗しました。");
+      setDeletingSelf(false);
+    }
+  };
 
   return (
     <div style={depth > 0 ? { marginLeft: 16 } : undefined}>
@@ -166,37 +246,25 @@ function FolderRow({
         >
           <ChevronDown size={12} className={`shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`} />
           <Folder size={13} className="shrink-0 text-neon-violet" />
-          {node.name}/
-          <span className="font-mono text-[10px] font-normal text-muted opacity-60">
-            ({countFilesRecursive(node)})
-          </span>
-          <span className="ml-auto shrink-0 rounded bg-neon-violet/10 px-1.5 py-0.5 font-mono text-[10px] font-normal text-neon-violet">
-            {formatSize(sumSizeRecursive(node))}
-          </span>
+          {name}/
         </button>
         <div className="flex shrink-0 items-center gap-2">
-          {node.path && countFilesRecursive(node) > 0 && (
-            <button
-              type="button"
-              onClick={() =>
-                iframeDownload(
-                  `/api/admin/modal/storage/zip?path=${encodeURIComponent(node.path)}`,
-                )
-              }
-              title="このフォルダ配下の全ファイルを CPU コンテナ（GPU課金0）でZIP化して一括ダウンロードします。"
-              className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-xs font-medium text-neon-violet transition-colors hover:bg-neon-violet/20"
-            >
-              <Download size={12} />
-              📦 このフォルダを一括DL (ZIP)
-            </button>
-          )}
           <button
             type="button"
-            onClick={() => onDeleteFolder(node.path)}
-            disabled={deletingPath === node.path}
+            onClick={() => iframeDownload(`/api/admin/modal/storage/zip?path=${encodeURIComponent(path)}`)}
+            title="このフォルダ配下の全ファイルを CPU コンテナ（GPU課金0）でZIP化して一括ダウンロードします。"
+            className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-xs font-medium text-neon-violet transition-colors hover:bg-neon-violet/20"
+          >
+            <Download size={12} />
+            📦 このフォルダを一括DL (ZIP)
+          </button>
+          <button
+            type="button"
+            onClick={handleDeleteSelf}
+            disabled={deletingSelf}
             className="inline-flex items-center gap-1 rounded-lg border border-red-500/30 px-2.5 py-1 text-xs text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {deletingPath === node.path ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+            {deletingSelf ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
             📁 フォルダごと一括削除
           </button>
         </div>
@@ -204,72 +272,27 @@ function FolderRow({
 
       {open && (
         <div className="mt-2 flex flex-col gap-2">
-          {sortedSubfolders(node).map((child) => (
-            <FolderRow
-              key={child.path}
-              node={child}
-              depth={depth + 1}
-              onDeleteFile={onDeleteFile}
-              onDeleteFolder={onDeleteFolder}
-              deletingPath={deletingPath}
-            />
+          {loading && (
+            <div className="flex items-center justify-center gap-2 py-6 text-xs text-muted">
+              <Loader2 size={14} className="animate-spin" />
+              読み込み中...
+            </div>
+          )}
+
+          {error && (
+            <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">{error}</p>
+          )}
+
+          {dirs && sortedDirEntries(dirs).map((d) => (
+            <FolderRow key={d.path} path={d.path} name={d.name} depth={depth + 1} onRemoved={handleChildRemoved} />
           ))}
 
-          {node.files.length > 0 && (
-            <div className="overflow-x-auto rounded-xl border border-border" style={{ marginLeft: 16 }}>
-              <table className="w-full min-w-[520px] text-left text-sm">
-                <thead>
-                  <tr className="border-b border-border bg-surface/60 text-xs uppercase tracking-wide text-muted">
-                    <th className="px-4 py-2.5 font-medium">ファイル名</th>
-                    <th className="px-4 py-2.5 font-medium">サイズ</th>
-                    <th className="px-4 py-2.5 font-medium">更新日時</th>
-                    <th className="px-4 py-2.5 font-medium" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {node.files.map((file) => (
-                    <tr key={file.path} className="border-b border-border/60 last:border-0 hover:bg-surface-hover/40">
-                      <td className="max-w-[280px] truncate px-4 py-2.5 font-mono text-xs text-foreground" title={file.path}>
-                        {file.path.split("/").pop()}
-                      </td>
-                      <td className="px-4 py-2.5 text-muted">{formatSize(file.size_bytes)}</td>
-                      <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-muted">
-                        {formatDateTime(file.modified_at)}
-                      </td>
-                      <td className="px-4 py-2.5 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              iframeDownload(
-                                `/api/admin/modal/storage/download?file_path=${encodeURIComponent(file.path)}`,
-                              )
-                            }
-                            className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
-                          >
-                            <Download size={12} />
-                            ダウンロード
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onDeleteFile(file.path)}
-                            disabled={deletingPath === file.path}
-                            className="inline-flex items-center gap-1 rounded-lg border border-red-500/30 px-2.5 py-1 text-xs text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {deletingPath === file.path ? (
-                              <Loader2 size={12} className="animate-spin" />
-                            ) : (
-                              <Trash2 size={12} />
-                            )}
-                            削除
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          {files && files.length > 0 && (
+            <FileTable files={files} deletingPath={deletingFilePath} onDeleteFile={handleDeleteFile} />
+          )}
+
+          {dirs && files && dirs.length === 0 && files.length === 0 && (
+            <p className="py-2 text-center text-[11px] text-muted opacity-70">空のフォルダです。</p>
           )}
         </div>
       )}
@@ -420,12 +443,24 @@ function DownloadTasksPanel({ refreshSignal }: { refreshSignal: number }) {
 }
 
 export function ModalStorageTab() {
-  const [files, setFiles] = useState<VolumeFile[]>([]);
+  // ルート直下（1階層）だけを保持する。以前はVolume全体を1回で取得して
+  // クライアント側でツリーを組み立てていたが、実運用規模では開くだけで
+  // 数秒〜十数秒かかっていたため、フォルダを開くたびに1階層ずつ取得する
+  // 方式に作り替えた（FolderRow参照）。
+  const [rootDirs, setRootDirs] = useState<VolumeDirEntry[] | null>(null);
+  const [rootFiles, setRootFiles] = useState<VolumeFile[] | null>(null);
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesError, setFilesError] = useState<string | null>(null);
+  const [deletingRootFilePath, setDeletingRootFilePath] = useState<string | null>(null);
   // Collapsed by default — expanding fetches (rather than fetching eagerly
   // on mount), so admins who don't need it skip the Modal round-trip.
   const [filesOpen, setFilesOpen] = useState(false);
+
+  // Volume全体の実使用量。os.walkする重い処理（実測 ~6秒 / 949GB・5,227
+  // ファイル）なので、閲覧の既定経路には含めず明示的なボタンで opt-in する。
+  const [usage, setUsage] = useState<{ totalBytes: number; totalFiles: number } | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageError, setUsageError] = useState<string | null>(null);
 
   // "file" = single-file URL download (existing behavior); "repo" = a whole
   // Hugging Face repo via snapshot_download (e.g. a sharded LLM) — see
@@ -442,20 +477,19 @@ export function ModalStorageTab() {
   // refetches immediately instead of waiting for its next poll tick.
   const [downloadTasksRefresh, setDownloadTasksRefresh] = useState(0);
 
-  const [deletingPath, setDeletingPath] = useState<string | null>(null);
-
   const [gitUrl, setGitUrl] = useState("");
   const [installing, setInstalling] = useState(false);
   const [installNotice, setInstallNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
-  const loadFiles = async () => {
+  const loadRoot = async () => {
     setFilesLoading(true);
     setFilesError(null);
     try {
-      const res = await fetch("/api/admin/modal/storage");
+      const res = await fetch("/api/admin/modal/storage?path=");
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? "取得に失敗しました。");
-      setFiles(data.files as VolumeFile[]);
+      setRootDirs((data.dirs ?? []) as VolumeDirEntry[]);
+      setRootFiles((data.files ?? []) as VolumeFile[]);
     } catch (err) {
       setFilesError(err instanceof Error ? err.message : "取得に失敗しました。");
     } finally {
@@ -464,11 +498,27 @@ export function ModalStorageTab() {
   };
 
   useEffect(() => {
-    if (!filesOpen) return;
-    (async () => {
-      await loadFiles();
-    })();
+    if (!filesOpen || rootDirs !== null) return;
+    // setState is behind an await inside loadRoot() — not a synchronous cascading render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadRoot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filesOpen]);
+
+  const calcUsage = async () => {
+    setUsageLoading(true);
+    setUsageError(null);
+    try {
+      const res = await fetch("/api/admin/modal/storage?usage=1");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? "取得に失敗しました。");
+      setUsage({ totalBytes: data.totalBytes as number, totalFiles: data.totalFiles as number });
+    } catch (err) {
+      setUsageError(err instanceof Error ? err.message : "取得に失敗しました。");
+    } finally {
+      setUsageLoading(false);
+    }
+  };
 
   const handleDownload = async () => {
     if (downloadMode === "repo") {
@@ -527,32 +577,20 @@ export function ModalStorageTab() {
     }
   };
 
-  const deletePath = async (path: string, isDir: boolean) => {
-    setDeletingPath(path);
+  const handleDeleteRootFile = async (path: string) => {
+    setDeletingRootFilePath(path);
     try {
-      const res = await fetch("/api/admin/modal/storage", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ file_path: path, is_dir: isDir }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error ?? "削除に失敗しました。");
-      if (isDir) {
-        setFiles((prev) => prev.filter((f) => f.path !== path && !f.path.startsWith(`${path}/`)));
-      } else {
-        setFiles((prev) => prev.filter((f) => f.path !== path));
-      }
+      await deleteVolumePath(path, false);
+      setRootFiles((prev) => (prev ? prev.filter((f) => f.path !== path) : prev));
     } catch (err) {
       setFilesError(err instanceof Error ? err.message : "削除に失敗しました。");
     } finally {
-      setDeletingPath(null);
+      setDeletingRootFilePath(null);
     }
   };
 
-  const handleDeleteFile = (path: string) => deletePath(path, false);
-  const handleDeleteFolder = (path: string) => {
-    if (!window.confirm(`「${path}/」フォルダ内のファイルをすべて削除します。よろしいですか？`)) return;
-    deletePath(path, true);
+  const handleRootFolderRemoved = (path: string) => {
+    setRootDirs((prev) => (prev ? prev.filter((d) => d.path !== path) : prev));
   };
 
   const handleInstallNode = async () => {
@@ -576,13 +614,11 @@ export function ModalStorageTab() {
     }
   };
 
-  const tree = useMemo(() => buildFolderTree(files), [files]);
-  const topLevelFolders = useMemo(() => sortedSubfolders(tree), [tree]);
-  const totalBytes = useMemo(() => files.reduce((sum, f) => sum + (f.size_bytes || 0), 0), [files]);
+  const rootEmpty = rootDirs !== null && rootFiles !== null && rootDirs.length === 0 && rootFiles.length === 0;
 
   return (
     <div className="flex flex-col gap-8">
-      {/* 0. File explorer — collapsed by default; model folders sort first, custom_nodes last */}
+      {/* 0. File explorer — collapsed by default; lazy per-folder loading (2026-09-19) */}
       <div className="rounded-2xl border-gradient bg-surface/40 p-6">
         <button
           type="button"
@@ -602,21 +638,39 @@ export function ModalStorageTab() {
         {filesOpen && (
           <div className="mt-4">
             <div className="mb-4 flex items-center justify-between gap-3">
-              {!filesLoading && files.length > 0 ? (
-                <div className="flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-1.5 text-xs">
-                  <HardDrive size={13} className="text-neon-violet" />
-                  <span className="text-muted">保存・使用容量</span>
-                  <span className="font-mono font-semibold text-foreground">{formatSize(totalBytes)}</span>
-                  <span className="text-muted opacity-70">/ {files.length} ファイル</span>
-                </div>
-              ) : (
-                <span />
-              )}
+              <div className="flex items-center gap-2">
+                {usage ? (
+                  <div className="flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-1.5 text-xs">
+                    <HardDrive size={13} className="text-neon-violet" />
+                    <span className="text-muted">実使用量</span>
+                    <span className="font-mono font-semibold text-foreground">{formatSize(usage.totalBytes)}</span>
+                    <span className="text-muted opacity-70">/ {usage.totalFiles} ファイル</span>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={calcUsage}
+                    disabled={usageLoading}
+                    title="Volume全体を走査して合計サイズを計算します（数秒かかります）。通常のフォルダ閲覧には不要です。"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {usageLoading ? <Loader2 size={12} className="animate-spin" /> : <HardDrive size={12} />}
+                    実使用量を計算
+                  </button>
+                )}
+                {usageError && <span className="text-xs text-red-400">{usageError}</span>}
+              </div>
               <button
                 type="button"
-                onClick={loadFiles}
-                className="shrink-0 text-xs text-muted transition-colors hover:text-foreground"
+                onClick={() => {
+                  setRootDirs(null);
+                  setRootFiles(null);
+                  setUsage(null);
+                  loadRoot();
+                }}
+                className="flex shrink-0 items-center gap-1 text-xs text-muted transition-colors hover:text-foreground"
               >
+                <RefreshCw size={12} />
                 再読み込み
               </button>
             </div>
@@ -632,22 +686,19 @@ export function ModalStorageTab() {
                 <Loader2 size={18} className="animate-spin" />
                 読み込み中...
               </div>
-            ) : files.length === 0 ? (
+            ) : rootEmpty ? (
               <div className="rounded-lg border border-border bg-background py-12 text-center text-xs text-muted">
                 ファイルがありません。
               </div>
             ) : (
               <div className="flex flex-col gap-2">
-                {topLevelFolders.map((folder) => (
-                  <FolderRow
-                    key={folder.path}
-                    node={folder}
-                    depth={0}
-                    onDeleteFile={handleDeleteFile}
-                    onDeleteFolder={handleDeleteFolder}
-                    deletingPath={deletingPath}
-                  />
-                ))}
+                {rootDirs &&
+                  sortedDirEntries(rootDirs).map((d) => (
+                    <FolderRow key={d.path} path={d.path} name={d.name} depth={0} onRemoved={handleRootFolderRemoved} />
+                  ))}
+                {rootFiles && rootFiles.length > 0 && (
+                  <FileTable files={rootFiles} deletingPath={deletingRootFilePath} onDeleteFile={handleDeleteRootFile} />
+                )}
               </div>
             )}
           </div>

@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/adminApiGuard";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import {
-  listVolumeFiles,
+  listVolumeDir,
+  getVolumeTotalUsage,
   spawnDownloadToVolume,
   spawnRepoDownloadToVolume,
   deleteVolumeFile,
@@ -45,13 +46,22 @@ function sanitizeSaveDir(raw: string): string | null {
   return segments.join("/");
 }
 
-export async function GET() {
+// 2026-09-19: 既定は遅延読み込み（1階層だけ）に変更。?usage=1 でVolume
+// 全体の実使用量（重い・opt-in）、それ以外は ?path= 配下の直下一覧を返す
+// （省略時はVolumeルート）。
+export async function GET(request: Request) {
   const { user, response } = await requireAdmin();
   if (!user) return response;
 
+  const { searchParams } = new URL(request.url);
   try {
-    const files = await listVolumeFiles();
-    return NextResponse.json({ files });
+    if (searchParams.get("usage") === "1") {
+      const usage = await getVolumeTotalUsage();
+      return NextResponse.json(usage);
+    }
+    const path = searchParams.get("path") ?? "";
+    const listing = await listVolumeDir(path);
+    return NextResponse.json(listing);
   } catch (err) {
     console.error("[admin/modal/storage] list failed:", err);
     return NextResponse.json({ error: "ファイル一覧の取得に失敗しました。" }, { status: 502 });

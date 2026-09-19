@@ -13,6 +13,14 @@ export type VolumeFile = {
   modified_at: string;
 };
 
+export type VolumeDirEntry = { name: string; path: string };
+
+export type VolumeDirListing = {
+  path: string;
+  dirs: VolumeDirEntry[];
+  files: Array<VolumeFile & { name: string }>;
+};
+
 // Same admin-only model-file subfolders the Modal image symlinks into
 // ComfyUI's models/ dir (see MODEL_SUBFOLDERS in scripts/modal_wan_animate.py).
 export const MODEL_SUBFOLDERS = ["diffusion_models", "text_encoders", "clip_vision", "vae", "loras"] as const;
@@ -25,6 +33,8 @@ const MODAL_STORAGE_LONG_TIMEOUT_MS = 180_000;
 
 type ModalStorageAction =
   | { action: "list" }
+  | { action: "list_dir"; path: string }
+  | { action: "total_usage" }
   | { action: "download_async"; download_id: string; url: string; subfolder: string; filename: string }
   | { action: "download_repo_async"; download_id: string; repo_id: string; save_dir: string }
   | { action: "read_file"; file_path: string }
@@ -70,6 +80,34 @@ export async function listVolumeFiles(): Promise<VolumeFile[]> {
     const bytes = typeof f.size_bytes === "number" ? f.size_bytes : 0;
     return { ...f, size_bytes: bytes, size: bytes, formattedSize: formatBytes(bytes) };
   });
+}
+
+// 2026-09-19導入: 遅延読み込み版の1階層取得。listVolumeFiles()（Volume全体を
+// os.walkする"list"アクション）は、実運用規模（数千ファイル）では admin
+// ファイルエクスプローラーを開くだけで数秒〜十数秒かかっていた。こちらは
+// 指定ディレクトリの直下だけを見るので、開いたフォルダの分しかコストが
+// かからない。
+export async function listVolumeDir(path: string): Promise<VolumeDirListing> {
+  const result = await callModalStorage<{
+    path: string;
+    dirs: VolumeDirEntry[];
+    files: Array<{ name: string; path: string; size_bytes: number; modified_at: string }>;
+  }>({ action: "list_dir", path });
+  const files = (result.files ?? []).map((f) => {
+    const bytes = typeof f.size_bytes === "number" ? f.size_bytes : 0;
+    return { ...f, size_bytes: bytes, size: bytes, formattedSize: formatBytes(bytes) };
+  });
+  return { path: result.path ?? path, dirs: result.dirs ?? [], files };
+}
+
+// Volume全体の実使用量。os.walkする重い処理なので明示的にadminが要求した
+// 時だけ呼ぶ（listVolumeDir によるツリー閲覧の既定経路には含めない）。
+export async function getVolumeTotalUsage(): Promise<{ totalBytes: number; totalFiles: number }> {
+  const result = await callModalStorage<{ total_bytes: number; total_files: number }>(
+    { action: "total_usage" },
+    MODAL_STORAGE_LONG_TIMEOUT_MS,
+  );
+  return { totalBytes: result.total_bytes ?? 0, totalFiles: result.total_files ?? 0 };
 }
 
 // Triggers the background download (see download_model_async in
