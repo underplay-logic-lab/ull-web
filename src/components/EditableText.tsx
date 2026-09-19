@@ -64,6 +64,15 @@ export function EditableText({ siteKey, fallback, as = "span", className }: Edit
     <Tag
       ref={(node: HTMLElement | null) => {
         elRef.current = node;
+        // 2026-09-19バグ修正: !editMode -> editMode の切り替わりで、この
+        // callback refが「新規アタッチ」される瞬間、useLayoutEffectは
+        // 依存配列 [value] が（editMode切り替え前後で）変化していない
+        // ために再実行されず、要素の子テキストが空のまま（!editMode側の
+        // JSXは {value} を子に持つが、editMode側は子を持たないため、React
+        // の再調整でテキストノードが除去される）取り残されるバグがあった。
+        // ここでref接続の瞬間に直接同期することで、useLayoutEffectの
+        // 依存配列判定に頼らず確実にテキストを反映する。
+        if (node && node.textContent !== value) node.textContent = value;
       }}
       // 新設のSourceTextEditor（ローカルdev専用、ソースファイル直接書き換え
       // 版の編集）が、既にDB連携済みのこの要素を誤って対象にしないための
