@@ -62,11 +62,14 @@ export const LORA_SPI_REFERENCE_RESOLUTION = 1024;
  * 実測点でアンカーして一律 0.213/5.0 = 0.0426 倍したもの。**どれも未検証**
  * なので、arch ごとに実測が出たら個別に差し替えること。
  *
- * sdxl だけは別扱い（sd-scripts ワーカー・別 GPU tier で桁が違う）。1.4 は
- * 2026-09-15 のスモーク実測（rank16・1024px・AdamW8bit・
- * gradient_checkpointing 有効で 1.32s/it）由来だが、2026-09-20 に本番既定が
- * prodigy ＋ gradient_checkpointing 無効へ変わったため **もう本番条件を
- * 表していない**。据え置いてあるだけで、これも要再計測。
+ * sdxl は別扱い（sd-scripts ワーカー・別 GPU tier で桁が違う）。**こちらも
+ * 2026-09-20 に実測済み** — L40S / 1024px / rank32 / prodigy /
+ * gradient_checkpointing 無効 で、step 数だけ変えた2回の実行から連立で分離:
+ *   elapsed(20step) = 56.0s、elapsed(120step) = 120.2s
+ *   → s/it = (120.2-56.0)/100 = 0.642、prep = 56.0 - 20×0.642 = 43.2s
+ * 旧値 1.4 は 2026-09-15 のスモーク（rank16・AdamW8bit・
+ * gradient_checkpointing 有効）由来で、条件も算出方法も違っていた。
+ * peak VRAM は 2回とも 17.73GB（L40S 48GB に対し 30GB の余裕）。
  *
  * ⚠️ modal_lora_worker.py 側にも同名のテーブルがある（payload に
  * cost_cap_seconds が乗らなかった場合のフォールバック）。2026-09-20 時点で
@@ -86,7 +89,7 @@ export const LORA_SPI_BASELINE: Readonly<Record<string, number>> = {
   zimage: 0.051,
   flux2_klein_4b: 0.047,
   // --- sd-scripts ワーカー（別 tier・別スタック）---
-  sdxl: 1.4,
+  sdxl: 0.642,
 };
 
 export type LoraWorkerBackend = "sd_scripts" | "ai_toolkit";

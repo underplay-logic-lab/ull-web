@@ -420,13 +420,17 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // （illustrious_xl / juggernaut_xl）の単価。ai-toolkit では品質が出ない
     // という実測でこちらへ分けてあり、結果として一段安い GPU tier で回る。
     //
-    // 0.0911 は価格据え置き点（1024px・画像30枚・1210step で推定 1,998秒
-    // × 0.0911 ≒ 182C、旧「係数の掛け算」方式も 182C）。原価ベース
-    // （L40S の時間単価・3倍markup）なら 0.1468 で、現在は markup 約1.9倍。
-    // ⚠️ sdxl の s/it も prep も未実測なので、この据え置き点自体が未検証の
-    // 入力に乗っている。SDXL は LoRA 学習で唯一はっきり黒字の系統であり
-    // 競合比でも安いと言えるので、実測してから詰めるのが良い。
-    value: 0.0911,
+    // 2026-09-20 の実測（loraRuntime.ts の LORA_SPI_BASELINE 参照）で、推定秒が
+    // 1,998 → 824 と半分以下になった。原価3倍に揃えるなら 0.1468 だが、それだと
+    // 代表ジョブが 183C → 122C と33%の値下げになる。
+    //
+    // ホスト判断（2026-09-20）: **値下げはしない。**SDXL は実測で fal の Flux
+    // LoRA trainer（2000step で ¥720〜1,500）に対し 2000step ¥292 と既に1/3以下
+    // で、これ以上下げても競合比の見え方は変わらない。0.222 は価格据え置き点
+    // （824秒 × 0.222 ≒ 183C ＝ 従来と同額）で、markup は約 4.5倍になる。
+    // ai-toolkit 側（3.0倍）より厚いが、原価ではなく価値で取る形
+    // （CLAUDE.md §0「よそでは出来ないことをやる。その分の対価はきちんと取る」）。
+    value: 0.222,
     label: "LoRA クレジット単価（sd-scripts / SDXL）",
     category: "lora_formula",
     unit: "C/GPU秒",
@@ -488,15 +492,18 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     isPublic: true,
   },
   lora_prep_load_s_sdxl: {
-    // sd-scripts ワーカー（SDXL）の固定準備時間。こちらは逆量子化も
-    // torch.compile も無いので ai-toolkit 側より大幅に小さいはず。
-    // ⚠️ 完全に未実測の暫定値。ai-toolkit 側の 1390 をそのまま当てると SDXL
-    // ジョブを数倍に過大請求してしまうため、分離だけ先に入れてある。
-    value: 300,
+    // sd-scripts ワーカー（SDXL）の固定準備時間。
+    //
+    // 2026-09-20 実測: step 数だけ変えた2回（20step=56.0s / 120step=120.2s）の
+    // 連立から prep = 43.2 秒。少し余裕を見て 45。
+    // ai-toolkit 側の 550 秒（= 280 + 逆量子化 270）と桁が違うのは、sd-scripts
+    // には逆量子化も torch.compile ウォームアップも無いため。backend ごとに
+    // prep を分ける設計判断が正しかったことを裏づけている。
+    value: 45,
     label: "LoRA 準備時間（固定分・sd-scripts / SDXL）",
     category: "lora_formula",
     unit: "s",
-    description: "SDXL系（sd-scripts ワーカー）の固定オーバーヘッド。⚠️未実測の暫定値。",
+    description: "SDXL系（sd-scripts ワーカー）の固定オーバーヘッド。2026-09-20 実測。",
     isPublic: true,
   },
   lora_prep_per_image_s: {

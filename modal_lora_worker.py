@@ -472,7 +472,7 @@ LORA_SPI_BASELINE: dict[str, float] = {
     "zimage": 0.051,
     "flux2_klein_4b": 0.047,
     # --- sd-scripts ---
-    "sdxl": 1.4,
+    "sdxl": 0.642,
 }
 LORA_SPI_BASELINE_DEFAULT = float(os.environ.get("LORA_SPI_BASELINE_DEFAULT", "2.5"))
 # Prep / latent-caching / checkpoint headroom added on top of pure training
