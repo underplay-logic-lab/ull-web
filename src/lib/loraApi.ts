@@ -14,12 +14,17 @@ export type LoraTrainingConfigInput = {
   custom_yaml_override?: string;
 };
 
-export const LORA_DATASET_BUCKET = "lora_datasets";
+// 2026-09-19: Supabase Storage バケット "lora_datasets" から Modal 直
+// アップロード（modal_lora_worker.py::upload_lora_dataset_image）へ移行
+// （CLAUDE.md §1標準）。返す path の形（"<userId>/<datasetId>/NNNN_name"）
+// は移行前と互換のまま — /api/studio/lora/train route.ts の dataset_id
+// 抽出ロジック（storagePaths[0].split("/")[1]）や Smart Ingest Engine
+// （modal_lora_worker.py::_derive_dataset_id）は無改修で動く。
 
-// Uploads the raw image files straight to Supabase Storage (bypassing
-// Vercel's 4.5 MB request body cap) under "<userId>/<datasetId>/NNNN_name".
-// The zero-padded index keeps the server-side sort aligned with the caption
-// array order. Returns the object paths, in upload order.
+// Uploads the raw image files straight to Modal (bypassing Vercel's 4.5 MB
+// request body cap) under "<userId>/<datasetId>/NNNN_name". The zero-padded
+// index keeps the server-side sort aligned with the caption array order.
+// Returns the object paths, in upload order.
 export async function uploadLoraDataset(
   userId: string,
   files: File[],
@@ -29,17 +34,43 @@ export async function uploadLoraDataset(
     typeof crypto !== "undefined" && crypto.randomUUID
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) throw new Error("ログインが必要です。");
+
+  const ticketRes = await fetch("/api/studio/lora/dataset-upload-token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify({ datasetId }),
+  });
+  const ticket = await ticketRes.json().catch(() => ({}));
+  if (!ticketRes.ok) throw new Error(ticket?.error || "アップロード準備に失敗しました。");
+
   const paths: string[] = [];
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     const safe = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "image";
-    const path = `${userId}/${datasetId}/${String(i).padStart(4, "0")}_${safe}`;
+    const filename = `${String(i).padStart(4, "0")}_${safe}`;
+
+    const uploadUrl = new URL(ticket.uploadUrl as string);
+    uploadUrl.searchParams.set("user_id", ticket.userId as string);
+    uploadUrl.searchParams.set("dataset_id", ticket.datasetId as string);
+    uploadUrl.searchParams.set("filename", filename);
+    uploadUrl.searchParams.set("expires", String(ticket.expiresAt));
+    uploadUrl.searchParams.set("sig", ticket.sig as string);
+
     let uploadError: unknown = null;
     try {
-      const { error } = await supabase.storage
-        .from(LORA_DATASET_BUCKET)
-        .upload(path, file, { upsert: true, contentType: file.type || "image/png" });
-      uploadError = error;
+      const res = await fetch(uploadUrl.toString(), {
+        method: "POST",
+        headers: { "Content-Type": file.type || "image/png" },
+        body: file,
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}) as { detail?: string; error?: string });
+        uploadError = new Error(detail?.detail || detail?.error || `HTTP ${res.status}`);
+      }
     } catch (thrown) {
       uploadError = thrown;
     }
@@ -49,7 +80,7 @@ export async function uploadLoraDataset(
       // /api/studio/lora/train with a partial dataset.
       throw new Error(`${file.name}（${i + 1}/${files.length} 枚目）: ${detail}`);
     }
-    paths.push(path);
+    paths.push(`${userId}/${datasetId}/${filename}`);
     onProgress?.(i + 1, files.length);
   }
   return { datasetId, paths };

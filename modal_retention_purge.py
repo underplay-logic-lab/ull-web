@@ -7,7 +7,6 @@ ULL データ保持ポリシー（CLAUDE.md §3）の実施 — 日次 purge。
       新規生成分はVolume直接配信へ移行済み、下記参照。移行前の行が14日経過するまでの経過措置）
     upscale-results … 超解像 出力（旧方式で保存済みの行のみ。2026-09-18〜、画像・動画とも
       新規生成分はVolume直接配信へ移行済み、下記参照。移行前の行が14日経過するまでの経過措置）
-    lora_datasets   … LoRA 学習用アップロード画像
   Modal Volume (ull-wan-models)
     loras/<lora_name>.safetensors      … 完成 LoRA の名前付きエイリアス
     loras/<user_id>/<job_id>/          … 学習ジョブごとの成果物（checkpoint 等）
@@ -31,6 +30,11 @@ ULL データ保持ポリシー（CLAUDE.md §3）の実施 — 日次 purge。
       共有の一時アップロード（2026-09-19、旧 Supabase "upscale-uploads" バケットから
       移行。CLAUDE.md §1標準。modal_studio_uploads.py::upload が書き込む実体。通常は
       ジョブ側が使用後すぐ削除するが、削除に失敗した孤児をここで拾う安全網）
+    lora_dataset_uploads/<user_id>/<dataset_id>/<filename> … LoRA学習用アップロード画像
+      （2026-09-19、旧 Supabase "lora_datasets" バケットから移行。CLAUDE.md §1標準。
+      modal_lora_worker.py::upload_lora_dataset_image が書き込む実体。通常は Smart
+      Ingest Engine が最適化コピーを焼いた直後に自分で削除するので、ここは削除漏れ
+      （Ingest失敗・raw-YAML経由等）だけを拾う安全網）
   Supabase DB
     angle_jobs / upscale_jobs / generation_jobs の古い行
 
@@ -98,6 +102,12 @@ DIRECTOR_USER_LORAS_DIR = f"{MODELS_DIR}/director_user_loras"
 # バケット）をModal直配信へ移行（CLAUDE.md §1標準）。<user_id>/<filename>の
 # フラット配置なので director_results 等と同じ _purge_volume_flat_files を使う。
 STUDIO_UPLOADS_DIR = f"{MODELS_DIR}/studio_uploads"
+# 2026-09-19: LoRA学習用データセット画像（旧 Supabase "lora_datasets"
+# バケット）も同標準へ移行。<user_id>/<dataset_id>/ のper-jobディレクトリ
+# 配置なので upscale_originals 等と同じ _purge_volume_job_dirs を使う
+# （通常は Smart Ingest Engine が最適化直後に自分で削除するので、ここは
+# 削除漏れだけを拾う安全網）。
+LORA_DATASET_UPLOADS_DIR = f"{MODELS_DIR}/lora_dataset_uploads"
 
 # 2026-09-19（ホスト指示）: 管理者アカウント（ADMIN_EMAILS）の生成物は自動削除
 # 対象外にする。ADMIN_EMAILS 自体は Next.js 側の管理画面ログイン許可リストで
@@ -117,7 +127,7 @@ RETENTION_DAYS = int(os.environ.get("ULL_RETENTION_DAYS", "14"))
 DRY_RUN = os.environ.get("ULL_RETENTION_DRY_RUN", "") in ("1", "true", "yes")
 
 DEFAULT_BUCKETS = [
-    "angle-results", "upscale-results", "lora_datasets", "custom-workflow-results",
+    "angle-results", "upscale-results", "custom-workflow-results",
     # 2026-09-17: Cinematic Director を video_url への base64 直埋め込みから
     # Storage バケット方式へ移行（[[cinematic-video-tab]] 系の旧privacy posture
     # は現行 DirectorStudioTab.tsx には無く、CLAUDE.md §6 の標準へ統一）。
@@ -131,6 +141,9 @@ DEFAULT_BUCKETS = [
 # 、下記）へ移行したため新規書き込みは無くなった。移行前に残っていた行は
 # 上記 buckets ループの対象から外れるので、"upscale-uploads" という名前の
 # まま ULL_RETENTION_BUCKETS で明示指定すれば旧データの掃除は引き続き可能。
+# 同じ理由で "lora_datasets" バケットも 2026-09-19 に DEFAULT_BUCKETS から
+# 外した（lora_dataset_uploads/、下記へ移行）。旧データの掃除が必要なら
+# 同様に ULL_RETENTION_BUCKETS へ明示指定する。
 
 # job テーブル → 対応バケット（ストレージ側は created_at 全掃きなので、ここは
 # 行削除の対象一覧）。
@@ -591,6 +604,7 @@ def _purge(dry_run: bool | None = None) -> dict:
         "custom_workflow_results": {},
         "director_user_loras": {},
         "studio_uploads": {},
+        "lora_dataset_uploads": {},
     }
     for b in buckets:
         report["buckets"].append(_sweep_bucket(b, cutoff_epoch))
@@ -612,6 +626,9 @@ def _purge(dry_run: bool | None = None) -> dict:
     )
     report["studio_uploads"] = _purge_volume_flat_files(
         STUDIO_UPLOADS_DIR, cutoff_epoch, "studio_uploads"
+    )
+    report["lora_dataset_uploads"] = _purge_volume_job_dirs(
+        LORA_DATASET_UPLOADS_DIR, cutoff_epoch, "lora_dataset_uploads"
     )
     report["rows"] = _purge_job_rows(cutoff_iso)
     report["elapsed_s"] = round(time.time() - started, 1)

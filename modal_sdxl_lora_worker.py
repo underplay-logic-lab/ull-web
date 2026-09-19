@@ -149,8 +149,8 @@ def probe_imports() -> dict:
 # attention backend — sdpa also works but xformers is what most of the
 # ecosystem's SDXL guidance/benchmarks assume), Pillow for the smoke test's
 # synthetic dataset generation, and requests — REQUIRED by train_sdxl_lora_job's
-# _patch_job / _download_storage_object / _refund_credits (all `import
-# requests`); without it a failed/finished job silently never leaves
+# _patch_job / _refund_credits (both `import requests`); without it a
+# failed/finished job silently never leaves
 # "processing" in the UI, exactly the modal_lora_worker.py pitfall its own
 # dispatch_image comment warns about.
 train_image = image.pip_install("xformers==0.0.29.post3", "Pillow", "requests").env(
@@ -545,39 +545,22 @@ def _is_infra_error(exc: BaseException) -> bool:
     return bool(_INFRA_MSG_RE.search(str(exc)))
 
 
-def _download_storage_object(bucket: str, key: str, attempts: int = 4) -> bytes:
-    """Fetches one object out of a private Supabase Storage bucket with the
-    service-role key. Retries transient network/5xx failures — a single
-    slow read must not sink a whole training job."""
-    import requests
+# 2026-09-19: 学習用データセット画像のアップロード先を Supabase Storage
+# ("lora_datasets" バケット) から Modal Volume 直配信へ移行（CLAUDE.md §1
+# 標準）。アップロード自体は modal_lora_worker.py::upload_lora_dataset_image
+# （このワーカーとは別appだが同じ Volume "ull-wan-models" を共有）が受け
+# 持つので、ここでは書き込み先と同じ規約でVolumeから直接読むだけでよい。
+LORA_DATASET_UPLOADS_DIR = f"{MODELS_DIR}/lora_dataset_uploads"
 
-    supabase_url = os.environ.get("SUPABASE_URL")
-    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-    if not supabase_url or not service_key:
-        raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not configured")
+
+def _read_lora_dataset_upload(key: str) -> bytes:
+    """"<user_id>/<dataset_id>/<filename>" 形式のkeyでVolumeから直接読む。"""
     if ".." in key:
         raise ValueError(f"illegal storage key: {key!r}")
-
-    url = f"{supabase_url}/storage/v1/object/{bucket}/{key.lstrip('/')}"
-    headers = {"apikey": service_key, "Authorization": f"Bearer {service_key}"}
-    last_exc: Exception | None = None
-    for i in range(attempts):
-        try:
-            res = requests.get(url, headers=headers, timeout=(10, 120))
-            if res.status_code == 200:
-                return res.content
-            if res.status_code < 500 and res.status_code != 429:
-                raise RuntimeError(
-                    f"storage download failed ({res.status_code}) for {bucket}/{key}: {res.text[:300]}"
-                )
-            last_exc = RuntimeError(f"storage {res.status_code} for {bucket}/{key}: {res.text[:200]}")
-        except requests.exceptions.RequestException as exc:
-            last_exc = exc
-        if i < attempts - 1:
-            wait = min(2**i, 8)
-            print(f"[storage] {key} attempt {i + 1}/{attempts} failed ({last_exc}); retry in {wait}s", flush=True)
-            time.sleep(wait)
-    raise InfraError(f"storage download for {bucket}/{key} failed after {attempts} attempts: {last_exc}")
+    p = pathlib.Path(LORA_DATASET_UPLOADS_DIR) / key
+    if not p.is_file():
+        raise RuntimeError(f"dataset upload not found on Volume: {key}")
+    return p.read_bytes()
 
 
 def _patch_job(job_id: str, fields: dict) -> None:
@@ -848,9 +831,8 @@ def _stage_dataset(params: dict, dataset_dir: pathlib.Path, trigger: str) -> lis
 
     if not staged_from_ingest:
         if storage_paths:
-            bucket = str(params.get("storage_bucket") or "lora_datasets")
             for i, key in enumerate(storage_paths):
-                data = _download_storage_object(bucket, str(key))
+                data = _read_lora_dataset_upload(str(key))
                 ext = os.path.splitext(str(key))[1] or ".png"
                 dest = dataset_dir / f"{i:04d}{ext}"
                 dest.write_bytes(data)

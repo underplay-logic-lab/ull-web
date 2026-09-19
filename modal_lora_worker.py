@@ -1191,90 +1191,6 @@ def _cost_cap_seconds(
     return capped, reason
 
 
-def _download_storage_object(bucket: str, key: str, attempts: int = 4) -> bytes:
-    """Fetches one object out of a (private) Supabase Storage bucket with the
-    service-role key — bypasses Storage RLS. Retries transient network /
-    5xx failures with backoff: a single slow read must not sink a whole
-    (multi-thousand-credit) training job."""
-    import requests
-
-    supabase_url = os.environ.get("SUPABASE_URL")
-    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-    if not supabase_url or not service_key:
-        raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not configured")
-    if ".." in key:
-        raise ValueError(f"illegal storage key: {key!r}")
-
-    url = f"{supabase_url}/storage/v1/object/{bucket}/{key.lstrip('/')}"
-    headers = {"apikey": service_key, "Authorization": f"Bearer {service_key}"}
-    last_exc: Exception | None = None
-    for i in range(attempts):
-        try:
-            res = requests.get(url, headers=headers, timeout=(10, 120))
-            if res.status_code == 200:
-                return res.content
-            # 5xx / 429 are worth retrying; a 4xx (missing object, bad key) is not.
-            if res.status_code < 500 and res.status_code != 429:
-                raise RuntimeError(
-                    f"storage download failed ({res.status_code}) for {bucket}/{key}: {res.text[:300]}"
-                )
-            last_exc = RuntimeError(f"storage {res.status_code} for {bucket}/{key}: {res.text[:200]}")
-        except requests.exceptions.RequestException as exc:
-            last_exc = exc
-        if i < attempts - 1:
-            wait = min(2 ** i, 8)
-            print(f"[storage] {key} attempt {i + 1}/{attempts} failed ({last_exc}); retry in {wait}s", flush=True)
-            time.sleep(wait)
-    raise InfraError(f"storage download for {bucket}/{key} failed after {attempts} attempts: {last_exc}")
-
-
-def _purge_storage_objects(bucket: str, keys: list, *, batch: int = 100) -> int:
-    """Best-effort PHYSICAL delete of objects from a (private) Supabase Storage
-    bucket with the service-role key — mirrors supabase-js
-    `storage.from(bucket).remove(paths)` (DELETE /object/<bucket> with a
-    {"prefixes": [...]} body).
-
-    Called the moment Smart Ingest has baked its own optimised WebP copies onto
-    the persistent Modal Volume: the uploaded originals are dead weight after
-    that, and leaving them in Storage silently eats the Supabase Free-tier 1GB
-    quota (CLAUDE.md §3). Never raises — a failed purge must never sink a
-    training job. Returns the number of objects Storage reported as removed."""
-    import requests
-
-    supabase_url = os.environ.get("SUPABASE_URL")
-    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-    clean = [str(k).lstrip("/") for k in (keys or []) if k and ".." not in str(k)]
-    if not supabase_url or not service_key or not clean:
-        return 0
-
-    url = f"{supabase_url}/storage/v1/object/{bucket}"
-    headers = {
-        "apikey": service_key,
-        "Authorization": f"Bearer {service_key}",
-        "Content-Type": "application/json",
-    }
-    removed = 0
-    for i in range(0, len(clean), batch):
-        chunk = clean[i : i + batch]
-        try:
-            res = requests.request(
-                "DELETE", url, headers=headers, json={"prefixes": chunk}, timeout=(10, 60)
-            )
-            if res.status_code == 200:
-                try:
-                    removed += len(res.json())
-                except Exception:  # noqa: BLE001 — 200 == the batch is gone
-                    removed += len(chunk)
-            else:
-                print(
-                    f"[ingest] storage purge {bucket}: HTTP {res.status_code} {res.text[:200]}",
-                    flush=True,
-                )
-        except requests.exceptions.RequestException as exc:
-            print(f"[ingest] storage purge {bucket} failed: {exc}", flush=True)
-    return removed
-
-
 # Signatures of a transient NETWORK / storage failure (ours) that aborts a
 # run early — as opposed to a config error or an over-scoped job that just
 # runs out of GPU time. Deliberately NARROW: OOM / CUDA faults / the 12h
@@ -3609,13 +3525,12 @@ def train_lora_job(params: dict) -> dict:
         if staged_from_ingest:
             pass  # images already in /root/dataset
         elif storage_paths:
-            # Primary path: the browser uploaded the images to Supabase
-            # Storage and only their object keys were forwarded here, so the
-            # Next.js request never hit Vercel's 4.5 MB body cap. Pull them
-            # back with the service-role key (bypasses Storage RLS).
-            bucket = str(params.get("storage_bucket") or "lora_datasets")
+            # Primary path (Smart Ingest 未使用時のフォールバック): ブラウザが
+            # upload_lora_dataset_image でVolumeへ直接アップロード済み
+            # （2026-09-19、Supabase Storageから移行）。object key ("<user_id>/
+            # <dataset_id>/<file>") をそのままVolume相対パスとして読む。
             for i, key in enumerate(storage_paths):
-                data = _download_storage_object(bucket, str(key))
+                data = _read_lora_dataset_upload(str(key))
                 ext = os.path.splitext(str(key))[1] or ".png"
                 dest = dataset / f"{i:04d}{ext}"
                 dest.write_bytes(data)
@@ -5140,10 +5055,9 @@ def ingest_and_optimize_dataset_cpu(
         if len(done) == n and [p.stem for p in done] == [f"{i:04d}" for i in range(n)]:
             print(f"[ingest] cache hit — {n} images at {rel}", flush=True)
             if os.environ.get("ULL_INGEST_PURGE_SOURCE", "1") != "0":
-                purged = _purge_storage_objects(bucket, storage_paths)
+                purged = _delete_lora_dataset_uploads(storage_paths)
                 print(
-                    f"[ingest] cache-hit — purged {purged}/{n} source objects "
-                    f"from Supabase Storage ({bucket})",
+                    f"[ingest] cache-hit — purged {purged}/{n} source uploads from Volume",
                     flush=True,
                 )
             return {
@@ -5162,7 +5076,7 @@ def ingest_and_optimize_dataset_cpu(
 
     def _one(idx: int, key_path: str) -> tuple:
         """-> (bytes_in, bytes_out, downscaled, passthrough)."""
-        raw = _download_storage_object(bucket, str(key_path))  # InfraError propagates -> hard fail
+        raw = _read_lora_dataset_upload(str(key_path))  # missing upload -> hard fail
         bytes_in = len(raw)
         orig_ext = (os.path.splitext(str(key_path))[1] or ".png").lower()
         try:
@@ -5243,13 +5157,12 @@ def ingest_and_optimize_dataset_cpu(
             flush=True,
         )
         # Optimised copies are committed to the Volume — the uploaded originals
-        # are now dead weight in Supabase Storage. Purge them so the Free-tier
-        # 1GB quota stays at ~0 (CLAUDE.md §3). Best-effort, never fatal.
+        # are now dead weight. Purge them immediately rather than waiting for
+        # the 14-day safety-net purge (CLAUDE.md §3). Best-effort, never fatal.
         if os.environ.get("ULL_INGEST_PURGE_SOURCE", "1") != "0":
-            purged = _purge_storage_objects(bucket, storage_paths)
+            purged = _delete_lora_dataset_uploads(storage_paths)
             print(
-                f"[ingest] purged {purged}/{n} source objects from "
-                f"Supabase Storage ({bucket}) after optimisation",
+                f"[ingest] purged {purged}/{n} source uploads from Volume after optimisation",
                 flush=True,
             )
         return {
@@ -5631,6 +5544,115 @@ async def upload_user_lora(
         f"{f', resumed from {start_offset / 1024**2:.1f} MB' if start_offset else ''})",
         flush=True,
     )
+    return {"ok": True, "path": rel_path, "size_bytes": size}
+
+
+# ULL LoRA Studio: 学習用データセット画像の直アップロード（2026-09-19導入）。
+# Supabase Storage バケット "lora_datasets" を廃止し、ここへ移行した
+# （CLAUDE.md §1標準）。既存の Smart Ingest Engine（ingest_and_optimize_
+# dataset_cpu、_derive_dataset_id）は "<user_id>/<dataset_id>/<file>" という
+# パス形さえ保たれていれば無改修で動くため、Supabase の bucket+key を
+# Volume の相対パスに置き換えるだけで済む——キャプション永続キャッシュの
+# dataset_id キー付けなど、デリケートな不変条件には一切触れていない。
+#
+# 1データセットあたり最大500枚（MAX_IMAGES、/api/studio/lora/train/route.ts
+# と同じ値）を1枚ずつPOSTするため、upload_user_loraのようなファイル名ごとの
+# 署名ではなく、dataset_id 単位でまとめて署名する（Next.jsへの往復を1回に
+# 抑える）。filename 自体は署名対象に含めないが、正規表現で安全な文字と
+# 画像拡張子のみに制限しているため、user_id/dataset_id 配下から出られない。
+LORA_DATASET_UPLOADS_DIR = f"{MODELS_DIR}/lora_dataset_uploads"
+_DATASET_IMG_FILENAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,140}\.(?:png|jpe?g|webp)$", re.IGNORECASE)
+
+
+def _verify_dataset_upload_token(user_id: str, dataset_id: str, expires: str, sig: str) -> bool:
+    """署名は Next.js 側 src/lib/loraDatasetUpload.server.ts が発行する。"""
+    secret = os.environ.get("MODAL_AUTH_TOKEN", "")
+    if not secret or not sig:
+        return False
+    try:
+        if int(expires) < time.time():
+            return False
+    except ValueError:
+        return False
+    payload = f"lora-dataset-upload:{user_id}:{dataset_id}:{expires}"
+    expected = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
+def _read_lora_dataset_upload(key: str) -> bytes:
+    """アップロード済みデータセット画像をVolumeから直接読む
+    （"<user_id>/<dataset_id>/<filename>"）。Smart Ingest（_one）と
+    train_lora_job/train_sdxl_lora_job のフォールバック経路の両方が使う。"""
+    if ".." in key:
+        raise ValueError(f"illegal storage key: {key!r}")
+    p = pathlib.Path(LORA_DATASET_UPLOADS_DIR) / key
+    if not p.is_file():
+        raise RuntimeError(f"dataset upload not found on Volume: {key}")
+    return p.read_bytes()
+
+
+def _delete_lora_dataset_uploads(keys: list) -> int:
+    """ベストエフォート削除。Smart Ingestが最適化コピーをVolumeへ焼き
+    終えた直後に呼ぶ——アップロード原本はもう不要（_purge_storage_objects
+    のVolume版）。失敗してもジョブは止めない。"""
+    removed = 0
+    for k in keys or []:
+        if not k or ".." in str(k):
+            continue
+        p = pathlib.Path(LORA_DATASET_UPLOADS_DIR) / str(k)
+        try:
+            if p.is_file():
+                p.unlink()
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol},
+    timeout=300,
+    scaledown_window=2,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="POST")
+async def upload_lora_dataset_image(
+    user_id: str, dataset_id: str, filename: str, expires: str, sig: str, request: fastapi.Request
+):
+    if not _verify_dataset_upload_token(user_id, dataset_id, expires, sig):
+        raise fastapi.HTTPException(status_code=403, detail="invalid or expired upload link")
+    if not (
+        _CKPT_DL_ID_RE.match(user_id)
+        and _CKPT_DL_ID_RE.match(dataset_id)
+        and _DATASET_IMG_FILENAME_RE.match(filename)
+    ):
+        raise fastapi.HTTPException(status_code=400, detail="invalid parameters")
+
+    dest_dir = pathlib.Path(LORA_DATASET_UPLOADS_DIR) / user_id / dataset_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / filename
+
+    # 学習用画像1枚あたりの上限。500枚 * 40MBでも十分な安全弁
+    # （通常のスマホ写真・イラストは数MB程度）。
+    max_bytes = 40 * 1024 * 1024
+    size = 0
+    try:
+        with open(dest_path, "wb", buffering=_DL_CHUNK) as f:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > max_bytes:
+                    dest_path.unlink(missing_ok=True)
+                    raise fastapi.HTTPException(status_code=413, detail="file too large (max 40MB)")
+                f.write(chunk)
+    except fastapi.HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        dest_path.unlink(missing_ok=True)
+        raise fastapi.HTTPException(status_code=500, detail=f"upload failed: {exc}") from exc
+
+    await vol.commit.aio()
+    rel_path = f"{user_id}/{dataset_id}/{filename}"
     return {"ok": True, "path": rel_path, "size_bytes": size}
 
 
