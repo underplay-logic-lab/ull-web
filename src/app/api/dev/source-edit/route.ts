@@ -47,6 +47,51 @@ function buildLooseWhitespaceRegex(oldText: string): RegExp {
   return new RegExp(pattern, "g");
 }
 
+// data-source-file が指すのは「クリックした要素を囲むJSXがあるファイル」
+// だが、表示文字列自体は src/lib/data.ts のような共有定数ファイルで定義され
+// .map() で展開されているだけ、というケースがある（例: Contact.tsx の
+// お問い合わせ用途リストは実体が src/lib/data.ts の contactServices 配列）。
+// ヒント先のファイルで見つからなかった場合、src/ 配下の .ts/.tsx 全体から
+// 一意に特定できるファイルを探すフォールバック。一意性の担保は「1ファイル
+// 内で1箇所」から「src/全体で1箇所」に強まるだけなので安全性は変わらない。
+async function walkSourceFiles(dir: string): Promise<string[]> {
+  const out: string[] = [];
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...(await walkSourceFiles(full)));
+    } else if (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+async function findUniqueMatchAcrossSrc(
+  srcRoot: string,
+  regex: RegExp,
+): Promise<{ file: string; totalMatches: number; fileCount: number } | null> {
+  const files = await walkSourceFiles(srcRoot.slice(0, -1));
+  let totalMatches = 0;
+  const hitFiles: string[] = [];
+  for (const f of files) {
+    let c: string;
+    try {
+      c = await fs.readFile(f, "utf-8");
+    } catch {
+      continue;
+    }
+    const m = c.match(regex) ?? [];
+    if (m.length > 0) {
+      totalMatches += m.length;
+      hitFiles.push(f);
+    }
+  }
+  if (hitFiles.length !== 1) return { file: "", totalMatches, fileCount: hitFiles.length };
+  return { file: hitFiles[0], totalMatches, fileCount: 1 };
+}
+
 export async function POST(request: Request) {
   if (process.env.NODE_ENV !== "development") {
     return NextResponse.json({ error: "この機能は開発環境専用です。" }, { status: 404 });
@@ -82,26 +127,49 @@ export async function POST(request: Request) {
   }
 
   const regex = buildLooseWhitespaceRegex(oldText);
-  const matches = content.match(regex) ?? [];
-  if (matches.length === 0) {
+  let targetAbs = abs;
+  let targetContent = content;
+  const primaryMatches = content.match(regex) ?? [];
+
+  if (primaryMatches.length > 1) {
     return NextResponse.json(
-      {
-        error:
-          "元の文言がファイル内に見つかりませんでした（既に変更されているか、動的に生成される文言の可能性があります）。",
-      },
-      { status: 409 },
-    );
-  }
-  if (matches.length > 1) {
-    return NextResponse.json(
-      { error: `同じ文言がこのファイル内に${matches.length}箇所あり、一意に特定できません。Alt+クリックでエディタを開いて手動編集してください。` },
+      { error: `同じ文言がこのファイル内に${primaryMatches.length}箇所あり、一意に特定できません。Alt+クリックでエディタを開いて手動編集してください。` },
       { status: 409 },
     );
   }
 
-  const updated = content.replace(regex, () => newText);
+  if (primaryMatches.length === 0) {
+    // ヒント先ファイルに無かった — src/lib/data.ts のような共有定数ファイル
+    // にある可能性を探る。
+    const fallback = await findUniqueMatchAcrossSrc(srcRoot, regex);
+    if (!fallback || fallback.fileCount === 0) {
+      return NextResponse.json(
+        {
+          error:
+            "元の文言がファイル内に見つかりませんでした（既に変更されているか、動的に生成される文言の可能性があります）。",
+        },
+        { status: 409 },
+      );
+    }
+    if (fallback.fileCount > 1 || fallback.totalMatches > 1) {
+      return NextResponse.json(
+        {
+          error: `同じ文言が複数のファイルにまたがって存在し、一意に特定できません。Alt+クリックでエディタを開いて手動編集してください。`,
+        },
+        { status: 409 },
+      );
+    }
+    targetAbs = fallback.file;
+    try {
+      targetContent = await fs.readFile(targetAbs, "utf-8");
+    } catch {
+      return NextResponse.json({ error: "ファイルを読み込めませんでした。" }, { status: 404 });
+    }
+  }
+
+  const updated = targetContent.replace(regex, () => newText);
   try {
-    await fs.writeFile(abs, updated, "utf-8");
+    await fs.writeFile(targetAbs, updated, "utf-8");
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "書き込みに失敗しました。" },
@@ -109,5 +177,6 @@ export async function POST(request: Request) {
     );
   }
 
-  return NextResponse.json({ ok: true, file, occurrences: 1 });
+  const actualFile = path.relative(root, targetAbs).replace(/\\/g, "/");
+  return NextResponse.json({ ok: true, file: actualFile, occurrences: 1 });
 }
