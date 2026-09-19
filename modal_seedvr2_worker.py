@@ -147,7 +147,11 @@ INPUT_IMG_MIN_EDGE = int(os.environ.get("ULL_INPUT_IMG_MIN_EDGE", "0"))
 INPUT_IMG_MULTIPLE = int(os.environ.get("ULL_INPUT_IMG_MULTIPLE", "16"))
 
 # ダウンロード許可ホスト（管理系と同じ考え方 — 既知の good ホストのみ）。
-_ALLOWED_IMAGE_HOSTS = ("huggingface.co", "supabase.co", "supabase.in", "amazonaws.com")
+# modal.run: 2026-09-19、Studio共通の一時アップロード（studio_uploads/）を
+# Supabase Storageから Modal直配信（modal_studio_uploads.py::download）へ
+# 移行（CLAUDE.md §1標準）。createStudioUploadSignedUrl が返すURLをこの
+# workerが直接fetchする経路（studioUploads.server.ts参照）。
+_ALLOWED_IMAGE_HOSTS = ("huggingface.co", "supabase.co", "supabase.in", "amazonaws.com", "modal.run")
 
 
 def _env_str(name: str, default: str) -> str:

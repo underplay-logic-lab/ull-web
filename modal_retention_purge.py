@@ -27,6 +27,10 @@ ULL データ保持ポリシー（CLAUDE.md §3）の実施 — 日次 purge。
       （2026-09-18導入・2026-09-19〜14日パージ対象化。当初「入力データなので保持期限
       なし」だったが、連続生成のたびに新規UUIDファイル名で重複が無期限に積み上がる
       欠陥があったため、他の入力データ(lora_datasets等)と同じ14日ルールに揃えた）
+    studio_uploads/<user_id>/<filename> … Director/Multi-Angle/超解像/特化ワークフロー
+      共有の一時アップロード（2026-09-19、旧 Supabase "upscale-uploads" バケットから
+      移行。CLAUDE.md §1標準。modal_studio_uploads.py::upload が書き込む実体。通常は
+      ジョブ側が使用後すぐ削除するが、削除に失敗した孤児をここで拾う安全網）
   Supabase DB
     angle_jobs / upscale_jobs / generation_jobs の古い行
 
@@ -90,6 +94,10 @@ CUSTOM_WORKFLOW_RESULTS_DIR = f"{MODELS_DIR}/custom_workflow_results"
 # 入力画像）等、他の「ユーザー入力データ」も等しく14日パージ対象にして
 # いるプロジェクト全体の方針と揃え、こちらも対象に含める。
 DIRECTOR_USER_LORAS_DIR = f"{MODELS_DIR}/director_user_loras"
+# 2026-09-19: Studio共通の一時アップロード（旧 Supabase "upscale-uploads"
+# バケット）をModal直配信へ移行（CLAUDE.md §1標準）。<user_id>/<filename>の
+# フラット配置なので director_results 等と同じ _purge_volume_flat_files を使う。
+STUDIO_UPLOADS_DIR = f"{MODELS_DIR}/studio_uploads"
 
 # 2026-09-19（ホスト指示）: 管理者アカウント（ADMIN_EMAILS）の生成物は自動削除
 # 対象外にする。ADMIN_EMAILS 自体は Next.js 側の管理画面ログイン許可リストで
@@ -114,12 +122,15 @@ DEFAULT_BUCKETS = [
     # Storage バケット方式へ移行（[[cinematic-video-tab]] 系の旧privacy posture
     # は現行 DirectorStudioTab.tsx には無く、CLAUDE.md §6 の標準へ統一）。
     "director-results",
-    # 2026-09-13: upscale/generate・upscale/batch route.ts が一時アップロード
-    # （upscale-uploads）を dispatch 直後に即削除していたのを撤去した（Modal
-    # worker が署名付きURLを fetch する前にオブジェクトが消えるレース条件で
-    # 実障害が出た）。削除しない代わりにここで14日自動パージの対象に含める。
-    "upscale-uploads",
 ]
+# 2026-09-13: upscale/generate・upscale/batch route.ts が一時アップロード
+# （旧 upscale-uploads バケット）を dispatch 直後に即削除していたのを撤去
+# した（Modal worker が署名付きURLを fetch する前にオブジェクトが消える
+# レース条件で実障害が出た）。削除しない代わりに14日自動パージの対象に
+# 含めていたが、2026-09-19にこのバケット自体をModal直配信（studio_uploads/
+# 、下記）へ移行したため新規書き込みは無くなった。移行前に残っていた行は
+# 上記 buckets ループの対象から外れるので、"upscale-uploads" という名前の
+# まま ULL_RETENTION_BUCKETS で明示指定すれば旧データの掃除は引き続き可能。
 
 # job テーブル → 対応バケット（ストレージ側は created_at 全掃きなので、ここは
 # 行削除の対象一覧）。
@@ -579,6 +590,7 @@ def _purge(dry_run: bool | None = None) -> dict:
         "angle_results": {},
         "custom_workflow_results": {},
         "director_user_loras": {},
+        "studio_uploads": {},
     }
     for b in buckets:
         report["buckets"].append(_sweep_bucket(b, cutoff_epoch))
@@ -597,6 +609,9 @@ def _purge(dry_run: bool | None = None) -> dict:
     )
     report["director_user_loras"] = _purge_volume_flat_files(
         DIRECTOR_USER_LORAS_DIR, cutoff_epoch, "director_user_loras"
+    )
+    report["studio_uploads"] = _purge_volume_flat_files(
+        STUDIO_UPLOADS_DIR, cutoff_epoch, "studio_uploads"
     )
     report["rows"] = _purge_job_rows(cutoff_iso)
     report["elapsed_s"] = round(time.time() - started, 1)
