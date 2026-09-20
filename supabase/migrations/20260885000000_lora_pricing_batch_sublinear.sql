@@ -31,3 +31,25 @@ insert into public.pricing_knobs (key, value, label, category, unit, description
   ('lora_batch_marginal_ratio', 0.42, 'LoRA 実効バッチの限界比率', 'lora_formula', '×',
    '1ステップのうち実効バッチに比例する割合。1.0で正比例（旧挙動）、0でバッチを上げても所要秒が変わらない。', true)
 on conflict (key) do nothing;
+
+-- ------------------------------------------------------------------------
+-- 併せて: lora_prep_dequant_s を実測配分値（270）へ揃える。
+--
+-- 本番DBには 570 が入ったままだった（2026-09-19 17:25 UTC 時点の行）。570 は
+-- 実測前のドラフトの見立てで、20260883 が 270 を入れようとしたものの
+-- `on conflict (key) do nothing` だったため上書きされずに残っていた。
+--
+-- 実測（docs/gpu-benchmarks.md §14.3、サンプル生成なし＝現行の本番設定）では
+-- minimax_h3 の prep 合計が 551秒。コード側はこれを
+--   lora_prep_load_s (280) + lora_prep_dequant_s (270) = 550秒
+-- と配分している。DB の 570 だと合計 850秒となり、**実測より300秒多く**
+-- 見積もることになる（minimax_h3 のジョブで約 169C ≒ ¥280 の過大請求）。
+--
+-- 配分そのものに意味は無く（単独では実測していない）、効くのは合計値。
+-- ⚠️ 同種の取り残しを防ぐため、既存キーの値を動かしたいときは
+-- `on conflict do nothing` ではなく明示的な update を書くこと。
+
+update public.pricing_knobs
+set value = 270,
+    updated_at = now()
+where key = 'lora_prep_dequant_s';
