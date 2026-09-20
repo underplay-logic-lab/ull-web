@@ -1878,20 +1878,20 @@ def _build_config(
         lr = float(tc.get("learning_rate", DEFAULT_TRAINING_CONFIG["learning_rate"]))
     # Intermediate checkpoints every 500 steps (or every 25% for short runs),
     # so the user can pick the least over-fit step afterward. Keep them all.
-    save_every = min(500, max(100, steps // 4))
-    # 2026-09-20: step 上限を 20,000 へ引き上げた（LORA_MAX_STEPS）のに伴い、
-    # 保存回数が青天井にならないよう **10回で頭打ち** にする。500刻みのままだと
-    # 20,000step で40回保存し、rank64 MiniMax H3（1個1.2GB）では1ジョブ最大24GB
-    # を Volume に積む（ull-wan-models は約939GB/1TB）。10回に固定すれば
-    # 20,000step でも 5,000step の今日と同じ約13GBに収まる。
+    save_every = min(250, max(100, steps // 4))
+    # 2026-09-20: 刻みを 500 → 250 に細かくし、代わりに **保存回数を20回で頭打ち**
+    # にする（ホスト判断「500は広すぎる。当たりがどこか分からないし、ベストが
+    # 欲しくて刻みたい人はいる」）。ai-toolkit 側の max_step_saves_to_keep=20 と
+    # 同じ数に揃えてある。
     #
-    # 「末尾N個だけ残す」（max_step_saves_to_keep を絞る）でも容量は同じだが、
-    # 20,000step だと最後の5,000stepしか残らない。過学習がどこで始まったかは
-    # 事前に分からないので、**学習全体を等間隔でカバーする**方を採った。
-    # ceil(steps/10) を100刻みに丸めたもの。5,000step以下では現行式の方が細かい
-    # ので何も変わらない（2,000step → 500刻みのまま）。
+    # 容量: rank64 MiniMax H3 は1個1.2GB なので最大 21個 ≒ 25GB/ジョブ。Modal の
+    # Volume は 1TiB/月まで無料、超過分は $0.09/GiB/月 なので、14日保持だと
+    # 最悪でも約 $0.84（¥125）/ジョブ。刻みを細かくする価値の方が大きいと判断した。
+    # ⚠️ ただし Volume(v1) は **ファイル数** に上限がある（推奨5万・ハード50万
+    # inode、超えると attach 遅延が線形に伸びる）。効いてくるならバイト数より先に
+    # こちらなので、増やす方向に触るときはファイル数を確認すること。
     if steps > 5000:
-        save_every = ((steps + 999) // 1000) * 100
+        save_every = ((steps + 999) // 1000) * 50
     res = resolution if resolution in (512, 768, 1024) else 768
 
     # low_vram off — the Blackwell tiers (b300/b200) have the headroom to
