@@ -11,7 +11,7 @@
 //
 // 新方式は「推定GPU秒 × クレジット単価」の1本:
 //   推定秒 = prep(枚数) + steps × s/it(arch, 解像度, 実効バッチ)
-//   ※ 実効バッチは正比例ではない（2026-09-20 実測。下の batchFactor）
+//   ※ 枚数/step はほぼ正比例（2026-09-21 実測。下の batchFactor）
 //   消費C  = ceil(推定秒 × クレジット単価[worker class])
 // 学習設定が変われば推定秒が変わり、価格が自動で追従する。設定値の確定を
 // 待たずに価格を運用でき、実測が更新されたら下の LORA_SPI_BASELINE と
@@ -191,7 +191,7 @@ export type LoraRuntimeInput = {
   steps: number;
   /** データセットの最大解像度。0/不明なら基準解像度として扱う。 */
   resolution?: number;
-  /** batch_size × gradient_accumulation_steps。 */
+  /** 1 step で処理する画像枚数 = batch_size × gradient_accumulation（gas は無関係）。 */
   effectiveBatch?: number;
   /** データセットの画像枚数。prep の可変分に効く。 */
   imageCount?: number;
@@ -221,15 +221,18 @@ export function loraEstimatedSeconds(input: LoraRuntimeInput): LoraRuntimeEstima
   const resolutionFactor =
     resolution > 0 ? Math.pow((resolution / LORA_SPI_REFERENCE_RESOLUTION) ** 2, exponent) : 1;
 
-  // 実効バッチ（batch_size × grad_accum）は1オプティマイザステップあたりの
-  // forward/backward 回数だが、**所要秒は正比例しない**。実測（§14.7）では
-  // バッチ1で 0.213 s/it、バッチ4（かつ rank 倍）で 0.485 s/it ＝ 1画像あたり
-  // はむしろ速い。バッチ1のとき GPU 使用率が平均 1.8% で遊んでいるためで、
-  // まとめても時間がほとんど増えない。
-  // そこで「1ステップのうちバッチに比例する分」の割合を knob で持ち、
-  //   係数 = (1 - m) + m × バッチ    （m=1 で旧挙動の正比例、m=0 で無関係）
-  // とする。バッチ1では必ず 1.0 になるので、LORA_SPI_BASELINE（バッチ1で実測）
-  // のアンカーはずれない。
+  // effectiveBatch = 1 step で処理する画像枚数（batch_size × gradient_accumulation）。
+  // 「1ステップのうちバッチに比例する分」の割合 m を knob で持ち、
+  //   係数 = (1 - m) + m × 枚数    （m=1 で正比例、m=0 でバッチ無関係）
+  // バッチ1では必ず 1.0 になるので LORA_SPI_BASELINE のアンカーはずれない。
+  //
+  // 2026-09-21 実測（docs §14.8.1、minimax_h3 / B300 / 1024px / rank64 / gc無効 /
+  // block_compile / 実写131枚）— **ほぼ正比例**:
+  //   batch1 → 1.78 s/it（1.78秒/枚） / batch2 → 3.45（1.725秒/枚）
+  //   batch4 → 6.52 s/it（1.63秒/枚）
+  // バッチ4倍で1画像あたりの改善は9%だけ。タイマーの内訳も forward/backward が
+  // 揃って約3.9倍で、バッチ1の時点で既に計算律速だった。よって m は 1.0 のまま
+  // （正比例＝実測比で最大9%の過大見積もり＝安全側）。
   const effectiveBatch = clamp(finite(input.effectiveBatch, 1) || 1, 1, MAX_EFFECTIVE_BATCH);
   const batchMarginal = clamp(finite(knobs.lora_batch_marginal_ratio, 1), 0, 1);
   const batchFactor = 1 - batchMarginal + batchMarginal * effectiveBatch;

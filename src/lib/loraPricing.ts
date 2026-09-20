@@ -123,11 +123,22 @@ export function loraPriceBreakdown(
     }
   }
 
-  // effective batch = batch_size * grad-accum（1オプティマイザステップあたりの
-  // forward/backward 回数なので所要秒に正比例する）
+  // 1 step で処理する画像枚数 = batch_size × gradient_accumulation。
+  //
+  // 🚨 2026-09-21 修正: ここは `gradient_accumulation_steps` を掛けていたが、
+  // ai-toolkit ではそれは**所要時間を増やさない**キーだった。ソース確認
+  // （toolkit/config_modules.py:455-462, BaseSDTrainProcess.py:2518/2549）:
+  //   - `gradient_accumulation`       … 1 step の内側ループ回数（既定1）。
+  //                                     処理枚数＝所要秒に効く。
+  //   - `gradient_accumulation_steps` … optimizer を何 step に1回踏むか（既定1）。
+  //                                     処理量は増えない。両者は相互排他。
+  // 実測でも「実効バッチ4」を名乗る2ジョブが2倍違った
+  //   batch2 + gas2 → 3.45 s/it（実は2枚ぶん） / batch4 → 6.52 s/it（4枚ぶん）
+  // 掛けたままだと cost-guard の許容秒も過小に出て、正常なジョブを
+  // 原価割れ判定で安全停止させ得る（docs §14.8.1）。
   const effectiveBatch =
     Math.max(1, asNumber(train.batch_size) ?? 1) *
-    Math.max(1, asNumber(train.gradient_accumulation_steps) ?? 1);
+    Math.max(1, asNumber(train.gradient_accumulation) ?? 1);
 
   // rank は課金には効かない（LoRA アダプタは基盤モデルに対して十分小さく、
   // 所要秒をほとんど動かさない）。表示と将来の実測用に拾うだけ。

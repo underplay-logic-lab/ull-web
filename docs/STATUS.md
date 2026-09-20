@@ -22,6 +22,17 @@
 - ベンチの `measured` 未定義バグ修正 + アスペクト比混在オプション（`3e3e8e9`）。
 - 長時間タスク完了時に `PushNotification` で知らせるルールを CLAUDE.md へ（`e3332ee`）。
 
+- **課金式の実効バッチを修正（2026-09-21）**。`batch_size ×
+  gradient_accumulation_steps` → `batch_size × gradient_accumulation`。
+  ai-toolkit では `_steps` 付きの方は optimizer を踏む間隔で**所要時間を
+  増やさない**（ソース確認済み）。掛けたままだと cost-guard の許容秒も
+  過小で、正常ジョブを原価割れ判定で止め得た。`lora_batch_marginal_ratio`
+  は既に 1.0（正比例）で DB も一致していたので**マイグレーション不要**。
+  新式の見積もりは実測と整合する（batch2+gas2: 推定3.56 / 実測3.45、
+  batch4: 推定7.12 / 実測6.52＝9%過大＝安全側）。
+- **`block_compile` を既定 ON・`vram_peak_gb` の記録を追加**（`5b3013a`, デプロイ済み）。
+- **「実効バッチ」の読み違いを docs で訂正**（`d150381`, §14.8.1 新設）。
+
 ### 反映状況 — 2026-09-20 時点ですべて適用済み
 
 - Vercel デプロイ（push `69f7750`）
@@ -35,23 +46,13 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 
 ## 次の一手（優先度順）
 
-1. **🚨 課金式の修正（最優先・原価割れ方向のバグ）。**
-   2026-09-21 に「実効バッチ」の読み違いが判明した（docs §14.8.1）。ai-toolkit の
-   tqdm 1 step は **`batch_size` 枚ぶん**で、YAML に書いていた
-   `gradient_accumulation_steps` は**処理量を増やさない**（内側ループを増やすのは
-   別キーの `gradient_accumulation`。相互排他）。
-   - 実測: 1画像あたり **1.78秒（batch1）/ 1.725秒（batch2）/ 1.63秒（batch4）**。
-     **バッチを4倍にして9%しか改善しない＝バッチ1で既に計算律速。**
-     「余った VRAM をバッチで埋める」は成立しない。
-   - `loraRuntime.ts` は実効バッチ = `batch_size × gradient_accumulation_steps`、
-     m = 0.42。①gas は時間を増やさないのに掛けている（過大請求）
-     ②batch はほぼ線形（m≈0.89）なのに 0.42（`batch_size 4` で**実所要の62%**しか
-     請求しない＝原価割れ）。**cost-guard も同じ式なので正常ジョブを安全停止させ得る。**
-   - **やること**: (a) 同一条件で `batch_size` 1 / 2 / 4 を測り直して f を確定
-     （v11/v12 は `cache_text_embeddings` の有無が違う）→ (b) 式を
-     `steps × f(batch_size)`（gas 非依存）に作り替え → (c) knob と cost-guard を同時更新。
-   - 生YAML（admin 限定）以外は `batch_size 1` 固定なので、**一般ユーザーへの
-     課金影響は無い**。急ぐ理由は admin ジョブの誤停止リスク。
+1. **torch.compile はバッチ1でも本当に効いているのか（未検証・要実測1本）。**
+   compile 有効の実測しか無く、**バッチ1の eager を一度も測っていない**。
+   バッチ4では compile の利得が eager 比ほぼゼロだったので、バッチ1でも
+   ゼロの可能性がある。もしそうなら、毎ジョブ **135〜477秒の warmup を
+   無駄に払っている**（GUI 既定は compile ON）。
+   検証は `compile: false` の50step ラン1本（約¥250）で済む。
+   1.78 s/it 前後なら compile は無価値 → GUI 既定を eager にして prep を丸ごと削れる。
 
 2. **§14.8 の compile 停止は解決済み（2026-09-20）。**
    原因は minimax_h3 forward のデータ依存分岐 `if bool(is_pad.any())`。

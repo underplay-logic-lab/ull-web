@@ -1242,8 +1242,15 @@ def _credit_covered_seconds(credits_cost: int) -> int:
 
 
 def _effective_batch(train_block: dict) -> int:
-    """batch_size x gradient_accumulation_steps。所要秒には正比例しない
-    （docs/gpu-benchmarks.md §14.7）が、compile の可否判定には効く（§14.8）。"""
+    """1 step で処理する画像枚数 = batch_size x gradient_accumulation。
+
+    🚨 2026-09-21 修正: 以前は `gradient_accumulation_steps` を掛けていたが、
+    ai-toolkit ではそれは optimizer を踏む間隔（既定1）で **処理量を増やさない**。
+    1 step の内側ループ回数は別キーの `gradient_accumulation`（既定1）で、両者は
+    相互排他（toolkit/config_modules.py:455-462、
+    BaseSDTrainProcess.py:2518/2549）。所要秒にはこの枚数がほぼ正比例する
+    （docs/gpu-benchmarks.md §14.8.1）。compile の可否判定にも効く（§14.8）。
+    """
     def _pos_int(v, default: int = 1) -> int:
         try:
             n = int(float(v))
@@ -1254,7 +1261,7 @@ def _effective_batch(train_block: dict) -> int:
     if not isinstance(train_block, dict):
         return 1
     return _pos_int(train_block.get("batch_size")) * _pos_int(
-        train_block.get("gradient_accumulation_steps")
+        train_block.get("gradient_accumulation")
     )
 
 
