@@ -25,66 +25,6 @@ export type LoraTrainingConfigInput = {
 // request body cap) under "<userId>/<datasetId>/NNNN_name". The zero-padded
 // index keeps the server-side sort aligned with the caption array order.
 // Returns the object paths, in upload order.
-type PreparedUpload = { body: Blob; ext: string; type: string; converted: boolean };
-
-// 学習で実際に使われる画素数まで、送る前にブラウザ側で落とす。Smart Ingest
-// （modal_lora_worker.py::ingest_and_optimize_dataset_cpu）が長辺1536へ
-// LANCZOS縮小 → WebP q95 に統一するので、そこへ渡る画素は変わらない。
-// デコードできない／WebPを吐けない環境では原本をそのまま返す（fail-open）。
-// EXIF の向きは createImageBitmap の imageOrientation で焼き込む
-// （サーバー側の exif_transpose は焼き込み済みの画像に対しては無害）。
-async function prepareForUpload(
-  file: File,
-  longEdge: number,
-  quality: number,
-): Promise<PreparedUpload> {
-  const asIs: PreparedUpload = {
-    body: file,
-    ext: (/\.[A-Za-z0-9]+$/.exec(file.name)?.[0] || ".png").toLowerCase(),
-    type: file.type || "image/png",
-    converted: false,
-  };
-  if (typeof createImageBitmap !== "function" || typeof document === "undefined") return asIs;
-
-  let bitmap: ImageBitmap | null = null;
-  try {
-    const decoded = await createImageBitmap(file, { imageOrientation: "from-image" });
-    const scale = Math.min(1, longEdge / Math.max(decoded.width, decoded.height));
-    const width = Math.max(1, Math.round(decoded.width * scale));
-    const height = Math.max(1, Math.round(decoded.height * scale));
-    if (scale < 1) {
-      // 縮小は createImageBitmap 側の高品質フィルタに任せる（canvas の
-      // drawImage より素性が良く、デコードも1回で済む）。
-      bitmap = await createImageBitmap(decoded, {
-        resizeWidth: width,
-        resizeHeight: height,
-        resizeQuality: "high",
-      });
-      decoded.close();
-    } else {
-      bitmap = decoded;
-    }
-
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return asIs;
-    ctx.drawImage(bitmap, 0, 0, width, height);
-
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, "image/webp", quality),
-    );
-    // toBlob が WebP 非対応なら PNG が返る。元より大きくなるなら意味がない。
-    if (!blob || blob.type !== "image/webp" || blob.size >= file.size) return asIs;
-    return { body: blob, ext: ".webp", type: "image/webp", converted: true };
-  } catch {
-    return asIs;
-  } finally {
-    bitmap?.close();
-  }
-}
-
 export async function uploadLoraDataset(
   userId: string,
   files: File[],
@@ -115,42 +55,21 @@ export async function uploadLoraDataset(
   // サーバー側は upload_lora_dataset_image に @modal.concurrent を付けて
   // 1コンテナで同時に受けられるようにしてある。
   const UPLOAD_CONCURRENCY = 10;
-  // 2026-09-20: 送るバイト自体を減らす。Smart Ingest
-  // （modal_lora_worker.py の INGEST_LONG_EDGE[1024] = 1536）が、学習前に
-  // どのみち長辺1536へLANCZOS縮小して WebP q95 へ再エンコードしている。
-  // 原寸を送っても着いた瞬間に捨てられるピクセルなので、同じ長辺まで
-  // ブラウザ側で落としてから送る。学習に入る画素は変わらない。
-  // 変換できない形式（HEIC等）やWebPエンコード非対応の環境では原本を
-  // そのまま送る（fail-open）。
-  const UPLOAD_LONG_EDGE = 1536;
-  // Smart Ingest の INGEST_QUALITY(=95) と同値。どの形式で送っても最終的に
-  // WebP q95 へ再エンコードされるので、1回目をここに揃えておけば
-  // 「q95 を q95 で再エンコード」となり、二重の非可逆化がほぼ無害になる。
-  const UPLOAD_WEBP_QUALITY = 0.95;
-  // 大きい原本を同時にデコードするとメモリを食う（4000x3000で約48MB/枚）。
-  // 送信は10並列のまま、デコード＋エンコードだけ3枚に絞る。
-  const PREPARE_CONCURRENCY = 3;
-  let prepareSlots = PREPARE_CONCURRENCY;
-  const prepareWaiters: Array<() => void> = [];
-  const withPrepareSlot = async (task: () => Promise<PreparedUpload>): Promise<PreparedUpload> => {
-    if (prepareSlots <= 0) await new Promise<void>((resolve) => prepareWaiters.push(resolve));
-    prepareSlots -= 1;
-    try {
-      return await task();
-    } finally {
-      prepareSlots += 1;
-      prepareWaiters.shift()?.();
-    }
-  };
-
+  // 2026-09-20: 「送る前にブラウザで長辺1536へ縮小し WebP 化する」を試して
+  // 取り消した。送信量は 52.2MB -> 36.7MB（30%減）に留まる一方、全体は
+  // 56.5秒 -> 109.5秒へ悪化した。1リクエスト平均も 4.3秒 -> 8.0秒 と、
+  // 1枚が小さくなったのに倍に伸びている。canvas の drawImage/toBlob が
+  // メインスレッドを占有して fetch のボディ送信を止めるため、変換の対価を
+  // 送信時間として払い直す形になる。Worker(OffscreenCanvas)へ逃がせば
+  // 成立し得るが、得られるのは送信量30%減で、1リクエスト4.3秒/400KB
+  // (=0.74Mbps) というサーバー側の固定コストの方が支配的。先に複数枚を
+  // 1リクエストへまとめる。実測は docs/gpu-benchmarks.md §15。
   const startedAt = Date.now();
-  const totalBytes = files.reduce((n, f) => n + f.size, 0);
 
   const paths: string[] = new Array(files.length);
   let done = 0;
   let cursor = 0;
   let sentBytes = 0;
-  let converted = 0;
   let requestMs = 0;
   // 最初に失敗した「枚目」を残す（並列なので完了順は入れ替わる）。1枚でも
   // 失敗したら中止する — 部分的なデータセットで /train へ進ませない。
@@ -158,15 +77,8 @@ export async function uploadLoraDataset(
 
   const uploadOne = async (i: number): Promise<void> => {
     const file = files[i];
-    const prepared = await withPrepareSlot(() =>
-      prepareForUpload(file, UPLOAD_LONG_EDGE, UPLOAD_WEBP_QUALITY),
-    );
-    if (prepared.converted) converted += 1;
-    sentBytes += prepared.body.size;
-    // 拡張子を落としてから安全化する（prepared.ext を付け直すため）。
-    const stem = file.name.replace(/\.[^.\/]*$/, "");
-    const base = stem.replace(/[^A-Za-z0-9._-]/g, "_").slice(-72) || "image";
-    const safe = `${base}${prepared.ext}`;
+    sentBytes += file.size;
+    const safe = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "image";
     const filename = `${String(i).padStart(4, "0")}_${safe}`;
     const reqStartedAt = Date.now();
 
@@ -181,8 +93,8 @@ export async function uploadLoraDataset(
     try {
       const res = await fetch(uploadUrl.toString(), {
         method: "POST",
-        headers: { "Content-Type": prepared.type },
-        body: prepared.body,
+        headers: { "Content-Type": file.type || "image/png" },
+        body: file,
       });
       if (!res.ok) {
         const detail = await res.json().catch(() => ({}) as { detail?: string; error?: string });
@@ -230,8 +142,7 @@ export async function uploadLoraDataset(
   const mbps = elapsedSec > 0 ? (sentBytes * 8) / elapsedSec / 1e6 : 0;
   const mb = (n: number) => (n / 1048576).toFixed(1);
   console.info(
-    `[lora-upload] ${files.length}枚 元${mb(totalBytes)}MB → 送信${mb(sentBytes)}MB` +
-      `（縮小 ${converted}枚）を ${elapsedSec.toFixed(1)}秒` +
+    `[lora-upload] ${files.length}枚 / ${mb(sentBytes)}MB を ${elapsedSec.toFixed(1)}秒` +
       `（実効 ${mbps.toFixed(1)} Mbps・並列 ${UPLOAD_CONCURRENCY}・` +
       `1リクエスト平均 ${(requestMs / Math.max(1, done) / 1000).toFixed(2)}秒）`,
   );
