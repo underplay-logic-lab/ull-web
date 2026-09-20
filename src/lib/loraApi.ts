@@ -123,7 +123,10 @@ export async function uploadLoraDataset(
   // 変換できない形式（HEIC等）やWebPエンコード非対応の環境では原本を
   // そのまま送る（fail-open）。
   const UPLOAD_LONG_EDGE = 1536;
-  const UPLOAD_WEBP_QUALITY = 0.92;
+  // Smart Ingest の INGEST_QUALITY(=95) と同値。どの形式で送っても最終的に
+  // WebP q95 へ再エンコードされるので、1回目をここに揃えておけば
+  // 「q95 を q95 で再エンコード」となり、二重の非可逆化がほぼ無害になる。
+  const UPLOAD_WEBP_QUALITY = 0.95;
   // 大きい原本を同時にデコードするとメモリを食う（4000x3000で約48MB/枚）。
   // 送信は10並列のまま、デコード＋エンコードだけ3枚に絞る。
   const PREPARE_CONCURRENCY = 3;
