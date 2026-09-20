@@ -22,13 +22,14 @@
 - ベンチの `measured` 未定義バグ修正 + アスペクト比混在オプション（`3e3e8e9`）。
 - 長時間タスク完了時に `PushNotification` で知らせるルールを CLAUDE.md へ（`e3332ee`）。
 
-### ⚠️ まだ適用していないもの
+### 反映状況 — 2026-09-20 時点ですべて適用済み
 
-1. マイグレーション `supabase/migrations/20260888000000_lora_pricing_gui_default_measured.sql`
-2. `modal_lora_worker.py` のデプロイ（フォールバック表の同期ぶん）
+- Vercel デプロイ（push `69f7750`）
+- マイグレーション `20260888000000_lora_pricing_gui_default_measured.sql`
+- `modal_lora_worker.py` のデプロイ（7.2秒・image 再ビルドなし・エンドポイント URL 不変）
 
-適用順序は **Vercel → SQL**。コード側 `DEFAULT_KNOBS` が先に出ていれば、DB 適用前でも
-フォールバックで新しい値が使われ、古い価格で生成が走る隙間ができない。
+**適用順序は Vercel → SQL を守ること。** コード側 `DEFAULT_KNOBS` が先に出ていれば、
+DB 適用前でもフォールバックで新しい値が使われ、古い価格で生成が走る隙間ができない。
 
 ---
 
