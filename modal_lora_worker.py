@@ -5877,6 +5877,13 @@ _DATASET_BATCH_MAX_BYTES = 256 * 1024 * 1024
     image=dispatch_image,
     volumes={MODELS_DIR: vol},
     timeout=900,
+    # 2026-09-20: cpu/memory を明示する。未指定だと Modal の既定（0.125 CPU）
+    # で multipart パースと Volume 書き込みを max_inputs 本ぶん捌くことになり、
+    # ここが律速になっていた。ホストの上り帯域は 540Mbps あるのに実効
+    # 14.3Mbps（2.6%）しか出ず、1リクエスト 14.43秒 のうち Modal 側の
+    # execution が 10〜14秒 を占めていた。docs/gpu-benchmarks.md §15。
+    cpu=4,
+    memory=4096,
     scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
@@ -5911,6 +5918,7 @@ async def upload_lora_dataset_batch(
             status_code=400, detail=f"too many files (max {_DATASET_BATCH_MAX_FILES})"
         )
 
+    t_start = time.monotonic()
     dest_dir = pathlib.Path(LORA_DATASET_UPLOADS_DIR) / user_id / dataset_id
     dest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -5952,7 +5960,17 @@ async def upload_lora_dataset_batch(
         raise
 
     # 枚数ぶんではなく、このバッチで1回だけ。ここが単枚版との違い。
+    t_write = time.monotonic()
     await vol.commit.aio()
+    t_commit = time.monotonic()
+    # 受信＋書き込みと commit のどちらが効いているかを毎回1行で残す。
+    # 「1リクエストの時間はほぼ全部サーバー側」と分かっている以上、次に削る
+    # 相手はこの内訳でしか決まらない。
+    print(
+        f"[upload-batch] {len(files)}枚 {total / 1048576:.1f}MB "
+        f"recv+write={t_write - t_start:.2f}s commit={t_commit - t_write:.2f}s",
+        flush=True,
+    )
     return {"ok": True, "files": written, "size_bytes": total}
 
 
