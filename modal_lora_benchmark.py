@@ -201,6 +201,57 @@ PLANS["image_tier"] = [
      "warmup_steps": 10, "measure_steps": 40},
 ]
 
+# ホストが実案件（yukipas_v5, 2026-09-04）で使った実設定の再現。
+#
+# 私の smoke は rank32 / 実効バッチ1 / gc無効 で peak 107.4GB だったが、
+# ホストの実設定は rank64 / 実効バッチ4（batch2 × grad_accum2）/ **gc有効**で
+# peak 約185GB だった。つまり「288GBに対して余裕がある」という私の判断は、
+# 軽い条件での数字に基づいた誤りだった。
+#
+# 知りたいのは1つ: **実設定で gradient_checkpointing を切っても B300 に載るか。**
+# 載るなら速度の利得をそのまま取れる（ホスト希望）。載らないなら既定を戻す。
+# gc有効側(185GB)は実績値があるので、対比のために1本だけ取る。
+_REAL_CONFIG = {
+    "target_model": "minimax_h3",
+    "resolution": 1024,
+    "rank": 64,
+    "batch": 2,
+    "grad_accum": 2,
+    "images": 24,
+    "optimizer": "adamw",
+    "lr": 0.00015,
+    "lr_scheduler": "cosine",
+    "network_kwargs": {"only_if_contains": ["transformer"]},
+    "warmup_steps": 10,
+    "measure_steps": 30,
+    # 2026-09-20: compile を切って測る。知りたいのは VRAM であり、docs §5 に
+    # 「VRAM は Inductor デフォルトでは変化なし」とあるので compile は交絡に
+    # しかならない。実際 compile 有効で回したところ、実効バッチ4では学習の
+    # 途中（step 6）で再コンパイルに入り8分以上戻ってこなかった
+    # （compile_dynamic=True でも shape 変化を吸収しきれていない）。
+    # ⚠️ この「実効バッチ>1 で途中再コンパイルが走る」こと自体が別途の課題。
+    # 本番は compile 既定オンなので、実効バッチを上げるユーザーは同じ目に遭う。
+    "compile": False,
+}
+PLANS["real_config"] = [
+    {**_REAL_CONFIG, "tier": "b300", "gradient_checkpointing": True},
+    {**_REAL_CONFIG, "tier": "b300", "gradient_checkpointing": False},
+]
+
+# チェックポイント保存のコスト検証。
+#
+# ホストの実案件（2000step / save_every 250 / 静止画145枚）は約4時間かかったが、
+# 同条件の実測から逆算すると学習部分は26〜33分にしかならない。7倍の差が学習
+# ループの外にある。最有力が「save_every 250 → 8回の保存」で、Modal Volume は
+# NFS のため大きなファイルの書き込みが遅い。
+#
+# 40step を save_every=10（学習中に3回保存）で回し、save_every=40（学習中の
+# 保存ゼロ）の real_config[gc OFF] と wall_s を比べれば1回あたりの保存コストが
+# 出る。他の条件は完全に同じにしてあるので、差分がそのまま保存コスト。
+PLANS["save_cost"] = [
+    {**_REAL_CONFIG, "tier": "b300", "gradient_checkpointing": False, "save_every": 10},
+]
+
 # 本番プランへ行く前の1条件だけの通し確認。config 生成 → データセット →
 # ai-toolkit 起動 → tqdm パース → VRAM 記録 までが実際の学習で通ることを、
 # 最小の課金（$3前後）で確かめるためのもの。CLAUDE.md §0「まず最小条件で」。
@@ -386,6 +437,7 @@ def _run_benchmark(spec: dict) -> dict:
     n_images = int(spec.get("images", DEFAULT_IMAGES))
     rank = int(spec.get("rank", 32))
     batch = int(spec.get("batch", 1))
+    grad_accum = int(spec.get("grad_accum", 1))
     optimizer = str(spec.get("optimizer", DEFAULT_TRAIN_SETTINGS["optimizer"]))
     grad_ckpt = bool(
         spec.get("gradient_checkpointing", DEFAULT_TRAIN_SETTINGS["gradient_checkpointing"])
@@ -405,8 +457,12 @@ def _run_benchmark(spec: dict) -> dict:
         "images": n_images,
         "rank": rank,
         "batch": batch,
+        "grad_accum": grad_accum,
+        "effective_batch": batch * grad_accum,
         "optimizer": optimizer,
         "gradient_checkpointing": grad_ckpt,
+        "compile": spec.get("compile"),
+        "save_every": int(spec.get("save_every") or total_steps),
         "total_steps": total_steps,
         "warmup_steps": warmup_steps,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -431,10 +487,18 @@ def _run_benchmark(spec: dict) -> dict:
                 "alpha": rank // 2,
                 "steps": total_steps,
                 "optimizer": optimizer,
+                # _build_config は tc["compile"] の明示指定を最優先する
+                # （環境変数はコンテナ側で再評価されるため CLI から効かない）。
+                # None なら本番既定（LORA_COMPILE_ENABLED）に従う。
+                **({} if spec.get("compile") is None else {"compile": bool(spec["compile"])}),
                 # 途中サンプル生成は shape が変わるたび再コンパイルが走り
                 # （~220s）、s/it の測定を壊す。ベンチでは完全に切る。
                 "sample_every": 0,
-                "save_every": total_steps,
+                # 既定は最後に1回だけ（= 学習中の保存コストをゼロにする）。
+                # spec で小さい値を渡すと学習中に保存が入り、その分が wall_s と
+                # step 間隔に現れる —「save_every を細かくすると遅くなる」の
+                # 検証用（CLAUDE.md §3 は save_every: 500 を標準としている）。
+                "save_every": int(spec.get("save_every") or total_steps),
             },
             override=None,
             resolution=resolution,
@@ -446,6 +510,10 @@ def _run_benchmark(spec: dict) -> dict:
             gradient_checkpointing=grad_ckpt,
             batch=batch,
             optimizer=optimizer,
+            grad_accum=grad_accum,
+            network_kwargs=spec.get("network_kwargs"),
+            lr=spec.get("lr"),
+            lr_scheduler=spec.get("lr_scheduler"),
         )
         result["config_path"] = str(config_path)
 
@@ -564,6 +632,26 @@ def _run_benchmark(spec: dict) -> dict:
         result["ok"] = not sanity
         if sanity:
             result["error"] = " / ".join(sanity)
+
+        # チェックポイント保存のコスト検証用。
+        # (a) 実際に書かれた .safetensors のサイズ（Modal Volume は NFS で
+        #     書き込みが遅く、CLAUDE.md §1 が「4MiB単位でバッファしないと
+        #     実効数KB/秒まで落ちる」と警告している経路）
+        # (b) step 間隔の生データ。保存が挟まった step だけ突出するので、
+        #     trimmed mean では消えてしまう「1回あたりの保存コスト」が見える。
+        try:
+            out_dir = pathlib.Path(W.OUTPUT_DIR)
+            files = sorted(out_dir.rglob("*.safetensors"))
+            result["saved_files"] = [
+                {"name": p.name, "mb": round(p.stat().st_size / 1e6, 1)} for p in files[:20]
+            ]
+            result["saved_count"] = len(files)
+        except Exception as exc:
+            result["saved_files"] = f"{type(exc).__name__}: {exc}"
+        if intervals:
+            top = sorted(intervals, reverse=True)[:5]
+            result["slowest_step_intervals_s"] = [round(x, 2) for x in top]
+            result["median_step_interval_s"] = round(sorted(intervals)[len(intervals) // 2], 4)
         if not result["ok"]:
             result["tail"] = tail[-40:]
 
@@ -583,7 +671,17 @@ def _run_benchmark(spec: dict) -> dict:
     return result
 
 
-def _patch_config(config_path, *, gradient_checkpointing: bool, batch: int, optimizer: str) -> dict:
+def _patch_config(
+    config_path,
+    *,
+    gradient_checkpointing: bool,
+    batch: int,
+    optimizer: str,
+    grad_accum: int = 1,
+    network_kwargs: dict | None = None,
+    lr: float | None = None,
+    lr_scheduler: str | None = None,
+) -> dict:
     """本番の `_build_config` が書いた YAML を、計測条件に合わせて上書きする。
 
     `_build_config` は `train.batch_size` / `gradient_accumulation_steps` を
@@ -604,7 +702,18 @@ def _patch_config(config_path, *, gradient_checkpointing: bool, batch: int, opti
     train = proc_block.setdefault("train", {})
     train["gradient_checkpointing"] = bool(gradient_checkpointing)
     train["batch_size"] = int(batch)
+    train["gradient_accumulation_steps"] = int(grad_accum)
     train["optimizer"] = optimizer
+    if lr is not None:
+        train["lr"] = lr
+    if lr_scheduler:
+        train["lr_scheduler"] = lr_scheduler
+
+    # network_kwargs（例: only_if_contains: ["transformer"]）は LoRA を挿す
+    # モジュールを絞るので、VRAM と s/it の両方に効く。本番の実設定を再現する
+    # には必須。
+    if network_kwargs:
+        proc_block.setdefault("network", {})["network_kwargs"] = network_kwargs
 
     model_block = proc_block.get("model", {})
     for key in ("quantize", "low_vram"):
@@ -842,6 +951,82 @@ def _parser_selftest() -> dict:
 # ---------------------------------------------------------------------------
 # ハーネス確認（最安 tier）
 # ---------------------------------------------------------------------------
+@app.function(
+    image=BENCH_IMAGE,
+    volumes={W.MODELS_DIR: W.vol},
+    timeout=30 * 60,
+    scaledown_window=2,
+)
+def volume_write_probe(size_mb: int = 1200) -> dict:
+    """Modal Volume への書き込み速度を CPU だけで測る。
+
+    背景: ホストの実案件（2000step / save_every 250）は約4時間かかったが、
+    同条件の実測では学習部分が26〜33分にしかならない。差の容疑者が
+    「1.2GB の中間チェックポイント × 8回」の Volume 書き込み。
+    GPU で学習を回して測るのは遠回りなので、書き込みだけを切り出す。
+
+    CLAUDE.md §1 は「Modal Volume (NFS) は1回あたりの読み書きオーバーヘッドが
+    大きい。小さいチャンクを大量に読み書きすると実効速度が数KB/秒まで落ち込む。
+    読み書きとも4MiB単位でバッファすること」と明記している。その主張自体も
+    ここで検証する（バッファ有無で比較）。
+    """
+    import os
+    import time
+
+    results: dict = {"size_mb": size_mb}
+    payload = os.urandom(8 * 1024 * 1024)  # 8MiB の元データを使い回す
+    target_bytes = size_mb * 1024 * 1024
+    probe_dir = pathlib.Path(W.MODELS_DIR) / "_bench_write_probe"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+
+    # buffering: -1 = Python 既定(約8KiB)、4MiB = CLAUDE.md 推奨
+    for label, buf in (("default_buffer", -1), ("4MiB_buffer", 4 * 1024 * 1024)):
+        p = probe_dir / f"probe_{label}.bin"
+        try:
+            t0 = time.time()
+            written = 0
+            with open(p, "wb", buffering=buf) as fh:
+                while written < target_bytes:
+                    n = min(len(payload), target_bytes - written)
+                    fh.write(payload[:n])
+                    written += n
+                fh.flush()
+                os.fsync(fh.fileno())
+            write_s = time.time() - t0
+
+            # Volume は commit しないと永続化されない。commit も実コストなので測る。
+            t1 = time.time()
+            W.vol.commit()
+            commit_s = time.time() - t1
+
+            results[label] = {
+                "write_s": round(write_s, 1),
+                "commit_s": round(commit_s, 1),
+                "total_s": round(write_s + commit_s, 1),
+                "mb_per_s": round(size_mb / max(write_s + commit_s, 0.001), 1),
+            }
+        except Exception as exc:
+            results[label] = f"{type(exc).__name__}: {exc}"
+        finally:
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    try:
+        W.vol.commit()
+        probe_dir.rmdir()
+    except Exception:
+        pass
+
+    # 実案件（1.2GB × 8回）に換算
+    best = results.get("4MiB_buffer")
+    if isinstance(best, dict):
+        results["projection_8_saves_min"] = round(best["total_s"] * 8 / 60, 1)
+    print("[volume_write_probe] " + json.dumps(results, ensure_ascii=False), flush=True)
+    return results
+
+
 @app.function(image=BENCH_IMAGE, gpu=TIER_GPU["t4"], timeout=15 * 60, scaledown_window=2)
 def harness_check() -> dict:
     """T4 で「VRAM サンプラが実機で動くか」だけを確かめる。学習はしない。
