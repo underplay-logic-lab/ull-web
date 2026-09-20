@@ -54,7 +54,14 @@ export async function uploadLoraDataset(
   // 送る前にブラウザで縮小する案は逆効果で取り消した経緯が
   // docs/gpu-benchmarks.md §15 にある。
   const UPLOAD_BATCH_SIZE = 10;
-  const BATCH_CONCURRENCY = 4;
+  // 2026-09-20 実測: 131枚/52.2MB が 14リクエスト・並列4 で 46.7秒。
+  // 1リクエスト平均 13.28秒 x (14/4=3.5ラウンド) = 46.5秒 と全体がぴたり
+  // 一致していて、律速はサーバーでも帯域でもなく「こちらが4本しか張って
+  // いないこと」。1接続あたりのスループットは単枚時代の 0.74Mbps から
+  // 2.25Mbps へ既に3倍になっている。サーバー側は
+  // upload_lora_dataset_batch の @modal.concurrent(max_inputs=16) まで
+  // 1コンテナで受けられるので、そこへ揃えて2ラウンドで終わらせる。
+  const BATCH_CONCURRENCY = 8;
   // 単枚フォールバック経路（Modal 未デプロイ時）の並列度。
   const UPLOAD_CONCURRENCY = 10;
 

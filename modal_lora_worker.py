@@ -5887,7 +5887,11 @@ _DATASET_BATCH_MAX_BYTES = 256 * 1024 * 1024
 # 実測の経緯は docs/gpu-benchmarks.md §15。
 # 単枚版（upload_lora_dataset_image）はフォールバック経路として残す
 # — Vercel だけ先に上がって Modal が未デプロイでもアップロードが壊れないように。
-@modal.concurrent(max_inputs=8)
+# max_inputs はブラウザ側の BATCH_CONCURRENCY(8) より広く取る。受信と
+# Volume 書き込みの I/O 待ちしかしないので、ここで詰まらせるとクライアントの
+# 並列がそのまま無駄になる（2026-09-20: 並列4で 14リクエストが3.5ラウンドに
+# なり、全体46.7秒のうち実質すべてがこのラウンド数で決まっていた）。
+@modal.concurrent(max_inputs=16)
 @modal.fastapi_endpoint(method="POST")
 async def upload_lora_dataset_batch(
     user_id: str,
