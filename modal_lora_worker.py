@@ -1879,6 +1879,19 @@ def _build_config(
     # Intermediate checkpoints every 500 steps (or every 25% for short runs),
     # so the user can pick the least over-fit step afterward. Keep them all.
     save_every = min(500, max(100, steps // 4))
+    # 2026-09-20: step 上限を 20,000 へ引き上げた（LORA_MAX_STEPS）のに伴い、
+    # 保存回数が青天井にならないよう **10回で頭打ち** にする。500刻みのままだと
+    # 20,000step で40回保存し、rank64 MiniMax H3（1個1.2GB）では1ジョブ最大24GB
+    # を Volume に積む（ull-wan-models は約939GB/1TB）。10回に固定すれば
+    # 20,000step でも 5,000step の今日と同じ約13GBに収まる。
+    #
+    # 「末尾N個だけ残す」（max_step_saves_to_keep を絞る）でも容量は同じだが、
+    # 20,000step だと最後の5,000stepしか残らない。過学習がどこで始まったかは
+    # 事前に分からないので、**学習全体を等間隔でカバーする**方を採った。
+    # ceil(steps/10) を100刻みに丸めたもの。5,000step以下では現行式の方が細かい
+    # ので何も変わらない（2,000step → 500刻みのまま）。
+    if steps > 5000:
+        save_every = ((steps + 999) // 1000) * 100
     res = resolution if resolution in (512, 768, 1024) else 768
 
     # low_vram off — the Blackwell tiers (b300/b200) have the headroom to
