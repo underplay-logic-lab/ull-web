@@ -6937,6 +6937,108 @@ def admin_cleanup_volume(
     }
 
 
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol},
+    timeout=1800,
+    scaledown_window=2,
+)
+def admin_volume_inventory(depth: int = 2, top: int = 30) -> dict:
+    """Volume の **inode 数**（ファイル + ディレクトリ + シンボリックリンクの
+    個数）と容量を、上位ディレクトリごとに数える。読むだけ・何も消さない。
+
+        modal run modal_lora_worker.py::admin_volume_inventory
+        modal run modal_lora_worker.py::admin_volume_inventory --depth 3 --top 50
+
+    なぜ GB ではなく個数を見るのか（2026-09-20 調査）: Modal Volume は容量に
+    上限が無く 1TiB/月まで無料（超過 $0.09/GiB/月）だが、**v1 は inode に上限が
+    ある** — 推奨 5万・ハード 50万。超えると attach / 変更のレイテンシが
+    ファイル数に線形で伸び、最終的に容量が空いていても ENOSPC になる。
+    このワーカーの場合、容量の主役（1.2GB のチェックポイント）は inode では
+    1個でしかなく、**軽いファイル（latent キャッシュ・ingest WebP・キャプション
+    .txt・HF キャッシュの blob/symlink）の方が個数を食う**という逆転が起きる。
+    削除や save_every の刻みを判断する前に、まずこの数字を見ること。
+
+    シンボリックリンクは辿らずに1個として数える（Modal が数えるのと同じ基準。
+    HF キャッシュは blobs の実体 + snapshots のリンクで二重に inode を使う）。
+    容量の方は同じ inode を重複計上しない（ハードリンク対策）。
+    """
+    import os
+
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[inventory] vol.reload skipped: {exc}", flush=True)
+
+    GB = 1024**3
+    root = MODELS_DIR.rstrip("/")
+    depth = max(1, min(int(depth), 6))
+
+    buckets: dict[str, dict] = {}
+    seen_size_keys: set[tuple[int, int]] = set()
+    total_inodes = 0
+    total_bytes = 0
+
+    def _bucket_for(path: str) -> str:
+        rel = path[len(root) :].replace(os.sep, "/").strip("/")
+        if not rel:
+            return "/"
+        return "/".join(rel.split("/")[:depth])
+
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        key = _bucket_for(dirpath)
+        b = buckets.setdefault(key, {"path": key, "inodes": 0, "bytes": 0, "dirs": 0, "links": 0})
+        # このディレクトリ自身も1 inode（root は数えない）。
+        if dirpath != root:
+            b["inodes"] += 1
+            b["dirs"] += 1
+            total_inodes += 1
+        # 大きいディレクトリで O(n^2) にならないよう set で判定する。
+        dirname_set = set(dirnames)
+        for name in filenames + dirnames:
+            full = os.path.join(dirpath, name)
+            if name in dirname_set and not os.path.islink(full):
+                continue  # ディレクトリ本体は os.walk が降りてきたときに数える
+            b["inodes"] += 1
+            total_inodes += 1
+            try:
+                st = os.lstat(full)
+            except OSError:
+                continue
+            if os.path.islink(full):
+                b["links"] += 1
+                continue
+            ino_key = (st.st_dev, st.st_ino)
+            if st.st_ino and ino_key in seen_size_keys:
+                continue
+            if st.st_ino:
+                seen_size_keys.add(ino_key)
+            b["bytes"] += st.st_size
+            total_bytes += st.st_size
+
+    rows = sorted(buckets.values(), key=lambda r: r["inodes"], reverse=True)[: max(1, int(top))]
+    print(f"[inventory] {root} — inodes={total_inodes:,} / used={total_bytes / GB:.1f} GB", flush=True)
+    print(f"[inventory] v1 の目安: 推奨 50,000 / ハード 500,000 inode", flush=True)
+    pct = total_inodes / 50_000 * 100
+    print(f"[inventory] 推奨上限に対して {pct:.1f}%", flush=True)
+    print(f"[inventory] {'path':<48} {'inodes':>10} {'GB':>9} {'dirs':>8} {'links':>8}", flush=True)
+    for r in rows:
+        print(
+            f"[inventory] {r['path'][:48]:<48} {r['inodes']:>10,} "
+            f"{r['bytes'] / GB:>9.2f} {r['dirs']:>8,} {r['links']:>8,}",
+            flush=True,
+        )
+    return {
+        "ok": True,
+        "total_inodes": total_inodes,
+        "used_gb": round(total_bytes / GB, 2),
+        "pct_of_recommended": round(pct, 1),
+        "recommended_limit": 50_000,
+        "hard_limit": 500_000,
+        "rows": rows,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Local one-shot CLI
 # ---------------------------------------------------------------------------
