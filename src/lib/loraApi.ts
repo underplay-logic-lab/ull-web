@@ -47,8 +47,23 @@ export async function uploadLoraDataset(
   const ticket = await ticketRes.json().catch(() => ({}));
   if (!ticketRes.ok) throw new Error(ticket?.error || "アップロード準備に失敗しました。");
 
-  const paths: string[] = [];
-  for (let i = 0; i < files.length; i++) {
+  // 2026-09-20: 1枚ずつの逐次POSTを並列化した。1リクエストあたりの
+  // ラウンドトリップと Modal Volume の commit が枚数分そのまま直列に積み上が
+  // っていて、131枚のデータセットでアップロードだけで数分かかっていた。
+  // paths は index で埋めるので順序はアップロード順のまま保たれる（captions
+  // 配列との対応が崩れると学習が別画像のキャプションで回ってしまう）。
+  // サーバー側は upload_lora_dataset_image に @modal.concurrent を付けて
+  // 1コンテナで同時に受けられるようにしてある。
+  const UPLOAD_CONCURRENCY = 6;
+
+  const paths: string[] = new Array(files.length);
+  let done = 0;
+  let cursor = 0;
+  // 最初に失敗した「枚目」を残す（並列なので完了順は入れ替わる）。1枚でも
+  // 失敗したら中止する — 部分的なデータセットで /train へ進ませない。
+  let failure: { index: number; message: string } | null = null;
+
+  const uploadOne = async (i: number): Promise<void> => {
     const file = files[i];
     const safe = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "image";
     const filename = `${String(i).padStart(4, "0")}_${safe}`;
@@ -74,15 +89,33 @@ export async function uploadLoraDataset(
     } catch (thrown) {
       uploadError = thrown;
     }
+
     if (uploadError) {
       const detail = uploadError instanceof Error ? uploadError.message : String(uploadError);
-      // Stop on the very first failure — the caller must not proceed to
-      // /api/studio/lora/train with a partial dataset.
-      throw new Error(`${file.name}（${i + 1}/${files.length} 枚目）: ${detail}`);
+      const message = `${file.name}（${i + 1}/${files.length} 枚目）: ${detail}`;
+      if (!failure || i < failure.index) failure = { index: i, message };
+      return;
     }
-    paths.push(`${userId}/${datasetId}/${filename}`);
-    onProgress?.(i + 1, files.length);
-  }
+    paths[i] = `${userId}/${datasetId}/${filename}`;
+    done += 1;
+    onProgress?.(done, files.length);
+  };
+
+  const runner = async (): Promise<void> => {
+    while (failure === null) {
+      const i = cursor;
+      cursor += 1;
+      if (i >= files.length) return;
+      await uploadOne(i);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(UPLOAD_CONCURRENCY, files.length) }, () => runner()),
+  );
+
+  if (failure !== null) throw new Error((failure as { message: string }).message);
+
   return { datasetId, paths };
 }
 
