@@ -1,10 +1,11 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getAdminEmails } from "@/lib/adminAuth";
 import { cancelLoraTrainingCall, type LoraDispatchPayload } from "@/lib/modalLoraTrain";
 
-// Cancelling a running call + terminating its container can take a moment.
+// Cancelling a running call + terminating its container can take a moment —
+// that work runs in after(), so it no longer delays the response.
 export const maxDuration = 60;
 
 const LORA_TRAINING_COST = 150;
@@ -119,17 +120,41 @@ async function cancelModalForJob(
   return { attempted: true, id, cancelled };
 }
 
-// Cancels the running / queued call (terminating its container), 100%-refunds
-// the original cost once (guarded by `refunded` when the column exists), and
-// closes the job. NEVER re-dispatches — a stuck job always ends here.
+// 2026-09-20: DB の行を閉じたあと、Modal の物理キャンセルは after() へ回す。
+// ユーザーの画面が復帰するのに必要なのは status の更新だけ（LoraStudioTab は
+// 3秒間隔でポーリングし、cancelled/failed/failed_timeout を終端として扱う）
+// 一方で cancel_lora_job は scaledown_window=2 のエンドポイントなので毎回
+// コールドスタートし、最大20秒（AbortSignal.timeout）待たされる。この待ちを
+// レスポンス経路から外すと、admin が「強制終了」を押してから画面が戻るまでが
+// 数十秒 -> 1秒未満になる。
+// after() が最後まで走らなかった場合に残るのは「GPUコンテナが自力で
+// タイムアウトするまで生きる」ことだけで、課金の歯止めは Modal 側のハード
+// タイムアウトと cost-guard が別に持っている（CLAUDE.md §3）。
+function scheduleModalCancel(job: JobRow): void {
+  after(async () => {
+    try {
+      await cancelModalForJob(job);
+    } catch (err) {
+      console.error(
+        `[recover] job ${job.id}: after() cancel failed:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  });
+}
+
+// 100%-refunds the original cost once (guarded by `refunded` when the column
+// exists) and closes the job. NEVER re-dispatches — a stuck job always ends
+// here. Physically cancelling the Modal call is the caller's job, in after():
+// the user's screen only needs the DB row closed, and cancel_lora_job is a
+// scaledown_window=2 endpoint that cold-starts on every call (up to 20s).
 async function closeWithRefund(
   job: JobRow,
   opts: { status?: string; message?: string; refund?: boolean } = {},
-): Promise<{ refunded: number; modalCancelled: boolean }> {
+): Promise<{ refunded: number }> {
   const status = opts.status ?? "failed_timeout";
   const message = opts.message ?? "cloud congestion — auto-refunded";
   const doRefund = opts.refund ?? true;
-  const cancel = await cancelModalForJob(job);
 
   const parentId = typeof job.parent_job_id === "string" ? job.parent_job_id : job.id;
   const { data: original } = await supabaseAdmin
@@ -175,7 +200,7 @@ async function closeWithRefund(
       completed_at: new Date().toISOString(),
     });
   }
-  return { refunded, modalCancelled: cancel.cancelled };
+  return { refunded };
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -234,7 +259,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     const yamlJob = isCustomYamlJob(job);
 
     if (action === "abort") {
-      const { refunded, modalCancelled } = await closeWithRefund(job, {
+      const { refunded } = await closeWithRefund(job, {
         status: "cancelled",
         message: isAdminCaller
           ? yamlJob
@@ -245,13 +270,15 @@ export async function POST(request: Request): Promise<NextResponse> {
             : "ユーザーによる中止 — 全額返金",
         refund: !yamlJob,
       });
-      return NextResponse.json({ ok: true, status: "cancelled", refunded, modalCancelled, customYaml: yamlJob });
+      scheduleModalCancel(job);
+      return NextResponse.json({ ok: true, status: "cancelled", refunded, customYaml: yamlJob });
     }
 
     // "timeout" — pending-stuck failover. The job never left the queue, so no
     // GPU was billed: always refund, YAML or not.
-    const { refunded, modalCancelled } = await closeWithRefund(job);
-    return NextResponse.json({ ok: true, status: "failed_timeout", refunded, modalCancelled });
+    const { refunded } = await closeWithRefund(job);
+    scheduleModalCancel(job);
+    return NextResponse.json({ ok: true, status: "failed_timeout", refunded });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[studio/lora/recover] unhandled:", message, err instanceof Error ? err.stack : undefined);
