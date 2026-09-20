@@ -79,17 +79,17 @@ export const LORA_SPI_REFERENCE_RESOLUTION = 1024;
  */
 export const LORA_SPI_BASELINE: Readonly<Record<string, number>> = {
   // --- ai-toolkit ワーカー ---
-  minimax_h3: 0.55, // ← 暫定（下記）。2026-09-20 に 0.213 から引き上げ
-  wan22_14b: 0.44,
-  wan21: 0.38,
-  ltx2: 0.38,
-  hunyuan: 0.44,
-  cogvideox: 0.44,
-  qwen_image: 0.22,
-  krea2: 0.22,
-  anima: 0.15,
-  zimage: 0.13,
-  flux2_klein_4b: 0.12,
+  minimax_h3: 0.90, // 実測由来（docs §14.14）。3.60 s/it ÷ 実効バッチ4
+  wan22_14b: 0.72,
+  wan21: 0.62,
+  ltx2: 0.62,
+  hunyuan: 0.72,
+  cogvideox: 0.72,
+  qwen_image: 0.36,
+  krea2: 0.36,
+  anima: 0.25,
+  zimage: 0.21,
+  flux2_klein_4b: 0.2,
   // --- sd-scripts ワーカー（別 tier・別スタック）---
   // 0.642 は「step 数だけ変えた2回の実行の総経過時間を連立で分離」して出した
   // 値で、下記の tqdm パースのバグとは無関係。よって据え置く。

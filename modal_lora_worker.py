@@ -476,18 +476,21 @@ LORA_SPI_BASELINE: dict[str, float] = {
     # cost_cap_seconds が乗らなかった場合のフォールバック用）。
     # 2026-09-20（夜）: ベンチの s/it 計測バグが判明し、本番フルランの実測
     # （minimax_h3 / 実効バッチ4 / 1024px で 5.24 s/it）を基準に引き上げた。
-    # 詳細は loraRuntime.ts のコメントと docs/gpu-benchmarks.md §14.13。
-    "minimax_h3": 0.55,
-    "wan22_14b": 0.44,
-    "wan21": 0.38,
-    "ltx2": 0.38,
-    "hunyuan": 0.44,
-    "cogvideox": 0.44,
-    "qwen_image": 0.22,
-    "krea2": 0.22,
-    "anima": 0.15,
-    "zimage": 0.13,
-    "flux2_klein_4b": 0.12,
+    # さらに同日、gradient_checkpointing を切った同一条件の実測（3.60 s/it）
+    # が出たので、そこから実効バッチ1へ割り戻した 0.90 を基準にし、未実測の
+    # 他 arch は相対順序を保ったまま同じ倍率（x1.64）でスケールした。
+    # 詳細は loraRuntime.ts のコメントと docs/gpu-benchmarks.md §14.13 / §14.14。
+    "minimax_h3": 0.9,
+    "wan22_14b": 0.72,
+    "wan21": 0.62,
+    "ltx2": 0.62,
+    "hunyuan": 0.72,
+    "cogvideox": 0.72,
+    "qwen_image": 0.36,
+    "krea2": 0.36,
+    "anima": 0.25,
+    "zimage": 0.21,
+    "flux2_klein_4b": 0.2,
     "sdxl": 0.642,
 }
 # 未知 arch（カスタムモデル）の s/it フォールバック。pricing_knobs の
