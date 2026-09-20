@@ -1811,6 +1811,30 @@ def _sanitize_override_yaml(
             # 指定していればそれを尊重し、未指定のときだけ有効化する。
             safe_model.setdefault("compile", bool(user_model.get("compile", True)))
             safe_model.setdefault("compile_dynamic", bool(user_model.get("compile_dynamic", True)))
+            # _cloud_safe_model_block() は arch=minimax_h3 のとき model ブロックを
+            # ゼロから作り直すため、YAML の compile 系オプションは compile /
+            # compile_dynamic 以外すべて落ちていた。とくに `block_compile: true`
+            # を書いても無言で無視され whole-model compile のままになる
+            # （= docs §14.8 の「再コンパイル1回 ≒ 8分」を回避できない）。
+            # ai-toolkit `ModelConfig` に実在するキーだけ通す。
+            for _ck in ("block_compile", "compile_mode", "compile_fullgraph", "cache_size_limit"):
+                if user_model.get(_ck) is not None:
+                    safe_model.setdefault(_ck, user_model[_ck])
+            # CLAUDE.md §1: mode="reduce-overhead"（CUDA Graphs）は禁止。
+            if str(safe_model.get("compile_mode") or "").strip() == "reduce-overhead":
+                print(
+                    "[stage2][sanitize] compile_mode: reduce-overhead は禁止"
+                    "（CLAUDE.md §1）-> default へ落とす",
+                    flush=True,
+                )
+                safe_model["compile_mode"] = "default"
+            if safe_model.get("block_compile"):
+                print(
+                    "[stage2] torch.compile: block_compile 有効 — ブロック単位で "
+                    "コンパイルする（shape/分岐が変わったときの再コンパイルが "
+                    "DiT 全体ではなく1ブロック分で済む。docs §14.8）",
+                    flush=True,
+                )
         proc["model"] = safe_model
 
         datasets = proc.get("datasets")

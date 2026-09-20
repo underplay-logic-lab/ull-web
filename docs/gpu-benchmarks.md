@@ -643,6 +643,130 @@ m = 0.42 は上の2点を結んだ値（0.485/0.2135 = 2.272 = 1 + 3m）。
 ついでに、GUI モードにしか入っていなかった `COMPILE_UNSUPPORTED_ARCHES`
 （flux2_klein_4b）のガードも生 YAML パスへ横展開した。
 
+#### 原因（2026-09-20、ai-toolkit / minimax_h3 のソース読みで確定）
+
+GPU を使わずソースだけで追える範囲は追い切った（CLAUDE.md §0）。結論は
+**「バッチ次元が動く」ではない**。上の仮説は誤りなので取り下げる。
+
+1. **端数バッチは複製でパディングされる。** `toolkit/dataloader_mixins.py`
+   `build_batch_indices()` は、バケットの残りが `batch_size` に足りないとき
+   バッチ内の要素を複製して必ず `batch_size` に揃える（ai-toolkit
+   `ba0b3db`, 2026-06-21。現 main にも入っている）。**バッチ次元は学習中
+   一定**で、shape 変化の原因にならない。
+2. **真犯人は minimax_h3 の forward にあるデータ依存分岐。**
+   `extensions_built_in/diffusion_models/minimax_h3/src/transformer.py:529`
+
+   ```python
+   is_pad = token_tags < 0
+   if bool(is_pad.any()):        # ← GPU テンソルの値で分岐
+       attn_mask = live[:, None, None, :]
+   ```
+
+   pad 行が出るのは `packing.pad_layouts_to_batch()` が**テキスト長を
+   バッチ内 max まで右詰めする**ときだけ。つまり:
+   - **バッチ1**: max = 自分自身の長さ → pad 行は絶対に出ない → 分岐は常に False。
+   - **バッチ>1**: キャプションのトークン長が揃わないバッチでは True、
+     複製パディングされた端数バッチ（同じ画像＝同じ長さ）では False。
+     **1ランの中で両方が出る**ので、2 つ目が初めて出た step で
+     **DiT 丸ごとの再コンパイル**が走る。
+
+   `compile_dynamic=True` は tensor の次元を symbolic にする設定で、
+   **Python レベルの分岐（guard）には効かない**。ここが「dynamic なのに
+   止まる」の答え。
+3. **1回の停止 ≒ 1回のフルコンパイル。** §14.15 の実測で first-step
+   JIT/compile は **476.9秒（7.9分）**。観測された「step 6 で8分停止」と
+   一致する。
+4. 同じ forward の `torch.unique(row_timesteps, return_inverse=True)`
+   （`transformer.py:542`）も出力 shape がデータ依存。distinct 数は
+   おおよそ 2×バッチ（各サンプルの video/text 用 t と audio 用 t）で、
+   **バッチ1では常に 2 で一定**、バッチ>1 では timestep が衝突した step で
+   だけ動く。二次的な再コンパイル要因。
+5. **ai-toolkit は whole-model compile のとき `cache_size_limit` を上げない**
+   （`BaseSDTrainProcess.py`: 自動引き上げは `block_compile` 経路だけ）。
+   torch 既定の 8 を超えると dynamo は黙って eager に落ちる。image に
+   `TORCHDYNAMO_SUPPRESS_ERRORS=1` を焼いてあるのでログにも出ない。
+6. おまけの副作用: pad 行があると SDPA に明示 bool マスクが渡り、flash 系
+   カーネルが選ばれなくなる。バッチ>1 は compile とは別に毎ステップ分の
+   コストを払っている。
+
+#### バッチ>1 で compile を効かせたいなら
+
+- **第一候補は `model.block_compile: true`**（`ModelConfig` 実在キー、
+  `cache_size_limit` も自動で 2×ブロック数に上がる）。ブロック単位で
+  コンパイルするので、再コンパイルの単価が「DiT 全体 8分」から
+  「1ブロック 数秒」に落ちる。H3 の `get_transformer_block_names()` は
+  `["blocks"]` を返すので経路も通る。steady-state の s/it が
+  whole-model compile より落ちないかは 40step のベンチ1本で確認できる。
+- 確証を取るなら `TORCH_LOGS="recompiles,graph_breaks"` を付けて1本回す。
+  失敗した guard がそのまま出るので、推測なしで確定できる。
+- 根本を消すなら「キャプション長でバッチをグルーピング」か「テキストを
+  固定長へパディング」。どちらも ai-toolkit 側の改造が必要。
+
+#### 実測: `block_compile: true` で停止は消えた（2026-09-20 夜、job `yukipas_v8`）
+
+条件: minimax_h3 / B300 / 1024px / rank64 / **batch_size 2 × grad_accum 2（実効4）** /
+adamw / gc **無効** / `only_if_contains: ["transformer"]` / compile **有効** +
+**block_compile 有効** / 実写131枚（2バケット）/ 200step。生YAML経路。
+
+ログで経路を確認: `Compiled 50 transformer block(s) with torch.compile
+(mode='default', fullgraph=False, dynamic=True, cache_size_limit=100 (auto))`。
+50ブロック個別コンパイル・cache 上限は自動で 100 まで上がっている。
+
+| | eager 実効4（§14.14） | whole-model compile 実効1（§14.15・GUI 現行） | **block_compile 実効4（今回）** |
+|---|---|---|---|
+| **s/it** | 3.60 | 1.80 | **3.45** |
+| **1画像あたり** | 0.90秒 | 1.80秒 | **0.863秒** |
+| first-step JIT/compile | 99.1s | 476.9s | **112.5s** |
+| 学習中の停止 | 無し | 無し | **無し（最大7秒）** |
+
+s/it は壁時計の step 区間で確認（step 10→190 で 3.450、50→150 で 3.460）。
+step 間隔の最遅は step1 40秒・step2 19秒（残りブロックと2つ目のバケット形状の
+コンパイル）・step101 7秒（サンプル生成パス）で、**あとは全て 4秒以下**。
+§14.8 の「8分級の停止を繰り返す」症状は消えた。prep 783.9秒
+（model load 555.1 + latent cache 116.3 + JIT 112.5）、stage2 合計 1,506秒。
+
+**ただし compile 自体の速度利得は eager 比 -4% しかない**（3.60 → 3.45）。
+バッチ1で出た「学習 ~2x」は再現しない。理由は上の副作用が支配的と見るのが妥当
+（pad 行があると SDPA に明示 bool マスクが渡り flash 系カーネルが外れる）。
+
+**損益分岐**: warmup 112.5秒を 0.15 s/step の節約で回収するには **約750step** 必要。
+実効バッチ>1 で 750step 未満のジョブは eager の方が安い。
+
+**原価**: 1画像 0.863秒は GUI 現行（バッチ1 + compile、1.80秒/枚）の **2.09倍安い**。
+「実効バッチで原価4倍下げ」には届かないが2倍強は取れる。
+
+**価格（m 係数）の再校正**: `loraRuntime.ts` の
+`s/it = base × ((1 - m) + m × 実効バッチ)` に、**同一データセット・同一設定**の
+二点（1.80@実効1 = §14.15 / 3.45@実効4 = 今回）を入れると
+
+```
+m = (3.45 / 1.80 - 1) / 3 = 0.306
+```
+
+現行 0.42 は実効4のジョブを 4.07 s/it と見積もる＝**実測より約20%の過大請求**
+（安全側）。実効バッチを一般ユーザーへ開放するなら 0.31 へ寄せる。
+
+**次に測る価値が高いのはバッチ1 + block_compile**（＝GUI 現行条件に block_compile
+だけ足す）。当たれば全 minimax_h3 ジョブの prep が 476.9 → 112.5秒＝**365秒短縮
+（B300 ¥1125/h 換算で約 ¥114/ジョブ）**。ただしブロック単位はクロスブロック融合が
+減るため、s/it が whole-model より落ちないかの確認が必須。
+
+#### 併せて判明: バッチ1の本番ジョブも既に再コンパイルを踏んでいる
+
+`modal_lora_benchmark.py::_make_dataset` は**全画像に同一キャプション**
+（`"ullbench a photo of sks subject"`）を書く。さらに既定はアスペクト比も
+正方形のみ。つまりベンチは **shape が1種類**で、コンパイルは1回で済む。
+
+一方、本番の実写データセットはキャプション長がバラバラ・アスペクト比も
+混在する。自前のベンチでも **batch1 + compile + `aspect_mix=True`** の
+warmup が **1,134.8秒**（`bench_results/lora_stage1_20260920_192153.jsonl`）で、
+正方形のみの 290.6〜587.9秒 の 2〜4倍。**バッチ1でもバケットが割れれば
+フルコンパイルを複数回踏む。**
+
+→ §14.15 の「合成ベンチと実写で s/it が9倍ずれる」の一部は、この
+コンパイル churn で説明できる可能性がある（断定はしない。`TORCH_LOGS` 付きの
+1本で切り分けられる）。
+
 ### 14.9 Modal Volume の書き込みは速い（チェックポイント保存は犯人ではない）
 
 1.2GB（rank64 MiniMax H3 LoRA の実サイズ）を書いて commit するまでの実測:
