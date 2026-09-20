@@ -5867,6 +5867,91 @@ async def upload_lora_dataset_image(
     return {"ok": True, "path": rel_path, "size_bytes": size}
 
 
+# 1リクエストで受ける枚数と総バイトの上限。ブラウザ側（src/lib/loraApi.ts の
+# UPLOAD_BATCH_SIZE）は10枚で送るので、32は再送や将来の引き上げ込みの安全弁。
+_DATASET_BATCH_MAX_FILES = 32
+_DATASET_BATCH_MAX_BYTES = 256 * 1024 * 1024
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol},
+    timeout=900,
+    scaledown_window=2,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+# 2026-09-20: 1枚1リクエストだと 400KB の送信に 4.3秒（=0.74Mbps/接続）かかって
+# いた。クライアントの並列度を6->10に上げても実効は 7.2->7.7Mbps とほぼ動かず、
+# 律速は帯域ではなく1リクエストあたりの固定コスト（ラウンドトリップ＋毎回の
+# vol.commit()）だった。複数枚を1リクエストで受けて commit を1回にまとめる。
+# 実測の経緯は docs/gpu-benchmarks.md §15。
+# 単枚版（upload_lora_dataset_image）はフォールバック経路として残す
+# — Vercel だけ先に上がって Modal が未デプロイでもアップロードが壊れないように。
+@modal.concurrent(max_inputs=8)
+@modal.fastapi_endpoint(method="POST")
+async def upload_lora_dataset_batch(
+    user_id: str,
+    dataset_id: str,
+    expires: str,
+    sig: str,
+    files: list[fastapi.UploadFile] = fastapi.File(...),
+):
+    if not _verify_dataset_upload_token(user_id, dataset_id, expires, sig):
+        raise fastapi.HTTPException(status_code=403, detail="invalid or expired upload link")
+    if not (_CKPT_DL_ID_RE.match(user_id) and _CKPT_DL_ID_RE.match(dataset_id)):
+        raise fastapi.HTTPException(status_code=400, detail="invalid parameters")
+    if not files:
+        raise fastapi.HTTPException(status_code=400, detail="no files in batch")
+    if len(files) > _DATASET_BATCH_MAX_FILES:
+        raise fastapi.HTTPException(
+            status_code=400, detail=f"too many files (max {_DATASET_BATCH_MAX_FILES})"
+        )
+
+    dest_dir = pathlib.Path(LORA_DATASET_UPLOADS_DIR) / user_id / dataset_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    max_bytes = 40 * 1024 * 1024  # 1枚あたり。単枚エンドポイントと同じ安全弁
+    written: list[dict] = []
+    total = 0
+    current: pathlib.Path | None = None
+    try:
+        for upload in files:
+            filename = os.path.basename(upload.filename or "")
+            if not _DATASET_IMG_FILENAME_RE.match(filename):
+                raise fastapi.HTTPException(
+                    status_code=400, detail=f"invalid filename: {filename}"
+                )
+            current = dest_dir / filename
+            size = 0
+            with open(current, "wb", buffering=_DL_CHUNK) as f:
+                while True:
+                    chunk = await upload.read(_DL_CHUNK)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    total += len(chunk)
+                    if size > max_bytes:
+                        raise fastapi.HTTPException(
+                            status_code=413, detail=f"file too large (max 40MB): {filename}"
+                        )
+                    if total > _DATASET_BATCH_MAX_BYTES:
+                        raise fastapi.HTTPException(status_code=413, detail="batch too large")
+                    f.write(chunk)
+            written.append({"path": f"{user_id}/{dataset_id}/{filename}", "size_bytes": size})
+            current = None
+    except Exception:
+        # 半端に書けたものを残さない。呼び出し側はバッチ単位で中止する。
+        if current is not None:
+            current.unlink(missing_ok=True)
+        for item in written:
+            pathlib.Path(LORA_DATASET_UPLOADS_DIR, item["path"]).unlink(missing_ok=True)
+        raise
+
+    # 枚数ぶんではなく、このバッチで1回だけ。ここが単枚版との違い。
+    await vol.commit.aio()
+    return {"ok": True, "files": written, "size_bytes": total}
+
+
 @app.function(
     image=dispatch_image,
     volumes={MODELS_DIR: vol_ro},

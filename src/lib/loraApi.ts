@@ -47,104 +47,180 @@ export async function uploadLoraDataset(
   const ticket = await ticketRes.json().catch(() => ({}));
   if (!ticketRes.ok) throw new Error(ticket?.error || "アップロード準備に失敗しました。");
 
-  // 2026-09-20: 1枚ずつの逐次POSTを並列化した。1リクエストあたりの
-  // ラウンドトリップと Modal Volume の commit が枚数分そのまま直列に積み上が
-  // っていて、131枚のデータセットでアップロードだけで数分かかっていた。
-  // paths は index で埋めるので順序はアップロード順のまま保たれる（captions
-  // 配列との対応が崩れると学習が別画像のキャプションで回ってしまう）。
-  // サーバー側は upload_lora_dataset_image に @modal.concurrent を付けて
-  // 1コンテナで同時に受けられるようにしてある。
+  // 2026-09-20: 律速は帯域ではなく「1リクエストあたりの固定コスト」だった。
+  // 400KB の送信に 4.3秒（=0.74Mbps/接続）かかっており、並列度を6->10に
+  // 上げても実効は 7.2->7.7Mbps とほぼ動かない。そこで複数枚を1リクエストへ
+  // まとめる（サーバー側の vol.commit() も枚数分から1バッチ1回に減る）。
+  // 送る前にブラウザで縮小する案は逆効果で取り消した経緯が
+  // docs/gpu-benchmarks.md §15 にある。
+  const UPLOAD_BATCH_SIZE = 10;
+  const BATCH_CONCURRENCY = 4;
+  // 単枚フォールバック経路（Modal 未デプロイ時）の並列度。
   const UPLOAD_CONCURRENCY = 10;
-  // 2026-09-20: 「送る前にブラウザで長辺1536へ縮小し WebP 化する」を試して
-  // 取り消した。送信量は 52.2MB -> 36.7MB（30%減）に留まる一方、全体は
-  // 56.5秒 -> 109.5秒へ悪化した。1リクエスト平均も 4.3秒 -> 8.0秒 と、
-  // 1枚が小さくなったのに倍に伸びている。canvas の drawImage/toBlob が
-  // メインスレッドを占有して fetch のボディ送信を止めるため、変換の対価を
-  // 送信時間として払い直す形になる。Worker(OffscreenCanvas)へ逃がせば
-  // 成立し得るが、得られるのは送信量30%減で、1リクエスト4.3秒/400KB
-  // (=0.74Mbps) というサーバー側の固定コストの方が支配的。先に複数枚を
-  // 1リクエストへまとめる。実測は docs/gpu-benchmarks.md §15。
-  const startedAt = Date.now();
 
+  const startedAt = Date.now();
   const paths: string[] = new Array(files.length);
   let done = 0;
-  let cursor = 0;
   let sentBytes = 0;
   let requestMs = 0;
   // 最初に失敗した「枚目」を残す（並列なので完了順は入れ替わる）。1枚でも
   // 失敗したら中止する — 部分的なデータセットで /train へ進ませない。
   let failure: { index: number; message: string } | null = null;
+  // バッチ経路が無い（Modal 側が未デプロイ）と分かったら単枚でやり直す。
+  let batchUnsupported = false;
+
+  const errorText = (thrown: unknown): string =>
+    thrown instanceof Error ? thrown.message : String(thrown);
+
+  const failAt = (index: number, message: string): void => {
+    if (!failure || index < failure.index) failure = { index, message };
+  };
+
+  // "NNNN_<元のファイル名>"。ゼロ埋めの連番でサーバー側のソートが captions
+  // 配列の順序と一致する（崩れると別画像のキャプションで学習が回る）。
+  const filenameFor = (i: number): string => {
+    const safe = files[i].name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "image";
+    return `${String(i).padStart(4, "0")}_${safe}`;
+  };
+
+  const signedUrl = (base: string): string => {
+    const url = new URL(base);
+    url.searchParams.set("user_id", ticket.userId as string);
+    url.searchParams.set("dataset_id", ticket.datasetId as string);
+    url.searchParams.set("expires", String(ticket.expiresAt));
+    url.searchParams.set("sig", ticket.sig as string);
+    return url.toString();
+  };
+
+  const uploadBatch = async (indexes: number[]): Promise<void> => {
+    const form = new FormData();
+    let batchBytes = 0;
+    for (const i of indexes) {
+      form.append("files", files[i], filenameFor(i));
+      batchBytes += files[i].size;
+    }
+
+    const startedRequestAt = Date.now();
+    let thrown: unknown = null;
+    try {
+      const res = await fetch(signedUrl(ticket.batchUploadUrl as string), {
+        method: "POST",
+        body: form,
+      });
+      if (res.status === 404 || res.status === 405) {
+        batchUnsupported = true;
+        return;
+      }
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}) as { detail?: string; error?: string });
+        thrown = new Error(detail?.detail || detail?.error || `HTTP ${res.status}`);
+      }
+    } catch (err) {
+      thrown = err;
+    }
+
+    if (thrown) {
+      const first = indexes[0];
+      failAt(first, `${files[first].name}（${first + 1}/${files.length} 枚目〜）: ${errorText(thrown)}`);
+      return;
+    }
+
+    requestMs += Date.now() - startedRequestAt;
+    sentBytes += batchBytes;
+    for (const i of indexes) paths[i] = `${userId}/${datasetId}/${filenameFor(i)}`;
+    done += indexes.length;
+    onProgress?.(done, files.length);
+  };
 
   const uploadOne = async (i: number): Promise<void> => {
     const file = files[i];
-    sentBytes += file.size;
-    const safe = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "image";
-    const filename = `${String(i).padStart(4, "0")}_${safe}`;
-    const reqStartedAt = Date.now();
+    const url = new URL(signedUrl(ticket.uploadUrl as string));
+    url.searchParams.set("filename", filenameFor(i));
 
-    const uploadUrl = new URL(ticket.uploadUrl as string);
-    uploadUrl.searchParams.set("user_id", ticket.userId as string);
-    uploadUrl.searchParams.set("dataset_id", ticket.datasetId as string);
-    uploadUrl.searchParams.set("filename", filename);
-    uploadUrl.searchParams.set("expires", String(ticket.expiresAt));
-    uploadUrl.searchParams.set("sig", ticket.sig as string);
-
-    let uploadError: unknown = null;
+    const startedRequestAt = Date.now();
+    let thrown: unknown = null;
     try {
-      const res = await fetch(uploadUrl.toString(), {
+      const res = await fetch(url.toString(), {
         method: "POST",
         headers: { "Content-Type": file.type || "image/png" },
         body: file,
       });
       if (!res.ok) {
         const detail = await res.json().catch(() => ({}) as { detail?: string; error?: string });
-        uploadError = new Error(detail?.detail || detail?.error || `HTTP ${res.status}`);
+        thrown = new Error(detail?.detail || detail?.error || `HTTP ${res.status}`);
       }
-    } catch (thrown) {
-      uploadError = thrown;
+    } catch (err) {
+      thrown = err;
     }
 
-    if (uploadError) {
-      const detail = uploadError instanceof Error ? uploadError.message : String(uploadError);
-      const message = `${file.name}（${i + 1}/${files.length} 枚目）: ${detail}`;
-      if (!failure || i < failure.index) failure = { index: i, message };
+    if (thrown) {
+      failAt(i, `${file.name}（${i + 1}/${files.length} 枚目）: ${errorText(thrown)}`);
       return;
     }
-    requestMs += Date.now() - reqStartedAt;
-    paths[i] = `${userId}/${datasetId}/${filename}`;
+
+    requestMs += Date.now() - startedRequestAt;
+    sentBytes += file.size;
+    paths[i] = `${userId}/${datasetId}/${filenameFor(i)}`;
     done += 1;
     onProgress?.(done, files.length);
   };
 
-  const runner = async (): Promise<void> => {
-    while (failure === null) {
-      const i = cursor;
-      cursor += 1;
-      if (i >= files.length) return;
-      await uploadOne(i);
-    }
+  const runPool = async <T,>(
+    items: T[],
+    concurrency: number,
+    worker: (item: T) => Promise<void>,
+  ): Promise<void> => {
+    let cursor = 0;
+    const runner = async (): Promise<void> => {
+      while (failure === null && !batchUnsupported) {
+        const i = cursor;
+        cursor += 1;
+        if (i >= items.length) return;
+        await worker(items[i]);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, items.length) }, () => runner()),
+    );
   };
 
-  await Promise.all(
-    Array.from({ length: Math.min(UPLOAD_CONCURRENCY, files.length) }, () => runner()),
-  );
+  const indexes = files.map((_, i) => i);
+  let route = "single";
+
+  if (ticket.batchUploadUrl) {
+    const batches: number[][] = [];
+    for (let i = 0; i < indexes.length; i += UPLOAD_BATCH_SIZE) {
+      batches.push(indexes.slice(i, i + UPLOAD_BATCH_SIZE));
+    }
+    route = "batch";
+    await runPool(batches, BATCH_CONCURRENCY, uploadBatch);
+    if (batchUnsupported) {
+      // Vercel だけ先に上がって Modal が未デプロイのときに来る。最初からやり直す
+      // （書けた分は同じパスへ上書きされるので、残骸にはならない）。
+      route = "single(batch未対応)";
+      done = 0;
+      sentBytes = 0;
+      requestMs = 0;
+      onProgress?.(0, files.length);
+    }
+  }
+
+  if (route !== "batch") {
+    batchUnsupported = false;
+    await runPool(indexes, UPLOAD_CONCURRENCY, uploadOne);
+  }
 
   if (failure !== null) throw new Error((failure as { message: string }).message);
 
-  // 実効スループットの計測。2026-09-20 の切り分け: 並列6(7.2Mbps) -> 10(7.7Mbps)
-  // でスループットがほぼ動かなかった。並列度を1.67倍にして7%しか増えないのは
-  // 「リクエスト単位のオーバーヘッドが支配的」では説明できず、上り帯域か
-  // サーバー側の同時受け入れ数（upload_lora_dataset_image の
-  // @modal.concurrent(max_inputs=8)）で頭打ちになっている形。送信量を1/4に
-  // 落としても所要時間が変わらないなら後者が確定し、次の一手は multipart で
-  // 複数枚を1リクエストにまとめること（commit 回数も枚数分から減る）。
+  // 実効スループットの計測。1リクエスト平均秒が、1枚あたりの固定コストが
+  // 残っているかどうかの判断材料になる（§15 の時点では 400KB で 4.3秒）。
   const elapsedSec = (Date.now() - startedAt) / 1000;
   const mbps = elapsedSec > 0 ? (sentBytes * 8) / elapsedSec / 1e6 : 0;
-  const mb = (n: number) => (n / 1048576).toFixed(1);
+  const requests = route === "batch" ? Math.ceil(files.length / UPLOAD_BATCH_SIZE) : files.length;
   console.info(
-    `[lora-upload] ${files.length}枚 / ${mb(sentBytes)}MB を ${elapsedSec.toFixed(1)}秒` +
-      `（実効 ${mbps.toFixed(1)} Mbps・並列 ${UPLOAD_CONCURRENCY}・` +
-      `1リクエスト平均 ${(requestMs / Math.max(1, done) / 1000).toFixed(2)}秒）`,
+    `[lora-upload] ${files.length}枚 / ${(sentBytes / 1048576).toFixed(1)}MB を ` +
+      `${elapsedSec.toFixed(1)}秒（実効 ${mbps.toFixed(1)} Mbps・${route}・` +
+      `${requests}リクエスト・1リクエスト平均 ${(requestMs / Math.max(1, requests) / 1000).toFixed(2)}秒）`,
   );
 
   return { datasetId, paths };

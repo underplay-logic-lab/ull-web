@@ -14,6 +14,10 @@ const DATASET_ID_RE = /^[0-9a-fA-F-]{1,64}$/;
 
 export type LoraDatasetUploadTicket = {
   uploadUrl: string;
+  // 複数枚を1リクエストで受ける upload_lora_dataset_batch のURL（2026-09-20）。
+  // 単枚版のURLから導出できる形なので env は任意。Modal 側が未デプロイでも
+  // ブラウザが 404/405 を見て単枚経路へ落ちる。
+  batchUploadUrl?: string;
   userId: string;
   datasetId: string;
   expiresAt: number;
@@ -32,10 +36,18 @@ export function createLoraDatasetUploadTicket(userId: string, datasetId: string)
   if (!authToken) {
     throw new Error("MODAL_AUTH_TOKEN が未設定です。");
   }
+  // Modal の web エンドポイントURLは関数名から決まる（…--upload-lora-dataset-
+  // image.modal.run）。env が無ければそこだけ差し替えて導出し、形が変わって
+  // いたら batchUploadUrl を返さない（＝ブラウザは単枚経路のまま）。
+  const derivedBatchUrl = uploadUrl.includes("upload-lora-dataset-image")
+    ? uploadUrl.replace("upload-lora-dataset-image", "upload-lora-dataset-batch")
+    : undefined;
+  const batchUploadUrl = process.env.MODAL_LORA_DATASET_UPLOAD_BATCH_URL || derivedBatchUrl;
+
   const expiresAt = Math.floor(Date.now() / 1000) + TICKET_TTL_SECONDS;
   const sig = crypto
     .createHmac("sha256", authToken)
     .update(`lora-dataset-upload:${userId}:${datasetId}:${expiresAt}`)
     .digest("hex");
-  return { uploadUrl, userId, datasetId, expiresAt, sig };
+  return { uploadUrl, batchUploadUrl, userId, datasetId, expiresAt, sig };
 }
