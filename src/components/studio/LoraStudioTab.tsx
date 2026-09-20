@@ -35,7 +35,6 @@ import {
   pollLoraJob,
   uploadLoraDataset,
   fetchRecentLoraJob,
-  recoverLoraJob,
   type LoraJobStatus,
   type LoraApiError,
   type LoraPollError,
@@ -94,7 +93,6 @@ import {
   clearCaptionCache,
   JOB_POLL_INTERVAL_MS,
   MAX_RETRY_COUNT,
-  STALL_ABANDON_SEC,
   POLL_KEEPALIVE_MS,
   MAX_IMAGES,
   MAX_TOTAL_BYTES,
@@ -301,15 +299,6 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // provisioning copy in ProgressPanel. Only ever written from the interval
   // callback below (never synchronously in the effect body).
   const [queuedElapsedSec, setQueuedElapsedSec] = useState(0);
-  // 進捗が止まってからの秒数。ワーカーは VRAM・進捗メッセージ・step を定期的に
-  // 更新するので、生きている間はこれが伸びない。伸び続ける＝ジョブ側が死んだのに
-  // DB の status が queued/processing のまま残っている状態で、2026-09-20 に
-  // 「Modal を手で止めたら LoRA Studio が prep 表示から復帰しなくなった」という
-  // 形で実際に踏んだ。そのときの唯一の脱出路が localStorage の手動削除だった。
-  const [stalledSec, setStalledSec] = useState(0);
-  const [abandoning, setAbandoning] = useState(false);
-  const jobSignatureRef = useRef<string>("");
-  const jobChangedAtRef = useRef<number>(0);
   // Transient-failure state for the status poll (see startPolling /
   // MAX_RETRY_COUNT). `pollRetry` > 0 drives the light "再接続中 (n/6)…" hint
   // while the loop is still on its fast exponential backoff; `pollLost` means
@@ -414,41 +403,6 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         queuedSinceRef.current > 0 ? Math.floor((Date.now() - queuedSinceRef.current) / 1000) : 0,
       );
     }, 1000);
-    return () => clearInterval(iv);
-  }, [job?.status]);
-
-  // ジョブの「見えている状態」が変わった時刻を記録する。進捗が動いている間は
-  // stalledSec が 0 に戻るので、破棄ボタンは正常なジョブには出ない。
-  useEffect(() => {
-    const active = job?.status === "queued" || job?.status === "processing";
-    if (!job || !active) {
-      jobSignatureRef.current = "";
-      jobChangedAtRef.current = 0;
-      setStalledSec(0);
-      return;
-    }
-    const sig = [
-      job.jobId,
-      job.status,
-      job.progressPercent,
-      job.progressMessage,
-      job.currentStep,
-      job.vramUsedGb,
-    ].join("|");
-    if (sig !== jobSignatureRef.current) {
-      jobSignatureRef.current = sig;
-      jobChangedAtRef.current = Date.now();
-      setStalledSec(0);
-    }
-  }, [job]);
-
-  useEffect(() => {
-    if (job?.status !== "queued" && job?.status !== "processing") return;
-    const iv = setInterval(() => {
-      setStalledSec(
-        jobChangedAtRef.current > 0 ? Math.floor((Date.now() - jobChangedAtRef.current) / 1000) : 0,
-      );
-    }, 5000);
     return () => clearInterval(iv);
   }, [job?.status]);
 
@@ -2368,37 +2322,6 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     }
   };
 
-  // 死んだジョブからの脱出路（2026-09-20）。GPU が落ちたのに DB の status が
-  // queued/processing のまま残ると、ProgressPanel は進捗表示から永遠に動かない
-  // ——ハードリロードしても localStorage のアクティブジョブポインタで同じ画面に
-  // 戻るため、ユーザー側の回復手段が存在しなかった。/api/studio/lora/recover は
-  // 以前から実装済みで、UI に配線されていなかっただけ（"monitor-only"）。
-  // abort はサーバー側でジョブを cancelled にし、返金可否も判定する（生 YAML
-  // ジョブは返金対象外）。API が失敗しても画面だけは必ずフォームへ戻す。
-  const handleAbandonJob = async () => {
-    const id = job?.jobId ?? activeJobIdRef.current;
-    if (!id || abandoning) return;
-    if (
-      !window.confirm(
-        "この学習ジョブを破棄してフォームに戻ります。\n" +
-          "進行中の学習は中断され、途中までの学習結果は失われます。\n\n" +
-          "よろしいですか？",
-      )
-    )
-      return;
-    setAbandoning(true);
-    try {
-      await recoverLoraJob(id, "abort");
-    } catch (err) {
-      // 既にサーバー側で終了扱いになっている等でも、画面が固まったままにする
-      // 理由は無いので握って先へ進む。
-      console.error("[lora] abandon failed (proceeding to reset anyway):", err);
-    } finally {
-      setAbandoning(false);
-      resetForm();
-    }
-  };
-
   // The "フォームに戻る" affordance on the progress / result panel. A job that
   // is still running OR has just completed does a SOFT return — `job`,
   // polling, and the active-job pointer are left intact so the progress /
@@ -2537,26 +2460,6 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               </div>
             )}
             <ProgressPanel job={job} queuedElapsedSec={queuedElapsedSec} onUseLora={onUseLora} />
-
-            {/* 進捗が STALL_ABANDON_SEC 以上動いていないときだけ出す脱出口。
-                正常なジョブでは VRAM や進捗メッセージが更新されるので出ない。 */}
-            {(job?.status === "queued" || job?.status === "processing") &&
-              stalledSec >= STALL_ABANDON_SEC && (
-                <div className="flex flex-col items-center gap-1.5 rounded-xl border border-amber-400/25 bg-amber-400/[0.06] px-3 py-2.5 text-center">
-                  <span className="text-[12px] leading-relaxed text-amber-300/90">
-                    {Math.floor(stalledSec / 60)}分ほど進捗が更新されていません。処理が続いている場合もありますが、
-                    応答が戻らないときはこのジョブを破棄してやり直せます。
-                  </span>
-                  <button
-                    type="button"
-                    onClick={handleAbandonJob}
-                    disabled={abandoning}
-                    className="rounded-lg border border-amber-400/40 px-3 py-1.5 text-[12px] font-semibold text-amber-200 transition hover:bg-amber-400/10 disabled:opacity-50"
-                  >
-                    {abandoning ? "破棄中…" : "このジョブを破棄する"}
-                  </button>
-                </div>
-              )}
 
             {/* Transient poll failure — still retrying with backoff. A light,
                 non-alarming hint; the progress bar above keeps its last value. */}

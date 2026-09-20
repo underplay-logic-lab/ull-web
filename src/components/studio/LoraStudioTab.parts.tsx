@@ -55,12 +55,6 @@ export const JOB_POLL_INTERVAL_MS = 3000;
 // loop — it drops to a slow keep-alive tick (POLL_KEEPALIVE_MS) that
 // self-heals the screen the moment the API / network is back.
 export const MAX_RETRY_COUNT = 6;
-
-// 進捗がこの秒数だけ動かなかったら、進捗カードに「このジョブを破棄する」を出す。
-// 7分。MiniMax H3 の逆量子化のように prep が長い区間でも、ワーカーは VRAM・
-// 進捗メッセージを定期更新するので正常なジョブでは到達しない。短くすると
-// 正常な prep 中に脱出口が見えてしまい、長くすると固まったユーザーを待たせる。
-export const STALL_ABANDON_SEC = 7 * 60;
 // Slow keep-alive cadence once the fast retries are spent and the degraded
 // card is up. The job keeps running server-side; this tick is what catches
 // its completion without the user having to click anything.
