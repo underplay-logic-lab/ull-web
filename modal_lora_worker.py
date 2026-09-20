@@ -405,6 +405,25 @@ LORA_COMPILE_ENABLED = os.environ.get("LORA_DISABLE_COMPILE", "").strip().lower(
     "yes",
 )
 
+# ai-toolkit の `model.block_compile`。DiT を1グラフで compile する代わりに
+# Transformer ブロック単位で compile する（ai-toolkit が cache_size_limit も
+# ブロック数×2 へ自動で上げる）。既定 ON。
+#
+# 2026-09-20 実測（docs/gpu-benchmarks.md §14.8）:
+#   - 実効バッチ>1 の「学習途中に8分停止」が消える。停止の正体は
+#     minimax_h3 forward のデータ依存分岐による DiT 丸ごとの再コンパイルで、
+#     ブロック単位なら再コンパイル1回の単価が数秒に落ちる。
+#   - バッチ1（GUI 既定）でも s/it は悪化しない（1.79 vs whole-model 1.85）。
+#     warmup も 135s vs 157.8s で不利にならない。
+# ブロックを持たない arch では ai-toolkit 側が whole-model compile へ
+# 自動フォールバックするので、arch ごとの分岐は不要。
+# LORA_BLOCK_COMPILE=0 で従来の whole-model compile に戻せる。
+LORA_BLOCK_COMPILE = os.environ.get("LORA_BLOCK_COMPILE", "").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)
+
 # torch.compile（Inductor）が確実に失敗する arch。ここに入れた arch は最初から
 # compile せず eager で回す。
 #
@@ -1103,6 +1122,27 @@ def _current_effective_vram_gb():
     except Exception:  # noqa: BLE001 — telemetry only, never fatal
         pass
     return None
+
+
+# 走行中の VRAM ピーク。CLAUDE.md §6-3 は非同期ジョブに「ライブ更新＋完了時
+# vram_peak_gb」を要求しているが、LoRA ワーカーは瞬間値を毎回上書きするだけで
+# ピークを残していなかった（2026-09-20: job yukipas_v8 の完了時 metadata は
+# 学習プロセス終了後の 0.6GB だけで、学習期のピークを後から追えなかった）。
+# tier 判定・バッチ/解像度上限の検討で毎回必要になる数字なので残す。
+# 1コンテナ＝1学習なのでモジュール変数で足りる。
+_VRAM_PEAK: dict[str, float] = {"gb": 0.0}
+
+
+def _track_vram_peak(gb) -> float:
+    """瞬間値を渡すとピークを更新し、更新後のピークを返す（telemetry 専用、
+    例外は投げない）。"""
+    try:
+        v = float(gb)
+    except (TypeError, ValueError):
+        return _VRAM_PEAK["gb"]
+    if v > _VRAM_PEAK["gb"]:
+        _VRAM_PEAK["gb"] = round(v, 1)
+    return _VRAM_PEAK["gb"]
 
 
 def _gpu_tier_label() -> str:
@@ -1820,6 +1860,9 @@ def _sanitize_override_yaml(
             for _ck in ("block_compile", "compile_mode", "compile_fullgraph", "cache_size_limit"):
                 if user_model.get(_ck) is not None:
                     safe_model.setdefault(_ck, user_model[_ck])
+            # 未指定なら GUI モードと同じ既定（LORA_BLOCK_COMPILE、既定 ON）。
+            if "block_compile" not in safe_model:
+                safe_model["block_compile"] = LORA_BLOCK_COMPILE
             # CLAUDE.md §1: mode="reduce-overhead"（CUDA Graphs）は禁止。
             if str(safe_model.get("compile_mode") or "").strip() == "reduce-overhead":
                 print(
@@ -1975,6 +2018,10 @@ def _build_config(
         # で true なので明示不要だが、意図を残すため書いておく。
         model_block["compile"] = True
         model_block["compile_dynamic"] = True
+        # ブロック単位 compile（LORA_BLOCK_COMPILE、既定 ON）。速度は同等で、
+        # shape / 分岐が変わったときの再コンパイル単価が桁で下がる（§14.8）。
+        if LORA_BLOCK_COMPILE:
+            model_block["block_compile"] = True
     if target.get("text_encoder"):
         model_block["text_encoder_path"] = target["text_encoder"]
     if target.get("vae"):
@@ -2920,6 +2967,7 @@ except Exception as _e:  # noqa: BLE001
         vram = _current_effective_vram_gb()
         if vram is not None:
             meta["vram_used_gb"] = vram
+            meta["vram_peak_gb"] = _track_vram_peak(vram)
         if log_ring:
             meta["logs"] = list(log_ring)
 
@@ -4156,6 +4204,11 @@ def train_lora_job(params: dict) -> dict:
         metadata = {"checkpoints": checkpoints, "gpu_tier": _gpu_tier_label()}
         if final_vram is not None:
             metadata["vram_used_gb"] = final_vram
+        # 完了時の瞬間値は学習プロセス終了後なのでほぼ空（実測 0.6GB）。
+        # 走行中のピークを別キーで残す（CLAUDE.md §6-3）。
+        _peak = _track_vram_peak(final_vram) if final_vram is not None else _VRAM_PEAK["gb"]
+        if _peak > 0:
+            metadata["vram_peak_gb"] = _peak
 
         _patch_job(
             job_id,
@@ -4203,6 +4256,10 @@ def train_lora_job(params: dict) -> dict:
             "infra_error": infra,
             "gpu_tier": _gpu_tier_label(),
         }
+        # 失敗・安全停止のときも VRAM ピークは残す（OOM 由来の失敗を後から
+        # 切り分けるのに要る）。
+        if _VRAM_PEAK["gb"] > 0:
+            meta["vram_peak_gb"] = _VRAM_PEAK["gb"]
         if is_safety_stop:
             meta["safety_stop"] = True
             meta["safety_kind"] = safety_kind
