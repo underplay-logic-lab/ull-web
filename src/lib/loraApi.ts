@@ -53,7 +53,12 @@ export async function uploadLoraDataset(
   // まとめる（サーバー側の vol.commit() も枚数分から1バッチ1回に減る）。
   // 送る前にブラウザで縮小する案は逆効果で取り消した経緯が
   // docs/gpu-benchmarks.md §15 にある。
-  const UPLOAD_BATCH_SIZE = 10;
+  // バッチは「枚数」ではなく「合計バイト」で切る。枚数固定だと1枚が大きい
+  // データセット（1枚26MB x 10枚）でサーバーの _DATASET_BATCH_MAX_BYTES
+  // (256MB) を超えて 413 になり、worker の timeout=900 にも間に合わなくなる。
+  // 1枚しか入らない場合は単枚POSTと同じ形に自然に縮退する。
+  const UPLOAD_BATCH_MAX_FILES = 10;
+  const UPLOAD_BATCH_MAX_BYTES = 16 * 1024 * 1024;
   // 2026-09-20 実測: 131枚/52.2MB が 14リクエスト・並列4 で 46.7秒。
   // 1リクエスト平均 13.28秒 x (14/4=3.5ラウンド) = 46.5秒 と全体がぴたり
   // 一致していて、律速はサーバーでも帯域でもなく「こちらが4本しか張って
@@ -193,12 +198,28 @@ export async function uploadLoraDataset(
 
   const indexes = files.map((_, i) => i);
   let route = "single";
+  let batchCount = 0;
 
   if (ticket.batchUploadUrl) {
     const batches: number[][] = [];
-    for (let i = 0; i < indexes.length; i += UPLOAD_BATCH_SIZE) {
-      batches.push(indexes.slice(i, i + UPLOAD_BATCH_SIZE));
+    let current: number[] = [];
+    let currentBytes = 0;
+    for (const i of indexes) {
+      const size = files[i].size;
+      // 空のバッチには必ず1枚入れる（1枚が上限を超えていても送れるように）。
+      if (
+        current.length > 0 &&
+        (current.length >= UPLOAD_BATCH_MAX_FILES || currentBytes + size > UPLOAD_BATCH_MAX_BYTES)
+      ) {
+        batches.push(current);
+        current = [];
+        currentBytes = 0;
+      }
+      current.push(i);
+      currentBytes += size;
     }
+    if (current.length > 0) batches.push(current);
+    batchCount = batches.length;
     route = "batch";
     await runPool(batches, BATCH_CONCURRENCY, uploadBatch);
     if (batchUnsupported) {
@@ -223,7 +244,7 @@ export async function uploadLoraDataset(
   // 残っているかどうかの判断材料になる（§15 の時点では 400KB で 4.3秒）。
   const elapsedSec = (Date.now() - startedAt) / 1000;
   const mbps = elapsedSec > 0 ? (sentBytes * 8) / elapsedSec / 1e6 : 0;
-  const requests = route === "batch" ? Math.ceil(files.length / UPLOAD_BATCH_SIZE) : files.length;
+  const requests = route === "batch" ? batchCount : files.length;
   console.info(
     `[lora-upload] ${files.length}枚 / ${(sentBytes / 1048576).toFixed(1)}MB を ` +
       `${elapsedSec.toFixed(1)}秒（実効 ${mbps.toFixed(1)} Mbps・${route}・` +
