@@ -44,6 +44,7 @@ export type KnobKey =
   | "lora_prep_dequant_s"
   | "lora_prep_per_image_s"
   | "lora_res_scale_exponent"
+  | "lora_batch_marginal_ratio"
   | "lora_spi_baseline_default"
   // 旧「係数の掛け算」方式の残骸（2026-09-20 廃止・未使用。DB 行は残置）
   | "lora_per_step"
@@ -537,6 +538,36 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "lora_formula",
     unit: "×",
     description: "s/it = 基準値 × (解像度²/1024²)^これ。1.0 で画素数に正比例。",
+    isPublic: true,
+  },
+  lora_batch_marginal_ratio: {
+    // 1ステップの所要秒のうち「実効バッチ（batch_size × grad_accum）に比例
+    // する分」の割合。1.0 で旧挙動（正比例）、0 でバッチを上げても所要秒が
+    // 増えない。s/it = 基準値 × 解像度係数 × ((1-これ) + これ × 実効バッチ)。
+    //
+    // 2026-09-20 実測（docs/gpu-benchmarks.md §14.7）で、正比例という前提が
+    // 誤りだと判明した:
+    //   実効バッチ1 / rank32 → 0.2135 s/it（1画像あたり 0.213秒）
+    //   実効バッチ4 / rank64 → 0.485  s/it（1画像あたり 0.121秒）
+    // バッチもrankも上げているのに1画像あたりはむしろ速い。バッチ1のとき
+    // GPU 使用率が平均 1.8% しかなく（§14.2）、GPU が遊んでいるのでまとめても
+    // 時間がほとんど増えないため。正比例のままだとバッチを上げたジョブを
+    // 最大で倍近く過大請求し、品質に有利な設定へのペナルティになっていた。
+    //
+    // 0.42 はこの2点を (1-m) + m×B で結んだ値（0.485/0.2135 = 2.272 = 1+3m）。
+    // ⚠️ 2点しかなく、しかも条件が完全には揃っていない（バッチ1側は rank32
+    // かつ torch.compile 有効、バッチ4側は rank64 かつ compile 無効）。どちらの
+    // 差もバッチ4側を相対的に重く見せる向きなので、**真の m は 0.42 より小さい**
+    // ＝この値は過大請求側に倒れている。安全側なのでこのまま採用するが、
+    // 同一条件（同 rank・同 compile）でバッチだけを 1/2/4/8 と振った実測が
+    // 出たら回帰で置き換えること。CLAUDE.md §0「少数の実測から法則を逆算
+    // しない」に照らし、これは暫定値の扱い。
+    value: 0.42,
+    label: "LoRA 実効バッチの限界比率",
+    category: "lora_formula",
+    unit: "×",
+    description:
+      "1ステップのうち実効バッチに比例する割合。1.0で正比例（旧挙動）、0でバッチを上げても所要秒が変わらない。",
     isPublic: true,
   },
   lora_spi_baseline_default: {

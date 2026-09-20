@@ -1193,6 +1193,23 @@ def _credit_covered_seconds(credits_cost: int) -> int:
     return int(max(1800, min(secs, LORA_ABS_MAX_RUN_S)))
 
 
+def _effective_batch(train_block: dict) -> int:
+    """batch_size x gradient_accumulation_steps。所要秒には正比例しない
+    （docs/gpu-benchmarks.md §14.7）が、compile の可否判定には効く（§14.8）。"""
+    def _pos_int(v, default: int = 1) -> int:
+        try:
+            n = int(float(v))
+        except (TypeError, ValueError):
+            return default
+        return n if n > 0 else default
+
+    if not isinstance(train_block, dict):
+        return 1
+    return _pos_int(train_block.get("batch_size")) * _pos_int(
+        train_block.get("gradient_accumulation_steps")
+    )
+
+
 def _arch_for_target(target_model: str, base_architecture: str = "") -> str:
     """Resolve a preset id / bare arch string to the ai-toolkit arch key used
     in LORA_SPI_BASELINE (falls back to whatever string was given)."""
@@ -1722,7 +1739,40 @@ def _sanitize_override_yaml(
         safe_model = _cloud_safe_model_block(
             user_model, target_model, custom_model_id, base_architecture
         )
-        if LORA_COMPILE_ENABLED:
+        # 実効バッチ（batch_size × grad_accum）。生 YAML だけがこれを 1 以外に
+        # できる（GUI モードの _build_config は両方 1 固定）。
+        _user_train = proc.get("train") if isinstance(proc.get("train"), dict) else {}
+        _eff_batch = _effective_batch(_user_train)
+        _yaml_arch = str(safe_model.get("arch") or "").strip()
+        if (
+            LORA_COMPILE_ENABLED
+            and user_model.get("compile") is None
+            and _yaml_arch in COMPILE_UNSUPPORTED_ARCHES
+        ):
+            # GUI モード（_build_config）と同じ既知の非対応 arch ガード。生 YAML
+            # 側には入っていなかった。TORCHDYNAMO_SUPPRESS_ERRORS で eager へ
+            # 落ちるので致命ではないが、落ちると分かっているコンパイルに数分
+            # 払う理由が無い。
+            print(
+                f"[stage2] torch.compile skipped: arch={_yaml_arch} は既知の "
+                "Inductor 非対応（COMPILE_UNSUPPORTED_ARCHES 参照）",
+                flush=True,
+            )
+        elif LORA_COMPILE_ENABLED and _eff_batch > 1 and user_model.get("compile") is None:
+            # 2026-09-20 実測（docs/gpu-benchmarks.md §14.8）: 実効バッチ>1 で
+            # compile を有効にすると **学習の途中で再コンパイルが走り、step 6 で
+            # 8分以上ログ無しで停止した**。compile_dynamic=True でも shape 変化を
+            # 吸収しきれていない。ユーザーからは「固まった」ようにしか見えず、
+            # しかも課金は推定GPU秒ベースなので見積もりからも外れる。
+            # 実効バッチ1では再現しないため、バッチを上げた生 YAML のときだけ
+            # 既定を eager に倒す（YAML が compile を明示していればそれを尊重）。
+            print(
+                f"[stage2] torch.compile skipped: effective_batch={_eff_batch} "
+                "（>1 では学習途中の再コンパイルで数分止まる実測があるため eager で回す。"
+                "YAML に model.compile: true を明示すれば有効化できる）",
+                flush=True,
+            )
+        elif LORA_COMPILE_ENABLED:
             # torch.compile 標準（CLAUDE.md §1）。生 YAML が明示的に compile を
             # 指定していればそれを尊重し、未指定のときだけ有効化する。
             safe_model.setdefault("compile", bool(user_model.get("compile", True)))
