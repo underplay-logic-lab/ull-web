@@ -490,7 +490,9 @@ LORA_SPI_BASELINE: dict[str, float] = {
     "flux2_klein_4b": 0.12,
     "sdxl": 0.642,
 }
-LORA_SPI_BASELINE_DEFAULT = float(os.environ.get("LORA_SPI_BASELINE_DEFAULT", "2.5"))
+# 未知 arch（カスタムモデル）の s/it フォールバック。pricing_knobs の
+# lora_spi_baseline_default と同じ意図・同じ値に保つこと（2026-09-20: 0.65）。
+LORA_SPI_BASELINE_DEFAULT = float(os.environ.get("LORA_SPI_BASELINE_DEFAULT", "0.65"))
 # Prep / latent-caching / checkpoint headroom added on top of pure training
 # time in the per-arch floor (a multi-res 1024 run legitimately spends
 # 20-40 min caching latents before step 1).
