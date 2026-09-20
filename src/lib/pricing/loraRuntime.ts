@@ -11,6 +11,7 @@
 //
 // 新方式は「推定GPU秒 × クレジット単価」の1本:
 //   推定秒 = prep(枚数) + steps × s/it(arch, 解像度, 実効バッチ)
+//   ※ 実効バッチは正比例ではない（2026-09-20 実測。下の batchFactor）
 //   消費C  = ceil(推定秒 × クレジット単価[worker class])
 // 学習設定が変われば推定秒が変わり、価格が自動で追従する。設定値の確定を
 // 待たずに価格を運用でき、実測が更新されたら下の LORA_SPI_BASELINE と
@@ -173,6 +174,8 @@ export type LoraRuntimeEstimate = {
   spi: number;
   /** 解像度による s/it の倍率（基準解像度で 1.0）。 */
   resolutionFactor: number;
+  /** 実効バッチによる s/it の倍率（バッチ1で 1.0）。正比例ではない — §14.7。 */
+  batchFactor: number;
   /** 実際の1ステップ所要秒（解像度・実効バッチ込み）。 */
   secondsPerStep: number;
   /** 純学習時間。 */
@@ -221,11 +224,20 @@ export function loraEstimatedSeconds(input: LoraRuntimeInput): LoraRuntimeEstima
   const resolutionFactor =
     resolution > 0 ? Math.pow((resolution / LORA_SPI_REFERENCE_RESOLUTION) ** 2, exponent) : 1;
 
-  // 実効バッチは1オプティマイザステップあたりの forward/backward 回数なので
-  // 所要秒に正比例する。
+  // 実効バッチ（batch_size × grad_accum）は1オプティマイザステップあたりの
+  // forward/backward 回数だが、**所要秒は正比例しない**。実測（§14.7）では
+  // バッチ1で 0.213 s/it、バッチ4（かつ rank 倍）で 0.485 s/it ＝ 1画像あたり
+  // はむしろ速い。バッチ1のとき GPU 使用率が平均 1.8% で遊んでいるためで、
+  // まとめても時間がほとんど増えない。
+  // そこで「1ステップのうちバッチに比例する分」の割合を knob で持ち、
+  //   係数 = (1 - m) + m × バッチ    （m=1 で旧挙動の正比例、m=0 で無関係）
+  // とする。バッチ1では必ず 1.0 になるので、LORA_SPI_BASELINE（バッチ1で実測）
+  // のアンカーはずれない。
   const effectiveBatch = clamp(finite(input.effectiveBatch, 1) || 1, 1, MAX_EFFECTIVE_BATCH);
+  const batchMarginal = clamp(finite(knobs.lora_batch_marginal_ratio, 1), 0, 1);
+  const batchFactor = 1 - batchMarginal + batchMarginal * effectiveBatch;
 
-  const secondsPerStep = spi * resolutionFactor * effectiveBatch;
+  const secondsPerStep = spi * resolutionFactor * batchFactor;
 
   const steps = clamp(Math.round(finite(input.steps, 0)), 0, MAX_STEPS_GUARD);
   const trainSeconds = steps * secondsPerStep;
@@ -242,6 +254,7 @@ export function loraEstimatedSeconds(input: LoraRuntimeInput): LoraRuntimeEstima
   return {
     spi,
     resolutionFactor,
+    batchFactor,
     secondsPerStep,
     trainSeconds,
     prepSeconds,
