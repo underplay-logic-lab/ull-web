@@ -46,40 +46,46 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 
 ## 次の一手（優先度順）
 
-1. **torch.compile はバッチ1でも本当に効いているのか（未検証・要実測1本）。**
-   compile 有効の実測しか無く、**バッチ1の eager を一度も測っていない**。
-   バッチ4では compile の利得が eager 比ほぼゼロだったので、バッチ1でも
-   ゼロの可能性がある。もしそうなら、毎ジョブ **135〜477秒の warmup を
-   無駄に払っている**（GUI 既定は compile ON）。
-   検証は `compile: false` の50step ラン1本（約¥250）で済む。
-   1.78 s/it 前後なら compile は無価値 → GUI 既定を eager にして prep を丸ごと削れる。
+1. **minimax_h3 の compile 既定を OFF にするか決める（実測は揃っている。実装30分）。**
+   バッチ1・同一条件で **compile 1.78 s/it / eager 1.87 s/it ＝ 利得 4.6%**。
+   回収に必要なのは **約1,570 step**（warmup 135秒・温キャッシュ）、冷キャッシュ
+   （477秒）なら **約5,545 step**。GUI の step 下限は200・実際は1,000〜3,000 なので
+   **多くのジョブで純損**。docs §14.8.1 参照。
+   - 実装案: `COMPILE_UNSUPPORTED_ARCHES` と同じ形で
+     `COMPILE_LOW_VALUE_ARCHES = {"minimax_h3"}` を足し、明示指定が無ければ eager。
+   - **他 arch には広げない**（未実測。docs §5 の「学習は ~2x 効く」はバグった
+     ベンチ由来で信用できない）。
+   - OFF にしたら `lora_prep_load_s`（828秒・compile warmup 477秒込みで校正）を
+     下げられる ＝ そのまま値下げ原資。
 
-2. **§14.8 の compile 停止は解決済み（2026-09-20）。**
-   原因は minimax_h3 forward のデータ依存分岐 `if bool(is_pad.any())`。
-   `block_compile` を全経路の既定 ON にして再コンパイル単価を8分→数秒にした
-   （`LORA_BLOCK_COMPILE=0` で戻せる）。バッチ1で s/it 1.79 vs whole-model 1.85 と
-   悪化しないことも確認済み。`vram_peak_gb` の記録も入れてデプロイ済み
-   （job yukipas_v12 で metadata への書き込みを確認）。
-   - 派生の知見: `cache_text_embeddings: true` は `encode_prompt` を
-     0.1107 → 0.0012秒にするが、**元々6%**なので速度目的の価値は小さい。
-     TE（32B）を CPU へ退避できるので VRAM は空く（batch4 で 193.9GB）。
-   - 内訳を知りたいときは `performance_log_every: 10` を process 直下に置く。
-     推測する前にこれを回すこと。
+2. **次の LoRA ジョブの `metadata.metrics` を見て prep 固定費を校正する（GPU代ゼロ）。**
+   2026-09-21 に計測保存を入れた（`59dd839`）。ジョブが1本走るだけで
+   `s_per_it` / `prep_s` / `model_load_s` / `latent_cache_s` / `jit_s` と条件一式が
+   job 行に入る。確認する knob は `lora_prep_load_s`（828）と
+   `lora_prep_per_image_s`（1.33）。
+   - 参考: 同一構成でも prep はキャッシュ温度で **1,272.8 → 517.6秒** と動く
+     （docs §14.8.1）。**冷キャッシュ基準のままにするのが妥当**（安く見積もって
+     冷えていたら原価割れする方が危険）。
 
-3. **価格表の文言修正。** トップページ `src/components/Hero.tsx` の「¥0 維持費」
+3. **価格表の文言修正（ローンチ前必須）。** `src/components/Hero.tsx` の「¥0 維持費」
    「月額固定費は0円」「秒単位の適正価格」が実態と乖離（月額サブスクが実在し、
    課金はジョブ開始前の一括見積もりデビット）。代替案はメモリ
-   `pricing-copy-accuracy-issue` にある。**ローンチ前に必須。**
-4. **SDXL（sd-scripts / L40S）の s/it と prep 実測。** 現行 `sdxl: 0.642` は旧設定
-   （AdamW8bit + gc 有効）由来で本番条件を表していない。有償顧客向けの機能。
-5. **画像系 arch の prep 実測。** `lora_prep_load_s = 828` は minimax_h3（逆量子化 +
-   compile warmup 477秒）基準。軽い arch（`qwen_image` / `flux2_klein_4b`）では
-   過大請求の可能性。
-6. **Polar API の 2026-10 移行。** 現在 2026-04 に固定中。**2027年1月のローテーションで
-   2026-04 が削除される**ため期限付き。メモリ `polar-api-version-migration` 参照。
-7. **SDXL 学習（sd-scripts）の残実装。** UI 入力欄 / salvage / cost-guard が未了。
+   `pricing-copy-accuracy-issue`。
 
----
+4. **ローンチ時に何モデル出すかの経営判断。** `TARGET_MODELS` 14本のうち実測済みは
+   minimax_h3 だけ。未実測 arch は推測価格で、**cost-guard は見積もりの約2.8倍まで
+   耐える**ので「ジョブが殺される」事故にはなりにくいが、推測が高すぎた場合は
+   初回ユーザーが払いすぎる。売りの中心だけ測って出す（1本 ¥300〜500）か、
+   14本全部推測価格で出すかはホスト判断。
+
+5. **SDXL（sd-scripts / L40S）の s/it と prep 実測。** 現行 `sdxl: 0.642` は旧設定
+   （AdamW8bit + gc 有効）由来。有償顧客向け機能。UI 入力欄 / salvage / cost-guard の
+   残実装もここ。
+
+6. **Polar API の 2026-10 移行。** 現在 2026-04 固定。2027年1月のローテーションで
+   2026-04 が削除されるため期限付き。メモリ `polar-api-version-migration`。
+
+7. **画像系 arch の prep 実測**（2 の仕組みで自然に溜まるので、能動的にやる必要は薄い）。
 
 ## 踏み抜きやすい地雷
 
