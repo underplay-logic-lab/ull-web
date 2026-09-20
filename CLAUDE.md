@@ -20,12 +20,13 @@
 - **モデルは使い分ける。** ルーチン作業（実装・リファクタ・定型修正・ログ確認・デプロイ）は **Sonnet**。原因不明のバグの切り分け・設計判断・トレードオフの比較など判断が重い場面だけ **Opus**。切り替えは `/clear` とセットで行う（セッション途中で変えても履歴は引き継がれるため効果が薄い）。
 - **Read は範囲指定を優先する。** 実測では Read の結果がセッション全体の34%を占め、単発で60万文字（約20万トークン）読んだ例もあった。まず Grep で当たりをつけ、`offset`/`limit` で必要な範囲だけ読む。巨大ファイル（`modal_lora_worker.py` 7,364行、`LoraStudioTab.tsx` 5,413行など）の全文読み込みは原則しない。
 - **Bash の出力は絞る。** ログやビルド出力は `| tail -60` 等で切る。`modal deploy` や長いテスト出力をそのまま全部流さない。
-- **このファイルを肥大化させない。** CLAUDE.md は毎リクエスト送信される固定費。**上限は 30KB**（2026-09-19 の分割直後で 29.6KB＝ほぼ上限。超えたら必ず `docs/` へ退避する）。実測値・ベンチ結果・事故の経緯など「記録」は `docs/` に置き、ここからは1行で参照する。**ルール（次に同じ場面で守るべきこと）だけをここに書く。**
+- **このファイルを肥大化させない。** CLAUDE.md は毎リクエスト送信される固定費。**上限は 30KB**（2026-09-20 の退避直後で 28.4KB。一度 31.2KB まで膨らんで超過した実績があるので、超えたら必ず `docs/` へ退避する）。実測値・ベンチ結果・事故の経緯など「記録」は `docs/` に置き、ここからは1行で参照する。**ルール（次に同じ場面で守るべきこと）だけをここに書く。**
   - 新しい実測や事故の経緯を書き足したくなったら、まず「これは次回守るべきルールか、それとも記録か」を判断する。記録なら `docs/` 側に追記し、そこから導かれるルールが新しい場合だけ、ここに1〜2行で足す。
 
 **退避先**:
 - `docs/gpu-benchmarks.md` — GPU tier実測・VRAM・torch.compile・SageAttention・課金校正・Modal運用の罠
-- `docs/studio-tab-patterns.md` — Studioタブ実装の詳細・実例・ハマりどころ
+- `docs/studio-tab-patterns.md` — Studioタブ実装の詳細・実例・ハマりどころ／大容量バイナリのModal直やり取り
+- `docs/model-licenses.md` — モデル・OSSのライセンス判定リスト（§5）と判定手順
 
 ---
 
@@ -117,17 +118,14 @@ env={"CXX_APPEND_FLAGS": "-std=c++20", "NVCC_APPEND_FLAGS": "-std=c++20"}
 
 ### 大容量バイナリは Supabase を経由させず Modal 側で直接やり取りする（2026-09-18導入・必須）
 
-Supabase Free プランの月間送信量は5GB（DB・Storage・Realtime・Auth・API 等の合算）しかなく、
-**動画・画像を配信するというこのサービスの根幹機能だけで構造的に超過する**（ベースラインだけで月6〜9GB）ことが実測で判明した。
+Supabase Free の月間送信量5GBは、動画・画像を配信するというこのサービスの根幹機能だけで構造的に超過する（実測）。
 
 - **標準パターン**: 大容量ファイル（生成結果の動画・画像、ユーザーが持ち込む大きな入力ファイル）は、**Supabase Storage を一切経由せず、ブラウザ⇔Modal間で直接やり取りする**。Supabase は「ジョブの状態・メタデータ・小さなテキスト」だけを持つ薄い層に徹させる。
-  - **配信**: Modal Volume の実体を `@modal.fastapi_endpoint` から直接ストリーム。手本: `modal_lora_worker.py::download_lora_checkpoint`（4MiBチャンク）。
-  - **アップロード**: ブラウザから直接 Modal の web エンドポイントへ POST し Volume へ保存。手本: `modal_lora_worker.py::upload_user_lora`。
-  - **認証**: `MODAL_AUTH_TOKEN` そのものはブラウザに渡さない。Next.js 側が短命のHMAC署名付きトークン（user_id・ファイル名・有効期限）を発行し、Modal 側で再計算・検証する。手本: `src/app/api/studio/lora/checkpoint/route.ts` の `signDownloadToken` / `modal_lora_worker.py` の `_verify_download_token`・`_verify_upload_token`。
-- **Modal Volume (NFS) は1回あたりの読み書きオーバーヘッドが大きい。** 小さいチャンクを大量に読み書きすると実効速度が数KB/秒まで落ち込む。**読み書きとも4MiB単位でバッファすること**（`open(path, mode, buffering=4*1024*1024)`）。ダウンロード・アップロード双方で実際に踏んだ。
-- **段階的な移行でよい**: 既存の生成系タブは順次このパターンへ移行する。**1回あたりの容量が大きい機能（動画系）から優先**（Director → 超解像動画 → 画像系）。移行中は両方式が混在してよい。
-- §6「生成物は必ず永続ストレージへ保存する」原則は不変。変わるのは**永続化先**（Supabase Storage → Modal Volume）。14日自動パージは Volume 側のパスも対象にできる設計。
-- これを徹底してもなお5GBを超えるなら、そこで初めて Pro プラン等を検討する。「回避できる送信量を回避しないまま課金で解決する」順番にはしない。
+- **認証**: `MODAL_AUTH_TOKEN` そのものはブラウザに渡さない。Next.js 側が短命のHMAC署名付きトークンを発行し、Modal 側で再計算・検証する。
+- **Modal Volume (NFS) は1回あたりの読み書きオーバーヘッドが大きい。読み書きとも4MiB単位でバッファし、`vol.commit()` はまとめて1回にする。**
+- 既存の生成系タブは**1回あたりの容量が大きい機能から**段階的に移行してよい。
+
+> 手本にするコード・経緯・ハマりどころは `docs/studio-tab-patterns.md` の同名の節。
 
 ### デプロイ
 
@@ -180,18 +178,7 @@ Supabase のマイグレーションファイル（`supabase/migrations/*.sql`�
 
 **ULL Studio は商用サービスとして一般公開する前提。** パイプラインに新しいモデル・推論コード・レンダラ・依存ライブラリを組み込む前に、**必ずライセンスを確認し、商用利用・SaaS再頒布・地域制限の3点を満たすものだけ採用する**。迷う場合は採用せずホストに確認する。
 
-**不可（本番採用禁止）**
-- 非商用ライセンス（CC-BY-NC、"research only"、FLUX.1 `[dev]`、**FLUX.1 Kontext `[dev]`** 等）。Kontext は BFL の有償商用ライセンスまたは Pro/Max API 経由でのみ商用可 → 自ホスト採用は不可。
-- **`nvdiffrast` / `nvdiffrec`**（NVIDIA Source Code License = 非商用）。3Dレンダリングは商用可のものを使う: 3D Gaussian Splatting 出力を **`gsplat`（Apache-2.0）**、メッシュは PyTorch3D（BSD）/ Kaolin（Apache-2.0）。Inria版3DGSラスタライザ（`diff-gaussian-rasterization`）も研究用途限定で不可。
-
-**可（確認済み・商用OK）**
-- **Qwen-Image / Qwen-Image-Edit-2511**: Apache-2.0。現行の画像編集・リスタイルの基盤。
-- **Microsoft TRELLIS / TRELLIS.2（`microsoft/TRELLIS.2-4B`）**: MIT。image→3D の第一候補（非商用レンダラ依存は上記のとおり回避）。
-- **Wan2.2-S2V-14B**: Apache-2.0・地域制限なし。ただし**速度・品質とも本番採用の水準に届かず不採用**（`docs/gpu-benchmarks.md` §10）。
-
-**要注意（地域制限あり・原則回避）**
-- **Hunyuan3D 2.1**: 重み＋学習コード公開だが **EU・英国・韓国で利用不可**、MAU1億超で別途ライセンス要、NOTICE同梱義務。グローバル公開サービスでは原則採用しない（TRELLIS優先）。品質面で必要なら geofence 前提でホスト承認を取る。
-- **Hunyuan3D 3.0 / 3.1**: プロプライエタリ（Tencent Cloud API のみ、重み非公開）。自ホスト不可で「Blackwell 自ホスト」の売りと矛盾するため採用しない。
+判定済みのリスト（不可: FLUX.1/2 `[dev]`・Kontext `[dev]`・`nvdiffrast`／可: Qwen-Image・TRELLIS・gsplat／要注意: Hunyuan3D は地域制限で原則回避）と、判定の手順は **`docs/model-licenses.md`**。**新しく判定したらそこへ追記する。**
 
 採用したモデル／依存の**名称・バージョン・ライセンス・確認日**を、当該ワーカーファイル冒頭の docstring に明記すること（`modal_angle_worker.py` の記法に倣う）。
 

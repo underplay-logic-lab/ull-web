@@ -266,3 +266,46 @@ Next.js側にフックできる箇所が無いので、**Postgres の `AFTER UPD
 DBの `gpu_warm_status` テーブルは害がないため未削除（`supabase/migrations/20260833000000_create_gpu_warm_status.sql`）。
 
 代替として、タブ内ローカルの warm カウントダウン（§7）を使う。
+
+
+---
+
+# 大容量バイナリは Supabase を経由させず Modal 側で直接やり取りする（2026-09-18導入）
+
+CLAUDE.md §1 の該当ルールの背景・手本・ハマりどころ。
+
+## なぜ
+
+Supabase Free プランの月間送信量は5GB（DB・Storage・Realtime・Auth・API 等の合算）しかなく、
+**動画・画像を配信するというこのサービスの根幹機能だけで構造的に超過する**
+（ベースラインだけで月6〜9GB）ことが実測で判明した。
+これを徹底してもなお5GBを超えるなら、そこで初めて Pro プラン等を検討する。
+「回避できる送信量を回避しないまま課金で解決する」順番にはしない。
+
+## 手本にするコード
+
+- **配信**: Modal Volume の実体を `@modal.fastapi_endpoint` から直接ストリーム。
+  `modal_lora_worker.py::download_lora_checkpoint`（4MiBチャンク）。
+- **アップロード（単枚）**: ブラウザから直接 Modal の web エンドポイントへ POST し Volume へ保存。
+  `modal_lora_worker.py::upload_user_lora`。
+- **アップロード（複数枚）**: 1リクエストに複数ファイルをまとめ、`vol.commit()` をバッチ1回にする。
+  `modal_lora_worker.py::upload_lora_dataset_batch` + `src/lib/loraApi.ts::uploadLoraDataset`。
+  1枚1リクエストだと 400KB の送信に 4.3秒かかっていた（`gpu-benchmarks.md` §15）。
+- **認証**: `MODAL_AUTH_TOKEN` そのものはブラウザに渡さない。Next.js 側が短命のHMAC署名付き
+  トークン（user_id・ファイル名・有効期限）を発行し、Modal 側で再計算・検証する。
+  `src/app/api/studio/lora/checkpoint/route.ts` の `signDownloadToken` /
+  `modal_lora_worker.py` の `_verify_download_token`・`_verify_upload_token`。
+
+## ハマりどころ
+
+- **Modal Volume (NFS) は1回あたりの読み書きオーバーヘッドが大きい。**
+  小さいチャンクを大量に読み書きすると実効速度が数KB/秒まで落ち込む。
+  **読み書きとも4MiB単位でバッファすること**（`open(path, mode, buffering=4*1024*1024)`）。
+  ダウンロード・アップロード双方で実際に踏んだ。
+- **`vol.commit()` を1ファイルごとに呼ぶと、その回数がそのまま直列コストになる。**
+  Modal Volume は `allow_background_commits=True` が既定で、バックグラウンドとコンテナ終了時に
+  自動コミットされる（`modal/_runtime/user_code_imports.py`）。明示commitはまとめて1回にする。
+- 移行は**1回あたりの容量が大きい機能（動画系）から優先**（Director → 超解像動画 → 画像系）。
+  移行中は両方式が混在してよい。
+- CLAUDE.md §6「生成物は必ず永続ストレージへ保存する」原則は不変。変わるのは**永続化先**
+  （Supabase Storage → Modal Volume）。14日自動パージは Volume 側のパスも対象にできる設計。
