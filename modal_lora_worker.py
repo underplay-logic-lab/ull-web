@@ -1748,6 +1748,32 @@ def _sanitize_override_yaml(
         # できる（GUI モードの _build_config は両方 1 固定）。
         _user_train = proc.get("train") if isinstance(proc.get("train"), dict) else {}
         _eff_batch = _effective_batch(_user_train)
+
+        # gradient_checkpointing（2026-09-20 ホスト判断）:
+        #   - YAML が明示していればその値を尊重する。明示するのは OOM 回避の
+        #     ときだけのはずで、こちらが潰すと学習そのものが落ちる。
+        #   - 未指定なら GUI モードと同じ既定（LORA_GRADIENT_CHECKPOINTING、
+        #     既定 False）へ揃える。生 YAML はローカル GPU 前提で書かれている
+        #     ことが多く、既定OFFの変更がこの経路だけ素通りしていた。
+        # VRAM に余裕がある環境で true のままだと 20〜40% 遅くなり、その分が
+        # そのまま原価に乗る（docs/gpu-benchmarks.md §14.13 の本番フルランは
+        # これに該当し、5.24 s/it・2000step で約3時間10分かかった）。
+        if isinstance(proc.get("train"), dict):
+            _yaml_gc = proc["train"].get("gradient_checkpointing")
+            if _yaml_gc is None:
+                proc["train"]["gradient_checkpointing"] = LORA_GRADIENT_CHECKPOINTING
+                print(
+                    "[stage2][sanitize] gradient_checkpointing 未指定 -> "
+                    f"{LORA_GRADIENT_CHECKPOINTING}（既定）",
+                    flush=True,
+                )
+            elif bool(_yaml_gc):
+                print(
+                    "[stage2][warn] gradient_checkpointing: true が YAML で明示されて "
+                    "います。VRAM が不足していないなら外した方が 20〜40% 速く、"
+                    "消費クレジットも下がります（OOM が出る場合だけ有効化を推奨）。",
+                    flush=True,
+                )
         _yaml_arch = str(safe_model.get("arch") or "").strip()
         if (
             LORA_COMPILE_ENABLED
@@ -5792,6 +5818,12 @@ def _delete_lora_dataset_uploads(keys: list) -> int:
     scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
+# 2026-09-20: ブラウザ側を並列アップロードに変えた（src/lib/loraApi.ts の
+# UPLOAD_CONCURRENCY）のに合わせて、1コンテナで同時に受けられるようにする。
+# これが無いと同時リクエストの数だけコンテナが立ち、各リクエストが自分の
+# コールドスタートを待つので並列化の効きが削れる。実体は受信ストリームと
+# Volume commit の I/O 待ちなので、GPU も CPU も食わない。
+@modal.concurrent(max_inputs=8)
 @modal.fastapi_endpoint(method="POST")
 async def upload_lora_dataset_image(
     user_id: str, dataset_id: str, filename: str, expires: str, sig: str, request: fastapi.Request
