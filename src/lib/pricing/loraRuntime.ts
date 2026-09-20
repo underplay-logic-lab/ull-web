@@ -44,55 +44,57 @@ export const LORA_SPI_REFERENCE_RESOLUTION = 1024;
 /**
  * arch 別の s/it（秒/イテレーション）。基準解像度・実効バッチ1。
  *
- * === 2026-09-20 実測（modal_lora_benchmark.py の smoke プラン、2回）===
- * minimax_h3 / B300 / 1024px / rank32 / batch1 / prodigy /
- * gradient_checkpointing 無効 / torch.compile 有効:
- *   1回目（サンプル生成あり） 0.2329 s/it
- *   2回目（サンプル生成なし） 0.2135 s/it   ← 現行の本番設定に一致
- * 学習ステップ間の壁時計差分から算出し、生ログの tqdm（`lr:`/`loss:` を伴う
- * 行＝本番ワーカー自身の判定でも学習ステップ）とも一致。本番設定に合う
- * 2回目を採用して 0.213 とした。
+ * 🚨 2026-09-20（夜）: この表を **0.213 等へ下げた根拠は誤りだった**。
+ * `modal_lora_benchmark.py` の s/it 計測にバグがあり（ai-toolkit が1ステップ
+ * につき tqdm 行を2本出すのを考慮せず、**同一時刻の2行の差**をステップ所要
+ * 時間として記録していた）、測れていたのは「ログ2行を読んで print する時間」
+ * だった。docs/gpu-benchmarks.md §14 冒頭の警告と §14.13 を参照。
  *
- * これにより docs/gpu-benchmarks.md §5 の 2026-09-06 計測（compile
- * 5.0-5.4 it/s ＝ 0.19-0.20 s/it）が正しかったと確認された。旧テーブルの
- * `minimax_h3: 5.0` は **it/s を s/it と取り違えた値**で、21倍の過大評価
- * だった。課金は推定GPU秒ベースなので、この取り違えは価格に直撃する。
+ * === 現時点で唯一信頼できる実測（本番フルラン、2026-09-20）===
+ * minimax_h3 / B300 / 1024px / rank64 / 実効バッチ4 / adamw /
+ * gradient_checkpointing 有効 / torch.compile 無効 / 実写131枚:
+ *   **5.24 s/it**（step 6 以降ずっと安定。tqdm 表示・壁時計差分とも一致）
  *
- * ⚠️ 実測できているのは minimax_h3 だけ。他の ai-toolkit arch は、旧テーブル
- * の相対順序（大きいモデルほど遅い、という方向自体は妥当）を保ったまま、
- * 実測点でアンカーして一律 0.213/5.0 = 0.0426 倍したもの。**どれも未検証**
- * なので、arch ごとに実測が出たら個別に差し替えること。
+ * ここから基準（実効バッチ1・compile 有効）へ戻すと:
+ *   5.24 ÷ 4（バッチ・線形と仮定）÷ 2（compile 有効で約2倍速・docs §5）≒ 0.65
+ * 独立した経路として、docs §5 の 2026-09-06 計測（rank32 / 768px / compile 有効
+ * で 5.0-5.4 **it/s** ＝ 0.19 s/it）を 1024px（画素数 ×1.78）・rank64 へ換算すると
+ *   0.37〜0.44
+ * となる。2経路の間を取り、**過小より過大へ倒す方針で 0.55** を採った。
  *
- * sdxl は別扱い（sd-scripts ワーカー・別 GPU tier で桁が違う）。**こちらも
- * 2026-09-20 に実測済み** — L40S / 1024px / rank32 / prodigy /
- * gradient_checkpointing 無効 で、step 数だけ変えた2回の実行から連立で分離:
- *   elapsed(20step) = 56.0s、elapsed(120step) = 120.2s
- *   → s/it = (120.2-56.0)/100 = 0.642、prep = 56.0 - 20×0.642 = 43.2s
- * 旧値 1.4 は 2026-09-15 のスモーク（rank16・AdamW8bit・
- * gradient_checkpointing 有効）由来で、条件も算出方法も違っていた。
- * peak VRAM は 2回とも 17.73GB（L40S 48GB に対し 30GB の余裕）。
+ * ⚠️ **これは暫定値**。確定させるには GUI モードの既定条件（実効バッチ1 /
+ * gradient_checkpointing 無効 / compile 有効）での実測が要る。これは**GPUを
+ * 追加で焼かなくても取れる** — 通常のジョブのログに出る tqdm の s/it を読めば
+ * よい（tqdm の値は今回の実測と一致することが確認できている）。
+ *
+ * ⚠️ この式は gradient_checkpointing と torch.compile の有無を見ていない。
+ * どちらも s/it を2倍近く動かすが、GUI モードでは両方固定（gc 無効・compile は
+ * 実効バッチ1なので有効）なので、効くのは生YAML（admin 限定）だけ。
+ *
+ * ⚠️ minimax_h3 以外の ai-toolkit arch は実測が無く、旧表の相対順序を保った
+ * まま minimax_h3 に合わせて一律スケールしたもの。**どれも未検証**。
  *
  * ⚠️ modal_lora_worker.py 側にも同名のテーブルがある（payload に
- * cost_cap_seconds が乗らなかった場合のフォールバック）。2026-09-20 時点で
- * 全 arch 同値に揃えてあるので、片方だけ触らないこと。
+ * cost_cap_seconds が乗らなかった場合のフォールバック）。片方だけ触らないこと。
  */
 export const LORA_SPI_BASELINE: Readonly<Record<string, number>> = {
   // --- ai-toolkit ワーカー ---
-  minimax_h3: 0.213, // ← 実測（2026-09-20, B300, 2回とも 0.21-0.23）
-  wan22_14b: 0.17,
-  wan21: 0.149,
-  ltx2: 0.149,
-  hunyuan: 0.17,
-  cogvideox: 0.17,
-  qwen_image: 0.085,
-  krea2: 0.085,
-  anima: 0.06,
-  zimage: 0.051,
-  flux2_klein_4b: 0.047,
+  minimax_h3: 0.55, // ← 暫定（下記）。2026-09-20 に 0.213 から引き上げ
+  wan22_14b: 0.44,
+  wan21: 0.38,
+  ltx2: 0.38,
+  hunyuan: 0.44,
+  cogvideox: 0.44,
+  qwen_image: 0.22,
+  krea2: 0.22,
+  anima: 0.15,
+  zimage: 0.13,
+  flux2_klein_4b: 0.12,
   // --- sd-scripts ワーカー（別 tier・別スタック）---
+  // 0.642 は「step 数だけ変えた2回の実行の総経過時間を連立で分離」して出した
+  // 値で、下記の tqdm パースのバグとは無関係。よって据え置く。
   sdxl: 0.642,
 };
-
 export type LoraWorkerBackend = "sd_scripts" | "ai_toolkit";
 
 // arch "sdxl"（illustrious_xl / juggernaut_xl プリセット、または

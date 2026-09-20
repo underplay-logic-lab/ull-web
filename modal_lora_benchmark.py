@@ -428,6 +428,40 @@ def _make_dataset(n_images: int, long_edge: int, dest: str) -> int:
 # ---------------------------------------------------------------------------
 # 計測本体（GPU 上で動く）
 # ---------------------------------------------------------------------------
+def _spi_from_samples(
+    step_samples: list[tuple[float, int]], warmup_steps: int
+) -> tuple[float | None, list[float]]:
+    """(読み取り時刻, step番号) の列から steady-state の s/it を出す。
+
+    ⚠️ 2026-09-20 — ここには **測定値を丸ごと無意味にするバグ**があった。
+    ai-toolkit は1ステップにつき tqdm 行を2本出す:
+
+        4/2000 [00:46<...]   ← step 4 完了
+        4/2000 [00:51<...]   ← step 4 の行を loss 更新で再描画
+        5/2000 [00:51<...]   ← step 5
+
+    旧実装は「step が増えた隣接ペア」だけを採っていたが、それは
+    `(00:51, 4) -> (00:51, 5)` ＝ **同一時刻の2行**であり、本当の所要時間
+    （00:46 -> 00:51）は ds == 0 のペアに入って捨てられていた。測れていたのは
+    「ログ2行をパイプから読んで print する時間」で、それが 0.2〜0.7 という
+    値の正体。同条件の本番実測は 5.24 s/it で、**約8倍の過小評価**だった。
+
+    正しくは **各 step 番号の最初の出現だけ**を残してから差分を取る。実際の
+    本番ログで検算すると 5.33 s/it となり、tqdm 自身の表示とも一致する。
+    """
+    first_seen: dict[int, float] = {}
+    for ts, st in step_samples:
+        if st not in first_seen:
+            first_seen[st] = ts
+    steps = sorted(st for st in first_seen if st > warmup_steps)
+    intervals: list[float] = []
+    for s0, s1 in zip(steps, steps[1:]):
+        ds = s1 - s0
+        if ds > 0:
+            intervals.append((first_seen[s1] - first_seen[s0]) / ds)
+    return _trimmed_mean(intervals), intervals
+
+
 def _run_benchmark(spec: dict) -> dict:
     """1条件を計測して結果 dict を返す。GPU 関数から呼ばれる。"""
     started_at = time.time()
@@ -583,14 +617,9 @@ def _run_benchmark(spec: dict) -> dict:
             result["error"] = f"max_seconds({max_seconds}s) を超過したため中断"
         _kill(proc)
 
-        # 壁時計の差分から s/it を出す（tqdm の内部移動平均に依存しない）。
-        measured = [p for p in step_samples if p[1] > warmup_steps]
-        intervals: list[float] = []
-        for (t0, s0), (t1, s1) in zip(measured, measured[1:]):
-            ds = s1 - s0
-            if ds > 0:
-                intervals.append((t1 - t0) / ds)
-        spi = _trimmed_mean(intervals)
+        # 壁時計の差分から s/it を出す。ロジックは _spi_from_samples()
+        # （回帰テスト付き — _parser_selftest を参照）。
+        spi, intervals = _spi_from_samples(step_samples, warmup_steps)
 
         result.update(
             {
@@ -945,6 +974,26 @@ def _parser_selftest() -> dict:
         good = abs(spi - expected) < 1e-6
         ok = ok and good
         results.append({"unit": unit, "spi": round(spi, 4), "ok": good})
+
+    # 2026-09-20 追加: 1ステップ2行の重複を畳めているかの回帰テスト。
+    # 旧実装はここで 0.0 を返していた（詳細は _spi_from_samples の docstring）。
+    # 本番ログ（yukipas_v6, 5.2〜5.3 s/it）の並びをそのまま使う。
+    dup_samples = [
+        (22.0, 1), (35.0, 1), (35.0, 2), (41.0, 2), (41.0, 3), (46.0, 3),
+        (46.0, 4), (51.0, 4), (51.0, 5), (57.0, 5), (57.0, 6), (62.0, 6),
+        (62.0, 7), (67.0, 7), (67.0, 8), (72.0, 8), (72.0, 9), (77.0, 9),
+        (77.0, 10), (83.0, 10), (83.0, 11),
+    ]
+    dup_spi, dup_intervals = _spi_from_samples(dup_samples, warmup_steps=4)
+    dup_ok = dup_spi is not None and 4.5 < dup_spi < 6.0
+    ok = ok and dup_ok
+    results.append({
+        "case": "duplicate tqdm lines per step",
+        "spi": round(dup_spi, 4) if dup_spi else None,
+        "intervals": dup_intervals,
+        "expected": "4.5〜6.0（旧実装は 0.0 を返していた）",
+        "ok": dup_ok,
+    })
     return {"ok": ok, "cases": results}
 
 

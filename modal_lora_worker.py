@@ -472,19 +472,22 @@ ULL_COST_GUARD_MULTIPLIER = max(
 # sdxl は別ワーカー（sd-scripts / 別 tier）で桁が違うため別扱い。旧値 0.9 は
 # 実測前の仮値だったので、2026-09-15 スモーク実測(1.32s/it)由来の 1.4 へ揃える。
 LORA_SPI_BASELINE: dict[str, float] = {
-    # --- ai-toolkit ---
-    "minimax_h3": 0.213,  # ← 唯一の実測値（2026-09-20, B300）
-    "wan22_14b": 0.17,
-    "wan21": 0.149,
-    "ltx2": 0.149,
-    "hunyuan": 0.17,
-    "cogvideox": 0.17,
-    "qwen_image": 0.085,
-    "krea2": 0.085,
-    "anima": 0.06,
-    "zimage": 0.051,
-    "flux2_klein_4b": 0.047,
-    # --- sd-scripts ---
+    # src/lib/pricing/loraRuntime.ts と同値に保つこと（payload に
+    # cost_cap_seconds が乗らなかった場合のフォールバック用）。
+    # 2026-09-20（夜）: ベンチの s/it 計測バグが判明し、本番フルランの実測
+    # （minimax_h3 / 実効バッチ4 / 1024px で 5.24 s/it）を基準に引き上げた。
+    # 詳細は loraRuntime.ts のコメントと docs/gpu-benchmarks.md §14.13。
+    "minimax_h3": 0.55,
+    "wan22_14b": 0.44,
+    "wan21": 0.38,
+    "ltx2": 0.38,
+    "hunyuan": 0.44,
+    "cogvideox": 0.44,
+    "qwen_image": 0.22,
+    "krea2": 0.22,
+    "anima": 0.15,
+    "zimage": 0.13,
+    "flux2_klein_4b": 0.12,
     "sdxl": 0.642,
 }
 LORA_SPI_BASELINE_DEFAULT = float(os.environ.get("LORA_SPI_BASELINE_DEFAULT", "2.5"))

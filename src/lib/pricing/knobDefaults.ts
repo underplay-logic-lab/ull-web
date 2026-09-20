@@ -464,7 +464,12 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // ⚠️ 270/280 の切り分けは、1回目のログのタイムスタンプから逆量子化を
     // 約270秒と見積もった上での配分で、2回目単独では両者を分離できていない。
     // 合計 550秒 の方が実測として確か。
-    value: 280,
+        // 2026-09-20（夜）実測で更新: 本番フルランの prep 内訳は
+    //   model load（逆量子化含む） 640.6s / latent キャッシュ 120.9s /
+    //   first-step JIT 99.1s = 合計 860.7s（docs §14.13）。
+    // 逆量子化ぶん（270）を差し引き、モデル化していなかった first-step JIT を
+    // ここへ含めて 370 + 99 ≒ 470 とした。旧値 280 は過小だった。
+value: 470,
     label: "LoRA 準備時間（固定分・ai-toolkit）",
     category: "lora_formula",
     unit: "s",
@@ -521,7 +526,10 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // なお画像のリサイズ・再エンコードは CPU 関数
     // （ingest_and_optimize_dataset_cpu）で GPU 起動前に済むため、ここには
     // 乗らない。
-    value: 0.15,
+        // 2026-09-20（夜）実測で更新: 実写131枚の latent キャッシュが 120.9秒
+    //   = 0.92秒/枚（docs §14.13）。旧値 0.15 は合成データ8枚（全て同一
+    // アスペクト比＝1バケット）から出した値で、実データの6倍の過小評価だった。
+value: 0.9,
     label: "LoRA 準備時間（1枚あたり）",
     category: "lora_formula",
     unit: "s/枚",
@@ -562,7 +570,11 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // 同一条件（同 rank・同 compile）でバッチだけを 1/2/4/8 と振った実測が
     // 出たら回帰で置き換えること。CLAUDE.md §0「少数の実測から法則を逆算
     // しない」に照らし、これは暫定値の扱い。
-    value: 0.42,
+        // 🚨 2026-09-20（夜）: 0.42 は撤回。根拠にしていた「実効バッチ1で0.213 /
+    // バッチ4で0.485」という実測が、ベンチの s/it 計測バグによる偽の値だった
+    // （docs §14 冒頭の警告）。実効バッチが所要秒にどう効くかは**現在まったく
+    // 未測定**なので、1.0（正比例＝過大側）へ戻す。測れたら改めて下げること。
+value: 1.0,
     label: "LoRA 実効バッチの限界比率",
     category: "lora_formula",
     unit: "×",
