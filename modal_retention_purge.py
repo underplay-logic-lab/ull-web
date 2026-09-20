@@ -132,18 +132,15 @@ DEFAULT_BUCKETS = [
     # Storage バケット方式へ移行（[[cinematic-video-tab]] 系の旧privacy posture
     # は現行 DirectorStudioTab.tsx には無く、CLAUDE.md §6 の標準へ統一）。
     "director-results",
+    # 2026-09-19 に Modal 直配信（studio_uploads/ ・ lora_dataset_uploads/）へ
+    # 移行したバケット。新規書き込みは無いが、移行前に残った分は誰かが
+    # ULL_RETENTION_BUCKETS で明示指定しない限り永久に残る。実際 2026-09-20
+    # 時点で upscale-uploads に 31.2MB / 13件が置き去りになっていた。
+    # 空のバケットを対象に含めても list が1回空振りするだけなので、外さずに
+    # 残して期限が来たものから自然に消えるようにする。
+    "upscale-uploads",
+    "lora_datasets",
 ]
-# 2026-09-13: upscale/generate・upscale/batch route.ts が一時アップロード
-# （旧 upscale-uploads バケット）を dispatch 直後に即削除していたのを撤去
-# した（Modal worker が署名付きURLを fetch する前にオブジェクトが消える
-# レース条件で実障害が出た）。削除しない代わりに14日自動パージの対象に
-# 含めていたが、2026-09-19にこのバケット自体をModal直配信（studio_uploads/
-# 、下記）へ移行したため新規書き込みは無くなった。移行前に残っていた行は
-# 上記 buckets ループの対象から外れるので、"upscale-uploads" という名前の
-# まま ULL_RETENTION_BUCKETS で明示指定すれば旧データの掃除は引き続き可能。
-# 同じ理由で "lora_datasets" バケットも 2026-09-19 に DEFAULT_BUCKETS から
-# 外した（lora_dataset_uploads/、下記へ移行）。旧データの掃除が必要なら
-# 同様に ULL_RETENTION_BUCKETS へ明示指定する。
 
 # job テーブル → 対応バケット（ストレージ側は created_at 全掃きなので、ここは
 # 行削除の対象一覧）。
