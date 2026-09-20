@@ -298,6 +298,10 @@ export const STEPS_QUICK: { value: number; label: string }[] = [
   { value: 500, label: "500 (軽量テスト)" },
   { value: 1000, label: "1000 (標準)" },
   { value: 2000, label: "2000 (高密度/受託推奨)" },
+  // 2026-09-20: スライダー上限を 5,000 → 20,000 に引き上げた（LORA_MAX_STEPS
+  // のコメント参照）のに合わせて、大規模データセット向けの目安を1つ足す。
+  // 上限そのものはクイック選択に出さない（推奨値ではなく壁なので）。
+  { value: 5000, label: "5000 (大規模データセット)" },
 ];
 export const LR_PRESETS: { value: number; label: string }[] = [
   { value: 0.0001, label: "0.0001 (1e-4) ・ 推奨/標準" },

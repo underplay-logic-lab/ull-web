@@ -13,8 +13,19 @@ import type { LoraCaptionCategory } from "@/lib/loraCaptionSpec";
 // autoLoraSteps() が画像枚数から動的に決める（下記）。
 export const DEFAULT_LORA_STEPS = 2000;
 
-// Top of the steps slider (エキスパート mode)。autoLoraSteps() の安全上限にも流用。
-export const LORA_MAX_STEPS = 5000;
+// Top of the steps slider (エキスパート mode)。
+//
+// 2026-09-20: 5,000 → 20,000。5,000 は根拠のない保守的な仮値で、CLAUDE.md §0
+// の「裏付けのない保守的な上限は自己ブロック」に該当していた。実際の壁は
+// Modal コンテナの 12時間（LORA_ABS_MAX_RUN_S）で、実測 s/it から逆算すると
+//   minimax_h3 / 1024px / バッチ1 / 25枚 → 約 149,000 step
+//   sdxl（sd-scripts / L40S）           → 約  50,000 step
+// までは 12h に収まる（loraMaxSteps() の実値。ばらつき用の1.3倍を引いた後）。20,000 はその内側に十分入る「UI として扱える」上限で、
+// 12h の壁そのものは loraMaxSteps()（src/lib/pricing/loraRuntime.ts）が設定
+// ごとに計算し、収まらない設定は /api/studio/lora/train が明示的に拒否する。
+// 課金と損切りは推定GPU秒ベースなので、step を増やせば価格も許容時間も自動で
+// 追従する（重い処理は高くなる＝CLAUDE.md §0）。
+export const LORA_MAX_STEPS = 20000;
 
 // 2026-09-15: 「オート」モードの学習stepを画像枚数に連動させる線形式。
 // 2026-09-14に「枚数×80(上限5000)」という式で一度出したが、これは
@@ -37,7 +48,12 @@ export const LORA_MAX_STEPS = 5000;
 export const LORA_AUTO_STEPS_BASE = 850;
 export const LORA_AUTO_STEPS_PER_IMAGE = 12;
 export const LORA_AUTO_STEPS_MIN = 500;
-export const LORA_AUTO_STEPS_MAX = LORA_MAX_STEPS;
+// 2026-09-20: LORA_MAX_STEPS への追従をやめて独立させた。オートの式
+// （850 + 12×枚数）が 5,000 に達するのは 346 枚のときで、実質的には
+// 「式が暴走していないか」の異常値ガードでしかない。エキスパートの
+// スライダー上限を引き上げたからといって、オートが黙って 20,000 step の
+// 高額ジョブを組めるようになるべきではない（枚数上限は 500 枚）。
+export const LORA_AUTO_STEPS_MAX = 5000;
 
 export function autoLoraSteps(imageCount: number): number {
   const n = Math.max(1, Math.round(imageCount) || 1);
