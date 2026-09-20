@@ -586,6 +586,12 @@ torch.compile 有効時はサンプルが学習と別 shape なので専用コ�
 
 ### 14.7 実効バッチは所要秒に正比例しない（課金式の前提が誤り）
 
+> 🚨 **2026-09-21: この節の結論（「バッチ4の方が1画像あたり2倍効率的」「m = 0.42」）は
+> 無効。** tqdm の 1 step が何枚ぶんかを読み違えている（`gradient_accumulation_steps`
+> を内側ループ回数だと誤認）。同一条件で測り直した結果、**1画像あたりは
+> 1.78秒(batch1) / 1.725秒(batch2) / 1.63秒(batch4) でほぼ横ばい**。
+> 正しい定義と実測は **§14.8.1**。以下は経緯の記録として残す。
+
 | 条件 | s/it | 1画像あたり |
 |---|---|---|
 | 実効バッチ1 / rank32 | 0.213 | 0.213秒 |
@@ -715,7 +721,7 @@ adamw / gc **無効** / `only_if_contains: ["transformer"]` / compile **有効**
 | | eager 実効4（§14.14） | whole-model compile 実効1（§14.15・GUI 現行） | **block_compile 実効4（今回）** |
 |---|---|---|---|
 | **s/it** | 3.60 | 1.80 | **3.45** |
-| **1画像あたり** | 0.90秒 | 1.80秒 | **0.863秒** |
+| **1画像あたり** | 1.80秒 | 1.80秒 | **1.725秒** |（←訂正済み。下の §14.8.1 参照）
 | first-step JIT/compile | 99.1s | 476.9s | **112.5s** |
 | 学習中の停止 | 無し | 無し | **無し（最大7秒）** |
 
@@ -740,19 +746,9 @@ step 間隔の最遅は step1 40秒・step2 19秒（残りブロックと2つ目
 > **block_compile の価値は warmup 短縮ではなく「再コンパイル1回の単価」**
 > （DiT 全体 ≒8分 → 1ブロック 数秒）にある。
 
-**原価**: 1画像 0.863秒は GUI 現行（バッチ1 + compile、1.80秒/枚）の **2.09倍安い**。
-「実効バッチで原価4倍下げ」には届かないが2倍強は取れる。
-
-**価格（m 係数）の再校正**: `loraRuntime.ts` の
-`s/it = base × ((1 - m) + m × 実効バッチ)` に、**同一データセット・同一設定**の
-二点（1.80@実効1 = §14.15 / 3.45@実効4 = 今回）を入れると
-
-```
-m = (3.45 / 1.80 - 1) / 3 = 0.306
-```
-
-現行 0.42 は実効4のジョブを 4.07 s/it と見積もる＝**実測より約20%の過大請求**
-（安全側）。実効バッチを一般ユーザーへ開放するなら 0.31 へ寄せる。
+> 🚨 **この節の「原価」「m 係数」の記述は誤りだったので削除した。** tqdm の
+> 1 step が何枚ぶんかを読み違えていた（`gradient_accumulation_steps` を内側
+> ループ回数だと誤認）。正しい数字と経緯は **§14.8.1** にまとめてある。
 
 **次に測る価値が高いのはバッチ1 + block_compile**（＝GUI 現行条件に block_compile
 だけ足す）。当たれば全 minimax_h3 ジョブの prep が 476.9 → 112.5秒＝**365秒短縮
@@ -831,6 +827,80 @@ warmup が **1,134.8秒**（`bench_results/lora_stage1_20260920_192153.jsonl`）
 → §14.15 の「合成ベンチと実写で s/it が9倍ずれる」の一部は、この
 コンパイル churn で説明できる可能性がある（断定はしない。`TORCH_LOGS` 付きの
 1本で切り分けられる）。
+
+### 14.8.1 🚨 tqdm の 1 step は「batch_size 枚」— 実効バッチの読み違い（2026-09-21）
+
+**これまで「実効バッチ」と呼んでいた値は、所要時間の単位として間違っていた。**
+§14.7 / §14.8 の「バッチを上げると1画像あたりが安くなる」という結論は、
+この読み違いから出たもので**成り立たない**。
+
+#### ソースで確定した step の定義
+
+`jobs/process/BaseSDTrainProcess.py`:
+
+```python
+for step in range(start_step_num, self.train_config.steps):   # ← tqdm の1 step
+    ...
+    for b in range(self.train_config.gradient_accumulation):  # ← 既定 1
+```
+
+`toolkit/config_modules.py:455-462` に**別々のキーが2つ**ある:
+
+| キー | 既定 | 意味 |
+|---|---|---|
+| `gradient_accumulation` | 1 | **内側ループの回数**。1 step で処理する micro-batch 数 |
+| `gradient_accumulation_steps` | 1 | optimizer を何 step に1回踏むか。**処理量は増えない** |
+
+両者は相互排他（両方 >1 にすると ValueError）。**我々の YAML が使っていたのは
+後者**なので、`batch_size 2` + `gradient_accumulation_steps 2` の 1 step は
+**2枚ぶん**であって4枚ぶんではない。
+
+#### 実測（B300 / rank64 / 1024px / gc 無効 / compile + block_compile / 実写131枚）
+
+同じ「実効バッチ4」を名乗る2ジョブが2倍違うことが、読み違いの動かぬ証拠:
+
+| job | 設定 | s/it | 1 step の枚数 | **1画像あたり** |
+|---|---|---|---|---|
+| v11 | `batch_size 1` | 1.78 | 1 | **1.78秒** |
+| v8 | `batch_size 2` + `gas 2` | 3.45 | 2 | **1.725秒** |
+| **v12** | **`batch_size 4`** + accum 1 | **6.52** | 4 | **1.63秒** |
+
+**バッチを4倍にして改善は9%。** タイマーの内訳も `calculate_loss` 0.57→2.23 /
+`backward` 0.50→1.88 / `predict_unet` 0.23→1.06 と揃って約3.9倍で、**素直に
+線形＝バッチ1の時点で既に計算律速**。「余っている VRAM をバッチで埋めれば
+効率が上がる」はこの構成では成立しない。
+
+#### 課金式への波及（未修正・要対応）
+
+`src/lib/pricing/loraRuntime.ts` は
+`s/it = base × ((1 - m) + m × 実効バッチ)`、実効バッチ =
+`batch_size × gradient_accumulation_steps`、m = 0.42。確定した事実に対して
+2か所狂っている:
+
+1. **`gradient_accumulation_steps` は所要時間を増やさない**のに掛けている → 過大請求
+2. **`batch_size` はほぼ線形**（2点から解くと m ≈ 0.89）なのに m = 0.42 →
+   `batch_size 4` のジョブを 4.02 s/it と見積もる（実測 6.52）＝
+   **実所要の62%しか請求していない**。cost-guard も同じ式なので、
+   **正常なジョブを原価割れ判定で安全停止させ得る**
+
+修正の方向: 所要時間は `steps × f(batch_size)` で、`gradient_accumulation_steps`
+は無関係。`f` はほぼ線形（m ≈ 0.9）。ただし**2点しかない**ので、確定させる前に
+`batch_size` 1 / 2 / 4 を同一条件（今回の v11 / v12 は cache_text_embeddings の
+有無が違う）で揃えて測り直すこと（CLAUDE.md §0）。
+
+#### 併せて確定したこと
+
+- **`cache_text_embeddings: true` は効く**: `encode_prompt` が
+  **0.1107 → 0.0012秒**。TE（32B）は CPU へ退避され
+  （`toolkit/sd_device_states_presets.py:102-105`）、H3 が必要とする
+  `text_token_tags` も `AdvancedPromptEmbeds.save/load` が全キー保存するので壊れない。
+  ただし **TE は毎ステップの6%しか占めていなかった**ので、速度目的の価値は小さい。
+- VRAM: `batch_size 4` + TE 退避で **193.9GB**（バッチ1・TE 常駐の 203.1GB より少ない）。
+  288GB に対しまだ94GB の余裕があるが、**per-image が改善しないので上げる意味は薄い**。
+- `[perf]` タイマーは `performance_log_every: <N>`（process 直下）で出せる。
+  内訳を推測する前にこれを回すこと。**非同期 CUDA のため `predict_unet` は
+  カーネル投入だけを計測し、実際の待ちは最初に同期する `calculate_loss` に出る**。
+  読むときは「forward+loss」で合算する。
 
 ### 14.9 Modal Volume の書き込みは速い（チェックポイント保存は犯人ではない）
 

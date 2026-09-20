@@ -8,7 +8,7 @@
 **更新のタイミング**: 作業の区切りごと（コミットした／方針が決まった／実測が
 出た／残課題が増減した）。セッションの終わりに必ず見直す。
 
-最終更新: 2026-09-20
+最終更新: 2026-09-21
 
 ---
 
@@ -35,40 +35,48 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 
 ## 次の一手（優先度順）
 
-1. **§14.8 の compile 停止は解決・対策は本番既定に入れた（2026-09-20）。**
-   原因は minimax_h3 forward のデータ依存分岐 `if bool(is_pad.any())`
-   （`transformer.py:529`）。バッチ>1 では pad あり／なしの両方が1ラン中に出て、
-   2つ目で DiT 丸ごと再コンパイル（≒8分）。`compile_dynamic=True` は tensor
-   次元にしか効かない。詳細 docs §14.8。
-   - **`block_compile` を全経路（GUI / 生YAML）の既定 ON にした**
-     （`LORA_BLOCK_COMPILE=0` で戻せる）。実測でバッチ1の s/it は 1.79 vs
-     whole-model 1.85 で悪化せず、warmup も 135s vs 157.8s。速度目的ではなく
-     **再コンパイル単価を8分→数秒に落とす保険**として採用。
-   - **`vram_peak_gb` を metadata に残すようにした**（CLAUDE.md §6-3 の規約を
-     満たしていなかった。従来は完了後の瞬間値 0.6GB だけが残っていた）。
-   - 残る知見: 稼ぎは compile ではなく**バッチ化**。1画像あたり
-     0.86秒（実効4）vs 1.80秒（実効1）＝ **2.1倍**。ただし実測2点から解くと
-     **s/it ≒ 1.8秒 × grad_accum** で、`batch_size` 1→2 はほぼ無料・
-     `grad_accum` は効率を買えない。VRAM はバッチ1で 203〜206GB、
-     micro-batch 2 で 234GB（差 28GB）なので micro-batch 3 に余地がありそう。
-   - **次の一手**: `accum 1` 固定で `batch_size` 1 / 2 / 3 を各50step 振る
-     （§14.7 が要求している「バッチだけ振った実測」）。これが出たら
-     `lora_batch_marginal_ratio`（現行 0.42）を正しい形に作り直し、GUI への
-     バッチ開放を判断する。1 micro-step の固定費 1.8秒の中身を潰す方が
-     本命かもしれない（ソース読みで追えるので GPU 不要）。
+1. **🚨 課金式の修正（最優先・原価割れ方向のバグ）。**
+   2026-09-21 に「実効バッチ」の読み違いが判明した（docs §14.8.1）。ai-toolkit の
+   tqdm 1 step は **`batch_size` 枚ぶん**で、YAML に書いていた
+   `gradient_accumulation_steps` は**処理量を増やさない**（内側ループを増やすのは
+   別キーの `gradient_accumulation`。相互排他）。
+   - 実測: 1画像あたり **1.78秒（batch1）/ 1.725秒（batch2）/ 1.63秒（batch4）**。
+     **バッチを4倍にして9%しか改善しない＝バッチ1で既に計算律速。**
+     「余った VRAM をバッチで埋める」は成立しない。
+   - `loraRuntime.ts` は実効バッチ = `batch_size × gradient_accumulation_steps`、
+     m = 0.42。①gas は時間を増やさないのに掛けている（過大請求）
+     ②batch はほぼ線形（m≈0.89）なのに 0.42（`batch_size 4` で**実所要の62%**しか
+     請求しない＝原価割れ）。**cost-guard も同じ式なので正常ジョブを安全停止させ得る。**
+   - **やること**: (a) 同一条件で `batch_size` 1 / 2 / 4 を測り直して f を確定
+     （v11/v12 は `cache_text_embeddings` の有無が違う）→ (b) 式を
+     `steps × f(batch_size)`（gas 非依存）に作り替え → (c) knob と cost-guard を同時更新。
+   - 生YAML（admin 限定）以外は `batch_size 1` 固定なので、**一般ユーザーへの
+     課金影響は無い**。急ぐ理由は admin ジョブの誤停止リスク。
 
-2. **価格表の文言修正。** トップページ `src/components/Hero.tsx` の「¥0 維持費」
+2. **§14.8 の compile 停止は解決済み（2026-09-20）。**
+   原因は minimax_h3 forward のデータ依存分岐 `if bool(is_pad.any())`。
+   `block_compile` を全経路の既定 ON にして再コンパイル単価を8分→数秒にした
+   （`LORA_BLOCK_COMPILE=0` で戻せる）。バッチ1で s/it 1.79 vs whole-model 1.85 と
+   悪化しないことも確認済み。`vram_peak_gb` の記録も入れてデプロイ済み
+   （job yukipas_v12 で metadata への書き込みを確認）。
+   - 派生の知見: `cache_text_embeddings: true` は `encode_prompt` を
+     0.1107 → 0.0012秒にするが、**元々6%**なので速度目的の価値は小さい。
+     TE（32B）を CPU へ退避できるので VRAM は空く（batch4 で 193.9GB）。
+   - 内訳を知りたいときは `performance_log_every: 10` を process 直下に置く。
+     推測する前にこれを回すこと。
+
+3. **価格表の文言修正。** トップページ `src/components/Hero.tsx` の「¥0 維持費」
    「月額固定費は0円」「秒単位の適正価格」が実態と乖離（月額サブスクが実在し、
    課金はジョブ開始前の一括見積もりデビット）。代替案はメモリ
    `pricing-copy-accuracy-issue` にある。**ローンチ前に必須。**
-3. **SDXL（sd-scripts / L40S）の s/it と prep 実測。** 現行 `sdxl: 0.642` は旧設定
+4. **SDXL（sd-scripts / L40S）の s/it と prep 実測。** 現行 `sdxl: 0.642` は旧設定
    （AdamW8bit + gc 有効）由来で本番条件を表していない。有償顧客向けの機能。
-4. **画像系 arch の prep 実測。** `lora_prep_load_s = 828` は minimax_h3（逆量子化 +
+5. **画像系 arch の prep 実測。** `lora_prep_load_s = 828` は minimax_h3（逆量子化 +
    compile warmup 477秒）基準。軽い arch（`qwen_image` / `flux2_klein_4b`）では
    過大請求の可能性。
-5. **Polar API の 2026-10 移行。** 現在 2026-04 に固定中。**2027年1月のローテーションで
+6. **Polar API の 2026-10 移行。** 現在 2026-04 に固定中。**2027年1月のローテーションで
    2026-04 が削除される**ため期限付き。メモリ `polar-api-version-migration` 参照。
-6. **SDXL 学習（sd-scripts）の残実装。** UI 入力欄 / salvage / cost-guard が未了。
+7. **SDXL 学習（sd-scripts）の残実装。** UI 入力欄 / salvage / cost-guard が未了。
 
 ---
 
