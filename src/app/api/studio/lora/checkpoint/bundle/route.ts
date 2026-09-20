@@ -89,6 +89,17 @@ export async function GET(request: Request): Promise<NextResponse> {
       sizeBytes: probe.size_bytes ?? null,
     });
   } catch (err) {
+    // 2026-09-20: ここに落ちた 502 の原因が後から追えなかった（レスポンスに
+    // message を詰めるだけで、サーバーログには何も残していなかった）。
+    // 落ちる経路は実質3つ — signJobArtifactUrl の env 未設定 throw、probe の
+    // 25秒タイムアウト、Modal 側の到達不能。どれなのかがログで分かるようにする。
+    // probe が found:false を返したケースは上の 404 で処理済みなので、ここに
+    // 来るのは「確認そのものが出来なかった」＝本当に異常な状態だけ。
+    const reason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    console.error(
+      `[studio/lora/checkpoint/bundle] probe failed job=${jobId} want=${want} ${reason}`,
+      err instanceof Error ? err.stack : undefined,
+    );
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "ダウンロードURLの生成に失敗しました。" },
       { status: 502 },
