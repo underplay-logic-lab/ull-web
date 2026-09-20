@@ -141,15 +141,33 @@ export async function GET() {
       .limit(PER_TABLE),
     supabaseAdmin
       .from("generation_jobs")
-      .select("id, user_id, status, workflow_type, video_url, result_path, credits_cost, error_message, created_at")
+      // video_url は意図的に取らない。2026-09-20 時点で director の5行に
+      // base64 data URI が入っており（合計60MB / 全16行）、このカラムを
+      // SELECT するだけで statement timeout (57014) になっていた。一覧が
+      // 常に「生成物の取得に失敗しました。」で開けず、取り残された LoRA
+      // ジョブの強制終了ボタンにも辿り着けなくなっていた。サムネイルは
+      // video_url を読まなくても signDirectorVideoUrl(user_id, job_id) で
+      // 作れる（HMAC のみ・DB 非依存）。
+      .select("id, user_id, status, workflow_type, result_path, credits_cost, error_message, created_at")
       .order("created_at", { ascending: false })
       .limit(PER_TABLE),
   ]);
 
-  const err = angle.error || upscale.error || gen.error;
-  if (err) {
-    console.error("[admin/generations] fetch failed:", err.message);
-    return NextResponse.json({ error: "生成物の取得に失敗しました。" }, { status: 500 });
+  // 2026-09-20: どのテーブルで落ちたかを admin 画面へ返す。ここが黙って
+  // 500 を返すだけだったため「最近の生成物」がずっと開けないことに気付けず、
+  // 取り残された LoRA ジョブの強制終了ボタンにも辿り着けなかった。
+  // admin 専用エンドポイントなので、理由をそのまま返してよい。
+  const failed = ([
+    ["angle_jobs", angle.error],
+    ["upscale_jobs", upscale.error],
+    ["generation_jobs", gen.error],
+  ] as const).filter(([, e]) => e);
+  if (failed.length > 0) {
+    const reason = failed
+      .map(([table, e]) => `${table}: ${e?.message ?? "unknown"}${e?.code ? ` (${e.code})` : ""}`)
+      .join(" / ");
+    console.error("[admin/generations] fetch failed:", reason);
+    return NextResponse.json({ error: `生成物の取得に失敗しました。${reason}`, reason }, { status: 500 });
   }
 
   const rows: GenRow[] = [];
@@ -207,14 +225,15 @@ export async function GET() {
   for (const r of gen.data ?? []) {
     const wt = (r.workflow_type as string) ?? "";
     const isLora = wt === "lora_training";
-    const rawVideo = isLora ? null : firstString(r.video_url);
-    let thumbUrl = rawVideo;
-    if (rawVideo && isVolumePath(rawVideo)) {
-      if (wt === "director") {
-        thumbUrl = signDirectorVideoUrl(r.user_id as string, r.id as string) ?? rawVideo;
-      } else if (wt === "custom") {
-        thumbUrl = signCustomWorkflowResultUrl(r.user_id as string, r.id as string, rawVideo) ?? rawVideo;
-      }
+    // video_url を読まずにサムネイルを決める（上の SELECT のコメント参照）。
+    // director は Volume の実体を署名URLで直接配信できる。custom は
+    // ファイル名が要る署名なので result_path から拾えるときだけ作る。
+    const rawResultPath = isLora ? null : firstString(r.result_path);
+    let thumbUrl: string | null = null;
+    if (wt === "director") {
+      thumbUrl = signDirectorVideoUrl(r.user_id as string, r.id as string);
+    } else if (wt === "custom" && rawResultPath && isVolumePath(rawResultPath)) {
+      thumbUrl = signCustomWorkflowResultUrl(r.user_id as string, r.id as string, rawResultPath);
     }
     rows.push({
       id: r.id as string,
