@@ -54,7 +54,9 @@ export async function uploadLoraDataset(
   // 配列との対応が崩れると学習が別画像のキャプションで回ってしまう）。
   // サーバー側は upload_lora_dataset_image に @modal.concurrent を付けて
   // 1コンテナで同時に受けられるようにしてある。
-  const UPLOAD_CONCURRENCY = 6;
+  const UPLOAD_CONCURRENCY = 10;
+  const startedAt = Date.now();
+  const totalBytes = files.reduce((n, f) => n + f.size, 0);
 
   const paths: string[] = new Array(files.length);
   let done = 0;
@@ -115,6 +117,20 @@ export async function uploadLoraDataset(
   );
 
   if (failure !== null) throw new Error((failure as { message: string }).message);
+
+  // 実効スループットの計測（2026-09-20）。131枚/52MB が約60秒＝約7Mbps で、
+  // これは「上り回線の帯域で説明できてしまう」水準だった。オーバーヘッド
+  // （リクエストのラウンドトリップ＋Volume commit が枚数分）が支配的なのか、
+  // 単に上り帯域で頭打ちなのかを1回のアップロードで切り分けるための1行。
+  // 前者ならリクエストをまとめる（multipart で複数枚/リクエスト）のが効き、
+  // 後者ならクライアント側で何をしても縮まらない。
+  const elapsedSec = (Date.now() - startedAt) / 1000;
+  const mbps = elapsedSec > 0 ? (totalBytes * 8) / elapsedSec / 1e6 : 0;
+  console.info(
+    `[lora-upload] ${files.length}枚 / ${(totalBytes / 1048576).toFixed(1)}MB を ` +
+      `${elapsedSec.toFixed(1)}秒（実効 ${mbps.toFixed(1)} Mbps・並列 ${UPLOAD_CONCURRENCY}・` +
+      `1枚あたり ${(elapsedSec / Math.max(1, files.length)).toFixed(2)}秒）`,
+  );
 
   return { datasetId, paths };
 }
