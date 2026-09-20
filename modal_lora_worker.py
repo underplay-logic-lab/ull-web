@@ -474,28 +474,28 @@ ULL_COST_GUARD_MULTIPLIER = max(
 LORA_SPI_BASELINE: dict[str, float] = {
     # src/lib/pricing/loraRuntime.ts と同値に保つこと（payload に
     # cost_cap_seconds が乗らなかった場合のフォールバック用）。
-    # 2026-09-20（夜）: ベンチの s/it 計測バグが判明し、本番フルランの実測
-    # （minimax_h3 / 実効バッチ4 / 1024px で 5.24 s/it）を基準に引き上げた。
-    # さらに同日、gradient_checkpointing を切った同一条件の実測（3.60 s/it）
-    # が出たので、そこから実効バッチ1へ割り戻した 0.90 を基準にし、未実測の
-    # 他 arch は相対順序を保ったまま同じ倍率（x1.64）でスケールした。
-    # 詳細は loraRuntime.ts のコメントと docs/gpu-benchmarks.md §14.13 / §14.14。
-    "minimax_h3": 0.9,
-    "wan22_14b": 0.72,
-    "wan21": 0.62,
-    "ltx2": 0.62,
-    "hunyuan": 0.72,
-    "cogvideox": 0.72,
-    "qwen_image": 0.36,
-    "krea2": 0.36,
-    "anima": 0.25,
-    "zimage": 0.21,
-    "flux2_klein_4b": 0.2,
+    # 2026-09-20（夜）: GUI 既定条件（実効バッチ1 / gradient_checkpointing 無効 /
+    # torch.compile **有効**）の本番ランで minimax_h3 を直接実測し 1.80 s/it。
+    # それまでの 0.90 は「実効バッチ4 の 3.60 s/it を正比例と仮定して 4 で割った
+    # 逆算」で、実測の半分だった。未実測の他 arch は相対順序を保ったまま同じ
+    # 倍率（x2.0）でスケールしてある。
+    # 詳細は loraRuntime.ts のコメントと docs/gpu-benchmarks.md §14.15。
+    "minimax_h3": 1.8,
+    "wan22_14b": 1.44,
+    "wan21": 1.24,
+    "ltx2": 1.24,
+    "hunyuan": 1.44,
+    "cogvideox": 1.44,
+    "qwen_image": 0.72,
+    "krea2": 0.72,
+    "anima": 0.5,
+    "zimage": 0.42,
+    "flux2_klein_4b": 0.4,
     "sdxl": 0.642,
 }
 # 未知 arch（カスタムモデル）の s/it フォールバック。pricing_knobs の
-# lora_spi_baseline_default と同じ意図・同じ値に保つこと（2026-09-20: 0.65）。
-LORA_SPI_BASELINE_DEFAULT = float(os.environ.get("LORA_SPI_BASELINE_DEFAULT", "0.65"))
+# lora_spi_baseline_default と同じ意図・同じ値に保つこと（2026-09-20: 2.0）。
+LORA_SPI_BASELINE_DEFAULT = float(os.environ.get("LORA_SPI_BASELINE_DEFAULT", "2.0"))
 # Prep / latent-caching / checkpoint headroom added on top of pure training
 # time in the per-arch floor (a multi-res 1024 run legitimately spends
 # 20-40 min caching latents before step 1).

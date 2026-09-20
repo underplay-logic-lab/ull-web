@@ -44,52 +44,47 @@ export const LORA_SPI_REFERENCE_RESOLUTION = 1024;
 /**
  * arch 別の s/it（秒/イテレーション）。基準解像度・実効バッチ1。
  *
- * 🚨 2026-09-20（夜）: この表を **0.213 等へ下げた根拠は誤りだった**。
- * `modal_lora_benchmark.py` の s/it 計測にバグがあり（ai-toolkit が1ステップ
- * につき tqdm 行を2本出すのを考慮せず、**同一時刻の2行の差**をステップ所要
- * 時間として記録していた）、測れていたのは「ログ2行を読んで print する時間」
- * だった。docs/gpu-benchmarks.md §14 冒頭の警告と §14.13 を参照。
+ * === 根拠: GUI 既定条件での本番実測（2026-09-20）===
+ * minimax_h3 / B300 / 1024px / rank64 / **実効バッチ1** / adamw /
+ * gradient_checkpointing 無効 / **torch.compile 有効** / 実写131枚 / 200step:
+ *   **1.80 s/it**
+ * 保存が挟まる区間を除いた定常部で、3経路が一致している:
+ *   step 130->180: 50step / 90秒 = 1.80
+ *   step  63->100: 37step / 66秒 = 1.78
+ *   tqdm 表示    : 1.70〜1.90
  *
- * === 現時点で唯一信頼できる実測（本番フルラン、2026-09-20）===
- * minimax_h3 / B300 / 1024px / rank64 / 実効バッチ4 / adamw /
- * gradient_checkpointing 有効 / torch.compile 無効 / 実写131枚:
- *   **5.24 s/it**（step 6 以降ずっと安定。tqdm 表示・壁時計差分とも一致）
+ * これは GUI モードが実際に使う構成そのもの（実効バッチ1固定・compile 有効）
+ * なので、逆算を挟まずそのまま基準値にできる。旧値 0.90 は「実効バッチ4 での
+ * 3.60 s/it を正比例と仮定して 4 で割った逆算」で、実測の半分だった。
  *
- * ここから基準（実効バッチ1・compile 有効）へ戻すと:
- *   5.24 ÷ 4（バッチ・線形と仮定）÷ 2（compile 有効で約2倍速・docs §5）≒ 0.65
- * 独立した経路として、docs §5 の 2026-09-06 計測（rank32 / 768px / compile 有効
- * で 5.0-5.4 **it/s** ＝ 0.19 s/it）を 1024px（画素数 ×1.78）・rank64 へ換算すると
- *   0.37〜0.44
- * となる。2経路の間を取り、**過小より過大へ倒す方針で 0.55** を採った。
- *
- * ⚠️ **これは暫定値**。確定させるには GUI モードの既定条件（実効バッチ1 /
- * gradient_checkpointing 無効 / compile 有効）での実測が要る。これは**GPUを
- * 追加で焼かなくても取れる** — 通常のジョブのログに出る tqdm の s/it を読めば
- * よい（tqdm の値は今回の実測と一致することが確認できている）。
+ * 🚨 **合成データのベンチを価格の根拠にしてはいけない**。同一条件を
+ * modal_lora_benchmark.py の合成24枚（アスペクト比7バケット混在）で測ると
+ * **0.20 s/it** で、実写と **9倍** ずれた。画素数を揃えても実データの重さは
+ * 再現できない。値付けに使う数字は必ず実ジョブのログから取ること。
  *
  * ⚠️ この式は gradient_checkpointing と torch.compile の有無を見ていない。
- * どちらも s/it を2倍近く動かすが、GUI モードでは両方固定（gc 無効・compile は
+ * どちらも s/it を大きく動かすが、GUI モードでは両方固定（gc 無効・compile は
  * 実効バッチ1なので有効）なので、効くのは生YAML（admin 限定）だけ。
  *
  * ⚠️ minimax_h3 以外の ai-toolkit arch は実測が無く、旧表の相対順序を保った
- * まま minimax_h3 に合わせて一律スケールしたもの。**どれも未検証**。
+ * まま minimax_h3 に合わせて一律スケール（x2.0）したもの。**どれも未検証**。
  *
  * ⚠️ modal_lora_worker.py 側にも同名のテーブルがある（payload に
  * cost_cap_seconds が乗らなかった場合のフォールバック）。片方だけ触らないこと。
  */
 export const LORA_SPI_BASELINE: Readonly<Record<string, number>> = {
   // --- ai-toolkit ワーカー ---
-  minimax_h3: 0.90, // 実測由来（docs §14.14）。3.60 s/it ÷ 実効バッチ4
-  wan22_14b: 0.72,
-  wan21: 0.62,
-  ltx2: 0.62,
-  hunyuan: 0.72,
-  cogvideox: 0.72,
-  qwen_image: 0.36,
-  krea2: 0.36,
-  anima: 0.25,
-  zimage: 0.21,
-  flux2_klein_4b: 0.2,
+  minimax_h3: 1.80, // 実測（docs §14.15）。GUI 既定条件そのもので計測した値
+  wan22_14b: 1.44,
+  wan21: 1.24,
+  ltx2: 1.24,
+  hunyuan: 1.44,
+  cogvideox: 1.44,
+  qwen_image: 0.72,
+  krea2: 0.72,
+  anima: 0.50,
+  zimage: 0.42,
+  flux2_klein_4b: 0.40,
   // --- sd-scripts ワーカー（別 tier・別スタック）---
   // 0.642 は「step 数だけ変えた2回の実行の総経過時間を連立で分離」して出した
   // 値で、下記の tqdm パースのバグとは無関係。よって据え置く。

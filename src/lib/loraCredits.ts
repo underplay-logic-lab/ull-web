@@ -18,9 +18,13 @@ export const DEFAULT_LORA_STEPS = 2000;
 // 2026-09-20: 5,000 → 20,000。5,000 は根拠のない保守的な仮値で、CLAUDE.md §0
 // の「裏付けのない保守的な上限は自己ブロック」に該当していた。実際の壁は
 // Modal コンテナの 12時間（LORA_ABS_MAX_RUN_S）で、実測 s/it から逆算すると
-//   minimax_h3 / 1024px / バッチ1 / 25枚 → 約 149,000 step
+//   minimax_h3 / 1024px / バッチ1 / 25枚 → 約  17,300 step
 //   sdxl（sd-scripts / L40S）           → 約  50,000 step
-// までは 12h に収まる（loraMaxSteps() の実値。ばらつき用の1.3倍を引いた後）。20,000 はその内側に十分入る「UI として扱える」上限で、
+// までは 12h に収まる（loraMaxSteps() の実値。ばらつき用の1.3倍を引いた後）。
+// ⚠️ 2026-09-20（夜）: GUI 既定条件の実測（docs §14.15）で minimax_h3 の s/it が
+// 0.90 → 1.80 になり、149,000 → 約 17,300 step へ下がった。**UI 上限 20,000 は
+// もはや内側ではなく**、minimax_h3 で 17,300 超を選ぶと /api/studio/lora/train が
+// 400 で拒否する。他 arch は余裕がある（wan22_14b 約21,600 / qwen_image 約43,300）。
 // 12h の壁そのものは loraMaxSteps()（src/lib/pricing/loraRuntime.ts）が設定
 // ごとに計算し、収まらない設定は /api/studio/lora/train が明示的に拒否する。
 // 課金と損切りは推定GPU秒ベースなので、step を増やせば価格も許容時間も自動で
