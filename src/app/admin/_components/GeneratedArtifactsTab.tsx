@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { supabase } from "@/lib/supabaseClient";
 import {
   AlertTriangle,
   ChevronRight,
@@ -123,6 +124,9 @@ function RecentGenerations() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // 強制終了中のジョブID（管理者操作・1件ずつ）。
+  const [aborting, setAborting] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -143,6 +147,44 @@ function RecentGenerations() {
       await load();
     })();
   }, [load]);
+
+  // queued/processing のまま取り残された LoRA ジョブを閉じる（管理者専用）。
+  // Modal 側を手で止めるとワーカーが誰も status を更新できなくなり、ユーザーの
+  // 画面は進捗表示のまま固まる。ユーザー側に中止 UI は置かない方針なので
+  // （開始したら完走させる）、後始末はここから行う。返金可否とModal call の
+  // キャンセルはサーバー側（/api/studio/lora/recover）が既存ロジックで判定する。
+  const abortJob = useCallback(
+    async (id: string) => {
+      if (
+        !window.confirm(
+          "このジョブを強制終了します（管理者操作）。\n" +
+            "返金の有無はジョブ種別に応じてサーバーが判定します" +
+            "（生YAMLモードは返金対象外）。\n\nよろしいですか？",
+        )
+      )
+        return;
+      setAborting(id);
+      setError(null);
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData.session?.access_token;
+        if (!token) throw new Error("セッションが切れています。再ログインしてください。");
+        const res = await fetch("/api/studio/lora/recover", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ jobId: id, action: "abort" }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json?.error ?? "強制終了に失敗しました。");
+        await load();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "強制終了に失敗しました。");
+      } finally {
+        setAborting(null);
+      }
+    },
+    [load],
+  );
 
   return (
     <div className="rounded-2xl border-gradient bg-surface/40 p-6">
@@ -256,6 +298,17 @@ function RecentGenerations() {
                         <span className="text-muted opacity-60">—</span>
                       )}
                       {r.extra && <span className="ml-1 text-[10px] text-muted">({r.extra})</span>}
+                      {r.kind === "lora" && (r.status === "queued" || r.status === "processing") && (
+                        <button
+                          type="button"
+                          onClick={() => void abortJob(r.id)}
+                          disabled={aborting === r.id}
+                          className="ml-1.5 rounded border border-red-400/40 px-1 text-[10px] text-red-300 transition-colors hover:bg-red-400/10 disabled:opacity-50"
+                          title="このジョブを cancelled にして閉じる（Modal call のキャンセルと返金判定はサーバー側）"
+                        >
+                          {aborting === r.id ? "終了中…" : "強制終了"}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );

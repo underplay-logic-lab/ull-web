@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getAdminEmails } from "@/lib/adminAuth";
 import { cancelLoraTrainingCall, type LoraDispatchPayload } from "@/lib/modalLoraTrain";
 
 // Cancelling a running call + terminating its container can take a moment.
@@ -205,12 +206,17 @@ export async function POST(request: Request): Promise<NextResponse> {
     const action: "abort" | "timeout" = body?.action === "abort" ? "abort" : "timeout";
     if (!jobId) return NextResponse.json({ error: "jobId が必要です。" }, { status: 400 });
 
-    const { data: jobData, error: jobErr } = await supabaseAdmin
-      .from("generation_jobs")
-      .select("*")
-      .eq("id", jobId)
-      .eq("user_id", user.id)
-      .maybeSingle();
+    // 管理者（ADMIN_EMAILS）は他ユーザーのジョブにも到達できる。2026-09-20 に
+    // Modal 側を手で止めたあと、DB のジョブ行が queued/processing のまま残って
+    // 誰も閉じられない状態を実際に踏んだ。ユーザー向けの中止 UI は意図的に
+    // 用意しない（ホスト判断: 開始したら完走させる）方針なので、後始末の経路は
+    // admin だけが持つ。判定は /api/admin/* と同じ allowlist。
+    const isAdminCaller = Boolean(
+      user.email && getAdminEmails().includes(user.email.toLowerCase()),
+    );
+    let jobQuery = supabaseAdmin.from("generation_jobs").select("*").eq("id", jobId);
+    if (!isAdminCaller) jobQuery = jobQuery.eq("user_id", user.id);
+    const { data: jobData, error: jobErr } = await jobQuery.maybeSingle();
     if (jobErr) {
       return NextResponse.json({ error: "ジョブの取得に失敗しました。", reason: jobErr.message }, { status: 500 });
     }
@@ -230,9 +236,13 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (action === "abort") {
       const { refunded, modalCancelled } = await closeWithRefund(job, {
         status: "cancelled",
-        message: yamlJob
-          ? "ユーザーによる中止（生YAMLモード — 返金対象外）"
-          : "ユーザーによる中止 — 全額返金",
+        message: isAdminCaller
+          ? yamlJob
+            ? "管理者による強制終了（生YAMLモード — 返金対象外）"
+            : "管理者による強制終了 — 全額返金"
+          : yamlJob
+            ? "ユーザーによる中止（生YAMLモード — 返金対象外）"
+            : "ユーザーによる中止 — 全額返金",
         refund: !yamlJob,
       });
       return NextResponse.json({ ok: true, status: "cancelled", refunded, modalCancelled, customYaml: yamlJob });
