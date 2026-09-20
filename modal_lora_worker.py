@@ -5898,7 +5898,9 @@ _DATASET_BATCH_MAX_BYTES = 256 * 1024 * 1024
 # Volume 書き込みの I/O 待ちしかしないので、ここで詰まらせるとクライアントの
 # 並列がそのまま無駄になる（2026-09-20: 並列4で 14リクエストが3.5ラウンドに
 # なり、全体46.7秒のうち実質すべてがこのラウンド数で決まっていた）。
-@modal.concurrent(max_inputs=16)
+# ハンドラ本体は1リクエスト1〜3秒しか使わない（受信は FastAPI が
+# UploadFile を解決する時点で終わっている）ので、32本受けても CPU は余る。
+@modal.concurrent(max_inputs=32)
 @modal.fastapi_endpoint(method="POST")
 async def upload_lora_dataset_batch(
     user_id: str,

@@ -66,7 +66,14 @@ export async function uploadLoraDataset(
   // 2.25Mbps へ既に3倍になっている。サーバー側は
   // upload_lora_dataset_batch の @modal.concurrent(max_inputs=16) まで
   // 1コンテナで受けられるので、そこへ揃えて2ラウンドで終わらせる。
-  const BATCH_CONCURRENCY = 8;
+  // 2026-09-20 追試: サーバー側の実処理は1リクエスト1〜3秒しかない
+  // （[upload-batch] recv+write=0.02s / commit=0.9〜3.4s）。にもかかわらず
+  // 1リクエストは16.93秒かかっており、差はHTTPボディの受信そのもの。
+  // 上り540Mbpsの回線で3.9MBに14秒（2.2Mbps/ストリーム）は、HTTP/2 の
+  // フロー制御ウィンドウ x 日米間RTT の積で説明が付く。この形の制限は
+  // ストリーム数を増やすと総和が伸びるので（並列4->8 で 9.4->14.3Mbps と
+  // ほぼ比例した）、リクエストを太らせるのではなく本数を増やす。
+  const BATCH_CONCURRENCY = 16;
   // 単枚フォールバック経路（Modal 未デプロイ時）の並列度。
   const UPLOAD_CONCURRENCY = 10;
 
