@@ -1133,6 +1133,18 @@ def _current_effective_vram_gb():
 _VRAM_PEAK: dict[str, float] = {"gb": 0.0}
 
 
+# 実ジョブから arch 別の校正値を回収するための計測値（2026-09-21 導入）。
+# 専用ベンチを14 arch ぶん回すと GPU 代と Volume 容量を先払いすることになるので、
+# 「実ジョブが走るたびに実測が溜まる」形にする（docs/gpu-benchmarks.md §14.8.1）。
+#
+# 他系統（推論）は generation_logs の execution_time_ms + gpu_tier と
+# generation_jobs.inputs の組で校正できるが、LoRA の課金式は
+# `prep + steps × s/it` の **合成** なので総所要時間だけでは2つの未知数に
+# 分解できない。だから LoRA に限って内訳を残す。
+# 1コンテナ＝1学習なのでモジュール変数で足りる（_VRAM_PEAK と同じ）。
+_RUN_METRICS: dict = {}
+
+
 def _track_vram_peak(gb) -> float:
     """瞬間値を渡すとピークを更新し、更新後のピークを返す（telemetry 専用、
     例外は投げない）。"""
@@ -3154,10 +3166,18 @@ except Exception as _e:  # noqa: BLE001
                     #     sample-gen bars are excluded unless the total is an
                     #     exact match to the configured step count or the line
                     #     carries a loss/lr field. total_steps stays authoritative.
+                    # 2026-09-21: 総ステップ数が config と一致するなら 100 未満でも
+                    # 学習バーとして受ける。生YAML の短いラン（50step 等）が
+                    # 学習として認識されず、進捗・prep 内訳・**s/it 予測による
+                    # cost-guard 監視までまるごと無効**になっていた
+                    # （GUI は route.ts が steps>=200 にクランプするので無影響）。
                     _is_train = (
                         m
                         and not cache_m
-                        and int(m.group(2)) >= 100
+                        and (
+                            int(m.group(2)) >= 100
+                            or (total_steps and int(m.group(2)) == total_steps)
+                        )
                         and (
                             m.group(4) == "s/it"
                             or (total_steps and int(m.group(2)) == total_steps)
@@ -3233,6 +3253,17 @@ except Exception as _e:  # noqa: BLE001
                                     f"(total prep {training_start - sub_start:.1f}s)",
                                     flush=True,
                                 )
+                                # 同じ数字を job 行にも残す（knob 校正用）。
+                                _RUN_METRICS.update(
+                                    {
+                                        "prep_s": round(training_start - sub_start, 1),
+                                        "model_load_s": (
+                                            round(_load_s, 1) if _load_s is not None else None
+                                        ),
+                                        "latent_cache_s": round(_cache_s, 1),
+                                        "jit_s": round(_jit_s, 1),
+                                    }
+                                )
                     _push()
                     _maybe_commit()
 
@@ -3279,6 +3310,16 @@ except Exception as _e:  # noqa: BLE001
         if state["step"] > 0 or cache_state["active"] or log_ring:
             _push(force=True)
         _maybe_commit(force=True)  # persist every save_every checkpoint written so far
+        # steady-state の s/it を残す。cost-guard の予測に使っているのと同じ
+        # trimmed 平均（外れ値＝チェックポイント保存やサンプル生成を落とす）。
+        try:
+            _spi_final = _trimmed_spi(rate_hist)
+            if _spi_final and _spi_final > 0:
+                _RUN_METRICS["s_per_it"] = round(float(_spi_final), 4)
+            if state["step"] > 0:
+                _RUN_METRICS["steps_observed"] = int(state["step"])
+        except Exception as _mx:  # noqa: BLE001 — telemetry only, never fatal
+            print(f"[perf] s/it の記録をスキップ: {_mx!r}", flush=True)
 
     if aborted:
         raise SafetyLimitError(aborted, kind=aborted_kind or "cost", refund=True)
@@ -4217,6 +4258,44 @@ def train_lora_job(params: dict) -> dict:
         if _peak > 0:
             metadata["vram_peak_gb"] = _peak
 
+        # --- arch 別 knob の校正用メトリクス（_RUN_METRICS の説明参照）---------
+        # ここで初めて「どの設定で s/it と prep が何秒だったか」が1行に揃う。
+        # ベンチを14 arch ぶん回す代わりに、実ジョブが走るたびにこれが溜まる。
+        try:
+            _metrics = dict(_RUN_METRICS)
+            _metrics.update(
+                {
+                    "arch": _arch_for_target(target_model, base_architecture),
+                    "resolution": int(resolution or 0),
+                    "images": len(image_paths),
+                    "steps_config": int(total_steps or 0),
+                    "raw_yaml": bool(override),
+                }
+            )
+            # batch / compile は生YAML で変わるので、実際に ai-toolkit へ渡した
+            # config から読む（GUI モードは batch 1 固定・compile は env 既定）。
+            try:
+                _cfg = yaml.safe_load(pathlib.Path(config_path).read_text(encoding="utf-8"))
+                _proc = (((_cfg or {}).get("config") or {}).get("process") or [{}])[0]
+                _tr = _proc.get("train") or {}
+                _md = _proc.get("model") or {}
+                _metrics.update(
+                    {
+                        "batch_size": int(_tr.get("batch_size") or 1),
+                        "grad_accum": int(_tr.get("gradient_accumulation") or 1),
+                        "gradient_checkpointing": bool(_tr.get("gradient_checkpointing")),
+                        "compile": bool(_md.get("compile")),
+                        "block_compile": bool(_md.get("block_compile")),
+                        "cache_text_embeddings": bool(_tr.get("cache_text_embeddings")),
+                    }
+                )
+            except Exception as _cfg_exc:  # noqa: BLE001 — telemetry only
+                print(f"[perf] config の読み取りをスキップ: {_cfg_exc!r}", flush=True)
+            metadata["metrics"] = _metrics
+            print(f"[perf] metrics -> {_metrics}", flush=True)
+        except Exception as _mt_exc:  # noqa: BLE001 — telemetry only, never fatal
+            print(f"[perf] metrics の記録をスキップ: {_mt_exc!r}", flush=True)
+
         _patch_job(
             job_id,
             {
@@ -4263,10 +4342,12 @@ def train_lora_job(params: dict) -> dict:
             "infra_error": infra,
             "gpu_tier": _gpu_tier_label(),
         }
-        # 失敗・安全停止のときも VRAM ピークは残す（OOM 由来の失敗を後から
-        # 切り分けるのに要る）。
+        # 失敗・安全停止のときも VRAM ピークと計測値は残す（OOM 由来の失敗や
+        # 見積もりミスを後から切り分けるのに要る）。
         if _VRAM_PEAK["gb"] > 0:
             meta["vram_peak_gb"] = _VRAM_PEAK["gb"]
+        if _RUN_METRICS:
+            meta["metrics"] = dict(_RUN_METRICS)
         if is_safety_stop:
             meta["safety_stop"] = True
             meta["safety_kind"] = safety_kind
