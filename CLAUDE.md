@@ -162,7 +162,7 @@ Modalジョブを完全に止めたい時は `modal container stop` ではなく
   - 生YAMLがパース不能なら上限 `loraCreditWorstCase(knobs)`（＝コンテナのハード上限秒 × 単価）を課金。
   - **実測が出たら `LORA_SPI_BASELINE`、価格水準を動かすなら単価 knob を触る。係数の手校正はもう不要。**
 - **原価割れ損切り（cost-guard）**: `src/lib/pricing/costGuard.server.ts` が knob からジョブの許容GPU秒を算出し、Next API が payload で Modal ワーカーへ渡す（LoRA: `cost_cap_seconds`、Angle: `max_allowed_time`）。ワーカー側の env override と `LORA_ABS_MAX_RUN_S` ハード上限は不変で残す。
-- **LoRA 中間チェックポイント**: `save_every` は短いランが25%刻み・500step上限、5,000step超は**保存10回で頭打ち**（等間隔）。中間 `.safetensors` を永続化し、完了画面で個別ダウンロードを可能にする。保存回数を増やす方向に変えるときは Volume 残量（1TB）を必ず確認する。
+- **LoRA 中間チェックポイント**: `save_every` は250刻み（短いランは25%刻み）、5,000step超は**保存20回で頭打ち**。中間 `.safetensors` を永続化し、完了画面で個別ダウンロードを可能にする。Modal Volume は 1TiB/月まで無料・超過 $0.09/GiB/月なので容量より **ファイル数**（v1は推奨5万・ハード50万 inode）に注意する。
 
 > ⚠️ **クレジット計算式を変更するときは、それを参照している全ての cost-guard / timeout 計算に影響が及んでいないか必ず確認すること。** 課金式とタイムアウト式が消費クレジット経由で密結合しており、片方を変えてもう片方が壊れた事故がある（`docs/gpu-benchmarks.md` §8）。LoRA については両者が同じ見積もり関数を共有するよう作り直して、この事故クラスを構造的に潰してある（2026-09-20）。
 
