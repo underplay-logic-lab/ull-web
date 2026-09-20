@@ -265,6 +265,32 @@ export function loraEstimatedSeconds(input: LoraRuntimeInput): LoraRuntimeEstima
 }
 
 /**
+ * 見積もりに対する余裕係数。実測のばらつきぶん（CLAUDE.md §0「タイムアウトは
+ * 多めに」）。損切りの下限（costGuard.server.ts）と、下の loraMaxSteps() が
+ * 「12時間に収まるか」を判定するときの両方で同じ値を使う。
+ */
+export const LORA_RUNTIME_CUSHION = 1.3;
+
+/**
+ * この設定で 12時間のコンテナ上限に収まる最大 step 数。
+ *
+ * UI のスライダー上限（LORA_MAX_STEPS = 20,000）は「扱いやすさ」で決めた
+ * 内側の値で、**本当の壁はこちら**。解像度・実効バッチ・枚数を上げていけば
+ * この値は下がるので、生 YAML のように極端な設定を組める経路では、投入前に
+ * ここで弾く（/api/studio/lora/train）。推定秒ベースなので、実測が更新されれば
+ * 上限も自動で追従する。
+ *
+ * 余裕係数ぶんを引いてあるのは、見積もりちょうどで 12h に張り付く設定を通すと
+ * 「課金だけして完走しない」ジョブになるため。
+ */
+export function loraMaxSteps(input: Omit<LoraRuntimeInput, "steps">): number {
+  const probe = loraEstimatedSeconds({ ...input, steps: 1 });
+  const budget = LORA_ABS_MAX_RUN_S / LORA_RUNTIME_CUSHION - probe.prepSeconds;
+  if (!(probe.secondsPerStep > 0) || budget <= 0) return 0;
+  return Math.max(0, Math.floor(budget / probe.secondsPerStep));
+}
+
+/**
  * 課金しうる上限クレジット。
  *
  * 「コンテナのハード上限（LORA_ABS_MAX_RUN_S）を超えて GPU を使うことは

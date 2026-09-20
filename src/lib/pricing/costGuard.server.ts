@@ -1,6 +1,10 @@
 import "server-only";
 import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";
-import { LORA_ABS_MAX_RUN_S, loraEstimatedSeconds } from "@/lib/pricing/loraRuntime";
+import {
+  LORA_ABS_MAX_RUN_S,
+  LORA_RUNTIME_CUSHION,
+  loraEstimatedSeconds,
+} from "@/lib/pricing/loraRuntime";
 
 // Central computation of the "原価割れ損切り" (cost-guard) seconds handed to the
 // Modal workers. Ported from modal_lora_worker.py's _credit_covered_seconds /
@@ -38,7 +42,7 @@ function expectedRunFloorSeconds(
 ): number {
   if (args.steps <= 0) return 0;
   const estimate = loraEstimatedSeconds({ ...args, knobs });
-  return Math.floor(Math.min(estimate.totalSeconds * 1.3, LORA_ABS_MAX_RUN_S));
+  return Math.floor(Math.min(estimate.totalSeconds * LORA_RUNTIME_CUSHION, LORA_ABS_MAX_RUN_S));
 }
 
 export type LoraCostCap = { seconds: number; reason: string };

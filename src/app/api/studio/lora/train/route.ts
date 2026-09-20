@@ -3,11 +3,11 @@ import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { spawnLoraTrainingJob, buildLoraDispatchPayload } from "@/lib/modalLoraTrain";
-import { DEFAULT_LORA_STEPS, autoLoraSteps, autoLoraRankAlpha } from "@/lib/loraCredits";
+import { DEFAULT_LORA_STEPS, LORA_MAX_STEPS, autoLoraSteps, autoLoraRankAlpha } from "@/lib/loraCredits";
 import { guiLoraPricingConfig, loraPriceBreakdown } from "@/lib/loraPricing";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { loraCostCapSeconds } from "@/lib/pricing/costGuard.server";
-import { loraCreditWorstCase } from "@/lib/pricing/loraRuntime";
+import { loraCreditWorstCase, loraMaxSteps } from "@/lib/pricing/loraRuntime";
 import { validateLoraYaml, loraYamlIdentity, collectLoraYamlStructureErrors } from "@/lib/loraYaml";
 import { getAdminEmails } from "@/lib/adminAuth";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -80,7 +80,10 @@ function sanitizeTrainingConfig(raw: unknown): Record<string, unknown> {
   if (rank !== undefined) out.rank = Math.min(256, Math.max(1, Math.round(rank)));
   if (alpha !== undefined) out.alpha = Math.min(256, Math.max(1, Math.round(alpha)));
   if (lr !== undefined) out.learning_rate = Math.min(1e-2, Math.max(1e-6, lr));
-  if (steps !== undefined) out.steps = Math.min(6000, Math.max(200, Math.round(steps)));
+  // 構造的な健全性だけを見る素朴なクランプ（UI のスライダー上限と同値）。
+  // 「この設定で 12時間に収まるか」は arch / 解像度 / 枚数が揃ってからでないと
+  // 判定できないので、下の loraMaxSteps() による明示的な拒否で見る。
+  if (steps !== undefined) out.steps = Math.min(LORA_MAX_STEPS, Math.max(200, Math.round(steps)));
   if (typeof src.optimizer === "string" && src.optimizer.trim()) {
     out.optimizer = src.optimizer.trim().slice(0, 40);
   }
@@ -455,6 +458,32 @@ async function handlePost(request: Request): Promise<NextResponse> {
         knobs,
       })
     : null;
+  // 12時間のコンテナ上限に収まらない設定は、頭打ちにして安く請求するのでは
+  // なく **受け付けない**（課金だけして完走しないジョブになるため）。GUI 経路
+  // は上限 20,000 step でも余裕で収まるので、実際にここへ来るのは生 YAML で
+  // 解像度・実効バッチを極端に上げた設定。
+  if (priceBreakdown && priceBreakdown.steps > 0) {
+    const fitSteps = loraMaxSteps({
+      arch: priceBreakdown.arch || pricedArch,
+      resolution: priceBreakdown.maxResolution,
+      effectiveBatch: priceBreakdown.effectiveBatch,
+      imageCount: priceBreakdown.imageCount,
+      spiOverride: hasOverride ? undefined : pricedPreset?.spiOverride,
+      knobs,
+    });
+    if (priceBreakdown.steps > fitSteps) {
+      return NextResponse.json(
+        {
+          error:
+            fitSteps > 0
+              ? `この設定では学習が実行時間の上限（12時間）に収まりません。step 数を ${fitSteps.toLocaleString("ja-JP")} 以下にするか、解像度・バッチサイズを下げてください。`
+              : "この設定では学習が実行時間の上限（12時間）に収まりません。解像度・バッチサイズを下げてください。",
+        },
+        { status: 400 },
+      );
+    }
+  }
+
   // A raw YAML that reached here unparseable (UI blocks it, so defence only),
   // or one with no positive step count -> the worst-case ceiling. Recomputed
   // from the live knobs so raising a coefficient can't be clamped away.
