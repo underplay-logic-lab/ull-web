@@ -252,6 +252,34 @@ PLANS["save_cost"] = [
     {**_REAL_CONFIG, "tier": "b300", "gradient_checkpointing": False, "save_every": 10},
 ]
 
+# GUI モード既定条件での s/it 確定（2026-09-20）。
+#
+# LORA_SPI_BASELINE["minimax_h3"] = 0.90 は "3.60 s/it ÷ 実効バッチ4" という
+# **正比例を仮定した逆算**であって、実効バッチ1での実測ではない（docs §14.14）。
+# バッチ1の有効な実測は1件も無い（§14.1〜14.4 の 0.213 は tqdm パースのバグで
+# 無効）。加えて §14.13/§14.14 はどちらも compile **無効**での計測だが、GUI
+# モードは実効バッチ1固定なので **compile が有効**になる（§14.8 のガードは
+# 実効バッチ>1 のときだけ compile を切る）。docs §5 では学習で compile は
+# 約2倍効くため、GUI 既定の真値は 0.90 を大きく下回る可能性がある。
+#
+# real_config から変えるのは3点だけ（他は §14.13/§14.14 と揃えて比較可能に保つ）:
+#   実効バッチ 4 -> 1 / compile 無効 -> 有効 / gc 無効（§14.14 と同じ）
+# これで同時に決まるもの:
+#   - LORA_SPI_BASELINE["minimax_h3"] の真値
+#   - 実効バッチが所要秒に正比例するか（バッチ1実測 × 4 と §14.14 の 3.60 を比較）
+#     → lora_batch_marginal_ratio の根拠。現行 0.65 は無効化された §14.7 由来。
+#   - compile 有効時の s/it（未計測）
+#
+# warmup_steps は compile の初回コンパイルを確実に捨てるため real_config より厚い。
+PLANS["gui_default"] = [
+    {**_REAL_CONFIG, "tier": "b300", "gradient_checkpointing": False,
+     "batch": 1, "grad_accum": 1, "compile": True,
+     # 実写に近いバケットの割れ方を再現する（compile 有効なので shape 変化の
+     # 影響が出る条件。正方形だけだと再コンパイル分を取り逃す）。
+     "aspect_mix": True,
+     "warmup_steps": 12, "measure_steps": 30},
+]
+
 # 本番プランへ行く前の1条件だけの通し確認。config 生成 → データセット →
 # ai-toolkit 起動 → tqdm パース → VRAM 記録 までが実際の学習で通ることを、
 # 最小の課金（$3前後）で確かめるためのもの。CLAUDE.md §0「まず最小条件で」。
@@ -391,13 +419,40 @@ def _trimmed_mean(xs: list[float], trim: float = 0.15) -> float | None:
 # ---------------------------------------------------------------------------
 # データセット生成
 # ---------------------------------------------------------------------------
-def _make_dataset(n_images: int, long_edge: int, dest: str) -> int:
+# 実写データセットでよくあるアスペクト比。ai-toolkit は比率ごとにバケットを
+# 作って別々の shape を流すため、正方形だけのデータでは **バケットが1つしか
+# できない**。torch.compile 有効時は shape が変わるたびに再コンパイルが走り
+# うる（docs §14.8 の「実効バッチ>1 で step 6 で8分停止」がまさにこれ）ので、
+# 正方形だけで測ると実データより良い数字が出て、価格を原価割れ方向へ倒す。
+_ASPECT_RATIOS: tuple[float, ...] = (1.0, 4 / 3, 3 / 4, 3 / 2, 2 / 3, 16 / 9, 9 / 16)
+
+
+def _aspect_dims(long_edge: int, ratio: float) -> tuple[int, int]:
+    """総画素数を long_edge^2 に保ったまま w:h = ratio にし、64 の倍数へ丸める。
+
+    画素数を揃えるのが要点。長辺を固定して比率を振ると計算量まで一緒に動いて
+    しまい、「バケットが割れた影響」と「単に重い/軽い画像になった影響」が
+    分離できなくなる。
+    """
+    area = float(long_edge) * float(long_edge)
+    w = int(round((area * ratio) ** 0.5 / 64.0)) * 64
+    h = int(round((area / ratio) ** 0.5 / 64.0)) * 64
+    return max(64, w), max(64, h)
+
+
+def _make_dataset(
+    n_images: int, long_edge: int, dest: str, aspect_mix: bool = False
+) -> int:
     """計測用のダミーデータセットを作る。
 
     速度は画像の**中身**ではなく画素数と枚数で決まるので、合成画像で十分。
     実写を使わないことで、再現性（毎回同じ入力）と、権利まわりの面倒が
     同時に片付く。キャプションは固定文字列を添えて Qwen キャプショニングを
     確実にスキップさせる（キャプション生成時間が s/it に混ざらないように）。
+
+    `aspect_mix=True` で `_ASPECT_RATIOS` を循環させ、実写データセットに近い
+    バケットの割れ方を再現する。**既定は False**（従来どおり正方形のみ）で、
+    過去に取った計測との比較可能性を壊さないため。
     """
     from PIL import Image
     import random
@@ -409,16 +464,20 @@ def _make_dataset(n_images: int, long_edge: int, dest: str) -> int:
 
     rnd = random.Random(1234)  # 固定 seed = 毎回同じデータセット
     for i in range(n_images):
-        img = Image.new("RGB", (long_edge, long_edge))
+        if aspect_mix:
+            w, h = _aspect_dims(long_edge, _ASPECT_RATIOS[i % len(_ASPECT_RATIOS)])
+        else:
+            w = h = long_edge
+        img = Image.new("RGB", (w, h))
         px = img.load()
         # 一様色だと VAE が潰れて非現実的に速くなる可能性があるので、
         # 粗いランダムブロックでそれなりの高周波成分を持たせる。
         block = 32
-        for by in range(0, long_edge, block):
-            for bx in range(0, long_edge, block):
+        for by in range(0, h, block):
+            for bx in range(0, w, block):
                 c = (rnd.randrange(256), rnd.randrange(256), rnd.randrange(256))
-                for y in range(by, min(by + block, long_edge)):
-                    for x in range(bx, min(bx + block, long_edge)):
+                for y in range(by, min(by + block, h)):
+                    for x in range(bx, min(bx + block, w)):
                         px[x, y] = c
         img.save(d / f"{i:04d}.png")
         (d / f"{i:04d}.txt").write_text("ullbench a photo of sks subject", encoding="utf-8")
@@ -476,6 +535,7 @@ def _run_benchmark(spec: dict) -> dict:
     grad_ckpt = bool(
         spec.get("gradient_checkpointing", DEFAULT_TRAIN_SETTINGS["gradient_checkpointing"])
     )
+    aspect_mix = bool(spec.get("aspect_mix", False))
     warmup_steps = int(spec.get("warmup_steps", WARMUP_STEPS))
     measure_steps = int(spec.get("measure_steps", MEASURE_STEPS))
     max_seconds = int(spec.get("max_seconds", DEFAULT_MAX_SECONDS))
@@ -496,6 +556,7 @@ def _run_benchmark(spec: dict) -> dict:
         "optimizer": optimizer,
         "gradient_checkpointing": grad_ckpt,
         "compile": spec.get("compile"),
+        "aspect_mix": aspect_mix,
         "save_every": int(spec.get("save_every") or total_steps),
         "total_steps": total_steps,
         "warmup_steps": warmup_steps,
@@ -508,7 +569,7 @@ def _run_benchmark(spec: dict) -> dict:
     proc = None
     try:
         lora_name = f"ullbench_{tier}_{target_model}_{resolution}_{n_images}"
-        _make_dataset(n_images, resolution, W.DATASET_DIR)
+        _make_dataset(n_images, resolution, W.DATASET_DIR, aspect_mix=aspect_mix)
         result["dataset_ready_s"] = round(time.time() - started_at, 1)
 
         # 本番と同じ config 生成を通す（公平性のため独自に YAML を書かない）。
@@ -627,7 +688,7 @@ def _run_benchmark(spec: dict) -> dict:
                 "spi_steady": round(spi, 4) if spi else None,
                 "spi_samples": len(intervals),
                 "spi_reported_last": result.pop("_last_reported_spi", None),
-                "steps_observed": measured[-1][1] if measured else 0,
+                "steps_observed": step_samples[-1][1] if step_samples else 0,
                 "cache_s": (
                     round(cache_last_ts - cache_first_ts, 1)
                     if cache_first_ts and cache_last_ts
@@ -651,7 +712,7 @@ def _run_benchmark(spec: dict) -> dict:
             sanity.append(f"s/it={spi:.4f} が現実的な範囲(0.001〜120)の外")
         if len(intervals) < 5:
             sanity.append(f"学習ステップのサンプルが {len(intervals)} 点しかない")
-        observed = measured[-1][1] if measured else 0
+        observed = step_samples[-1][1] if step_samples else 0
         if observed < total_steps * 0.8:
             sanity.append(f"到達ステップ {observed} が宣言値 {total_steps} に届いていない")
         peak = sampler.samples and max(s[1] for s in sampler.samples) or 0
