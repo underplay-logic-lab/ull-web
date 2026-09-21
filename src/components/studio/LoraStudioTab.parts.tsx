@@ -173,6 +173,7 @@ export type LoraFormDraft = {
   primaryDescription: string;
   primaryFixedTags: string;
   primaryIdentityTags: string;
+  primaryIdentityTagsJa: string;
   extraSubjects: LoraSubject[];
   loraName: string;
   captionCategory: LoraCaptionCategory;
@@ -202,6 +203,7 @@ export function buildFormDraft(v: {
   primaryDescription: string;
   primaryFixedTags: string;
   primaryIdentityTags: string;
+  primaryIdentityTagsJa: string;
   extraSubjects: LoraSubject[];
   loraName: string;
   captionCategory: LoraCaptionCategory;
@@ -222,6 +224,7 @@ export function buildFormDraft(v: {
     primaryDescription: v.primaryDescription,
     primaryFixedTags: v.primaryFixedTags,
     primaryIdentityTags: v.primaryIdentityTags,
+    primaryIdentityTagsJa: v.primaryIdentityTagsJa,
     extraSubjects: v.extraSubjects,
     loraName: v.loraName,
     captionCategory: v.captionCategory,
@@ -376,6 +379,7 @@ export const DEFAULT_FORM_DRAFT: LoraFormDraft = buildFormDraft({
   primaryDescription: "",
   primaryFixedTags: "",
   primaryIdentityTags: "",
+  primaryIdentityTagsJa: "",
   extraSubjects: [],
   loraName: "",
   captionCategory: "character",
@@ -412,6 +416,7 @@ export const quickSelectBtnCls =
 // 渡るものなので、機械任せで確認不能にしない。
 export function IdentityTagsField({
   value,
+  valueJa,
   onChange,
   sourceJa,
   onConvert,
@@ -421,11 +426,14 @@ export function IdentityTagsField({
   canExtract,
   disabled,
 }: {
+  /** 英タグ（カンマ区切り）。モデルへ渡る正のデータ。 */
   value: string;
-  onChange: (next: string) => void;
+  /** 同じ並びの日本語（カンマ区切り）。表示専用。 */
+  valueJa: string;
+  onChange: (next: { en: string; ja: string }) => void;
   sourceJa: string;
   onConvert: () => void;
-  /** 画像解析（解析済みのデータセットから identity を抽出）。 */
+  /** 画像解析（取り込んだ画像から identity を抽出）。 */
   onExtract: () => void;
   converting: boolean;
   extracting: boolean;
@@ -433,32 +441,40 @@ export function IdentityTagsField({
   disabled: boolean;
 }) {
   const [draft, setDraft] = useState("");
-  const tags = value
-    .split(/\s*[,、]\s*/)
-    .map((t) => t.trim())
-    .filter(Boolean);
+  // 英と日を同じ並びで持つ。日が欠けていれば英をそのまま見せる（表示は
+  // 常に何か出す方が、空欄で「消えた？」と思わせるより安全）。
+  const en = value.split(/\s*[,、]\s*/).map((t) => t.trim()).filter(Boolean);
+  const ja = valueJa.split(/\s*[,、]\s*/).map((t) => t.trim());
+  const tags = en.map((t, i) => ({ en: t, ja: ja[i] || t }));
   const busy = disabled || converting || extracting;
 
-  const setTags = (next: string[]) => onChange([...new Set(next)].join(", "));
+  const setTags = (next: { en: string; ja: string }[]) => {
+    const seen = new Set<string>();
+    const uniq = next.filter((t) => t.en && !seen.has(t.en) && seen.add(t.en) !== undefined);
+    onChange({ en: uniq.map((t) => t.en).join(", "), ja: uniq.map((t) => t.ja).join(", ") });
+  };
   const addDraft = () => {
     const t = draft.trim().replace(/[,、]/g, "");
     if (!t) return;
-    setTags([...tags, t]);
+    // 日本語で打たれたらそのまま日本語側に入れ、英側は後段の変換に委ねる。
+    // 英字だけなら両方に同じ値を入れる。
+    const isAscii = /^[ -~]+$/.test(t);
+    setTags([...tags, { en: isAscii ? t.toLowerCase() : t, ja: t }]);
     setDraft("");
   };
 
   return (
     <div className="mt-1.5 rounded-lg border border-border/60 bg-background/60 p-2">
       <div className="mb-1 flex flex-wrap items-center gap-1.5">
-        <span className="text-[10px] font-medium text-foreground">metadata に埋め込むタグ</span>
+        <span className="text-[10px] font-medium text-foreground">学習したい特徴</span>
         <button
           type="button"
           onClick={onExtract}
           disabled={busy || !canExtract}
           title={
             canExtract
-              ? "解析済みの画像から、この人物の変わらない特徴を抽出します"
-              : "先に画像のAI解析を済ませてください"
+              ? "取り込んだ画像から、この人物の変わらない特徴を抽出します"
+              : "先に画像を取り込んでください"
           }
           className="inline-flex items-center gap-1 rounded-md border border-neon-violet/40 bg-neon-violet/10 px-2 py-0.5 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-40"
         >
@@ -469,7 +485,7 @@ export function IdentityTagsField({
           type="button"
           onClick={onConvert}
           disabled={busy || !sourceJa.trim()}
-          title="上に書いた日本語の特徴を Danbooru タグへ変換します"
+          title="上に書いた日本語の特徴をタグへ変換します"
           className={quickSelectBtnCls}
         >
           {converting ? <Loader2 size={10} className="animate-spin" /> : <Languages size={10} />}
@@ -481,15 +497,16 @@ export function IdentityTagsField({
         <div className="mb-1.5 flex flex-wrap gap-1">
           {tags.map((t) => (
             <span
-              key={t}
-              className="inline-flex items-center gap-1 rounded-full border border-neon-pink/40 bg-neon-pink/10 px-2 py-0.5 font-mono text-[10px] text-neon-pink"
+              key={t.en}
+              title={t.en}
+              className="inline-flex items-center gap-1 rounded-full border border-neon-pink/40 bg-neon-pink/10 px-2 py-0.5 text-[10px] text-neon-pink"
             >
-              {t}
+              {t.ja}
               {!busy && (
                 <button
                   type="button"
-                  onClick={() => setTags(tags.filter((x) => x !== t))}
-                  aria-label={`${t} を削除`}
+                  onClick={() => setTags(tags.filter((x) => x.en !== t.en))}
+                  aria-label={`${t.ja} を削除`}
                   className="text-neon-pink/70 transition-colors hover:text-red-400"
                 >
                   ×
@@ -500,7 +517,7 @@ export function IdentityTagsField({
         </div>
       ) : (
         <p className="mb-1.5 text-[10px] text-muted">
-          まだありません。「画像から抽出」か、上の日本語から変換してください。
+          まだありません。「画像から抽出」を押してください。
         </p>
       )}
 
@@ -514,9 +531,9 @@ export function IdentityTagsField({
               addDraft();
             }
           }}
-          placeholder="タグを追加（例: bald）"
+          placeholder="特徴を追加（例: 白髪）"
           disabled={busy}
-          className={`${fieldCls} font-mono text-[11px]`}
+          className={`${fieldCls} text-[11px]`}
         />
         <button type="button" onClick={addDraft} disabled={busy || !draft.trim()} className={quickSelectBtnCls}>
           追加
@@ -524,11 +541,14 @@ export function IdentityTagsField({
       </div>
 
       <p className="mt-1 text-[10px] leading-relaxed text-muted">
-        キャプションには<strong className="text-foreground">書かれず</strong>、完成した LoRA の metadata にだけ埋め込まれます（生成時にプロンプトへ戻して再現性を上げるため）。不要なタグは × で消し、足りないものは追加してください。
+        ここに残した特徴だけが<strong className="text-foreground">トリガーワードに焼き込まれ</strong>、キャプションには書かれません。
+        学習させたくないもの（例: 眼鏡を外した絵も出したい）は <strong className="text-foreground">×</strong> で消してください。
+        完成した LoRA の metadata にも同じ内容が埋め込まれます。
       </p>
     </div>
   );
 }
+
 
 // ---------------------------------------------------------------------------
 

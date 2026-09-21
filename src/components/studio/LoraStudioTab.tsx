@@ -129,6 +129,9 @@ import {
   type Phase,
 } from "./LoraStudioTab.parts";
 
+// 日本語のカンマ（、）も区切りとして扱う。
+const SPLIT_TAGS_RE = /\s*[,、]\s*/;
+
 export function LoraStudioTab({
   onUseLora,
   onOpenMultiAngle,
@@ -225,6 +228,8 @@ export function LoraStudioTab({
   // ComfyUI 側の「LoRA を読んだら metadata のタグをプロンプトへ足す」運用で
   // 生成時に戻ってくることで再現性が上がる、という対称の使い方（ホスト運用）。
   const [primaryIdentityTags, setPrimaryIdentityTags] = useState("");
+  // 上の英タグと同じ並びの日本語表示（表示専用。英側が正）。
+  const [primaryIdentityTagsJa, setPrimaryIdentityTagsJa] = useState("");
   const [extraSubjects, setExtraSubjects] = useState<LoraSubject[]>([]);
   const allSubjects = useMemo<LoraSubject[]>(
     () =>
@@ -235,11 +240,19 @@ export function LoraStudioTab({
               description: primaryDescription.trim(),
               fixedTags: primaryFixedTags.trim(),
               identityTags: primaryIdentityTags.trim(),
+              identityTagsJa: primaryIdentityTagsJa.trim(),
             },
             ...extraSubjects,
           ]
         : [],
-    [triggerWord, primaryDescription, primaryFixedTags, primaryIdentityTags, extraSubjects],
+    [
+      triggerWord,
+      primaryDescription,
+      primaryFixedTags,
+      primaryIdentityTags,
+      primaryIdentityTagsJa,
+      extraSubjects,
+    ],
   );
   const [loraName, setLoraName] = useState("");
   // SDXL/sd-scriptsワーカー限定のメタデータタグ埋め込み（2026-09-15、
@@ -494,6 +507,7 @@ export function LoraStudioTab({
         if (typeof d.primaryDescription === "string") setPrimaryDescription(d.primaryDescription);
         if (typeof d.primaryFixedTags === "string") setPrimaryFixedTags(d.primaryFixedTags);
         if (typeof d.primaryIdentityTags === "string") setPrimaryIdentityTags(d.primaryIdentityTags);
+        if (typeof d.primaryIdentityTagsJa === "string") setPrimaryIdentityTagsJa(d.primaryIdentityTagsJa);
         if (Array.isArray(d.extraSubjects)) {
           const restored = d.extraSubjects
             .map((s) => {
@@ -585,6 +599,7 @@ export function LoraStudioTab({
       primaryDescription,
       primaryFixedTags,
       primaryIdentityTags,
+      primaryIdentityTagsJa,
       extraSubjects,
       loraName,
       captionCategory,
@@ -617,6 +632,7 @@ export function LoraStudioTab({
     primaryDescription,
     primaryFixedTags,
     primaryIdentityTags,
+    primaryIdentityTagsJa,
     extraSubjects,
     loraName,
     captionCategory,
@@ -856,8 +872,21 @@ export function LoraStudioTab({
       setIdentityBusy(index);
       try {
         const tags = await translateCaption(text, "to_en", "tags");
-        if (index < 0) setPrimaryIdentityTags(tags);
-        else setExtraSubjects((prev) => prev.map((p, k) => (k === index ? { ...p, identityTags: tags } : p)));
+        // 日本語側は元の入力をそのまま並べる。数が合わなければ表示側で英に
+        // フォールバックするので、ズレても壊れない。
+        const ja = text
+          .split(SPLIT_TAGS_RE)
+          .map((x) => x.trim())
+          .filter(Boolean)
+          .join(", ");
+        if (index < 0) {
+          setPrimaryIdentityTags(tags);
+          setPrimaryIdentityTagsJa(ja);
+        } else {
+          setExtraSubjects((prev) =>
+            prev.map((p, k) => (k === index ? { ...p, identityTags: tags, identityTagsJa: ja } : p)),
+          );
+        }
         setIdentityConfirmed(false);
       } catch (err) {
         console.warn("[lora] identity tag conversion failed:", err);
@@ -894,9 +923,16 @@ export function LoraStudioTab({
       setIdentityExtracting(index);
       try {
         const tags = await extractIdentityTags(pool, t, hintJa);
-        const merged = tags.join(", ");
-        if (index < 0) setPrimaryIdentityTags(merged);
-        else setExtraSubjects((prev) => prev.map((p, k) => (k === index ? { ...p, identityTags: merged } : p)));
+        const en = tags.map((x) => x.en).join(", ");
+        const ja = tags.map((x) => x.ja).join(", ");
+        if (index < 0) {
+          setPrimaryIdentityTags(en);
+          setPrimaryIdentityTagsJa(ja);
+        } else {
+          setExtraSubjects((prev) =>
+            prev.map((p, k) => (k === index ? { ...p, identityTags: en, identityTagsJa: ja } : p)),
+          );
+        }
         setIdentityConfirmed(false);
       } catch (err) {
         console.warn("[lora] identity extraction failed:", err);
@@ -1004,13 +1040,28 @@ export function LoraStudioTab({
   }, [yamlMode, yamlCheck, resolution]);
   const heavyConfigWarn = resolutionHas1280 && images.length > 100;
 
+  // 確定済みの identity リスト（日本語表示があれば日本語、無ければ英タグ）。
+  // 2026-09-21 の宣言方式移行で、これがキャプションのブラックリストになる。
+  // 被写体が複数いる場合は「◯◯: a, b / △△: c」の形で全員ぶんを渡す。
+  const confirmedIdentityJa = useMemo(() => {
+    const parts = allSubjects
+      .map((sub) => {
+        const list = (sub.identityTagsJa ?? "").trim() || (sub.identityTags ?? "").trim();
+        return list ? `${sub.trigger.trim() || "被写体"}: ${list}` : "";
+      })
+      .filter(Boolean);
+    return parts.join(" / ");
+  }, [allSubjects]);
+
   const captionSpec: LoraCaptionSpec = useMemo(
     () => ({
       category: captionCategory,
-      fixed: captionFixed.trim(),
+      // 手入力欄より確定リストを優先する。リストが空のときだけ手入力
+      // （および、それも空ならカテゴリ既定）へフォールバックする。
+      fixed: confirmedIdentityJa || captionFixed.trim(),
       varying: captionVarying.trim(),
     }),
-    [captionCategory, captionFixed, captionVarying],
+    [captionCategory, confirmedIdentityJa, captionFixed, captionVarying],
   );
   const captionSpecFilled = captionSpecHasInput(captionSpec);
   const captionCategoryMeta = LORA_CAPTION_CATEGORY_META[captionCategory];
@@ -2510,6 +2561,7 @@ export function LoraStudioTab({
     setPrimaryDescription("");
     setPrimaryFixedTags("");
     setPrimaryIdentityTags("");
+    setPrimaryIdentityTagsJa("");
     setExtraSubjects([]);
     setLoraName("");
     setEmbedTagsInput("");
@@ -3152,10 +3204,12 @@ export function LoraStudioTab({
                         />
                         <IdentityTagsField
                           value={primaryIdentityTags}
+                          valueJa={primaryIdentityTagsJa}
                           onChange={(next) => {
-                      setPrimaryIdentityTags(next);
-                      setIdentityConfirmed(false);
-                    }}
+                            setPrimaryIdentityTags(next.en);
+                            setPrimaryIdentityTagsJa(next.ja);
+                            setIdentityConfirmed(false);
+                          }}
                           sourceJa={primaryDescription}
                           onConvert={() => void convertIdentityTags(-1, primaryDescription)}
                           onExtract={() => void extractIdentityFor(-1, triggerWord, primaryDescription)}
@@ -3183,8 +3237,10 @@ export function LoraStudioTab({
                   />
                   <IdentityTagsField
                     value={primaryIdentityTags}
+                    valueJa={primaryIdentityTagsJa}
                     onChange={(next) => {
-                      setPrimaryIdentityTags(next);
+                      setPrimaryIdentityTags(next.en);
+                      setPrimaryIdentityTagsJa(next.ja);
                       setIdentityConfirmed(false);
                     }}
                     sourceJa={primaryDescription}
@@ -3257,8 +3313,13 @@ export function LoraStudioTab({
                   />
                   <IdentityTagsField
                     value={s.identityTags ?? ""}
+                    valueJa={s.identityTagsJa ?? ""}
                     onChange={(next) => {
-                      setExtraSubjects((prev) => prev.map((p, k) => (k === i ? { ...p, identityTags: next } : p)));
+                      setExtraSubjects((prev) =>
+                        prev.map((p, k) =>
+                          k === i ? { ...p, identityTags: next.en, identityTagsJa: next.ja } : p,
+                        ),
+                      );
                       setIdentityConfirmed(false);
                     }}
                     sourceJa={s.description}
@@ -3444,9 +3505,8 @@ export function LoraStudioTab({
             {captionPromptOpen && (
               <div className="space-y-3 px-3 pb-3">
                 <p className="text-[10px] leading-relaxed text-muted">
-                  学習タイプを選び、日本語で「固定したい特徴」と「変化させたい特徴」を入力してください。
-                  「次へ」を押すと入力内容をAIが解析し、画像解析エンジン向けの最適な英語キャプション指示を自動生成・反映します
-                  （固定したい特徴はキャプションから除外＝トリガーワードに焼き込み、変化させたい特徴のみ描写）。
+                  学習タイプを選ぶと、その種類に合ったキャプションの方針が自動で適用されます。
+                  「次へ」を押すと、画像解析エンジン向けの英語キャプション指示をAIが組み立てて反映します。
                 </p>
                 {/* 2026-09-21: 「入力しないと何も効かない」と誤解されていた
                     （ホスト確認）。実際は学習タイプごとの既定ルールが常に
@@ -3454,6 +3514,28 @@ export function LoraStudioTab({
                     置き換わる実装で、1語足しただけで顔や髪色が
                     ブラックリストから外れる事故があった（loraCaptionSpec.ts
                     の buildCaptionMetaPrompt のコメント参照）。 */}
+                {/* 確定リストがある間は、手入力の固定/変化を出さない
+                    （2026-09-21 の宣言方式移行）。上の「学習したい特徴」が
+                    ブラックリストそのものになるので、同じことを2箇所で
+                    指定させると矛盾するため。代わりに結果を日本語で見せる。 */}
+                {confirmedIdentityJa ? (
+                  <div className="rounded-lg border border-border/60 bg-background/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted">
+                    <p>
+                      上の<strong className="text-foreground">「学習したい特徴」</strong>がそのまま適用されます。
+                    </p>
+                    <p className="mt-1">
+                      🔒 <strong className="text-foreground">トリガーワードに焼き込む</strong>（キャプションに書かない）:
+                      <span className="ml-1 text-neon-pink">{confirmedIdentityJa}</span>
+                    </p>
+                    <p className="mt-1">
+                      ✏️ <strong className="text-foreground">毎回キャプションに書く</strong>（学習しない）:
+                      <span className="ml-1">上記以外すべて — 顔立ち・髪型・髪色・目の色も含め、ポーズ・表情・構図・背景・光</span>
+                    </p>
+                    <p className="mt-1 opacity-80">
+                      焼き込みたくないものは、上のリストから <strong className="text-foreground">×</strong> で外してください。
+                    </p>
+                  </div>
+                ) : (
                 <p className="rounded-lg border border-border/60 bg-background/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted">
                   <strong className="text-foreground">通常は両方とも空欄のままで構いません。</strong>
                   学習タイプを選んだ時点で既定ルールが効いています。人物なら、顔立ち・髪型・髪色・目の色・固有の装飾品は
@@ -3468,6 +3550,7 @@ export function LoraStudioTab({
                   <br />
                   ⚠️ 学習タイプを「衣装」にすると<strong className="text-foreground">逆になります</strong>（衣装を書かず、着ている人の顔や髪を描写）。人物LoRAでは「キャラクター／人物」を選んでください。
                 </p>
+                )}
 
                 {/* Caption FORMAT — dense prose vs. comma tags, routed by the
                     selected base model unless the user pins it. */}

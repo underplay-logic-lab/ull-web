@@ -54,15 +54,19 @@ function buildPrompt(trigger: string, hintJa: string): string {
     "  and clothing UNLESS it is a signature outfit worn in every single image.",
     "If two people appear, describe ONLY the one matching the description above.",
     "",
-    "Answer as a JSON array of lowercase Danbooru-style tags, at most 12, most",
-    'distinctive first. Example: ["bald", "fat", "glasses", "old man"]',
+    "Answer as a JSON array of at most 12 objects, most distinctive first.",
+    'Each object is {"en": <lowercase Danbooru-style tag>, "ja": <short natural Japanese>}.',
+    'Example: [{"en":"bald","ja":"禿頭"},{"en":"fat","ja":"太っている"},{"en":"glasses","ja":"眼鏡"}]',
+    "The Japanese is what the user reads; the English is what goes into the model prompt.",
     "Output ONLY the JSON array — no prose, no markdown fences.",
   ]
     .filter(Boolean)
     .join("\n");
 }
 
-function parseTags(raw: string): string[] {
+export type IdentityTag = { en: string; ja: string };
+
+function parseTags(raw: string): IdentityTag[] {
   const text = raw.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
   let arr: unknown = null;
   try {
@@ -77,16 +81,23 @@ function parseTags(raw: string): string[] {
       }
     }
   }
-  const out: string[] = [];
+  const out: IdentityTag[] = [];
   const seen = new Set<string>();
   for (const v of Array.isArray(arr) ? arr : []) {
-    const t = String(v ?? "")
+    const o = (v ?? {}) as Record<string, unknown>;
+    const en = String(o.en ?? "")
       .toLowerCase()
       .replace(/[^a-z0-9 _'-]/g, "")
       .trim();
-    if (!t || t.length > 40 || seen.has(t)) continue;
-    seen.add(t);
-    out.push(t);
+    // 日本語側は表示専用なので記号を落とすだけに留める（漢字・かなを消さない）。
+    const ja = String(o.ja ?? "")
+      .split(/[,、\r\n]/)
+      .join(" ")
+      .trim()
+      .slice(0, 40);
+    if (!en || en.length > 40 || seen.has(en)) continue;
+    seen.add(en);
+    out.push({ en, ja: ja || en });
     if (out.length >= 12) break;
   }
   return out;
@@ -136,7 +147,7 @@ export async function POST(request: Request) {
 
     let raw: string;
     try {
-      raw = await runGeminiVision(genAI, buildPrompt(trigger, hintJa), images, true);
+      raw = await runGeminiVision(genAI, buildPrompt(trigger, hintJa), images, "enja");
     } catch (e) {
       return geminiErrorResponse(e, ERR_MESSAGES);
     }

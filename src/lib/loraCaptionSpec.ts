@@ -188,6 +188,9 @@ export type LoraCaptionSpec = {
 
 export const CAPTION_SPEC_MAX_FIELD = 1500;
 
+// テンプレートリテラル内で改行を挟むためだけの定数（ソース上の見た目を壊さない）。
+const NEWLINE = String.fromCharCode(10);
+
 export function isLoraCaptionCategory(v: unknown): v is LoraCaptionCategory {
   return typeof v === "string" && (LORA_CAPTION_CATEGORIES as readonly string[]).includes(v);
 }
@@ -256,24 +259,24 @@ export function buildCaptionMetaPrompt(spec: LoraCaptionSpec, triggerWord: strin
     "You are a senior dataset engineer who writes captioning instructions for LoRA fine-tuning.",
     `The user is training a ${meta.typeLabelEn}. The trigger word is "${trigger}".`,
     "",
-    "The user describes, in Japanese, two groups of features:",
-    `- FIXED / IDENTITY features (these ARE "${trigger}" and are being baked into the trigger token — they must be treated as a hard blacklist and NEVER written in any caption, even when clearly visible):`,
-    `  ${rule.forbid}${spec.fixed.trim() ? `
-  ADDITIONALLY, the user specifically listed: ${spec.fixed.trim()}` : ""}`,
+    // 2026-09-21（宣言方式へ移行）: `fixed` は「画像から抽出 → ユーザーが
+    // 取捨選択して確定したリスト」になった。空欄から書かせていた頃と違い
+    // 書き漏らしが起きにくいので、**既定の forbid を置き換える**のが正しい。
+    //
+    // これで「全画像で眼鏡をかけているが眼鏡は学習したくない」が、リストから
+    // 外すだけで表現できる（以前は既定の forbid に眼鏡が含まれてしまい、
+    // 変化させたい側に書いても指示が矛盾していた）。
+    // リストが空のときだけカテゴリ既定にフォールバックする。
+    "The user has confirmed exactly which features define this subject:",
+    `- FIXED / IDENTITY features (these ARE "${trigger}" and are being baked into the trigger token — treat this as the COMPLETE blacklist and NEVER write any of them in a caption, even when clearly visible):`,
+    `  ${spec.fixed.trim() || rule.forbid}`,
+    spec.fixed.trim()
+      ? "  This list is exhaustive. Anything NOT on it — including the face, hairstyle, hair colour and eye colour — is a normal visible detail and SHOULD be described when visible."
+      : "",
     `- VARIABLE features (these change between images and MUST be described in detail so the model learns they are not part of "${trigger}"):`,
-    `  ${rule.describe}${spec.varying.trim() ? `
-  ADDITIONALLY, the user specifically listed: ${spec.varying.trim()}` : ""}`,
+    `  ${rule.describe}${spec.varying.trim() ? `${NEWLINE}  ADDITIONALLY, the user specifically listed: ${spec.varying.trim()}` : ""}`,
     "",
-    // 2026-09-21: 既定を常に効かせる（置き換えない）ようにした副作用で、
-    // 「既定では固定扱いのものを、あえて変動扱いにしたい」が表現できなく
-    // なっていた。実例: 全画像で眼鏡をかけているが、眼鏡はキャラの特徴に
-    // したくない（＝描写させて学習から外したい）。ユーザーの明示指定を
-    // 既定より優先させる一文で解消する。
-    "PRECEDENCE: the user's explicit lists override the defaults above. If the",
-    "user listed something as VARIABLE that the default blacklist would forbid,",
-    "the user wins — it MUST be described. If the user listed something as FIXED",
-    "that the defaults would describe, the user wins — it MUST NEVER be written.",
-    "",
+
     "Write a single English instruction block for the image-captioning VLM (Qwen). Requirements:",
     `1. Tell it to output ONE line of comma-separated English, starting with "${trigger}," and nothing before it.`,
     "2. Translate the user's Japanese feature lists into concrete English wording inside the instruction.",
@@ -384,6 +387,12 @@ export type LoraSubject = {
    * **キャプションには一切入らず metadata にだけ入る**。
    */
   identityTags?: string;
+  /**
+   * identityTags と同じ並びの日本語表示（カンマ区切り、2026-09-21）。
+   * ユーザーが読むのは日本語、モデルへ渡すのは英タグ、という二層にするため。
+   * 英側が正で、こちらは表示専用（欠けていれば英をそのまま出す）。
+   */
+  identityTagsJa?: string;
 };
 
 function escapeReSub(s: string): string {

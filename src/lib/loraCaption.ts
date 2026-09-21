@@ -443,11 +443,13 @@ export async function generateDatasetCaptions(
 //
 // サムネイルはキャプションと同じキャッシュを使うので、解析済みのデータセット
 // なら追加のデコードは発生しない。
+export type IdentityTag = { en: string; ja: string };
+
 export async function extractIdentityTags(
   files: File[],
   trigger: string,
   hintJa: string,
-): Promise<string[]> {
+): Promise<IdentityTag[]> {
   const thumbs: Thumb[] = [];
   for (const f of files.slice(0, 6)) {
     const t = await makeThumbnail(f);
@@ -466,5 +468,5 @@ export async function extractIdentityTags(
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || "特徴の抽出に失敗しました。");
-  return Array.isArray(data?.tags) ? (data.tags as string[]) : [];
+  return Array.isArray(data?.tags) ? (data.tags as IdentityTag[]) : [];
 }
