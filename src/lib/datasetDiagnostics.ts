@@ -34,10 +34,11 @@ export const DIAGNOSTIC_AXES: Record<DiagnosticAxis, AxisDef> = {
       { id: "closeup", label: "顔アップ", keywords: ["close-up", "closeup", "face shot", "portrait", "head shot"] },
       { id: "bust", label: "バスト", keywords: ["bust shot", "bust", "chest up"] },
       // ⚠️ `cowboy shot`（腿の途中から上）と `knee up`（膝から上）は **全身では
-      // ない**（2026-09-22 に踏んだ）。足が写らないので Danbooru でも full body
-      // とは別タグ。ここを全身側に入れていたため、作った上半身クロップが軒並み
-      // 「全身」に数えられ、「上半身が足りない」という指摘が消えないのに
-      // 「全身に偏っている」とだけ出続けていた。
+      // ない**（2026-09-22 修正）。どちらも足が写らないので Danbooru でも
+      // full body とは別タグ。全身側へ入れていたため「全身」が実態より多く、
+      // 「上半身」が実態より少なく数えられていた。上半身クロップの出力
+      // （頭〜腰/腿）はまさにこの2タグが付きやすいので、ここを間違えると
+      // 「上半身が足りない」という指摘がクロップしても消えなくなる。
       {
         id: "upper",
         label: "上半身",
