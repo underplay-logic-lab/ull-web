@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { AlertTriangle, ChevronDown, Loader2, Scissors, Stethoscope, Wand2 } from "lucide-react";
+import { AlertTriangle, ChevronDown, Scissors, Stethoscope, Wand2 } from "lucide-react";
 import {
   analyzeDataset,
   DIAGNOSTIC_AXES,
@@ -19,9 +19,7 @@ export function DatasetDiagnosticsPanel({
   items,
   subjects,
   onOpenMultiAngle,
-  onSmartCrop,
-  smartCropCandidateCount = 0,
-  smartCropBusy = false,
+  onPrepareCrop,
 }: {
   items: DiagnosticInput[];
   subjects: LoraSubject[];
@@ -29,12 +27,13 @@ export function DatasetDiagnosticsPanel({
   onOpenMultiAngle?: () => void;
   /**
    * 距離軸の穴を埋める導線（2026-09-21）。ボタン自体はドロップゾーン内にも
-   * あるが、165枚のサムネイル grid を挟んだ**上**にあるため、指摘を読んだ
-   * 位置からは見えない。指摘のすぐ横にも出す。
+   * あるが、165枚のサムネイル grid を挟んでいて指摘を読んだ位置からは
+   * 見えない。ただし**ここで切り出しを実行はしない** — 実行ボタンが2つある
+   * と「どちらが何を対象にするのか」が分からなくなるため（2026-09-21、
+   * ホスト指摘）。ここは「該当被写体の元画像を選択してクロップ欄へ送る」
+   * だけを行い、実行は1つのボタンに集約する。
    */
-  onSmartCrop?: () => void;
-  smartCropCandidateCount?: number;
-  smartCropBusy?: boolean;
+  onPrepareCrop?: (subject: string) => void;
 }) {
   const [open, setOpen] = useState(true);
   const diag = useMemo(() => analyzeDataset(items, subjects), [items, subjects]);
@@ -47,7 +46,13 @@ export function DatasetDiagnosticsPanel({
   // Multi-Angle Studio で作れる穴があるか（カメラ由来の軸＝距離・向き・仰角）。
   const angleFixable = diag.issues.filter((i) => i.fixableWith === "multi_angle").length;
   // 手持ちの引き画から切り出せる穴（距離軸）。無料・即時なので先に出す。
-  const cropFixable = diag.issues.filter((i) => i.fixableWith === "smart_crop").length;
+  const cropSubjects = [
+    ...new Set(
+      diag.issues
+        .filter((i) => i.fixableWith === "smart_crop" && i.subject)
+        .map((i) => i.subject as string),
+    ),
+  ];
 
   return (
     <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5">
@@ -171,27 +176,26 @@ export function DatasetDiagnosticsPanel({
                 <strong className="text-foreground">学習回数を増やしても直らない指摘があります。</strong>
                 同じ画像を繰り返し見せても情報は増えないので、足りない構図の画像を追加してください。
               </p>
-              {cropFixable > 0 && onSmartCrop && (
+              {cropSubjects.length > 0 && onPrepareCrop && (
                 <>
                   <p className="text-[10px] leading-relaxed text-muted">
                     このうち <strong className="text-foreground">距離（顔アップ・バスト・上半身）</strong>{" "}
                     の穴は、すでに取り込んである引き画から{" "}
                     <strong className="text-foreground">無料で・その場で</strong> 切り出せます。
                   </p>
-                  <button
-                    type="button"
-                    onClick={onSmartCrop}
-                    disabled={smartCropBusy || smartCropCandidateCount === 0}
-                    className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {smartCropBusy ? (
-                      <Loader2 size={11} className="animate-spin" />
-                    ) : (
-                      <Scissors size={11} />
-                    )}
-                    ✂️ スマートクロップで切り出す
-                    {smartCropCandidateCount > 0 ? `（元画像 ${smartCropCandidateCount} 枚）` : ""}
-                  </button>
+                  <div className="flex flex-wrap gap-1.5">
+                    {cropSubjects.map((subj) => (
+                      <button
+                        key={subj}
+                        type="button"
+                        onClick={() => onPrepareCrop(subj)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20"
+                      >
+                        <Scissors size={11} />
+                        <span className="font-mono">{subj}</span> の元画像を選んでクロップ欄へ
+                      </button>
+                    ))}
+                  </div>
                 </>
               )}
               {angleFixable > 0 && onOpenMultiAngle && (

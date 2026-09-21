@@ -91,6 +91,9 @@ export const MIN_SHORT_EDGE_WARN = 768;
  * 2048 超の情報は使われず、アップロード時間と転送量を食うだけ。
  */
 export const MAX_LONG_EDGE = 2048;
+
+/** 診断パネルからスクロールで飛ぶための、クロップ欄の DOM id。 */
+export const SMART_CROP_PANEL_ID = "lora-smart-crop-panel";
 // Raw upload budget. The worker's Smart Ingest stage downscales / re-encodes
 // every image on a free CPU container before the GPU starts, and AI-vision
 // captioning only ever sees ~640px browser thumbnails — so a large raw
@@ -590,6 +593,8 @@ export function ImageDropzone({
   onSmartCrop,
   onSetRepeats,
   selectionGroups,
+  selectedIds,
+  onSelectedChange,
 }: {
   images: DatasetImage[];
   onAdd: (files: FileList | File[]) => void;
@@ -610,6 +615,8 @@ export function ImageDropzone({
    * 1〜2クリックで選べるようにする。複数の軸を選んだ場合は**積集合**。
    */
   selectionGroups?: { key: string; title: string; options: { id: string; label: string; ids: string[] }[] }[];
+  selectedIds: Set<string>;
+  onSelectedChange: (next: Set<string>) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [filters, setFilters] = useState<Record<string, string | null>>({});
@@ -618,7 +625,11 @@ export function ImageDropzone({
   const totalBytes = images.reduce((s, i) => s + i.file.size, 0);
   // 学習回数の一括設定用の選択状態。1枚ずつ触るには枚数が多すぎるので、
   // 「選んでまとめて設定」を基本操作にする（shift+クリックで範囲選択）。
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // 選択状態は親が持つ（2026-09-21）。診断パネルから「kocho の元画像だけを
+  // 選んでクロップ欄へ送る」ためにここから外へ出した。
+  const selected = selectedIds;
+  const setSelected = (v: Set<string> | ((prev: Set<string>) => Set<string>)) =>
+    onSelectedChange(typeof v === "function" ? v(selectedIds) : v);
   const lastClickedRef = useRef<string | null>(null);
   const weighted = images.filter((i) => (i.repeats ?? 1) !== 1).length;
 
@@ -822,7 +833,10 @@ export function ImageDropzone({
               ない構図まで増える。選択中があればそれだけを、無ければ未クロップ
               全部を対象にする。 */}
           {onSmartCrop && !disabled && (
-            <div className="mt-2 rounded-lg border border-border bg-background/60 px-3 py-2">
+            <div
+              id={SMART_CROP_PANEL_ID}
+              className="mt-2 scroll-mt-24 rounded-lg border border-border bg-background/60 px-3 py-2"
+            >
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px]">
                 <span className="font-medium text-foreground">スマートクロップ</span>
                 <span className="text-muted">切り出す構図:</span>
@@ -869,7 +883,13 @@ export function ImageDropzone({
                   </span>
                 )}
               </div>
-              <p className="mt-1.5 text-[10px] text-muted">
+              <p
+                className={`mt-1.5 text-[10px] ${
+                  images.length + cropTargetIds.length * cropKinds.size > MAX_IMAGES
+                    ? "text-amber-400"
+                    : "text-muted"
+                }`}
+              >
                 最大 {cropTargetIds.length * cropKinds.size} 枚増えます（現在 {images.length} 枚 / 上限{" "}
                 {MAX_IMAGES} 枚）。切り出し元が小さすぎるもの（全身から顔アップ等）は自動で除外されます。
                 {selected.size === 0 && "上のチップで絞り込むと、必要な分だけ切り出せます。"}

@@ -114,6 +114,7 @@ import {
   POLL_KEEPALIVE_MS,
   MAX_IMAGES,
   MAX_LONG_EDGE,
+  SMART_CROP_PANEL_ID,
   MIN_SHORT_EDGE_ERROR,
   MAX_TOTAL_BYTES,
   MAX_FILE_BYTES,
@@ -1148,6 +1149,29 @@ export function LoraStudioTab({
     if (distMap.size > 1) groups.push({ key: "distance", title: "構図", options: toOptions(distMap) });
     return groups;
   }, [images, captions, allSubjects]);
+
+  // サムネイルの選択状態（学習回数の一括設定・クロップ対象の指定に使う）。
+  // 診断パネルから「この被写体の元画像だけ選ぶ」ためにタブ側で持つ。
+  const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set());
+
+  // 診断の「◯◯ の元画像を選んでクロップ欄へ」。実際の切り出しは実行しない
+  // （実行ボタンが2つあると対象が分からなくなる。2026-09-21 ホスト指摘）。
+  // 対象は「その被写体が写っていて、まだ切り出していない元画像」。
+  const prepareCropForSubject = useCallback(
+    (subject: string) => {
+      const ids = images
+        .filter((img) => {
+          if (img.cropKind) return false;
+          const cap = (captions[img.id] ?? "").trim();
+          if (!cap) return false;
+          return matchLeadingSubjectTriggers(cap, allSubjects).some((x) => x.trigger === subject);
+        })
+        .map((img) => img.id);
+      setSelectedImageIds(new Set(ids));
+      document.getElementById(SMART_CROP_PANEL_ID)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    },
+    [images, captions, allSubjects],
+  );
 
   const tooSmallImages = useMemo(() => images.filter((i) => i.sizeVerdict === "tooSmall"), [images]);
 
@@ -3157,6 +3181,8 @@ export function LoraStudioTab({
             }
             onSetRepeats={setImageRepeats}
             selectionGroups={selectionGroups}
+            selectedIds={selectedImageIds}
+            onSelectedChange={setSelectedImageIds}
             smartCropBusy={smartCropBusy}
             smartCropProgress={smartCropProgress}
             onSmartCrop={(ids, kinds) => void runSmartCropForDataset(ids, kinds)}
@@ -3216,9 +3242,7 @@ export function LoraStudioTab({
               items={diagnosticItems}
               subjects={allSubjects}
               onOpenMultiAngle={onOpenMultiAngle}
-              onSmartCrop={() => void runSmartCropForDataset(undefined, ["upper"])}
-              smartCropCandidateCount={images.filter((img) => !img.cropKind).length}
-              smartCropBusy={smartCropBusy}
+              onPrepareCrop={prepareCropForSubject}
             />
           )}
 
