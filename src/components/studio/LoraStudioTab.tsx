@@ -22,6 +22,7 @@ import {
   Sparkles,
   Tag,
   Trash2,
+  Scissors,
   Wand2,
   Zap,
 } from "lucide-react";
@@ -1262,6 +1263,8 @@ export function LoraStudioTab({
     }
     return out;
   }, [images, captions]);
+
+  const croppedImages = useMemo(() => images.filter((i) => i.cropKind), [images]);
 
   const tooSmallImages = useMemo(() => images.filter((i) => i.sizeVerdict === "tooSmall"), [images]);
 
@@ -3318,6 +3321,43 @@ export function LoraStudioTab({
                   .join(", ")}
                 {tooSmallImages.length > 5 ? " ほか" : ""}
               </p>
+            </div>
+          )}
+
+          {/* 切り出した画像は人手で点検しないと使えない（2026-09-22、ホスト
+              指摘「クロップ後に削除の説明が必要」）。何を基準に消すのかが
+              分からないと点検しようがないので、判断基準まで書く。 */}
+          {croppedImages.length > 0 && (
+            <div className="space-y-1.5 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
+              <p className="text-[11px] font-medium text-neon-violet">
+                切り出した {croppedImages.length} 枚を確認してください
+              </p>
+              <ul className="space-y-0.5 text-[10px] leading-relaxed text-muted">
+                <li>
+                  ・
+                  <strong className="text-foreground">
+                    顔（目・鼻・口）がフレームから欠けている画像は削除してください。
+                  </strong>
+                  顔が欠けた絵を学習させると、その構図での再現性が落ちます。頭頂部が少し切れている程度は問題ありません。
+                </li>
+                <li>・体が胸や腰で切れているのは問題ありません。それが上半身クロップの目的です。</li>
+                <li>
+                  ・
+                  <strong className="text-foreground">
+                    別の被写体が顔なしで大きく写り込んでいる画像も削除してください。
+                  </strong>
+                  顔が無いとその被写体の学習には使えず、かといって主役の特徴として吸収されてしまいます。
+                </li>
+                <li>・端にわずかに他の被写体が入る程度（細い帯）は無視して構いません。</li>
+              </ul>
+              <button
+                type="button"
+                onClick={() => setSelectedImageIds(new Set(croppedImages.map((i) => i.id)))}
+                className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20"
+              >
+                <Scissors size={11} />
+                切り出した {croppedImages.length} 枚を選択して目立たせる
+              </button>
             </div>
           )}
 
