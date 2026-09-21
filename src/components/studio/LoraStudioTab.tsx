@@ -3202,6 +3202,8 @@ export function LoraStudioTab({
                           disabled={busy}
                           className={`${fieldCls} mt-1.5 text-[11px]`}
                         />
+                        {/* 「画像から抽出」が主経路なので、画像が入るまで出さない（2026-09-21）。 */}
+                        {images.length > 0 && (
                         <IdentityTagsField
                           value={primaryIdentityTags}
                           valueJa={primaryIdentityTagsJa}
@@ -3218,6 +3220,7 @@ export function LoraStudioTab({
                           canExtract={images.length > 0}
                           disabled={busy}
                         />
+                        )}
                       </>
                     )}
                   </>
@@ -3235,6 +3238,8 @@ export function LoraStudioTab({
                     disabled={busy}
                     className={`${fieldCls} mt-1.5 text-[11px]`}
                   />
+                  {/* 「画像から抽出」が主経路なので、画像が入るまで出さない（2026-09-21）。 */}
+                  {images.length > 0 && (
                   <IdentityTagsField
                     value={primaryIdentityTags}
                     valueJa={primaryIdentityTagsJa}
@@ -3251,6 +3256,7 @@ export function LoraStudioTab({
                     canExtract={images.length > 0}
                     disabled={busy}
                   />
+                  )}
                 </div>
               );
             })()}
@@ -3311,6 +3317,8 @@ export function LoraStudioTab({
                     disabled={busy}
                     className={`${fieldCls} mt-1.5 text-[11px]`}
                   />
+                  {/* 「画像から抽出」が主経路なので、画像が入るまで出さない（2026-09-21）。 */}
+                  {images.length > 0 && (
                   <IdentityTagsField
                     value={s.identityTags ?? ""}
                     valueJa={s.identityTagsJa ?? ""}
@@ -3330,6 +3338,7 @@ export function LoraStudioTab({
                     canExtract={images.length > 0}
                     disabled={busy}
                   />
+                  )}
                 </div>
               ))}
             {!yamlMode && isSdxlJob && extraSubjects.length > 0 && (
