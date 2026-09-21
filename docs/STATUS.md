@@ -126,9 +126,9 @@
 
 ### 次にやること（LTX-2 / SDXL 顧客対応）
 
-1. LTX-2 の 158.94GB を削除 → `_REPO_SNAPSHOT_IGNORE` に LTX-2 を追加 →
-   **LTX-2 のスモーク1本で確定**（GPU を使うのでホスト承認が要る）。
-   Volume 966.5GB → 807.6GB（余裕 34GB → 193GB）。
+1. ~~LTX-2 の 158.94GB を削除~~ → **完了（2026-09-21）**。`_REPO_SNAPSHOT_IGNORE`
+   追加 → 削除 → CPU で再DLが走らないこと確認 → B300 スモークで学習が通ること確認。
+   Volume 966.5GB → **807.6GB**（余裕 34GB → 193GB）。手順と根拠は docs §14.8.3。
 2. `waiNSFW_illustrious_v11.safetensors` を Volume へ（admin リモートダウンローダは
    civitai.com を許可済み。ただし単一ファイルモードの保存先は MODEL_SUBFOLDERS
    限定なので `diffusion_models/`）。**採用する版のモデルページでライセンス再確認**。

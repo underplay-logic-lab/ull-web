@@ -995,11 +995,28 @@ else:
 ビルド時点のものなので厳密には版がずれ得る。**削除後に LTX-2 のスモークを1本通して
 確定させること。**
 
-#### 再発防止
+#### 実施と検証（2026-09-21、同日中に完了）
 
-`modal_lora_worker.py` の `_REPO_SNAPSHOT_IGNORE`（既に Qwen-Image の transformer
-シャードで使っている仕組み）に LTX-2 のリポジトリ直下 `*.safetensors` と
-`latent_upsampler/` を追加すれば、次回以降の `snapshot_download` で落とさずに済む。
+1. `_REPO_SNAPSHOT_IGNORE` に `"Lightricks/LTX-2": ["ltx-2-*.safetensors",
+   "latent_upsampler/*", "*.mp4"]` を追加してデプロイ。**先にこれを入れること** —
+   入れずに消すと `_repo_cache_complete()` が「不完全」と判定して次のジョブで
+   全部落とし直す。`*` は fnmatch でパス区切りも食うので、サブフォルダを
+   巻き込まないよう先頭を `ltx-2-` で固定している。
+2. 使い捨ての CPU ジョブで **snapshot のシンボリックリンクと blob の両方**を削除
+   （リンクだけ消してもバイトは解放されない）。実測 11ファイル・**158.94GB**。
+3. CPU 検証: `modal run modal_lora_worker.py::ensure_model_cached_cpu
+   --model-arch ltx_video` → `[cache] Lightricks/LTX-2: already complete on Volume`
+   ＝ 再ダウンロードが走らないことを確認。
+4. GPU 検証: `modal_lora_benchmark.py` に `PLANS["ltx2_smoke"]`（b300 / 768px /
+   8枚 / 20step、概算 $1.82）を追加して実行 → `create LoRA for U-Net: 1344
+   modules` / latent キャッシュ / `Compiled 48 transformer block(s)` / 学習ステップ
+   まで通過。**削除後も LTX-2 は正常に学習できる。**
+
+結果: LTX-2 292.76 → **133.82 GB**、`training/` 648.66 → **489.72 GB**、
+Volume 全体 966.5 → **807.6 GB**（1TB に対する余裕が 34GB → 193GB）。
+
+⚠️ ai-toolkit を上げたらこの前提を再確認すること（mono checkpoint を既定にする
+変更が入ると、除外したファイルが必要になる）。
 
 ### 14.9 Modal Volume の書き込みは速い（チェックポイント保存は犯人ではない）
 

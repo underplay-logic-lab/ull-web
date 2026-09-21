@@ -288,6 +288,16 @@ PLANS["smoke"] = [
      "warmup_steps": 10, "measure_steps": 30},
 ]
 
+# 2026-09-21: LTX-2 の HF キャッシュから「読まれないファイル」158.94GB を削除した
+# （docs/gpu-benchmarks.md §14.8.3）あとの検証用。ai-toolkit の LTX2Model が
+# Diffusers サブフォルダ側だけを読むことはソースで確認済みだが、イメージに入って
+# いる ai-toolkit の版が GitHub main とずれ得るので、実機で1本通して確定させる。
+# 目的は「モデルがロードできて学習ステップが回るか」だけなので最小条件。
+PLANS["ltx2_smoke"] = [
+    {"tier": "b300", "target_model": "ltx_video", "resolution": 768, "images": 8,
+     "warmup_steps": 5, "measure_steps": 15},
+]
+
 PLANS["default"] = (
     PLANS["tiers"]
     + [PLANS["resolution"][0], PLANS["resolution"][2]]  # 1024 は tiers 側で測る

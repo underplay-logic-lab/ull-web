@@ -4639,6 +4639,29 @@ _REPO_SNAPSHOT_IGNORE: dict[str, list[str]] = {
         "transformer/*.bin",
         "transformer/*.pth",
     ],
+    # Lightricks/LTX-2（2026-09-21 追加）: リポジトリ直下に同じ 19B の精度違いが
+    # 6本ぶら下がっていて、合計 158.94GB が我々の構成では**一度も読まれない**。
+    # 内訳と根拠は docs/gpu-benchmarks.md §14.8.3。
+    #   ltx-2-19b-dev / -distilled (各40.31GB)、-dev-fp8 / -distilled-fp8 (各25.22GB)、
+    #   -dev-fp4 (18.62GB)、-distilled-lora-384 (7.15GB)、
+    #   spatial/temporal upscaler (1.17GB)、latent_upsampler/ (0.93GB)、デモ mp4
+    #
+    # 理由: ai-toolkit の LTX2Model.load_model() が単一ファイル（mono checkpoint）
+    # 経路に入るのは name_or_path が ".safetensors" で終わるときだけ。我々の
+    # TARGET_MODELS["ltx_video"] は {"unet": "Lightricks/LTX-2"}（リポジトリID）
+    # なので、必ず Diffusers サブフォルダ（transformer/ text_encoder/ vae/
+    # audio_vae/ connectors/ vocoder/ tokenizer/）側を読む。latent_upsampler は
+    # ltx2.py 内に参照が1箇所も無い。
+    #
+    # ⚠️ ai-toolkit を上げたらこの前提を再確認すること（mono checkpoint を既定に
+    # する変更が入ると、ここで除外したファイルが必要になる）。
+    # `*` は fnmatch でパス区切りも食うので、サブフォルダ側を巻き込まないよう
+    # 先頭を "ltx-2-" で固定している。
+    "Lightricks/LTX-2": [
+        "ltx-2-*.safetensors",
+        "latent_upsampler/*",
+        "*.mp4",
+    ],
 }
 
 # The exact files ai-toolkit's qwen_image loader physically opens from the
