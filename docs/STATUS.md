@@ -61,6 +61,28 @@
   📌 **教訓: この手の文言は (1) CMS の `site_contents`、(2) `EditableText` の
   fallback、(3) 統計バッジ・比較表のようなハードコード配列 の3レーンに散る。
   「直したはず」の確認は本番ページの実表示 + 全レーンの grep でやる。**
+- **SDXL（sd-scripts）ワーカーの cost-guard / salvage を実装（2026-09-21・デプロイ済み）。**
+  それまで `timeout=10800` の固定の器しか無く、CLAUDE.md §3 の動的損切りが
+  このワーカーだけ未実装だった。
+  - `modal_sdxl_lora_worker.py`: trimmed s/it から残り step の所要を予測し、
+    cap 超過で graceful stop → 中間チェックポイント保全 → 全額返金。cap は
+    payload `cost_cap_seconds`（pricing_knobs 由来）優先、無ければ
+    `SDXL_SPI_BASELINE`（0.642）と L40S 時給から算出。
+  - **🐛 最終 LoRA のダウンロードが必ず 404 になるバグを発見・修正。** metadata に
+    `filename="<name>.safetensors"` と書きながら実ファイルは
+    `"<name>_final.safetensors"` で置いていた（ダウンロード API は filename を
+    そのまま `loras/<user>/<job>/<filename>` として引く）。
+  - 中間チェックポイントを全部永続化するようにした（CLAUDE.md §3。従来は最終1個
+    だけ）。走行中も30秒間隔で `vol.commit()` するので、コンテナが落ちても
+    salvage できる。失敗・安全停止でも途中結果を残して metadata に載せる。
+  - `modal_lora_worker.py` の `salvage_lora_job` が `/models/outputs_sdxl/<key>`
+    も探すようにした（従来は ai-toolkit のルートだけ見ていたので SDXL ジョブの
+    salvage は常に空振りしていた）。
+  - `costGuard.server.ts`: arch=sdxl の許容秒を **L40S の時給**で算出するように
+    修正（全 arch を B300 で割っていた。単価が約4倍違うので許容秒が約1/4になり、
+    しかも課金側は既に sdxl 専用の安い単価 knob を使っているため二重に厳しかった）。
+  - メモリ `sdxl-training-sd-scripts-plan` の「フロントUI未着手」は**既に実装済み**
+    （`LoraStudioTab.tsx` に埋め込みタグ / keep_tokens の入力欄がある）。
 - **「実効バッチ」の読み違いを docs で訂正**（`d150381`, §14.8.1 新設）。
 
 ### 反映状況 — 2026-09-21 時点ですべて適用済み
@@ -94,9 +116,11 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    初回ユーザーが払いすぎる。売りの中心だけ測って出す（1本 ¥300〜500）か、
    14本全部推測価格で出すかはホスト判断。
 
-3. **SDXL（sd-scripts / L40S）の s/it と prep 実測。** 現行 `sdxl: 0.642` は旧設定
-   （AdamW8bit + gc 有効）由来。有償顧客向け機能。UI 入力欄 / salvage / cost-guard の
-   残実装もここ。
+3. **SDXL の残りは実機ものだけ。** cost-guard / salvage / UI は実装済み（上記）。
+   残るのは **B300 vs L40S の実測 $/job 比較**と、現行 `sdxl: 0.642`
+   （AdamW8bit + gc 有効で測った値）の再確認。gc は 2026-09-20 に既定 OFF に
+   なった＝実運用はこれより**速い**見込みなので、0.642 は過大見積もり＝安全側。
+   急がない。
 
 4. **Polar API の 2026-10 移行。** 現在 2026-04 固定。2027年1月のローテーションで
    2026-04 が削除されるため期限付き。メモリ `polar-api-version-migration`。

@@ -97,6 +97,48 @@ SDXL_GRADIENT_CHECKPOINTING = os.environ.get("SDXL_GRADIENT_CHECKPOINTING", "0")
     "False",
 )
 
+# --- 原価割れ損切り（cost-guard / CLAUDE.md §3）------------------------------
+# ai-toolkit ワーカー（modal_lora_worker.py）の _cost_cap_seconds 相当をこちらへ
+# 移植したもの（2026-09-21）。それまでこのワーカーは下の timeout=10800 という
+# 固定の器だけに頼っていて、「正しく課金されているが想定より遅いジョブ」と
+# 「暴走して原価を食い潰すジョブ」を区別できなかった。
+#
+# 本筋は **Next.js 側が payload の cost_cap_seconds として渡してくる値**
+# （src/lib/pricing/costGuard.server.ts が pricing_knobs から算出、admin で
+# 編集でき worker 再デプロイ不要）。ここにある定数はその payload が無い／0 の
+# ときのフォールバックと、env による緊急上書き用。
+#
+# 判定は「実測 s/it の trimmed 平均 → 残り step の所要を予測 → cap を超えたら
+# graceful stop + 中間チェックポイント保存 + 全額返金」。JIT ウォームアップや
+# 保存 I/O に引っ張られないよう SDXL_COST_MIN_STEP step 経過してから効かせる。
+SDXL_COST_MIN_STEP = int(os.environ.get("SDXL_COST_MIN_STEP", "50"))
+# コンテナの timeout=10800 より必ず手前で止める（graceful stop の猶予 5 分）。
+SDXL_ABS_MAX_RUN_S = int(os.environ.get("SDXL_ABS_MAX_RUN_S", str(10800 - 300)))
+# credits_cost == 0（内部実行・スモーク）のときだけ使うフォールバック上限。
+SDXL_SAFETY_LIMIT_S = int(os.environ.get("SDXL_SAFETY_LIMIT_S", str(3 * 60 * 60)))
+# 損切りの緩さ。ai-toolkit 側の ULL_COST_GUARD_MULTIPLIER と同じ意味・同じ既定。
+SDXL_COST_GUARD_MULTIPLIER = max(
+    1.0, min(float(os.environ.get("ULL_COST_GUARD_MULTIPLIER", "1.4")), 3.0)
+)
+# s/it のフォールバック基準値。**src/lib/pricing/loraRuntime.ts の
+# LORA_SPI_BASELINE.sdxl と同じ値に保つこと**（あちらが課金側の SSOT）。
+# 2026-09-20 実測: step 数だけ変えた2回（20step / 120step）の総経過時間を連立で
+# 分離して 0.642 s/it・prep 43.2秒。ただし当時は AdamW8bit + gradient_checkpointing
+# 有効で、現在の既定（prodigy / gc 無効）より遅い条件なので、**実運用はこれより
+# 速い見込み＝過大見積もり＝安全側**。
+SDXL_SPI_BASELINE = float(os.environ.get("SDXL_SPI_BASELINE", "0.642"))
+# 同じく prep（モデルロード + latent キャッシュ + 保存）の固定分。
+# knobDefaults.ts の lora_prep_load_s_sdxl（45秒）に対し、下限計算では
+# 取りこぼしが致命的なので厚めに取る。
+SDXL_FLOOR_PREP_S = int(os.environ.get("SDXL_FLOOR_PREP_S", str(10 * 60)))
+# L40S の時間単価（USD）と円換算。knobDefaults.ts の gpu_usd_per_hour_l40s /
+# usd_jpy_rate、credit_to_jpy、lora_margin_target と同じ意味の値。payload が
+# 来ないときだけ使うので、knob 側が動いてもこちらは概算で構わない。
+SDXL_GPU_USD_PER_HOUR = float(os.environ.get("SDXL_GPU_USD_PER_HOUR", "1.95"))
+SDXL_USD_JPY = float(os.environ.get("ULL_USD_JPY", "150"))
+SDXL_CREDIT_TO_JPY = float(os.environ.get("ULL_CREDIT_TO_JPY", "1.66"))
+SDXL_MARGIN_TARGET = float(os.environ.get("ULL_LORA_MARGIN_TARGET", "0.70"))
+
 # --- CPU-only probe image ---------------------------------------------------
 # sd-scripts' own README baseline: PyTorch 2.6.0+, CUDA 12.4 (cu124). Not
 # Blackwell-specific guidance (that's cu128/129) since GPU_REQUEST above is
@@ -646,6 +688,96 @@ class InfraError(RuntimeError):
     """A transient infra failure (network/Storage) — always refunded."""
 
 
+class SafetyLimitError(RuntimeError):
+    """原価割れ防止のためにシステム側の判断で早期停止した、という区別。
+    modal_lora_worker.py の同名クラスと同じ契約: 中間チェックポイントは
+    Volume に残して salvage 可能にし、クレジットは **全額返金** する
+    （ユーザーの設定ミスによるクラッシュではないため）。"""
+
+    def __init__(self, message: str, *, kind: str = "cost", checkpoints: "list | None" = None):
+        super().__init__(message)
+        self.kind = kind
+        # 停止時点までに保全できたチェックポイント。job 行の metadata へ載せて
+        # ダウンロード API（filename の許可リストとして metadata.checkpoints を
+        # 見る）から引けるようにする。
+        self.checkpoints = checkpoints or []
+
+
+def _trimmed_spi(hist) -> "float | None":
+    """直近 ~30 step の s/it を trimmed 平均で出す。上下 15% を落とすので、
+    チェックポイント保存で1 step だけ跳ねた区間や、逆に cache ヒットで
+    速すぎた区間に予測が引きずられない。modal_lora_worker.py の同名関数と
+    同じ実装（2つのワーカーは意図的に無結合なので import せず複製）。"""
+    xs = list(hist)
+    if len(xs) < 5:
+        return None
+    last_step = xs[-1][1]
+    xs = [p for p in xs if last_step - p[1] <= 30] or xs
+    ivs: list[float] = []
+    for (t0, s0), (t1, s1) in zip(xs, xs[1:]):
+        ds = s1 - s0
+        if ds > 0:
+            ivs.append((t1 - t0) / ds)
+    if len(ivs) < 3:
+        return None
+    ivs.sort()
+    k = max(1, int(len(ivs) * 0.15))
+    core = ivs[k:-k] if len(ivs) > 2 * k else ivs
+    return (sum(core) / len(core)) if core else None
+
+
+def _credit_covered_seconds(credits_cost: int) -> int:
+    """支払われたクレジットが目標マージンを保ったまま賄える GPU 秒。
+
+      revenue_jpy  = credits_cost x SDXL_CREDIT_TO_JPY
+      max_cost_jpy = revenue_jpy x SDXL_MARGIN_TARGET
+      L40S         = SDXL_GPU_USD_PER_HOUR x SDXL_USD_JPY 円/h
+
+    ⚠️ ai-toolkit 側は B300 の時間単価で割るが、このワーカーは L40S で回る
+    （単価が約 1/4）。同じ式を流用すると許容秒が 1/4 になり、正常なジョブを
+    誤って撃ち落とす。課金側も arch=sdxl だけ別単価 knob
+    （lora_credits_per_gpu_second_sdxl）を使っているので、損切り側も GPU tier を
+    合わせる必要がある。これはあくまで payload が無いときのフォールバックで、
+    本筋は costGuard.server.ts が渡してくる cost_cap_seconds。
+    """
+    revenue_jpy = max(0, credits_cost) * SDXL_CREDIT_TO_JPY
+    max_cost_jpy = revenue_jpy * SDXL_MARGIN_TARGET
+    jpy_per_sec = (SDXL_GPU_USD_PER_HOUR * SDXL_USD_JPY) / 3600
+    secs = max_cost_jpy / jpy_per_sec if jpy_per_sec > 0 else 0.0
+    return int(max(1800, min(secs, SDXL_ABS_MAX_RUN_S)))
+
+
+def _expected_run_floor_seconds(total_steps: int) -> int:
+    """損切りの下限。いくら課金額が小さくても、宣言した step 数を基準 s/it で
+    走り切るだけの時間（+30% と prep 余裕）は必ず与える。CLAUDE.md §0
+    「タイムアウト／ポーリング上限は多めに」。"""
+    if total_steps <= 0:
+        return 0
+    floor = SDXL_FLOOR_PREP_S + total_steps * SDXL_SPI_BASELINE * 1.3
+    return int(min(floor, SDXL_ABS_MAX_RUN_S))
+
+
+def _cost_cap_seconds(credits_cost: int, total_steps: int, override_s: int = 0) -> tuple[int, str]:
+    """このジョブに許す実時間の上限（秒）と、ログ用の理由文字列。
+
+    override_s > 0（= Next.js が pricing_knobs から算出して payload
+    cost_cap_seconds で渡してきた値）ならそれをそのまま使う。admin で単価や
+    閾値を変えたとき worker を再デプロイせずに追従させるため。"""
+    if override_s > 0:
+        capped = int(min(override_s, SDXL_ABS_MAX_RUN_S))
+        return capped, f"payload cost_cap_seconds={override_s}s -> {capped}s ({capped / 3600:.2f}h)"
+    base = _credit_covered_seconds(credits_cost) if credits_cost > 0 else SDXL_SAFETY_LIMIT_S
+    with_margin = base * SDXL_COST_GUARD_MULTIPLIER
+    floor = _expected_run_floor_seconds(total_steps)
+    capped = int(min(max(with_margin, floor), SDXL_ABS_MAX_RUN_S))
+    reason = (
+        f"{credits_cost}C -> base {base}s x{SDXL_COST_GUARD_MULTIPLIER:.2f} = {int(with_margin)}s, "
+        f"floor[{total_steps or '?'}st @ {SDXL_SPI_BASELINE}s/it] {floor}s -> {capped}s "
+        f"({capped / 3600:.2f}h)"
+    )
+    return capped, reason
+
+
 _INFRA_MSG_RE = re.compile(
     r"(read timed out|connect timed out|connection (?:reset|aborted|error|refused)|"
     r"connectionpool|max retries exceeded|failed to establish a new connection|"
@@ -1004,6 +1136,71 @@ def _stage_dataset(params: dict, dataset_dir: pathlib.Path, trigger: str) -> lis
 
 
 _SDXL_STEP_RE = re.compile(r"steps:\s*\d+%\|.*?\|\s*(\d+)/(\d+)")
+# sd-scripts が --save_every_n_steps で吐く中間チェックポイントのファイル名
+# （"<output_name>-step00000250.safetensors"）から step 数を取る。最終保存は
+# サフィックス無しの "<output_name>.safetensors"。
+_SDXL_CKPT_STEP_RE = re.compile(r"-step0*(\d+)\.safetensors$")
+
+
+def _kill(proc) -> None:
+    """graceful stop。SIGTERM で 30 秒待ち、往生際が悪ければ SIGKILL。
+    sd-scripts はシグナルを受けると書きかけの safetensors を閉じてから落ちる
+    ので、いきなり kill すると壊れたチェックポイントが残り得る。"""
+    try:
+        proc.terminate()
+        proc.wait(timeout=30)
+    except Exception:  # noqa: BLE001
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _persist_checkpoints(
+    output_dir: str, lora_name: str, user_id: str, job_id: str, declared_steps: int
+) -> list[dict]:
+    """output_dir に出ている .safetensors を **全部** loras/<user_id>/<job_id>/
+    へ複製し、完了画面がそのまま使える checkpoints 配列を返す。
+
+    2026-09-21 までは最終 1 個しか残しておらず、
+    (a) CLAUDE.md §3 の「中間チェックポイントを永続化して個別ダウンロード可能に
+        する」を SDXL だけ満たしていない
+    (b) 安全停止・失敗時に途中結果が丸ごと消える（= salvage が効かない）
+    という2つのギャップがあった。成功パスと停止パスの両方からこれを呼ぶ。
+
+    ⚠️ Volume(v1) はバイト数より **ファイル数**（推奨5万 inode）が先に効く。
+    save_every は _build_train_args が最大20回に抑えているので、1ジョブあたり
+    最大21ファイル。
+    """
+    out = pathlib.Path(output_dir)
+    files = sorted(out.glob("*.safetensors"))
+    if not files:
+        return []
+    # 最終 = サフィックスの無いファイル。無ければ step 番号が最大のもの。
+    final = next((f for f in files if not _SDXL_CKPT_STEP_RE.search(f.name)), files[-1])
+    job_dir = (
+        pathlib.Path(LORA_OUTPUT_DIR) / user_id / job_id if (user_id and job_id) else None
+    )
+    if job_dir is not None:
+        job_dir.mkdir(parents=True, exist_ok=True)
+    checkpoints: list[dict] = []
+    for f in files:
+        m = _SDXL_CKPT_STEP_RE.search(f.name)
+        is_final = f == final
+        step = int(m.group(1)) if m else (declared_steps if is_final else 0)
+        entry: dict = {
+            "step": step,
+            "filename": f"{lora_name}_final.safetensors" if is_final else f.name,
+            "size_bytes": f.stat().st_size,
+            "is_final": is_final,
+        }
+        if job_dir is not None:
+            dest = job_dir / entry["filename"]
+            shutil.copy2(f, dest)
+            entry["path"] = f"loras/{user_id}/{job_id}/{dest.name}"
+        checkpoints.append(entry)
+    checkpoints.sort(key=lambda c: (c["is_final"], c["step"]))
+    return checkpoints
 
 
 @app.function(image=train_image, gpu=GPU_REQUEST, volumes={MODELS_DIR: vol}, timeout=10800, scaledown_window=2)
@@ -1027,14 +1224,15 @@ def train_sdxl_lora_job(params: dict) -> dict:
       resolution, output_lora_name, job_id, user_id, credits_cost,
       trigger_word
 
-    KNOWN GAP (2026-09-15): no dynamic cost-guard yet (CLAUDE.md §3) — the
-    ai-toolkit worker's _cost_cap_seconds derives a live abort threshold
-    from a per-arch measured s/it baseline (LORA_SPI_BASELINE); this worker
-    has no such baseline yet (L40S sd-scripts SDXL throughput across a real
-    range of steps/resolutions hasn't been benchmarked — the smoke test is
-    a single data point: 20 steps/1024px/rank16 -> ~1.3s/it). Relies solely
-    on this function's hard `timeout=` for now. Must be measured and wired
-    before this handles unattended paying-customer jobs.
+    Cost-guard (CLAUDE.md §3, 2026-09-21): the projected wall time is
+    recomputed from a trimmed s/it average once SDXL_COST_MIN_STEP real
+    steps are in; over the cap -> graceful stop, partial checkpoints are
+    persisted to loras/<user_id>/<job_id>/, credits fully refunded. The cap
+    is normally the value Next.js pre-computed from pricing_knobs and sent
+    as payload cost_cap_seconds (admin-editable, no redeploy); without it,
+    _cost_cap_seconds derives one here from SDXL_SPI_BASELINE (0.642 s/it,
+    2026-09-20 measurement — see that constant) and the L40S hourly rate.
+    The hard `timeout=` below stays as the last-resort ceiling.
     """
     try:
         vol.reload()
@@ -1090,26 +1288,101 @@ def train_sdxl_lora_job(params: dict) -> dict:
             mixed_precision=mixed_precision,
         )
 
+        # 原価割れ損切り（CLAUDE.md §3）。本筋は Next.js が pricing_knobs から
+        # 算出して payload cost_cap_seconds で渡してくる値。無い/0 のときだけ
+        # ワーカー内で算出する。
+        try:
+            cost_cap_override = int(float(params.get("cost_cap_seconds") or 0))
+        except (TypeError, ValueError):
+            cost_cap_override = 0
+        declared_steps = int(tc.get("steps") or 0)
+        cost_cap_s, cap_reason = _cost_cap_seconds(
+            credits_cost, declared_steps, override_s=cost_cap_override
+        )
+        print(f"[sdxl] cost-guard: {cap_reason}", flush=True)
+
         _patch_job(job_id, {"progress_percent": 15, "progress_message": "学習開始"})
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         last_progress_patch = 0.0
         tail_lines: list[str] = []
+        rate_hist: list[tuple[float, int]] = []
+        first_step = 0
+        last_step = 0
+        last_total = 0
+        aborted = ""
+        last_ckpt_scan = 0.0
+        committed_ckpts = 0
         for line in proc.stdout:
             tail_lines.append(line.rstrip("\n"))
             if len(tail_lines) > 200:
                 tail_lines = tail_lines[-200:]
             m = _SDXL_STEP_RE.search(line)
             now = time.time()
-            # ~8s cadence, matching CLAUDE.md §6's async-tab VRAM live-update rate.
-            if m and now - last_progress_patch > 8:
+            if m:
                 cur, total = int(m.group(1)), int(m.group(2))
-                pct = 15 + int(80 * cur / max(1, total))
-                vram = _current_effective_vram_gb()
-                fields: dict = {"progress_percent": min(95, pct), "progress_message": f"学習中 {cur}/{total}"}
-                if vram is not None:
-                    fields["metadata"] = {"vram_used_gb": vram}
-                _patch_job(job_id, fields)
-                last_progress_patch = now
+                if cur > last_step:
+                    if not rate_hist:
+                        first_step = cur
+                    rate_hist.append((now, cur))
+                    if len(rate_hist) > 120:
+                        rate_hist = rate_hist[-120:]
+                    last_step, last_total = cur, total
+                # ~8s cadence, matching CLAUDE.md §6's async-tab VRAM live-update rate.
+                if now - last_progress_patch > 8:
+                    pct = 15 + int(80 * cur / max(1, total))
+                    vram = _current_effective_vram_gb()
+                    fields: dict = {"progress_percent": min(95, pct), "progress_message": f"学習中 {cur}/{total}"}
+                    if vram is not None:
+                        fields["metadata"] = {"vram_used_gb": vram}
+                    _patch_job(job_id, fields)
+                    last_progress_patch = now
+
+            # 中間チェックポイントを走行中に Volume へ commit しておく。
+            # output_dir は Volume 上（_job_output_dir -> /models/outputs_sdxl/…）
+            # だが、commit しない限り他のコンテナからは見えないため、コンテナ
+            # タイムアウトや Modal 側の kill で落ちたときに salvage できない。
+            # ファイル数が増えたときだけ commit するので、保存が無い間は I/O 0。
+            if now - last_ckpt_scan > 30:
+                last_ckpt_scan = now
+                try:
+                    n_ckpt = len(list(output_dir.glob("*.safetensors")))
+                    if n_ckpt > committed_ckpts:
+                        vol.commit()
+                        committed_ckpts = n_ckpt
+                        print(f"[sdxl] committed {n_ckpt} checkpoint(s) to the Volume", flush=True)
+                except Exception as commit_exc:  # noqa: BLE001 — never fatal
+                    print(f"[sdxl] intermediate commit skipped: {commit_exc!r}", flush=True)
+
+            # 実 step が SDXL_COST_MIN_STEP 本たまってから（= 初回のロード/JIT を
+            # 平均から外してから）、残り step の所要を予測して cap と比べる。
+            if (last_step - first_step) >= SDXL_COST_MIN_STEP and last_total > 0:
+                spi = _trimmed_spi(rate_hist)
+                if spi and spi > 0:
+                    remaining = max(0, last_total - last_step)
+                    projected_total = (now - started) + remaining * spi
+                    if projected_total > cost_cap_s:
+                        aborted = (
+                            f"原価割れ防止のため安全停止しました。予測所要 "
+                            f"{projected_total / 3600:.2f}h が上限 {cost_cap_s / 3600:.2f}h を"
+                            f"超えています（実測 {spi:.2f}s/it・Step {last_step}/{last_total} で停止）。"
+                            f"クレジットは全額返金され、そこまでの中間チェックポイントは"
+                            f"ダウンロードできます。"
+                        )
+                        break
+
+        if aborted:
+            print(f"[sdxl] SAFETY ABORT (cost): {aborted}", flush=True)
+            _patch_job(job_id, {"progress_message": "安全停止処理中（中間結果を保存しています）…"})
+            _kill(proc)
+            # 途中までのチェックポイントを Volume に残してから投げる
+            # （ai-toolkit 側の salvage と同じ趣旨）。
+            salvaged = _persist_checkpoints(str(output_dir), lora_name, user_id, job_id, last_step)
+            try:
+                vol.commit()
+            except Exception as commit_exc:  # noqa: BLE001
+                print(f"[sdxl] salvage commit skipped: {commit_exc}", flush=True)
+            print(f"[sdxl] salvaged {len(salvaged)} checkpoint(s)", flush=True)
+            raise SafetyLimitError(aborted, kind="cost", checkpoints=salvaged)
         returncode = proc.wait()
         if returncode != 0:
             raise RuntimeError(f"sd-scripts exited {returncode}:\n" + "\n".join(tail_lines[-40:]))
@@ -1117,7 +1390,11 @@ def train_sdxl_lora_job(params: dict) -> dict:
         produced = sorted(pathlib.Path(output_dir).glob("*.safetensors"))
         if not produced:
             raise RuntimeError("sd-scripts finished with no .safetensors output")
-        final_ckpt = produced[-1]
+        # 最終 = step サフィックスの付かないファイル（sd-scripts の最終保存）。
+        # 中間保存も同じディレクトリに並ぶので、名前順の末尾に頼らず明示的に選ぶ。
+        final_ckpt = next(
+            (f for f in produced if not _SDXL_CKPT_STEP_RE.search(f.name)), produced[-1]
+        )
 
         # Optional metadata-tag embedding (host-typed, e.g. "kocho, 1man, fat:21,
         # obese, bald, glasses" — see _embed_metadata_tags docstring). Applied to
@@ -1138,20 +1415,20 @@ def train_sdxl_lora_job(params: dict) -> dict:
         os.makedirs(LORA_OUTPUT_DIR, exist_ok=True)
         dest_path = pathlib.Path(LORA_OUTPUT_DIR) / f"{lora_name}.safetensors"
         shutil.copy2(final_ckpt, dest_path)
-        checkpoints: list[dict] = [
-            {
-                "step": int(tc.get("steps") or 0),
-                "filename": dest_path.name,
-                "size_bytes": dest_path.stat().st_size,
-                "is_final": True,
-            }
-        ]
-        if user_id and job_id:
-            job_ckpt_dir = pathlib.Path(LORA_OUTPUT_DIR) / user_id / job_id
-            job_ckpt_dir.mkdir(parents=True, exist_ok=True)
-            fname = f"{lora_name}_final.safetensors"
-            shutil.copy2(final_ckpt, job_ckpt_dir / fname)
-            checkpoints[0]["path"] = f"loras/{user_id}/{job_id}/{fname}"
+        # 中間チェックポイントも含めて全部 loras/<user_id>/<job_id>/ へ残す
+        # （CLAUDE.md §3「中間 .safetensors を永続化し、完了画面で個別
+        # ダウンロードを可能にする」）。
+        #
+        # 🐛 2026-09-21 修正: 以前はここで最終1個だけを残し、metadata には
+        # filename="<name>.safetensors" と書きながら実ファイルは
+        # "<name>_final.safetensors" で置いていた。ダウンロード API
+        # （/api/studio/lora/checkpoint）は metadata の filename をそのまま
+        # loras/<user>/<job>/<filename> として引くので、**最終 LoRA の
+        # ダウンロードが必ず 404 になっていた**。_persist_checkpoints は
+        # 実際に書いた名前をそのまま filename に入れる。
+        checkpoints = _persist_checkpoints(
+            str(output_dir), lora_name, user_id, job_id, declared_steps
+        )
 
         try:
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -1190,17 +1467,41 @@ def train_sdxl_lora_job(params: dict) -> dict:
     except Exception as exc:  # report + refund, then re-raise
         print(f"[sdxl] FAILED: {exc}", flush=True)
         infra = _is_infra_error(exc)
+        safety = isinstance(exc, SafetyLimitError)
         # No raw-config escape hatch in this worker yet (unlike train_lora_job's
         # custom_yaml_override) -> every failure here is either a transient
-        # infra fault or a system-side bug, never a user-authored config crash.
-        # Always refund until a raw/advanced mode is added.
+        # infra fault, a deliberate cost-guard stop, or a system-side bug —
+        # never a user-authored config crash. Always refund until a raw/
+        # advanced mode is added.
         should_refund = True
+        failure_meta: dict = {"refunded": should_refund, "infra_error": infra}
+        if safety:
+            failure_meta["safety_stop"] = getattr(exc, "kind", "cost")
+            salvaged_ckpts = getattr(exc, "checkpoints", None)
+            if salvaged_ckpts:
+                failure_meta["checkpoints"] = salvaged_ckpts
+        else:
+            # 安全停止パスは既に自分で保存済み。それ以外の失敗（sd-scripts の
+            # 異常終了・infra エラー）でも、そこまでに書けた中間チェックポイントが
+            # あるなら捨てずに残す — ユーザーから見れば「落ちたが途中までは
+            # 取り出せる」になり、返金と両立する。失敗処理自体は何があっても
+            # 止めない。
+            try:
+                rescued = _persist_checkpoints(
+                    str(output_dir), lora_name, user_id, job_id, 0
+                )
+                if rescued:
+                    vol.commit()
+                    failure_meta["checkpoints"] = rescued
+                    print(f"[sdxl] rescued {len(rescued)} checkpoint(s) from a failed run", flush=True)
+            except Exception as rescue_exc:  # noqa: BLE001 — best effort only
+                print(f"[sdxl] checkpoint rescue skipped: {rescue_exc!r}", flush=True)
         _patch_job(
             job_id,
             {
                 "status": "failed",
                 "error_message": str(exc)[:2000],
-                "metadata": {"refunded": should_refund, "infra_error": infra},
+                "metadata": failure_meta,
                 "completed_at": _now_iso(),
             },
         )

@@ -4,6 +4,7 @@ import {
   LORA_ABS_MAX_RUN_S,
   LORA_RUNTIME_CUSHION,
   loraEstimatedSeconds,
+  loraWorkerBackend,
 } from "@/lib/pricing/loraRuntime";
 
 // Central computation of the "原価割れ損切り" (cost-guard) seconds handed to the
@@ -23,10 +24,25 @@ import {
 // import 元を壊さないため。
 export { LORA_ABS_MAX_RUN_S } from "@/lib/pricing/loraRuntime";
 
-function creditCoveredSeconds(creditsCost: number, knobs: PricingKnobs): number {
+// 2026-09-21: GPU tier をバックエンドに合わせるようにした。arch="sdxl" は
+// sd-scripts ワーカー（modal_sdxl_lora_worker.py）で **L40S** で回るのに、
+// ここは全 arch を B300 の時給で割っていた。L40S は B300 の約 1/4 の単価なので
+// 許容秒が約 1/4 になり、しかも課金側は既に sdxl 専用の安い単価 knob
+// （lora_credits_per_gpu_second_sdxl）を使っているため、二重に厳しくなって
+// **正常なジョブを原価割れ判定で撃ち落とし得た**。実際には下の archFloor が
+// 効いて救われていたが、それは偶然の保険であって設計ではない。
+function creditCoveredSeconds(
+  creditsCost: number,
+  knobs: PricingKnobs,
+  arch: string,
+): number {
   const revenueJpy = Math.max(0, creditsCost) * knobs.credit_to_jpy;
   const maxCostJpy = revenueJpy * knobs.lora_margin_target;
-  const jpyPerSec = (knobs.gpu_usd_per_hour_b300 * knobs.usd_jpy_rate) / 3600;
+  const usdPerHour =
+    loraWorkerBackend(arch) === "sd_scripts"
+      ? knobs.gpu_usd_per_hour_l40s
+      : knobs.gpu_usd_per_hour_b300;
+  const jpyPerSec = (usdPerHour * knobs.usd_jpy_rate) / 3600;
   const secs = jpyPerSec > 0 ? maxCostJpy / jpyPerSec : 0;
   return Math.floor(Math.max(1800, Math.min(secs, LORA_ABS_MAX_RUN_S)));
 }
@@ -63,7 +79,9 @@ export function loraCostCapSeconds(args: {
 
   const multiplier = Math.max(1.0, Math.min(knobs.lora_cost_guard_multiplier, 3.0));
   const base =
-    args.creditsCost > 0 ? creditCoveredSeconds(args.creditsCost, knobs) : knobs.lora_safety_limit_s;
+    args.creditsCost > 0
+      ? creditCoveredSeconds(args.creditsCost, knobs, arch)
+      : knobs.lora_safety_limit_s;
   const withMargin = base * multiplier;
   const archFloor = expectedRunFloorSeconds(
     {

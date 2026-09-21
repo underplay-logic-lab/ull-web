@@ -6748,10 +6748,21 @@ def salvage_lora_job(data: dict, request: fastapi.Request):
     # Where ai-toolkit's output tree could be — keyed by fc-id first (that's
     # what _job_output_dir() uses when the container self-recorded its call
     # id), then the job id, then a bare lora-name dir as a last resort.
+    #
+    # 2026-09-21: sd-scripts ワーカー（modal_sdxl_lora_worker.py、arch="sdxl"）の
+    # 出力ツリーも見るようにした。あちらは同じ Volume の別ルート
+    # （/models/outputs_sdxl/<key>）に書くので、ここを足さないと SDXL ジョブの
+    # salvage が常に空振りしていた。キーの作り方はあちらの _job_output_dir と
+    # 同じ（英数と ._- 以外を _ に、120文字で切る）。
     search_roots: list[pathlib.Path] = []
     for key in (call_id, job_id, lora_name):
-        if key:
-            root = pathlib.Path(_job_output_dir(key))
+        if not key:
+            continue
+        safe_key = re.sub(r"[^A-Za-z0-9._-]", "_", str(key)).strip("_")[:120] or "job"
+        for root in (
+            pathlib.Path(_job_output_dir(key)),
+            pathlib.Path(f"{MODELS_DIR}/outputs_sdxl/{safe_key}"),
+        ):
             if root not in search_roots:
                 search_roots.append(root)
     dest_dir = pathlib.Path(LORA_OUTPUT_DIR) / user_id / job_id
