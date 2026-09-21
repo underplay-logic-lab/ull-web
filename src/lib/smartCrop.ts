@@ -125,7 +125,7 @@ async function drawBoxToOutput(
   return canvas;
 }
 
-function toFile(canvas: HTMLCanvasElement, stem: string, kind: SmartCropKind): Promise<File> {
+function toFile(canvas: HTMLCanvasElement, stem: string, kind: string): Promise<File> {
   return canvasToBlob(canvas).then(
     // lastModified を 0 に固定する（2026-09-22）。既定だと生成時刻が入るため、
     // **同じ元画像から同じ構図を2回切り出すと別物として二重登録**されていた。
@@ -171,13 +171,21 @@ export async function runSmartCrop(file: File): Promise<SmartCropOutput[]> {
     const img = await loadImage(objectUrl);
     const w = img.naturalWidth;
     const h = img.naturalHeight;
-    const { face, pose } = await detectSmartCropLandmarks(img);
+    const { people } = await detectSmartCropLandmarks(img);
 
-    if (!face && !pose) {
+    if (people.length === 0) {
       return await fallbackAligned(img, stem);
     }
 
     const outputs: SmartCropOutput[] = [];
+    // 2人以上写っている画像は人物ごとにファイル名を分ける。1人だけのときは
+    // 従来どおりの名前にして、再クロップ時の重複除外（名前・サイズ・更新日時）
+    // をそのまま効かせる。
+    const suffix = (kind: SmartCropKind, idx: number): string =>
+      people.length > 1 ? `p${idx + 1}_${kind}` : kind;
+
+    for (let pi = 0; pi < people.length; pi++) {
+    const { face, pose } = people[pi];
     let headTop: Point | undefined;
 
     if (face) {
@@ -191,7 +199,7 @@ export async function runSmartCrop(file: File): Promise<SmartCropOutput[]> {
         const canvas = await drawBoxToOutput(img, box, outW, outH);
         outputs.push({
           kind: "face",
-          file: await toFile(canvas, stem, "face"),
+          file: await toFile(canvas, stem, suffix("face", pi)),
           width: outW,
           height: outH,
           upscale: outW / Math.max(1, box.width),
@@ -262,7 +270,7 @@ export async function runSmartCrop(file: File): Promise<SmartCropOutput[]> {
         const upperCanvas = await drawBoxToOutput(img, upperBox, uW, uH);
         outputs.push({
           kind: "upper",
-          file: await toFile(upperCanvas, stem, "upper"),
+          file: await toFile(upperCanvas, stem, suffix("upper", pi)),
           width: uW,
           height: uH,
           upscale: uW / Math.max(1, upperBox.width),
@@ -276,13 +284,14 @@ export async function runSmartCrop(file: File): Promise<SmartCropOutput[]> {
         const fullCanvas = await drawBoxToOutput(img, fullBox, fW, fH);
         outputs.push({
           kind: "full",
-          file: await toFile(fullCanvas, stem, "full"),
+          file: await toFile(fullCanvas, stem, suffix("full", pi)),
           width: fW,
           height: fH,
           upscale: fW / Math.max(1, clampedFull.width),
           coverage: (clampedFull.width * clampedFull.height) / (w * h),
         });
       }
+    }
     }
 
     if (!outputs.length) return await fallbackAligned(img, stem);

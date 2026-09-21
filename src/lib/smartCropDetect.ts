@@ -55,7 +55,7 @@ async function getFaceLandmarker() {
       return FaceLandmarker.createFromOptions(fileset, {
         baseOptions: { modelAssetPath: FACE_MODEL_URL, delegate: "CPU" },
         runningMode: "IMAGE",
-        numFaces: 1,
+        numFaces: 2,
       });
     })();
   }
@@ -70,7 +70,7 @@ async function getPoseLandmarker() {
       return PoseLandmarker.createFromOptions(fileset, {
         baseOptions: { modelAssetPath: POSE_MODEL_URL, delegate: "CPU" },
         runningMode: "IMAGE",
-        numPoses: 1,
+        numPoses: 2,
       });
     })();
   }
@@ -84,10 +84,19 @@ export function warmSmartCropModels(): void {
   void getPoseLandmarker().catch(() => {});
 }
 
-export type SmartCropLandmarks = {
+/** 1人ぶんのランドマーク。face / pose のどちらかは必ず入っている。 */
+export type SmartCropPerson = {
   face: NormalizedLandmark[] | null;
   pose: NormalizedLandmark[] | null;
 };
+
+/**
+ * 画像に写っている人物（最大2人）。2026-09-22 まで1人しか検出しておらず、
+ * 2人写っている画像から「狙った側」を切り出せなかった。duo 画像を丸ごと
+ * 除外すると素材が集まらないので、両方を検出してそれぞれ切り出す。
+ * 切り出した絵がどちらの被写体かは、後段のキャプションが判定する。
+ */
+export type SmartCropLandmarks = { people: SmartCropPerson[] };
 
 export function isLandmarkVisible(lm: NormalizedLandmark | undefined): lm is NormalizedLandmark {
   return Boolean(lm) && (lm!.visibility === undefined || lm!.visibility >= MIN_VISIBILITY);
@@ -95,19 +104,49 @@ export function isLandmarkVisible(lm: NormalizedLandmark | undefined): lm is Nor
 
 export async function detectSmartCropLandmarks(image: HTMLImageElement): Promise<SmartCropLandmarks> {
   const [faceLandmarker, poseLandmarker] = await Promise.all([getFaceLandmarker(), getPoseLandmarker()]);
-  let face: NormalizedLandmark[] | null = null;
-  let pose: NormalizedLandmark[] | null = null;
+  let faces: NormalizedLandmark[][] = [];
+  let poses: NormalizedLandmark[][] = [];
   try {
-    const result = faceLandmarker.detect(image);
-    face = result.faceLandmarks?.[0] ?? null;
+    faces = faceLandmarker.detect(image).faceLandmarks ?? [];
   } catch (err) {
     console.error("[smartCropDetect] face detection failed:", err);
   }
   try {
-    const result = poseLandmarker.detect(image);
-    pose = result.landmarks?.[0] ?? null;
+    poses = poseLandmarker.detect(image).landmarks ?? [];
   } catch (err) {
     console.error("[smartCropDetect] pose detection failed:", err);
   }
-  return { face, pose };
+
+  // pose と face は別のモデルなので順番が一致しない。pose の鼻に一番近い顔を
+  // 割り当てる（正規化座標なので単純なユークリッド距離でよい）。
+  const noseOf = (f: NormalizedLandmark[]) => f[FACE_LM.nose];
+  const used = new Set<number>();
+  const people: SmartCropPerson[] = poses.map((pose) => {
+    const pn = pose[POSE_LM.nose];
+    let best = -1;
+    let bestD = Infinity;
+    if (pn) {
+      faces.forEach((f, i) => {
+        if (used.has(i)) return;
+        const fn = noseOf(f);
+        if (!fn) return;
+        const d = Math.hypot(fn.x - pn.x, fn.y - pn.y);
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      });
+    }
+    // 離れすぎている組み合わせは別人。0.25 は正規化座標での距離。
+    if (best >= 0 && bestD <= 0.25) {
+      used.add(best);
+      return { face: faces[best], pose };
+    }
+    return { face: null, pose };
+  });
+  // 体が検出できず顔だけ取れた人物も拾う（バストアップ等）。
+  faces.forEach((f, i) => {
+    if (!used.has(i)) people.push({ face: f, pose: null });
+  });
+  return { people };
 }

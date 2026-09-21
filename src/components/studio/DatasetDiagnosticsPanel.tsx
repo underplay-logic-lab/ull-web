@@ -242,9 +242,8 @@ export function DatasetDiagnosticsPanel({
                 ))}
               </div>
               <p className="text-[10px] leading-relaxed text-muted opacity-80">
-                ※ 対象は<strong className="text-foreground">その被写体だけが写っている画像</strong>です。
-                2人写っている画像は切り出しの基準になる人物を選べないため除外します
-                （狙った方ではなく、もう一方が切り出されてしまうため）。
+                ※ 2人写っている画像からは<strong className="text-foreground">両方</strong>を切り出します。
+                どちらがどの被写体かはキャプションが判定するので、狙っていない側の分も無駄になりません。
               </p>
               {cropPlan.size > 1 && (
                 <p className="text-[10px] leading-relaxed text-amber-400">
