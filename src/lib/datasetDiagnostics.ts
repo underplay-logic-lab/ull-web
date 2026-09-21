@@ -127,10 +127,15 @@ export type DiagnosticIssue = {
    * もので、方位角8方向 / 仰角4段 / 距離3段（顔アップ・バストアップ・全身）を
    * 揃えられる＝診断の 距離 / 向き / 仰角 の3軸と1:1で対応する。
    *
+   * "smart_crop" = 手持ちの画像から切り出せる。距離軸だけは**寄せる方向**に
+   * 限り無料・即時で作れるので、クレジットを使う Multi-Angle より優先する。
+   * 逆方向（顔アップしか無い被写体の全身）は切り出しでは作れないので、
+   * その場合は "multi_angle" に倒す。
+   *
    * null = 製品内に作る手段が無い（姿勢・背景）。**作れないものを 🔴 で
    * 突きつけない** — 指摘のレベルも warn に落とす。
    */
-  fixableWith: "multi_angle" | null;
+  fixableWith: "multi_angle" | "smart_crop" | null;
 };
 
 export type DatasetDiagnostic = {
@@ -272,21 +277,26 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
     }
 
     // --- 距離の穴（目安に依存する warn）---
-    for (const b of DIAGNOSTIC_AXES.distance.buckets) {
+    // distance.buckets は寄り → 引き の順に並んでいる。切り出しは「引き画を
+    // 寄せる」ことしかできないので、自分より後ろ（広い）バケットに在庫が
+    // あるときだけ smart_crop を出口にする。
+    const distBuckets = DIAGNOSTIC_AXES.distance.buckets;
+    distBuckets.forEach((b, idx) => {
       const got = s.axes.distance[b.id] ?? 0;
       const want = DIAGNOSTIC_TARGETS.distance[b.id] ?? 0;
-      if (want > 0 && got < want) {
-        issues.push({
-          level: got === 0 ? "error" : "warn",
-          subject: s.trigger,
-          message: `「${b.label}」が ${got}枚です（目安 ${want}枚）。${
-            got === 0 ? "この距離では生成できません。" : ""
-          }`,
-          notFixableByRepeats: true,
-          fixableWith: "multi_angle",
-        });
-      }
-    }
+      if (want <= 0 || got >= want) return;
+      const wider = distBuckets.slice(idx + 1).reduce((n, w) => n + (s.axes.distance[w.id] ?? 0), 0);
+      const croppable = wider > 0;
+      issues.push({
+        level: got === 0 ? "error" : "warn",
+        subject: s.trigger,
+        message: `「${b.label}」が ${got}枚です（目安 ${want}枚）。${
+          got === 0 ? "この距離では生成できません。" : ""
+        }${croppable ? `より引いた画が ${wider}枚 あるので、スマートクロップで作れます。` : ""}`,
+        notFixableByRepeats: true,
+        fixableWith: croppable ? "smart_crop" : "multi_angle",
+      });
+    });
 
     if (s.unique < DIAGNOSTIC_TARGETS.minUniquePerSubject) {
       issues.push({

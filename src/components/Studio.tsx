@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Wrench } from "lucide-react";
 import { CreditsBadge } from "@/components/CreditsBadge";
 import { CustomWorkflowsTab } from "@/components/studio/CustomWorkflowsTab";
@@ -44,6 +44,32 @@ function ImageGenMaintenancePlaceholder() {
 export function Studio() {
   const { user } = useSupabaseUser();
   const [activeTab, setActiveTab] = useState<StudioTab>("custom");
+
+  // LoRA Studio だけは一度開いたら**アンマウントしない**（2026-09-21）。
+  // このタブはユーザーがローカルから取り込んだ File と object URL を
+  // コンポーネントの state に持っており、他の state と違って復元できない。
+  // 条件付きレンダリングのままだと、診断パネルの「マルチアングルで足りない
+  // 構図を作る」を押した瞬間に 165 枚のデータセットが消えるという、自分で
+  // 案内した導線が自分で成果物を壊す状態になっていた。
+  // 他タブは失っても困る state が無いので従来どおり。
+  // 一度でも lora を開いたか。タブ遷移は必ず goTab を通す。
+  const [loraMounted, setLoraMounted] = useState(false);
+  const goTab = useCallback((id: StudioTab) => {
+    if (id === "lora") setLoraMounted(true);
+    setActiveTab(id);
+  }, []);
+
+  // タブを切り替えると中身の高さが大きく変わるため、スクロール位置を据え置くと
+  // フッター（問い合わせ）まで飛んだように見える。毎回タブの頭へ戻す。
+  const tabsRef = useRef<HTMLDivElement | null>(null);
+  const firstRenderRef = useRef(true);
+  useEffect(() => {
+    if (firstRenderRef.current) {
+      firstRenderRef.current = false;
+      return;
+    }
+    tabsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [activeTab]);
 
   return (
     <section id="studio" data-source-file="src/components/Studio.tsx" className="relative py-24 sm:py-32">
@@ -107,12 +133,12 @@ export function Studio() {
             </div>
           )}
 
-          <div className="mt-8 flex flex-wrap items-center justify-center gap-2">
+          <div ref={tabsRef} className="mt-8 flex flex-wrap items-center justify-center gap-2 scroll-mt-20">
             {STUDIO_TABS.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => goTab(tab.id)}
                 className={`rounded-full border px-4 py-1.5 text-xs font-mono font-medium transition-colors ${
                   activeTab === tab.id
                     ? "border-neon-pink/40 bg-neon-pink/10 text-neon-pink"
@@ -125,6 +151,16 @@ export function Studio() {
           </div>
         </div>
 
+        {/* 一度開いた LoRA Studio は hidden で残す（state を捨てないため）。 */}
+        {loraMounted && (
+          <div className={activeTab === "lora" ? undefined : "hidden"}>
+            <LoraStudioTab
+              onUseLora={() => goTab("custom")}
+              onOpenMultiAngle={() => goTab("angle")}
+            />
+          </div>
+        )}
+
         {activeTab === "custom" ? (
           <CustomWorkflowsTab />
         ) : activeTab === "angle" ? (
@@ -135,12 +171,7 @@ export function Studio() {
           <UpscaleVideoStudioTab />
         ) : activeTab === "director" ? (
           <DirectorStudioTab />
-        ) : activeTab === "lora" ? (
-          <LoraStudioTab
-            onUseLora={() => setActiveTab("custom")}
-            onOpenMultiAngle={() => setActiveTab("angle")}
-          />
-        ) : (
+        ) : activeTab === "lora" ? null : (
           <ImageGenMaintenancePlaceholder />
         )}
       </div>

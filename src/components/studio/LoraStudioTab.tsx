@@ -2986,6 +2986,9 @@ export function LoraStudioTab({
               items={diagnosticItems}
               subjects={allSubjects}
               onOpenMultiAngle={onOpenMultiAngle}
+              onSmartCrop={() => void runSmartCropForDataset()}
+              smartCropCandidateCount={images.filter((img) => !img.cropKind).length}
+              smartCropBusy={smartCropBusy}
             />
           )}
 
