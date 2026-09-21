@@ -1153,9 +1153,18 @@ export function LoraStudioTab({
         .map(([id, v]) => ({ id, label: v.label, ids: v.ids }))
         .sort((a, b) => b.ids.length - a.ids.length);
 
+    // 取り込んだ元画像か、切り出したものか（2026-09-22、ホスト指摘）。
+    // 「duo 判定になった切り出しだけを見たい」のように、他の軸と掛け合わせて
+    // 点検するのに要る。クロップは他キャラの端が写り込むことがあるため。
+    const kindMap = new Map<string, { label: string; ids: string[] }>();
+    for (const img of captioned) {
+      push(kindMap, img.cropKind ? "crop" : "orig", img.cropKind ? "切り出し" : "取り込み", img.id);
+    }
+
     const groups: { key: string; title: string; options: { id: string; label: string; ids: string[] }[] }[] = [];
     if (subjMap.size > 1) groups.push({ key: "subject", title: "被写体", options: toOptions(subjMap) });
     if (distMap.size > 1) groups.push({ key: "distance", title: "構図", options: toOptions(distMap) });
+    if (kindMap.size > 1) groups.push({ key: "origin", title: "種別", options: toOptions(kindMap) });
     return groups;
   }, [images, captions, allSubjects]);
 
