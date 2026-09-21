@@ -1008,9 +1008,22 @@ else:
    --model-arch ltx_video` → `[cache] Lightricks/LTX-2: already complete on Volume`
    ＝ 再ダウンロードが走らないことを確認。
 4. GPU 検証: `modal_lora_benchmark.py` に `PLANS["ltx2_smoke"]`（b300 / 768px /
-   8枚 / 20step、概算 $1.82）を追加して実行 → `create LoRA for U-Net: 1344
-   modules` / latent キャッシュ / `Compiled 48 transformer block(s)` / 学習ステップ
-   まで通過。**削除後も LTX-2 は正常に学習できる。**
+   8枚 / 20step）を追加して実行 → **20/20 step 完走・`ok: true`**。
+   `create LoRA for U-Net: 1344 modules` / latent キャッシュ /
+   `Compiled 48 transformer block(s)` すべて通過。**削除後も LTX-2 は正常に
+   学習できることを実機で確認した。**実コスト **$1.299**（見積もり $1.82）。
+
+   | | 実測 |
+   |---|---|
+   | warmup（compile・冷キャッシュ） | 605.2s |
+   | latent キャッシュ（8枚） | 48.9s |
+   | **VRAM ピーク** | **80.17 GB** |
+   | s/it（合成8枚・768px・rank32・バッチ1） | 0.9503 |
+
+   🚨 **この s/it を価格に使わないこと。**合成データのベンチであり、§14.15 の
+   「実写と9倍ずれる」地雷がそのまま当てはまる。`LORA_SPI_BASELINE["ltx2"]`
+   （現行 1.24）は実ジョブのログが出るまで触らない。
+   VRAM ピーク 80.17GB は可否判定には使える参考値（H200 141GB でも載る可能性）。
 
 結果: LTX-2 292.76 → **133.82 GB**、`training/` 648.66 → **489.72 GB**、
 Volume 全体 966.5 → **807.6 GB**（1TB に対する余裕が 34GB → 193GB）。
