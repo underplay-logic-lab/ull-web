@@ -2686,6 +2686,7 @@ export function LoraStudioTab({
           subjects={allSubjects.length >= 1 ? allSubjects : undefined}
           maxImages={MAX_IMAGES}
           maxTotalBytes={MAX_TOTAL_BYTES}
+          canDownloadDataset={isAdmin}
           onRecaption={recaptionForCuration}
           resolvedCaptionMode={resolvedCaptionMode}
         />
@@ -2862,16 +2863,22 @@ export function LoraStudioTab({
               <ImagePlus size={15} className="text-neon-violet" />
               学習データセット
             </h3>
-            {images.length > 0 && (
+            {/* 2026-09-21: 学習前のデータセットDLは admin 限定にした
+                （ホスト方針「生成ボタンを押す前に成果物の提供が出来ないように」）。
+                自動キャプションは Gemini 無料枠で動くので、ここを開けておくと
+                「画像を入れて解析させ、ZIP を落としてローカルで焼く」が成立して
+                しまい、学習の対価を取れない。学習開始後（=課金済み）の
+                データセットDLは従来どおり誰でも使える。 */}
+            {isAdmin && images.length > 0 && (
               <button
                 type="button"
                 onClick={downloadDatasetZipLocal}
                 disabled={busy || datasetZipBusy}
-                title="現在の画像とキャプション(.txt)を1つのZIPにまとめて保存します。"
+                title="【admin限定】現在の画像とキャプション(.txt)を1つのZIPにまとめて保存します。"
                 className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-[11px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {datasetZipBusy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
-                📦 データセットDL
+                📦 データセットDL（admin）
               </button>
             )}
           </div>

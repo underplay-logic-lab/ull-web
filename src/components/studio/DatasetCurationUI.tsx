@@ -56,11 +56,20 @@ export function DatasetCurationUI({
   disabled = false,
   onRecaption,
   resolvedCaptionMode = "tags",
+  canDownloadDataset = false,
 }: {
   pairs: CurationPair[];
   // A setState updater — every mutation is applied against the freshest state
   // so an exclude toggle can never clobber (or be clobbered by) an in-flight
   // translation landing on a different card.
+  /**
+   * 学習前のデータセットDLを出してよいか（admin 限定、2026-09-21）。
+   * 自動キャプションは Gemini の無料枠で動くので、ここを誰にでも開けておくと
+   * 「画像を入れて解析させ、ZIP を落としてローカルで焼く」が成立してしまい、
+   * 学習の対価を取れない（ホスト方針「生成ボタンを押す前に成果物の提供が
+   * 出来ないように」）。学習開始後のDLは課金済みなので従来どおり。
+   */
+  canDownloadDataset?: boolean;
   onChange: Dispatch<SetStateAction<CurationPair[]>>;
   onConfirm: () => void;
   onCancel: () => void;
@@ -423,16 +432,18 @@ export function DatasetCurationUI({
             <Languages size={13} />
             🇬🇧 日本語を英語へ一括反映
           </button>
+          {canDownloadDataset && (
           <button
             type="button"
             onClick={downloadDataset}
             disabled={disabled || zipping || Boolean(bulk) || kept.length === 0}
-            title="現在残っている画像とキャプション(.txt)を1つのZIPにまとめて保存します。"
+            title="【admin限定】現在残っている画像とキャプション(.txt)を1つのZIPにまとめて保存します。"
             className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
           >
             {zipping ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-            📦 データセットDL (画像+txt)
+            📦 データセットDL (画像+txt)（admin）
           </button>
+          )}
         </div>
       </div>
 
