@@ -597,6 +597,7 @@ export function ImageDropzone({
   onSelectedChange,
   onRejectedDrop,
   onSuggestRepeats,
+  distanceById,
 }: {
   images: DatasetImage[];
   onAdd: (files: FileList | File[]) => void;
@@ -623,6 +624,8 @@ export function ImageDropzone({
   onRejectedDrop?: () => void;
   /** 構図の偏りを均す学習回数を一括で入れる（未指定ならボタンを出さない）。 */
   onSuggestRepeats?: () => void;
+  /** 画像id -> キャプションから判定した距離バケットid（クロップ候補の絞り込み用）。 */
+  distanceById?: Record<string, string[]>;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [filters, setFilters] = useState<Record<string, string | null>>({});
@@ -661,11 +664,32 @@ export function ImageDropzone({
   };
 
   const croppedCount = images.filter((i) => i.cropKind).length;
-  // 選択中があればそれを、無ければ未クロップの元画像すべてを対象にする。
-  const cropTargetIds =
+  // 切り出しは「引き画を寄せる」ことしかできない（2026-09-21、ホスト指摘
+  // 「全身から全身を切り出すのもおかしいし、クローズアップから全身を切り出す
+  // のもおかしい」）。キャプションから分かっている元画像の距離より**寄り側**の
+  // 構図だけを候補にする。距離が分からない画像は判断できないので通す。
+  const DIST_ORDER: Record<string, number> = { closeup: 0, bust: 1, upper: 2, full: 3 };
+  const KIND_DIST: Record<SmartCropKind, number> = { face: 0, upper: 2, full: 3 };
+  const canProduce = (imgId: string, kind: SmartCropKind) => {
+    const src = distanceById?.[imgId];
+    if (!src || src.length === 0) return true; // 未分類は判断できないので通す
+    const widest = Math.max(...src.map((b) => DIST_ORDER[b] ?? 3));
+    return widest > KIND_DIST[kind];
+  };
+  // 選択中があればそれを、無ければ未クロップの元画像すべてを母数にする。
+  const cropPool = (
     selected.size > 0
-      ? images.filter((i) => selected.has(i.id) && !i.cropKind).map((i) => i.id)
-      : images.filter((i) => !i.cropKind).map((i) => i.id);
+      ? images.filter((i) => selected.has(i.id) && !i.cropKind)
+      : images.filter((i) => !i.cropKind)
+  );
+  const cropTargetIds = cropPool
+    .filter((i) => [...cropKinds].some((k) => canProduce(i.id, k)))
+    .map((i) => i.id);
+  // 実際に増える枚数の見込み（構図ごとに作れる画像数の合計）。
+  const cropEstimate = [...cropKinds].reduce(
+    (t, k) => t + cropPool.filter((i) => canProduce(i.id, k)).length,
+    0,
+  );
 
   // チップで絞り込んだ結果（複数軸は積集合）を選択状態へ反映する。
   const applyFilters = (next: Record<string, string | null>) => {
@@ -888,10 +912,7 @@ export function ImageDropzone({
                 >
                   {smartCropBusy ? <Loader2 size={12} className="animate-spin" /> : <Scissors size={12} />}
                   ✂️ {[...cropKinds].map((k) => SMART_CROP_KIND_LABEL[k]).join("・")} を{" "}
-                  {selected.size > 0 ? `選択中の ${cropTargetIds.length} 枚` : `${cropTargetIds.length} 枚すべて`}
-                  {" から切り出す（最大 +"}
-                  {cropTargetIds.length * cropKinds.size}
-                  {" 枚）"}
+                  {cropTargetIds.length} 枚から切り出す（+{cropEstimate} 枚）
                 </button>
                 {smartCropBusy && smartCropProgress && (
                   <span className="text-muted">
@@ -900,16 +921,26 @@ export function ImageDropzone({
                 )}
               </div>
               <p
-                className={`mt-1.5 text-[10px] ${
-                  images.length + cropTargetIds.length * cropKinds.size > MAX_IMAGES
-                    ? "text-amber-400"
-                    : "text-muted"
+                className={`mt-1.5 text-[10px] leading-relaxed ${
+                  images.length + cropEstimate > MAX_IMAGES ? "text-amber-400" : "text-muted"
                 }`}
               >
-                現在 {images.length} 枚 / 上限 {MAX_IMAGES} 枚。切り出し元が小さすぎるもの（全身から顔アップ等）は
-                自動で除外されるので、実際の増加はこれより少なくなります。
-                {selected.size === 0 &&
-                  "対象を絞るには、下の一括選択チップ（被写体・構図）で選んでからこのボタンを押してください。"}
+                {cropTargetIds.length === 0 ? (
+                  <>
+                    選んだ構図を作れる元画像がありません。切り出しは
+                    <strong className="text-foreground">引いた画を寄せることしかできない</strong>
+                    ので、たとえば「全身」は元画像より引いた画が無いと作れません。
+                    「上半身」なら全身の画像から、「顔」なら全身・上半身・バストの画像から作れます。
+                  </>
+                ) : (
+                  <>
+                    対象は「選んだ構図より引いて写っている元画像」だけです（{cropPool.length} 枚中{" "}
+                    {cropTargetIds.length} 枚）。現在 {images.length} 枚 / 上限 {MAX_IMAGES} 枚。
+                    切り出し元が小さすぎるもの（全身から顔アップ等）はさらに自動で除外されます。
+                    {selected.size === 0 &&
+                      " 被写体で絞るには、下の一括選択チップで選んでからこのボタンを押してください。"}
+                  </>
+                )}
               </p>
             </div>
           )}

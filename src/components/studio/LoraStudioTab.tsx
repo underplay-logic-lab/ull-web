@@ -1228,6 +1228,16 @@ export function LoraStudioTab({
     );
   }, [images, captions, allSubjects, setImageRepeats]);
 
+  // 画像id -> 距離バケット（クロップ候補の絞り込みに使う）。判定は診断と同じ。
+  const distanceById = useMemo(() => {
+    const out: Record<string, string[]> = {};
+    for (const img of images) {
+      const cap = (captions[img.id] ?? "").trim();
+      if (cap) out[img.id] = captionBuckets(cap, "distance");
+    }
+    return out;
+  }, [images, captions]);
+
   const tooSmallImages = useMemo(() => images.filter((i) => i.sizeVerdict === "tooSmall"), [images]);
 
   const effectiveEmbedTags = useMemo(() => {
@@ -3246,6 +3256,7 @@ export function LoraStudioTab({
             selectedIds={selectedImageIds}
             onSelectedChange={setSelectedImageIds}
             onSuggestRepeats={captionSubjectCounts.total > 0 ? applySuggestedRepeats : undefined}
+            distanceById={distanceById}
             smartCropBusy={smartCropBusy}
             smartCropProgress={smartCropProgress}
             onSmartCrop={(ids, kinds) => void runSmartCropForDataset(ids, kinds)}
@@ -3302,6 +3313,7 @@ export function LoraStudioTab({
               src/lib/datasetDiagnostics.ts のヘッダに動機と実データの検証あり。 */}
           {diagnosticItems.length > 0 && (
             <DatasetDiagnosticsPanel
+              provisional={autoCap.running || pendingCaptionCount > 0}
               items={diagnosticItems}
               subjects={allSubjects}
               onOpenMultiAngle={onOpenMultiAngle}

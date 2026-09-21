@@ -20,6 +20,7 @@ export function DatasetDiagnosticsPanel({
   subjects,
   onOpenMultiAngle,
   onPrepareCrop,
+  provisional = false,
 }: {
   items: DiagnosticInput[];
   subjects: LoraSubject[];
@@ -34,6 +35,12 @@ export function DatasetDiagnosticsPanel({
    * だけを行い、実行は1つのボタンに集約する。
    */
   onPrepareCrop?: (subject: string) => void;
+  /**
+   * キャプション解析が終わっていない＝この診断は暫定値（2026-09-21、ホスト
+   * 指摘「要確認の数値がやる度に変わる」）。解析中は対象枚数が増えていくので
+   * 数字が動くのは当然だが、黙っていると不信の元になるので明示する。
+   */
+  provisional?: boolean;
 }) {
   const [open, setOpen] = useState(true);
   const diag = useMemo(() => analyzeDataset(items, subjects), [items, subjects]);
@@ -72,6 +79,11 @@ export function DatasetDiagnosticsPanel({
           {errors.length === 0 && warns.length > 0 && (
             <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
               {warns.length}
+            </span>
+          )}
+          {provisional && (
+            <span className="rounded-full bg-neutral-500/20 px-2 py-0.5 text-[10px] font-semibold text-muted">
+              解析中・暫定
             </span>
           )}
           {errors.length === 0 && warns.length === 0 && (
@@ -227,8 +239,14 @@ export function DatasetDiagnosticsPanel({
             </p>
           )}
 
+          {provisional && (
+            <p className="text-[10px] leading-relaxed text-amber-400">
+              キャプション解析が終わっていないため、この数字はまだ動きます。全部終わってから判断してください。
+            </p>
+          )}
           <p className="text-[10px] leading-relaxed text-muted opacity-70">
-            ※ この集計はキャプションのタグを数えたものです。枚数そのものは事実ですが、「目安◯枚」はまだ実測で校正されていない出発点の値です。
+            ※ この集計はキャプションのタグを数えたものです。キャプションは AI が毎回書き起こすため、
+            同じ画像でも解析し直すとタグが少し変わり、指摘の件数も前後します。枚数そのものは事実ですが、「目安◯枚」はまだ実測で校正されていない出発点の値です。
           </p>
         </div>
       )}
