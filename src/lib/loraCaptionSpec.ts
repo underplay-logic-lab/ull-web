@@ -264,6 +264,16 @@ export function buildCaptionMetaPrompt(spec: LoraCaptionSpec, triggerWord: strin
     `  ${rule.describe}${spec.varying.trim() ? `
   ADDITIONALLY, the user specifically listed: ${spec.varying.trim()}` : ""}`,
     "",
+    // 2026-09-21: 既定を常に効かせる（置き換えない）ようにした副作用で、
+    // 「既定では固定扱いのものを、あえて変動扱いにしたい」が表現できなく
+    // なっていた。実例: 全画像で眼鏡をかけているが、眼鏡はキャラの特徴に
+    // したくない（＝描写させて学習から外したい）。ユーザーの明示指定を
+    // 既定より優先させる一文で解消する。
+    "PRECEDENCE: the user's explicit lists override the defaults above. If the",
+    "user listed something as VARIABLE that the default blacklist would forbid,",
+    "the user wins — it MUST be described. If the user listed something as FIXED",
+    "that the defaults would describe, the user wins — it MUST NEVER be written.",
+    "",
     "Write a single English instruction block for the image-captioning VLM (Qwen). Requirements:",
     `1. Tell it to output ONE line of comma-separated English, starting with "${trigger}," and nothing before it.`,
     "2. Translate the user's Japanese feature lists into concrete English wording inside the instruction.",

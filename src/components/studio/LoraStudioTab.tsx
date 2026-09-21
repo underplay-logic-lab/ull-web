@@ -882,12 +882,18 @@ export function LoraStudioTab({
     async (index: number, trigger: string, hintJa: string) => {
       const t = trigger.trim();
       if (!t) return;
+      // キャプション前でも動かす（2026-09-21、ホスト指摘「画像から抽出を
+      // デフォルトにして、抽出結果を表示して追加・削除してもらう流れ」）。
+      // 複数人が写っていても、日本語の特徴をヒントとして渡すので Gemini 側で
+      // 対象を選り分けられる（identity-tags の buildPrompt 参照）。
+      // キャプション済みならその被写体のトリガーで始まる画像を優先する。
       const captioned = images.filter((img) => (captions[img.id] ?? "").trim());
-      // その被写体のトリガーで始まるキャプションの画像を優先する。
       const mine = captioned.filter((img) =>
         (captions[img.id] ?? "").toLowerCase().startsWith(t.toLowerCase()),
       );
-      const pool = (mine.length > 0 ? mine : captioned).slice(0, 6).map((img) => img.file);
+      const pool = (mine.length > 0 ? mine : captioned.length > 0 ? captioned : images)
+        .slice(0, 6)
+        .map((img) => img.file);
       if (pool.length === 0) return;
       setIdentityExtracting(index);
       try {
@@ -3159,7 +3165,7 @@ export function LoraStudioTab({
                           onExtract={() => void extractIdentityFor(-1, triggerWord, primaryDescription)}
                           converting={identityBusy === -1}
                           extracting={identityExtracting === -1}
-                          canExtract={captionedCount > 0}
+                          canExtract={images.length > 0}
                           disabled={busy}
                         />
                       </>
@@ -3190,7 +3196,7 @@ export function LoraStudioTab({
                     onExtract={() => void extractIdentityFor(-1, triggerWord, primaryDescription)}
                     converting={identityBusy === -1}
                     extracting={identityExtracting === -1}
-                    canExtract={captionedCount > 0}
+                    canExtract={images.length > 0}
                     disabled={busy}
                   />
                 </div>
@@ -3264,7 +3270,7 @@ export function LoraStudioTab({
                     onExtract={() => void extractIdentityFor(i, s.trigger, s.description)}
                     converting={identityBusy === i}
                     extracting={identityExtracting === i}
-                    canExtract={captionedCount > 0}
+                    canExtract={images.length > 0}
                     disabled={busy}
                   />
                 </div>
@@ -3331,7 +3337,10 @@ export function LoraStudioTab({
           {/* SDXL/sd-scriptsワーカー限定: 完成した.safetensorsに書き込む
               「おすすめタグ」を手動指定する任意機能（2026-09-15）。未指定なら
               sd-scripts純正のメタデータ（実際のキャプション由来）のまま。 */}
-          {!yamlMode && isSdxlJob && (
+          {/* 画像が1枚も無いうちは出さない（2026-09-21、ホスト指摘）。
+              「画像から抽出」が主経路なので、素材が無い状態で見せても
+              できることが無い。 */}
+          {!yamlMode && isSdxlJob && images.length > 0 && (
             <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5">
               <button
                 type="button"
@@ -3450,9 +3459,16 @@ export function LoraStudioTab({
                     ブラックリストから外れる事故があった（loraCaptionSpec.ts
                     の buildCaptionMetaPrompt のコメント参照）。 */}
                 <p className="rounded-lg border border-border/60 bg-background/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted">
-                  <strong className="text-foreground">空欄でも構いません。</strong>
-                  学習タイプごとの既定ルールが常に適用されます（人物なら、顔立ち・髪型・髪色・目の色・固有の装飾品はキャプションに書かれません＝トリガーワードに焼き込まれます）。
-                  ここへの入力は<strong className="text-foreground">その既定への追加</strong>で、既定を打ち消すものではありません。
+                  <strong className="text-foreground">通常は両方とも空欄のままで構いません。</strong>
+                  学習タイプを選んだ時点で既定ルールが効いています。人物なら、顔立ち・髪型・髪色・目の色・固有の装飾品は
+                  <strong className="text-foreground">キャプションに書かれず、トリガーワードに焼き込まれます</strong>。
+                  ポーズ・表情・構図・背景・光だけが描写されます。
+                  <br />
+                  <span className="text-foreground">入力が要るのは、その既定を変えたいときだけです。</span>
+                  例:「全部の画像で眼鏡をかけているが、眼鏡はこのキャラの特徴にしたくない（外した絵も出したい）」→
+                  <strong className="text-foreground">変化させたい特徴に「眼鏡」</strong>と入力。
+                  逆に既定では拾われない持ち物などを焼き込みたければ、固定したい特徴に書きます。
+                  <strong className="text-foreground">ここに書いた指定は既定より優先されます。</strong>
                   <br />
                   ⚠️ 学習タイプを「衣装」にすると<strong className="text-foreground">逆になります</strong>（衣装を書かず、着ている人の顔や髪を描写）。人物LoRAでは「キャラクター／人物」を選んでください。
                 </p>
