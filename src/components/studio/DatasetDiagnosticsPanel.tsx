@@ -34,7 +34,7 @@ export function DatasetDiagnosticsPanel({
    * ホスト指摘）。ここは「該当被写体の元画像を選択してクロップ欄へ送る」
    * だけを行い、実行は1つのボタンに集約する。
    */
-  onPrepareCrop?: (subject: string) => void;
+  onPrepareCrop?: (subject: string, kinds: ("face" | "upper")[]) => void;
   /**
    * キャプション解析が終わっていない＝この診断は暫定値（2026-09-21、ホスト
    * 指摘「要確認の数値がやる度に変わる」）。解析中は対象枚数が増えていくので
@@ -53,13 +53,15 @@ export function DatasetDiagnosticsPanel({
   // Multi-Angle Studio で作れる穴があるか（カメラ由来の軸＝距離・向き・仰角）。
   const angleFixable = diag.issues.filter((i) => i.fixableWith === "multi_angle").length;
   // 手持ちの引き画から切り出せる穴（距離軸）。無料・即時なので先に出す。
-  const cropSubjects = [
-    ...new Set(
-      diag.issues
-        .filter((i) => i.fixableWith === "smart_crop" && i.subject)
-        .map((i) => i.subject as string),
-    ),
-  ];
+  // 被写体ごとに「クロップで埋まる穴」と、その構図をまとめる。
+  const cropPlan = new Map<string, Set<"face" | "upper">>();
+  for (const i of diag.issues) {
+    if (i.fixableWith !== "smart_crop" || !i.subject || !i.cropKind) continue;
+    const set = cropPlan.get(i.subject) ?? new Set<"face" | "upper">();
+    set.add(i.cropKind);
+    cropPlan.set(i.subject, set);
+  }
+  const KIND_LABEL: Record<"face" | "upper", string> = { face: "顔アップ", upper: "上半身" };
 
   return (
     <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5">
@@ -205,23 +207,25 @@ export function DatasetDiagnosticsPanel({
                 <strong className="text-foreground">学習回数を増やしても直らない指摘があります。</strong>
                 同じ画像を繰り返し見せても情報は増えないので、足りない構図の画像を追加してください。
               </p>
-              {cropSubjects.length > 0 && onPrepareCrop && (
+              {cropPlan.size > 0 && onPrepareCrop && (
                 <>
                   <p className="text-[10px] leading-relaxed text-muted">
                     このうち <strong className="text-foreground">距離（顔アップ・バスト・上半身）</strong>{" "}
                     の穴は、すでに取り込んである引き画から{" "}
                     <strong className="text-foreground">無料で・その場で</strong> 切り出せます。
+                    下のボタンを押すと、その被写体の元画像と切り出す構図がクロップ欄に自動でセットされます。
                   </p>
                   <div className="flex flex-wrap gap-1.5">
-                    {cropSubjects.map((subj) => (
+                    {[...cropPlan.entries()].map(([subj, kinds]) => (
                       <button
                         key={subj}
                         type="button"
-                        onClick={() => onPrepareCrop(subj)}
+                        onClick={() => onPrepareCrop(subj, [...kinds])}
                         className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20"
                       >
                         <Scissors size={11} />
-                        <span className="font-mono">{subj}</span> の元画像を選んでクロップ欄へ
+                        <span className="font-mono">{subj}</span> の{" "}
+                        {[...kinds].map((k) => KIND_LABEL[k]).join("・")} を切り出す準備をする
                       </button>
                     ))}
                   </div>

@@ -148,6 +148,8 @@ export type DiagnosticIssue = {
    * 突きつけない** — 指摘のレベルも warn に落とす。
    */
   fixableWith: "multi_angle" | "smart_crop" | null;
+  /** smart_crop のとき、どの構図で切り出せば埋まるか（UI の初期選択に使う）。 */
+  cropKind?: "face" | "upper";
 };
 
 export type DatasetDiagnostic = {
@@ -330,6 +332,30 @@ export function analyzeDataset(
 // 作る手段が無いので、指摘は参考情報（warn）に留める。
 const MULTI_ANGLE_AXES: DiagnosticAxis[] = ["distance", "view", "elevation"];
 
+/**
+ * スマートクロップが実際に作れる距離バケットだけを smart_crop 扱いにする
+ * （2026-09-22）。クロッパーの出力は 顔 / 上半身 / 全身 の3種で、
+ * **「バスト」に対応する出力は無い**。また「全身」は元画像より引いた画が
+ * 必要なので作れない。よって埋められるのは closeup と upper だけ。
+ * さらに、その被写体に**より引いた画の在庫**が無ければ切り出しようがない。
+ */
+const CROPPABLE_DISTANCE: Record<string, "face" | "upper"> = {
+  closeup: "face",
+  upper: "upper",
+};
+const DISTANCE_ORDER = ["closeup", "bust", "upper", "full"];
+
+function distanceFix(
+  bucketId: string,
+  axes: Record<string, number>,
+): { fixableWith: "smart_crop" | "multi_angle"; cropKind?: "face" | "upper" } {
+  const kind = CROPPABLE_DISTANCE[bucketId];
+  if (!kind) return { fixableWith: "multi_angle" };
+  const idx = DISTANCE_ORDER.indexOf(bucketId);
+  const wider = DISTANCE_ORDER.slice(idx + 1).reduce((n, b) => n + (axes[b] ?? 0), 0);
+  return wider > 0 ? { fixableWith: "smart_crop", cropKind: kind } : { fixableWith: "multi_angle" };
+}
+
 function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
   const issues: DiagnosticIssue[] = [];
   if (subjects.length === 0) return issues;
@@ -368,23 +394,21 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
     // distance.buckets は寄り → 引き の順に並んでいる。切り出しは「引き画を
     // 寄せる」ことしかできないので、自分より後ろ（広い）バケットに在庫が
     // あるときだけ smart_crop を出口にする。
-    const distBuckets = DIAGNOSTIC_AXES.distance.buckets;
-    distBuckets.forEach((b, idx) => {
+    for (const b of DIAGNOSTIC_AXES.distance.buckets) {
       const got = s.axes.distance[b.id] ?? 0;
       const want = DIAGNOSTIC_TARGETS.distance[b.id] ?? 0;
-      if (want <= 0 || got >= want) return;
-      const wider = distBuckets.slice(idx + 1).reduce((n, w) => n + (s.axes.distance[w.id] ?? 0), 0);
-      const croppable = wider > 0;
+      if (want <= 0 || got >= want) continue;
+      const fix = distanceFix(b.id, s.axes.distance);
       issues.push({
         level: got === 0 ? "error" : "warn",
         subject: s.trigger,
         message: `「${b.label}」が ${got}枚です（目安 ${want}枚）。${
           got === 0 ? "この距離では生成できません。" : ""
-        }${croppable ? `より引いた画が ${wider}枚 あるので、スマートクロップで作れます。` : ""}`,
+        }${fix.fixableWith === "smart_crop" ? "より引いた画から、スマートクロップで作れます。" : ""}`,
         notFixableByRepeats: true,
-        fixableWith: croppable ? "smart_crop" : "multi_angle",
+        ...fix,
       });
-    });
+    }
 
     if (s.unique < DIAGNOSTIC_TARGETS.minUniquePerSubject) {
       issues.push({
@@ -430,12 +454,21 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
           if (n === 0) continue; // 0枚は上の構造的欠落側で拾う
           if (peak / n < DIAGNOSTIC_TARGETS.bucketImbalanceRatio) continue;
           const richer = counts.find((c) => c.n === peak)!.s.trigger;
+          // 距離軸の不足は、より引いた画が在庫にあればクロップで埋まる
+          // （2026-09-22）。以前は一律でマルチアングルへ誘導しており、
+          // 無料・即時で作れるものにクレジットを使わせる案内になっていた。
+          const fix: { fixableWith: DiagnosticIssue["fixableWith"]; cropKind?: "face" | "upper" } =
+            axis === "distance"
+              ? distanceFix(bucket.id, s.axes.distance)
+              : { fixableWith: MULTI_ANGLE_AXES.includes(axis) ? "multi_angle" : null };
           issues.push({
             level: MULTI_ANGLE_AXES.includes(axis) ? "error" : "warn",
             subject: s.trigger,
-            message: `${DIAGNOSTIC_AXES[axis].label}の「${bucket.label}」が ${n}枚しかありません（${richer} は ${peak}枚）。この構図では ${richer} に比べて明らかに弱くなります。`,
+            message:
+              `${DIAGNOSTIC_AXES[axis].label}の「${bucket.label}」が ${n}枚しかありません（${richer} は ${peak}枚）。この構図では ${richer} に比べて明らかに弱くなります。` +
+              (fix.fixableWith === "smart_crop" ? "より引いた画から、スマートクロップで作れます。" : ""),
             notFixableByRepeats: true,
-            fixableWith: MULTI_ANGLE_AXES.includes(axis) ? "multi_angle" : null,
+            ...fix,
           });
         }
       }

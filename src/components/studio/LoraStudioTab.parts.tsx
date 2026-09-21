@@ -598,6 +598,8 @@ export function ImageDropzone({
   onRejectedDrop,
   onSuggestRepeats,
   distanceById,
+  cropKindSelection,
+  onCropKindsChange,
 }: {
   images: DatasetImage[];
   onAdd: (files: FileList | File[]) => void;
@@ -626,10 +628,16 @@ export function ImageDropzone({
   onSuggestRepeats?: () => void;
   /** 画像id -> キャプションから判定した距離バケットid（クロップ候補の絞り込み用）。 */
   distanceById?: Record<string, string[]>;
+  cropKindSelection: Set<SmartCropKind>;
+  onCropKindsChange: (next: Set<SmartCropKind>) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [filters, setFilters] = useState<Record<string, string | null>>({});
-  const [cropKinds, setCropKinds] = useState<Set<SmartCropKind>>(new Set(["face", "upper", "full"]));
+  // 切り出す構図。診断パネルから「顔アップと上半身を切り出す準備」と指示が
+  // 来るのでタブ側が持つ（2026-09-22）。
+  const cropKinds = cropKindSelection;
+  const setCropKinds = (v: Set<SmartCropKind> | ((p: Set<SmartCropKind>) => Set<SmartCropKind>)) =>
+    onCropKindsChange(typeof v === "function" ? v(cropKindSelection) : v);
   const [dragOver, setDragOver] = useState(false);
   const totalBytes = images.reduce((s, i) => s + i.file.size, 0);
   // 学習回数の一括設定用の選択状態。1枚ずつ触るには枚数が多すぎるので、

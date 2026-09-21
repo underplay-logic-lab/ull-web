@@ -1157,8 +1157,12 @@ export function LoraStudioTab({
   // 診断の「◯◯ の元画像を選んでクロップ欄へ」。実際の切り出しは実行しない
   // （実行ボタンが2つあると対象が分からなくなる。2026-09-21 ホスト指摘）。
   // 対象は「その被写体が写っていて、まだ切り出していない元画像」。
+  const [cropKindSelection, setCropKindSelection] = useState<Set<SmartCropKind>>(
+    new Set<SmartCropKind>(["face", "upper", "full"]),
+  );
+
   const prepareCropForSubject = useCallback(
-    (subject: string) => {
+    (subject: string, kinds: ("face" | "upper")[]) => {
       const ids = images
         .filter((img) => {
           if (img.cropKind) return false;
@@ -1168,6 +1172,9 @@ export function LoraStudioTab({
         })
         .map((img) => img.id);
       setSelectedImageIds(new Set(ids));
+      // 診断が「この構図が足りない」と言っている以上、切り出す構図もそこへ
+      // 合わせる（余計な構図まで作らせない）。
+      if (kinds.length) setCropKindSelection(new Set<SmartCropKind>(kinds));
       document.getElementById(SMART_CROP_PANEL_ID)?.scrollIntoView({ behavior: "smooth", block: "center" });
     },
     [images, captions, allSubjects],
@@ -3257,6 +3264,8 @@ export function LoraStudioTab({
             onSelectedChange={setSelectedImageIds}
             onSuggestRepeats={captionSubjectCounts.total > 0 ? applySuggestedRepeats : undefined}
             distanceById={distanceById}
+            cropKindSelection={cropKindSelection}
+            onCropKindsChange={setCropKindSelection}
             smartCropBusy={smartCropBusy}
             smartCropProgress={smartCropProgress}
             onSmartCrop={(ids, kinds) => void runSmartCropForDataset(ids, kinds)}
