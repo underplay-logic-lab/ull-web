@@ -449,6 +449,8 @@ export async function extractIdentityTags(
   files: File[],
   trigger: string,
   hintJa: string,
+  /** 性別/人数タグ（"1man, solo, male" 等）。誰を見るかの決定打として渡す。 */
+  fixedTags = "",
 ): Promise<IdentityTag[]> {
   const thumbs: Thumb[] = [];
   for (const f of files.slice(0, 6)) {
@@ -464,7 +466,7 @@ export async function extractIdentityTags(
   const res = await fetch("/api/studio/lora/identity-tags", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ trigger, hint_ja: hintJa, images: thumbs }),
+    body: JSON.stringify({ trigger, hint_ja: hintJa, fixed_tags: fixedTags, images: thumbs }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || "特徴の抽出に失敗しました。");

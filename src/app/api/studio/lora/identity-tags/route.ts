@@ -38,10 +38,29 @@ const ERR_MESSAGES = {
   failed: "特徴の抽出に失敗しました。",
 } as const;
 
-function buildPrompt(trigger: string, hintJa: string): string {
+/** "1man, solo, male" / "1girl, solo, female" 等から性別だけを取り出す。 */
+function genderOf(fixedTags: string): "male" | "female" | null {
+  const t = fixedTags.toLowerCase();
+  if (/(1man|1boy|male|man|boy)/.test(t)) return "male";
+  if (/(1girl|1woman|female|woman|girl)/.test(t)) return "female";
+  return null;
+}
+
+function buildPrompt(trigger: string, hintJa: string, fixedTags: string): string {
+  // 性別は「誰を見るか」の決定打（2026-09-22、ホスト報告「男と女が混じる」）。
+  // 自動抽出はキャプション前に走るため、どの画像に誰が写っているかが分からず
+  // データセットの先頭を無差別に送っている。複数人が写っていると、日本語の
+  // ヒントだけでは取り違える。性別タグは UI で必ず選ばせているので確実。
+  const gender = genderOf(fixedTags);
   return [
     "You are building the identity tag list for a LoRA of a single recurring character.",
     `The character's trigger word is "${trigger}".`,
+    gender
+      ? `**The character is ${gender.toUpperCase()}.** Several people may appear in an image. ` +
+        `Describe ONLY the ${gender} person. Never describe anyone of another gender, ` +
+        `and never mix traits from two people into one list. ` +
+        `If an image contains no ${gender} person, ignore that image entirely.`
+      : "",
     hintJa ? `The user describes them in Japanese as: ${hintJa}` : "",
     "",
     "Look at the images and list ONLY this character's PERMANENT physical identity traits —",
@@ -122,6 +141,7 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => null);
     const trigger = typeof body?.trigger === "string" ? body.trigger.trim().slice(0, 64) : "";
     const hintJa = typeof body?.hint_ja === "string" ? body.hint_ja.trim().slice(0, 300) : "";
+    const fixedTags = typeof body?.fixed_tags === "string" ? body.fixed_tags.trim().slice(0, 200) : "";
     if (!trigger) {
       return NextResponse.json({ error: "トリガーワードが必要です。" }, { status: 400 });
     }
@@ -147,7 +167,7 @@ export async function POST(request: Request) {
 
     let raw: string;
     try {
-      raw = await runGeminiVision(genAI, buildPrompt(trigger, hintJa), images, "enja");
+      raw = await runGeminiVision(genAI, buildPrompt(trigger, hintJa, fixedTags), images, "enja");
     } catch (e) {
       return geminiErrorResponse(e, ERR_MESSAGES);
     }

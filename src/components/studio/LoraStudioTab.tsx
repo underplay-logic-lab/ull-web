@@ -22,7 +22,6 @@ import {
   Sparkles,
   Tag,
   Trash2,
-  Scissors,
   Wand2,
   Zap,
 } from "lucide-react";
@@ -87,7 +86,7 @@ import { translateCaption } from "@/lib/loraTranslate";
 import { extractIdentityTags } from "@/lib/loraCaption";
 import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
 import { generateDatasetCaptions, captionFileKey } from "@/lib/loraCaption";
-import { runSmartCrop, type SmartCropKind } from "@/lib/smartCrop";
+import { runSmartCrop, SMART_CROP_KIND_LABEL, type SmartCropKind } from "@/lib/smartCrop";
 import { prepareDatasetImage, type ImageSizeVerdict } from "@/lib/datasetImagePrep";
 
 // 切り出し結果を捨てる閾値（2026-09-21、ホスト指摘「粗い画像を学習しちゃう
@@ -1000,7 +999,7 @@ export function LoraStudioTab({
   // デコードは発生しない。
   const [identityExtracting, setIdentityExtracting] = useState<number | null>(null);
   const extractIdentityFor = useCallback(
-    async (index: number, trigger: string, hintJa: string) => {
+    async (index: number, trigger: string, hintJa: string, fixedTags = "") => {
       const t = trigger.trim();
       if (!t) return;
       // キャプション前でも動かす（2026-09-21、ホスト指摘「画像から抽出を
@@ -1012,13 +1011,20 @@ export function LoraStudioTab({
       const mine = captioned.filter((img) =>
         (captions[img.id] ?? "").toLowerCase().startsWith(t.toLowerCase()),
       );
-      const pool = (mine.length > 0 ? mine : captioned.length > 0 ? captioned : images)
+      // キャプション前は「誰が写っているか」が分からない。先頭6枚を取ると
+      // フォルダ単位で偏って片方の被写体しか入らないので（2026-09-22、
+      // ホスト報告「男と女が混じる」）、全体から等間隔で拾う。誰を見るかは
+      // 性別タグで API 側に指定する。
+      const source = mine.length > 0 ? mine : captioned.length > 0 ? captioned : images;
+      const step = Math.max(1, Math.floor(source.length / 6));
+      const pool = source
+        .filter((_, k) => k % step === 0)
         .slice(0, 6)
         .map((img) => img.file);
       if (pool.length === 0) return;
       setIdentityExtracting(index);
       try {
-        const tags = await extractIdentityTags(pool, t, hintJa);
+        const tags = await extractIdentityTags(pool, t, hintJa, fixedTags);
         const en = tags.map((x) => x.en).join(", ");
         const ja = tags.map((x) => x.ja).join(", ");
         if (index < 0) {
@@ -1259,26 +1265,35 @@ export function LoraStudioTab({
   const autoExtractedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (images.length === 0) return;
-    const jobs: { index: number; trigger: string; hint: string; has: boolean }[] = [
-      { index: -1, trigger: triggerWord.trim(), hint: primaryDescription, has: !!primaryIdentityTags.trim() },
+    const jobs = [
+      {
+        index: -1,
+        trigger: triggerWord.trim(),
+        hint: primaryDescription,
+        fixedTags: primaryFixedTags,
+        has: !!primaryIdentityTags.trim(),
+      },
       ...extraSubjects.map((sub, i) => ({
         index: i,
         trigger: (sub.trigger ?? "").trim(),
         hint: sub.description ?? "",
+        fixedTags: sub.fixedTags ?? "",
         has: !!(sub.identityTags ?? "").trim(),
       })),
     ];
     for (const j of jobs) {
       if (!j.trigger || j.has) continue;
-      const key = `${j.index}:${j.trigger}`;
+      // 性別タグは「誰を見るか」の決定打なので、埋まるまで待つ。
+      if (!j.fixedTags.trim()) continue;
+      const key = `${j.index}:${j.trigger}:${j.fixedTags}`;
       if (autoExtractedRef.current.has(key)) continue;
       autoExtractedRef.current.add(key);
-      void extractIdentityFor(j.index, j.trigger, j.hint);
+      void extractIdentityFor(j.index, j.trigger, j.hint, j.fixedTags);
     }
     // extractIdentityFor は毎レンダー作り直されるので依存から外す（キーで
     // 二重実行を防いでいる）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [images.length, triggerWord, primaryIdentityTags, extraSubjects]);
+  }, [images.length, triggerWord, primaryIdentityTags, primaryFixedTags, extraSubjects]);
 
   // 被写体の「特徴」欄の説明を読んだか（初回だけ出す）。初期値を lazy に
   // 読むので effect で setState する必要がない。SSR では false のまま。
@@ -3381,11 +3396,11 @@ export function LoraStudioTab({
             onSmartCrop={(ids, kinds) => void runSmartCropForDataset(ids, kinds)}
           />
 
-          {/* 切り出した画像は人手で点検しないと使えない（2026-09-22、ホスト
-              指摘「クロップ後に削除の説明が必要」）。何を基準に消すのかが
-              分からないと点検しようがないので、判断基準まで書く。 */}
+          {/* 切り出した画像は人手で点検しないと使えない（2026-09-22）。
+              判断基準と**切り出した画像だけのグリッド**をクロップ欄の直下に
+              置く。上のサムネイル一覧まで戻って探させない（ホスト指摘）。 */}
           {croppedImages.length > 0 && (
-            <div className="space-y-1.5 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
+            <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
               <p className="text-[11px] font-medium text-neon-violet">
                 切り出した {croppedImages.length} 枚を確認してください
               </p>
@@ -3407,14 +3422,30 @@ export function LoraStudioTab({
                 </li>
                 <li>・端にわずかに他の被写体が入る程度（細い帯）は無視して構いません。</li>
               </ul>
-              <button
-                type="button"
-                onClick={() => setSelectedImageIds(new Set(croppedImages.map((i) => i.id)))}
-                className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20"
-              >
-                <Scissors size={11} />
-                切り出した {croppedImages.length} 枚を選択して目立たせる
-              </button>
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+                {croppedImages.map((img) => (
+                  <div
+                    key={img.id}
+                    className="group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border border-border bg-neutral-900"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={img.url} alt="" className="h-full w-full object-cover" />
+                    <span className="absolute bottom-1 right-1 rounded bg-neon-violet/85 px-1 py-0.5 text-[8px] font-medium text-white">
+                      {img.cropKind ? SMART_CROP_KIND_LABEL[img.cropKind] : ""}
+                    </span>
+                    {!busy && (
+                      <button
+                        type="button"
+                        onClick={() => removeImage(img.id)}
+                        className="absolute right-1 top-1 rounded-md bg-black/70 p-1 text-white opacity-0 transition-opacity group-hover:opacity-100"
+                        aria-label="削除"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -3587,6 +3618,36 @@ export function LoraStudioTab({
 
         {/* Right column — settings */}
         <div className="space-y-4 rounded-2xl border-gradient bg-surface/40 p-5">
+          {/* ベースモデルは一番上（2026-09-22、ホスト指摘）。学習対象や
+              複数人物の指定が SDXL 系かどうかで変わるため、これを先に
+              決めないと下の欄が出たり消えたりして混乱する。 */}
+          <div className="space-y-2">
+            <label className="block text-[11px] font-medium text-muted">ベースモデル</label>
+            <select
+              value={modelChoice}
+              onChange={(e) => handleModelChange(e.target.value)}
+              disabled={busy}
+              className={fieldCls}
+            >
+              {PRESET_GROUPS.map((g) => (
+                <optgroup key={g} label={LORA_PRESET_GROUP_LABELS[g]}>
+                  {LORA_PRESETS.filter((p) => p.group === g).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label} — {p.note}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+              {/* "任意の HuggingFace Repo ID を手動指定" is sealed out of the
+                  general UI — the 12-model commercial lineup above is the
+                  only base-model entry point. isCustom / customModelId /
+                  baseArchitecture stay wired underneath (handleModelChange,
+                  runTraining, pricing) as inert dead code so a still-saved
+                  old form draft with modelChoice="__custom__" degrades to
+                  "no matching preset" rather than a crash — nothing in this
+                  UI can set modelChoice to "__custom__" any more. */}
+            </select>
+          </div>
           <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
             <Cpu size={15} className="text-neon-violet" />
             学習設定
@@ -3825,33 +3886,6 @@ export function LoraStudioTab({
             )}
           </div>
 
-          <div className="space-y-2">
-            <label className="block text-[11px] font-medium text-muted">ベースモデル</label>
-            <select
-              value={modelChoice}
-              onChange={(e) => handleModelChange(e.target.value)}
-              disabled={busy}
-              className={fieldCls}
-            >
-              {PRESET_GROUPS.map((g) => (
-                <optgroup key={g} label={LORA_PRESET_GROUP_LABELS[g]}>
-                  {LORA_PRESETS.filter((p) => p.group === g).map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label} — {p.note}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-              {/* "任意の HuggingFace Repo ID を手動指定" is sealed out of the
-                  general UI — the 12-model commercial lineup above is the
-                  only base-model entry point. isCustom / customModelId /
-                  baseArchitecture stay wired underneath (handleModelChange,
-                  runTraining, pricing) as inert dead code so a still-saved
-                  old form draft with modelChoice="__custom__" degrades to
-                  "no matching preset" rather than a crash — nothing in this
-                  UI can set modelChoice to "__custom__" any more. */}
-            </select>
-          </div>
 
           <div>
             <label className="mb-1 block text-[11px] font-medium text-muted">学習解像度</label>
