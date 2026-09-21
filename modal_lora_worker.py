@@ -437,6 +437,22 @@ LORA_BLOCK_COMPILE = os.environ.get("LORA_BLOCK_COMPILE", "").strip().lower() no
 # torch / ai-toolkit の更新で直る可能性があるので、上げたときは外して再検証する。
 COMPILE_UNSUPPORTED_ARCHES: frozenset[str] = frozenset({"flux2_klein_4b"})
 
+# torch.compile は通るが、**warmup を回収できない** arch。明示指定が無ければ
+# eager で回す（COMPILE_UNSUPPORTED_ARCHES と同じ扱い。速度ではなく採算の問題）。
+#
+# 2026-09-21 実測（docs/gpu-benchmarks.md §14.8.2）— minimax_h3 / B300 / 1024px /
+# rank64 / gc 無効 / バッチ1（＝GUI 既定そのもの）:
+#   - steady s/it は compile 1.78 / eager 1.87 ＝ **利得わずか 4.6%**（0.09 s/step）。
+#   - 回収に必要な step 数は warmup 135秒（温 Inductor キャッシュ）で **約1,570**、
+#     477秒（冷キャッシュ・§14.15）なら **約5,545**。
+#   - GUI の step 下限は200・実運用は 1,000〜3,000 なので、**多くのジョブで純損**。
+# さらに eager なら「学習途中の再コンパイルで止まる」事故クラス（§14.8）自体が
+# 消える。速度の上振れ 4.6% より、warmup 分の確実な GPU 代と事故の上限を取った。
+# ⚠️ 他 arch へ広げないこと（未実測。§5 の「学習は ~2x 効く」はバグったベンチ由来）。
+# 有効化したいときは GUI 経路なら training_config.compile: true、生 YAML 経路なら
+# model.compile: true を明示する（どちらも明示指定が最優先）。
+COMPILE_LOW_VALUE_ARCHES: frozenset[str] = frozenset({"minimax_h3"})
+
 # --- GPU-cost defence / watchdogs ----------------------------------------
 # The container timeout is 12h; the only earlier stops are:
 #   PREP  — a TRUE deadlock: no stdout/stderr/tqdm output AT ALL for
@@ -1851,6 +1867,18 @@ def _sanitize_override_yaml(
                 "Inductor 非対応（COMPILE_UNSUPPORTED_ARCHES 参照）",
                 flush=True,
             )
+        elif (
+            LORA_COMPILE_ENABLED
+            and user_model.get("compile") is None
+            and _yaml_arch in COMPILE_LOW_VALUE_ARCHES
+        ):
+            # warmup を回収できない arch（COMPILE_LOW_VALUE_ARCHES 参照）。
+            print(
+                f"[stage2] torch.compile skipped: arch={_yaml_arch} は warmup を "
+                "回収できない（利得4.6%に対し回収に1,570step 以上。docs §14.8.2）。"
+                "YAML に model.compile: true を明示すれば有効化できる",
+                flush=True,
+            )
         elif LORA_COMPILE_ENABLED and _eff_batch > 1 and user_model.get("compile") is None:
             # 2026-09-20 実測（docs/gpu-benchmarks.md §14.8）: 実効バッチ>1 で
             # compile を有効にすると **学習の途中で再コンパイルが走り、step 6 で
@@ -2029,6 +2057,15 @@ def _build_config(
         print(
             f"[stage2] torch.compile skipped: arch={target['arch']} は既知の "
             f"Inductor 非対応（COMPILE_UNSUPPORTED_ARCHES 参照）",
+            flush=True,
+        )
+        _compile_on = False
+    # compile は通るが warmup を回収できない arch も、明示指定が無ければ eager。
+    elif _compile_explicit is None and target["arch"] in COMPILE_LOW_VALUE_ARCHES:
+        print(
+            f"[stage2] torch.compile skipped: arch={target['arch']} は warmup を "
+            f"回収できない（利得4.6%に対し回収に1,570step 以上。"
+            f"COMPILE_LOW_VALUE_ARCHES / docs §14.8.2 参照）",
             flush=True,
         )
         _compile_on = False

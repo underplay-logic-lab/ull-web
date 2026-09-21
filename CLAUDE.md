@@ -108,7 +108,7 @@ ULL Studio の差別化は「ローカルPCでも他のSaaSでも不可能な処
 
 - **`mode="reduce-overhead"`（CUDA Graphs）は禁止** — CFG を使うパイプラインは1ステップで transformer を2回呼ぶため出力バッファが上書きされて落ちる。Inductor デフォルト mode を使う。
 - `try/except` と `torch._dynamo.config.suppress_errors = True` で必ずガードし、環境変数で ON/OFF できるようにする。
-- **現況**: 学習（ai-toolkit / LoRA）は **~2x 効くので既定オン**。推論系（`modal_angle_worker.py`、`modal_seedvr2_worker.py`）は warmup が巨大すぎて **既定オフ**（env でオプトイン）。
+- **現況**: LoRA 学習は arch ごとに実測で判断（`COMPILE_UNSUPPORTED_ARCHES` / `COMPILE_LOW_VALUE_ARCHES`）。minimax_h3 は利得4.6%で warmup を回収できず**既定オフ**（docs §14.8.2）。「学習は ~2x 効く」はバグったベンチ由来なので**未実測 arch へ流用しない**。推論系（`modal_angle_worker.py`、`modal_seedvr2_worker.py`）は warmup が巨大すぎて **既定オフ**（env でオプトイン）。
 - ComfyUI ベースの動画ワーカーは、ワークフローJSONに `TorchCompileModel` ノードを挿入する後処理（`_inject_torch_compile`）。曖昧・既存compileノードあり・例外時は無改変で返す（fail-open）。`WAN_TORCH_COMPILE=0` で無効化。
 
 > 各ワーカーの実測値・warmup時間・break-even は `docs/gpu-benchmarks.md` §5。

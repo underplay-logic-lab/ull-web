@@ -902,6 +902,45 @@ for step in range(start_step_num, self.train_config.steps):   # ← tqdm の1 st
   カーネル投入だけを計測し、実際の待ちは最初に同期する `calculate_loss` に出る**。
   読むときは「forward+loss」で合算する。
 
+### 14.8.2 minimax_h3 の torch.compile は warmup を回収できない → 既定 OFF（2026-09-21）
+
+バッチ1（＝GUI 既定そのもの）・同一条件で compile 有無を比べた結果:
+
+| | compile + block_compile | **eager** |
+|---|---|---|
+| steady s/it | 1.78（v11・§14.8.1） | **1.87** |
+| first-step warmup | 135s（温 Inductor キャッシュ・v10）／476.9s（冷・§14.15） | **0s** |
+
+**利得は 4.6%（0.09 s/step）しかない。** 回収に必要な step 数:
+
+| Inductor キャッシュ | warmup | 損益分岐 |
+|---|---|---|
+| 温（連続実行） | 135s | **約1,570 step** |
+| 冷（§14.15・別 base model / 久々の実行） | 476.9s | **約5,545 step** |
+
+GUI の step 下限は200、実運用は 1,000〜3,000。**冷キャッシュなら常に純損、
+温キャッシュでも過半のジョブで損**になる。さらに eager では §14.8 の
+「学習途中の再コンパイルで数分止まる」事故クラスが構造的に消える。
+
+→ **2026-09-21: `COMPILE_LOW_VALUE_ARCHES = {"minimax_h3"}` を追加し、明示指定が
+無ければ eager で回すようにした**（GUI 経路 `_build_config` / 生 YAML 経路の
+両方）。有効化したいときは `training_config.compile: true`（GUI・ベンチ用）か
+`model.compile: true`（生 YAML）を明示する。
+
+⚠️ **他 arch へ広げないこと。** 未実測であり、§5 の「学習は ~2x 効く」は
+バグったベンチ由来で信用できない。arch ごとに §14.8.1 と同じ条件で測ってから。
+
+**価格への含意（未適用・値下げ原資）**: `lora_prep_load_s`（828秒）は compile
+warmup 476.9秒を込みで校正した値なので、eager 既定では**過大請求側に倒れる**。
+一方 s/it は 1.80 → 実測 1.87 で 3.9% 過小。代表ジョブ（2000step）では
+`+0.07 × 2000 = +140秒` に対し `-476.9秒` で、**差し引きなお安全側**。
+knob を下げるかどうかは §14.8.2 単独ではなく、実ジョブの `metadata.metrics`
+（2026-09-21 に計測保存を実装）が溜まってから判断する。
+
+> 📌 数値の出所: この比較は 2026-09-21 のセッションで実施し、当時 `docs/STATUS.md`
+> にだけ記録されていたものをここへ移した（job 名は記録されていない）。compile 側
+> 1.78 は v11（§14.8.1）と一致する。
+
 ### 14.9 Modal Volume の書き込みは速い（チェックポイント保存は犯人ではない）
 
 1.2GB（rank64 MiniMax H3 LoRA の実サイズ）を書いて commit するまでの実測:
