@@ -129,9 +129,15 @@
 1. ~~LTX-2 の 158.94GB を削除~~ → **完了（2026-09-21）**。`_REPO_SNAPSHOT_IGNORE`
    追加 → 削除 → CPU で再DLが走らないこと確認 → B300 スモークで学習が通ること確認。
    Volume 966.5GB → **807.6GB**（余裕 34GB → 193GB）。手順と根拠は docs §14.8.3。
-2. `waiNSFW_illustrious_v11.safetensors` を Volume へ（admin リモートダウンローダは
-   civitai.com を許可済み。ただし単一ファイルモードの保存先は MODEL_SUBFOLDERS
-   限定なので `diffusion_models/`）。**採用する版のモデルページでライセンス再確認**。
+2. ~~`waiNSFW_illustrious_v11.safetensors` を Volume へ~~ → **完了（2026-09-21）**。
+   ホストが `modal volume put` で投入済み
+   （`diffusion_models/waiNSFW_illustrious_v11.safetensors`・**6.46GB**）。
+   ⚠️ **採用する版のモデルページでライセンス再確認は未実施**（HF ミラーの
+   `faipl-1.0-sd` 表記を根拠にしている。docs/model-licenses.md 参照）。
+   - 併せて **admin からローカルPCのファイルを送る口を新設**した。それまで
+     リモートダウンローダ（URL 指定）しか無く、手元にしか無いファイルを
+     持ち込めなかった（ホスト指摘）。ブラウザ→Modal 直・HMAC 署名・
+     **レジューム対応**（`admin_upload_volume_file` / `_status`）。
 3. `wai_illustrious` プリセットを追加（`loraModels.ts` + sd-scripts 側の
    `SDXL_TARGET_MODELS` にローカルパスで1行）。単一ファイル経路（`_resolve_base_model`
    の custom 分岐）は**未検証**なので実ジョブ1本で確定させる。ついでに SDXL の

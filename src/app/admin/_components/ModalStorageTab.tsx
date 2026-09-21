@@ -1,8 +1,9 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { ArrowDownUp, CheckCircle2, ChevronDown, Download, Eye, Folder, GitBranch, HardDrive, Loader2, Play, RefreshCw, Search, Trash2, XCircle } from "lucide-react";
+import { ArrowDownUp, CheckCircle2, ChevronDown, Download, Eye, Folder, GitBranch, HardDrive, Loader2, Play, RefreshCw, Search, Trash2, Upload, XCircle } from "lucide-react";
 import { GpuCostReferenceCard } from "@/components/admin/GpuCostReferenceCard";
+import { ADMIN_UPLOAD_DIRS, ADMIN_UPLOAD_NAME_RE, uploadFileToVolume } from "@/lib/adminVolumeUpload";
 import type { ModelDownload, VolumeDirEntry, VolumeFile } from "./types";
 
 // --- 2026-09-21: ファイルエクスプローラーの使い勝手まわり --------------------
@@ -705,6 +706,121 @@ function FolderRow({
   );
 }
 
+// ローカルPC -> Volume の直アップロード（2026-09-21）。リモートダウンローダは
+// 「URL から Modal に落とさせる」ものなので、手元にしか無いファイル（Civitai に
+// 置かれていないマージモデル等）を持ち込めなかった（ホスト指摘）。
+// 実体は Vercel を通らず、ブラウザから Modal へ直接 PUT する
+// （CLAUDE.md §1・§6-4: リクエストボディ上限 4.5MB のため API route は通せない）。
+function VolumeUploadPanel({ onUploaded }: { onUploaded: () => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [subdir, setSubdir] = useState<string>(ADMIN_UPLOAD_DIRS[0]);
+  const [uploading, setUploading] = useState(false);
+  const [loaded, setLoaded] = useState(0);
+  const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  const total = file?.size ?? 0;
+  const pct = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
+  const nameOk = file ? ADMIN_UPLOAD_NAME_RE.test(file.name) : true;
+
+  const handleUpload = async () => {
+    if (!file) return;
+    setUploading(true);
+    setNotice(null);
+    setLoaded(0);
+    try {
+      const res = await uploadFileToVolume(file, subdir, (l) => setLoaded(l));
+      setNotice({ kind: "success", text: `✅ ${res.path} に保存しました（${formatSize(res.sizeBytes)}）` });
+      setFile(null);
+      onUploaded();
+    } catch (err) {
+      setNotice({
+        kind: "error",
+        text: err instanceof Error ? err.message : "アップロードに失敗しました。",
+      });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div className="rounded-2xl border-gradient bg-surface/40 p-6">
+      <h3 className="mb-1 flex items-center gap-2 text-sm font-bold text-foreground">
+        <Upload size={16} className="text-neon-violet" />
+        ローカルファイルをアップロード
+      </h3>
+      <p className="mb-4 text-xs text-muted">
+        手元の .safetensors などを Volume へ直接送ります。途中で中断しても、同じファイルを選び直せば続きから再開します。
+      </p>
+
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <input
+          type="file"
+          onChange={(e) => {
+            setFile(e.target.files?.[0] ?? null);
+            setNotice(null);
+            setLoaded(0);
+          }}
+          disabled={uploading}
+          className="flex-1 text-xs text-muted file:mr-3 file:rounded-lg file:border file:border-border file:bg-background file:px-3 file:py-1.5 file:text-xs file:text-foreground"
+        />
+        <select
+          value={subdir}
+          onChange={(e) => setSubdir(e.target.value)}
+          disabled={uploading}
+          className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground"
+        >
+          {ADMIN_UPLOAD_DIRS.map((d) => (
+            <option key={d} value={d}>
+              {d}/
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={handleUpload}
+          disabled={!file || uploading || !nameOk}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-3 py-1.5 text-xs font-medium text-neon-violet transition-colors hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {uploading ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
+          アップロード
+        </button>
+      </div>
+
+      {file && !nameOk && (
+        <p className="mt-2 text-xs text-red-400">
+          このファイル名は使えません。英数字と . _ - のみ、拡張子は .safetensors / .ckpt / .pt / .pth / .bin / .gguf です。
+        </p>
+      )}
+
+      {uploading && (
+        <div className="mt-3">
+          <div className="h-1.5 overflow-hidden rounded-full bg-background">
+            <div
+              className="h-full bg-gradient-to-r from-neon-pink to-neon-violet transition-all"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <p className="mt-1.5 font-mono text-[11px] text-muted">
+            {formatSize(loaded)} / {formatSize(total)}（{pct}%）
+          </p>
+        </div>
+      )}
+
+      {notice && (
+        <p
+          className={`mt-3 rounded-lg border px-3 py-2 text-xs ${
+            notice.kind === "success"
+              ? "border-neon-pink/30 bg-neon-pink/10 text-neon-pink"
+              : "border-red-500/30 bg-red-500/10 text-red-400"
+          }`}
+        >
+          {notice.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // Polling interval for the "📥 ダウンロードタスク一覧" panel — short enough
 // to feel live, long enough not to hammer the admin API while a big model
 // download sits in the background for several minutes.
@@ -1189,7 +1305,17 @@ export function ModalStorageTab() {
       {/* 1. GPU selection reference — static, collapsed by default */}
       <GpuCostReferenceCard />
 
-      {/* 2. Remote downloader */}
+      {/* 2. ローカルアップロード（リモートダウンローダの手前 — 手元のファイルを
+             送るケースの方が迷いやすいので先に見せる） */}
+      <VolumeUploadPanel
+        onUploaded={() => {
+          setRootDirs(null);
+          setRootFiles(null);
+          loadRoot();
+        }}
+      />
+
+      {/* 3. Remote downloader */}
       <div className="rounded-2xl border-gradient bg-surface/40 p-6">
         <h3 className="mb-4 flex items-center gap-2 text-sm font-bold text-foreground">
           <Download size={16} className="text-neon-violet" />

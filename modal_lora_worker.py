@@ -6532,6 +6532,141 @@ def admin_download_volume_file(path: str, expires: str, sig: str, request: fasta
     return _stream_download(fp, download_name=fp.name)
 
 
+# --- admin: ローカルPC -> Volume の直アップロード（2026-09-21追加）-----------
+# それまで admin からモデルを持ち込む手段が「HuggingFace / Civitai の URL を
+# 入れて Modal 側に落とさせる」リモートダウンローダしか無く、**手元の
+# .safetensors（Civitai に無いマージモデル等）を送り込めなかった**
+# （ホスト指摘）。
+#
+# 設計は upload_user_lora（Director の外部LoRA）と同じ:
+#   * ブラウザ -> Modal 直（CLAUDE.md §1。Vercel のボディ上限 4.5MB を避ける）
+#   * MODAL_AUTH_TOKEN はブラウザに渡さず、Next.js が短命の HMAC 署名を発行
+#   * offset 指定で**途中から再開できる**（7GB 級を送る前提。タブのスリープや
+#     回線断でゼロからやり直しにならないように）
+#   * 4 MiB バッファ書き込み（Volume は小さい書き込みを大量に投げると実効
+#     数KB/秒まで落ちる）
+# 保存先は _ADMIN_UPLOAD_DIRS のホワイトリストに限定する。任意パスを開けると
+# custom_nodes や training/hf_cache を上書きできてしまうため。
+_ADMIN_UPLOAD_DIRS = (
+    "diffusion_models",
+    "checkpoints",
+    "text_encoders",
+    "clip",
+    "clip_vision",
+    "vae",
+    "loras",
+    "upscale_models",
+)
+_ADMIN_UPLOAD_NAME_RE = re.compile(
+    r"^[A-Za-z0-9._-]{1,180}\.(?:safetensors|ckpt|pt|pth|bin|gguf)$"
+)
+# 単一ファイルの上限。SDXL のフルチェックポイントが約7GB、H3 系の DiT が
+# 20〜40GB なので、そのあたりまでは通す。
+_ADMIN_UPLOAD_MAX_BYTES = 64 * 1024 * 1024 * 1024  # 64GB
+
+
+def _admin_upload_dest(path: str) -> pathlib.Path:
+    """"<subdir>/<filename>" を検証して絶対パスへ。ホワイトリスト外の
+    ディレクトリ、危険なファイル名、traversal はすべて 400。"""
+    rel = str(path or "").strip().strip("/")
+    parts = rel.split("/")
+    if len(parts) != 2:
+        raise fastapi.HTTPException(
+            status_code=400, detail="path must be '<subdir>/<filename>'"
+        )
+    subdir, filename = parts
+    if subdir not in _ADMIN_UPLOAD_DIRS:
+        raise fastapi.HTTPException(
+            status_code=400, detail=f"subdir must be one of {list(_ADMIN_UPLOAD_DIRS)}"
+        )
+    if not _ADMIN_UPLOAD_NAME_RE.match(filename):
+        raise fastapi.HTTPException(status_code=400, detail="invalid filename")
+    return _safe_volume_path(f"{subdir}/{filename}")
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol_ro},  # 現在のサイズを見るだけ
+    timeout=300,
+    scaledown_window=2,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="GET")
+def admin_upload_volume_status(path: str, expires: str, sig: str, request: fastapi.Request):
+    """レジューム用。送信済みバイト数を返す。クライアントはこの値を offset
+    としてそのまま PUT に渡す。"""
+    if not _verify_admin_token("upload", path, expires, sig):
+        raise fastapi.HTTPException(status_code=403, detail="invalid or expired link")
+    dest = _admin_upload_dest(path)
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin-upload] vol.reload() skipped: {exc}", flush=True)
+    size = dest.stat().st_size if dest.is_file() else 0
+    return {"ok": True, "path": path, "uploaded_bytes": size}
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol},  # 書き込むので read-only ではない
+    timeout=3 * 3600,
+    scaledown_window=2,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="PUT")
+async def admin_upload_volume_file(
+    path: str, expires: str, sig: str, request: fastapi.Request, offset: str = "0"
+):
+    if not _verify_admin_token("upload", path, expires, sig):
+        raise fastapi.HTTPException(status_code=403, detail="invalid or expired link")
+    dest = _admin_upload_dest(path)
+    try:
+        start_offset = int(offset)
+        if start_offset < 0:
+            raise ValueError
+    except ValueError:
+        raise fastapi.HTTPException(status_code=400, detail="invalid offset") from None
+
+    try:
+        # async def の中で同期版 vol.reload() を呼ぶと AsyncUsageWarning が出る。
+        await vol.reload.aio()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin-upload] vol.reload() skipped: {exc}", flush=True)
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    current_size = dest.stat().st_size if dest.is_file() else 0
+    if start_offset != current_size:
+        # 並行アップロードや古い部分ファイルからの誤った継続を防ぐ。
+        raise fastapi.HTTPException(
+            status_code=409,
+            detail=f"offset mismatch (client={start_offset}, server has={current_size}) — re-check status and retry",
+        )
+
+    mode = "ab" if start_offset > 0 else "wb"
+    size = start_offset
+    try:
+        with open(dest, mode, buffering=_DL_CHUNK) as f:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > _ADMIN_UPLOAD_MAX_BYTES:
+                    dest.unlink(missing_ok=True)
+                    raise fastapi.HTTPException(status_code=413, detail="file too large")
+                f.write(chunk)
+    except fastapi.HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # 中断しても部分ファイルは消さない（次回 status -> offset で再開する）。
+        raise fastapi.HTTPException(status_code=500, detail=f"upload interrupted: {exc}") from exc
+
+    await vol.commit.aio()
+    print(
+        f"[admin-upload] saved {path} ({size / 1024**3:.2f} GB"
+        f"{f', resumed from {start_offset / 1024**3:.2f} GB' if start_offset else ''})",
+        flush=True,
+    )
+    return {"ok": True, "path": path, "size_bytes": size}
+
+
 @app.function(
     image=dispatch_image,
     # read-only: reads Volume files, writes the ZIP only to /tmp (not the Volume)

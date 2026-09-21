@@ -198,17 +198,61 @@ const ADMIN_DL_TOKEN_TTL_S = 900;
 // Modal deploy URL: <workspace>--<app>-<function-name-kebab>.modal.run.
 // Derived from the checkpoint URL so no new env var is required (override
 // with MODAL_ADMIN_VOLUME_DOWNLOAD_URL / _ZIP_URL if the pattern ever shifts).
-function adminEndpoint(scope: "file" | "zip"): string {
+function adminEndpoint(scope: "file" | "zip" | "upload" | "upload-status"): string {
   const explicit =
     scope === "file"
       ? process.env.MODAL_ADMIN_VOLUME_DOWNLOAD_URL
-      : process.env.MODAL_ADMIN_VOLUME_ZIP_URL;
+      : scope === "zip"
+        ? process.env.MODAL_ADMIN_VOLUME_ZIP_URL
+        : undefined;
   if (explicit) return explicit;
   const base = process.env.MODAL_LORA_CHECKPOINT_DOWNLOAD_URL;
   if (!base) throw new Error("Modal is not configured (missing MODAL_LORA_CHECKPOINT_DOWNLOAD_URL).");
-  const fn = scope === "file" ? "admin-download-volume-file" : "admin-zip-volume-folder";
+  const fn =
+    scope === "file"
+      ? "admin-download-volume-file"
+      : scope === "zip"
+        ? "admin-zip-volume-folder"
+        : scope === "upload"
+          ? "admin-upload-volume-file"
+          : "admin-upload-volume-status";
   return base.replace("download-lora-checkpoint", fn);
 }
+
+// ローカルPC -> Volume の直アップロード（2026-09-21）。ブラウザは
+// MODAL_AUTH_TOKEN を持たないので、admin 認証済みの Next.js 側で短命の
+// HMAC 署名 URL を作って渡す（ダウンロード側と同じ設計）。
+// アップロード自体は Vercel を経由せずブラウザから Modal へ直接投げる
+// （CLAUDE.md §1・§6-4: リクエストボディ 4.5MB 上限を避ける）。
+// `uploadUrl` は PUT・レジューム用に ?offset= を足して使う。
+// TTL は 15分だが、Modal 側は署名の expires しか見ないので、長いアップロード
+// の途中で失効した場合はクライアントが再発行して offset から再開する。
+export function signAdminVolumeUploadUrls(relPath: string): {
+  uploadUrl: string;
+  statusUrl: string;
+  expiresAt: number;
+} {
+  const secret = process.env.MODAL_AUTH_TOKEN;
+  if (!secret) throw new Error("Modal is not configured (missing MODAL_AUTH_TOKEN).");
+  const path = relPath.replace(/^\/+/, "");
+  const expires = Math.floor(Date.now() / 1000) + ADMIN_DL_TOKEN_TTL_S;
+  const sig = crypto
+    .createHmac("sha256", secret)
+    .update(`admin:upload:${path}:${expires}`)
+    .digest("hex");
+  const build = (scope: "upload" | "upload-status") => {
+    const u = new URL(adminEndpoint(scope));
+    u.searchParams.set("path", path);
+    u.searchParams.set("expires", String(expires));
+    u.searchParams.set("sig", sig);
+    return u.toString();
+  };
+  return { uploadUrl: build("upload"), statusUrl: build("upload-status"), expiresAt: expires };
+}
+
+// 保存先ホワイトリストとファイル名規則は client 側と共有する
+// （このファイルは "server-only" なので admin 画面から直接 import できない）。
+export { ADMIN_UPLOAD_DIRS, ADMIN_UPLOAD_NAME_RE } from "@/lib/adminVolumeUpload";
 
 // Returns a ~15-minute signed URL that streams a Volume file (scope "file")
 // or a CPU-built ZIP of a Volume folder (scope "zip") straight to the browser.
