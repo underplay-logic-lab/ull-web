@@ -117,6 +117,7 @@ import {
   MAX_LONG_EDGE,
   SMART_CROP_PANEL_ID,
   LORA_SETTINGS_ANCHOR_ID,
+  SUBJECT_HINT_SEEN_KEY,
   RepeatWeightPanel,
   MIN_SHORT_EDGE_ERROR,
   MAX_TOTAL_BYTES,
@@ -281,7 +282,6 @@ export function LoraStudioTab({
   // [[sdxl-training-sd-scripts-plan]] の「フロントUI未着手」項目）。
   // "tag:freq,tag,..." 形式の文字列。空ならopt-out（sd-scripts純正メタデータ
   // のまま）— modal_sdxl_lora_worker.py の _parse_embed_tags と同じ書式。
-  const [embedTagsInput, setEmbedTagsInput] = useState("");
   // keep_tokens の手入力欄は 2026-09-21 に廃止した。値はキャプションの
   // 固定ブロック長から keepTokensForCaption() が画像ごとに算出する。
   const [embedTagsOpen, setEmbedTagsOpen] = useState(false);
@@ -990,42 +990,7 @@ export function LoraStudioTab({
   // 同じ情報を日本語と英タグで2回入力させていたのを1つに統合した。変換は既存の
   // /api/studio/lora/translate（action "to_en" + caption_type "tags"）をそのまま
   // 使う——日本語→Danbooru タグ列はこのルートの本来の仕事なので新設不要。
-  const [identityBusy, setIdentityBusy] = useState<number | null>(null);
-  // metadata の内容を目視確認したか。確認するまで学習を開始させない
-  // （ホスト方針「ちゃんと確認してもらってOKをしないと生成ボタンが有効に
-  //   ならない感じで」）。タグを触るたびに false へ戻す。
   const [identityConfirmed, setIdentityConfirmed] = useState(false);
-  const convertIdentityTags = useCallback(
-    async (index: number, ja: string) => {
-      const text = ja.trim();
-      if (!text) return;
-      setIdentityBusy(index);
-      try {
-        const tags = await translateCaption(text, "to_en", "tags");
-        // 日本語側は元の入力をそのまま並べる。数が合わなければ表示側で英に
-        // フォールバックするので、ズレても壊れない。
-        const ja = text
-          .split(SPLIT_TAGS_RE)
-          .map((x) => x.trim())
-          .filter(Boolean)
-          .join(", ");
-        if (index < 0) {
-          setPrimaryIdentityTags(tags);
-          setPrimaryIdentityTagsJa(ja);
-        } else {
-          setExtraSubjects((prev) =>
-            prev.map((p, k) => (k === index ? { ...p, identityTags: tags, identityTagsJa: ja } : p)),
-          );
-        }
-        setIdentityConfirmed(false);
-      } catch (err) {
-        console.warn("[lora] identity tag conversion failed:", err);
-      } finally {
-        setIdentityBusy(null);
-      }
-    },
-    [],
-  );
 
   // 画像から identity タグを抽出する（ホスト方針「画像解析結果から抽出される
   // が、最終的には不要なら削除・不足なら追加」）。返るのは候補で、確定は
@@ -1272,12 +1237,65 @@ export function LoraStudioTab({
 
   const croppedImages = useMemo(() => images.filter((i) => i.cropKind), [images]);
 
+  // 手で足した特徴を1語だけ英訳する（2026-09-22）。以前は日本語のまま英側へ
+  // 入り、LoRA の metadata に日本語タグが焼かれていた。
+  const translateIdentityTag = useCallback(async (ja: string): Promise<string> => {
+    try {
+      const tags = await translateCaption(ja, "to_en", "tags");
+      return (tags || "")
+        .split(SPLIT_TAGS_RE)
+        .map((x) => x.trim())
+        .filter(Boolean)[0] ?? "";
+    } catch {
+      return "";
+    }
+  }, []);
+
+  // 「画像から抽出」はボタンではなく自動実行（2026-09-22、ホスト指摘）。
+  // 画像が入っていてトリガーワードがあり、まだ特徴が空の被写体だけを対象に
+  // 1回ずつ走らせる。effect の中で同期 setState はしない（非同期の完了時に
+  // extractIdentityFor が自前で state を更新する）。
+  const autoExtractedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (images.length === 0) return;
+    const jobs: { index: number; trigger: string; hint: string; has: boolean }[] = [
+      { index: -1, trigger: triggerWord.trim(), hint: primaryDescription, has: !!primaryIdentityTags.trim() },
+      ...extraSubjects.map((sub, i) => ({
+        index: i,
+        trigger: (sub.trigger ?? "").trim(),
+        hint: sub.description ?? "",
+        has: !!(sub.identityTags ?? "").trim(),
+      })),
+    ];
+    for (const j of jobs) {
+      if (!j.trigger || j.has) continue;
+      const key = `${j.index}:${j.trigger}`;
+      if (autoExtractedRef.current.has(key)) continue;
+      autoExtractedRef.current.add(key);
+      void extractIdentityFor(j.index, j.trigger, j.hint);
+    }
+    // extractIdentityFor は毎レンダー作り直されるので依存から外す（キーで
+    // 二重実行を防いでいる）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [images.length, triggerWord, primaryIdentityTags, extraSubjects]);
+
+  // 被写体の「特徴」欄の説明を読んだか（初回だけ出す）。初期値を lazy に
+  // 読むので effect で setState する必要がない。SSR では false のまま。
+  const [subjectHintSeen] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      const seen = Boolean(window.localStorage.getItem(SUBJECT_HINT_SEEN_KEY));
+      if (!seen) window.localStorage.setItem(SUBJECT_HINT_SEEN_KEY, "1");
+      return seen;
+    } catch {
+      return false; // プライベートウィンドウ等。出し続けても害は無い
+    }
+  });
+
   const tooSmallImages = useMemo(() => images.filter((i) => i.sizeVerdict === "tooSmall"), [images]);
 
-  const effectiveEmbedTags = useMemo(() => {
-    const extra = embedTagsInput.trim();
-    return [autoEmbedTags, extra].filter(Boolean).join(", ");
-  }, [autoEmbedTags, embedTagsInput]);
+  // 手入力の追加欄は 2026-09-22 に廃止。被写体レジストリから作った分だけ。
+  const effectiveEmbedTags = autoEmbedTags;
 
   const totalBytes = useMemo(() => images.reduce((s, i) => s + i.file.size, 0), [images]);
 
@@ -2870,7 +2888,6 @@ export function LoraStudioTab({
     setPrimaryIdentityTagsJa("");
     setExtraSubjects([]);
     setLoraName("");
-    setEmbedTagsInput("");
     setEmbedTagsOpen(false);
     setPro(DEFAULT_PRO);
     setCaptionCategory("character");
@@ -3641,7 +3658,7 @@ export function LoraStudioTab({
                           className={`${fieldCls} mt-1.5 text-[11px]`}
                         />
                         <p className="mt-0.5 text-[10px] leading-relaxed text-muted">
-                          下の「画像から抽出」の精度を上げるためのメモです。
+                          下の特徴を画像から自動抽出するときの精度を上げるためのメモです。
                           <strong className="text-foreground">学習内容には影響しません</strong>。
                         </p>
                         {/* 「画像から抽出」が主経路なので、画像が入るまで出さない（2026-09-21）。 */}
@@ -3654,12 +3671,8 @@ export function LoraStudioTab({
                             setPrimaryIdentityTagsJa(next.ja);
                             setIdentityConfirmed(false);
                           }}
-                          sourceJa={primaryDescription}
-                          onConvert={() => void convertIdentityTags(-1, primaryDescription)}
-                          onExtract={() => void extractIdentityFor(-1, triggerWord, primaryDescription)}
-                          converting={identityBusy === -1}
                           extracting={identityExtracting === -1}
-                          canExtract={images.length > 0}
+                          onTranslateTag={translateIdentityTag}
                           disabled={busy}
                         />
                         )}
@@ -3691,12 +3704,8 @@ export function LoraStudioTab({
                       setPrimaryIdentityTagsJa(next.ja);
                       setIdentityConfirmed(false);
                     }}
-                    sourceJa={primaryDescription}
-                    onConvert={() => void convertIdentityTags(-1, primaryDescription)}
-                    onExtract={() => void extractIdentityFor(-1, triggerWord, primaryDescription)}
-                    converting={identityBusy === -1}
                     extracting={identityExtracting === -1}
-                    canExtract={images.length > 0}
+                    onTranslateTag={translateIdentityTag}
                     disabled={busy}
                   />
                   )}
@@ -3774,18 +3783,16 @@ export function LoraStudioTab({
                       );
                       setIdentityConfirmed(false);
                     }}
-                    sourceJa={s.description}
-                    onConvert={() => void convertIdentityTags(i, s.description)}
-                    onExtract={() => void extractIdentityFor(i, s.trigger, s.description)}
-                    converting={identityBusy === i}
                     extracting={identityExtracting === i}
-                    canExtract={images.length > 0}
+                    onTranslateTag={translateIdentityTag}
                     disabled={busy}
                   />
                   )}
                 </div>
               ))}
-            {!yamlMode && isSdxlJob && extraSubjects.length > 0 && (
+            {/* 初回だけ出す（2026-09-22、ホスト指摘）。一度読めば済む説明で、
+                毎回出ると画面の密度を上げるだけ。localStorage に既読を持つ。 */}
+            {!yamlMode && isSdxlJob && extraSubjects.length > 0 && !subjectHintSeen && (
               <p className="mt-1.5 rounded-lg border border-border/60 bg-background/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted">
                 「特徴」は、自動キャプションのAIが画像ごとに
                 <strong className="text-foreground">どちらが写っているかを判定するための手がかり</strong>
@@ -3914,22 +3921,12 @@ export function LoraStudioTab({
                       <strong className="text-foreground">キャプションには書かれない（＝トリガーに焼き込む）特徴を、生成時にプロンプトへ戻すための欄</strong>です。
                     </p>
                   </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] font-medium text-muted">
-                      追加で埋め込むタグ（任意）
-                    </label>
-                    <input
-                      value={embedTagsInput}
-                      onChange={(e) => setEmbedTagsInput(e.target.value)}
-                      placeholder="上記に足したいタグがあれば（例: signature outfit）"
-                      disabled={busy}
-                      className={`${fieldCls} font-mono`}
-                    />
-                    <p className="mt-1 text-[10px] text-muted">
-                      カンマ区切り。「タグ:頻度」形式も使えます（頻度を省略すると{" "}
-                      <code className="text-neon-violet">21</code> — 実際の出現回数ではない固定のダミー値）。
-                    </p>
-                  </div>
+                  {/* 2026-09-22: 「追加で埋め込むタグ」欄は廃止（ホスト判断）。
+                      ここに足したいものは結局「トリガーワードに焼き込みたい
+                      特徴」であり、それは上の「学習したい特徴」に足せば英タグに
+                      変換されて自動でここへ入る。同じ情報の入口が2つあると、
+                      片方（この欄）だけ日本語のまま metadata に焼かれる事故が
+                      起きる（実際に起きた）。 */}
                 </div>
               )}
             </div>
@@ -4276,7 +4273,6 @@ export function LoraStudioTab({
                           }`}
                         >
                           {r}
-                          {r === 32 ? " ・推奨" : ""}
                         </button>
                       ))}
                     </div>

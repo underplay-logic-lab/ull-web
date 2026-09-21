@@ -13,7 +13,6 @@ import {
   ClipboardCopy,
   Download,
   ImagePlus,
-  Languages,
   Loader2,
   Lock,
   MessageCircle,
@@ -97,6 +96,9 @@ export const SMART_CROP_PANEL_ID = "lora-smart-crop-panel";
 
 /** 学習設定（モード選択とエキスパート欄）へスクロールで飛ぶための DOM id。 */
 export const LORA_SETTINGS_ANCHOR_ID = "lora-settings-anchor";
+
+/** 被写体の「特徴」欄の説明を一度読んだか（2回目以降は出さない）。 */
+export const SUBJECT_HINT_SEEN_KEY = "ull.lora.subjectHintSeen";
 // Raw upload budget. The worker's Smart Ingest stage downscales / re-encodes
 // every image on a free CPU container before the GPU starts, and AI-vision
 // captioning only ever sees ~640px browser thumbnails — so a large raw
@@ -449,12 +451,8 @@ export function IdentityTagsField({
   value,
   valueJa,
   onChange,
-  sourceJa,
-  onConvert,
-  onExtract,
-  converting,
+  onTranslateTag,
   extracting,
-  canExtract,
   disabled,
 }: {
   /** 英タグ（カンマ区切り）。モデルへ渡る正のデータ。 */
@@ -462,13 +460,13 @@ export function IdentityTagsField({
   /** 同じ並びの日本語（カンマ区切り）。表示専用。 */
   valueJa: string;
   onChange: (next: { en: string; ja: string }) => void;
-  sourceJa: string;
-  onConvert: () => void;
-  /** 画像解析（取り込んだ画像から identity を抽出）。 */
-  onExtract: () => void;
-  converting: boolean;
+  /**
+   * 手で足したタグの日本語→英訳（2026-09-22、ホスト指摘）。以前は日本語の
+   * まま英側にも入ってしまい、LoRA の metadata に日本語タグが焼かれていた。
+   */
+  onTranslateTag: (ja: string) => Promise<string>;
+  /** 画像からの自動抽出が走っている間。抽出はボタンではなく自動実行。 */
   extracting: boolean;
-  canExtract: boolean;
   disabled: boolean;
 }) {
   const [draft, setDraft] = useState("");
@@ -477,51 +475,45 @@ export function IdentityTagsField({
   const en = value.split(/\s*[,、]\s*/).map((t) => t.trim()).filter(Boolean);
   const ja = valueJa.split(/\s*[,、]\s*/).map((t) => t.trim());
   const tags = en.map((t, i) => ({ en: t, ja: ja[i] || t }));
-  const busy = disabled || converting || extracting;
+  const [adding, setAdding] = useState(false);
+  const busy = disabled || extracting || adding;
 
   const setTags = (next: { en: string; ja: string }[]) => {
     const seen = new Set<string>();
     const uniq = next.filter((t) => t.en && !seen.has(t.en) && seen.add(t.en) !== undefined);
     onChange({ en: uniq.map((t) => t.en).join(", "), ja: uniq.map((t) => t.ja).join(", ") });
   };
-  const addDraft = () => {
+  const addDraft = async () => {
     const t = draft.trim().replace(/[,、]/g, "");
     if (!t) return;
-    // 日本語で打たれたらそのまま日本語側に入れ、英側は後段の変換に委ねる。
-    // 英字だけなら両方に同じ値を入れる。
-    const isAscii = /^[ -~]+$/.test(t);
-    setTags([...tags, { en: isAscii ? t.toLowerCase() : t, ja: t }]);
-    setDraft("");
+    // 英字だけならそのままタグとして使える。日本語なら**必ず英訳してから**
+    // 入れる — 英側は LoRA の metadata に焼かれてモデルへ渡る正のデータで、
+    // 日本語が混ざると生成時のプロンプトとして機能しない。
+    if (/^[ -~]+$/.test(t)) {
+      setTags([...tags, { en: t.toLowerCase(), ja: t }]);
+      setDraft("");
+      return;
+    }
+    setAdding(true);
+    try {
+      const en = (await onTranslateTag(t)).trim();
+      setTags([...tags, { en: en || t, ja: t }]);
+      setDraft("");
+    } finally {
+      setAdding(false);
+    }
   };
 
   return (
     <div className="mt-1.5 rounded-lg border border-border/60 bg-background/60 p-2">
       <div className="mb-1 flex flex-wrap items-center gap-1.5">
         <span className="text-[10px] font-medium text-foreground">学習したい特徴</span>
-        <button
-          type="button"
-          onClick={onExtract}
-          disabled={busy || !canExtract}
-          title={
-            canExtract
-              ? "取り込んだ画像から、この人物の変わらない特徴を抽出します"
-              : "先に画像を取り込んでください"
-          }
-          className="inline-flex items-center gap-1 rounded-md border border-neon-violet/40 bg-neon-violet/10 px-2 py-0.5 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {extracting ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
-          画像から抽出
-        </button>
-        <button
-          type="button"
-          onClick={onConvert}
-          disabled={busy || !sourceJa.trim()}
-          title="上に書いた手がかりの文をタグへ変換します（画像から抽出できないときの代替）"
-          className={quickSelectBtnCls}
-        >
-          {converting ? <Loader2 size={10} className="animate-spin" /> : <Languages size={10} />}
-          日本語から変換
-        </button>
+        {extracting && (
+          <span className="inline-flex items-center gap-1 text-[10px] text-neon-violet">
+            <Loader2 size={10} className="animate-spin" />
+            画像から抽出中…
+          </span>
+        )}
       </div>
 
       {tags.length > 0 ? (
@@ -548,7 +540,9 @@ export function IdentityTagsField({
         </div>
       ) : (
         <p className="mb-1.5 text-[10px] text-muted">
-          まだありません。「画像から抽出」を押してください。
+          {extracting
+            ? "画像を解析しています…"
+            : "画像を取り込むと、この人物の変わらない特徴を自動で抽出します。"}
         </p>
       )}
 
@@ -559,14 +553,20 @@ export function IdentityTagsField({
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              addDraft();
+              void addDraft();
             }
           }}
           placeholder="特徴を追加（例: 白髪）"
           disabled={busy}
           className={`${fieldCls} text-[11px]`}
         />
-        <button type="button" onClick={addDraft} disabled={busy || !draft.trim()} className={quickSelectBtnCls}>
+        <button
+          type="button"
+          onClick={() => void addDraft()}
+          disabled={busy || !draft.trim()}
+          className={quickSelectBtnCls}
+        >
+          {adding ? <Loader2 size={10} className="animate-spin" /> : null}
           追加
         </button>
       </div>
