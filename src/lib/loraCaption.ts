@@ -20,15 +20,20 @@ import type { LoraCaptionCategory, LoraSubject, ResolvedCaptionMode } from "@/li
 
 const CAPTION_MAX_EDGE = 640; // 512–768 band — tiny payload, plenty for tagging
 const CAPTION_QUALITY = 0.8;
-// Small batches: bounded request-body size, fast failure isolation, and the
-// 20s timeout stays realistic (a handful of thumbnails per call).
-const CAPTION_BATCH_SIZE = 4;
+// 1リクエストあたりの枚数。**無料枠はリクエスト数で切られる**（モデルごとに
+// 約20回/日、4モデルへフォールバックして合計80回前後）ので、ここが小さいほど
+// 枠を食う。4枚だと165枚の解析に42リクエスト＝1回の解析で枠の半分を使い切り、
+// 実際に1日で使い切った（2026-09-22、ホスト報告）。
+// 12枚なら14リクエストで済む。サムネイルは長辺640px・q0.8 なので1枚40〜60KB、
+// 12枚でも1MB弱とボディは十分小さい。生成が長くなるぶんタイムアウトは
+// 20s -> 90s へ引き上げる（ルート側の maxDuration は 120s）。
+const CAPTION_BATCH_SIZE = 12;
 // Workers pulling the queue. 3 concurrent ~6s calls ≈ 0.5 req/s — well under
 // the vision API's burst ceiling, and 3 in-flight requests is a small memory
 // footprint now that thumbnails are pre-computed + cached.
 const CAPTION_CONCURRENCY = 3;
 // Per-request hard timeout (AbortController).
-const REQUEST_TIMEOUT_MS = 20_000;
+const REQUEST_TIMEOUT_MS = 90_000;
 // Retries per task before its images are marked `errored`.
 const MAX_RETRIES = 3;
 const BACKOFF_BASE_MS = 1_000;
@@ -58,6 +63,8 @@ export type DatasetCaptionResult = {
   captionedCount: number;
   /** File indices Google's safety filter refused — the worker VLM fills these. */
   safetyRejected: number[];
+  /** 空応答の理由（API がそのまま返した文字列）。断定を避けるため生で出す。 */
+  safetyReason?: string;
   /** File indices that exhausted their retries (rate limit / error / timeout). */
   errored: number[];
   /** true when every valid (present, decodable) image ended up with a caption. */
@@ -202,6 +209,7 @@ export async function generateDatasetCaptions(
     }
   }
   const safety = new Set<number>();
+  let safetyReason = "";
   const undecodable = new Set<number>();
   const errored = new Set<number>();
 
@@ -226,6 +234,7 @@ export async function generateDatasetCaptions(
       captionsJa,
       captionedCount: captions.filter((c) => c.trim().length > 0).length,
       safetyRejected: [...safety].sort((a, b) => a - b),
+      safetyReason,
       errored: [...errored].sort((a, b) => a - b),
       complete: total === 0 || complete,
     };
@@ -333,6 +342,12 @@ export async function generateDatasetCaptions(
       });
       if (landed.length) opts.onBatch?.(landed);
       if (data.safety === true && landed.length === 0) {
+        // 理由の文字列を捨てない（2026-09-22、ホスト指摘「コンテンツポリシー
+        // により対象外も間違ってる」）。安全性フィルタ以外の事情で空応答に
+        // なることがあり、こちらが断定すると誤った案内になる。
+        if (typeof data.reason === "string" && data.reason.trim() && !safetyReason) {
+          safetyReason = data.reason.trim().slice(0, 200);
+        }
         pairs.forEach((p) => safety.add(p.i));
         return { kind: "resolved", leftover: [], status };
       }

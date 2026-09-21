@@ -704,10 +704,17 @@ export function LoraStudioTab({
       entries.some((e) => !(e.caption ?? "").trim() && Boolean(cache[captionFileKey(e.file)]));
     if (cacheWouldRehydrate && !zombieDraftDecidedRef.current) {
       zombieDraftDecidedRef.current = true;
-      const startClean = window.confirm(
-        "新しいデータセットが読み込まれました。以前のキャプション下書きを破棄して完全に新規作成しますか？\n\n" +
-          "「OK」= 下書きを破棄し、クリーンな状態でキャプションを作り直します\n" +
-          "「キャンセル」= 以前のキャプション下書きを引き継ぎます",
+      // ⚠️ 破棄を既定（OK）にしていたのが原因で、AI解析の1日の上限を使い切る
+      // 事故が起きた（2026-09-22、ホスト報告）。リロード後に同じ画像を入れ直すと
+      // 必ずこのダイアログが出るため OK を押しがちになる。破棄はコストが大きい
+      // （無料枠は1日80リクエスト前後）ので、**再利用を OK 側**に置く。
+      const reusable = entries.filter(
+        (e) => !(e.caption ?? "").trim() && Boolean(cache[captionFileKey(e.file)]),
+      ).length;
+      const startClean = !window.confirm(
+        `同じ画像の解析結果が ${reusable} 件、この端末に残っています。再利用しますか？\n\n` +
+          "「OK」= 再利用する（AI解析を使いません・推奨）\n" +
+          "「キャンセル」= 破棄して解析し直す（AI解析の1日の上限を消費します）",
       );
       if (startClean) {
         useCache = false;
@@ -2469,10 +2476,12 @@ export function LoraStudioTab({
           missed === 0
             ? null
             : `${missed} 枚は自動解析できませんでした` +
+              // 断定しない（2026-09-22、ホスト指摘）。空応答の理由は安全性
+              // フィルタとは限らないので、API が返した文字列をそのまま出す。
               (safetyMissed > 0
-                ? safetyMissed >= missed
-                  ? "（コンテンツポリシーにより対象外）"
-                  : `（うち ${safetyMissed} 枚はコンテンツポリシー対象）`
+                ? `（うち ${safetyMissed} 枚は解析AIが空の結果を返しました` +
+                  (res.safetyReason ? `／理由: ${res.safetyReason}` : "") +
+                  "）"
                 : "") +
               (isSdxlJobRef.current
                 ? "。このままだと、その画像は**トリガーワードだけ**で学習されます（写っている服装・背景・ポーズがトリガーに焼き込まれます）。下の「🔄 未完了の画像を再解析」を押してください。"
