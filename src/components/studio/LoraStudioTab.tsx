@@ -671,6 +671,7 @@ export function LoraStudioTab({
       /* private mode / quota — persistence is best-effort */
     }
   }, [
+    reflectedSpecKey,
     triggerWord,
     primaryDescription,
     primaryFixedTags,
