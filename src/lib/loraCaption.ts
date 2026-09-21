@@ -20,20 +20,21 @@ import type { LoraCaptionCategory, LoraSubject, ResolvedCaptionMode } from "@/li
 
 const CAPTION_MAX_EDGE = 640; // 512–768 band — tiny payload, plenty for tagging
 const CAPTION_QUALITY = 0.8;
-// 1リクエストあたりの枚数。**無料枠はリクエスト数で切られる**（モデルごとに
-// 約20回/日、4モデルへフォールバックして合計80回前後）ので、ここが小さいほど
-// 枠を食う。4枚だと165枚の解析に42リクエスト＝1回の解析で枠の半分を使い切り、
-// 実際に1日で使い切った（2026-09-22、ホスト報告）。
-// 12枚なら14リクエストで済む。サムネイルは長辺640px・q0.8 なので1枚40〜60KB、
-// 12枚でも1MB弱とボディは十分小さい。生成が長くなるぶんタイムアウトは
-// 20s -> 90s へ引き上げる（ルート側の maxDuration は 120s）。
-const CAPTION_BATCH_SIZE = 12;
+// 1リクエストあたりの枚数。
+//
+// ⚠️ 大きくしてはいけない（2026-09-22）。Gemini が安全性で拒否すると**その
+// リクエストの全画像**が巻き添えで失われる（landed.length === 0 で batch 丸ごと
+// safety 扱い）。12枚にすると1枚の拒否で12枚が消える。無料枠の節約のために
+// 一度12へ上げたが、このプロジェクトの素材（NSFW寄りのイラスト）は Google の
+// **設定で解除できない**カテゴリに当たることがあり、巻き添えのほうが痛い。
+// 課金キーならリクエスト数は問題にならないので、切り分けの細かさを優先する。
+const CAPTION_BATCH_SIZE = 4;
 // Workers pulling the queue. 3 concurrent ~6s calls ≈ 0.5 req/s — well under
 // the vision API's burst ceiling, and 3 in-flight requests is a small memory
 // footprint now that thumbnails are pre-computed + cached.
 const CAPTION_CONCURRENCY = 3;
 // Per-request hard timeout (AbortController).
-const REQUEST_TIMEOUT_MS = 90_000;
+const REQUEST_TIMEOUT_MS = 40_000;
 // Retries per task before its images are marked `errored`.
 const MAX_RETRIES = 3;
 const BACKOFF_BASE_MS = 1_000;
