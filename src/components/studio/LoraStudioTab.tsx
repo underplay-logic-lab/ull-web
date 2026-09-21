@@ -95,6 +95,12 @@ import { prepareDatasetImage, type ImageSizeVerdict } from "@/lib/datasetImagePr
 // 1.35 は「上半身（実寸 約640px → 768px ＝ 約1.2倍）は通し、顔アップは落とす」
 // という線で引いた出発点で、実測校正はしていない。
 const SMART_CROP_MAX_UPSCALE = 1.35;
+// 切り出し結果の短辺の下限（2026-09-22）。引き伸ばしをやめた（cropOutputSize）
+// ので拡大率では弾けなくなった代わりに、出来上がりが小さすぎるものを落とす。
+// 384 は「全身絵から切った顔でも、寄りの情報としては使える」下限の目安で、
+// 未校正。ここを上げすぎると顔アップが足りない被写体ほど作れなくなる
+// （まさにそれで 1024 固定＋拡大率1.35 が破綻した）。
+const SMART_CROP_MIN_SHORT_EDGE = 384;
 // 切り出し元が元画像のこの割合以上を占めるなら、中身がほぼ同じで情報が
 // 増えないので捨てる（全身写真から全身を切り出すケース）。
 const SMART_CROP_REDUNDANT_COVERAGE = 0.85;
@@ -935,7 +941,7 @@ export function LoraStudioTab({
     const failures: string[] = [];
     // 数が合わないという指摘（2026-09-22）に応えるため、全部を数えて最後に
     // 1回だけ内訳を出す。「対象 = 追加 + 除外 + 作れなかった」が必ず合う。
-    const rejected = { upscaled: 0, redundant: 0 };
+    const rejected = { upscaled: 0, redundant: 0, tooSmall: 0 };
     let kept = 0;
     let noOutput = 0;
     for (let i = 0; i < candidates.length; i++) {
@@ -948,6 +954,10 @@ export function LoraStudioTab({
           // 1024x1536 の全身写真から顔を切ると約7倍になるのが典型。
           if (o.upscale > SMART_CROP_MAX_UPSCALE) {
             rejected.upscaled += 1;
+            return false;
+          }
+          if (Math.min(o.width, o.height) < SMART_CROP_MIN_SHORT_EDGE) {
+            rejected.tooSmall += 1;
             return false;
           }
           // 元画像とほぼ同じ範囲＝情報が増えない重複（全身→全身）。
@@ -984,10 +994,13 @@ export function LoraStudioTab({
     );
     setAddNotice(
       `元画像 ${candidates.length} 枚から ${kept} 枚を切り出してデータセットに追加しました。` +
-        ` 内訳: 生成 ${kept + rejected.upscaled + rejected.redundant} 枚` +
+        ` 内訳: 生成 ${kept + rejected.upscaled + rejected.redundant + rejected.tooSmall} 枚` +
         ` → 採用 ${kept}` +
         (rejected.upscaled
           ? ` / 切り出し元が小さすぎて除外 ${rejected.upscaled}（${SMART_CROP_MAX_UPSCALE}倍以上に引き伸ばされるため。全身写真から顔アップを作っても、ぼけた顔を学習させるだけです）`
+          : "") +
+        (rejected.tooSmall
+          ? ` / 小さすぎて除外 ${rejected.tooSmall}（短辺 ${SMART_CROP_MIN_SHORT_EDGE}px 未満。元画像の中でその部分が小さすぎます）`
           : "") +
         (rejected.redundant
           ? ` / 元画像とほぼ同じ範囲で除外 ${rejected.redundant}（情報が増えません）`

@@ -128,6 +128,29 @@ export function computeFullBodyCropBox(points: Point[], headTop?: Point): Box {
   return { left: minX - mx, top: minY - my, width: w + 2 * mx, height: h + 2 * my };
 }
 
+/**
+ * 切り出しの出力サイズを**元の領域の大きさから**決める（2026-09-22）。
+ *
+ * 以前は顔1024x1024 / 上半身768x1024 の固定で、小さい領域を引き伸ばして
+ * 出していた。そのため拡大率の足切り（1.35倍）を通るには元の顔が758px以上
+ * 必要で、全身絵（顔は150px前後）からは1枚も作れなかった。**顔アップが
+ * 足りない被写体ほど作れない**という本末転倒な状態。
+ *
+ * 引き伸ばさず、元の大きさのまま（64の倍数へ丸め、上限は従来の固定値）
+ * 出せば、拡大による劣化は原理的に起きない。学習側は
+ * `bucket_no_upscale = true` なので、小さい画像はその解像度のまま学習される。
+ */
+export function cropOutputSize(
+  boxWidth: number,
+  ratioW: number,
+  ratioH: number,
+  maxW: number,
+): { width: number; height: number } {
+  const w = Math.min(maxW, Math.max(64, Math.round(boxWidth / 64) * 64));
+  const h = Math.max(64, Math.round(((w * ratioH) / ratioW) / 64) * 64);
+  return { width: w, height: h };
+}
+
 export const SMART_CROP_OUTPUT_SIZE = {
   face: { width: 1024, height: 1024 },
   upper: { width: 768, height: 1024 },

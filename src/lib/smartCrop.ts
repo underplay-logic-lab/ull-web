@@ -10,6 +10,7 @@ import {
   computeFaceCropBox,
   computeFullBodyCropBox,
   computeUpperBodyCropBox,
+  cropOutputSize,
   fullBodyOutputSize,
   type Box,
   type Point,
@@ -195,7 +196,15 @@ export async function runSmartCrop(file: File): Promise<SmartCropOutput[]> {
       const forehead = face[FACE_LM.forehead];
       if (eyeA && eyeB && nose) {
         const box = computeFaceCropBox(pt(eyeA, w, h), pt(eyeB, w, h), pt(nose, w, h));
-        const { width: outW, height: outH } = SMART_CROP_OUTPUT_SIZE.face;
+        // 引き伸ばさない（cropOutputSize のコメント参照）。全身絵から顔を
+        // 切ると 150px 前後にしかならないが、1024 へ拡大するより元のまま
+        // 出したほうが良い。学習側は bucket_no_upscale なのでそのまま扱える。
+        const { width: outW, height: outH } = cropOutputSize(
+          box.width,
+          1,
+          1,
+          SMART_CROP_OUTPUT_SIZE.face.width,
+        );
         const canvas = await drawBoxToOutput(img, box, outW, outH);
         outputs.push({
           kind: "face",
@@ -266,7 +275,12 @@ export async function runSmartCrop(file: File): Promise<SmartCropOutput[]> {
           midHip,
           lowestElbowY: lowestElbowY.length ? Math.max(...lowestElbowY) : undefined,
         });
-        const { width: uW, height: uH } = SMART_CROP_OUTPUT_SIZE.upper;
+        const { width: uW, height: uH } = cropOutputSize(
+          upperBox.width,
+          3,
+          4,
+          SMART_CROP_OUTPUT_SIZE.upper.width,
+        );
         const upperCanvas = await drawBoxToOutput(img, upperBox, uW, uH);
         outputs.push({
           kind: "upper",
