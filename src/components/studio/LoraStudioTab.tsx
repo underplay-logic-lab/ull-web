@@ -116,6 +116,8 @@ import {
   MAX_IMAGES,
   MAX_LONG_EDGE,
   SMART_CROP_PANEL_ID,
+  LORA_SETTINGS_ANCHOR_ID,
+  RepeatWeightPanel,
   MIN_SHORT_EDGE_ERROR,
   MAX_TOTAL_BYTES,
   MAX_FILE_BYTES,
@@ -899,6 +901,10 @@ export function LoraStudioTab({
   // 未クロップの元画像（cropKind未設定）だけを対象に、1枚ずつ順番に
   // スマートクロップを実行してデータセットへ追加する。並列実行にしない
   // のはメモリ・進捗表示のシンプルさを優先したもの（1枚あたり数百ms程度）。
+  // サムネイルの選択状態（学習回数の一括設定・クロップ対象の指定に使う）。
+  // 診断パネルから「この被写体の元画像だけ選ぶ」ためにタブ側で持つ。
+  const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set());
+
   const runSmartCropForDataset = useCallback(async (ids?: string[], kinds?: SmartCropKind[]) => {
     // 対象を絞れる（2026-09-21）。165枚×3種を一括で切り出すと上限500枚を
     // 超えるうえ、要らない構図まで増えてキャプション解析の無料枠も食う。
@@ -950,6 +956,10 @@ export function LoraStudioTab({
     }
     setSmartCropBusy(false);
     setSmartCropProgress(null);
+    // 切り出しが終わったら選択は解除する（2026-09-22、ホスト指摘）。
+    // 診断から飛んできた選択がそのまま残っていると、次の工程（学習回数）で
+    // 「なぜこれだけ選ばれているのか」が分からなくなる。
+    setSelectedImageIds(new Set());
     setAddNotice(
       `元画像 ${candidates.length} 枚から ${kept} 枚を切り出してデータセットに追加しました。` +
         ` 内訳: 生成 ${kept + rejected.upscaled + rejected.redundant} 枚` +
@@ -1168,10 +1178,6 @@ export function LoraStudioTab({
     if (kindMap.size > 1) groups.push({ key: "origin", title: "種別", options: toOptions(kindMap) });
     return groups;
   }, [images, captions, allSubjects]);
-
-  // サムネイルの選択状態（学習回数の一括設定・クロップ対象の指定に使う）。
-  // 診断パネルから「この被写体の元画像だけ選ぶ」ためにタブ側で持つ。
-  const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set());
 
   // 診断の「◯◯ の元画像を選んでクロップ欄へ」。実際の切り出しは実行しない
   // （実行ボタンが2つあると対象が分からなくなる。2026-09-21 ホスト指摘）。
@@ -3190,7 +3196,7 @@ export function LoraStudioTab({
       </div>
 
       {/* Mode switch */}
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div id={LORA_SETTINGS_ANCHOR_ID} className="grid gap-2 scroll-mt-24 sm:grid-cols-2">
         {MODES.map((m) => (
           <button
             key={m.id}
@@ -3279,11 +3285,8 @@ export function LoraStudioTab({
                   ? "error"
                   : "pending"
             }
-            onSetRepeats={setImageRepeats}
-            selectionGroups={selectionGroups}
             selectedIds={selectedImageIds}
             onSelectedChange={setSelectedImageIds}
-            onSuggestRepeats={captionSubjectCounts.total > 0 ? applySuggestedRepeats : undefined}
             distanceById={distanceById}
             cropKindSelection={cropKindSelection}
             onCropKindsChange={setCropKindSelection}
@@ -3385,6 +3388,26 @@ export function LoraStudioTab({
               subjects={allSubjects}
               onOpenMultiAngle={onOpenMultiAngle}
               onPrepareCrop={prepareCropForSubject}
+            />
+          )}
+
+          {/* データセットを触る工程の最後（2026-09-22、ホスト指摘）。
+              取り込み → クロップ → 診断 を見てから比率を決める操作なので、
+              順番として最後でないと「これで終わりなのか」が分からなくなる。 */}
+          {images.length > 0 && (
+            <RepeatWeightPanel
+              images={images}
+              disabled={busy}
+              onSetRepeats={setImageRepeats}
+              selectionGroups={selectionGroups}
+              selectedIds={selectedImageIds}
+              onSelectedChange={setSelectedImageIds}
+              onSuggestRepeats={captionSubjectCounts.total > 0 ? applySuggestedRepeats : undefined}
+              onGoToSettings={() =>
+                document
+                  .getElementById(LORA_SETTINGS_ANCHOR_ID)
+                  ?.scrollIntoView({ behavior: "smooth", block: "start" })
+              }
             />
           )}
 

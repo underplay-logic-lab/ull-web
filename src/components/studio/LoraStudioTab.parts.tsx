@@ -94,6 +94,9 @@ export const MAX_LONG_EDGE = 2048;
 
 /** 診断パネルからスクロールで飛ぶための、クロップ欄の DOM id。 */
 export const SMART_CROP_PANEL_ID = "lora-smart-crop-panel";
+
+/** 学習設定（モード選択とエキスパート欄）へスクロールで飛ぶための DOM id。 */
+export const LORA_SETTINGS_ANCHOR_ID = "lora-settings-anchor";
 // Raw upload budget. The worker's Smart Ingest stage downscales / re-encodes
 // every image on a free CPU container before the GPU starts, and AI-vision
 // captioning only ever sees ~640px browser thumbnails — so a large raw
@@ -591,12 +594,10 @@ export function ImageDropzone({
   smartCropBusy,
   smartCropProgress,
   onSmartCrop,
-  onSetRepeats,
-  selectionGroups,
   selectedIds,
   onSelectedChange,
   onRejectedDrop,
-  onSuggestRepeats,
+  selectable,
   distanceById,
   cropKindSelection,
   onCropKindsChange,
@@ -612,27 +613,23 @@ export function ImageDropzone({
   smartCropProgress?: { done: number; total: number } | null;
   onSmartCrop?: (ids: string[], kinds: SmartCropKind[]) => void;
   onRecaption?: (id: string) => void;
-  // 画像ごとの学習回数の一括設定（未指定なら重み付け UI を出さない）。
-  onSetRepeats?: (ids: string[], repeats: number) => void;
+  /** 画像をクリックで選択できるようにするか（学習回数パネルと連動）。 */
+  selectable?: boolean;
   /**
    * キャプションから作った一括選択の軸（2026-09-21）。165枚を1枚ずつ
    * shift+クリックで拾うのは現実的ではないので、「kocho の全身だけ」を
    * 1〜2クリックで選べるようにする。複数の軸を選んだ場合は**積集合**。
    */
-  selectionGroups?: { key: string; title: string; options: { id: string; label: string; ids: string[] }[] }[];
   selectedIds: Set<string>;
   onSelectedChange: (next: Set<string>) => void;
   /** 受け付けられない状態でドロップ／クリックされたときに理由を出す。 */
   onRejectedDrop?: () => void;
-  /** 構図の偏りを均す学習回数を一括で入れる（未指定ならボタンを出さない）。 */
-  onSuggestRepeats?: () => void;
   /** 画像id -> キャプションから判定した距離バケットid（クロップ候補の絞り込み用）。 */
   distanceById?: Record<string, string[]>;
   cropKindSelection: Set<SmartCropKind>;
   onCropKindsChange: (next: Set<SmartCropKind>) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [filters, setFilters] = useState<Record<string, string | null>>({});
   // 切り出す構図。診断パネルから「顔アップと上半身を切り出す準備」と指示が
   // 来るのでタブ側が持つ（2026-09-22）。
   const cropKinds = cropKindSelection;
@@ -648,7 +645,6 @@ export function ImageDropzone({
   const setSelected = (v: Set<string> | ((prev: Set<string>) => Set<string>)) =>
     onSelectedChange(typeof v === "function" ? v(selectedIds) : v);
   const lastClickedRef = useRef<string | null>(null);
-  const weighted = images.filter((i) => (i.repeats ?? 1) !== 1).length;
 
   const toggleSelect = (id: string, shiftKey: boolean) => {
     setSelected((prev) => {
@@ -699,32 +695,6 @@ export function ImageDropzone({
     0,
   );
 
-  // チップで絞り込んだ結果（複数軸は積集合）を選択状態へ反映する。
-  const applyFilters = (next: Record<string, string | null>) => {
-    setFilters(next);
-    const active = (selectionGroups ?? [])
-      .map((g) => {
-        const picked = next[g.key];
-        return picked ? g.options.find((o) => o.id === picked) : null;
-      })
-      .filter(Boolean) as { ids: string[] }[];
-    if (active.length === 0) {
-      setSelected(new Set());
-      return;
-    }
-    let ids = new Set(active[0].ids);
-    for (const g of active.slice(1)) {
-      const s2 = new Set(g.ids);
-      ids = new Set([...ids].filter((id) => s2.has(id)));
-    }
-    setSelected(ids);
-  };
-
-  const applyRepeats = (n: number) => {
-    if (!onSetRepeats || selected.size === 0) return;
-    onSetRepeats([...selected], n);
-    setSelected(new Set());
-  };
 
   return (
     <div>
@@ -801,13 +771,13 @@ export function ImageDropzone({
               const recapping = recaptioningIds?.has(img.id) ?? false;
               const reps = img.repeats ?? 1;
               const isSelected = selected.has(img.id);
-              const selectable = !!onSetRepeats && !disabled;
+              const canSelect = selectable !== false && !disabled;
               return (
                 <div
                   key={img.id}
-                  onClick={selectable ? (e) => toggleSelect(img.id, e.shiftKey) : undefined}
+                  onClick={canSelect ? (e) => toggleSelect(img.id, e.shiftKey) : undefined}
                   className={`group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border bg-neutral-900 ${
-                    selectable ? "cursor-pointer" : ""
+                    canSelect ? "cursor-pointer" : ""
                   } ${
                     isSelected
                       ? "border-neon-violet ring-2 ring-neon-violet/60"
@@ -984,134 +954,218 @@ export function ImageDropzone({
               </p>
             </div>
           )}
-          {/* 画像ごとの学習回数（kohya の "10_name" フォルダ相当）。
-              ここはグリッドの**下**に置く（2026-09-21、ホスト指摘）。取り込んだ
-              後にやる操作なので、取り込み欄の直下にあると手順が前後して見える。
-              枚数が多いと選択のための上下移動が辛いので、キャプションから
-              作った一括選択チップ（被写体・構図）を併設する。 */}
-          {onSetRepeats && !disabled && (
-            <div className="mt-2 rounded-lg border border-border bg-background/60 px-3 py-2">
-              {selectionGroups && selectionGroups.length > 0 && (
-                <div className="mb-2 space-y-1 border-b border-border/60 pb-2">
-                  {selectionGroups.map((g) => (
-                    <div key={g.key} className="flex flex-wrap items-center gap-1.5 text-[10px]">
-                      <span className="w-12 shrink-0 text-muted">{g.title}</span>
-                      {g.options.map((o) => {
-                        const on = filters[g.key] === o.id;
-                        return (
-                          <button
-                            key={o.id}
-                            type="button"
-                            onClick={() =>
-                              applyFilters({ ...filters, [g.key]: on ? null : o.id })
-                            }
-                            className={`rounded-full border px-2 py-0.5 transition-colors ${
-                              on
-                                ? "border-neon-violet/60 bg-neon-violet/15 text-neon-violet"
-                                : "border-border bg-background/60 text-muted hover:text-foreground"
-                            }`}
-                          >
-                            {o.label}
-                            <span className="ml-1 font-mono opacity-70">{o.ids.length}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px]">
-                <span className="font-medium text-foreground">学習回数の重み付け</span>
-                {selected.size > 0 ? (
-                  <>
-                    <span className="text-neon-violet">{selected.size} 枚を選択中 →</span>
-                    {REPEAT_PRESETS.map((n) => (
-                      <button
-                        key={n}
-                        type="button"
-                        onClick={() => applyRepeats(n)}
-                        className={quickSelectBtnCls}
-                      >
-                        ×{n}
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const raw = window.prompt(`学習回数（1〜${MAX_IMAGE_REPEATS}）`, "4");
-                        const n = Number(raw);
-                        if (Number.isFinite(n)) applyRepeats(Math.min(MAX_IMAGE_REPEATS, Math.max(1, Math.round(n))));
-                      }}
-                      className={quickSelectBtnCls}
-                    >
-                      カスタム
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => applyFilters({})}
-                      className="text-muted transition-colors hover:text-foreground"
-                    >
-                      選択解除
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-muted">
-                      画像をクリックで選択（shift+クリックで範囲）→ 倍率を指定
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setSelected(new Set(images.map((i) => i.id)))}
-                      className={quickSelectBtnCls}
-                    >
-                      全選択
-                    </button>
-                    {weighted > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => onSetRepeats(images.map((i) => i.id), 1)}
-                        className={quickSelectBtnCls}
-                      >
-                        すべて ×1 に戻す
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-              <div className="mt-1.5 space-y-1 text-[10px] leading-relaxed text-muted">
-                <p>
-                  ×2 にした画像は、学習中に
-                  <strong className="text-foreground">2倍の頻度で見せられます</strong>
-                  （同じ画像を2枚入れるのと同じ意味）。
-                  <strong className="text-foreground">消費クレジットは変わりません</strong>
-                  ——総ステップ数は固定で、変わるのはデータセットの構成比だけです。
-                </p>
-                <p>
-                  使いどころは
-                  <strong className="text-foreground">「少ない構図を、多い構図に近づける」</strong>
-                  こと。全身ばかりで顔アップが少ないなら、顔アップ側を上げます。
-                  多い側を下げることはできない（最小が ×1）ので、常に少ない側を上げる方向で調整します。
-                  <strong className="text-foreground">情報が増えるわけではない</strong>ので、
-                  ×4 を超える重み付けは素材不足の先送りにしかなりません。
-                </p>
-                {onSuggestRepeats && (
-                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                    <button type="button" onClick={onSuggestRepeats} className={quickSelectBtnCls}>
-                      📐 構図の偏りを均す回数を自動で入れる
-                    </button>
-                    <span className="opacity-70">
-                      被写体ごとに、一番多い構図の枚数へ揃うよう回数を割り当てます（上限 ×4）。
-                      入れたあと個別に直せます。
-                    </span>
-                  </div>
-                )}
-                {weighted > 0 && <p>{weighted} 枚に重み付けがかかっています。</p>}
-              </div>
-            </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * 画像ごとの学習回数（kohya の "10_name" フォルダ相当）。
+ *
+ * データセットを触る工程の**最後**に置く（2026-09-22、ホスト指摘
+ * 「この重みづけは最後にやる必要があるので一番下に」）。取り込み → クロップ →
+ * 診断 の結果を見てから比率を決める操作なので、順番として最後でないと
+ * 「これで終わりなのか」が分からなくなる。
+ *
+ * 枚数が多いと1枚ずつ選ぶのは非現実的なので、キャプションから作った一括選択
+ * チップ（被写体・構図・種別）を併設する。複数軸は積集合。
+ */
+export function RepeatWeightPanel({
+  images,
+  disabled,
+  onSetRepeats,
+  selectionGroups,
+  selectedIds,
+  onSelectedChange,
+  onSuggestRepeats,
+  onGoToSettings,
+}: {
+  images: DatasetImage[];
+  disabled: boolean;
+  onSetRepeats: (ids: string[], repeats: number) => void;
+  selectionGroups?: { key: string; title: string; options: { id: string; label: string; ids: string[] }[] }[];
+  selectedIds: Set<string>;
+  onSelectedChange: (next: Set<string>) => void;
+  onSuggestRepeats?: () => void;
+  /** 次の工程（設定）へ送る導線。 */
+  onGoToSettings?: () => void;
+}) {
+  const [filters, setFilters] = useState<Record<string, string | null>>({});
+  const selected = selectedIds;
+  const setSelected = (v: Set<string> | ((p: Set<string>) => Set<string>)) =>
+    onSelectedChange(typeof v === "function" ? v(selectedIds) : v);
+  const weighted = images.filter((i) => (i.repeats ?? 1) !== 1).length;
+
+  const applyFilters = (next: Record<string, string | null>) => {
+    setFilters(next);
+    const active = (selectionGroups ?? [])
+      .map((g) => (next[g.key] ? g.options.find((o) => o.id === next[g.key]) : null))
+      .filter(Boolean) as { ids: string[] }[];
+    if (active.length === 0) {
+      setSelected(new Set());
+      return;
+    }
+    let ids = new Set(active[0].ids);
+    for (const g of active.slice(1)) {
+      const s2 = new Set(g.ids);
+      ids = new Set([...ids].filter((id) => s2.has(id)));
+    }
+    setSelected(ids);
+  };
+
+  const applyRepeats = (n: number) => {
+    if (selected.size === 0) return;
+    onSetRepeats([...selected], n);
+    setSelected(new Set());
+  };
+
+  if (images.length === 0) return null;
+
+  return (
+    <>
+{/* 画像ごとの学習回数（kohya の "10_name" フォルダ相当）。
+    ここはグリッドの**下**に置く（2026-09-21、ホスト指摘）。取り込んだ
+    後にやる操作なので、取り込み欄の直下にあると手順が前後して見える。
+    枚数が多いと選択のための上下移動が辛いので、キャプションから
+    作った一括選択チップ（被写体・構図）を併設する。 */}
+{onSetRepeats && !disabled && (
+  <div className="mt-2 rounded-lg border border-border bg-background/60 px-3 py-2">
+    {selectionGroups && selectionGroups.length > 0 && (
+      <div className="mb-2 space-y-1 border-b border-border/60 pb-2">
+        {selectionGroups.map((g) => (
+          <div key={g.key} className="flex flex-wrap items-center gap-1.5 text-[10px]">
+            <span className="w-12 shrink-0 text-muted">{g.title}</span>
+            {g.options.map((o) => {
+              const on = filters[g.key] === o.id;
+              return (
+                <button
+                  key={o.id}
+                  type="button"
+                  onClick={() =>
+                    applyFilters({ ...filters, [g.key]: on ? null : o.id })
+                  }
+                  className={`rounded-full border px-2 py-0.5 transition-colors ${
+                    on
+                      ? "border-neon-violet/60 bg-neon-violet/15 text-neon-violet"
+                      : "border-border bg-background/60 text-muted hover:text-foreground"
+                  }`}
+                >
+                  {o.label}
+                  <span className="ml-1 font-mono opacity-70">{o.ids.length}</span>
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    )}
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px]">
+      <span className="font-medium text-foreground">学習回数の重み付け</span>
+      {selected.size > 0 ? (
+        <>
+          <span className="text-neon-violet">{selected.size} 枚を選択中 →</span>
+          {REPEAT_PRESETS.map((n) => (
+            <button
+              key={n}
+              type="button"
+              onClick={() => applyRepeats(n)}
+              className={quickSelectBtnCls}
+            >
+              ×{n}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              const raw = window.prompt(`学習回数（1〜${MAX_IMAGE_REPEATS}）`, "4");
+              const n = Number(raw);
+              if (Number.isFinite(n)) applyRepeats(Math.min(MAX_IMAGE_REPEATS, Math.max(1, Math.round(n))));
+            }}
+            className={quickSelectBtnCls}
+          >
+            カスタム
+          </button>
+          <button
+            type="button"
+            onClick={() => applyFilters({})}
+            className="text-muted transition-colors hover:text-foreground"
+          >
+            選択解除
+          </button>
+        </>
+      ) : (
+        <>
+          <span className="text-muted">
+            画像をクリックで選択（shift+クリックで範囲）→ 倍率を指定
+          </span>
+          <button
+            type="button"
+            onClick={() => setSelected(new Set(images.map((i) => i.id)))}
+            className={quickSelectBtnCls}
+          >
+            全選択
+          </button>
+          {weighted > 0 && (
+            <button
+              type="button"
+              onClick={() => onSetRepeats(images.map((i) => i.id), 1)}
+              className={quickSelectBtnCls}
+            >
+              すべて ×1 に戻す
+            </button>
           )}
         </>
       )}
     </div>
+    <div className="mt-1.5 space-y-1 text-[10px] leading-relaxed text-muted">
+      <p>
+        ×2 にした画像は、学習中に
+        <strong className="text-foreground">2倍の頻度で見せられます</strong>
+        （同じ画像を2枚入れるのと同じ意味）。
+        <strong className="text-foreground">消費クレジットは変わりません</strong>
+        ——総ステップ数は固定で、変わるのはデータセットの構成比だけです。
+      </p>
+      <p>
+        使いどころは
+        <strong className="text-foreground">「少ない構図を、多い構図に近づける」</strong>
+        こと。全身ばかりで顔アップが少ないなら、顔アップ側を上げます。
+        多い側を下げることはできない（最小が ×1）ので、常に少ない側を上げる方向で調整します。
+        <strong className="text-foreground">情報が増えるわけではない</strong>ので、
+        ×4 を超える重み付けは素材不足の先送りにしかなりません。
+      </p>
+      {onSuggestRepeats && (
+        <div className="flex flex-wrap items-center gap-2 pt-0.5">
+          <button type="button" onClick={onSuggestRepeats} className={quickSelectBtnCls}>
+            📐 構図の偏りを均す回数を自動で入れる
+          </button>
+          <span className="opacity-70">
+            被写体ごとに、一番多い構図の枚数へ揃うよう回数を割り当てます（上限 ×4）。
+            入れたあと個別に直せます。
+          </span>
+        </div>
+      )}
+      {weighted > 0 && <p>{weighted} 枚に重み付けがかかっています。</p>}
+    </div>
+  </div>
+)}
+      {onGoToSettings && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-neon-pink/30 bg-neon-pink/5 px-3 py-2">
+          <span className="text-[11px] text-muted">
+            データセットの準備はここまでです。次は学習設定を確認して実行します。
+          </span>
+          <button
+            type="button"
+            onClick={onGoToSettings}
+            className="inline-flex items-center gap-1 rounded-lg border border-neon-pink/40 bg-neon-pink/10 px-2.5 py-1 text-[11px] font-medium text-neon-pink transition-colors hover:bg-neon-pink/20"
+          >
+            学習設定へ進む
+          </button>
+        </div>
+      )}
+    </>
   );
 }
 
