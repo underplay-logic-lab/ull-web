@@ -2427,7 +2427,16 @@ export function LoraStudioTab({
         setAutoCap((s) => ({ ...s, running: false, error: "自動解析に失敗しました。" }));
         return null;
       }
-      if (ac.signal.aborted) return null;
+      if (ac.signal.aborted) {
+        // 中断された経路で running を下ろしていなかった（2026-09-22、ホスト
+        // 報告「解析は完了したのに解析中表示がぐるぐるしたまま」）。後続の
+        // パスが走っていれば旗はそちらが管理するので、自分がまだ最新の
+        // 中断コントローラを持っているときだけ下ろす。
+        if (autoCaptionAbortRef.current === ac) {
+          setAutoCap((st) => ({ ...st, running: false, note: null }));
+        }
+        return null;
+      }
 
       // Safety net: fold in anything onBatch missed, still live-filtered.
       const tail = mergeLive(
@@ -3599,7 +3608,9 @@ export function LoraStudioTab({
               src/lib/datasetDiagnostics.ts のヘッダに動機と実データの検証あり。 */}
           {diagnosticItems.length > 0 && (
             <DatasetDiagnosticsPanel
-              provisional={autoCap.running}
+              // 未解析が残っていないなら「解析中」と出す意味が無い（旗が
+              // 立ちっぱなしでも診断が固まらないようにする二重の保険）。
+              provisional={autoCap.running && pendingCaptionCount > 0}
               // 解析が止まっているのに「解析中」と出し続けない（2026-09-22、
               // ホスト報告）。空の結果が返った画像は「試行済み」扱いになり
               // 自動では再試行されないので、件数と再解析の導線を出す。
