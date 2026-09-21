@@ -94,7 +94,7 @@ const releaseDecode = (): void => {
 // Downscale one File to a base64 thumbnail (no data: prefix), longest edge
 // CAPTION_MAX_EDGE, WebP where the browser supports canvas WebP export else
 // JPEG. Returns null (cached) if the browser can't decode it.
-async function makeThumbnail(file: File): Promise<Thumb | null> {
+export async function makeThumbnail(file: File): Promise<Thumb | null> {
   const key = captionFileKey(file);
   const hit = thumbCache.get(key);
   if (hit !== undefined) return hit;
@@ -432,4 +432,39 @@ export async function generateDatasetCaptions(
 
   reportProgress();
   return result();
+}
+
+
+// --- 被写体の identity タグを画像から抽出する（2026-09-21）------------------
+//
+// キャプションとは逆向きの情報（あちらは identity をブラックリストで書かせない）
+// なので、被写体ごとに数枚だけ渡す専用の1パスを立てる。返るのは**候補**で、
+// 取捨選択は UI 側（ホスト方針: 「不要なら削除、不足なら追加」）。
+//
+// サムネイルはキャプションと同じキャッシュを使うので、解析済みのデータセット
+// なら追加のデコードは発生しない。
+export async function extractIdentityTags(
+  files: File[],
+  trigger: string,
+  hintJa: string,
+): Promise<string[]> {
+  const thumbs: Thumb[] = [];
+  for (const f of files.slice(0, 6)) {
+    const t = await makeThumbnail(f);
+    if (t) thumbs.push(t);
+  }
+  if (thumbs.length === 0) throw new Error("画像を読み込めませんでした。");
+
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData.session?.access_token;
+  if (!token) throw new Error("ログインが必要です。");
+
+  const res = await fetch("/api/studio/lora/identity-tags", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ trigger, hint_ja: hintJa, images: thumbs }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || "特徴の抽出に失敗しました。");
+  return Array.isArray(data?.tags) ? (data.tags as string[]) : [];
 }

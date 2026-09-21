@@ -81,6 +81,7 @@ import {
 } from "@/lib/loraCaptionSpec";
 import { DatasetDiagnosticsPanel } from "@/components/studio/DatasetDiagnosticsPanel";
 import { translateCaption } from "@/lib/loraTranslate";
+import { extractIdentityTags } from "@/lib/loraCaption";
 import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
 import { generateDatasetCaptions, captionFileKey } from "@/lib/loraCaption";
 import { runSmartCrop, type SmartCropKind } from "@/lib/smartCrop";
@@ -844,6 +845,10 @@ export function LoraStudioTab({
   // /api/studio/lora/translate（action "to_en" + caption_type "tags"）をそのまま
   // 使う——日本語→Danbooru タグ列はこのルートの本来の仕事なので新設不要。
   const [identityBusy, setIdentityBusy] = useState<number | null>(null);
+  // metadata の内容を目視確認したか。確認するまで学習を開始させない
+  // （ホスト方針「ちゃんと確認してもらってOKをしないと生成ボタンが有効に
+  //   ならない感じで」）。タグを触るたびに false へ戻す。
+  const [identityConfirmed, setIdentityConfirmed] = useState(false);
   const convertIdentityTags = useCallback(
     async (index: number, ja: string) => {
       const text = ja.trim();
@@ -853,6 +858,7 @@ export function LoraStudioTab({
         const tags = await translateCaption(text, "to_en", "tags");
         if (index < 0) setPrimaryIdentityTags(tags);
         else setExtraSubjects((prev) => prev.map((p, k) => (k === index ? { ...p, identityTags: tags } : p)));
+        setIdentityConfirmed(false);
       } catch (err) {
         console.warn("[lora] identity tag conversion failed:", err);
       } finally {
@@ -860,6 +866,44 @@ export function LoraStudioTab({
       }
     },
     [],
+  );
+
+  // 画像から identity タグを抽出する（ホスト方針「画像解析結果から抽出される
+  // が、最終的には不要なら削除・不足なら追加」）。返るのは候補で、確定は
+  // ユーザーが行う。渡すのは「その被写体が写っているキャプション済み画像」の
+  // 先頭6枚——サムネイルはキャプションと同じキャッシュを使うので追加の
+  // デコードは発生しない。
+  const [identityExtracting, setIdentityExtracting] = useState<number | null>(null);
+  const captionedCount = useMemo(
+    () => images.filter((img) => (captions[img.id] ?? "").trim()).length,
+    [images, captions],
+  );
+  const extractIdentityFor = useCallback(
+    async (index: number, trigger: string, hintJa: string) => {
+      const t = trigger.trim();
+      if (!t) return;
+      const captioned = images.filter((img) => (captions[img.id] ?? "").trim());
+      // その被写体のトリガーで始まるキャプションの画像を優先する。
+      const mine = captioned.filter((img) =>
+        (captions[img.id] ?? "").toLowerCase().startsWith(t.toLowerCase()),
+      );
+      const pool = (mine.length > 0 ? mine : captioned).slice(0, 6).map((img) => img.file);
+      if (pool.length === 0) return;
+      setIdentityExtracting(index);
+      try {
+        const tags = await extractIdentityTags(pool, t, hintJa);
+        const merged = tags.join(", ");
+        if (index < 0) setPrimaryIdentityTags(merged);
+        else setExtraSubjects((prev) => prev.map((p, k) => (k === index ? { ...p, identityTags: merged } : p)));
+        setIdentityConfirmed(false);
+      } catch (err) {
+        console.warn("[lora] identity extraction failed:", err);
+        window.alert(err instanceof Error ? err.message : "特徴の抽出に失敗しました。");
+      } finally {
+        setIdentityExtracting(null);
+      }
+    },
+    [images, captions],
   );
 
   const setImageRepeats = useCallback((ids: string[], repeats: number) => {
@@ -1068,6 +1112,13 @@ export function LoraStudioTab({
   // 判定）。生YAMLモードは生YAML自体をsd-scriptsワーカーが受け付けないため
   // 対象外（route.tsが400で拒否する）。
   const isSdxlJob = pricedArch === "sdxl";
+
+  // metadata に何か埋め込む LoRA では、内容を目視確認するまで学習させない。
+  // 納品物に焼かれてユーザーの手元へ渡るものなので、黙って確定させない。
+  const needsIdentityConfirm = useMemo(
+    () => !yamlMode && isSdxlJob && autoEmbedTags.trim().length > 0 && !identityConfirmed,
+    [yamlMode, isSdxlJob, autoEmbedTags, identityConfirmed],
+  );
 
   // Caption FORMAT resolved for the model in the dropdown right now. The key
   // blends preset id + arch + label + (custom) base architecture so a tag
@@ -2824,11 +2875,22 @@ export function LoraStudioTab({
               </button>
             )}
           </div>
+          {/* 2026-09-21: トリガーワード未入力での取り込みを弾く（ホスト指摘
+              「トリガーワードとかを先にやらないとうまくいかないなら、画像の
+              取り込みとかも弾くようにした方がいい」）。被写体が未登録のまま
+              キャプションを走らせると、AI が誰を指すか分からず全部やり直しに
+              なり、しかも無料枠を食い潰す。 */}
+          {!yamlMode && !triggerWord.trim() && (
+            <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-400">
+              <strong>先にトリガーワードを入力してください。</strong>
+              被写体が決まっていない状態で画像を解析すると、AI がどの人物か判断できず、キャプションをやり直すことになります。
+            </p>
+          )}
           <ImageDropzone
             images={images}
             onAdd={addImages}
             onRemove={removeImage}
-            disabled={busy}
+            disabled={busy || (!yamlMode && !triggerWord.trim())}
             recaptioningIds={recaptioningIds}
             onRecaption={(id) => void recaptionOne(id)}
             captionState={(id) =>
@@ -3081,10 +3143,16 @@ export function LoraStudioTab({
                         />
                         <IdentityTagsField
                           value={primaryIdentityTags}
-                          onChange={setPrimaryIdentityTags}
+                          onChange={(next) => {
+                      setPrimaryIdentityTags(next);
+                      setIdentityConfirmed(false);
+                    }}
                           sourceJa={primaryDescription}
                           onConvert={() => void convertIdentityTags(-1, primaryDescription)}
+                          onExtract={() => void extractIdentityFor(-1, triggerWord, primaryDescription)}
                           converting={identityBusy === -1}
+                          extracting={identityExtracting === -1}
+                          canExtract={captionedCount > 0}
                           disabled={busy}
                         />
                       </>
@@ -3106,10 +3174,16 @@ export function LoraStudioTab({
                   />
                   <IdentityTagsField
                     value={primaryIdentityTags}
-                    onChange={setPrimaryIdentityTags}
+                    onChange={(next) => {
+                      setPrimaryIdentityTags(next);
+                      setIdentityConfirmed(false);
+                    }}
                     sourceJa={primaryDescription}
                     onConvert={() => void convertIdentityTags(-1, primaryDescription)}
+                    onExtract={() => void extractIdentityFor(-1, triggerWord, primaryDescription)}
                     converting={identityBusy === -1}
+                    extracting={identityExtracting === -1}
+                    canExtract={captionedCount > 0}
                     disabled={busy}
                   />
                 </div>
@@ -3174,12 +3248,16 @@ export function LoraStudioTab({
                   />
                   <IdentityTagsField
                     value={s.identityTags ?? ""}
-                    onChange={(next) =>
-                      setExtraSubjects((prev) => prev.map((p, k) => (k === i ? { ...p, identityTags: next } : p)))
-                    }
+                    onChange={(next) => {
+                      setExtraSubjects((prev) => prev.map((p, k) => (k === i ? { ...p, identityTags: next } : p)));
+                      setIdentityConfirmed(false);
+                    }}
                     sourceJa={s.description}
                     onConvert={() => void convertIdentityTags(i, s.description)}
+                    onExtract={() => void extractIdentityFor(i, s.trigger, s.description)}
                     converting={identityBusy === i}
+                    extracting={identityExtracting === i}
+                    canExtract={captionedCount > 0}
                     disabled={busy}
                   />
                 </div>
@@ -3259,11 +3337,16 @@ export function LoraStudioTab({
                 </span>
                 <ChevronDown
                   size={14}
-                  className={`shrink-0 text-muted transition-transform ${embedTagsOpen ? "rotate-180" : ""}`}
+                  className={`shrink-0 text-muted transition-transform ${
+                    embedTagsOpen || needsIdentityConfirm ? "rotate-180" : ""
+                  }`}
                 />
               </button>
 
-              {embedTagsOpen && (
+              {/* 確認が済むまでは畳ませない。ボタンが「埋め込むタグを確認して
+                  ください」と言っているのに、確認欄が折りたたみの中にあると
+                  詰まるため。 */}
+              {(embedTagsOpen || needsIdentityConfirm) && (
                 <div className="space-y-2 px-3 pb-3">
                   {/* 2026-09-21: 自動生成に切り替えた。ここは「この LoRA を
                       正しく呼び出すためのトークン」であり、キャプションから
@@ -3276,10 +3359,30 @@ export function LoraStudioTab({
                     ComfyUI 側で「LoRA を読み込んだらメタデータのタグをプロンプトへ追加する」運用をしている場合、ここが生成時の再現性に直結します。
                   </p>
                   <div className="rounded-lg border border-border/60 bg-background/60 px-2 py-1.5">
-                    <div className="text-[10px] font-medium text-foreground">自動生成される内容</div>
+                    <div className="text-[10px] font-medium text-foreground">実際に書き込まれる内容</div>
                     <code className="mt-1 block break-all font-mono text-[10px] text-neon-violet">
-                      {autoEmbedTags || "（トリガーワードを入力すると表示されます）"}
+                      {effectiveEmbedTags || "（トリガーワードを入力すると表示されます）"}
                     </code>
+                    {/* 2026-09-21: 納品物（.safetensors の metadata）に焼かれて
+                        ユーザーの手元へ渡るものなので、目視確認するまで学習を
+                        開始させない（ホスト方針）。 */}
+                    {effectiveEmbedTags.trim() && (
+                      <label className="mt-2 flex cursor-pointer items-start gap-1.5 text-[10px] leading-relaxed text-foreground">
+                        <input
+                          type="checkbox"
+                          checked={identityConfirmed}
+                          onChange={(e) => setIdentityConfirmed(e.target.checked)}
+                          disabled={busy}
+                          className="mt-0.5 accent-neon-violet"
+                        />
+                        <span>
+                          この内容で書き込むことを確認しました
+                          {!identityConfirmed && (
+                            <span className="ml-1 text-amber-400">（チェックするまで学習を開始できません）</span>
+                          )}
+                        </span>
+                      </label>
+                    )}
                     <p className="mt-1 text-[10px] leading-relaxed text-muted">
                       トリガーワード＋性別/人数タグ＋下の「見た目の固定特徴」から組み立てています。
                       <strong className="text-foreground">キャプションには書かれない（＝トリガーに焼き込む）特徴を、生成時にプロンプトへ戻すための欄</strong>です。
@@ -3834,7 +3937,8 @@ export function LoraStudioTab({
                 Boolean(inFlightJob) ||
                 (Boolean(user) && !insufficientCredits && !canSubmit) ||
                 captionGen.state === "generating" ||
-                (Boolean(user) && autoCap.running)
+                (Boolean(user) && autoCap.running) ||
+                (Boolean(user) && !insufficientCredits && needsIdentityConfirm)
               }
               className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -3867,6 +3971,11 @@ export function LoraStudioTab({
                 <>
                   <Loader2 size={16} className="animate-spin" />
                   キャプションプロンプトを生成中…
+                </>
+              ) : needsIdentityConfirm ? (
+                <>
+                  <AlertTriangle size={16} />
+                  埋め込むタグを確認してください
                 </>
               ) : curationEnabled ? (
                 <>

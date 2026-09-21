@@ -415,40 +415,116 @@ export function IdentityTagsField({
   onChange,
   sourceJa,
   onConvert,
+  onExtract,
   converting,
+  extracting,
+  canExtract,
   disabled,
 }: {
   value: string;
   onChange: (next: string) => void;
   sourceJa: string;
   onConvert: () => void;
+  /** 画像解析（解析済みのデータセットから identity を抽出）。 */
+  onExtract: () => void;
   converting: boolean;
+  extracting: boolean;
+  canExtract: boolean;
   disabled: boolean;
 }) {
-  const canConvert = !disabled && !converting && sourceJa.trim().length > 0;
+  const [draft, setDraft] = useState("");
+  const tags = value
+    .split(/\s*[,、]\s*/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const busy = disabled || converting || extracting;
+
+  const setTags = (next: string[]) => onChange([...new Set(next)].join(", "));
+  const addDraft = () => {
+    const t = draft.trim().replace(/[,、]/g, "");
+    if (!t) return;
+    setTags([...tags, t]);
+    setDraft("");
+  };
+
   return (
-    <div className="mt-1.5">
-      <div className="flex items-center gap-1.5">
-        <input
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="metadata に埋め込むタグ（左の「タグに変換」で自動生成）"
-          disabled={disabled}
-          className={`${fieldCls} font-mono text-[11px]`}
-        />
+    <div className="mt-1.5 rounded-lg border border-border/60 bg-background/60 p-2">
+      <div className="mb-1 flex flex-wrap items-center gap-1.5">
+        <span className="text-[10px] font-medium text-foreground">metadata に埋め込むタグ</span>
+        <button
+          type="button"
+          onClick={onExtract}
+          disabled={busy || !canExtract}
+          title={
+            canExtract
+              ? "解析済みの画像から、この人物の変わらない特徴を抽出します"
+              : "先に画像のAI解析を済ませてください"
+          }
+          className="inline-flex items-center gap-1 rounded-md border border-neon-violet/40 bg-neon-violet/10 px-2 py-0.5 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {extracting ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
+          画像から抽出
+        </button>
         <button
           type="button"
           onClick={onConvert}
-          disabled={!canConvert}
-          title="上の日本語の特徴を Danbooru タグへ変換します"
-          className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2 py-1.5 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={busy || !sourceJa.trim()}
+          title="上に書いた日本語の特徴を Danbooru タグへ変換します"
+          className={quickSelectBtnCls}
         >
-          {converting ? <Loader2 size={11} className="animate-spin" /> : <Languages size={11} />}
-          タグに変換
+          {converting ? <Loader2 size={10} className="animate-spin" /> : <Languages size={10} />}
+          日本語から変換
         </button>
       </div>
-      <p className="mt-0.5 text-[10px] leading-relaxed text-muted">
-        キャプションには<strong className="text-foreground">書かれず</strong>、完成した LoRA の metadata にだけ埋め込まれます（生成時にプロンプトへ戻して再現性を上げるため）。
+
+      {tags.length > 0 ? (
+        <div className="mb-1.5 flex flex-wrap gap-1">
+          {tags.map((t) => (
+            <span
+              key={t}
+              className="inline-flex items-center gap-1 rounded-full border border-neon-pink/40 bg-neon-pink/10 px-2 py-0.5 font-mono text-[10px] text-neon-pink"
+            >
+              {t}
+              {!busy && (
+                <button
+                  type="button"
+                  onClick={() => setTags(tags.filter((x) => x !== t))}
+                  aria-label={`${t} を削除`}
+                  className="text-neon-pink/70 transition-colors hover:text-red-400"
+                >
+                  ×
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="mb-1.5 text-[10px] text-muted">
+          まだありません。「画像から抽出」か、上の日本語から変換してください。
+        </p>
+      )}
+
+      <div className="flex items-center gap-1.5">
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addDraft();
+            }
+          }}
+          placeholder="タグを追加（例: bald）"
+          disabled={busy}
+          className={`${fieldCls} font-mono text-[11px]`}
+        />
+        <button type="button" onClick={addDraft} disabled={busy || !draft.trim()} className={quickSelectBtnCls}>
+          追加
+        </button>
+      </div>
+
+      <p className="mt-1 text-[10px] leading-relaxed text-muted">
+        キャプションには<strong className="text-foreground">書かれず</strong>、完成した LoRA の metadata にだけ埋め込まれます（生成時にプロンプトへ戻して再現性を上げるため）。不要なタグは × で消し、足りないものは追加してください。
       </p>
     </div>
   );
