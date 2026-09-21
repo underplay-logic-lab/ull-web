@@ -1186,12 +1186,20 @@ export function LoraStudioTab({
 
   const prepareCropForSubject = useCallback(
     (subject: string, kinds: ("face" | "upper")[]) => {
+      // ⚠️ **その被写体だけが写っている画像**に限る（2026-09-22、ホスト指摘）。
+      // クロップは MediaPipe が検出した1人を基準に枠を決めるので、2人写って
+      // いる画像から「kocho を切り出す」ことはできない。出てくるのは検出され
+      // た側＝hitozuma かもしれず、「kocho の顔アップを増やす」という目的を
+      // 達成しないばかりか、既に足りている側をさらに増やす。加えて duo 画像は
+      // 両方の選択に入るため、被写体ごとに1回ずつ実行すると同じ切り出しが
+      // 二重に登録される原因にもなっていた。
       const ids = images
         .filter((img) => {
           if (img.cropKind) return false;
           const cap = (captions[img.id] ?? "").trim();
           if (!cap) return false;
-          return matchLeadingSubjectTriggers(cap, allSubjects).some((x) => x.trigger === subject);
+          const hits = matchLeadingSubjectTriggers(cap, allSubjects);
+          return hits.length === 1 && hits[0].trigger === subject;
         })
         .map((img) => img.id);
       setSelectedImageIds(new Set(ids));

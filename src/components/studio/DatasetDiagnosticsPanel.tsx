@@ -241,6 +241,11 @@ export function DatasetDiagnosticsPanel({
                   </button>
                 ))}
               </div>
+              <p className="text-[10px] leading-relaxed text-muted opacity-80">
+                ※ 対象は<strong className="text-foreground">その被写体だけが写っている画像</strong>です。
+                2人写っている画像は切り出しの基準になる人物を選べないため除外します
+                （狙った方ではなく、もう一方が切り出されてしまうため）。
+              </p>
               {cropPlan.size > 1 && (
                 <p className="text-[10px] leading-relaxed text-amber-400">
                   被写体ごとに<strong>1回ずつ</strong>行ってください。押す →
