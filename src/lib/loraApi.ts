@@ -187,6 +187,7 @@ export async function uploadLoraDataset(
 
     const startedRequestAt = Date.now();
     let thrown: unknown = null;
+    let lastResponseText = "";
     const key = indexes[0];
     try {
       const status = await new Promise<number>((resolve, reject) => {
@@ -201,7 +202,10 @@ export async function uploadLoraDataset(
         xhr.onerror = () => reject(new Error("ネットワークエラー（接続が切れました）"));
         xhr.ontimeout = () => reject(new Error("タイムアウトしました"));
         xhr.onabort = () => reject(new Error("中断されました"));
-        xhr.onload = () => resolve(xhr.status);
+        xhr.onload = () => {
+          lastResponseText = xhr.responseText || "";
+          resolve(xhr.status);
+        };
         // サーバー側は commit に最大30秒ほど使う。送信後の待ちも含めて余裕を取る。
         xhr.timeout = 10 * 60 * 1000;
         xhr.send(form);
@@ -211,7 +215,18 @@ export async function uploadLoraDataset(
         inflightBytes.delete(key);
         return null;
       }
-      if (status < 200 || status >= 300) thrown = new Error(`HTTP ${status}`);
+      if (status < 200 || status >= 300) {
+        // サーバーの detail を読み捨てない（2026-09-22）。fetch から XHR へ
+        // 切り替えた際に落としてしまい、400 の理由が分からなくなっていた。
+        let detail = "";
+        try {
+          const body = JSON.parse(lastResponseText || "{}") as { detail?: string; error?: string };
+          detail = (body.detail || body.error || "").toString();
+        } catch {
+          detail = (lastResponseText || "").slice(0, 200);
+        }
+        thrown = new Error(detail ? `HTTP ${status}: ${detail}` : `HTTP ${status}`);
+      }
     } catch (err) {
       thrown = err;
     }
