@@ -64,14 +64,19 @@ type JsonMode = boolean | "enja";
 function genConfig(model: string, jsonArray: JsonMode, dropThinking: boolean): GenerationConfig {
   // Generous cap: a truncated response trips a full-call MAX_TOKENS retry
   // (a big chunk of the old caption latency). The EN+JA batch needs headroom.
-  // ⚠️ **温度を0にしてはいけない**（2026-09-22 に踏んで差し戻した）。
-  // 2026-09-21 に「解析結果が毎回変わる」対策として構造化出力を温度0にしたが、
-  // 翌日 165枚中 144枚が安全性で拒否されるようになった。温度0は生成が決定的に
-  // なるため、ある画像で出力側の安全性フィルタに触れる経路を一度選ぶと**毎回
-  // 必ず同じように拒否される**。0.2 の揺らぎが、事実上のリトライとして効いて
-  // いた。診断の件数が多少ブレるのは、データセットの大半を失うことに比べれば
-  // はるかに小さい問題。
-  const cfg: Record<string, unknown> = { temperature: 0.2, maxOutputTokens: 16384 };
+  // 構造化出力（キャプション／翻訳／タグ抽出）は「同じ入力なら同じ答え」で
+  // あってほしい決定的なタスクなので温度0（2026-09-21、ホスト指摘「解析結果が
+  // 毎回変わる」）。自由文（jsonArray=false）は従来どおり少しだけ揺らす。
+  //
+  // ⚠️ 2026-09-22 に「165枚中144枚が安全性で拒否される」事故が起きた際、
+  // 温度0を疑って一度0.2へ戻したが**誤診だった**。コミット時刻で確認すると、
+  // 温度0の導入後にも165枚の解析が全て成功しており、実際の原因は同日の
+  // CAPTION_BATCH_SIZE 4->12（1枚の拒否で12枚が巻き添え）だった。
+  // 温度0はこの件と無関係なので維持する。
+  const cfg: Record<string, unknown> = {
+    temperature: jsonArray ? 0 : 0.2,
+    maxOutputTokens: 16384,
+  };
   if (!dropThinking) {
     // The -latest aliases (flash / flash-lite / pro) now resolve to 3.x
     // models, which REJECT thinkingBudget:0 with a 400 ("invalid argument")
