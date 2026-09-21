@@ -127,7 +127,13 @@ async function drawBoxToOutput(
 
 function toFile(canvas: HTMLCanvasElement, stem: string, kind: SmartCropKind): Promise<File> {
   return canvasToBlob(canvas).then(
-    (blob) => new File([blob], `${stem}_${kind}.png`, { type: "image/png" }),
+    // lastModified を 0 に固定する（2026-09-22）。既定だと生成時刻が入るため、
+    // **同じ元画像から同じ構図を2回切り出すと別物として二重登録**されていた。
+    // 被写体が2人いる duo 画像は両方の選択に入るので、被写体ごとに1回ずつ
+    // クロップすると必ずこれが起きる（MediaPipe は画像あたり1人しか検出しない
+    // ので、2回目は1回目と同じ人物の同じ枠になる）。固定すれば
+    // addDatasetFiles の「名前・サイズ・更新日時が同一なら除外」に乗る。
+    (blob) => new File([blob], `${stem}_${kind}.png`, { type: "image/png", lastModified: 0 }),
   );
 }
 
