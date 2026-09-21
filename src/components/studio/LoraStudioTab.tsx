@@ -3791,6 +3791,11 @@ export function LoraStudioTab({
                           extracting={identityExtracting === -1}
                           onTranslateTag={translateIdentityTag}
                           onRedo={() => redoIdentityExtract(-1)}
+                          blockedReason={
+                            primaryFixedTags.trim()
+                              ? null
+                              : "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
+                          }
                           disabled={busy}
                         />
                         )}
@@ -3825,6 +3830,11 @@ export function LoraStudioTab({
                     extracting={identityExtracting === -1}
                     onTranslateTag={translateIdentityTag}
                     onRedo={() => redoIdentityExtract(-1)}
+                    blockedReason={
+                      primaryFixedTags.trim()
+                        ? null
+                        : "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
+                    }
                     disabled={busy}
                   />
                   )}
@@ -3912,6 +3922,11 @@ export function LoraStudioTab({
                     extracting={identityExtracting === i}
                     onTranslateTag={translateIdentityTag}
                     onRedo={() => redoIdentityExtract(i)}
+                    blockedReason={
+                      (s.fixedTags ?? "").trim()
+                        ? null
+                        : "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
+                    }
                     disabled={busy}
                   />
                   )}

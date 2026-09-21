@@ -456,6 +456,7 @@ export function IdentityTagsField({
   onChange,
   onTranslateTag,
   onRedo,
+  blockedReason,
   extracting,
   disabled,
 }: {
@@ -471,6 +472,12 @@ export function IdentityTagsField({
   onTranslateTag: (ja: string) => Promise<string>;
   /** 抽出をやり直す（結果がおかしかったとき用）。 */
   onRedo?: () => void;
+  /**
+   * 自動抽出がまだ走れない理由（2026-09-22、ホスト指摘）。性別タグが
+   * 未選択だと「誰を見るか」が決まらないので抽出を止めているが、
+   * 黙って何も出ないと壊れているように見える。
+   */
+  blockedReason?: string | null;
   /** 画像からの自動抽出が走っている間。抽出はボタンではなく自動実行。 */
   extracting: boolean;
   disabled: boolean;
@@ -556,10 +563,10 @@ export function IdentityTagsField({
           ))}
         </div>
       ) : (
-        <p className="mb-1.5 text-[10px] text-muted">
+        <p className={`mb-1.5 text-[10px] ${blockedReason && !extracting ? "text-amber-400" : "text-muted"}`}>
           {extracting
             ? "画像を解析しています…"
-            : "画像を取り込むと、この人物の変わらない特徴を自動で抽出します。"}
+            : (blockedReason ?? "画像を取り込むと、この人物の変わらない特徴を自動で抽出します。")}
         </p>
       )}
 
