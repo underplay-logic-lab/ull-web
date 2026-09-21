@@ -941,6 +941,66 @@ knob を下げるかどうかは §14.8.2 単独ではなく、実ジョブの `
 > にだけ記録されていたものをここへ移した（job 名は記録されていない）。compile 側
 > 1.78 は v11（§14.8.1）と一致する。
 
+### 14.8.3 LTX-2 の HF キャッシュ 292.8GB — 159GB は一度も読まれない（2026-09-21）
+
+`training/hf_cache/hub/models--Lightricks--LTX-2` 単独で **292.76 GB**（Volume 全体
+966.5GB の 30%）。内訳を実測し、ai-toolkit のローダーをソースで確認した結果、
+**約 159GB は我々の構成では一度も読まれない**ことが確定した。
+
+#### スナップショットの実測内訳
+
+| | 容量 | 我々の構成で読まれるか |
+|---|---|---|
+| `text_encoder/`（27ファイル） | 93.47 GB | ✅ |
+| `transformer/`（8シャード） | 35.17 GB | ✅ |
+| `connectors/` | 2.67 GB | ✅ |
+| `vae/` | 2.28 GB | ✅ |
+| `tokenizer/` `audio_vae/` `vocoder/` `scheduler/` | 0.24 GB | ✅ |
+| **`ltx-2-19b-dev.safetensors`** | **40.31 GB** | ❌ |
+| **`ltx-2-19b-distilled.safetensors`** | **40.31 GB** | ❌ |
+| **`ltx-2-19b-dev-fp8.safetensors`** | **25.22 GB** | ❌ |
+| **`ltx-2-19b-distilled-fp8.safetensors`** | **25.22 GB** | ❌ |
+| **`ltx-2-19b-dev-fp4.safetensors`** | **18.62 GB** | ❌ |
+| **`ltx-2-19b-distilled-lora-384.safetensors`** | **7.15 GB** | ❌ |
+| **`ltx-2-spatial-upscaler-x2-1.0.safetensors`** | **0.93 GB** | ❌ |
+| **`latent_upsampler/`** | **0.93 GB** | ❌（ローダーが参照していない） |
+| **`ltx-2-temporal-upscaler-x2-1.0.safetensors`** | **0.24 GB** | ❌ |
+| `ltx-2-running-local.mp4`（デモ動画） | 0.01 GB | ❌ |
+| **不要計** | **158.94 GB** | |
+
+#### 根拠（ai-toolkit のソース）
+
+`extensions_built_in/diffusion_models/ltx2/ltx2.py`（`LTX2Model`, `arch = "ltx2"`,
+`ltx_te_path = None`）の `load_model()`:
+
+```python
+if not os.path.exists(model_path) and model_path.endswith(".safetensors"):
+    ...  # 単一ファイル指定のときだけ Hub から individual file を取りに行く
+if os.path.exists(model_path) and model_path.endswith(".safetensors"):
+    combined_state_dict = load_file(model_path)   # mono checkpoint 経路
+...
+else:
+    transformer = LTX2VideoTransformer3DModel.load_model(model_path, dtype=dtype)
+```
+
+我々の `TARGET_MODELS["ltx_video"]` は `{"arch": "ltx2", "unet": "Lightricks/LTX-2"}`＝
+**`.safetensors` で終わらないリポジトリ ID** なので、mono-checkpoint 経路には入らず
+**必ず Diffusers サブフォルダ側**を読む。TE も `te_name_or_path` 未指定 かつ
+`ltx_te_path = None` なので「using combo hf repo」分岐に落ち、`name_or_path` の
+`text_encoder/` と `tokenizer/` を読む。VAE / audio_vae / connectors / vocoder も
+`extras_name_or_path`（既定 = name_or_path）のサブフォルダ。`latent_upsampler` は
+ファイル中に参照が1箇所も無い。
+
+⚠️ 確認したのは GitHub の `main`。イメージは `AI_TOOLKIT_REF`（既定 `main`）の
+ビルド時点のものなので厳密には版がずれ得る。**削除後に LTX-2 のスモークを1本通して
+確定させること。**
+
+#### 再発防止
+
+`modal_lora_worker.py` の `_REPO_SNAPSHOT_IGNORE`（既に Qwen-Image の transformer
+シャードで使っている仕組み）に LTX-2 のリポジトリ直下 `*.safetensors` と
+`latent_upsampler/` を追加すれば、次回以降の `snapshot_download` で落とさずに済む。
+
 ### 14.9 Modal Volume の書き込みは速い（チェックポイント保存は犯人ではない）
 
 1.2GB（rank64 MiniMax H3 LoRA の実サイズ）を書いて commit するまでの実測:

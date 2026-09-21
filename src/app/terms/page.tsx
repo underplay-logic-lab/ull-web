@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 
 export default function TermsPage() {
   return (
-    <LegalPage title="利用規約" updatedAt="2026年9月13日">
+    <LegalPage title="利用規約" updatedAt="2026年9月21日">
       <LegalSection heading="第1条（適用）">
         <p>
           本規約は、{siteConfig.name}（以下「当サイト」といいます）が提供するAI生成サービス「Studio」、ツール配布、および関連コンテンツ（以下「本サービス」といいます）の利用条件を定めるものです。ユーザーは本サービスを利用することで、本規約に同意したものとみなされます。
@@ -30,6 +30,38 @@ export default function TermsPage() {
       <LegalSection heading="第3条（生成物の取り扱い）">
         <p>
           Studio機能を通じてユーザーが生成したコンテンツ（以下「生成物」）の権利はユーザーに帰属します。ただし、商用利用の可否は、生成に使用された各AIモデル・LoRA固有のオープンソースライセンスの定めに準じます。生成物が第三者の権利を侵害しないこと、および利用しようとするモデルのライセンス条件を満たすことについては、ユーザー自身の責任において確認してください。
+        </p>
+      </LegalSection>
+
+      {/* Fair AI Public License 1.0-SD（Illustrious 系ベースモデル）の表示義務。
+          同ライセンスは "To modify also means to perform any training on a model"
+          と定義しており、**そのベースで LoRA を学習する行為自体が改変**にあたる。
+          改変物は同ライセンス（または同等以上に寛容な条件）で提供する義務があり、
+          ネットワーク越しに提供する場合は利用者が派生モデルを受け取れる手段が
+          必要（当サービスは LoRA 本体をダウンロード提供しているので満たす）。
+          残る義務が「その LoRA が本ライセンス下にある」という告知で、それがここ。
+          CLAUDE.md §2 の「NOTICE が必要なモデルは目立たない場所で義務を満たす」
+          方針に沿って、一般向け UI ではなくこの規約ページで満たす。
+          判定の詳細は docs/model-licenses.md。条番号を振り直すと既存の参照が
+          ずれるため「第3条の2」として挿入している。 */}
+      <LegalSection heading="第3条の2（学習したLoRAのライセンス）">
+        <p>
+          LoRA Studioで選択できるベースモデルのうち、<strong>Illustrious XL 系のモデル</strong>（Illustrious XL、およびこれを基にした派生・マージモデルを含みます）は{" "}
+          <a
+            href="https://freedevproject.org/faipl-1.0-sd/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-neon-pink underline underline-offset-2 hover:opacity-80"
+          >
+            Fair AI Public License 1.0-SD
+          </a>
+          のもとで提供されています。同ライセンスは、モデルに対して学習を行うことを「改変」と定義しています。
+        </p>
+        <p>
+          したがって、<strong>これらのベースモデルを選択して学習されたLoRAは、同ライセンス（または同等以上に寛容な条件）のもとで提供されます。</strong>ユーザーが当該LoRAを第三者へ再配布する場合も、同じ条件で提供する必要があります。また同ライセンスが定める禁止用途（違法な用途、未成年者への加害、虚偽情報の流布、個人識別情報の悪用、嫌がらせ、差別的取扱い、医療的助言、司法・法執行・出入国手続への利用等）に該当する利用はできません。
+        </p>
+        <p>
+          上記以外のベースモデルは、それぞれ固有のライセンス（Apache-2.0等）に従います。学習・生成に用いたベースモデルのライセンス条件を満たすことについては、第3条のとおりユーザー自身の責任において確認してください。
         </p>
       </LegalSection>
 

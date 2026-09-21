@@ -112,6 +112,31 @@
   - **空フォルダは既定で非表示**（トグルで表示・削除はしない）。「空フォルダ N 件を
     非表示にしています」と件数を出す。
 
+- **Illustrious 系のライセンス表示を利用規約へ追加（2026-09-21）。** `docs/model-licenses.md`
+  に Illustrious 系の記載が1件も無く、**既に GUI に出している `illustrious_xl` にも
+  義務が発生していた**（既存の穴）。Fair AI Public License 1.0-SD は
+  **「モデルに対して学習を行うこと」を改変と定義**しており、そのベースで焼いた LoRA は
+  同ライセンス下で提供する義務がある。LoRA 本体をダウンロード提供しているので
+  「派生モデルを受け取れる手段」の要件は満たしており、残る告知義務を
+  `src/app/terms/page.tsx` の**第3条の2**として追加した（条番号は振り直さない）。
+- **LTX-2 の不要ファイルを特定（2026-09-21）。** 292.76GB のうち **158.94GB が
+  我々の構成では一度も読まれない**（ComfyUI 用の単一ファイル群 + latent_upsampler +
+  デモ動画）。ai-toolkit の `LTX2Model.load_model()` をソースで確認済み。
+  詳細と根拠コードは docs §14.8.2 の次（§14.8.3）。**削除は未実施。**
+
+### 次にやること（LTX-2 / SDXL 顧客対応）
+
+1. LTX-2 の 158.94GB を削除 → `_REPO_SNAPSHOT_IGNORE` に LTX-2 を追加 →
+   **LTX-2 のスモーク1本で確定**（GPU を使うのでホスト承認が要る）。
+   Volume 966.5GB → 807.6GB（余裕 34GB → 193GB）。
+2. `waiNSFW_illustrious_v11.safetensors` を Volume へ（admin リモートダウンローダは
+   civitai.com を許可済み。ただし単一ファイルモードの保存先は MODEL_SUBFOLDERS
+   限定なので `diffusion_models/`）。**採用する版のモデルページでライセンス再確認**。
+3. `wai_illustrious` プリセットを追加（`loraModels.ts` + sd-scripts 側の
+   `SDXL_TARGET_MODELS` にローカルパスで1行）。単一ファイル経路（`_resolve_base_model`
+   の custom 分岐）は**未検証**なので実ジョブ1本で確定させる。ついでに SDXL の
+   s/it と prep の実測も取れる。
+
 ### ファイル配置の調査結果（2026-09-21、ホスト質問への回答）
 
 - `loras/<name>.safetensors`（直下）= ComfyUI から名前で引くための**モデル
