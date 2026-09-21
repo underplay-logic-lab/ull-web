@@ -241,6 +241,13 @@ export function DatasetDiagnosticsPanel({
                   </button>
                 ))}
               </div>
+              {cropPlan.size > 1 && (
+                <p className="text-[10px] leading-relaxed text-amber-400">
+                  被写体ごとに<strong>1回ずつ</strong>行ってください。押す →
+                  下のクロップ欄で「切り出す」→ 戻ってもう片方を押す → もう一度「切り出す」、の順です。
+                  切り出しが終わると選択は自動で解除されるので、2回目はそのまま押せます。
+                </p>
+              )}
             </div>
           )}
 
