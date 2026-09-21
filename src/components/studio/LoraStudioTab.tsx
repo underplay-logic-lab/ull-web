@@ -874,10 +874,6 @@ export function LoraStudioTab({
   // 先頭6枚——サムネイルはキャプションと同じキャッシュを使うので追加の
   // デコードは発生しない。
   const [identityExtracting, setIdentityExtracting] = useState<number | null>(null);
-  const captionedCount = useMemo(
-    () => images.filter((img) => (captions[img.id] ?? "").trim()).length,
-    [images, captions],
-  );
   const extractIdentityFor = useCallback(
     async (index: number, trigger: string, hintJa: string) => {
       const t = trigger.trim();
