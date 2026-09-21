@@ -69,6 +69,8 @@ import {
   captionSpecHasInput,
   buildCaptionFallbackPrompt,
   normalizeSubjectTags,
+  buildEmbedTagsFromSubjects,
+  keepTokensForCaption,
   resolveCaptionMode,
   isCaptionMode,
   type LoraCaptionCategory,
@@ -207,20 +209,26 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // （2026-09-15、ホスト報告: 同じ人物なのに1girl/1womanが混在・soloタグが
   // 抜ける画像があった）。空なら従来通りAIの判定＋多数決に任せる。
   const [primaryFixedTags, setPrimaryFixedTags] = useState("");
+  // 見た目の固定特徴（Danbooru タグ、カンマ区切り。例: "bald, fat, glasses"）。
+  // キャプションには**書かず**、LoRA の metadata にだけ埋め込む。
+  // ComfyUI 側の「LoRA を読んだら metadata のタグをプロンプトへ足す」運用で
+  // 生成時に戻ってくることで再現性が上がる、という対称の使い方（ホスト運用）。
+  const [primaryIdentityTags, setPrimaryIdentityTags] = useState("");
   const [extraSubjects, setExtraSubjects] = useState<LoraSubject[]>([]);
   const allSubjects = useMemo<LoraSubject[]>(
     () =>
-      extraSubjects.length > 0 || primaryFixedTags.trim()
+      extraSubjects.length > 0 || primaryFixedTags.trim() || primaryIdentityTags.trim()
         ? [
             {
               trigger: triggerWord.trim(),
               description: primaryDescription.trim(),
               fixedTags: primaryFixedTags.trim(),
+              identityTags: primaryIdentityTags.trim(),
             },
             ...extraSubjects,
           ]
         : [],
-    [triggerWord, primaryDescription, primaryFixedTags, extraSubjects],
+    [triggerWord, primaryDescription, primaryFixedTags, primaryIdentityTags, extraSubjects],
   );
   const [loraName, setLoraName] = useState("");
   // SDXL/sd-scriptsワーカー限定のメタデータタグ埋め込み（2026-09-15、
@@ -228,7 +236,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // "tag:freq,tag,..." 形式の文字列。空ならopt-out（sd-scripts純正メタデータ
   // のまま）— modal_sdxl_lora_worker.py の _parse_embed_tags と同じ書式。
   const [embedTagsInput, setEmbedTagsInput] = useState("");
-  const [keepTokensInput, setKeepTokensInput] = useState("");
+  // keep_tokens の手入力欄は 2026-09-21 に廃止した。値はキャプションの
+  // 固定ブロック長から keepTokensForCaption() が画像ごとに算出する。
   const [embedTagsOpen, setEmbedTagsOpen] = useState(false);
   const [pro, setPro] = useState<ProConfig>(DEFAULT_PRO);
   // LoRA-type-aware auto-caption spec: the training TYPE + the user's JP notes
@@ -473,6 +482,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         if (typeof d.triggerWord === "string") setTriggerWord(d.triggerWord);
         if (typeof d.primaryDescription === "string") setPrimaryDescription(d.primaryDescription);
         if (typeof d.primaryFixedTags === "string") setPrimaryFixedTags(d.primaryFixedTags);
+        if (typeof d.primaryIdentityTags === "string") setPrimaryIdentityTags(d.primaryIdentityTags);
         if (Array.isArray(d.extraSubjects)) {
           const restored = d.extraSubjects
             .map((s) => {
@@ -563,6 +573,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       triggerWord,
       primaryDescription,
       primaryFixedTags,
+      primaryIdentityTags,
       extraSubjects,
       loraName,
       captionCategory,
@@ -594,6 +605,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     triggerWord,
     primaryDescription,
     primaryFixedTags,
+    primaryIdentityTags,
     extraSubjects,
     loraName,
     captionCategory,
@@ -854,6 +866,14 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       return next;
     });
   }, []);
+
+  // metadata へ埋め込むタグ。被写体レジストリから自動生成し、手入力欄は
+  // 「追加分」として後ろに連結する（2026-09-21 — 以前は全部手入力だった）。
+  const autoEmbedTags = useMemo(() => buildEmbedTagsFromSubjects(allSubjects), [allSubjects]);
+  const effectiveEmbedTags = useMemo(() => {
+    const extra = embedTagsInput.trim();
+    return [autoEmbedTags, extra].filter(Boolean).join(", ");
+  }, [autoEmbedTags, embedTagsInput]);
 
   const totalBytes = useMemo(() => images.reduce((s, i) => s + i.file.size, 0), [images]);
 
@@ -1585,10 +1605,13 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
         captionSpec: captionSpecFilled ? captionSpec : undefined,
         // SDXL/sd-scriptsワーカー限定のメタデータタグ埋め込み。yamlMode/非SDXL
         // では常にundefined（サーバー側isSdxlJob判定と同じくopt-out）。
-        embedTags: !yamlMode && isSdxlJob && embedTagsInput.trim() ? embedTagsInput.trim() : undefined,
-        keepTokens:
-          !yamlMode && isSdxlJob && keepTokensInput.trim() && Number.isFinite(Number(keepTokensInput))
-            ? Number(keepTokensInput)
+        embedTags: !yamlMode && isSdxlJob && effectiveEmbedTags ? effectiveEmbedTags : undefined,
+        // 画像ごとの keep_tokens はキャプションから数える（ユーザー入力ではない）。
+        // キャプションの固定ブロック（trigger 群 + 数/性別タグ）の長さと
+        // ズレると trigger が本文へ紛れ込むので、値を入力させる設計をやめた。
+        keepTokensPerImage:
+          !yamlMode && isSdxlJob && allSubjects.length > 0
+            ? captionList.map((c) => keepTokensForCaption(c, allSubjects, 4))
             : undefined,
       });
       const { jobId, remainingCredits } = startRes;
@@ -2391,10 +2414,10 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
     setTriggerWord("");
     setPrimaryDescription("");
     setPrimaryFixedTags("");
+    setPrimaryIdentityTags("");
     setExtraSubjects([]);
     setLoraName("");
     setEmbedTagsInput("");
-    setKeepTokensInput("");
     setEmbedTagsOpen(false);
     setPro(DEFAULT_PRO);
     setCaptionCategory("character");
@@ -2993,7 +3016,16 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                   <>
                     {triggerInput}
                     {!yamlMode && isSdxlJob && (
-                      <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
+                      <>
+                        <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
+                        <input
+                          value={primaryIdentityTags}
+                          onChange={(e) => setPrimaryIdentityTags(e.target.value)}
+                          placeholder="見た目の固定特徴（英タグ。例: bald, fat, glasses）"
+                          disabled={busy}
+                          className={`${fieldCls} mt-1.5 font-mono text-[11px]`}
+                        />
+                      </>
                     )}
                   </>
                 );
@@ -3009,6 +3041,16 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                     placeholder="1人目の特徴（AIが見分ける手がかり。例: 銀髪の女性）"
                     disabled={busy}
                     className={`${fieldCls} mt-1.5 text-[11px]`}
+                  />
+                  {/* 2026-09-21: 見た目の固定特徴。キャプションからは除外され
+                      （＝トリガーに焼き込まれ）、LoRA の metadata にだけ入る。
+                      ComfyUI 側で読み戻す運用のため（ホスト）。 */}
+                  <input
+                    value={primaryIdentityTags}
+                    onChange={(e) => setPrimaryIdentityTags(e.target.value)}
+                    placeholder="見た目の固定特徴（英タグ。例: bald, fat, glasses）"
+                    disabled={busy}
+                    className={`${fieldCls} mt-1.5 font-mono text-[11px]`}
                   />
                 </div>
               );
@@ -3069,6 +3111,17 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                     placeholder={`${i + 2}人目の特徴（AIが見分ける手がかり。例: 黒コートの男性）`}
                     disabled={busy}
                     className={`${fieldCls} mt-1.5 text-[11px]`}
+                  />
+                  <input
+                    value={s.identityTags ?? ""}
+                    onChange={(e) =>
+                      setExtraSubjects((prev) =>
+                        prev.map((p, k) => (k === i ? { ...p, identityTags: e.target.value } : p)),
+                      )
+                    }
+                    placeholder={`${i + 2}人目の見た目の固定特徴（英タグ。例: bald, fat, glasses）`}
+                    disabled={busy}
+                    className={`${fieldCls} mt-1.5 font-mono text-[11px]`}
                   />
                 </div>
               ))}
@@ -3153,42 +3206,40 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
 
               {embedTagsOpen && (
                 <div className="space-y-2 px-3 pb-3">
+                  {/* 2026-09-21: 自動生成に切り替えた。ここは「この LoRA を
+                      正しく呼び出すためのトークン」であり、キャプションから
+                      意図的に外したもの（trigger / 数・性別タグ / identity）と
+                      ちょうど逆の関係にある。被写体登録から機械的に作れるので、
+                      書式（"tag:頻度"）をユーザーに説明する必要はもう無い。
+                      keep_tokens の手入力欄は廃止（キャプションから自動算出）。 */}
                   <p className="text-[10px] leading-relaxed text-muted">
-                    学習完了後の .safetensors に、ComfyUI/Civitai/A1111 等が「Trained words」として表示する
-                    タグを手動で書き込みます。指定すると主要キャプション由来のタグ頻度情報は置き換わります
-                    （未指定なら sd-scripts が書き込む実際のキャプション由来のメタデータがそのまま使われます）。
+                    学習完了後の .safetensors に、ComfyUI / Civitai / A1111 等が「Trained words」として読むタグを書き込みます。
+                    ComfyUI 側で「LoRA を読み込んだらメタデータのタグをプロンプトへ追加する」運用をしている場合、ここが生成時の再現性に直結します。
                   </p>
-                  <div>
-                    <label className="mb-1 block text-[11px] font-medium text-muted">埋め込むタグ</label>
-                    <input
-                      value={embedTagsInput}
-                      onChange={(e) => setEmbedTagsInput(e.target.value)}
-                      placeholder="例: yukipas:21,silver hair,school uniform"
-                      disabled={busy}
-                      className={`${fieldCls} font-mono`}
-                    />
-                    <p className="mt-1 text-[10px] text-muted">
-                      「タグ」または「タグ:頻度」をカンマ区切りで指定します。頻度を省略すると{" "}
-                      <code className="text-neon-violet">21</code>
-                      （実際の出現回数ではない固定のダミー値）が使われます。
+                  <div className="rounded-lg border border-border/60 bg-background/60 px-2 py-1.5">
+                    <div className="text-[10px] font-medium text-foreground">自動生成される内容</div>
+                    <code className="mt-1 block break-all font-mono text-[10px] text-neon-violet">
+                      {autoEmbedTags || "（トリガーワードを入力すると表示されます）"}
+                    </code>
+                    <p className="mt-1 text-[10px] leading-relaxed text-muted">
+                      トリガーワード＋性別/人数タグ＋下の「見た目の固定特徴」から組み立てています。
+                      <strong className="text-foreground">キャプションには書かれない（＝トリガーに焼き込む）特徴を、生成時にプロンプトへ戻すための欄</strong>です。
                     </p>
                   </div>
                   <div>
                     <label className="mb-1 block text-[11px] font-medium text-muted">
-                      keep_tokens（任意・既定 4）
+                      追加で埋め込むタグ（任意）
                     </label>
                     <input
-                      type="number"
-                      min={1}
-                      max={20}
-                      value={keepTokensInput}
-                      onChange={(e) => setKeepTokensInput(e.target.value)}
-                      placeholder="4"
+                      value={embedTagsInput}
+                      onChange={(e) => setEmbedTagsInput(e.target.value)}
+                      placeholder="上記に足したいタグがあれば（例: signature outfit）"
                       disabled={busy}
-                      className={`${fieldCls} w-24`}
+                      className={`${fieldCls} font-mono`}
                     />
                     <p className="mt-1 text-[10px] text-muted">
-                      キャプション先頭から何トークンをシャッフル対象外にするか（trigger word 等の固定タグ数に合わせます）。
+                      カンマ区切り。「タグ:頻度」形式も使えます（頻度を省略すると{" "}
+                      <code className="text-neon-violet">21</code> — 実際の出現回数ではない固定のダミー値）。
                     </p>
                   </div>
                 </div>
@@ -3222,6 +3273,19 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                   学習タイプを選び、日本語で「固定したい特徴」と「変化させたい特徴」を入力してください。
                   「次へ」を押すと入力内容をAIが解析し、画像解析エンジン向けの最適な英語キャプション指示を自動生成・反映します
                   （固定したい特徴はキャプションから除外＝トリガーワードに焼き込み、変化させたい特徴のみ描写）。
+                </p>
+                {/* 2026-09-21: 「入力しないと何も効かない」と誤解されていた
+                    （ホスト確認）。実際は学習タイプごとの既定ルールが常に
+                    効いていて、入力はその追加。以前は入力すると既定が
+                    置き換わる実装で、1語足しただけで顔や髪色が
+                    ブラックリストから外れる事故があった（loraCaptionSpec.ts
+                    の buildCaptionMetaPrompt のコメント参照）。 */}
+                <p className="rounded-lg border border-border/60 bg-background/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted">
+                  <strong className="text-foreground">空欄でも構いません。</strong>
+                  学習タイプごとの既定ルールが常に適用されます（人物なら、顔立ち・髪型・髪色・目の色・固有の装飾品はキャプションに書かれません＝トリガーワードに焼き込まれます）。
+                  ここへの入力は<strong className="text-foreground">その既定への追加</strong>で、既定を打ち消すものではありません。
+                  <br />
+                  ⚠️ 学習タイプを「衣装」にすると<strong className="text-foreground">逆になります</strong>（衣装を書かず、着ている人の顔や髪を描写）。人物LoRAでは「キャラクター／人物」を選んでください。
                 </p>
 
                 {/* Caption FORMAT — dense prose vs. comma tags, routed by the

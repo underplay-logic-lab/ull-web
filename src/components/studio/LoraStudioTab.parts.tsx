@@ -171,6 +171,7 @@ export type LoraFormDraft = {
   // 性別/人数タグの固定値（例: "1girl, solo"）、空ならAI判定に任せる。
   primaryDescription: string;
   primaryFixedTags: string;
+  primaryIdentityTags: string;
   extraSubjects: LoraSubject[];
   loraName: string;
   captionCategory: LoraCaptionCategory;
@@ -199,6 +200,7 @@ export function buildFormDraft(v: {
   triggerWord: string;
   primaryDescription: string;
   primaryFixedTags: string;
+  primaryIdentityTags: string;
   extraSubjects: LoraSubject[];
   loraName: string;
   captionCategory: LoraCaptionCategory;
@@ -218,6 +220,7 @@ export function buildFormDraft(v: {
     triggerWord: v.triggerWord,
     primaryDescription: v.primaryDescription,
     primaryFixedTags: v.primaryFixedTags,
+    primaryIdentityTags: v.primaryIdentityTags,
     extraSubjects: v.extraSubjects,
     loraName: v.loraName,
     captionCategory: v.captionCategory,
@@ -371,6 +374,7 @@ export const DEFAULT_FORM_DRAFT: LoraFormDraft = buildFormDraft({
   triggerWord: "",
   primaryDescription: "",
   primaryFixedTags: "",
+  primaryIdentityTags: "",
   extraSubjects: [],
   loraName: "",
   captionCategory: "character",

@@ -269,6 +269,8 @@ export type StartLoraTrainingParams = {
   // "10_name" と同じ意味。未指定・全要素1 なら重み付けなし。
   // ⚠️ 総ステップ数は固定なので消費クレジットは変わらない。
   repeats?: number[];
+  /** 画像ごとの keep_tokens（SDXL のみ）。キャプションから自動算出した値。 */
+  keepTokensPerImage?: number[];
   targetModel: LoraTargetModel;
   // Universal loader — required when targetModel === "custom".
   customModelId?: string;
@@ -316,6 +318,9 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
       storage_paths: params.storagePaths,
       captions: params.captions,
       ...(params.repeats?.some((n) => n !== 1) ? { repeats: params.repeats } : {}),
+      ...(params.keepTokensPerImage?.some((n, _i, a) => n !== a[0])
+        ? { keep_tokens_per_image: params.keepTokensPerImage }
+        : {}),
       target_model: params.targetModel,
       custom_model_id: params.customModelId,
       base_architecture: params.baseArchitecture,

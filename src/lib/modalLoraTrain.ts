@@ -79,6 +79,13 @@ export type SpawnLoraTrainingParams = {
   // 未指定・全要素1 なら従来どおり単一データセット。
   // ⚠️ 総ステップ数は固定なので**課金は変わらない**。変わるのは構成比だけ。
   repeats?: number[];
+  // sdxl worker only — 画像ごとの keep_tokens（storagePaths と同じ並び）。
+  // shuffle_caption が「先頭いくつを固定するか」で、キャプションの固定ブロック
+  // （trigger 群 + 数/性別タグ）の長さと一致していないと trigger が本文へ
+  // 紛れ込む。solo=4 / duo=4 / 3人=6 と画像ごとに変わり得るので、
+  // loraCaptionSpec.ts の keepTokensForCaption が実キャプションから数えた値を
+  // 渡す（ユーザーには入力させない）。
+  keepTokensPerImage?: number[];
 };
 
 // The exact Modal payload — stored on the job so a pending-timeout retry can
@@ -103,6 +110,7 @@ export type LoraDispatchPayload = {
   embed_tags?: string;
   keep_tokens?: number;
   repeats?: number[];
+  keep_tokens_per_image?: number[];
 };
 
 export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraDispatchPayload {
@@ -138,6 +146,11 @@ export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraD
     // 全部 1 なら送らない（ワーカー側も未指定と同じ扱いになる）。
     ...(params.repeats && params.repeats.some((n) => n !== 1)
       ? { repeats: params.repeats }
+      : {}),
+    // 全部同じ値なら送らない（ワーカーは keep_tokens 単体へフォールバック）。
+    ...(params.keepTokensPerImage &&
+    params.keepTokensPerImage.some((n) => n !== params.keepTokensPerImage?.[0])
+      ? { keep_tokens_per_image: params.keepTokensPerImage }
       : {}),
   };
 }

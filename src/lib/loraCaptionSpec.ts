@@ -238,6 +238,16 @@ export function buildCategoryDefaultInstruction(
 // The system instruction for Gemini. Gemini must return ONLY the English
 // instruction block (no preamble) — that block is embedded verbatim into the
 // worker's [User Instructions] slot before Qwen captions each image.
+//
+// 🚨 2026-09-21 修正（ホスト指摘で発覚）: 以前は `spec.fixed` に何か入力が
+// あるとカテゴリ既定の forbid / describe を **丸ごと置き換えて**いた。
+// つまり「髪飾りも固定したい」と1語足しただけで、顔・髪・目の色が
+// ブラックリストから外れて VLM が描写し始め、キャラの identity が
+// トリガーから剥がれる——**情報を足すほど結果が悪くなる**挙動だった。
+// 利用者が気づける類の副作用ではないので、既定は常に効かせたうえで
+// ユーザーの入力を **追記** する形に変えた。
+// 「既定を無効にして自分の指定だけで焼きたい」需要が出たら、それは
+// 明示的なトグルとして足すこと（暗黙の置き換えに戻さない）。
 export function buildCaptionMetaPrompt(spec: LoraCaptionSpec, triggerWord: string): string {
   const meta = LORA_CAPTION_CATEGORY_META[spec.category];
   const rule = LORA_CATEGORY_CAPTION_RULES[spec.category];
@@ -248,9 +258,11 @@ export function buildCaptionMetaPrompt(spec: LoraCaptionSpec, triggerWord: strin
     "",
     "The user describes, in Japanese, two groups of features:",
     `- FIXED / IDENTITY features (these ARE "${trigger}" and are being baked into the trigger token — they must be treated as a hard blacklist and NEVER written in any caption, even when clearly visible):`,
-    `  ${spec.fixed.trim() || `(none specified — use the default blacklist for a ${meta.typeLabelEn}: ${rule.forbid})`}`,
+    `  ${rule.forbid}${spec.fixed.trim() ? `
+  ADDITIONALLY, the user specifically listed: ${spec.fixed.trim()}` : ""}`,
     `- VARIABLE features (these change between images and MUST be described in detail so the model learns they are not part of "${trigger}"):`,
-    `  ${spec.varying.trim() || `(none specified — describe only these: ${rule.describe})`}`,
+    `  ${rule.describe}${spec.varying.trim() ? `
+  ADDITIONALLY, the user specifically listed: ${spec.varying.trim()}` : ""}`,
     "",
     "Write a single English instruction block for the image-captioning VLM (Qwen). Requirements:",
     `1. Tell it to output ONE line of comma-separated English, starting with "${trigger}," and nothing before it.`,
@@ -346,6 +358,22 @@ export type LoraSubject = {
    * normalization is used as before (legacy behaviour, unchanged).
    */
   fixedTags?: string;
+  /**
+   * この被写体の **identity タグ**（Danbooru 形式、カンマ区切り。例:
+   * "bald, fat, glasses"）。2026-09-21 追加。
+   *
+   * キャプションに書く内容とちょうど **逆** の役割を持つ:
+   *   - キャプション: identity は書かない（＝トリガーへ焼き込む）
+   *   - LoRA の metadata: identity を **埋め込む**
+   * ホストの ComfyUI 側に「LoRA を読み込んだら metadata のタグを
+   * プロンプトへ自動追加する」機能があり、生成時にこれが戻ることで
+   * 再現性が上がる、という運用。
+   *
+   * fixedTags（"1man, solo, male" のような数・性別タグ）とは別物。
+   * あちらは全キャプションの先頭へ強制挿入されるが、こちらは
+   * **キャプションには一切入らず metadata にだけ入る**。
+   */
+  identityTags?: string;
 };
 
 function escapeReSub(s: string): string {
@@ -558,4 +586,75 @@ export function normalizeSubjectTags(
     fixes.set(id, tokens.join(", "));
   }
   return fixes;
+}
+
+
+// ---------------------------------------------------------------------------
+// LoRA の metadata へ埋め込むタグ（2026-09-21 追加）
+//
+// modal_sdxl_lora_worker.py の _parse_embed_tags が読む "tag:freq,tag,..."
+// 形式の文字列を、登録済みの被写体情報から機械的に組み立てる。以前は
+// ユーザーが手で書く欄しか無く、書式（頻度値の意味）も伝わっていなかった。
+//
+// 中身は「この LoRA を正しく呼び出すためのトークン」:
+//   trigger + fixedTags（1man, solo, male）+ identityTags（bald, fat, glasses）
+// ＝ **キャプションから意図的に除外したもの**。生成時にプロンプトへ戻すと
+// 再現性が上がる、という対称性で使う。
+// ---------------------------------------------------------------------------
+
+/** 手入力の embed_tags と同じ既定頻度（fix_lora_metadata_gui.py 由来のダミー値）。 */
+export const EMBED_TAG_DEFAULT_FREQ = 21;
+
+function splitTags(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(/\s*[,、]\s*/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+/**
+ * 被写体レジストリから embed_tags 文字列を組み立てる。重複は先勝ちで除去し、
+ * 順序は「被写体ごとに trigger → 数/性別 → identity」。空なら "" を返す
+ * （呼び出し側は空なら送らない＝ワーカー側で metadata 書き換えごとスキップ）。
+ */
+export function buildEmbedTagsFromSubjects(subjects: LoraSubject[]): string {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (t: string) => {
+    const key = t.toLowerCase();
+    if (!t || seen.has(key)) return;
+    seen.add(key);
+    out.push(t);
+  };
+  for (const s of subjects) {
+    push(s.trigger.trim());
+    for (const t of splitTags(s.fixedTags)) push(t);
+    for (const t of splitTags(s.identityTags)) push(t);
+  }
+  return out.join(", ");
+}
+
+/**
+ * キャプション先頭の「固定ブロック」のトークン数 = sd-scripts の keep_tokens。
+ * shuffle_caption はこの数だけ先頭を固定してから後ろを混ぜるので、ここが
+ * ズレると trigger や性別タグが本文に紛れ込む。
+ *
+ * applySubjectFixedTags がその固定ブロックを組み立てているので、値は
+ * 入力させるのではなく **キャプションから数えられる**:
+ *   solo  "kocho, 1man, solo, male, ..."          -> 4
+ *   duo   "hitozuma, kocho, 1woman, 1man, ..."    -> 4
+ *   trio  "A, B, C, 1girl, 1boy, 1man, ..."       -> 6
+ * 被写体が1人も一致しないキャプション（未解析など）は fallback を返す。
+ */
+export function keepTokensForCaption(
+  caption: string,
+  subjects: LoraSubject[],
+  fallback = 4,
+): number {
+  const present = matchLeadingSubjectTriggers(caption, subjects);
+  if (present.length === 0) return fallback;
+  const tokens = caption.trim().split(/\s*[,、]\s*/);
+  let i = present.length; // 先頭は一致した trigger 群
+  while (i < tokens.length && COUNT_GENDER_TAG_RE.test(tokens[i]?.trim() ?? "")) i++;
+  return Math.max(1, i);
 }

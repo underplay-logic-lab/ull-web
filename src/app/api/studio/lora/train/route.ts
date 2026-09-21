@@ -420,6 +420,16 @@ async function handlePost(request: Request): Promise<NextResponse> {
       ? Math.min(20, Math.max(1, Math.round(keepTokensRaw)))
       : undefined;
 
+  // 画像ごとの keep_tokens（SDXL のみ）。クライアントが実キャプションから
+  // 数えた値で、ユーザー入力ではない。1..60 に丸める。
+  const keepTokensPerImage =
+    isSdxlJob && Array.isArray(body.keep_tokens_per_image)
+      ? (body.keep_tokens_per_image as unknown[]).slice(0, MAX_IMAGES).map((n) => {
+          const v = typeof n === "number" && Number.isFinite(n) ? Math.round(n) : 4;
+          return Math.min(60, Math.max(1, v));
+        })
+      : undefined;
+
   // 2026-09-14: 学習解像度はもうクライアントが選ぶものではない
   // （LoraStudioTab.tsx参照）。body.resolutionは信用せず、モデルの
   // アーキテクチャから常にrecommendedResolution()で権威的に決める
@@ -583,6 +593,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
     embedTags,
     keepTokens,
     repeats,
+    keepTokensPerImage,
   };
   // The full Modal payload is stashed on the job so a pending-timeout retry
   // can re-dispatch it verbatim (no re-debit).
