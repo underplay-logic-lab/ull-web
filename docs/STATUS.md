@@ -138,10 +138,17 @@
      リモートダウンローダ（URL 指定）しか無く、手元にしか無いファイルを
      持ち込めなかった（ホスト指摘）。ブラウザ→Modal 直・HMAC 署名・
      **レジューム対応**（`admin_upload_volume_file` / `_status`）。
-3. `wai_illustrious` プリセットを追加（`loraModels.ts` + sd-scripts 側の
-   `SDXL_TARGET_MODELS` にローカルパスで1行）。単一ファイル経路（`_resolve_base_model`
-   の custom 分岐）は**未検証**なので実ジョブ1本で確定させる。ついでに SDXL の
-   s/it と prep の実測も取れる。
+3. ~~`wai_illustrious` プリセットを追加~~ → **完了（2026-09-21）**。
+   `loraModels.ts` + `SDXL_TARGET_MODELS`（Volume 上の単一 .safetensors を直接指す）。
+   **単一ファイル経路を L40S スモークで実機確認済み**（returncode 0 / 20step 完走 /
+   LoRA 2,958テンソル・114.44MB / VRAM ピーク **16.71GB**）。
+   スモークに `target_model` 引数を足したので、以後どのプリセットでも通せる。
+   - ⚠️ **VRAM 16.71GB しか使っていない。** L40S(48GB) は過剰で、もっと安い tier が
+     使える可能性が高い。$/job の比較はまだ。
+   - 🚨 **SDXL の s/it が旧計測と2倍食い違う（docs §14.8.4）。** 同じ連立の方法で
+     0.642 → **1.197**。現行 knob の見積もりは実所要の **55%** しかない。
+     ただし合成5枚のデータなので knob は据え置き。**実写データセットの実ジョブ
+     1本で決着させる**（`metadata.metrics` に自動で残る）。
 
 ### ファイル配置の調査結果（2026-09-21、ホスト質問への回答）
 

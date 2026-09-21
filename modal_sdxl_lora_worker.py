@@ -250,9 +250,20 @@ SDXL_BASE_REPO = "stabilityai/stable-diffusion-xl-base-1.0"
 # actually shipped. Forcing mixed_precision="fp16" for this ONE preset (with
 # --no_half_vae, already unconditional in _build_train_args, for the VAE
 # instability fp16 SDXL is known for) is the only way to load it at all.
+#
+# wai_illustrious（2026-09-21追加）は HF の Diffusers リポジトリが存在せず、
+# Civitai 配布の単一 .safetensors しか無い。sd-scripts は
+# --pretrained_model_name_or_path にローカルの単一チェックポイントを渡すのが
+# 標準ワークフローなので（library/sdxl_train_util.py の _load_target_model は
+# HF リポジトリIDとローカルファイルで分岐する）、Volume 上の実ファイルを
+# そのまま指す。ファイルは admin のアップローダ（admin_upload_volume_file）か
+# `modal volume put` で diffusion_models/ に置く。
+# variant 導出は HF リポジトリID のときだけ効くので、単一ファイルでは
+# mixed_precision はこのプロジェクト標準の bf16 のままでよい。
 SDXL_TARGET_MODELS: dict[str, dict] = {
     "illustrious_xl": {"repo": "OnomaAIResearch/Illustrious-xl-early-release-v0"},
     "juggernaut_xl": {"repo": "RunDiffusion/Juggernaut-XL-v9", "mixed_precision": "fp16"},
+    "wai_illustrious": {"repo": f"{MODELS_DIR}/diffusion_models/waiNSFW_illustrious_v11.safetensors"},
 }
 
 
@@ -513,7 +524,11 @@ DEFAULT_TRAINING_CONFIG = {
 
 @app.function(image=train_image, gpu=GPU_REQUEST, volumes={MODELS_DIR: vol}, timeout=3600)
 def smoke_test_sdxl_lora(
-    steps: int = 20, rank: int = 16, resolution: int = 1024, images: int = 5
+    steps: int = 20,
+    rank: int = 16,
+    resolution: int = 1024,
+    images: int = 5,
+    target_model: str = "",
 ) -> dict:
     """Minimal REAL end-to-end proof: tiny synthetic dataset -> a handful of
     training steps -> a valid .safetensors LoRA out the other end, on the
@@ -560,8 +575,21 @@ def smoke_test_sdxl_lora(
         "optimizer": "prodigy",
         "learning_rate": 1e-4,
     }
+    # 2026-09-21: target_model を引数化した。既定（空文字）は従来どおりバニラ
+    # SDXL base だが、プリセット id を渡せばそのベースで通るかを確かめられる。
+    # 特に wai_illustrious は **HF リポジトリIDではなく Volume 上の単一
+    # .safetensors** を渡す初のケースで、sd-scripts のローカルファイル分岐を
+    # 実機で通したことが無かった（本番ジョブを流す前にここで潰す）。
+    pretrained_model, mixed_precision = _resolve_base_model({"target_model": target_model})
+    print(f"[smoke] base model -> {pretrained_model} (mixed_precision={mixed_precision})", flush=True)
     args = [sys.executable, f"{SD_SCRIPTS_DIR}/sdxl_train_network.py"] + _build_train_args(
-        "smoke_test", dataset_toml, str(output_dir), tc, resolution=resolution
+        "smoke_test",
+        dataset_toml,
+        str(output_dir),
+        tc,
+        resolution=resolution,
+        pretrained_model=pretrained_model,
+        mixed_precision=mixed_precision,
     )
 
     # gradient_checkpointing を既定OFFにした（2026-09-20）影響で、L40S(48GB)
@@ -612,6 +640,9 @@ def smoke_test_sdxl_lora(
         "resolution": resolution,
         "images": images,
         "gpu": GPU_REQUEST,
+        "target_model": target_model or "(vanilla sdxl base)",
+        "pretrained_model": pretrained_model,
+        "mixed_precision": mixed_precision,
         "gradient_checkpointing": SDXL_GRADIENT_CHECKPOINTING,
         "vram_peak_gb": round(max(vram), 2) if vram else None,
         "vram_samples": len(vram),

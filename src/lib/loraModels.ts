@@ -165,6 +165,25 @@ export const LORA_PRESETS: LoraPreset[] = [
     note: "アニメ・イラスト生成に特化した次世代2B DiTモデル。",
   },
   { id: "illustrious_xl", label: "Illustrious XL", group: "anime", arch: "sdxl", note: "イラスト SDXL" },
+  {
+    // 2026-09-21 追加。Illustrious ベースの実務向けマージモデルで、固定客が
+    // 実際にこの版を使っているため「学習も同じ版で焼く」必要がある
+    // （ホスト指摘。LoRA はベースモデルに強く依存するので、Illustrious base で
+    // 焼いたものを wai で使うと再現性が落ちる）。
+    //
+    // Civitai 配布の単一ファイルで HF の Diffusers リポジトリが無いため、
+    // sd-scripts ワーカー側は Volume 上の .safetensors を直接渡す
+    // （modal_sdxl_lora_worker.py の SDXL_TARGET_MODELS を参照）。
+    // ライセンスは Illustrious 本家と同じ Fair AI Public License 1.0-SD で、
+    // **このベースで焼いた LoRA も同ライセンス下**になる。利用規約 第3条の2 で
+    // 告知済み（判定の詳細は docs/model-licenses.md）。
+    id: "wai_illustrious",
+    label: "WAI NSFW Illustrious v11",
+    group: "anime",
+    arch: "sdxl",
+    note: "Illustrious ベースの実写寄りマージ。表現の自由度が高い定番。",
+    recommendedResolution: 1024,
+  },
 ];
 
 export const LORA_PRESET_IDS = new Set(LORA_PRESETS.map((p) => p.id));
