@@ -1269,6 +1269,11 @@ export function LoraStudioTab({
   }, [images, captions]);
 
   const croppedImages = useMemo(() => images.filter((i) => i.cropKind), [images]);
+  // キャプションが付いていない画像（＝解析が拒否された／届かなかったもの）。
+  const uncaptionedImages = useMemo(
+    () => images.filter((i) => !(captions[i.id] ?? "").trim() && !userCaptionIds.has(i.id)),
+    [images, captions, userCaptionIds],
+  );
 
   // 切り出したのに2人以上写っていると判定された画像（2026-09-22、ホスト提案）。
   // クロップは「1人を切り出す」操作なので、結果に2人いるのは
@@ -3515,6 +3520,43 @@ export function LoraStudioTab({
                 <RotateCcw size={12} />
                 🔄 未完了の画像（{pendingCaptionCount}枚）を再解析
               </button>
+              {/* どれが未解析なのかを特定する手段が無かった（2026-09-22、
+                  ホスト指摘）。選んで目で見る／まとめて捨てる、の2つを置く。
+                  未解析のまま学習すると、その画像はトリガーワードだけで
+                  学習され、写っている服装・背景がキャラへ焼き込まれる。 */}
+              <div className="flex w-full flex-wrap items-center gap-2 border-t border-amber-500/30 pt-2">
+                <span className="text-[10px] text-amber-200/80">
+                  未解析のまま学習すると、その画像はトリガーワードだけで学習されます
+                  （写っている服装・背景がキャラに焼き込まれます）。
+                </span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setSelectedImageIds(new Set(uncaptionedImages.map((i) => i.id)))}
+                  className="rounded-md border border-amber-400/50 bg-amber-400/10 px-2 py-1 text-[10px] text-amber-200 transition-colors hover:bg-amber-400/20 disabled:opacity-50"
+                >
+                  未解析の {pendingCaptionCount} 枚を選択して確認
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    if (
+                      !window.confirm(
+                        `未解析の ${pendingCaptionCount} 枚をデータセットから削除します。よろしいですか？`,
+                      )
+                    )
+                      return;
+                    const ids = uncaptionedImages.map((i) => i.id);
+                    ids.forEach((id) => removeImage(id));
+                    setSelectedImageIds(new Set());
+                    setAddNotice(`未解析だった ${ids.length} 枚を削除しました。`);
+                  }}
+                  className="rounded-md border border-red-500/50 bg-red-500/10 px-2 py-1 text-[10px] text-red-300 transition-colors hover:bg-red-500/20 disabled:opacity-50"
+                >
+                  未解析の {pendingCaptionCount} 枚を削除
+                </button>
+              </div>
             </div>
           )}
 
