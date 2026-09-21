@@ -71,6 +71,14 @@ export type SpawnLoraTrainingParams = {
   // DEFAULT_KEEP_TOKENS in modal_sdxl_lora_worker.py). Undefined -> worker's
   // own default (4).
   keepTokens?: number;
+  // 画像ごとの学習回数（storagePaths と同じ並び）。kohya のフォルダ名規約
+  // "10_name"（その画像を10回学習する）と同じ意味で、ローカルの ai-toolkit /
+  // sd-scripts 運用では定番の重み付け手段。ULL Studio はブラウザから画像を
+  // 1つの束として受け取るのでフォルダ名が使えず、代わりに倍率ごとに
+  // dataset/subset を分けて num_repeats を指定する（両ワーカー対応）。
+  // 未指定・全要素1 なら従来どおり単一データセット。
+  // ⚠️ 総ステップ数は固定なので**課金は変わらない**。変わるのは構成比だけ。
+  repeats?: number[];
 };
 
 // The exact Modal payload — stored on the job so a pending-timeout retry can
@@ -94,6 +102,7 @@ export type LoraDispatchPayload = {
   cost_cap_seconds?: number;
   embed_tags?: string;
   keep_tokens?: number;
+  repeats?: number[];
 };
 
 export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraDispatchPayload {
@@ -125,6 +134,10 @@ export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraD
     ...(params.embedTags && params.embedTags.trim() ? { embed_tags: params.embedTags.trim() } : {}),
     ...(typeof params.keepTokens === "number" && Number.isFinite(params.keepTokens)
       ? { keep_tokens: Math.round(params.keepTokens) }
+      : {}),
+    // 全部 1 なら送らない（ワーカー側も未指定と同じ扱いになる）。
+    ...(params.repeats && params.repeats.some((n) => n !== 1)
+      ? { repeats: params.repeats }
       : {}),
   };
 }

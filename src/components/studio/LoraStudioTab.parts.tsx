@@ -317,7 +317,23 @@ export const LR_PRESETS: { value: number; label: string }[] = [
 
 // cropKind: スマートクロップが生成した画像だけに付く（元アップロード画像は
 // undefined）。再度スマートクロップを実行する対象から除外する判定にも使う。
-export type DatasetImage = { id: string; file: File; url: string; cropKind?: SmartCropKind };
+// repeats: この画像を何回学習するか（kohya のフォルダ名規約 "10_name" と同じ
+// 意味）。未設定＝1。特定の被写体だけ厚く焼きたいときに使う。
+// ⚠️ 総ステップ数は固定なので**消費クレジットは変わらない**。変わるのは
+// データセットの構成比だけ。
+export type DatasetImage = {
+  id: string;
+  file: File;
+  url: string;
+  cropKind?: SmartCropKind;
+  repeats?: number;
+};
+
+// 両ワーカー（modal_lora_worker.py / modal_sdxl_lora_worker.py）の
+// MAX_IMAGE_REPEATS と同じ値に保つこと。
+export const MAX_IMAGE_REPEATS = 50;
+// ワンクリックで選べる倍率。実務で使うのはこのあたり。
+export const REPEAT_PRESETS = [1, 2, 3, 5, 10] as const;
 
 export type ProConfig = {
   rank: number;
@@ -394,6 +410,7 @@ export function ImageDropzone({
   smartCropBusy,
   smartCropProgress,
   onSmartCrop,
+  onSetRepeats,
 }: {
   images: DatasetImage[];
   onAdd: (files: FileList | File[]) => void;
@@ -408,10 +425,44 @@ export function ImageDropzone({
   smartCropProgress?: { done: number; total: number } | null;
   onSmartCrop?: () => void;
   onRecaption?: (id: string) => void;
+  // 画像ごとの学習回数の一括設定（未指定なら重み付け UI を出さない）。
+  onSetRepeats?: (ids: string[], repeats: number) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const totalBytes = images.reduce((s, i) => s + i.file.size, 0);
+  // 学習回数の一括設定用の選択状態。1枚ずつ触るには枚数が多すぎるので、
+  // 「選んでまとめて設定」を基本操作にする（shift+クリックで範囲選択）。
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const lastClickedRef = useRef<string | null>(null);
+  const weighted = images.filter((i) => (i.repeats ?? 1) !== 1).length;
+
+  const toggleSelect = (id: string, shiftKey: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const anchor = lastClickedRef.current;
+      if (shiftKey && anchor && anchor !== id) {
+        const ids = images.map((i) => i.id);
+        const a = ids.indexOf(anchor);
+        const b = ids.indexOf(id);
+        if (a !== -1 && b !== -1) {
+          const [lo, hi] = a < b ? [a, b] : [b, a];
+          for (let k = lo; k <= hi; k++) next.add(ids[k]);
+          return next;
+        }
+      }
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    lastClickedRef.current = id;
+  };
+
+  const applyRepeats = (n: number) => {
+    if (!onSetRepeats || selected.size === 0) return;
+    onSetRepeats([...selected], n);
+    setSelected(new Set());
+  };
 
   return (
     <div>
@@ -465,6 +516,76 @@ export function ImageDropzone({
               </button>
             )}
           </div>
+          {/* 画像ごとの学習回数（kohya の "10_name" フォルダ相当）。枚数が多い
+              ので「選んでまとめて設定」を基本操作にする。shift+クリックで範囲選択。 */}
+          {onSetRepeats && !disabled && (
+            <div className="mt-2 rounded-lg border border-border bg-background/60 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px]">
+                <span className="font-medium text-foreground">学習回数の重み付け</span>
+                {selected.size > 0 ? (
+                  <>
+                    <span className="text-neon-violet">{selected.size} 枚を選択中 →</span>
+                    {REPEAT_PRESETS.map((n) => (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => applyRepeats(n)}
+                        className={quickSelectBtnCls}
+                      >
+                        ×{n}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const raw = window.prompt(`学習回数（1〜${MAX_IMAGE_REPEATS}）`, "4");
+                        const n = Number(raw);
+                        if (Number.isFinite(n)) applyRepeats(Math.min(MAX_IMAGE_REPEATS, Math.max(1, Math.round(n))));
+                      }}
+                      className={quickSelectBtnCls}
+                    >
+                      カスタム
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelected(new Set())}
+                      className="text-muted transition-colors hover:text-foreground"
+                    >
+                      選択解除
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-muted">
+                      画像をクリックで選択（shift+クリックで範囲）→ 倍率を指定
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSelected(new Set(images.map((i) => i.id)))}
+                      className={quickSelectBtnCls}
+                    >
+                      全選択
+                    </button>
+                    {weighted > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => onSetRepeats(images.map((i) => i.id), 1)}
+                        className={quickSelectBtnCls}
+                      >
+                        すべて ×1 に戻す
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+              {weighted > 0 && (
+                <p className="mt-1.5 text-[10px] text-muted">
+                  {weighted} 枚に重み付けあり。<strong className="text-foreground">消費クレジットは変わりません</strong>
+                  （総ステップ数は固定で、変わるのはデータセットの構成比だけ）。
+                </p>
+              )}
+            </div>
+          )}
           {onSmartCrop && (
             <div className="mt-2 flex items-center gap-2">
               <button
@@ -489,11 +610,21 @@ export function ImageDropzone({
             {images.map((img) => {
               const st = captionState?.(img.id) ?? "ok";
               const recapping = recaptioningIds?.has(img.id) ?? false;
+              const reps = img.repeats ?? 1;
+              const isSelected = selected.has(img.id);
+              const selectable = !!onSetRepeats && !disabled;
               return (
                 <div
                   key={img.id}
+                  onClick={selectable ? (e) => toggleSelect(img.id, e.shiftKey) : undefined}
                   className={`group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border bg-neutral-900 ${
-                    st === "error" ? "border-red-500/60" : "border-border"
+                    selectable ? "cursor-pointer" : ""
+                  } ${
+                    isSelected
+                      ? "border-neon-violet ring-2 ring-neon-violet/60"
+                      : st === "error"
+                        ? "border-red-500/60"
+                        : "border-border"
                   }`}
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -510,7 +641,10 @@ export function ImageDropzone({
                   {!disabled && !recapping && st === "error" && onRecaption && (
                     <button
                       type="button"
-                      onClick={() => onRecaption(img.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRecaption(img.id);
+                      }}
                       title="この画像を再解析"
                       className="absolute inset-x-1 bottom-1 inline-flex items-center justify-center gap-1 rounded-md bg-red-500/80 px-1 py-0.5 text-[9px] font-semibold text-white transition-opacity hover:bg-red-500"
                     >
@@ -522,6 +656,14 @@ export function ImageDropzone({
                       未解析
                     </span>
                   )}
+                  {reps !== 1 && (
+                    <span
+                      className="absolute bottom-1 left-1 rounded bg-neon-pink/90 px-1 py-0.5 text-[9px] font-bold text-white"
+                      title={`この画像は ${reps} 回学習されます`}
+                    >
+                      ×{reps}
+                    </span>
+                  )}
                   {img.cropKind && (
                     <span className="absolute bottom-1 right-1 rounded bg-neon-violet/85 px-1 py-0.5 text-[8px] font-medium text-white">
                       ✂️ {SMART_CROP_KIND_LABEL[img.cropKind]}
@@ -530,7 +672,10 @@ export function ImageDropzone({
                   {!disabled && (
                     <button
                       type="button"
-                      onClick={() => onRemove(img.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRemove(img.id);
+                      }}
                       className="absolute right-1 top-1 rounded-md bg-black/70 p-1 text-white opacity-0 transition-opacity group-hover:opacity-100"
                       aria-label="削除"
                     >

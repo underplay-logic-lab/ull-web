@@ -66,6 +66,8 @@ const CUSTOM_MODEL_ID_RE = /^[A-Za-z0-9._\-/]{2,200}$/;
 // LoraStudioTab.tsxのMAX_IMAGESと同じ値・同じ根拠（2026-09-15の実機ベンチで
 // worst caseでも45分予算の半分以下と確認済み）。フロントと必ず一致させること。
 const MAX_IMAGES = 500;
+// 画像ごとの学習回数の上限。両ワーカーの MAX_IMAGE_REPEATS と同じ値に保つこと。
+const MAX_IMAGE_REPEATS = 50;
 const MIN_IMAGES = 1;
 
 function sanitizeTrainingConfig(raw: unknown): Record<string, unknown> {
@@ -275,6 +277,17 @@ async function handlePost(request: Request): Promise<NextResponse> {
   // "<user.id>/<datasetId>/<file>" — the 2nd segment keys the worker's
   // persisted-caption cache on the Volume.
   const datasetId = storagePaths[0].split("/")[1] ?? "";
+
+  // 画像ごとの学習回数（storage_paths と同じ並び）。kohya のフォルダ名規約
+  // "10_name" と同じ意味で、特定の被写体を厚く焼きたいときに使う。
+  // ⚠️ 総ステップ数は固定なので**課金には影響しない**（変わるのは構成比だけ）。
+  // 範囲外・非数値はワーカー側でも 1 に丸めるが、ここでも正規化しておく。
+  const repeats = Array.isArray(body.repeats)
+    ? (body.repeats as unknown[]).slice(0, MAX_IMAGES).map((n) => {
+        const v = typeof n === "number" && Number.isFinite(n) ? Math.round(n) : 1;
+        return Math.min(MAX_IMAGE_REPEATS, Math.max(1, v));
+      })
+    : undefined;
 
   const captions = Array.isArray(body.captions)
     ? (body.captions as unknown[]).map((c) => (typeof c === "string" ? c : "")).slice(0, MAX_IMAGES)
@@ -569,6 +582,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
     worker,
     embedTags,
     keepTokens,
+    repeats,
   };
   // The full Modal payload is stashed on the job so a pending-timeout retry
   // can re-dispatch it verbatim (no re-debit).
@@ -583,6 +597,8 @@ async function handlePost(request: Request): Promise<NextResponse> {
     num_images: storagePaths.length,
     resolution,
     trigger_word: triggerWord || null,
+    // 重み付けを使ったジョブかどうかを監査できるよう、使った場合だけ残す。
+    image_repeats: repeats && repeats.some((n) => n !== 1) ? repeats : undefined,
     // どのModalワーカー/appへ配送したか — 自己修復系（/api/jobs/[id]、
     // recover/salvage route）が将来ワーカー別分岐を必要とする時のため
     // ジョブ行に残しておく。cancel/status は workspace-global な

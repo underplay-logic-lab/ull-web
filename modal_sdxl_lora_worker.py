@@ -320,33 +320,100 @@ SD_SCRIPTS_OPTIMIZER_MAP = {
 SD_SCRIPTS_OPTIMIZER_FALLBACK = "AdamW"
 
 
-def _write_dataset_toml(root: str, image_dir: str, resolution: int, keep_tokens: int = DEFAULT_KEEP_TOKENS) -> str:
-    """Writes an sd-scripts "general method" dataset TOML pointing at an
-    already-populated `image_dir` (each image alongside a same-stem `.txt`
-    caption — exactly what ULL Studio's existing Smart Ingest + LoRA
-    captioning pipeline already produces for the ai-toolkit worker). Returns
-    the TOML path. `shuffle_caption`/`keep_tokens` mirror the project's
-    keep_tokens=N caption convention (see DEFAULT_KEEP_TOKENS above)."""
+# 学習回数の重み付け（num_repeats）の上限。kohya のフォルダ名規約
+# （"10_name" で10回）と同じ意味の値で、実務で使うのはせいぜい 1〜10。
+# 大きすぎる値は「その画像だけを延々と焼く」ことになり事故なので蓋をする。
+MAX_IMAGE_REPEATS = 50
+
+
+def _normalize_repeats(params: dict, count: int) -> list[int]:
+    """payload の `repeats`（storage_paths と同じ並びの配列）を検証して返す。
+    未指定・長さ不一致の要素は 1（＝重み付けなし）。"""
+    raw = params.get("repeats") or []
+    out: list[int] = []
+    for i in range(count):
+        v = raw[i] if isinstance(raw, list) and i < len(raw) else 1
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            n = 1
+        out.append(max(1, min(MAX_IMAGE_REPEATS, n)))
+    return out
+
+
+def _group_by_repeats(image_paths: list, repeats: list, dataset_dir) -> list:
+    """画像を学習回数ごとのサブフォルダへ振り分け、[(num_repeats, dir), ...]
+    を返す（2026-09-21追加）。
+
+    ローカルの kohya 運用では `datasets/10_kocho/` のようにフォルダ名の先頭へ
+    数字を置いて画像ごとの学習回数を変えるのが定番で、ホストもこれで焼いて
+    いた。ULL Studio はブラウザから枚数ぶんの画像を1つの束として受け取るので
+    フォルダ名を使えない。代わりに**サブセットを分けて `num_repeats` を個別に
+    指定する**（TOML 側の表現としては同じもの）。
+
+    ⚠️ 課金には影響しない。sd-scripts は `--max_train_steps` で総ステップ数が
+    固定されており、num_repeats が変えるのは「どの画像がどれくらいの頻度で
+    出てくるか」という**構成比**だけ。latent キャッシュも画像1枚につき1回
+    なので prep も変わらない。
+    """
     import pathlib
 
+    groups: dict = {}
+    for path, n in zip(image_paths, repeats):
+        groups.setdefault(n, []).append(path)
+
+    if len(groups) <= 1:
+        # 全部同じ倍率なら従来どおり単一サブセット（余計なフォルダを作らない）。
+        only = next(iter(groups), 1)
+        return [(only, str(dataset_dir))]
+
+    out: list = []
+    for n in sorted(groups):
+        sub = pathlib.Path(dataset_dir) / f"r{n:02d}"
+        sub.mkdir(parents=True, exist_ok=True)
+        for path in groups[n]:
+            txt = path.with_suffix(".txt")
+            shutil.move(str(path), str(sub / path.name))
+            if txt.is_file():
+                shutil.move(str(txt), str(sub / txt.name))
+        out.append((n, str(sub)))
+        print(f"[sdxl] repeats x{n}: {len(groups[n])} 枚 -> {sub}", flush=True)
+    return out
+
+
+def _write_dataset_toml(
+    root: str,
+    subsets: list,
+    resolution: int,
+    keep_tokens: int = DEFAULT_KEEP_TOKENS,
+) -> str:
+    """Writes an sd-scripts "general method" dataset TOML. `subsets` is
+    [(num_repeats, image_dir), ...] — one entry per repeat weight (see
+    _group_by_repeats). Each image_dir holds images alongside same-stem
+    `.txt` captions, exactly what ULL Studio's Smart Ingest + captioning
+    pipeline already produces. `shuffle_caption`/`keep_tokens` mirror the
+    project's keep_tokens=N caption convention (see DEFAULT_KEEP_TOKENS)."""
+    import pathlib
+
+    head = [
+        "[general]",
+        "shuffle_caption = true",
+        "caption_extension = '.txt'",
+        f"keep_tokens = {int(keep_tokens)}",
+        "",
+        "[[datasets]]",
+        f"resolution = {int(resolution)}",
+        "batch_size = 1",
+    ]
+    for num_repeats, image_dir in subsets:
+        head += [
+            "",
+            "  [[datasets.subsets]]",
+            f"  image_dir = '{image_dir}'",
+            f"  num_repeats = {int(num_repeats)}",
+        ]
     toml_path = pathlib.Path(root) / "dataset.toml"
-    toml_path.write_text(
-        f"""\
-[general]
-shuffle_caption = true
-caption_extension = '.txt'
-keep_tokens = {int(keep_tokens)}
-
-[[datasets]]
-resolution = {int(resolution)}
-batch_size = 1
-
-  [[datasets.subsets]]
-  image_dir = '{image_dir}'
-  num_repeats = 1
-""",
-        encoding="utf-8",
-    )
+    toml_path.write_text(chr(10).join(head) + chr(10), encoding="utf-8")
     return str(toml_path)
 
 
@@ -1385,7 +1452,18 @@ def train_sdxl_lora_job(params: dict) -> dict:
         image_paths = _stage_dataset(params, dataset_dir, trigger)
         _patch_job(job_id, {"progress_percent": 10, "progress_message": f"{len(image_paths)}枚を学習準備中"})
 
-        dataset_toml = _write_dataset_toml(str(work_dir), str(dataset_dir), resolution, keep_tokens)
+        # 画像ごとの学習回数（kohya のフォルダ名 "10_name" 相当）。
+        # 全部 1 なら従来どおり単一サブセット。
+        repeats = _normalize_repeats(params, len(image_paths))
+        subsets = _group_by_repeats(image_paths, repeats, dataset_dir)
+        if len(subsets) > 1:
+            # 各グループの枚数は _group_by_repeats が1行ずつ出している。
+            print(
+                f"[sdxl] 学習回数の重み付けあり: {len(subsets)} グループ "
+                + "(" + " / ".join(f"x{n}" for n, _ in subsets) + ")",
+                flush=True,
+            )
+        dataset_toml = _write_dataset_toml(str(work_dir), subsets, resolution, keep_tokens)
         output_dir.mkdir(parents=True, exist_ok=True)
 
         pretrained_model, mixed_precision = _resolve_base_model(params)

@@ -1929,16 +1929,28 @@ def _sanitize_override_yaml(
 
         datasets = proc.get("datasets")
         if isinstance(datasets, list) and datasets and isinstance(datasets[0], dict):
-            datasets[0]["folder_path"] = DATASET_DIR
+            base_ds = datasets[0]
+            if dataset_groups and len(dataset_groups) > 1:
+                # 画像ごとの学習回数が指定されている場合は、YAML が書いた
+                # dataset 設定をテンプレートとして倍率ぶん複製する。
+                proc["datasets"] = [
+                    {**base_ds, "folder_path": folder, "num_repeats": n}
+                    for n, folder in dataset_groups
+                ]
+            else:
+                base_ds["folder_path"] = DATASET_DIR
         else:
-            proc["datasets"] = [
-                {
-                    "folder_path": DATASET_DIR,
-                    "caption_ext": "txt",
-                    "cache_latents_to_disk": True,
-                    "resolution": [768],
-                }
-            ]
+            _tmpl = {
+                "folder_path": DATASET_DIR,
+                "caption_ext": "txt",
+                "cache_latents_to_disk": True,
+                "resolution": [768],
+            }
+            proc["datasets"] = (
+                [{**_tmpl, "folder_path": folder, "num_repeats": n} for n, folder in dataset_groups]
+                if dataset_groups and len(dataset_groups) > 1
+                else [_tmpl]
+            )
 
         # Per-job dir on the Volume — the checkpoint collectors are handed the
         # same path, and a periodic vol.commit() during training keeps the
@@ -1954,6 +1966,61 @@ def _sanitize_override_yaml(
     return yaml.safe_dump(data, sort_keys=False)
 
 
+# 画像ごとの学習回数（kohya のフォルダ名 "10_name" 相当）の上限。
+# modal_sdxl_lora_worker.py の MAX_IMAGE_REPEATS と同じ値に保つこと。
+MAX_IMAGE_REPEATS = 50
+
+
+def _normalize_repeats(params: dict, count: int) -> list[int]:
+    """payload の `repeats`（storage_paths と同じ並び）を検証する。
+    未指定・長さ不一致の要素は 1（重み付けなし）。"""
+    raw = params.get("repeats") or []
+    out: list[int] = []
+    for i in range(count):
+        v = raw[i] if isinstance(raw, list) and i < len(raw) else 1
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            n = 1
+        out.append(max(1, min(MAX_IMAGE_REPEATS, n)))
+    return out
+
+
+def _group_dataset_by_repeats(image_paths: list, repeats: list) -> list:
+    """DATASET_DIR 直下の画像を学習回数ごとのサブフォルダへ移し、
+    [(num_repeats, folder_path), ...] を返す（2026-09-21追加）。
+
+    ai-toolkit の `DatasetConfig` は **dataset エントリごとに `num_repeats`**
+    を持つ（toolkit/config_modules.py の DatasetConfig.num_repeats、既定1）。
+    したがって倍率ごとに folder_path を分けて datasets を複数並べればよい。
+    kohya のフォルダ名規約（"10_name"）と同じことを config 側で表現する形。
+
+    ⚠️ 課金には影響しない。総ステップ数は `train.steps` で固定で、num_repeats
+    が変えるのは構成比だけ。
+    ⚠️ 副作用: 画像のパスが変わるので **latent キャッシュは作り直しになる**
+    （キャッシュはファイルパス基準）。重み付けを使わないジョブは従来どおり
+    フラットなままなので影響を受けない。
+    """
+    groups: dict = {}
+    for path, n in zip(image_paths, repeats):
+        groups.setdefault(n, []).append(path)
+    if len(groups) <= 1:
+        return [(next(iter(groups), 1), DATASET_DIR)]
+
+    out: list = []
+    for n in sorted(groups):
+        sub = pathlib.Path(DATASET_DIR) / f"r{n:02d}"
+        sub.mkdir(parents=True, exist_ok=True)
+        for path in groups[n]:
+            txt = path.with_suffix(".txt")
+            shutil.move(str(path), str(sub / path.name))
+            if txt.is_file():
+                shutil.move(str(txt), str(sub / txt.name))
+        out.append((n, str(sub)))
+        print(f"[train] repeats x{n}: {len(groups[n])} 枚 -> {sub}", flush=True)
+    return out
+
+
 def _build_config(
     lora_name: str,
     trigger: str,
@@ -1964,6 +2031,7 @@ def _build_config(
     base_architecture: str = "",
     resolution: int = 768,
     output_dir: str = OUTPUT_DIR,
+    dataset_groups: "list | None" = None,
 ) -> pathlib.Path:
     """Manual override (raw YAML string or a dict) wins outright; otherwise
     a standard job YAML is assembled from `tc` + either the preset registry
@@ -2116,15 +2184,21 @@ def _build_config(
                         "max_step_saves_to_keep": 20,
                         "push_to_hub": False,
                     },
+                    # 画像ごとの学習回数（kohya の "10_name" フォルダ相当）が
+                    # 指定されていれば、倍率ごとに dataset を並べる
+                    # （ai-toolkit の DatasetConfig.num_repeats）。
+                    # 指定が無ければ従来どおり単一 dataset。
                     "datasets": [
                         {
-                            "folder_path": DATASET_DIR,
+                            "folder_path": folder,
                             "caption_ext": "txt",
                             "caption_dropout_rate": 0.05,
                             "shuffle_tokens": False,
                             "cache_latents_to_disk": True,
                             "resolution": [res],
+                            **({"num_repeats": n} if n != 1 else {}),
                         }
+                        for n, folder in (dataset_groups or [(1, DATASET_DIR)])
                     ],
                     "train": {
                         "batch_size": 1,
@@ -4129,9 +4203,20 @@ def train_lora_job(params: dict) -> dict:
         pathlib.Path(job_output_dir).mkdir(parents=True, exist_ok=True)
         vol.commit()  # make the per-job output dir visible on the Volume
         print(f"[stage2] ai-toolkit output -> {job_output_dir} (on Volume)", flush=True)
+        # 画像ごとの学習回数。persist（キャプションキャッシュ）と dataset.zip は
+        # フラットな image_paths を前提にしているので、**それらが済んでから**
+        # グループ分けする（ファイルを移動するため）。
+        _repeats = _normalize_repeats(params, len(image_paths))
+        dataset_groups = _group_dataset_by_repeats(image_paths, _repeats)
+        if len(dataset_groups) > 1:
+            print(
+                f"[train] 学習回数の重み付けあり: {len(dataset_groups)} グループ "
+                + "(" + " / ".join(f"x{n}" for n, _ in dataset_groups) + ")",
+                flush=True,
+            )
         config_path = _build_config(
             lora_name, trigger, target_model, tc, override, custom_model_id,
-            base_architecture, resolution, job_output_dir,
+            base_architecture, resolution, job_output_dir, dataset_groups,
         )
         if override:
             # A raw-YAML job — pull the real step count out of the YAML text so

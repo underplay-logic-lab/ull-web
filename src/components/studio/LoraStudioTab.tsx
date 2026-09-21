@@ -118,6 +118,7 @@ import {
   fieldCls,
   type Mode,
   type DatasetImage,
+  MAX_IMAGE_REPEATS,
   type ProConfig,
   type Phase,
 } from "./LoraStudioTab.parts";
@@ -812,6 +813,16 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       );
     }
   }, [addDatasetFiles]);
+
+  // 画像ごとの学習回数（kohya のフォルダ名 "10_name" 相当）をまとめて設定する。
+  // ⚠️ 総ステップ数は固定なので消費クレジットは変わらない（構成比だけが変わる）。
+  const setImageRepeats = useCallback((ids: string[], repeats: number) => {
+    const target = new Set(ids);
+    const n = Math.min(MAX_IMAGE_REPEATS, Math.max(1, Math.round(repeats)));
+    setImages((prev) =>
+      prev.map((img) => (target.has(img.id) ? { ...img, repeats: n } : img)),
+    );
+  }, []);
 
   const removeImage = useCallback((id: string) => {
     setImages((prev) => {
@@ -1551,6 +1562,8 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
       const startRes = await startLoraTraining({
         storagePaths: paths,
         captions: captionList,
+        // imgs と paths は同じ並び（アップロード順）なので、そのまま添える。
+        repeats: imgs.map((i) => i.repeats ?? 1),
         targetModel,
         customModelId: isCustom ? customModelId.trim() : undefined,
         baseArchitecture: isCustom ? baseArchitecture : undefined,
@@ -2760,6 +2773,7 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                   ? "error"
                   : "pending"
             }
+            onSetRepeats={setImageRepeats}
             smartCropCandidateCount={images.filter((img) => !img.cropKind).length}
             smartCropBusy={smartCropBusy}
             smartCropProgress={smartCropProgress}

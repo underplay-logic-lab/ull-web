@@ -265,6 +265,10 @@ export type StartLoraTrainingParams = {
   // Supabase Storage object paths (from uploadLoraDataset), in caption order.
   storagePaths: string[];
   captions: string[];
+  // 画像ごとの学習回数（storagePaths と同じ並び）。kohya のフォルダ名規約
+  // "10_name" と同じ意味。未指定・全要素1 なら重み付けなし。
+  // ⚠️ 総ステップ数は固定なので消費クレジットは変わらない。
+  repeats?: number[];
   targetModel: LoraTargetModel;
   // Universal loader — required when targetModel === "custom".
   customModelId?: string;
@@ -311,6 +315,7 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
     body: JSON.stringify({
       storage_paths: params.storagePaths,
       captions: params.captions,
+      ...(params.repeats?.some((n) => n !== 1) ? { repeats: params.repeats } : {}),
       target_model: params.targetModel,
       custom_model_id: params.customModelId,
       base_architecture: params.baseArchitecture,
