@@ -1259,6 +1259,21 @@ export function LoraStudioTab({
 
   const croppedImages = useMemo(() => images.filter((i) => i.cropKind), [images]);
 
+  // 切り出したのに2人以上写っていると判定された画像（2026-09-22、ホスト提案）。
+  // クロップは「1人を切り出す」操作なので、結果に2人いるのは
+  //   (a) カップル構図を切って両方の顔が入った（正当）
+  //   (b) 隣の人物の腕や袖が残ってキャプションが拾った（削除対象）
+  // のどちらか。どちらも目視が要るのでここへ集める。集計の差分を突き合わせる
+  // 方式と違い、**同時に複数被写体ぶんクロップしても1枚ずつ判定できる**。
+  const multiSubjectCrops = useMemo(() => {
+    if (allSubjects.filter((x) => x.trigger.trim()).length < 2) return [];
+    return croppedImages.filter((img) => {
+      const cap = (captions[img.id] ?? "").trim();
+      if (!cap) return false;
+      return matchLeadingSubjectTriggers(cap, allSubjects).length >= 2;
+    });
+  }, [croppedImages, captions, allSubjects]);
+
   // 手で足した特徴を1語だけ英訳する（2026-09-22）。以前は日本語のまま英側へ
   // 入り、LoRA の metadata に日本語タグが焼かれていた。
   const translateIdentityTag = useCallback(async (ja: string): Promise<string> => {
@@ -3482,11 +3497,26 @@ export function LoraStudioTab({
                 </li>
                 <li>・端にわずかに他の被写体が入る程度（細い帯）は無視して構いません。</li>
               </ul>
+              {multiSubjectCrops.length > 0 && (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
+                  <p className="text-[10px] leading-relaxed text-amber-400">
+                    このうち <strong>{multiSubjectCrops.length} 枚</strong>{" "}
+                    は、切り出したあとも2人以上写っていると判定されました（下で枠が付いています）。
+                    <strong>両方の顔が写っているなら残してください</strong>——2人が同じ絵にいる構図は貴重な素材です。
+                    <strong>腕や服の端だけが残っているものは削除してください</strong>
+                    ——その人物の学習には使えないうえ、主役の特徴として吸収されてしまいます。
+                  </p>
+                </div>
+              )}
               <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
                 {croppedImages.map((img) => (
                   <div
                     key={img.id}
-                    className="group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border border-border bg-neutral-900"
+                    className={`group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border bg-neutral-900 ${
+                      multiSubjectCrops.some((m) => m.id === img.id)
+                        ? "border-amber-500/70 ring-1 ring-amber-500/40"
+                        : "border-border"
+                    }`}
                   >
                     {/* object-cover だと縦長の上半身クロップが正方形に切り抜かれて
                         頭が落ちる（2026-09-22、ホスト指摘）。顔の欠けを目視する
