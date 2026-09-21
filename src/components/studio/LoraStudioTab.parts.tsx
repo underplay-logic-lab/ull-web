@@ -485,7 +485,7 @@ export function IdentityTagsField({
           type="button"
           onClick={onConvert}
           disabled={busy || !sourceJa.trim()}
-          title="上に書いた日本語の特徴をタグへ変換します"
+          title="上に書いた手がかりの文をタグへ変換します（画像から抽出できないときの代替）"
           className={quickSelectBtnCls}
         >
           {converting ? <Loader2 size={10} className="animate-spin" /> : <Languages size={10} />}

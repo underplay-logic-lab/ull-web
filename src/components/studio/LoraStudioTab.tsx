@@ -3198,10 +3198,14 @@ export function LoraStudioTab({
                         <input
                           value={primaryDescription}
                           onChange={(e) => setPrimaryDescription(e.target.value)}
-                          placeholder="見た目の固定特徴（日本語。例: 太っている、禿頭、眼鏡）"
+                          placeholder="どんな人物か（例: 太った禿頭の男性）"
                           disabled={busy}
                           className={`${fieldCls} mt-1.5 text-[11px]`}
                         />
+                        <p className="mt-0.5 text-[10px] leading-relaxed text-muted">
+                          下の「画像から抽出」の精度を上げるためのメモです。
+                          <strong className="text-foreground">学習内容には影響しません</strong>。
+                        </p>
                         {/* 「画像から抽出」が主経路なので、画像が入るまで出さない（2026-09-21）。 */}
                         {images.length > 0 && (
                         <IdentityTagsField
@@ -3234,10 +3238,11 @@ export function LoraStudioTab({
                   <input
                     value={primaryDescription}
                     onChange={(e) => setPrimaryDescription(e.target.value)}
-                    placeholder="1人目の見た目の特徴（日本語。例: 太っている、禿頭、眼鏡）"
+                    placeholder="1人目を見分ける手がかり（例: 太った禿頭の男性）"
                     disabled={busy}
                     className={`${fieldCls} mt-1.5 text-[11px]`}
                   />
+                  <p className="mt-0.5 text-[10px] leading-relaxed text-muted">AI がどちらの人物かを判定するためのメモです。<strong className="text-foreground">学習内容には影響しません</strong>（学習させる特徴は下で決めます）。</p>
                   {/* 「画像から抽出」が主経路なので、画像が入るまで出さない（2026-09-21）。 */}
                   {images.length > 0 && (
                   <IdentityTagsField
@@ -3313,10 +3318,11 @@ export function LoraStudioTab({
                         prev.map((p, k) => (k === i ? { ...p, description: e.target.value } : p)),
                       )
                     }
-                    placeholder={`${i + 2}人目の見た目の特徴（日本語。例: 銀髪、ロングヘア、青い瞳）`}
+                    placeholder={`${i + 2}人目を見分ける手がかり（例: 銀髪ロングの女性）`}
                     disabled={busy}
                     className={`${fieldCls} mt-1.5 text-[11px]`}
                   />
+                  <p className="mt-0.5 text-[10px] leading-relaxed text-muted">AI がどちらの人物かを判定するためのメモです。<strong className="text-foreground">学習内容には影響しません</strong>（学習させる特徴は下で決めます）。</p>
                   {/* 「画像から抽出」が主経路なので、画像が入るまで出さない（2026-09-21）。 */}
                   {images.length > 0 && (
                   <IdentityTagsField
