@@ -1016,6 +1016,32 @@ export function LoraStudioTab({
   // consumer — canSubmit, trainingConfig, price, effective name/trigger —
   // takes the GUI-slider path and custom_yaml_override is never sent.
   const yamlMode = mode === "pro" && pro.useRawYaml && isAdmin;
+
+  // オートが実際に使う値（= エキスパートの出発点であるべき値）。
+  // rank/alpha は LoRA のカテゴリ、ステップ数は取り込んだ枚数で決まる。
+  const autoConfig = useMemo(() => {
+    const { rank, alpha } = autoLoraRankAlpha(captionCategory);
+    return { rank, alpha, steps: autoLoraSteps(images.length) };
+  }, [captionCategory, images.length]);
+
+  // エキスパートへ入った瞬間に alpha 16→32 / steps 2830→2000 のように値が
+  // 静かに変わっていた（DEFAULT_PRO が枚数もカテゴリも見ない固定値だった
+  // ため）。まだ一度も触られていない場合に限り、オートの推奨値を初期値
+  // として流し込む（2026-09-21、ホスト指摘）。
+  const enterProMode = useCallback(() => {
+    setPro((p) => {
+      const pristine =
+        p.rank === DEFAULT_PRO.rank &&
+        p.alpha === DEFAULT_PRO.alpha &&
+        p.steps === DEFAULT_PRO.steps &&
+        p.learningRate === DEFAULT_PRO.learningRate &&
+        !p.lrCustom &&
+        p.optimizer === DEFAULT_PRO.optimizer;
+      if (!pristine) return p;
+      return { ...p, rank: autoConfig.rank, alpha: autoConfig.alpha, alphaLinked: false, steps: autoConfig.steps };
+    });
+    setMode("pro");
+  }, [autoConfig]);
   // Live YAML syntax check for the raw-YAML editor — drives the badge below
   // the textarea and gates the submit button. Only meaningful in yamlMode.
   const yamlCheck = useMemo(
@@ -2904,8 +2930,8 @@ export function LoraStudioTab({
           <button
             key={m.id}
             type="button"
-            disabled={busy}
-            onClick={() => setMode(m.id)}
+            disabled={busy || (m.id === "pro" && images.length === 0)}
+            onClick={() => (m.id === "pro" ? enterProMode() : setMode(m.id))}
             className={`rounded-xl border p-3 text-left transition-colors disabled:opacity-50 ${
               mode === m.id
                 ? "border-neon-pink/50 bg-neon-pink/10"
@@ -2917,6 +2943,17 @@ export function LoraStudioTab({
           </button>
         ))}
       </div>
+      {/* 画像が無いとエキスパートに入れない（2026-09-21、ホスト指摘）。
+          rank/alpha はカテゴリ、ステップ数は枚数から決まるので、素材ゼロの
+          段階で数字を並べても迷わせるだけ。しかも 0 枚で入ると推奨ステップ数
+          850 が初期値として焼き付いてしまう。 */}
+      {images.length === 0 && (
+        <p className="rounded-xl border border-border bg-surface/40 px-3 py-2 text-[11px] leading-relaxed text-muted">
+          rank・alpha・学習ステップ数などの
+          <strong className="text-foreground">推奨値は、取り込んだ画像から自動で決まります</strong>
+          。画像を取り込むとエキスパートを開けるようになり、実行前に自由に変更できます。
+        </p>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr] lg:items-start">
         {/* Left column — dataset + captions */}
@@ -3751,7 +3788,10 @@ export function LoraStudioTab({
             )}
           </div>
 
-          {mode === "pro" && (
+          {/* 画像を取り込む前は rank / ステップ数の欄を出さない（2026-09-21、
+              ホスト指摘）。推奨値は枚数とカテゴリから決まるので、素材が無い
+              段階で数字だけ並べても迷わせるだけ。 */}
+          {mode === "pro" && images.length > 0 && (
             <div className="space-y-3 rounded-xl border border-neon-pink/30 bg-neon-pink/5 p-3">
               {isAdmin ? (
                 <label className="flex items-center gap-2 text-[11px] font-medium text-neon-pink">
