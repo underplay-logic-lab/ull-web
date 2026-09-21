@@ -752,7 +752,11 @@ export function LoraStudioTab({
     const before = imagesRef.current.length;
     setAddNotice(
       `${newImgs.length} 枚を追加しました（合計 ${before + newImgs.length} 枚）` +
-        (dupes > 0 ? ` ／ 取り込み済みと同じ画像 ${dupes} 枚は除外` : ""),
+        (dupes > 0
+          ? ` ／ 取り込み済みと同じ画像 ${dupes} 枚は除外しました。` +
+            `特定の画像を多めに学習させたい場合は、同じ画像を重ねて入れるのではなく、` +
+            `サムネイルを選んで「学習回数」を 2〜4 に上げてください（同じ効果が得られ、あとから変更できます）。`
+          : ""),
     );
     if (newImgs.length) setImages((prev) => [...prev, ...newImgs]);
     if (Object.keys(newCaps).length) setCaptions((prev) => ({ ...prev, ...newCaps }));
