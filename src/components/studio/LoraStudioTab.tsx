@@ -911,7 +911,11 @@ export function LoraStudioTab({
     setSmartCropProgress({ done: 0, total: candidates.length });
     setErrorMessage(null);
     const failures: string[] = [];
+    // 数が合わないという指摘（2026-09-22）に応えるため、全部を数えて最後に
+    // 1回だけ内訳を出す。「対象 = 追加 + 除外 + 作れなかった」が必ず合う。
     const rejected = { upscaled: 0, redundant: 0 };
+    let kept = 0;
+    let noOutput = 0;
     for (let i = 0; i < candidates.length; i++) {
       const candidate = candidates[i];
       try {
@@ -931,6 +935,11 @@ export function LoraStudioTab({
           }
           return true;
         });
+        // 人物が検出できないと runSmartCrop は全身1枚（フォールバック）しか
+        // 返さないため、顔・上半身だけを選んでいると何も作れない。
+        const wanted = outputs.filter((o) => !kindSet || kindSet.has(o.kind));
+        if (wanted.length === 0) noOutput += 1;
+        kept += keep.length;
         addDatasetFiles(keep.map((o) => ({ file: o.file, cropKind: o.kind })));
       } catch (err) {
         failures.push(candidate.file.name);
@@ -940,20 +949,20 @@ export function LoraStudioTab({
     }
     setSmartCropBusy(false);
     setSmartCropProgress(null);
-    if (rejected.upscaled || rejected.redundant) {
-      setAddNotice(
-        [
-          rejected.upscaled
-            ? `${rejected.upscaled} 枚は切り出し元が小さすぎる（${SMART_CROP_MAX_UPSCALE}倍以上に引き伸ばされる）ため除外しました。全身の写真から顔アップを作っても、ぼけた顔を学習させるだけです。`
-            : "",
-          rejected.redundant
-            ? `${rejected.redundant} 枚は元画像とほぼ同じ範囲だったため除外しました（情報が増えません）。`
-            : "",
-        ]
-          .filter(Boolean)
-          .join(" "),
-      );
-    }
+    setAddNotice(
+      `元画像 ${candidates.length} 枚から ${kept} 枚を切り出してデータセットに追加しました。` +
+        ` 内訳: 生成 ${kept + rejected.upscaled + rejected.redundant} 枚` +
+        ` → 採用 ${kept}` +
+        (rejected.upscaled
+          ? ` / 切り出し元が小さすぎて除外 ${rejected.upscaled}（${SMART_CROP_MAX_UPSCALE}倍以上に引き伸ばされるため。全身写真から顔アップを作っても、ぼけた顔を学習させるだけです）`
+          : "") +
+        (rejected.redundant
+          ? ` / 元画像とほぼ同じ範囲で除外 ${rejected.redundant}（情報が増えません）`
+          : "") +
+        (noOutput
+          ? `。 ${noOutput} 枚は人物の骨格を検出できず、選んだ構図を作れませんでした。`
+          : "。"),
+    );
     if (failures.length) {
       setErrorMessage(
         `${failures.length} 枚でスマートクロップに失敗しました（人物の骨格が検出できなかった可能性があります）: ` +

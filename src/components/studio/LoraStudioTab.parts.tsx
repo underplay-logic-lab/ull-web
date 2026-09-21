@@ -949,7 +949,7 @@ export function ImageDropzone({
                 >
                   {smartCropBusy ? <Loader2 size={12} className="animate-spin" /> : <Scissors size={12} />}
                   ✂️ {[...cropKinds].map((k) => SMART_CROP_KIND_LABEL[k]).join("・")} を{" "}
-                  {cropTargetIds.length} 枚から切り出す（+{cropEstimate} 枚）
+                  {cropTargetIds.length} 枚から切り出す（最大 +{cropEstimate} 枚）
                 </button>
                 {smartCropBusy && smartCropProgress && (
                   <span className="text-muted">
@@ -974,7 +974,9 @@ export function ImageDropzone({
                     構図の横の数字は「対象 {cropPool.length} 枚のうち、その構図を作れる枚数」です
                     （切り出しは引いた画を寄せることしかできないため）。現在 {images.length} 枚 / 上限{" "}
                     {MAX_IMAGES} 枚。
-                    切り出し元が小さすぎるもの（全身から顔アップ等）はさらに自動で除外されます。
+                    <strong className="text-foreground">実際に増える枚数はこれよりかなり少なくなります</strong>
+                    ——切り出し元が小さすぎるもの（全身写真からの顔アップが典型）と、人物の骨格を検出できな
+                    かった画像は自動で除外されるためです。実行後に内訳が出ます。
                     {selected.size === 0 &&
                       " 被写体で絞るには、下の一括選択チップで選んでからこのボタンを押してください。"}
                   </>
