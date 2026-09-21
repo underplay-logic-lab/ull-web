@@ -21,6 +21,7 @@ export function DatasetDiagnosticsPanel({
   onOpenMultiAngle,
   onPrepareCrop,
   provisional = false,
+  stalledCount = 0,
 }: {
   items: DiagnosticInput[];
   subjects: LoraSubject[];
@@ -41,6 +42,8 @@ export function DatasetDiagnosticsPanel({
    * 数字が動くのは当然だが、黙っていると不信の元になるので明示する。
    */
   provisional?: boolean;
+  /** 解析が走っていないのに未解析のまま残っている枚数（0なら正常）。 */
+  stalledCount?: number;
 }) {
   const [open, setOpen] = useState(true);
   const diag = useMemo(() => analyzeDataset(items, subjects), [items, subjects]);
@@ -91,6 +94,11 @@ export function DatasetDiagnosticsPanel({
             <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
               <Loader2 size={9} className="animate-spin" />
               解析中・暫定
+            </span>
+          )}
+          {!provisional && stalledCount > 0 && (
+            <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] font-semibold text-red-400">
+              未解析 {stalledCount} 枚
             </span>
           )}
           {errors.length === 0 && warns.length === 0 && (
@@ -274,6 +282,14 @@ export function DatasetDiagnosticsPanel({
           {provisional && (
             <p className="text-[10px] leading-relaxed text-amber-400">
               キャプション解析が終わっていないため、この数字はまだ動きます。全部終わってから判断してください。
+            </p>
+          )}
+          {!provisional && stalledCount > 0 && (
+            <p className="text-[10px] leading-relaxed text-red-400">
+              {stalledCount} 枚が未解析のまま残っています（解析は止まっています）。
+              解析結果が空で返った画像は自動では再試行されないので、キャプション欄の
+              <strong>「🔄 未完了の画像を再解析」</strong>
+              を押してください。この {stalledCount} 枚は上の集計に入っていません。
             </p>
           )}
           <p className="text-[10px] leading-relaxed text-muted opacity-70">

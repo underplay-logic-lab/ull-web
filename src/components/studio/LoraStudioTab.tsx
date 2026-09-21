@@ -3468,7 +3468,11 @@ export function LoraStudioTab({
               src/lib/datasetDiagnostics.ts のヘッダに動機と実データの検証あり。 */}
           {diagnosticItems.length > 0 && (
             <DatasetDiagnosticsPanel
-              provisional={autoCap.running || pendingCaptionCount > 0}
+              provisional={autoCap.running}
+              // 解析が止まっているのに「解析中」と出し続けない（2026-09-22、
+              // ホスト報告）。空の結果が返った画像は「試行済み」扱いになり
+              // 自動では再試行されないので、件数と再解析の導線を出す。
+              stalledCount={!autoCap.running ? pendingCaptionCount : 0}
               items={diagnosticItems}
               subjects={allSubjects}
               onOpenMultiAngle={onOpenMultiAngle}
