@@ -80,6 +80,7 @@ import {
   type ResolvedCaptionMode,
 } from "@/lib/loraCaptionSpec";
 import { DatasetDiagnosticsPanel } from "@/components/studio/DatasetDiagnosticsPanel";
+import { translateCaption } from "@/lib/loraTranslate";
 import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
 import { generateDatasetCaptions, captionFileKey } from "@/lib/loraCaption";
 import { runSmartCrop, type SmartCropKind } from "@/lib/smartCrop";
@@ -122,6 +123,7 @@ import {
   type Mode,
   type DatasetImage,
   MAX_IMAGE_REPEATS,
+  IdentityTagsField,
   type ProConfig,
   type Phase,
 } from "./LoraStudioTab.parts";
@@ -836,6 +838,30 @@ export function LoraStudioTab({
 
   // 画像ごとの学習回数（kohya のフォルダ名 "10_name" 相当）をまとめて設定する。
   // ⚠️ 総ステップ数は固定なので消費クレジットは変わらない（構成比だけが変わる）。
+  // 「見た目の固定特徴」は日本語で入力してもらい、Danbooru タグへは自動変換する
+  // （2026-09-21、ホスト指摘「入れるにしても日本語じゃないと使い勝手が悪い」）。
+  // 同じ情報を日本語と英タグで2回入力させていたのを1つに統合した。変換は既存の
+  // /api/studio/lora/translate（action "to_en" + caption_type "tags"）をそのまま
+  // 使う——日本語→Danbooru タグ列はこのルートの本来の仕事なので新設不要。
+  const [identityBusy, setIdentityBusy] = useState<number | null>(null);
+  const convertIdentityTags = useCallback(
+    async (index: number, ja: string) => {
+      const text = ja.trim();
+      if (!text) return;
+      setIdentityBusy(index);
+      try {
+        const tags = await translateCaption(text, "to_en", "tags");
+        if (index < 0) setPrimaryIdentityTags(tags);
+        else setExtraSubjects((prev) => prev.map((p, k) => (k === index ? { ...p, identityTags: tags } : p)));
+      } catch (err) {
+        console.warn("[lora] identity tag conversion failed:", err);
+      } finally {
+        setIdentityBusy(null);
+      }
+    },
+    [],
+  );
+
   const setImageRepeats = useCallback((ids: string[], repeats: number) => {
     const target = new Set(ids);
     const n = Math.min(MAX_IMAGE_REPEATS, Math.max(1, Math.round(repeats)));
@@ -3047,11 +3073,19 @@ export function LoraStudioTab({
                       <>
                         <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
                         <input
-                          value={primaryIdentityTags}
-                          onChange={(e) => setPrimaryIdentityTags(e.target.value)}
-                          placeholder="見た目の固定特徴（英タグ。例: bald, fat, glasses）"
+                          value={primaryDescription}
+                          onChange={(e) => setPrimaryDescription(e.target.value)}
+                          placeholder="見た目の固定特徴（日本語。例: 太っている、禿頭、眼鏡）"
                           disabled={busy}
-                          className={`${fieldCls} mt-1.5 font-mono text-[11px]`}
+                          className={`${fieldCls} mt-1.5 text-[11px]`}
+                        />
+                        <IdentityTagsField
+                          value={primaryIdentityTags}
+                          onChange={setPrimaryIdentityTags}
+                          sourceJa={primaryDescription}
+                          onConvert={() => void convertIdentityTags(-1, primaryDescription)}
+                          converting={identityBusy === -1}
+                          disabled={busy}
                         />
                       </>
                     )}
@@ -3066,19 +3100,17 @@ export function LoraStudioTab({
                   <input
                     value={primaryDescription}
                     onChange={(e) => setPrimaryDescription(e.target.value)}
-                    placeholder="1人目の特徴（AIが見分ける手がかり。例: 銀髪の女性）"
+                    placeholder="1人目の見た目の特徴（日本語。例: 太っている、禿頭、眼鏡）"
                     disabled={busy}
                     className={`${fieldCls} mt-1.5 text-[11px]`}
                   />
-                  {/* 2026-09-21: 見た目の固定特徴。キャプションからは除外され
-                      （＝トリガーに焼き込まれ）、LoRA の metadata にだけ入る。
-                      ComfyUI 側で読み戻す運用のため（ホスト）。 */}
-                  <input
+                  <IdentityTagsField
                     value={primaryIdentityTags}
-                    onChange={(e) => setPrimaryIdentityTags(e.target.value)}
-                    placeholder="見た目の固定特徴（英タグ。例: bald, fat, glasses）"
+                    onChange={setPrimaryIdentityTags}
+                    sourceJa={primaryDescription}
+                    onConvert={() => void convertIdentityTags(-1, primaryDescription)}
+                    converting={identityBusy === -1}
                     disabled={busy}
-                    className={`${fieldCls} mt-1.5 font-mono text-[11px]`}
                   />
                 </div>
               );
@@ -3136,20 +3168,19 @@ export function LoraStudioTab({
                         prev.map((p, k) => (k === i ? { ...p, description: e.target.value } : p)),
                       )
                     }
-                    placeholder={`${i + 2}人目の特徴（AIが見分ける手がかり。例: 黒コートの男性）`}
+                    placeholder={`${i + 2}人目の見た目の特徴（日本語。例: 銀髪、ロングヘア、青い瞳）`}
                     disabled={busy}
                     className={`${fieldCls} mt-1.5 text-[11px]`}
                   />
-                  <input
+                  <IdentityTagsField
                     value={s.identityTags ?? ""}
-                    onChange={(e) =>
-                      setExtraSubjects((prev) =>
-                        prev.map((p, k) => (k === i ? { ...p, identityTags: e.target.value } : p)),
-                      )
+                    onChange={(next) =>
+                      setExtraSubjects((prev) => prev.map((p, k) => (k === i ? { ...p, identityTags: next } : p)))
                     }
-                    placeholder={`${i + 2}人目の見た目の固定特徴（英タグ。例: bald, fat, glasses）`}
+                    sourceJa={s.description}
+                    onConvert={() => void convertIdentityTags(i, s.description)}
+                    converting={identityBusy === i}
                     disabled={busy}
-                    className={`${fieldCls} mt-1.5 font-mono text-[11px]`}
                   />
                 </div>
               ))}

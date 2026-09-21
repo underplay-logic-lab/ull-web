@@ -13,6 +13,7 @@ import {
   ClipboardCopy,
   Download,
   ImagePlus,
+  Languages,
   Loader2,
   Lock,
   MessageCircle,
@@ -399,6 +400,59 @@ export const fieldCls =
 // Quick-select helper buttons above the checkpoint list (全選択 / 後半のみ / 全解除).
 export const quickSelectBtnCls =
   "rounded-md border border-border px-2 py-0.5 text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground";
+
+// 見た目の固定特徴（identity タグ）の入力補助（2026-09-21）。
+//
+// 元は「日本語の特徴」と「英タグ」で同じ情報を2回入力させていた（ホスト指摘
+// 「入れるにしても日本語じゃないと使い勝手が悪い」）。日本語だけ書いてもらい、
+// Danbooru タグへの変換は既存の /api/studio/lora/translate
+// （action "to_en" + caption_type "tags"）に任せる。
+//
+// 変換結果は編集可能なまま出す。LoRA の metadata に焼かれてユーザーの手元へ
+// 渡るものなので、機械任せで確認不能にしない。
+export function IdentityTagsField({
+  value,
+  onChange,
+  sourceJa,
+  onConvert,
+  converting,
+  disabled,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  sourceJa: string;
+  onConvert: () => void;
+  converting: boolean;
+  disabled: boolean;
+}) {
+  const canConvert = !disabled && !converting && sourceJa.trim().length > 0;
+  return (
+    <div className="mt-1.5">
+      <div className="flex items-center gap-1.5">
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="metadata に埋め込むタグ（左の「タグに変換」で自動生成）"
+          disabled={disabled}
+          className={`${fieldCls} font-mono text-[11px]`}
+        />
+        <button
+          type="button"
+          onClick={onConvert}
+          disabled={!canConvert}
+          title="上の日本語の特徴を Danbooru タグへ変換します"
+          className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2 py-1.5 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {converting ? <Loader2 size={11} className="animate-spin" /> : <Languages size={11} />}
+          タグに変換
+        </button>
+      </div>
+      <p className="mt-0.5 text-[10px] leading-relaxed text-muted">
+        キャプションには<strong className="text-foreground">書かれず</strong>、完成した LoRA の metadata にだけ埋め込まれます（生成時にプロンプトへ戻して再現性を上げるため）。
+      </p>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 
