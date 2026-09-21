@@ -27,10 +27,13 @@ export type LoraTrainingConfigInput = {
 // Returns the object paths, in upload order.
 export async function uploadLoraDataset(
   userId: string,
+  // 送信前に WebP へ差し替えるので再代入する。
   files: File[],
   onProgress?: (done: number, total: number) => void,
   /** 送信済みバイト数（枚数カウンタより細かく動く）。 */
   onBytes?: (sent: number, total: number) => void,
+  /** 送信前の WebP 変換の進捗。 */
+  onOptimize?: (done: number, total: number) => void,
 ): Promise<{ datasetId: string; paths: string[] }> {
   const datasetId =
     typeof crypto !== "undefined" && crypto.randomUUID
@@ -78,6 +81,48 @@ export async function uploadLoraDataset(
   const BATCH_CONCURRENCY = 16;
   // 単枚フォールバック経路（Modal 未デプロイ時）の並列度。
   const UPLOAD_CONCURRENCY = 10;
+
+  // --- 送信前に WebP q95 へ変換する（2026-09-22）-----------------------------
+  // ホストの実データ（1024x1536 の PNG イラスト 209枚）で **317MB -> 35MB、
+  // 9倍の削減**を実測した。送信量が律速（HTTP/2 のフロー制御 x 日米間RTT、
+  // docs/gpu-benchmarks.md §15）なので、ここが一番効く。
+  //
+  // ⚠️ §15 には「クライアント側の変換は2倍悪化」という実測がある。あれは
+  // **送信と同時に**変換して canvas がメインスレッドを占有し fetch の送信を
+  // 止めたケースで、しかも素材が 400KB/枚で削減率が 30% しか無かった。ここは
+  // 送信を1本も張る前に変換を終わらせるので、その競合は起きない。
+  // 学習側は sd-scripts がどのみちバケットへリサイズして latent 化するので、
+  // q95 の損失は VAE 自身の損失よりはるかに小さい。
+  const toWebp = async (f: File): Promise<File> => {
+    if (/^image\/webp$/i.test(f.type)) return f;
+    try {
+      const bmp = await createImageBitmap(f);
+      const canvas = document.createElement("canvas");
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        bmp.close();
+        return f;
+      }
+      ctx.drawImage(bmp, 0, 0);
+      bmp.close();
+      const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/webp", 0.95));
+      // 小さくならないなら原本を送る（既に圧縮済みの JPEG 等）。
+      if (!blob || blob.size >= f.size) return f;
+      const name = f.name.replace(/\.[^.]+$/, "") + ".webp";
+      return new File([blob], name, { type: "image/webp", lastModified: f.lastModified });
+    } catch {
+      return f; // デコードできない形式は原本のまま送る
+    }
+  };
+
+  const optimized: File[] = [];
+  for (let i = 0; i < files.length; i++) {
+    optimized.push(await toWebp(files[i]));
+    onOptimize?.(i + 1, files.length);
+  }
+  files = optimized;
 
   const startedAt = Date.now();
   const totalBytes = files.reduce((t, f) => t + f.size, 0);

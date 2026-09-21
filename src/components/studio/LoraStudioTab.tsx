@@ -178,6 +178,8 @@ export function LoraStudioTab({
   const [smartCropProgress, setSmartCropProgress] = useState<{ done: number; total: number } | null>(null);
   // 送信済みバイト（枚数カウンタは16並列ぶんまとめて動くので、止まって見える）。
   const [uploadBytes, setUploadBytes] = useState<{ sent: number; total: number } | null>(null);
+  // 送信前の WebP 変換（実測で 317MB -> 35MB。ここが送信時間を9倍縮める）。
+  const [optimizeProgress, setOptimizeProgress] = useState<{ done: number; total: number } | null>(null);
   const smartCropWarmedRef = useRef(false);
   // English caption per image id. Filled by the AI-vision auto-caption pass on
   // drop, or straight from a .txt / ZIP the user brought.
@@ -2051,6 +2053,7 @@ export function LoraStudioTab({
     setActiveJobModelLabel(null);
     setUploadProgress({ done: 0, total: imgs.length });
     setUploadBytes(null);
+    setOptimizeProgress(null);
 
     // Phase 1 — upload every image to Storage first. If even one fails we
     // abort here and NEVER call /api/studio/lora/train (calling it with a
@@ -2076,6 +2079,7 @@ export function LoraStudioTab({
           imgs.map((i) => i.file),
           (done, total) => setUploadProgress({ done, total }),
           (sent, total) => setUploadBytes({ sent, total }),
+          (done, total) => setOptimizeProgress(done < total ? { done, total } : null),
         );
         paths = uploaded.paths;
       } catch (err) {
@@ -3031,12 +3035,14 @@ export function LoraStudioTab({
               <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5 p-4">
                 <div className="flex items-center gap-2 text-sm text-neon-violet">
                   <Loader2 size={15} className="animate-spin" />
-                  {uploadProgress && uploadProgress.done < uploadProgress.total
+                  {optimizeProgress
+                    ? `画像を送信用に最適化中… ${optimizeProgress.done}/${optimizeProgress.total} 枚`
+                    : uploadProgress && uploadProgress.done < uploadProgress.total
                     ? `画像をアップロード中… ${uploadProgress.done}/${uploadProgress.total} 枚` +
                       (uploadBytes
                         ? `（${(uploadBytes.sent / 1024 / 1024).toFixed(0)} / ${(uploadBytes.total / 1024 / 1024).toFixed(0)} MB 送信済み）`
                         : "")
-                    : "🚀 学習ジョブを起動しています…"}
+                      : "🚀 学習ジョブを起動しています…"}
                 </div>
                 {uploadProgress && (
                   <div className="mt-2 h-2 overflow-hidden rounded-full bg-background/70">
@@ -3046,9 +3052,11 @@ export function LoraStudioTab({
                         // バイト基準にする（枚数は16並列ぶんまとめて動くので、
                         // 2分以上 0% のまま止まって見える）。
                         width: `${Math.round(
-                          uploadBytes && uploadBytes.total > 0
-                            ? (uploadBytes.sent / uploadBytes.total) * 100
-                            : (uploadProgress.done / Math.max(1, uploadProgress.total)) * 100,
+                          optimizeProgress
+                            ? (optimizeProgress.done / Math.max(1, optimizeProgress.total)) * 100
+                            : uploadBytes && uploadBytes.total > 0
+                              ? (uploadBytes.sent / uploadBytes.total) * 100
+                              : (uploadProgress.done / Math.max(1, uploadProgress.total)) * 100,
                         )}%`,
                       }}
                     />
