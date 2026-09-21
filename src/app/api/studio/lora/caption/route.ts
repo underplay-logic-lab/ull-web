@@ -90,7 +90,13 @@ function subjectClassificationLines(subjects: LoraSubject[]): string[] {
     // クロップは duo 画像から片方を切り出すため、隣の人物の端が残りやすい。
     // 顔が見えない人物を数えると、その被写体は「首から下だけ」を学習し、
     // 比率も崩れる。顔を基準にする。
-    "IMPORTANT — only name a subject whose FACE is clearly visible in the image. If a person appears only as a hand, an arm, a shoulder, a strip of clothing, or is cut off at the edge of the frame so their face is not shown, IGNORE that person completely: do not output their trigger word, do not count them in the gender/count tag, and do not describe anything they are wearing. A partially visible person with no face is background, not a subject.",
+    // ⚠️ 「顔がはっきり見える人物だけ」と書いたら効きすぎた（2026-09-22）。
+    // 横向き・後ろ向き・顔が小さい、といった理由で**実際に写っている被写体**が
+    // 落とされ、duo 画像が片方だけのキャプションになった。本来の意図は
+    // 「腕や袖だけの写り込みを除く」ことなので、除外の条件を身体の写り方で
+    // 書き直す。顔の向きや見やすさは条件にしない。
+    "IMPORTANT — a person counts as a subject when a meaningful part of their body is in frame: head plus torso, or a clearly recognisable figure. Name them even if they face away from the camera, are seen in profile, are partly overlapped by the other person, or their face is small or shadowed.",
+    "Only IGNORE a person when they are a mere fragment at the edge of the frame — a hand, a forearm, a shoulder, or a strip of clothing or hair with no head and no torso. For such a fragment, do not output their trigger word, do not count them in the gender/count tag, and do not describe what they are wearing: it is background, not a subject.",
     "Every subject's own gender/age is FIXED — it never changes between images of the same subject. Once you judge a subject's Danbooru-style count/gender tag (e.g. 1girl vs 1woman, 1boy vs 1man) from their description, use that SAME tag every time that subject appears, even if a particular photo makes them look a little older or younger.",
   ];
 }
