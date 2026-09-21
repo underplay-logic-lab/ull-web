@@ -87,6 +87,17 @@ import { extractIdentityTags } from "@/lib/loraCaption";
 import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
 import { generateDatasetCaptions, captionFileKey } from "@/lib/loraCaption";
 import { runSmartCrop, type SmartCropKind } from "@/lib/smartCrop";
+import { prepareDatasetImage, type ImageSizeVerdict } from "@/lib/datasetImagePrep";
+
+// 切り出し結果を捨てる閾値（2026-09-21、ホスト指摘「粗い画像を学習しちゃう
+// だけだろ？」）。出力は固定サイズへ引き伸ばされるので、切り出し元の領域が
+// 小さいほどただの水増しになる。1024x1536 の全身写真だと顔は150px前後＝約7倍。
+// 1.35 は「上半身（実寸 約640px → 768px ＝ 約1.2倍）は通し、顔アップは落とす」
+// という線で引いた出発点で、実測校正はしていない。
+const SMART_CROP_MAX_UPSCALE = 1.35;
+// 切り出し元が元画像のこの割合以上を占めるなら、中身がほぼ同じで情報が
+// 増えないので捨てる（全身写真から全身を切り出すケース）。
+const SMART_CROP_REDUNDANT_COVERAGE = 0.85;
 import { warmSmartCropModels } from "@/lib/smartCropDetect";
 import {
   ImageDropzone,
@@ -102,6 +113,8 @@ import {
   MAX_RETRY_COUNT,
   POLL_KEEPALIVE_MS,
   MAX_IMAGES,
+  MAX_LONG_EDGE,
+  MIN_SHORT_EDGE_ERROR,
   MAX_TOTAL_BYTES,
   MAX_FILE_BYTES,
   ACTIVE_JOB_STORAGE_KEY,
@@ -137,10 +150,13 @@ const SPLIT_TAGS_RE = /\s*[,、]\s*/;
 export function LoraStudioTab({
   onUseLora,
   onOpenMultiAngle,
+  onOpenUpscale,
 }: {
   onUseLora?: (loraFilename: string) => void;
   /** データセット診断から「足りない構図を作る」導線でタブを切り替える。 */
   onOpenMultiAngle?: () => void;
+  /** 小さすぎる素材を拡大しに行く導線（超解像タブへ切り替える）。 */
+  onOpenUpscale?: () => void;
 }) {
   const { user } = useSupabaseUser();
   const { credits, loading: creditsLoading } = useProfileCredits(user);
@@ -653,7 +669,7 @@ export function LoraStudioTab({
     pro,
   ]);
 
-  const addDatasetFiles = useCallback((entries: { file: File; caption?: string; cropKind?: SmartCropKind }[]) => {
+  const addDatasetFiles = useCallback((entries: { file: File; caption?: string; cropKind?: SmartCropKind; sizeVerdict?: ImageSizeVerdict }[]) => {
     // Deterministic, filename-derived id (no random UUID) so it's a stable
     // React key across every re-render / curation round-trip; a numeric
     // suffix disambiguates genuinely identical files.
@@ -716,7 +732,7 @@ export function LoraStudioTab({
           `不要な画像を削除してから追加してください。`,
       );
     }
-    for (const { file, caption, cropKind } of entries) {
+    for (const { file, caption, cropKind, sizeVerdict } of entries) {
       if (file.size > MAX_FILE_BYTES) continue;
       if (room <= 0) break;
       room--;
@@ -733,7 +749,7 @@ export function LoraStudioTab({
       }
       const id = base;
       used.add(id);
-      newImgs.push({ id, file, url: URL.createObjectURL(file), cropKind });
+      newImgs.push({ id, file, url: URL.createObjectURL(file), cropKind, sizeVerdict });
       if ((caption ?? "").trim()) {
         newCaps[id] = caption!.trim();
         // Brought by the user (.txt / ZIP) — not AI-generated.
@@ -797,6 +813,29 @@ export function LoraStudioTab({
     [addDatasetFiles],
   );
 
+  // 取り込み前に1枚ずつサイズを測り、長辺が大きすぎるものは縮小してから
+  // 渡す（2026-09-21）。ワーカー側は bucket_no_upscale なので小さい画像は
+  // 引き伸ばされず、そのぶん甘い LoRA になる。黙っていると原因不明の品質
+  // 劣化になるので、ここで計測して下の警告パネルへ回す。
+  const addDatasetFilesChecked = useCallback(
+    async (entries: { file: File; caption?: string }[]) => {
+      const prepared = await Promise.all(
+        entries.map(async (e) => {
+          const p = await prepareDatasetImage(e.file);
+          return { ...e, file: p.file, sizeVerdict: p.verdict, shrunkFrom: p.shrunkFrom };
+        }),
+      );
+      const shrunk = prepared.filter((p) => p.shrunkFrom).length;
+      addDatasetFiles(prepared);
+      if (shrunk > 0) {
+        setAddNotice(
+          `${shrunk} 枚は長辺が ${MAX_LONG_EDGE}px を超えていたため、取り込み時に縮小しました（学習解像度では使われない情報のため、画質は落ちません）。`,
+        );
+      }
+    },
+    [addDatasetFiles],
+  );
+
   const addImages = useCallback(
     (incoming: FileList | File[]) => {
       const arr = Array.from(incoming);
@@ -820,10 +859,10 @@ export function LoraStudioTab({
                 }
               }),
             );
-            addDatasetFiles(imgs.map((file) => ({ file, caption: byStem.get(stem(file.name)) })));
+            void addDatasetFilesChecked(imgs.map((file) => ({ file, caption: byStem.get(stem(file.name)) })));
           })();
         } else {
-          addDatasetFiles(imgs.map((file) => ({ file })));
+          void addDatasetFilesChecked(imgs.map((file) => ({ file })));
         }
       }
       zips.forEach((z) => void importZip(z));
@@ -842,7 +881,7 @@ export function LoraStudioTab({
         );
       }
     },
-    [addDatasetFiles, importZip],
+    [addDatasetFilesChecked, importZip],
   );
 
   // モデル（MediaPipe WASM + .task、計10MB前後）はユーザーがデータセットに
@@ -858,18 +897,40 @@ export function LoraStudioTab({
   // 未クロップの元画像（cropKind未設定）だけを対象に、1枚ずつ順番に
   // スマートクロップを実行してデータセットへ追加する。並列実行にしない
   // のはメモリ・進捗表示のシンプルさを優先したもの（1枚あたり数百ms程度）。
-  const runSmartCropForDataset = useCallback(async () => {
-    const candidates = imagesRef.current.filter((img) => !img.cropKind);
+  const runSmartCropForDataset = useCallback(async (ids?: string[], kinds?: SmartCropKind[]) => {
+    // 対象を絞れる（2026-09-21）。165枚×3種を一括で切り出すと上限500枚を
+    // 超えるうえ、要らない構図まで増えてキャプション解析の無料枠も食う。
+    const want = ids && ids.length ? new Set(ids) : null;
+    const kindSet = kinds && kinds.length ? new Set(kinds) : null;
+    const candidates = imagesRef.current.filter(
+      (img) => !img.cropKind && (!want || want.has(img.id)),
+    );
     if (!candidates.length) return;
     setSmartCropBusy(true);
     setSmartCropProgress({ done: 0, total: candidates.length });
     setErrorMessage(null);
     const failures: string[] = [];
+    const rejected = { upscaled: 0, redundant: 0 };
     for (let i = 0; i < candidates.length; i++) {
       const candidate = candidates[i];
       try {
         const outputs = await runSmartCrop(candidate.file);
-        addDatasetFiles(outputs.map((o) => ({ file: o.file, cropKind: o.kind })));
+        const keep = outputs.filter((o) => {
+          if (kindSet && !kindSet.has(o.kind)) return false;
+          // 拡大しすぎ（＝切り出し元が小さい）＝ボケた画像を学習させるだけ。
+          // 1024x1536 の全身写真から顔を切ると約7倍になるのが典型。
+          if (o.upscale > SMART_CROP_MAX_UPSCALE) {
+            rejected.upscaled += 1;
+            return false;
+          }
+          // 元画像とほぼ同じ範囲＝情報が増えない重複（全身→全身）。
+          if (o.coverage >= SMART_CROP_REDUNDANT_COVERAGE) {
+            rejected.redundant += 1;
+            return false;
+          }
+          return true;
+        });
+        addDatasetFiles(keep.map((o) => ({ file: o.file, cropKind: o.kind })));
       } catch (err) {
         failures.push(candidate.file.name);
         console.error("[LoraStudioTab] smart crop failed:", candidate.file.name, err);
@@ -878,6 +939,20 @@ export function LoraStudioTab({
     }
     setSmartCropBusy(false);
     setSmartCropProgress(null);
+    if (rejected.upscaled || rejected.redundant) {
+      setAddNotice(
+        [
+          rejected.upscaled
+            ? `${rejected.upscaled} 枚は切り出し元が小さすぎる（${SMART_CROP_MAX_UPSCALE}倍以上に引き伸ばされる）ため除外しました。全身の写真から顔アップを作っても、ぼけた顔を学習させるだけです。`
+            : "",
+          rejected.redundant
+            ? `${rejected.redundant} 枚は元画像とほぼ同じ範囲だったため除外しました（情報が増えません）。`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
+      );
+    }
     if (failures.length) {
       setErrorMessage(
         `${failures.length} 枚でスマートクロップに失敗しました（人物の骨格が検出できなかった可能性があります）: ` +
@@ -1073,6 +1148,8 @@ export function LoraStudioTab({
     if (distMap.size > 1) groups.push({ key: "distance", title: "構図", options: toOptions(distMap) });
     return groups;
   }, [images, captions, allSubjects]);
+
+  const tooSmallImages = useMemo(() => images.filter((i) => i.sizeVerdict === "tooSmall"), [images]);
 
   const effectiveEmbedTags = useMemo(() => {
     const extra = embedTagsInput.trim();
@@ -3080,11 +3157,42 @@ export function LoraStudioTab({
             }
             onSetRepeats={setImageRepeats}
             selectionGroups={selectionGroups}
-            smartCropCandidateCount={images.filter((img) => !img.cropKind).length}
             smartCropBusy={smartCropBusy}
             smartCropProgress={smartCropProgress}
-            onSmartCrop={() => void runSmartCropForDataset()}
+            onSmartCrop={(ids, kinds) => void runSmartCropForDataset(ids, kinds)}
           />
+
+          {/* 短辺が足りない画像の警告と、超解像タブへの導線（2026-09-21）。
+              ワーカーは bucket_no_upscale なので小さい画像は引き伸ばされず、
+              そのまま小さく学習される＝甘い LoRA になる。ホスト方針:
+              「小さいときは当サイトの超解像で大きくしてから再投入」。 */}
+          {tooSmallImages.length > 0 && (
+            <div className="space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+              <p className="text-[11px] leading-relaxed text-amber-400">
+                <strong>{tooSmallImages.length} 枚</strong> は短辺が {MIN_SHORT_EDGE_ERROR}px
+                 未満です。このまま学習すると、その画像だけ解像度が足りないまま学習され、仕上がりが甘くなります
+                （引き伸ばしはしません。ぼけた絵を学習するほうが害が大きいため）。
+              </p>
+              {onOpenUpscale && (
+                <button
+                  type="button"
+                  onClick={onOpenUpscale}
+                  className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-400 transition-colors hover:bg-amber-500/20"
+                >
+                  <Wand2 size={11} />
+                  ✨ 超解像で拡大してから入れ直す
+                </button>
+              )}
+              <p className="text-[10px] leading-relaxed text-muted">
+                該当:{" "}
+                {tooSmallImages
+                  .slice(0, 5)
+                  .map((i) => i.file.name)
+                  .join(", ")}
+                {tooSmallImages.length > 5 ? " ほか" : ""}
+              </p>
+            </div>
+          )}
 
           {addNotice && (
             <p className="flex items-start justify-between gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] text-neon-violet">
@@ -3108,7 +3216,7 @@ export function LoraStudioTab({
               items={diagnosticItems}
               subjects={allSubjects}
               onOpenMultiAngle={onOpenMultiAngle}
-              onSmartCrop={() => void runSmartCropForDataset()}
+              onSmartCrop={() => void runSmartCropForDataset(undefined, ["upper"])}
               smartCropCandidateCount={images.filter((img) => !img.cropKind).length}
               smartCropBusy={smartCropBusy}
             />

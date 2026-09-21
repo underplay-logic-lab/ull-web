@@ -29,6 +29,17 @@ export type SmartCropOutput = {
   file: File;
   width: number;
   height: number;
+  /**
+   * 出力サイズ ÷ 切り出し元の実寸（2026-09-21、ホスト指摘）。
+   *
+   * 出力は固定サイズ（顔1024x1024 / 上半身768x1024 / 全身は長辺1024）へ
+   * 引き伸ばされるため、元の領域が小さいほど水増しになる。全身1枚から顔を
+   * 切ると顔は150px前後しか無く、1024へ5〜7倍に拡大された**ボケた顔**を
+   * 学習させることになる。呼び出し側がこの値で足切りできるようにする。
+   */
+  upscale: number;
+  /** 切り出し元の領域が元画像の面積に占める割合。1に近いほど元画像と同じ。 */
+  coverage: number;
 };
 
 export const SMART_CROP_KIND_LABEL: Record<SmartCropKind, string> = {
@@ -139,7 +150,8 @@ async function fallbackAligned(img: HTMLImageElement, stem: string): Promise<Sma
     height: h,
   };
   const canvas = await drawBoxToOutput(img, box, w, h);
-  return [{ kind: "full", file: await toFile(canvas, stem, "full"), width: w, height: h }];
+  // 64の倍数へ揃えるだけなので拡大は無く、中身も元画像とほぼ同じ。
+  return [{ kind: "full", file: await toFile(canvas, stem, "full"), width: w, height: h, upscale: 1, coverage: 1 }];
 }
 
 /**
@@ -171,7 +183,14 @@ export async function runSmartCrop(file: File): Promise<SmartCropOutput[]> {
         const box = computeFaceCropBox(pt(eyeA, w, h), pt(eyeB, w, h), pt(nose, w, h));
         const { width: outW, height: outH } = SMART_CROP_OUTPUT_SIZE.face;
         const canvas = await drawBoxToOutput(img, box, outW, outH);
-        outputs.push({ kind: "face", file: await toFile(canvas, stem, "face"), width: outW, height: outH });
+        outputs.push({
+          kind: "face",
+          file: await toFile(canvas, stem, "face"),
+          width: outW,
+          height: outH,
+          upscale: outW / Math.max(1, box.width),
+          coverage: (box.width * box.height) / (w * h),
+        });
       }
       if (forehead) headTop = pt(forehead, w, h);
     }
@@ -213,14 +232,28 @@ export async function runSmartCrop(file: File): Promise<SmartCropOutput[]> {
         });
         const { width: uW, height: uH } = SMART_CROP_OUTPUT_SIZE.upper;
         const upperCanvas = await drawBoxToOutput(img, upperBox, uW, uH);
-        outputs.push({ kind: "upper", file: await toFile(upperCanvas, stem, "upper"), width: uW, height: uH });
+        outputs.push({
+          kind: "upper",
+          file: await toFile(upperCanvas, stem, "upper"),
+          width: uW,
+          height: uH,
+          upscale: uW / Math.max(1, upperBox.width),
+          coverage: (upperBox.width * upperBox.height) / (w * h),
+        });
 
         const bodyPoints: Point[] = pose.filter(isLandmarkVisible).map((lm) => pt(lm, w, h));
         const fullBox = computeFullBodyCropBox(bodyPoints, headTop);
         const clampedFull = clampBoxToImage(fullBox, w, h);
         const { width: fW, height: fH } = fullBodyOutputSize(clampedFull);
         const fullCanvas = await drawBoxToOutput(img, fullBox, fW, fH);
-        outputs.push({ kind: "full", file: await toFile(fullCanvas, stem, "full"), width: fW, height: fH });
+        outputs.push({
+          kind: "full",
+          file: await toFile(fullCanvas, stem, "full"),
+          width: fW,
+          height: fH,
+          upscale: fW / Math.max(1, clampedFull.width),
+          coverage: (clampedFull.width * clampedFull.height) / (w * h),
+        });
       }
     }
 

@@ -435,6 +435,19 @@ def _write_dataset_toml(
         "[[datasets]]",
         f"resolution = {int(resolution)}",
         "batch_size = 1",
+        # アスペクト比バケット（2026-09-21）。これが無いと sd-scripts は全画像を
+        # resolution の正方形へリサイズ＋中央クロップするため、1024x1536 の
+        # 縦長イラストは上下が三分の一ほど切り落とされる。ホストがローカルで
+        # 実績を出している dataset.toml と同じ設定に揃える:
+        #     resolution = [1024, 1024] / enable_bucket = true / bucket_no_upscale = true
+        # min/max_bucket_reso はホストの構成でも未指定（kohya の既定）なので
+        # 合わせて指定しない。
+        #
+        # bucket_no_upscale = true は「小さい画像を引き伸ばさない」。引き伸ばすと
+        # ぼけた絵を学習するだけなので、小さい素材は**投入前に超解像で拡大する**
+        # というのがホストのローカル運用で、UI 側もその導線に揃えてある。
+        "enable_bucket = true",
+        "bucket_no_upscale = true",
     ]
     for num_repeats, sub_keep, image_dir in subsets:
         head += [
@@ -481,6 +494,8 @@ keep_tokens = {DEFAULT_KEEP_TOKENS}
 
 [[datasets]]
 resolution = 1024
+enable_bucket = true
+bucket_no_upscale = true
 batch_size = 1
 
   [[datasets.subsets]]

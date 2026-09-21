@@ -157,6 +157,7 @@ export function Studio() {
             <LoraStudioTab
               onUseLora={() => goTab("custom")}
               onOpenMultiAngle={() => goTab("angle")}
+              onOpenUpscale={() => goTab("upscale")}
             />
           </div>
         )}

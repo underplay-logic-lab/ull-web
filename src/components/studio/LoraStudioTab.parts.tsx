@@ -68,6 +68,29 @@ export const POLL_KEEPALIVE_MS = 15_000;
 // 実測の1/5程度しか使っていない過度に保守的な仮値だった（CLAUDE.md §0）。
 // 500枚なら worst case でも20分＝予算の半分以下に収まる安全マージンを確保。
 export const MAX_IMAGES = 500;
+
+/**
+ * 学習に投入する画像サイズの下限・上限（2026-09-21）。
+ *
+ * ワーカー側は `bucket_no_upscale = true`（ホストのローカル実績構成と同じ）で
+ * 動くため、**小さい画像は引き伸ばされず、小さいまま学習される**。つまり
+ * 短辺が足りない素材は「そのぶん甘い LoRA になる」だけで、警告しないと
+ * 原因不明の品質劣化になる。ホスト方針: 小さいものは当サイトの超解像で
+ * 拡大してから入れ直してもらう。
+ *
+ * SDXL の標準バケットは短辺 640（640x1536）まで存在し、768x1024 は正規の
+ * バケットそのもの。よって 768 は欠陥ではない。640 を割ると **どのバケットにも
+ * 届かない**ので赤、768 未満は黄、という線を引く（未校正）。
+ * スマートクロップの出力（上半身 768x1024）が黄にならないよう、この線は
+ * 768 を「合格」に含める必要がある。
+ */
+export const MIN_SHORT_EDGE_ERROR = 640;
+export const MIN_SHORT_EDGE_WARN = 768;
+/**
+ * これを超える長辺はブラウザ側で縮小してからアップロードする。1024 学習に
+ * 2048 超の情報は使われず、アップロード時間と転送量を食うだけ。
+ */
+export const MAX_LONG_EDGE = 2048;
 // Raw upload budget. The worker's Smart Ingest stage downscales / re-encodes
 // every image on a free CPU container before the GPU starts, and AI-vision
 // captioning only ever sees ~640px browser thumbnails — so a large raw
@@ -333,6 +356,8 @@ export type DatasetImage = {
   file: File;
   url: string;
   cropKind?: SmartCropKind;
+  /** 短辺が学習解像度に足りているか（取り込み時に計測）。 */
+  sizeVerdict?: "ok" | "small" | "tooSmall";
   repeats?: number;
 };
 
@@ -560,7 +585,6 @@ export function ImageDropzone({
   captionState,
   recaptioningIds,
   onRecaption,
-  smartCropCandidateCount,
   smartCropBusy,
   smartCropProgress,
   onSmartCrop,
@@ -574,11 +598,9 @@ export function ImageDropzone({
   // "ok" (captioned) | "error" (retries exhausted) | "pending" (not yet done).
   captionState?: (id: string) => "ok" | "error" | "pending";
   recaptioningIds?: Set<string>;
-  // スマートクロップ未実施の元画像の枚数（0なら実行対象なし）。
-  smartCropCandidateCount?: number;
   smartCropBusy?: boolean;
   smartCropProgress?: { done: number; total: number } | null;
-  onSmartCrop?: () => void;
+  onSmartCrop?: (ids: string[], kinds: SmartCropKind[]) => void;
   onRecaption?: (id: string) => void;
   // 画像ごとの学習回数の一括設定（未指定なら重み付け UI を出さない）。
   onSetRepeats?: (ids: string[], repeats: number) => void;
@@ -591,6 +613,7 @@ export function ImageDropzone({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [filters, setFilters] = useState<Record<string, string | null>>({});
+  const [cropKinds, setCropKinds] = useState<Set<SmartCropKind>>(new Set(["face", "upper", "full"]));
   const [dragOver, setDragOver] = useState(false);
   const totalBytes = images.reduce((s, i) => s + i.file.size, 0);
   // 学習回数の一括設定用の選択状態。1枚ずつ触るには枚数が多すぎるので、
@@ -621,6 +644,11 @@ export function ImageDropzone({
   };
 
   const croppedCount = images.filter((i) => i.cropKind).length;
+  // 選択中があればそれを、無ければ未クロップの元画像すべてを対象にする。
+  const cropTargetIds =
+    selected.size > 0
+      ? images.filter((i) => selected.has(i.id) && !i.cropKind).map((i) => i.id)
+      : images.filter((i) => !i.cropKind).map((i) => i.id);
 
   // チップで絞り込んだ結果（複数軸は積集合）を選択状態へ反映する。
   const applyFilters = (next: Record<string, string | null>) => {
@@ -709,26 +737,6 @@ export function ImageDropzone({
               </button>
             )}
           </div>
-          {onSmartCrop && (
-            <div className="mt-2 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={onSmartCrop}
-                disabled={disabled || smartCropBusy || !smartCropCandidateCount}
-                title="骨格・顔の座標から「顔クローズアップ / 上半身 / 全身」の3枚を自動で切り出し、データセットに追加します。"
-                className="inline-flex items-center gap-1.5 rounded-lg border border-neon-violet/40 bg-neon-violet/5 px-2.5 py-1 text-[11px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/10 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {smartCropBusy ? <Loader2 size={12} className="animate-spin" /> : <Scissors size={12} />}
-                ✂️ スマートクロップ
-                {smartCropCandidateCount ? `（元画像 ${smartCropCandidateCount} 枚）` : ""}
-              </button>
-              {smartCropBusy && smartCropProgress && (
-                <span className="text-[11px] text-muted">
-                  {smartCropProgress.done}/{smartCropProgress.total} 枚 処理中…
-                </span>
-              )}
-            </div>
-          )}
           <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-5">
             {images.map((img) => {
               const st = captionState?.(img.id) ?? "ok";
@@ -809,6 +817,65 @@ export function ImageDropzone({
               );
             })}
           </div>
+          {/* スマートクロップ。**対象と種類を選べる**（2026-09-21）。全画像×3種を
+              一括で切り出すと 165枚 → +495枚 で上限500枚を超えてしまい、必要の
+              ない構図まで増える。選択中があればそれだけを、無ければ未クロップ
+              全部を対象にする。 */}
+          {onSmartCrop && !disabled && (
+            <div className="mt-2 rounded-lg border border-border bg-background/60 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px]">
+                <span className="font-medium text-foreground">スマートクロップ</span>
+                <span className="text-muted">切り出す構図:</span>
+                {(["face", "upper", "full"] as SmartCropKind[]).map((k) => {
+                  const on = cropKinds.has(k);
+                  return (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() =>
+                        setCropKinds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(k)) next.delete(k);
+                          else next.add(k);
+                          return next.size ? next : prev; // 全部オフは無意味
+                        })
+                      }
+                      className={`rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+                        on
+                          ? "border-neon-violet/60 bg-neon-violet/15 text-neon-violet"
+                          : "border-border bg-background/60 text-muted hover:text-foreground"
+                      }`}
+                    >
+                      {SMART_CROP_KIND_LABEL[k]}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => onSmartCrop(cropTargetIds, [...cropKinds])}
+                  disabled={smartCropBusy || cropTargetIds.length === 0}
+                  title="骨格・顔の座標を見て、選んだ構図に切り出してデータセットに追加します。"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-neon-violet/40 bg-neon-violet/5 px-2.5 py-1 text-[11px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {smartCropBusy ? <Loader2 size={12} className="animate-spin" /> : <Scissors size={12} />}
+                  ✂️{" "}
+                  {selected.size > 0
+                    ? `選択した ${cropTargetIds.length} 枚を切り出す`
+                    : `未クロップ ${cropTargetIds.length} 枚すべてを切り出す`}
+                </button>
+                {smartCropBusy && smartCropProgress && (
+                  <span className="text-muted">
+                    {smartCropProgress.done}/{smartCropProgress.total} 枚 処理中…
+                  </span>
+                )}
+              </div>
+              <p className="mt-1.5 text-[10px] text-muted">
+                最大 {cropTargetIds.length * cropKinds.size} 枚増えます（現在 {images.length} 枚 / 上限{" "}
+                {MAX_IMAGES} 枚）。切り出し元が小さすぎるもの（全身から顔アップ等）は自動で除外されます。
+                {selected.size === 0 && "上のチップで絞り込むと、必要な分だけ切り出せます。"}
+              </p>
+            </div>
+          )}
           {/* 画像ごとの学習回数（kohya の "10_name" フォルダ相当）。
               ここはグリッドの**下**に置く（2026-09-21、ホスト指摘）。取り込んだ
               後にやる操作なので、取り込み欄の直下にあると手順が前後して見える。
