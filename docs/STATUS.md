@@ -135,14 +135,21 @@
   `run_custom_workflow` → `_save_output_temp` が全生成物を
   `outputs/all/<uuid hex>_<ComfyUI のファイル名>` で7日保管する経路。
   機能自体は保留（メモリ `image-to-3d-feature-validation`）。
-- ⚠️ **`outputs/all` の7日自動削除が効いていない疑い**。`OUTPUTS_ALL_RETENTION_DAYS
-  = 7` に対し 2026-09-13 のファイルが残っている（18件・合計約150MB）。
-  `schedule=modal.Period(days=1)` はデプロイのたびにタイマーが巻き戻るため、
-  頻繁にデプロイする app では発火しにくい（リポジトリ内の5つの定期purgeが全部
-  `Period`）。**絶対時刻の `modal.Cron` に替えるべき。**未対応。
-
-
-- **「実効バッチ」の読み違いを docs で訂正**（`d150381`, §14.8.1 新設）。
+- ✅ **自動削除タイマーは全部動いている**（2026-09-21 に Modal のログで確認。
+  いったん「効いていない疑い」と報告したが誤りだった）。
+  - `ull-retention-purge` / `purge_expired`（14日）: 2026-09-21 03:17 JST に実行。
+    cutoff 09-06 で全項目0件＝**まだ14日を超えたデータが無いだけ**。
+  - `ull-lora-worker` / `cleanup_old_latent_caches`（14日）: 09-21 13:18 JST に実行。
+  - `ull-wan-animate-blackwell` / `cleanup_old_outputs`（7日・`outputs/all`）:
+    09-20 20:28 JST に実行し removed 0。そのときの cutoff が 09-13 11:28Z で、
+    最古のファイルが 09-13 11:50Z ＝ **22分だけ新しくて生き残っただけ**。
+    次回で消える。
+  - `modal.Period(days=1)` がデプロイでタイマーを巻き戻す件は、実際には
+    **デプロイ直後にも1回走る**挙動で、頻繁なデプロイでも空振りしていなかった。
+    ログで確認するまで断定しないこと（CLAUDE.md §0）。
+- **自動で走らないのは `admin_cleanup_volume`（既定3日）だけ。** スケジュール無しの
+  手動関数なので、`outputs/<fc-id>/config.yaml` のような作業ディレクトリの残骸は
+  admin が実行するまで残る。
 
 ### 反映状況 — 2026-09-21 時点ですべて適用済み
 
