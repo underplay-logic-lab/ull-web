@@ -3342,6 +3342,28 @@ export function LoraStudioTab({
               被写体が決まっていない状態で画像を解析すると、AI がどの人物か判断できず、キャプションをやり直すことになります。
             </p>
           )}
+          {/* 取り込み口のすぐ上に置く（2026-09-22、ホスト指摘）。設定側に
+              あると、取り込みに集中している間は視界に入らず、押し忘れたまま
+              学習が始まる。文言も実態に合わせた——「アップロード後」ではなく
+              実際には開始ボタンを押した直後に確認画面へ移動する。 */}
+          <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-background/40 px-3 py-2">
+            <input
+              type="checkbox"
+              checked={curationEnabled}
+              onChange={(e) => setCurationEnabled(e.target.checked)}
+              disabled={busy}
+              className="mt-0.5 accent-neon-pink"
+            />
+            <span className="text-[11px] leading-relaxed text-muted">
+              <span className="font-medium text-foreground">
+                学習を始める前に、キャプションを1枚ずつ確認・編集する
+              </span>
+              <br />
+              開始ボタンを押すと学習には進まず、確認画面へ移動します。そこで自動生成された
+              キャプションを日本語で見ながら直し、そのうえで学習を開始します。
+            </span>
+          </label>
+
           <ImageDropzone
             images={images}
             onAdd={addImages}
@@ -3544,29 +3566,6 @@ export function LoraStudioTab({
             </div>
           )}
 
-          {/* キュレーションの選択は自動解析の案内より**前**に置く
-              （2026-09-22、ホスト指摘）。解析が終わってから「確認画面を出すか」
-              を聞かれても手遅れに見える。 */}
-          <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-background/40 px-3 py-2">
-            <input
-              type="checkbox"
-              checked={curationEnabled}
-              onChange={(e) => setCurationEnabled(e.target.checked)}
-              disabled={busy}
-              className="mt-0.5 accent-neon-pink"
-            />
-            <span className="text-[11px] leading-relaxed text-muted">
-              <span className="font-medium text-foreground">アップロード後にキュレーション画面で確認・編集する</span>
-              <br />
-              画像をブラウザ上でプレビューして不要なものを間引き、自動生成されたキャプションを日本語で確認・修正してから学習を開始します。
-            </span>
-          </label>
-
-          {(aiCaptionedCount > 0 || userCaptionCount > 0) && !curationEnabled && (
-            <p className="text-[10px] leading-relaxed text-muted">
-              キャプションを1枚ずつ確認・編集したい場合は、上の「キュレーション画面で確認・編集する」を有効にしてください。
-            </p>
-          )}
 
           {/* Auto-routing badge: reflects the customCaptions / skipCaptioning
               the payload will carry, decided by what was dropped in + the AI
@@ -4617,7 +4616,15 @@ export function LoraStudioTab({
               {submitting ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  🚀 学習ジョブを起動中…
+                  {/* 確認画面へ進むだけの時に「学習ジョブを起動中」と出すのは嘘
+                      （2026-09-22、ホスト指摘）。特徴が変わっていると、ここで
+                      キャプションを全部作り直すので数分かかる。何をしているかを
+                      出す。 */}
+                  {curationEnabled
+                    ? autoCap.running
+                      ? `キャプションを作り直しています… ${autoCap.done}/${autoCap.total}`
+                      : "データセットを準備しています…（学習はまだ始まりません）"
+                    : "🚀 学習ジョブを起動中…"}
                 </>
               ) : inFlightJob ? (
                 <>
