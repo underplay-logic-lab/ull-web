@@ -1422,6 +1422,60 @@ class ModalStorage:
                     total_bytes += st.st_size
         return {"total_bytes": total_bytes, "total_files": total_files}
 
+    # 1フォルダあたりの走査上限。これを超えたら打ち切って truncated=True を
+    # 返す（表示は "20,000+ ファイル"）。admin が HF キャッシュのような巨大な
+    # ディレクトリを開いてもレスポンスが返らなくならないようにするための蓋。
+    DIR_STATS_ENTRY_BUDGET = 20000
+
+    def _dir_stats(self, item: dict) -> dict:
+        """指定した複数ディレクトリそれぞれの「配下のファイル数と合計バイト」を
+        返す（2026-09-21 再導入）。
+
+        経緯: 2026-09-19 に admin ファイルエクスプローラーを遅延読み込み化した
+        際（commit e271c62）、フォルダ行に出していたファイル数・容量が消えた。
+        旧実装は開いた瞬間に Volume 全体を os.walk して数えていたため、数千
+        ファイル規模で十数秒かかっていた。ここでは **今開いているフォルダの
+        直下の子ディレクトリだけ** をまとめて集計し、UI はリスト描画の後から
+        非同期で埋めるので、一覧表示そのものは速いまま数字が戻る。
+
+        シンボリックリンクは実体を追わない（_list と同じ扱い。HF キャッシュの
+        snapshots/ は実体が blobs/ にあるので二重計上しない）。
+        """
+        _reload_volume("admin-dir-stats")
+        raw_paths = item.get("paths") or []
+        if not isinstance(raw_paths, list):
+            raise fastapi.HTTPException(status_code=400, detail="paths must be a list")
+        stats: dict = {}
+        for raw in raw_paths[:200]:
+            rel = str(raw or "").strip().strip("/")
+            if ".." in rel.split("/"):
+                continue
+            target = os.path.join(MODELS_DIR, rel) if rel else MODELS_DIR
+            if not os.path.isdir(target):
+                continue
+            n_files = 0
+            total = 0
+            truncated = False
+            for root, dirs, filenames in os.walk(target):
+                if "snapshots" in dirs:
+                    dirs.remove("snapshots")
+                for name in filenames:
+                    if n_files >= self.DIR_STATS_ENTRY_BUDGET:
+                        truncated = True
+                        break
+                    full = os.path.join(root, name)
+                    try:
+                        st = os.lstat(full)
+                    except OSError:
+                        continue
+                    n_files += 1
+                    if not os.path.islink(full):
+                        total += st.st_size
+                if truncated:
+                    break
+            stats[rel] = {"files": n_files, "bytes": total, "truncated": truncated}
+        return {"stats": stats}
+
     def _download_async(self, item: dict) -> dict:
         """
         Validates the request, then spawns download_model_async as a
@@ -1565,6 +1619,8 @@ class ModalStorage:
             return self._list_dir(item)
         if action == "total_usage":
             return self._total_usage()
+        if action == "dir_stats":
+            return self._dir_stats(item)
         if action == "download_async":
             return self._download_async(item)
         if action == "download_repo_async":

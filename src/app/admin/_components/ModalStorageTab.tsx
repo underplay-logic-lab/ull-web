@@ -1,9 +1,113 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { CheckCircle2, ChevronDown, Download, Folder, GitBranch, HardDrive, Loader2, RefreshCw, Trash2, XCircle } from "lucide-react";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { ArrowDownUp, CheckCircle2, ChevronDown, Download, Eye, Folder, GitBranch, HardDrive, Loader2, RefreshCw, Search, Trash2, XCircle } from "lucide-react";
 import { GpuCostReferenceCard } from "@/components/admin/GpuCostReferenceCard";
 import type { ModelDownload, VolumeDirEntry, VolumeFile } from "./types";
+
+// --- 2026-09-21: ファイルエクスプローラーの使い勝手まわり --------------------
+// ホスト指摘: ①フォルダごとのファイル数・容量が消えた（e271c62 の遅延読み込み
+// 化で countFilesRecursive / sumSizeRecursive ごと削除された）②フォルダ名が
+// UUID 2段で何のジョブか分からない ③ファイル名が長すぎて肝心の末尾
+// （_step0001000 / _final）が見えない ④ソートできない ⑤プレビューが無い。
+// ファイルの置き場所（パス規約）は変えず、表示だけで解決する方針。
+
+type SortKey = "name" | "size" | "modified";
+type SortState = { key: SortKey; dir: "asc" | "desc" };
+const DEFAULT_SORT: SortState = { key: "name", dir: "asc" };
+
+type VolumeDirStat = { files: number; bytes: number; truncated: boolean };
+type VolumePathLabel = { kind: "user" | "job"; label: string; sub?: string };
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const PREVIEW_IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "gif"];
+const PREVIEW_VIDEO_EXTS = ["mp4", "webm", "mov"];
+// プレビューは /api/admin/modal/storage/download?inline=1 が Vercel 経由で
+// バイトを中継する経路なので、大きいファイルは開かせない（ダウンロードは
+// 署名付きの直リンクなので上限なし）。
+const PREVIEW_MAX_BYTES = 25 * 1024 * 1024;
+
+function extOf(name: string): string {
+  return name.toLowerCase().split(".").pop() ?? "";
+}
+
+function previewKindOf(file: VolumeFile): "image" | "video" | null {
+  if (file.size_bytes > PREVIEW_MAX_BYTES) return null;
+  const ext = extOf(file.path);
+  if (PREVIEW_IMAGE_EXTS.includes(ext)) return "image";
+  if (PREVIEW_VIDEO_EXTS.includes(ext)) return "video";
+  return null;
+}
+
+// 長いファイル名は「中央」を省略する。末尾（_step0001000.safetensors /
+// _final.safetensors）が何なのかを判別する肝なので、末尾は必ず残す。
+function middleEllipsis(name: string, max = 52): string {
+  if (name.length <= max) return name;
+  const tail = Math.min(24, Math.floor(max / 2));
+  return `${name.slice(0, max - tail - 1)}…${name.slice(-tail)}`;
+}
+
+function compareBy(sort: SortState, a: { name: string; size: number; modified: string }, b: typeof a): number {
+  const sign = sort.dir === "asc" ? 1 : -1;
+  if (sort.key === "size") return sign * (a.size - b.size);
+  if (sort.key === "modified") return sign * a.modified.localeCompare(b.modified);
+  return sign * a.name.localeCompare(b.name);
+}
+
+// その階層の子フォルダぶんの「ファイル数 / 容量」と、UUID の名前解決を
+// まとめて1回ずつ取りに行く。一覧の描画はブロックせず、返ってきた順に
+// 埋まる（集計は Volume の走査なので数秒かかることがある）。
+function useDirMeta(dirs: VolumeDirEntry[] | null, enabled: boolean) {
+  const [stats, setStats] = useState<Record<string, VolumeDirStat>>({});
+  const [labels, setLabels] = useState<Record<string, VolumePathLabel>>({});
+  // 「どの階層ぶんの集計が返ってきたか」を持つ。別途 loading フラグを立てると
+  // effect 本体で setState することになり cascading render になるため、
+  // 読み込み中かどうかはこれと pathKey の比較で導出する。
+  const [statsDoneFor, setStatsDoneFor] = useState("");
+
+  const pathKey = dirs ? dirs.map((d) => d.path).join("|") : "";
+  const statsLoading = enabled && !!dirs && dirs.length > 0 && statsDoneFor !== pathKey;
+
+  useEffect(() => {
+    if (!enabled || !dirs || dirs.length === 0) return;
+    let cancelled = false;
+    fetch("/api/admin/modal/storage/stats", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths: dirs.map((d) => d.path) }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled) setStats((d?.stats ?? {}) as Record<string, VolumeDirStat>);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setStatsDoneFor(pathKey);
+      });
+
+    const ids = dirs.map((d) => d.name).filter((n) => UUID_RE.test(n));
+    if (ids.length > 0) {
+      fetch("/api/admin/modal/storage/labels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          if (!cancelled) setLabels((d?.labels ?? {}) as Record<string, VolumePathLabel>);
+        })
+        .catch(() => undefined);
+    }
+    return () => {
+      cancelled = true;
+    };
+    // pathKey が同じ間は再取得しない（削除で配列の identity だけ変わるケース）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathKey, enabled]);
+
+  return { stats, labels, statsLoading };
+}
 
 // Mirrors MODEL_SUBFOLDERS in src/lib/modalStorage.ts / scripts/modal_wan_animate.py.
 const MODEL_SUBFOLDERS = ["diffusion_models", "text_encoders", "clip_vision", "vae", "loras"] as const;
@@ -95,6 +199,45 @@ function sortedDirEntries(dirs: VolumeDirEntry[]): VolumeDirEntry[] {
   });
 }
 
+// 絞り込み（名前 + 解決済みラベル）とソートをフォルダ一覧へ適用する。
+// sort.key === "name" のときは従来の表示優先度（モデル系フォルダを先頭、
+// custom_nodes を末尾）を維持する — 普段の並びを壊さないため。
+function filterSortDirs(
+  dirs: VolumeDirEntry[] | null,
+  query: string,
+  sort: SortState,
+  stats: Record<string, VolumeDirStat>,
+  labels: Record<string, VolumePathLabel>,
+): VolumeDirEntry[] {
+  if (!dirs) return [];
+  const q = query.trim().toLowerCase();
+  const rows = q
+    ? dirs.filter((d) => {
+        const l = labels[d.name];
+        return (
+          d.name.toLowerCase().includes(q) ||
+          (l?.label ?? "").toLowerCase().includes(q) ||
+          (l?.sub ?? "").toLowerCase().includes(q)
+        );
+      })
+    : dirs;
+  if (sort.key === "name") return sortedDirEntries(rows);
+  return [...rows].sort((a, b) =>
+    compareBy(
+      sort,
+      { name: a.name, size: stats[a.path]?.bytes ?? -1, modified: "" },
+      { name: b.name, size: stats[b.path]?.bytes ?? -1, modified: "" },
+    ),
+  );
+}
+
+function filterFiles(files: VolumeFile[] | null, query: string): VolumeFile[] {
+  if (!files) return [];
+  const q = query.trim().toLowerCase();
+  if (!q) return files;
+  return files.filter((f) => (f.path.split("/").pop() ?? "").toLowerCase().includes(q));
+}
+
 // Deletes one file via the shared DELETE route and reports ok/error — used
 // by both FileTable (called from the owning level's own handler) so the
 // network call itself isn't duplicated per call site.
@@ -108,61 +251,151 @@ async function deleteVolumePath(path: string, isDir: boolean): Promise<void> {
   if (!res.ok) throw new Error(data?.error ?? "削除に失敗しました。");
 }
 
+function SortHeader({
+  label,
+  col,
+  sort,
+  onSort,
+  className = "",
+}: {
+  label: string;
+  col: SortKey;
+  sort: SortState;
+  onSort: (key: SortKey) => void;
+  className?: string;
+}) {
+  const active = sort.key === col;
+  return (
+    <th className={`px-4 py-2.5 font-medium ${className}`}>
+      <button
+        type="button"
+        onClick={() => onSort(col)}
+        className={`inline-flex items-center gap-1 transition-colors hover:text-foreground ${active ? "text-foreground" : ""}`}
+      >
+        {label}
+        {active ? (
+          <span className="font-mono text-[10px]">{sort.dir === "asc" ? "▲" : "▼"}</span>
+        ) : (
+          <ArrowDownUp size={10} className="opacity-40" />
+        )}
+      </button>
+    </th>
+  );
+}
+
+function FilePreview({ file }: { file: VolumeFile }) {
+  const kind = previewKindOf(file);
+  const src = `/api/admin/modal/storage/download?file_path=${encodeURIComponent(file.path)}&inline=1`;
+  if (kind === "image") {
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={src} alt={file.path} className="max-h-72 rounded-lg border border-border" />;
+  }
+  if (kind === "video") {
+    return <video src={src} controls className="max-h-72 rounded-lg border border-border" />;
+  }
+  return null;
+}
+
 function FileTable({
   files,
   deletingPath,
   onDeleteFile,
+  sort,
+  onSort,
 }: {
   files: VolumeFile[];
   deletingPath: string | null;
   onDeleteFile: (path: string) => void;
+  sort: SortState;
+  onSort: (key: SortKey) => void;
 }) {
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
+  const sorted = useMemo(
+    () =>
+      [...files].sort((a, b) =>
+        compareBy(
+          sort,
+          { name: a.path.split("/").pop() ?? "", size: a.size_bytes, modified: a.modified_at ?? "" },
+          { name: b.path.split("/").pop() ?? "", size: b.size_bytes, modified: b.modified_at ?? "" },
+        ),
+      ),
+    [files, sort],
+  );
   return (
     <div className="overflow-x-auto rounded-xl border border-border" style={{ marginLeft: 16 }}>
       <table className="w-full min-w-[520px] text-left text-sm">
         <thead>
           <tr className="border-b border-border bg-surface/60 text-xs uppercase tracking-wide text-muted">
-            <th className="px-4 py-2.5 font-medium">ファイル名</th>
-            <th className="px-4 py-2.5 font-medium">サイズ</th>
-            <th className="px-4 py-2.5 font-medium">更新日時</th>
+            <SortHeader label="ファイル名" col="name" sort={sort} onSort={onSort} />
+            <SortHeader label="サイズ" col="size" sort={sort} onSort={onSort} />
+            <SortHeader label="更新日時" col="modified" sort={sort} onSort={onSort} />
             <th className="px-4 py-2.5 font-medium" />
           </tr>
         </thead>
         <tbody>
-          {files.map((file) => (
-            <tr key={file.path} className="border-b border-border/60 last:border-0 hover:bg-surface-hover/40">
-              <td className="max-w-[280px] truncate px-4 py-2.5 font-mono text-xs text-foreground" title={file.path}>
-                {file.path.split("/").pop()}
-              </td>
-              <td className="px-4 py-2.5 text-muted">{formatSize(file.size_bytes)}</td>
-              <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-muted">
-                {formatDateTime(file.modified_at)}
-              </td>
-              <td className="px-4 py-2.5 text-right">
-                <div className="flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      iframeDownload(`/api/admin/modal/storage/download?file_path=${encodeURIComponent(file.path)}`)
-                    }
-                    className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
-                  >
-                    <Download size={12} />
-                    ダウンロード
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onDeleteFile(file.path)}
-                    disabled={deletingPath === file.path}
-                    className="inline-flex items-center gap-1 rounded-lg border border-red-500/30 px-2.5 py-1 text-xs text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {deletingPath === file.path ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-                    削除
-                  </button>
-                </div>
-              </td>
-            </tr>
-          ))}
+          {sorted.map((file) => {
+            const name = file.path.split("/").pop() ?? file.path;
+            const canPreview = previewKindOf(file) !== null;
+            const open = previewPath === file.path;
+            return (
+              <Fragment key={file.path}>
+                <tr className="border-b border-border/60 last:border-0 hover:bg-surface-hover/40">
+                  {/* 長い名前は中央省略。末尾（_step0001000 / _final）は肝なので必ず残す。 */}
+                  <td className="px-4 py-2.5 font-mono text-xs text-foreground" title={file.path}>
+                    {middleEllipsis(name)}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-2.5 text-muted">{formatSize(file.size_bytes)}</td>
+                  <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-muted">
+                    {formatDateTime(file.modified_at)}
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      {canPreview && (
+                        <button
+                          type="button"
+                          onClick={() => setPreviewPath(open ? null : file.path)}
+                          className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs transition-colors ${
+                            open
+                              ? "border-neon-violet/50 bg-neon-violet/10 text-neon-violet"
+                              : "border-border text-muted hover:border-neon-violet/40 hover:text-foreground"
+                          }`}
+                        >
+                          <Eye size={12} />
+                          プレビュー
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          iframeDownload(`/api/admin/modal/storage/download?file_path=${encodeURIComponent(file.path)}`)
+                        }
+                        className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+                      >
+                        <Download size={12} />
+                        ダウンロード
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteFile(file.path)}
+                        disabled={deletingPath === file.path}
+                        className="inline-flex items-center gap-1 rounded-lg border border-red-500/30 px-2.5 py-1 text-xs text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {deletingPath === file.path ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                        削除
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+                {open && (
+                  <tr className="border-b border-border/60 last:border-0">
+                    <td colSpan={4} className="px-4 py-3">
+                      <FilePreview file={file} />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -174,7 +407,29 @@ function FileTable({
 // でVolume全体を毎回os.walkしていた旧実装の遅さを解消するため、フォルダ
 // ごとに独立して自分の中身を持つ構造に作り替えた（以前は起動時に全ファイル
 // を取得しクライアント側でツリーを構築していた）。
-function FolderRow({ path, name, depth, onRemoved }: { path: string; name: string; depth: number; onRemoved: (path: string) => void }) {
+function FolderRow({
+  path,
+  name,
+  depth,
+  onRemoved,
+  sort,
+  onSort,
+  query,
+  stat,
+  label,
+  statLoading,
+}: {
+  path: string;
+  name: string;
+  depth: number;
+  onRemoved: (path: string) => void;
+  sort: SortState;
+  onSort: (key: SortKey) => void;
+  query: string;
+  stat?: VolumeDirStat;
+  label?: VolumePathLabel;
+  statLoading?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [dirs, setDirs] = useState<VolumeDirEntry[] | null>(null);
   const [files, setFiles] = useState<VolumeFile[] | null>(null);
@@ -207,6 +462,13 @@ function FolderRow({ path, name, depth, onRemoved }: { path: string; name: strin
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  const { stats: childStats, labels: childLabels, statsLoading: childStatsLoading } = useDirMeta(dirs, open);
+  const visibleDirs = useMemo(
+    () => filterSortDirs(dirs, query, sort, childStats, childLabels),
+    [dirs, query, sort, childStats, childLabels],
+  );
+  const visibleFiles = useMemo(() => filterFiles(files, query), [files, query]);
 
   const handleChildRemoved = (childPath: string) => {
     setDirs((prev) => (prev ? prev.filter((d) => d.path !== childPath) : prev));
@@ -246,7 +508,31 @@ function FolderRow({ path, name, depth, onRemoved }: { path: string; name: strin
         >
           <ChevronDown size={12} className={`shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`} />
           <Folder size={13} className="shrink-0 text-neon-violet" />
-          {name}/
+          <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            {/* UUID フォルダは「何のジョブ/誰か」を解決して前に出す。元の
+                UUID は同定に要るので薄い字で必ず併記する。 */}
+            {label ? (
+              <>
+                <span className="truncate text-foreground">
+                  {label.kind === "user" ? "👤 " : "🎯 "}
+                  {label.label}
+                </span>
+                {label.sub && <span className="truncate text-[10px] text-muted">{label.sub}</span>}
+                <span className="truncate font-mono text-[10px] text-muted opacity-50">{name}</span>
+              </>
+            ) : (
+              <span className="truncate">{name}/</span>
+            )}
+            {/* 2026-09-21 復活: フォルダ配下のファイル数と容量（e271c62 で消えた）。 */}
+            {stat ? (
+              <span className="shrink-0 font-mono text-[10px] text-muted">
+                {stat.truncated ? `${stat.files}+` : stat.files} ファイル · {formatSize(stat.bytes)}
+                {stat.truncated ? "+" : ""}
+              </span>
+            ) : statLoading ? (
+              <Loader2 size={10} className="shrink-0 animate-spin text-muted opacity-60" />
+            ) : null}
+          </span>
         </button>
         <div className="flex shrink-0 items-center gap-2">
           <button
@@ -283,16 +569,36 @@ function FolderRow({ path, name, depth, onRemoved }: { path: string; name: strin
             <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">{error}</p>
           )}
 
-          {dirs && sortedDirEntries(dirs).map((d) => (
-            <FolderRow key={d.path} path={d.path} name={d.name} depth={depth + 1} onRemoved={handleChildRemoved} />
+          {visibleDirs.map((d) => (
+            <FolderRow
+              key={d.path}
+              path={d.path}
+              name={d.name}
+              depth={depth + 1}
+              onRemoved={handleChildRemoved}
+              sort={sort}
+              onSort={onSort}
+              query={query}
+              stat={childStats[d.path]}
+              label={childLabels[d.name]}
+              statLoading={childStatsLoading}
+            />
           ))}
 
-          {files && files.length > 0 && (
-            <FileTable files={files} deletingPath={deletingFilePath} onDeleteFile={handleDeleteFile} />
+          {visibleFiles.length > 0 && (
+            <FileTable
+              files={visibleFiles}
+              deletingPath={deletingFilePath}
+              onDeleteFile={handleDeleteFile}
+              sort={sort}
+              onSort={onSort}
+            />
           )}
 
-          {dirs && files && dirs.length === 0 && files.length === 0 && (
-            <p className="py-2 text-center text-[11px] text-muted opacity-70">空のフォルダです。</p>
+          {dirs && files && visibleDirs.length === 0 && visibleFiles.length === 0 && (
+            <p className="py-2 text-center text-[11px] text-muted opacity-70">
+              {query ? "この絞り込みに一致するものはありません。" : "空のフォルダです。"}
+            </p>
           )}
         </div>
       )}
@@ -455,6 +761,12 @@ export function ModalStorageTab() {
   // Collapsed by default — expanding fetches (rather than fetching eagerly
   // on mount), so admins who don't need it skip the Modal round-trip.
   const [filesOpen, setFilesOpen] = useState(false);
+  // 2026-09-21: 全階層に効く絞り込みとソート。階層ごとに持つと「どこで何を
+  // 並べ替えたか」が分からなくなるので、エクスプローラー全体で1つにする。
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
+  const toggleSort = (key: SortKey) =>
+    setSort((prev) => (prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
 
   // Volume全体の実使用量。os.walkする重い処理（実測 ~6秒 / 949GB・5,227
   // ファイル）なので、閲覧の既定経路には含めず明示的なボタンで opt-in する。
@@ -614,6 +926,16 @@ export function ModalStorageTab() {
     }
   };
 
+  const {
+    stats: rootStats,
+    labels: rootLabels,
+    statsLoading: rootStatsLoading,
+  } = useDirMeta(rootDirs, filesOpen);
+  const visibleRootDirs = useMemo(
+    () => filterSortDirs(rootDirs, query, sort, rootStats, rootLabels),
+    [rootDirs, query, sort, rootStats, rootLabels],
+  );
+  const visibleRootFiles = useMemo(() => filterFiles(rootFiles, query), [rootFiles, query]);
   const rootEmpty = rootDirs !== null && rootFiles !== null && rootDirs.length === 0 && rootFiles.length === 0;
 
   return (
@@ -659,6 +981,26 @@ export function ModalStorageTab() {
                   </button>
                 )}
                 {usageError && <span className="text-xs text-red-400">{usageError}</span>}
+                {/* 2026-09-21: 読み込み済みの階層に対する絞り込み。フォルダは
+                    解決済みのラベル（LoRA名・メールアドレス）にも当たる。 */}
+                <div className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5">
+                  <Search size={12} className="shrink-0 text-muted" />
+                  <input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="名前 / LoRA名 / ユーザーで絞り込み"
+                    className="w-56 bg-transparent text-xs text-foreground outline-none placeholder:text-muted/60"
+                  />
+                  {query && (
+                    <button
+                      type="button"
+                      onClick={() => setQuery("")}
+                      className="shrink-0 text-xs text-muted hover:text-foreground"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
               </div>
               <button
                 type="button"
@@ -692,12 +1034,29 @@ export function ModalStorageTab() {
               </div>
             ) : (
               <div className="flex flex-col gap-2">
-                {rootDirs &&
-                  sortedDirEntries(rootDirs).map((d) => (
-                    <FolderRow key={d.path} path={d.path} name={d.name} depth={0} onRemoved={handleRootFolderRemoved} />
-                  ))}
-                {rootFiles && rootFiles.length > 0 && (
-                  <FileTable files={rootFiles} deletingPath={deletingRootFilePath} onDeleteFile={handleDeleteRootFile} />
+                {visibleRootDirs.map((d) => (
+                  <FolderRow
+                    key={d.path}
+                    path={d.path}
+                    name={d.name}
+                    depth={0}
+                    onRemoved={handleRootFolderRemoved}
+                    sort={sort}
+                    onSort={toggleSort}
+                    query={query}
+                    stat={rootStats[d.path]}
+                    label={rootLabels[d.name]}
+                    statLoading={rootStatsLoading}
+                  />
+                ))}
+                {visibleRootFiles.length > 0 && (
+                  <FileTable
+                    files={visibleRootFiles}
+                    deletingPath={deletingRootFilePath}
+                    onDeleteFile={handleDeleteRootFile}
+                    sort={sort}
+                    onSort={toggleSort}
+                  />
                 )}
               </div>
             )}

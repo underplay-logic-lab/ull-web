@@ -35,6 +35,7 @@ type ModalStorageAction =
   | { action: "list" }
   | { action: "list_dir"; path: string }
   | { action: "total_usage" }
+  | { action: "dir_stats"; paths: string[] }
   | { action: "download_async"; download_id: string; url: string; subfolder: string; filename: string }
   | { action: "download_repo_async"; download_id: string; repo_id: string; save_dir: string }
   | { action: "read_file"; file_path: string }
@@ -98,6 +99,23 @@ export async function listVolumeDir(path: string): Promise<VolumeDirListing> {
     return { ...f, size_bytes: bytes, size: bytes, formattedSize: formatBytes(bytes) };
   });
   return { path: result.path ?? path, dirs: result.dirs ?? [], files };
+}
+
+export type VolumeDirStat = { files: number; bytes: number; truncated: boolean };
+
+// 2026-09-21: フォルダ行の「ファイル数 / 容量」表示の復活用（e271c62 の遅延
+// 読み込み化で消えていた）。今開いているフォルダの子ディレクトリぶんだけを
+// まとめて集計する。UI は一覧を描画してから後追いで呼ぶので、開く速度は
+// 落ちない。1フォルダ2万エントリで打ち切り（truncated=true）。
+export async function getVolumeDirStats(
+  paths: string[],
+): Promise<Record<string, VolumeDirStat>> {
+  if (paths.length === 0) return {};
+  const result = await callModalStorage<{ stats: Record<string, VolumeDirStat> }>(
+    { action: "dir_stats", paths },
+    MODAL_STORAGE_LONG_TIMEOUT_MS,
+  );
+  return result.stats ?? {};
 }
 
 // Volume全体の実使用量。os.walkする重い処理なので明示的にadminが要求した
