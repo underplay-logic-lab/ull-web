@@ -86,6 +86,11 @@ function subjectClassificationLines(subjects: LoraSubject[]): string[] {
     "This dataset has MULTIPLE distinct subjects, each with its own trigger word. For each image, first decide which of the following it depicts — usually just one, but if TWO (or more) of these registered subjects appear TOGETHER in the same image (e.g. a couple/group shot), name ALL of them, not just one:",
     ...subjects.map((s) => `  - "${s.trigger}": ${s.description || "(no description given)"}`),
     "Start the caption with every matching subject's own trigger word — spelled exactly as above, one per subject actually present, each its own comma-separated tag, before anything else. Never substitute one subject's trigger for another, even if two sound similar. If genuinely unclear which subject it is, pick the closest match rather than omitting a trigger; never omit a trigger for a subject that IS visibly present just because two subjects are in frame.",
+    // 腕や袖だけの写り込みで trigger が付く事故（2026-09-22、ホスト報告）。
+    // クロップは duo 画像から片方を切り出すため、隣の人物の端が残りやすい。
+    // 顔が見えない人物を数えると、その被写体は「首から下だけ」を学習し、
+    // 比率も崩れる。顔を基準にする。
+    "IMPORTANT — only name a subject whose FACE is clearly visible in the image. If a person appears only as a hand, an arm, a shoulder, a strip of clothing, or is cut off at the edge of the frame so their face is not shown, IGNORE that person completely: do not output their trigger word, do not count them in the gender/count tag, and do not describe anything they are wearing. A partially visible person with no face is background, not a subject.",
     "Every subject's own gender/age is FIXED — it never changes between images of the same subject. Once you judge a subject's Danbooru-style count/gender tag (e.g. 1girl vs 1woman, 1boy vs 1man) from their description, use that SAME tag every time that subject appears, even if a particular photo makes them look a little older or younger.",
   ];
 }
