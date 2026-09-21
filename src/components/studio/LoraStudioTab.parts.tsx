@@ -596,6 +596,7 @@ export function ImageDropzone({
   selectedIds,
   onSelectedChange,
   onRejectedDrop,
+  onSuggestRepeats,
 }: {
   images: DatasetImage[];
   onAdd: (files: FileList | File[]) => void;
@@ -620,6 +621,8 @@ export function ImageDropzone({
   onSelectedChange: (next: Set<string>) => void;
   /** 受け付けられない状態でドロップ／クリックされたときに理由を出す。 */
   onRejectedDrop?: () => void;
+  /** 構図の偏りを均す学習回数を一括で入れる（未指定ならボタンを出さない）。 */
+  onSuggestRepeats?: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [filters, setFilters] = useState<Record<string, string | null>>({});
@@ -884,10 +887,11 @@ export function ImageDropzone({
                   className="inline-flex items-center gap-1.5 rounded-lg border border-neon-violet/40 bg-neon-violet/5 px-2.5 py-1 text-[11px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/10 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {smartCropBusy ? <Loader2 size={12} className="animate-spin" /> : <Scissors size={12} />}
-                  ✂️{" "}
-                  {selected.size > 0
-                    ? `選択した ${cropTargetIds.length} 枚を切り出す`
-                    : `未クロップ ${cropTargetIds.length} 枚すべてを切り出す`}
+                  ✂️ {[...cropKinds].map((k) => SMART_CROP_KIND_LABEL[k]).join("・")} を{" "}
+                  {selected.size > 0 ? `選択中の ${cropTargetIds.length} 枚` : `${cropTargetIds.length} 枚すべて`}
+                  {" から切り出す（最大 +"}
+                  {cropTargetIds.length * cropKinds.size}
+                  {" 枚）"}
                 </button>
                 {smartCropBusy && smartCropProgress && (
                   <span className="text-muted">
@@ -902,9 +906,10 @@ export function ImageDropzone({
                     : "text-muted"
                 }`}
               >
-                最大 {cropTargetIds.length * cropKinds.size} 枚増えます（現在 {images.length} 枚 / 上限{" "}
-                {MAX_IMAGES} 枚）。切り出し元が小さすぎるもの（全身から顔アップ等）は自動で除外されます。
-                {selected.size === 0 && "上のチップで絞り込むと、必要な分だけ切り出せます。"}
+                現在 {images.length} 枚 / 上限 {MAX_IMAGES} 枚。切り出し元が小さすぎるもの（全身から顔アップ等）は
+                自動で除外されるので、実際の増加はこれより少なくなります。
+                {selected.size === 0 &&
+                  "対象を絞るには、下の一括選択チップ（被写体・構図）で選んでからこのボタンを押してください。"}
               </p>
             </div>
           )}
@@ -1002,12 +1007,35 @@ export function ImageDropzone({
                   </>
                 )}
               </div>
-              {weighted > 0 && (
-                <p className="mt-1.5 text-[10px] text-muted">
-                  {weighted} 枚に重み付けあり。<strong className="text-foreground">消費クレジットは変わりません</strong>
-                  （総ステップ数は固定で、変わるのはデータセットの構成比だけ）。
+              <div className="mt-1.5 space-y-1 text-[10px] leading-relaxed text-muted">
+                <p>
+                  ×2 にした画像は、学習中に
+                  <strong className="text-foreground">2倍の頻度で見せられます</strong>
+                  （同じ画像を2枚入れるのと同じ意味）。
+                  <strong className="text-foreground">消費クレジットは変わりません</strong>
+                  ——総ステップ数は固定で、変わるのはデータセットの構成比だけです。
                 </p>
-              )}
+                <p>
+                  使いどころは
+                  <strong className="text-foreground">「少ない構図を、多い構図に近づける」</strong>
+                  こと。全身ばかりで顔アップが少ないなら、顔アップ側を上げます。
+                  多い側を下げることはできない（最小が ×1）ので、常に少ない側を上げる方向で調整します。
+                  <strong className="text-foreground">情報が増えるわけではない</strong>ので、
+                  ×4 を超える重み付けは素材不足の先送りにしかなりません。
+                </p>
+                {onSuggestRepeats && (
+                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                    <button type="button" onClick={onSuggestRepeats} className={quickSelectBtnCls}>
+                      📐 構図の偏りを均す回数を自動で入れる
+                    </button>
+                    <span className="opacity-70">
+                      被写体ごとに、一番多い構図の枚数へ揃うよう回数を割り当てます（上限 ×4）。
+                      入れたあと個別に直せます。
+                    </span>
+                  </div>
+                )}
+                {weighted > 0 && <p>{weighted} 枚に重み付けがかかっています。</p>}
+              </div>
             </div>
           )}
         </>

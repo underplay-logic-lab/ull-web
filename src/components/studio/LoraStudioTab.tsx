@@ -80,7 +80,7 @@ import {
   type ResolvedCaptionMode,
   matchLeadingSubjectTriggers,
 } from "@/lib/loraCaptionSpec";
-import { captionBuckets, DIAGNOSTIC_AXES } from "@/lib/datasetDiagnostics";
+import { captionBuckets, DIAGNOSTIC_AXES, suggestRepeats } from "@/lib/datasetDiagnostics";
 import { DatasetDiagnosticsPanel } from "@/components/studio/DatasetDiagnosticsPanel";
 import { translateCaption } from "@/lib/loraTranslate";
 import { extractIdentityTags } from "@/lib/loraCaption";
@@ -1172,6 +1172,61 @@ export function LoraStudioTab({
     },
     [images, captions, allSubjects],
   );
+
+  // キャプションに実際に入っている被写体の内訳（2026-09-21、ホスト指摘）。
+  // 以前は主トリガーだけを見て「全キャプションの先頭に hitozuma を反映済み」
+  // と出しており、kocho 単独の画像がある構成では単純に嘘だった。
+  // キャプション自体は API 側が subjects 全体を見て振り分けているので正しい。
+  const captionSubjectCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    let none = 0;
+    let total = 0;
+    for (const img of images) {
+      const cap = (captions[img.id] ?? "").trim();
+      if (!cap) continue;
+      total += 1;
+      const hits = matchLeadingSubjectTriggers(cap, allSubjects);
+      if (hits.length === 0) {
+        none += 1;
+        continue;
+      }
+      const key = hits.map((h) => h.trigger).join(" + ");
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return {
+      total,
+      none,
+      rows: [...counts.entries()].sort((a, b) => b[1] - a[1]),
+    };
+  }, [images, captions, allSubjects]);
+
+  // 構図の偏りを均す学習回数を一括適用する（2026-09-21、ホスト指摘
+  // 「どれだけ増やせば良いのかがわかりにくい」）。キャプションが付いている
+  // 画像だけが対象で、被写体ごとに一番多い距離バケットへ揃える（上限×4）。
+  const applySuggestedRepeats = useCallback(() => {
+    const captioned = images.filter((img) => (captions[img.id] ?? "").trim());
+    if (captioned.length === 0) return;
+    const sug = suggestRepeats(
+      captioned.map((img) => ({ caption: (captions[img.id] ?? "").trim() })),
+      allSubjects,
+    );
+    const byRepeat = new Map<number, string[]>();
+    captioned.forEach((img, k) => {
+      const n = sug[k] ?? 1;
+      const list = byRepeat.get(n) ?? [];
+      list.push(img.id);
+      byRepeat.set(n, list);
+    });
+    for (const [n, ids] of byRepeat) setImageRepeats(ids, n);
+    setAddNotice(
+      "構図の偏りを均す学習回数を入れました: " +
+        [...byRepeat.entries()]
+          .sort((a, b) => a[0] - b[0])
+          .map(([n, ids]) => `×${n} が ${ids.length} 枚`)
+          .join(" / ") +
+        "。多い構図を下げることはできないので、少ない構図を上げる形になります。個別に直せます。",
+    );
+  }, [images, captions, allSubjects, setImageRepeats]);
 
   const tooSmallImages = useMemo(() => images.filter((i) => i.sizeVerdict === "tooSmall"), [images]);
 
@@ -3190,6 +3245,7 @@ export function LoraStudioTab({
             selectionGroups={selectionGroups}
             selectedIds={selectedImageIds}
             onSelectedChange={setSelectedImageIds}
+            onSuggestRepeats={captionSubjectCounts.total > 0 ? applySuggestedRepeats : undefined}
             smartCropBusy={smartCropBusy}
             smartCropProgress={smartCropProgress}
             onSmartCrop={(ids, kinds) => void runSmartCropForDataset(ids, kinds)}
@@ -3356,9 +3412,16 @@ export function LoraStudioTab({
             <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-green-400">
               <span className="inline-flex items-center gap-1">
                 <Check size={10} />
-                全キャプション（{aiCaptionedCount} 件）の先頭に「
-                <span className="font-mono font-medium">{curationTrigger}</span>
-                」を反映済み
+                キャプション {captionSubjectCounts.total} 件に被写体タグを反映済み:{" "}
+                {captionSubjectCounts.rows.map(([key, n], k) => (
+                  <span key={key}>
+                    {k > 0 && " / "}
+                    <span className="font-mono font-medium">{key}</span> {n}
+                  </span>
+                ))}
+                {captionSubjectCounts.none > 0 && (
+                  <span className="text-amber-400"> / 被写体不明 {captionSubjectCounts.none}</span>
+                )}
               </span>
               {captionSpecFilled && (
                 <span className="text-muted">

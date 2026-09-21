@@ -196,6 +196,69 @@ export function captionBuckets(caption: string, axis: DiagnosticAxis): string[] 
     .map((b) => b.id);
 }
 
+/**
+ * 構図（距離）の偏りを均す学習回数を提案する（2026-09-21、ホスト指摘
+ * 「どれだけ増やせば良いのかがわかりにくい」）。
+ *
+ * 考え方はこれだけ:
+ *   被写体ごとに距離バケットの枚数を数え、**一番多いバケットに合わせる**
+ *   回数を割り当てる（少ないバケットほど回数を上げる）。
+ *
+ * ただし上限を設ける。4枚を25枚に合わせようとすると ×6 になるが、同じ4枚を
+ * 6回見せても情報は増えず、その4枚の背景・ポーズまで焼き込む方向にしか
+ * 働かない。`cap` はそのための足枷で、既定 4 は「×4 を超える重み付けは
+ * 素材不足の先送りでしかない」という判断からの出発点（未校正）。
+ *
+ * 1枚が複数のバケット／被写体に該当することがある（duo の全身など）。
+ * その場合は**大きい方**を採る — 足りないバケットを埋めるのが目的なので。
+ *
+ * ⚠️ これは**被写体間の比率までは触らない**。距離の偏りだけを均すので、
+ * 結果として被写体ごとの総露出は動く。Illustrious の男性バイアス
+ * （docs/STATUS.md）のように意図して比率を傾けている場合は、適用後に
+ * 露出の数字を必ず確認すること。
+ */
+export function suggestRepeats(
+  items: DiagnosticInput[],
+  subjects: LoraSubject[],
+  cap = 4,
+): number[] {
+  // 1パス目: 被写体ごと・バケットごとの枚数を数える。
+  const counts = new Map<string, Map<string, number>>();
+  const perItem = items.map((item) => {
+    const caption = (item.caption ?? "").trim();
+    if (!caption) return null;
+    const present = matchLeadingSubjectTriggers(caption, subjects);
+    const targets =
+      present.length > 0
+        ? present.map((x) => x.trigger.trim())
+        : [subjects[0]?.trigger.trim() || "（この LoRA）"];
+    const buckets = captionBuckets(caption, "distance");
+    for (const t of targets) {
+      let m = counts.get(t);
+      if (!m) counts.set(t, (m = new Map()));
+      for (const b of buckets) m.set(b, (m.get(b) ?? 0) + 1);
+    }
+    return { targets, buckets };
+  });
+
+  // 2パス目: 各被写体の最大バケットへ合わせる回数を割り当てる。
+  return perItem.map((info) => {
+    if (!info || info.buckets.length === 0) return 1;
+    let best = 1;
+    for (const t of info.targets) {
+      const m = counts.get(t);
+      if (!m || m.size === 0) continue;
+      const peak = Math.max(...m.values());
+      for (const b of info.buckets) {
+        const n = m.get(b) ?? 0;
+        if (n <= 0) continue;
+        best = Math.max(best, Math.min(cap, Math.max(1, Math.round(peak / n))));
+      }
+    }
+    return best;
+  });
+}
+
 export function analyzeDataset(
   items: DiagnosticInput[],
   subjects: LoraSubject[],
