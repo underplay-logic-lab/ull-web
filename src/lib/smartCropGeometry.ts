@@ -76,7 +76,10 @@ export function computeFaceCropBox(eyeA: Point, eyeB: Point, nose: Point): Box {
   return squareFromCenter(cx, cy, EYE_UP_MULT * dEye, EYE_DOWN_MULT * dEye);
 }
 
-const UPPER_TOP_MARGIN_RATIO = 0.1; // 頭頂部からさらに10%上に余白
+// 頭頂部からさらに上へ取る余白。2026-09-22 に 0.1 -> 0.18 へ。頭頂部の位置は
+// 推定値なので、足りないと顔が切れる（取り返しがつかない）一方、多すぎても
+// 背景が少し入るだけで害が小さい。非対称なコストなので余裕を持たせる。
+const UPPER_TOP_MARGIN_RATIO = 0.18;
 const UPPER_SHOULDER_WIDTH_MULT = 1.6;
 const UPPER_ASPECT_W = 3;
 const UPPER_ASPECT_H = 4;

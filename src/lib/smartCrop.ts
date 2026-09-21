@@ -219,12 +219,34 @@ export async function runSmartCrop(file: File): Promise<SmartCropOutput[]> {
           x: (pt(leftHip, w, h).x + pt(rightHip, w, h).x) / 2,
           y: (pt(leftHip, w, h).y + pt(rightHip, w, h).y) / 2,
         };
-        // 頭頂部: Face Landmarker が取れていればそれを使う。無ければ肩幅から
-        // 簡易推定（頭の高さ ≒ 肩幅×0.9 は成人の平均的な頭身比に基づく目安）。
-        const estimatedHeadTop: Point = headTop ?? {
-          x: (lS.x + rS.x) / 2,
-          y: Math.min(lS.y, rS.y) - Math.hypot(lS.x - rS.x, lS.y - rS.y) * 0.9,
-        };
+        // 頭頂部の推定（2026-09-22 に作り直した）。
+        //
+        // 旧実装は Face Landmarker が失敗したとき「肩の高さ − 肩幅×0.9」で
+        // 推定していたが、**横向き・後ろ向きだと2Dの肩幅が大幅に縮む**ため
+        // 推定位置が実際の頭頂部よりずっと下になり、顔が枠の外へ出ていた
+        // （ホスト報告「顔が見切れて上半身だけの画像が結構ある」）。
+        //
+        // Pose Landmarker の鼻は横向き・後ろ向きでも比較的安定して取れるので、
+        // 鼻から肩までの**縦方向**の距離を基準にする。この距離は体の向きで
+        // 縮まないので、肩幅より信頼できる。係数 1.6 は「鼻〜肩の距離 ≒
+        // 顎〜鎖骨」で、頭頂部はそこから上へ同程度＋髪ぶんの余裕を見た値。
+        const poseNose = pose[POSE_LM.nose];
+        const shoulderY = Math.min(lS.y, rS.y);
+        let estimatedHeadTop: Point;
+        if (headTop) {
+          estimatedHeadTop = headTop;
+        } else if (isLandmarkVisible(poseNose)) {
+          const nose = pt(poseNose, w, h);
+          const noseToShoulder = Math.max(shoulderY - nose.y, 1);
+          estimatedHeadTop = { x: nose.x, y: nose.y - noseToShoulder * 1.6 };
+        } else {
+          // 鼻も取れない（完全な後ろ向き等）。肩幅基準に戻すが、縮みを見込んで
+          // 係数を上げる。切りすぎるより余白が多いほうが害が小さい。
+          estimatedHeadTop = {
+            x: (lS.x + rS.x) / 2,
+            y: shoulderY - Math.hypot(lS.x - rS.x, lS.y - rS.y) * 1.3,
+          };
+        }
         const lowestElbowY = [leftElbow, rightElbow]
           .filter(isLandmarkVisible)
           .map((e) => pt(e, w, h).y);
