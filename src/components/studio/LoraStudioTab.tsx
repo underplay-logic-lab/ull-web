@@ -1277,6 +1277,8 @@ export function LoraStudioTab({
   // 画像が入っていてトリガーワードがあり、まだ特徴が空の被写体だけを対象に
   // 1回ずつ走らせる。effect の中で同期 setState はしない（非同期の完了時に
   // extractIdentityFor が自前で state を更新する）。
+  // 「別の人物を追加」の直後にフォーカスを当てる被写体の index。
+  const focusSubjectRef = useRef<number | null>(null);
   const autoExtractedRef = useRef<Set<string>>(new Set());
   // 抽出をやり直す（結果がおかしかったとき用）。自動実行は1回きりなので、
   // これが無いと直す手段が手入力しか無くなる（2026-09-22）。
@@ -3542,6 +3544,30 @@ export function LoraStudioTab({
             </div>
           )}
 
+          {/* キュレーションの選択は自動解析の案内より**前**に置く
+              （2026-09-22、ホスト指摘）。解析が終わってから「確認画面を出すか」
+              を聞かれても手遅れに見える。 */}
+          <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-background/40 px-3 py-2">
+            <input
+              type="checkbox"
+              checked={curationEnabled}
+              onChange={(e) => setCurationEnabled(e.target.checked)}
+              disabled={busy}
+              className="mt-0.5 accent-neon-pink"
+            />
+            <span className="text-[11px] leading-relaxed text-muted">
+              <span className="font-medium text-foreground">アップロード後にキュレーション画面で確認・編集する</span>
+              <br />
+              画像をブラウザ上でプレビューして不要なものを間引き、自動生成されたキャプションを日本語で確認・修正してから学習を開始します。
+            </span>
+          </label>
+
+          {(aiCaptionedCount > 0 || userCaptionCount > 0) && !curationEnabled && (
+            <p className="text-[10px] leading-relaxed text-muted">
+              キャプションを1枚ずつ確認・編集したい場合は、上の「キュレーション画面で確認・編集する」を有効にしてください。
+            </p>
+          )}
+
           {/* Auto-routing badge: reflects the customCaptions / skipCaptioning
               the payload will carry, decided by what was dropped in + the AI
               vision pass result. No vendor names (CLAUDE.md §2). */}
@@ -3576,7 +3602,8 @@ export function LoraStudioTab({
                     <span className="font-medium">
                       高速AIビジョンが全画像を自動解析しました（最適タグを即時付与）
                     </span>
-                    {pendingCaptionCount > 0 &&
+
+          {pendingCaptionCount > 0 &&
                       `。${pendingCaptionCount} 枚は解析できず、学習時に自動補完されます`}
                     。
                   </span>
@@ -3633,26 +3660,6 @@ export function LoraStudioTab({
             </p>
           )}
 
-          <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-background/40 px-3 py-2">
-            <input
-              type="checkbox"
-              checked={curationEnabled}
-              onChange={(e) => setCurationEnabled(e.target.checked)}
-              disabled={busy}
-              className="mt-0.5 accent-neon-pink"
-            />
-            <span className="text-[11px] leading-relaxed text-muted">
-              <span className="font-medium text-foreground">アップロード後にキュレーション画面で確認・編集する</span>
-              <br />
-              画像をブラウザ上でプレビューして不要なものを間引き、自動生成されたキャプションを日本語で確認・修正してから学習を開始します。
-            </span>
-          </label>
-
-          {(aiCaptionedCount > 0 || userCaptionCount > 0) && !curationEnabled && (
-            <p className="text-[10px] leading-relaxed text-muted">
-              キャプションを1枚ずつ確認・編集したい場合は、上の「キュレーション画面で確認・編集する」を有効にしてください。
-            </p>
-          )}
         </div>
 
         {/* Right column — settings */}
@@ -3861,6 +3868,13 @@ export function LoraStudioTab({
                     }
                     placeholder={`${i + 2}人目のtrigger word（例: kocho）`}
                     disabled={busy}
+                    // 追加した直後はここへカーソルを置く（2026-09-22、ホスト指摘）。
+                    ref={(el) => {
+                      if (el && focusSubjectRef.current === i) {
+                        focusSubjectRef.current = null;
+                        el.focus();
+                      }
+                    }}
                     className={`${fieldCls} font-mono`}
                   />
                   <GenderTagPicker
@@ -3917,7 +3931,10 @@ export function LoraStudioTab({
               <button
                 type="button"
                 onClick={() =>
-                  setExtraSubjects((prev) => [...prev, { trigger: "", description: "", fixedTags: "" }])
+                  setExtraSubjects((prev) => {
+                    focusSubjectRef.current = prev.length;
+                    return [...prev, { trigger: "", description: "", fixedTags: "" }];
+                  })
                 }
                 disabled={busy}
                 className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-muted transition-colors hover:text-neon-violet disabled:opacity-50"

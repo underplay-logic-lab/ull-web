@@ -39,10 +39,23 @@ const ERR_MESSAGES = {
 } as const;
 
 /** "1man, solo, male" / "1girl, solo, female" 等から性別だけを取り出す。 */
+// 部分一致で判定してはいけない（2026-09-22 に実際に踏んだ）。
+// "1woman" は "man" を、"female" は "male" を含むため、女性タグが male と
+// 判定されて女性側の被写体に男性の特徴が返る。カンマ・空白で割って
+// トークン単位の完全一致で見る（単語境界の正規表現も、生成過程で壊れて
+// 制御文字になっていた実績があるので使わない）。
+const FEMALE_TOKENS = new Set(["1girl", "2girls", "1woman", "female", "woman", "women", "girl", "girls"]);
+const MALE_TOKENS = new Set(["1boy", "2boys", "1man", "male", "man", "men", "boy", "boys"]);
+
 function genderOf(fixedTags: string): "male" | "female" | null {
-  const t = fixedTags.toLowerCase();
-  if (/(1man|1boy|male|man|boy)/.test(t)) return "male";
-  if (/(1girl|1woman|female|woman|girl)/.test(t)) return "female";
+  const tokens = fixedTags
+    .toLowerCase()
+    .replace(/[,、]/g, " ")
+    .split(" ")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (tokens.some((t) => FEMALE_TOKENS.has(t))) return "female";
+  if (tokens.some((t) => MALE_TOKENS.has(t))) return "male";
   return null;
 }
 
