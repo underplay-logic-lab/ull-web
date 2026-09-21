@@ -702,6 +702,15 @@ export function LoraStudioTab({
           (oversized.length > 3 ? " ほか" : ""),
       );
     }
+    // 上限超過も無言で切り捨てない（CLAUDE.md §6-8）。oversized と両方
+    // 起きた場合は後勝ちになるが、どちらも「何枚落ちたか」は必ず出る。
+    const overflow = entries.length - oversized.length - Math.max(room, 0);
+    if (overflow > 0) {
+      setErrorMessage(
+        `1データセットの上限 ${MAX_IMAGES} 枚に達したため、${overflow} 枚を取り込めませんでした。` +
+          `不要な画像を削除してから追加してください。`,
+      );
+    }
     for (const { file, caption, cropKind } of entries) {
       if (file.size > MAX_FILE_BYTES) continue;
       if (room <= 0) break;
