@@ -1569,6 +1569,11 @@ export function LoraStudioTab({
   // 判定）。生YAMLモードは生YAML自体をsd-scriptsワーカーが受け付けないため
   // 対象外（route.tsが400で拒否する）。
   const isSdxlJob = pricedArch === "sdxl";
+  // 非同期コールバック（runVisionCaptions の完了処理）から参照するため。
+  const isSdxlJobRef = useRef(isSdxlJob);
+  useEffect(() => {
+    isSdxlJobRef.current = isSdxlJob;
+  }, [isSdxlJob]);
 
   // metadata に何か埋め込む LoRA では、内容を目視確認するまで学習させない。
   // 納品物に焼かれてユーザーの手元へ渡るものなので、黙って確定させない。
@@ -2446,14 +2451,23 @@ export function LoraStudioTab({
         running: false,
         done: s.total,
         note: null,
+        // ⚠️ 「学習時に自動補完されます」は SDXL では**嘘**だった
+        // （2026-09-22）。modal_sdxl_lora_worker.py の _stage_dataset は
+        // VLM 補完を持たず、キャプションが空の画像は**トリガーワードだけ**で
+        // 学習される。その画像のポーズ・背景・服装がすべてトリガーへ
+        // 焼き込まれるので、放置していい話ではない。
         error:
           missed === 0
             ? null
-            : safetyMissed >= missed
-              ? `${missed} 枚はコンテンツポリシーにより自動解析の対象外です（学習時に自動補完されます）。`
-              : safetyMissed > 0
-                ? `${missed} 枚は自動解析できませんでした（うち ${safetyMissed} 枚はコンテンツポリシー対象、学習時に自動補完されます）。`
-                : `${missed} 枚は自動解析できませんでした（学習時に自動補完されます）。`,
+            : `${missed} 枚は自動解析できませんでした` +
+              (safetyMissed > 0
+                ? safetyMissed >= missed
+                  ? "（コンテンツポリシーにより対象外）"
+                  : `（うち ${safetyMissed} 枚はコンテンツポリシー対象）`
+                : "") +
+              (isSdxlJobRef.current
+                ? "。このままだと、その画像は**トリガーワードだけ**で学習されます（写っている服装・背景・ポーズがトリガーに焼き込まれます）。下の「🔄 未完了の画像を再解析」を押してください。"
+                : "（学習時に自動補完されます）。"),
       }));
       applyGenderTagConsistency();
       // Pass finished while still on the form — leave the user exactly where
@@ -3462,6 +3476,123 @@ export function LoraStudioTab({
           )}
 
 
+          {/* キャプションの状態は画像一覧の直下に出す（2026-09-22、ホスト
+              指摘）。設定側にあると、どの画像の話なのかが結び付かない。 */}
+          {/* Resume: re-analyze every image that has no caption yet (never
+              started, timed out, or errored). Always visible while any remain. */}
+          {!autoCap.running && images.length > 0 && pendingCaptionCount > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-300">
+              <span className="flex items-center gap-1.5">
+                <AlertTriangle size={13} className="shrink-0" />
+                {captionErrorCount > 0
+                  ? `${pendingCaptionCount} 枚が未解析です（うち ${captionErrorCount} 枚はエラー / タイムアウト）。`
+                  : `${pendingCaptionCount} 枚がまだ解析されていません。`}
+              </span>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void recaptionIncomplete()}
+                className="inline-flex items-center gap-1.5 rounded-md border border-amber-400/60 bg-amber-400/10 px-3 py-1.5 font-semibold text-amber-200 transition-colors hover:bg-amber-400/20 disabled:opacity-50"
+              >
+                <RotateCcw size={12} />
+                🔄 未完了の画像（{pendingCaptionCount}枚）を再解析
+              </button>
+            </div>
+          )}
+
+
+          {/* Auto-routing badge: reflects the customCaptions / skipCaptioning
+              the payload will carry, decided by what was dropped in + the AI
+              vision pass result. No vendor names (CLAUDE.md §2). */}
+          {images.length > 0 &&
+            (autoCap.running && pendingCaptionCount > 0 ? (
+              <p className="flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
+                <Loader2 size={13} className="shrink-0 animate-spin" />
+                <span>
+                  <span className="font-medium">高速AIビジョンが全画像を自動解析中…</span>（
+                  {Math.min(aiCaptionedCount, aiTargetCount)}/{aiTargetCount}）
+                  {autoCap.note && (
+                    <span className="ml-1 text-neon-violet/70">— {autoCap.note}</span>
+                  )}
+                </span>
+              </p>
+            ) : hasUserCaptions ? (
+              <p className="flex items-start gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-[11px] leading-relaxed text-green-400">
+                <span className="shrink-0">📄</span>
+                <span>
+                  自前キャプション（{userCaptionCount} 件）を検知：
+                  <span className="font-medium">AI解析をスキップして高速学習</span>します
+                  {userCaptionCount < images.length &&
+                    `（キャプション無し ${images.length - userCaptionCount} 枚はトリガーワードのみ）`}
+                  。
+                </span>
+              </p>
+            ) : aiCaptionedCount > 0 ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-[11px] leading-relaxed text-green-400">
+                <span className="flex items-start gap-2">
+                  <span className="shrink-0">✨</span>
+                  <span>
+                    <span className="font-medium">
+                      高速AIビジョンが全画像を自動解析しました（最適タグを即時付与）
+                    </span>
+
+          {pendingCaptionCount > 0 &&
+                      `。${pendingCaptionCount} 枚は解析できず、学習時に自動補完されます`}
+                    。
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  disabled={busy || autoCap.running}
+                  onClick={() => void recaptionAll()}
+                  title="現在のトリガーワード・こだわり設定で全画像を解析し直します"
+                  className="inline-flex items-center gap-1 rounded-md border border-green-500/40 px-2 py-1 text-[10px] font-medium text-green-400 transition-colors hover:bg-green-500/10 disabled:opacity-50"
+                >
+                  <RotateCcw size={10} />
+                  AI再解析
+                </button>
+              </div>
+            ) : (
+              <p className="flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
+                <span className="shrink-0">✨</span>
+                <span>
+                  <span className="font-medium">高速AIビジョンが全画像を自動解析</span>
+                  し、最適なタグを即時付与します（画像＋同名 .txt の ZIP を入れると自前キャプション扱い）。
+                </span>
+              </p>
+            ))}
+          {autoCap.error && !autoCap.running && (
+            <p className="text-[10px] text-amber-400">⚠️ {autoCap.error}</p>
+          )}
+
+          {/* Live confirmation that the trigger word + fixed/varying spec are
+              reflected in the current captions (client-side sync, no re-run). */}
+          {!autoCap.running && aiCaptionedCount > 0 && curationTrigger && (
+            <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-green-400">
+              <span className="inline-flex items-center gap-1">
+                <Check size={10} />
+                キャプション {captionSubjectCounts.total} 件に被写体タグを反映済み:{" "}
+                {captionSubjectCounts.rows.map(([key, n], k) => (
+                  <span key={key}>
+                    {k > 0 && " / "}
+                    <span className="font-mono font-medium">{key}</span> {n}
+                  </span>
+                ))}
+                {captionSubjectCounts.none > 0 && (
+                  <span className="text-amber-400"> / 被写体不明 {captionSubjectCounts.none}</span>
+                )}
+              </span>
+              {captionSpecFilled && (
+                <span className="text-muted">
+                  ・固定/変化の特徴指示も反映
+                  {captionSpecKey !== reflectedSpecKey && (
+                    <span className="text-amber-400">（変更あり — 「次へ」で更新）</span>
+                  )}
+                </span>
+              )}
+            </p>
+          )}
+
           {/* データセット構成の自動診断（2026-09-21）。キャプションが1枚でも
               揃った時点から出す。「この構成だと誰がどう弱くなるか」を焼く前に
               知らせるのが目的で、オートモードでのクレーム防止が本題。
@@ -3604,120 +3735,6 @@ export function LoraStudioTab({
             </p>
           )}
 
-          {/* Resume: re-analyze every image that has no caption yet (never
-              started, timed out, or errored). Always visible while any remain. */}
-          {!autoCap.running && images.length > 0 && pendingCaptionCount > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-300">
-              <span className="flex items-center gap-1.5">
-                <AlertTriangle size={13} className="shrink-0" />
-                {captionErrorCount > 0
-                  ? `${pendingCaptionCount} 枚が未解析です（うち ${captionErrorCount} 枚はエラー / タイムアウト）。`
-                  : `${pendingCaptionCount} 枚がまだ解析されていません。`}
-              </span>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void recaptionIncomplete()}
-                className="inline-flex items-center gap-1.5 rounded-md border border-amber-400/60 bg-amber-400/10 px-3 py-1.5 font-semibold text-amber-200 transition-colors hover:bg-amber-400/20 disabled:opacity-50"
-              >
-                <RotateCcw size={12} />
-                🔄 未完了の画像（{pendingCaptionCount}枚）を再解析
-              </button>
-            </div>
-          )}
-
-
-          {/* Auto-routing badge: reflects the customCaptions / skipCaptioning
-              the payload will carry, decided by what was dropped in + the AI
-              vision pass result. No vendor names (CLAUDE.md §2). */}
-          {images.length > 0 &&
-            (autoCap.running && pendingCaptionCount > 0 ? (
-              <p className="flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
-                <Loader2 size={13} className="shrink-0 animate-spin" />
-                <span>
-                  <span className="font-medium">高速AIビジョンが全画像を自動解析中…</span>（
-                  {Math.min(aiCaptionedCount, aiTargetCount)}/{aiTargetCount}）
-                  {autoCap.note && (
-                    <span className="ml-1 text-neon-violet/70">— {autoCap.note}</span>
-                  )}
-                </span>
-              </p>
-            ) : hasUserCaptions ? (
-              <p className="flex items-start gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-[11px] leading-relaxed text-green-400">
-                <span className="shrink-0">📄</span>
-                <span>
-                  自前キャプション（{userCaptionCount} 件）を検知：
-                  <span className="font-medium">AI解析をスキップして高速学習</span>します
-                  {userCaptionCount < images.length &&
-                    `（キャプション無し ${images.length - userCaptionCount} 枚はトリガーワードのみ）`}
-                  。
-                </span>
-              </p>
-            ) : aiCaptionedCount > 0 ? (
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-[11px] leading-relaxed text-green-400">
-                <span className="flex items-start gap-2">
-                  <span className="shrink-0">✨</span>
-                  <span>
-                    <span className="font-medium">
-                      高速AIビジョンが全画像を自動解析しました（最適タグを即時付与）
-                    </span>
-
-          {pendingCaptionCount > 0 &&
-                      `。${pendingCaptionCount} 枚は解析できず、学習時に自動補完されます`}
-                    。
-                  </span>
-                </span>
-                <button
-                  type="button"
-                  disabled={busy || autoCap.running}
-                  onClick={() => void recaptionAll()}
-                  title="現在のトリガーワード・こだわり設定で全画像を解析し直します"
-                  className="inline-flex items-center gap-1 rounded-md border border-green-500/40 px-2 py-1 text-[10px] font-medium text-green-400 transition-colors hover:bg-green-500/10 disabled:opacity-50"
-                >
-                  <RotateCcw size={10} />
-                  AI再解析
-                </button>
-              </div>
-            ) : (
-              <p className="flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
-                <span className="shrink-0">✨</span>
-                <span>
-                  <span className="font-medium">高速AIビジョンが全画像を自動解析</span>
-                  し、最適なタグを即時付与します（画像＋同名 .txt の ZIP を入れると自前キャプション扱い）。
-                </span>
-              </p>
-            ))}
-          {autoCap.error && !autoCap.running && (
-            <p className="text-[10px] text-amber-400">⚠️ {autoCap.error}</p>
-          )}
-
-          {/* Live confirmation that the trigger word + fixed/varying spec are
-              reflected in the current captions (client-side sync, no re-run). */}
-          {!autoCap.running && aiCaptionedCount > 0 && curationTrigger && (
-            <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-green-400">
-              <span className="inline-flex items-center gap-1">
-                <Check size={10} />
-                キャプション {captionSubjectCounts.total} 件に被写体タグを反映済み:{" "}
-                {captionSubjectCounts.rows.map(([key, n], k) => (
-                  <span key={key}>
-                    {k > 0 && " / "}
-                    <span className="font-mono font-medium">{key}</span> {n}
-                  </span>
-                ))}
-                {captionSubjectCounts.none > 0 && (
-                  <span className="text-amber-400"> / 被写体不明 {captionSubjectCounts.none}</span>
-                )}
-              </span>
-              {captionSpecFilled && (
-                <span className="text-muted">
-                  ・固定/変化の特徴指示も反映
-                  {captionSpecKey !== reflectedSpecKey && (
-                    <span className="text-amber-400">（変更あり — 「次へ」で更新）</span>
-                  )}
-                </span>
-              )}
-            </p>
-          )}
 
         </div>
 
