@@ -1077,6 +1077,50 @@ B300 時給のままなら cap 2,520s で余裕 4% しか無かった。
 `s_per_it` / `prep_s` が残るようにしてあるので、SDXL のジョブが1本走れば
 確定する。それまで `LORA_SPI_BASELINE["sdxl"]` は据え置く。
 
+### 14.8.5 minimax_h3 のベース重みは量子化版（CLAUDE.md §1 の例外・2026-09-21）
+
+CLAUDE.md §1 は「量子化禁止・BF16 フル精度を既定」だが、**`minimax_h3` は
+ベース重みが量子化版しか無い**。方針は「**使えるなら無圧縮版を使う。使えなければ
+仕方ない**」（ホスト、2026-09-21）。
+
+| | 実際に読んでいるファイル |
+|---|---|
+| ベース DiT | `diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors`（**pruned INT8 convrot**） |
+| ベース TE | `clip/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`（**NVFP4 AWQ**） |
+| 学習の計算 dtype | `train.dtype: "bf16"` ✅ |
+| 我々による量子化 | `model.quantize: false` ✅ |
+| **出来上がる LoRA** | `save.dtype: "bf16"` ✅ |
+
+#### なぜ無圧縮版を使えないか
+
+ai-toolkit の `MiniMaxH3Transformer` は**融合済み int8_convrot の state_dict
+レイアウトに決め打ち**で書かれている。生の bf16 checkpoint を渡すと:
+
+```
+Unexpected key(s) in state_dict: blocks.0.adaln_proj.linear.bias …
+```
+
+bf16 は `adaln_proj` が分離したままだが、量子化パーティションはこれを融合する
+ため、キーが噛み合わない。ai-toolkit の `minimax_h3` ローダーは
+`_resolve_comfy_file()` 経由で partition `fl2va_pruned` + `*_int8_convrot` /
+`*_nvfp4_awq` のファイル名を既定で解決しており、**top-level の
+`text_encoder_path` / `vae_path` を無視する**。経緯は
+`modal_lora_worker.py` の `TARGET_MODELS["minimax_h3"]` のコメント。
+
+つまり **VRAM を節約するためにこちらが量子化を選んだのではなく、この arch には
+その配置しか存在しない**。CLAUDE.md §1 が承認を求めている「品質と引き換えに
+量子化を選ぶ」ケースには当たらないので、承認不要の例外として扱う。
+
+⚠️ Volume には `clip/qwen3vl_32b_minimax_h3_bf16.safetensors`（48.0GB）も
+あるが、これは **Director の推論**用で学習には使えない（§14.8.3 の容量調査参照）。
+「bf16 版があるじゃないか」と差し替えると全ジョブが落ちる。
+
+#### UI 表記について
+
+`loraModels.ts` の `minimax_h3` の note「BF16 フル精度・動画」は**そのままで
+よい**（ホスト判断）。ユーザーが受け取る LoRA と学習の計算はどちらも bf16 で、
+この表記が指しているのはそこだから。
+
 ### 14.9 Modal Volume の書き込みは速い（チェックポイント保存は犯人ではない）
 
 1.2GB（rank64 MiniMax H3 LoRA の実サイズ）を書いて commit するまでの実測:
