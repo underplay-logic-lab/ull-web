@@ -5,8 +5,8 @@ import { EditableText } from "@/components/EditableText";
 import { EditableLink } from "@/components/EditableLink";
 import { EditableMedia } from "@/components/EditableMedia";
 
-// 「いいとこどり」ヒーロー。ローカルの自由度 × クラウドの手軽さ × 秒単位の
-// 適正価格。未認証向けの無料お試し生成ボタン（推論デモ）は置かない — 自前 GPU
+// 「いいとこどり」ヒーロー。ローカルの自由度 × クラウドの手軽さ × 使った分
+// だけの適正価格。未認証向けの無料お試し生成ボタン（推論デモ）は置かない — 自前 GPU
 // を 1 秒も無駄にしないための原価防衛（Task spec §1）。CTA はログイン導線と
 // 料金導線の 2 つだけ。
 export function Hero() {
@@ -25,7 +25,7 @@ export function Hero() {
           <Sparkles size={12} className="text-neon-pink" />
           <EditableText
             siteKey="hero_ii_badge"
-            fallback="ローカルの自由度 × クラウドの手軽さ × 秒単位の適正価格"
+            fallback="ローカルの自由度 × クラウドの手軽さ × 使った分だけの適正価格"
           />
         </div>
 
@@ -52,7 +52,7 @@ export function Hero() {
         <p className="mx-auto mt-8 max-w-2xl text-base leading-relaxed text-muted sm:text-lg">
           <EditableText
             siteKey="hero_ii_subtitle"
-            fallback="スマホから世界最高峰のGPUパワーを1クリックで解放する、次世代クリエイティブスタジオ。月額固定費は0円、生成した分だけの完全従量課金。"
+            fallback="スマホから世界最高峰のGPUパワーを1クリックで解放する、次世代クリエイティブスタジオ。"
           />
         </p>
 

@@ -159,7 +159,7 @@ export function DeviceZeroWasteSection() {
             <p className="text-xs leading-relaxed text-muted">
               <EditableText
                 siteKey="dzw_meter_caption"
-                fallback="レンタルGPUは「考えている時間」も課金対象。ULL は生成した瞬間だけ、秒単位で課金します。"
+                fallback="レンタルGPUは「考えている時間」も課金対象。ULL は生成に使うGPU時間ぶんだけの課金です。"
               />
             </p>
           </div>
