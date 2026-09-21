@@ -115,6 +115,7 @@ import {
   MAX_IMAGES,
   MAX_LONG_EDGE,
   SMART_CROP_PANEL_ID,
+  CROP_REVIEW_PANEL_ID,
   LORA_SETTINGS_ANCHOR_ID,
   SUBJECT_HINT_SEEN_KEY,
   RepeatWeightPanel,
@@ -772,6 +773,9 @@ export function LoraStudioTab({
     // 何枚増えて合計いくつになったかを毎回出す。取り込み直後に数が合わない
     // という混乱が実際に起きたため、内訳を必ず可視化する。
     const before = imagesRef.current.length;
+    // この通知は**取り込み欄のすぐ下**に出す（2026-09-22、ホスト指摘）。
+    // 以前はサムネイル一覧の下にあり、取り込み中は画面外で見えず、後から
+    // スクロールして出会うと「2 枚」が何の数字か分からなかった。
     setAddNotice(
       `${newImgs.length} 枚を追加しました（合計 ${before + newImgs.length} 枚）` +
         (dupes > 0
@@ -960,6 +964,13 @@ export function LoraStudioTab({
     // 診断から飛んできた選択がそのまま残っていると、次の工程（学習回数）で
     // 「なぜこれだけ選ばれているのか」が分からなくなる。
     setSelectedImageIds(new Set());
+    // 上のサムネイル一覧が数十行ぶん伸びるので、放っておくとクロップ欄が
+    // 画面外へ押し出される。切り出し結果の一覧まで戻す。
+    requestAnimationFrame(() =>
+      document
+        .getElementById(CROP_REVIEW_PANEL_ID)
+        ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
     setAddNotice(
       `元画像 ${candidates.length} 枚から ${kept} 枚を切り出してデータセットに追加しました。` +
         ` 内訳: 生成 ${kept + rejected.upscaled + rejected.redundant} 枚` +
@@ -3334,6 +3345,8 @@ export function LoraStudioTab({
             onAdd={addImages}
             onRemove={removeImage}
             disabled={busy || (!yamlMode && !triggerWord.trim())}
+            notice={addNotice}
+            onDismissNotice={() => setAddNotice(null)}
             onRejectedDrop={() =>
               setErrorMessage(
                 busy
@@ -3386,18 +3399,6 @@ export function LoraStudioTab({
             </div>
           )}
 
-          {addNotice && (
-            <p className="flex items-start justify-between gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] text-neon-violet">
-              <span>{addNotice}</span>
-              <button
-                type="button"
-                onClick={() => setAddNotice(null)}
-                className="shrink-0 text-muted transition-colors hover:text-foreground"
-              >
-                ✕
-              </button>
-            </p>
-          )}
 
           {/* データセット構成の自動診断（2026-09-21）。キャプションが1枚でも
               揃った時点から出す。「この構成だと誰がどう弱くなるか」を焼く前に
@@ -3432,7 +3433,10 @@ export function LoraStudioTab({
               判断基準と**切り出した画像だけのグリッド**をクロップ欄の直下に
               置く。上のサムネイル一覧まで戻って探させない（ホスト指摘）。 */}
           {croppedImages.length > 0 && (
-            <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
+            <div
+              id={CROP_REVIEW_PANEL_ID}
+              className="space-y-2 scroll-mt-24 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2"
+            >
               <p className="text-[11px] font-medium text-neon-violet">
                 切り出した {croppedImages.length} 枚を確認してください
               </p>
@@ -3460,8 +3464,11 @@ export function LoraStudioTab({
                     key={img.id}
                     className="group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border border-border bg-neutral-900"
                   >
+                    {/* object-cover だと縦長の上半身クロップが正方形に切り抜かれて
+                        頭が落ちる（2026-09-22、ホスト指摘）。顔の欠けを目視する
+                        ための一覧なので、必ず全体を出す。 */}
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={img.url} alt="" className="h-full w-full object-cover" />
+                    <img src={img.url} alt="" className="h-full w-full object-contain" />
                     <span className="absolute bottom-1 right-1 rounded bg-neon-violet/85 px-1 py-0.5 text-[8px] font-medium text-white">
                       {img.cropKind ? SMART_CROP_KIND_LABEL[img.cropKind] : ""}
                     </span>

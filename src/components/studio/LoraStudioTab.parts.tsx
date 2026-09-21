@@ -97,6 +97,9 @@ export const SMART_CROP_PANEL_ID = "lora-smart-crop-panel";
 /** 学習設定（モード選択とエキスパート欄）へスクロールで飛ぶための DOM id。 */
 export const LORA_SETTINGS_ANCHOR_ID = "lora-settings-anchor";
 
+/** 切り出し結果の点検パネルの DOM id（クロップ実行後にここへ戻す）。 */
+export const CROP_REVIEW_PANEL_ID = "lora-crop-review-panel";
+
 /** 被写体の「特徴」欄の説明を一度読んだか（2回目以降は出さない）。 */
 export const SUBJECT_HINT_SEEN_KEY = "ull.lora.subjectHintSeen";
 // Raw upload budget. The worker's Smart Ingest stage downscales / re-encodes
@@ -608,6 +611,8 @@ export function ImageDropzone({
   selectedIds,
   onSelectedChange,
   onRejectedDrop,
+  notice,
+  onDismissNotice,
   selectable,
 }: {
   images: DatasetImage[];
@@ -629,6 +634,9 @@ export function ImageDropzone({
   onSelectedChange: (next: Set<string>) => void;
   /** 受け付けられない状態でドロップ／クリックされたときに理由を出す。 */
   onRejectedDrop?: () => void;
+  /** 取り込み結果の通知（追加枚数・除外理由など）。 */
+  notice?: string | null;
+  onDismissNotice?: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -709,6 +717,24 @@ export function ImageDropzone({
           }}
         />
       </div>
+
+      {/* 取り込みの結果はドロップ欄の直下に出す（2026-09-22、ホスト指摘）。
+          サムネイル一覧の下だと、取り込み中は画面外で見えない。 */}
+      {notice && (
+        <p className="mt-2 flex items-start justify-between gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] text-neon-violet">
+          <span>{notice}</span>
+          {onDismissNotice && (
+            <button
+              type="button"
+              onClick={onDismissNotice}
+              className="shrink-0 text-muted transition-colors hover:text-foreground"
+              aria-label="閉じる"
+            >
+              ✕
+            </button>
+          )}
+        </p>
+      )}
 
       {images.length > 0 && (
         <>

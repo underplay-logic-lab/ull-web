@@ -405,7 +405,10 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
       if (want <= 0 || got >= want) continue;
       const fix = distanceFix(b.id, s.axes.distance);
       issues.push({
-        level: got === 0 ? "error" : "warn",
+        // 構図の不足は赤（2026-09-22、ホスト判断「cropしてもらわないと
+        // 良い状態にならないわけだし」）。切り出せば無料で埋まるので、
+        // 黄色で流されるより確実に手を打ってもらうほうがよい。
+        level: got === 0 || fix.fixableWith === "smart_crop" ? "error" : "warn",
         subject: s.trigger,
         message: `「${b.label}」が ${got}枚です（目安 ${want}枚）。${
           got === 0 ? "この距離では生成できません。" : ""
@@ -449,7 +452,8 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
           : [];
       const uniqThin = [...new Set(thin)];
       issues.push({
-        level: "warn",
+        // 距離の偏りは、薄い側を切り出して実際に均せる＝手を打つべき指摘。
+        level: uniqThin.length ? "error" : "warn",
         subject: s.trigger,
         message:
           `${DIAGNOSTIC_AXES[axis].label}が「${top.b.label}」に偏っています（${top.n}枚 / 分類できた ${classified}枚 の ${Math.round(share * 100)}%）。この構図以外での再現性が落ちます。` +
