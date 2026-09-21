@@ -28,6 +28,17 @@ const POSE_MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 
 export const FACE_LM = { irisA: 468, irisB: 473, nose: 1, chin: 152, forehead: 10 } as const;
+/**
+ * 1枚の画像から切り出す人物の上限（2026-09-22）。
+ *
+ * 被写体（トリガーワード）は最大8人まで登録できる（caption/route.ts の
+ * slice(0, 8)）が、クロップ側はここを4にしてある。MediaPipe はランドマーク
+ * 推定を**実際に検出できた人数ぶんだけ**実行するので、上限を上げても1〜2人の
+ * 画像が遅くなることはない。4で止めているのは、5人以上が写った画像から
+ * 切り出した絵はどれも小さく、キャラクター学習の素材として使えないため。
+ */
+const MAX_DETECTED_PEOPLE = 4;
+
 export const POSE_LM = {
   nose: 0,
   leftShoulder: 11,
@@ -55,7 +66,7 @@ async function getFaceLandmarker() {
       return FaceLandmarker.createFromOptions(fileset, {
         baseOptions: { modelAssetPath: FACE_MODEL_URL, delegate: "CPU" },
         runningMode: "IMAGE",
-        numFaces: 2,
+        numFaces: MAX_DETECTED_PEOPLE,
       });
     })();
   }
@@ -70,7 +81,7 @@ async function getPoseLandmarker() {
       return PoseLandmarker.createFromOptions(fileset, {
         baseOptions: { modelAssetPath: POSE_MODEL_URL, delegate: "CPU" },
         runningMode: "IMAGE",
-        numPoses: 2,
+        numPoses: MAX_DETECTED_PEOPLE,
       });
     })();
   }
