@@ -56,9 +56,9 @@ export function DatasetDiagnosticsPanel({
   // 被写体ごとに「クロップで埋まる穴」と、その構図をまとめる。
   const cropPlan = new Map<string, Set<"face" | "upper">>();
   for (const i of diag.issues) {
-    if (i.fixableWith !== "smart_crop" || !i.subject || !i.cropKind) continue;
+    if (i.fixableWith !== "smart_crop" || !i.subject || !i.cropKinds?.length) continue;
     const set = cropPlan.get(i.subject) ?? new Set<"face" | "upper">();
-    set.add(i.cropKind);
+    for (const k of i.cropKinds) set.add(k);
     cropPlan.set(i.subject, set);
   }
   const KIND_LABEL: Record<"face" | "upper", string> = { face: "顔アップ", upper: "上半身" };
@@ -205,39 +205,43 @@ export function DatasetDiagnosticsPanel({
             <p className="text-[10px] text-muted">構成の偏りは見つかりませんでした。</p>
           )}
 
+          {/* クロップの導線は「素材を足すしかない」ブロックの外に出す
+              （2026-09-22、ホスト指摘）。「全身に偏っている」は学習回数でも
+              調整できる warn なのであちらの中に入らないが、薄いほうの構図を
+              引き画から切り出せば実物が増える＝そちらのほうが上位の手当て。 */}
+          {cropPlan.size > 0 && onPrepareCrop && (
+            <div className="space-y-1.5 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2 py-1.5">
+              <p className="text-[10px] leading-relaxed text-muted">
+                <strong className="text-foreground">足りない構図は、いま持っている引き画から切り出せます。</strong>{" "}
+                無料で、その場で増やせます。下のボタンを押すと、対象の元画像と切り出す構図がクロップ欄に
+                自動でセットされます。
+                <span className="opacity-70">
+                  （「要確認」だけでなく「注意」の穴も一緒に埋めるので、赤の件数より多くの構図を提案することがあります）
+                </span>
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {[...cropPlan.entries()].map(([subj, kinds]) => (
+                  <button
+                    key={subj}
+                    type="button"
+                    onClick={() => onPrepareCrop(subj, [...kinds])}
+                    className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/15 px-2.5 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/25"
+                  >
+                    <Scissors size={11} />
+                    <span className="font-mono">{subj}</span> の{" "}
+                    {[...kinds].map((k) => KIND_LABEL[k]).join("・")} を切り出す準備をする
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {needMaterial > 0 && (
             <div className="space-y-1.5 rounded-lg border border-border/60 bg-background/60 px-2 py-1.5">
               <p className="text-[10px] leading-relaxed text-muted">
                 <strong className="text-foreground">学習回数を増やしても直らない指摘があります。</strong>
                 同じ画像を繰り返し見せても情報は増えないので、足りない構図の画像を追加してください。
               </p>
-              {cropPlan.size > 0 && onPrepareCrop && (
-                <>
-                  <p className="text-[10px] leading-relaxed text-muted">
-                    このうち <strong className="text-foreground">距離（顔アップ・バスト・上半身）</strong>{" "}
-                    の穴は、すでに取り込んである引き画から{" "}
-                    <strong className="text-foreground">無料で・その場で</strong> 切り出せます。
-                    下のボタンを押すと、その被写体の元画像と切り出す構図がクロップ欄に自動でセットされます。
-                    <span className="opacity-70">
-                      （ボタンは「要確認」だけでなく「注意」の穴も一緒に埋めるので、赤の件数より多くの構図を提案することがあります）
-                    </span>
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {[...cropPlan.entries()].map(([subj, kinds]) => (
-                      <button
-                        key={subj}
-                        type="button"
-                        onClick={() => onPrepareCrop(subj, [...kinds])}
-                        className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20"
-                      >
-                        <Scissors size={11} />
-                        <span className="font-mono">{subj}</span> の{" "}
-                        {[...kinds].map((k) => KIND_LABEL[k]).join("・")} を切り出す準備をする
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
               {angleFixable > 0 && onOpenMultiAngle && (
                 <>
                   <p className="text-[10px] leading-relaxed text-muted">

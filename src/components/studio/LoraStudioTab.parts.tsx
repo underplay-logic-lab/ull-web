@@ -591,16 +591,10 @@ export function ImageDropzone({
   captionState,
   recaptioningIds,
   onRecaption,
-  smartCropBusy,
-  smartCropProgress,
-  onSmartCrop,
   selectedIds,
   onSelectedChange,
   onRejectedDrop,
   selectable,
-  distanceById,
-  cropKindSelection,
-  onCropKindsChange,
 }: {
   images: DatasetImage[];
   onAdd: (files: FileList | File[]) => void;
@@ -609,9 +603,6 @@ export function ImageDropzone({
   // "ok" (captioned) | "error" (retries exhausted) | "pending" (not yet done).
   captionState?: (id: string) => "ok" | "error" | "pending";
   recaptioningIds?: Set<string>;
-  smartCropBusy?: boolean;
-  smartCropProgress?: { done: number; total: number } | null;
-  onSmartCrop?: (ids: string[], kinds: SmartCropKind[]) => void;
   onRecaption?: (id: string) => void;
   /** 画像をクリックで選択できるようにするか（学習回数パネルと連動）。 */
   selectable?: boolean;
@@ -624,17 +615,8 @@ export function ImageDropzone({
   onSelectedChange: (next: Set<string>) => void;
   /** 受け付けられない状態でドロップ／クリックされたときに理由を出す。 */
   onRejectedDrop?: () => void;
-  /** 画像id -> キャプションから判定した距離バケットid（クロップ候補の絞り込み用）。 */
-  distanceById?: Record<string, string[]>;
-  cropKindSelection: Set<SmartCropKind>;
-  onCropKindsChange: (next: Set<SmartCropKind>) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
-  // 切り出す構図。診断パネルから「顔アップと上半身を切り出す準備」と指示が
-  // 来るのでタブ側が持つ（2026-09-22）。
-  const cropKinds = cropKindSelection;
-  const setCropKinds = (v: Set<SmartCropKind> | ((p: Set<SmartCropKind>) => Set<SmartCropKind>)) =>
-    onCropKindsChange(typeof v === "function" ? v(cropKindSelection) : v);
   const [dragOver, setDragOver] = useState(false);
   const totalBytes = images.reduce((s, i) => s + i.file.size, 0);
   // 学習回数の一括設定用の選択状態。1枚ずつ触るには枚数が多すぎるので、
@@ -668,33 +650,6 @@ export function ImageDropzone({
   };
 
   const croppedCount = images.filter((i) => i.cropKind).length;
-  // 切り出しは「引き画を寄せる」ことしかできない（2026-09-21、ホスト指摘
-  // 「全身から全身を切り出すのもおかしいし、クローズアップから全身を切り出す
-  // のもおかしい」）。キャプションから分かっている元画像の距離より**寄り側**の
-  // 構図だけを候補にする。距離が分からない画像は判断できないので通す。
-  const DIST_ORDER: Record<string, number> = { closeup: 0, bust: 1, upper: 2, full: 3 };
-  const KIND_DIST: Record<SmartCropKind, number> = { face: 0, upper: 2, full: 3 };
-  const canProduce = (imgId: string, kind: SmartCropKind) => {
-    const src = distanceById?.[imgId];
-    if (!src || src.length === 0) return true; // 未分類は判断できないので通す
-    const widest = Math.max(...src.map((b) => DIST_ORDER[b] ?? 3));
-    return widest > KIND_DIST[kind];
-  };
-  // 選択中があればそれを、無ければ未クロップの元画像すべてを母数にする。
-  const cropPool = (
-    selected.size > 0
-      ? images.filter((i) => selected.has(i.id) && !i.cropKind)
-      : images.filter((i) => !i.cropKind)
-  );
-  const cropTargetIds = cropPool
-    .filter((i) => [...cropKinds].some((k) => canProduce(i.id, k)))
-    .map((i) => i.id);
-  // 実際に増える枚数の見込み（構図ごとに作れる画像数の合計）。
-  const cropEstimate = [...cropKinds].reduce(
-    (t, k) => t + cropPool.filter((i) => canProduce(i.id, k)).length,
-    0,
-  );
-
 
   return (
     <div>
@@ -845,115 +800,6 @@ export function ImageDropzone({
               );
             })}
           </div>
-          {/* スマートクロップ。**対象と種類を選べる**（2026-09-21）。全画像×3種を
-              一括で切り出すと 165枚 → +495枚 で上限500枚を超えてしまい、必要の
-              ない構図まで増える。選択中があればそれだけを、無ければ未クロップ
-              全部を対象にする。 */}
-          {onSmartCrop && !disabled && (
-            <div
-              id={SMART_CROP_PANEL_ID}
-              className="mt-2 scroll-mt-24 rounded-lg border border-border bg-background/60 px-3 py-2"
-            >
-              {/* 対象がどこまでか（＝何を母数に数えているか）を最初に言う。
-                  診断から飛んでくると被写体が強制選択されるので、その状態が
-                  見えないと数字の意味が分からない（2026-09-22、ホスト指摘）。 */}
-              <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border/60 pb-1.5 text-[11px]">
-                <span className="font-medium text-foreground">スマートクロップ</span>
-                {selected.size > 0 ? (
-                  <>
-                    <span className="text-neon-violet">
-                      対象: 選択中の {cropPool.length} 枚だけ
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => onSelectedChange(new Set())}
-                      className={quickSelectBtnCls}
-                    >
-                      選択を解除して全画像を対象にする
-                    </button>
-                  </>
-                ) : (
-                  <span className="text-muted">対象: 未クロップの全画像 {cropPool.length} 枚</span>
-                )}
-              </div>
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px]">
-                <span className="text-muted">切り出す構図:</span>
-                {(["face", "upper", "full"] as SmartCropKind[]).map((k) => {
-                  const on = cropKinds.has(k);
-                  const n = cropPool.filter((i) => canProduce(i.id, k)).length;
-                  return (
-                    <button
-                      key={k}
-                      type="button"
-                      disabled={n === 0}
-                      title={
-                        n === 0
-                          ? "対象の中に、この構図より引いて写っている元画像がありません。"
-                          : `対象 ${cropPool.length} 枚のうち ${n} 枚から作れます。`
-                      }
-                      onClick={() =>
-                        setCropKinds((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(k)) next.delete(k);
-                          else next.add(k);
-                          return next.size ? next : prev; // 全部オフは無意味
-                        })
-                      }
-                      className={`rounded-full border px-2 py-0.5 text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                        on
-                          ? "border-neon-violet/60 bg-neon-violet/15 text-neon-violet"
-                          : "border-border bg-background/60 text-muted hover:text-foreground"
-                      }`}
-                    >
-                      {SMART_CROP_KIND_LABEL[k]}
-                      <span className="ml-1 font-mono opacity-70">{n}</span>
-                    </button>
-                  );
-                })}
-                <button
-                  type="button"
-                  onClick={() => onSmartCrop(cropTargetIds, [...cropKinds])}
-                  disabled={smartCropBusy || cropTargetIds.length === 0}
-                  title="骨格・顔の座標を見て、選んだ構図に切り出してデータセットに追加します。"
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-neon-violet/40 bg-neon-violet/5 px-2.5 py-1 text-[11px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/10 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {smartCropBusy ? <Loader2 size={12} className="animate-spin" /> : <Scissors size={12} />}
-                  ✂️ {[...cropKinds].map((k) => SMART_CROP_KIND_LABEL[k]).join("・")} を{" "}
-                  {cropTargetIds.length} 枚から切り出す（最大 +{cropEstimate} 枚）
-                </button>
-                {smartCropBusy && smartCropProgress && (
-                  <span className="text-muted">
-                    {smartCropProgress.done}/{smartCropProgress.total} 枚 処理中…
-                  </span>
-                )}
-              </div>
-              <p
-                className={`mt-1.5 text-[10px] leading-relaxed ${
-                  images.length + cropEstimate > MAX_IMAGES ? "text-amber-400" : "text-muted"
-                }`}
-              >
-                {cropTargetIds.length === 0 ? (
-                  <>
-                    選んだ構図を作れる元画像がありません。切り出しは
-                    <strong className="text-foreground">引いた画を寄せることしかできない</strong>
-                    ので、たとえば「全身」は元画像より引いた画が無いと作れません。
-                    「上半身」なら全身の画像から、「顔」なら全身・上半身・バストの画像から作れます。
-                  </>
-                ) : (
-                  <>
-                    構図の横の数字は「対象 {cropPool.length} 枚のうち、その構図を作れる枚数」です
-                    （切り出しは引いた画を寄せることしかできないため）。現在 {images.length} 枚 / 上限{" "}
-                    {MAX_IMAGES} 枚。
-                    <strong className="text-foreground">実際に増える枚数はこれよりかなり少なくなります</strong>
-                    ——切り出し元が小さすぎるもの（全身写真からの顔アップが典型）と、人物の骨格を検出できな
-                    かった画像は自動で除外されるためです。実行後に内訳が出ます。
-                    {selected.size === 0 &&
-                      " 被写体で絞るには、下の一括選択チップで選んでからこのボタンを押してください。"}
-                  </>
-                )}
-              </p>
-            </div>
-          )}
         </>
       )}
     </div>
@@ -1171,6 +1017,184 @@ export function RepeatWeightPanel({
 
 // ---------------------------------------------------------------------------
 
+/**
+ * スマートクロップ。**診断の下**に置く（2026-09-22、ホスト指摘「流れ的に
+ * スマートクロップは診断の下かな」）。何が足りないかを診断で見てから、
+ * それを切り出す、という順番でないと操作の意味が分からない。
+ *
+ * 対象（選択中があればそれだけ）と構図を選べる。切り出しは引いた画を寄せる
+ * ことしかできないので、構図ごとに「作れる元画像の枚数」を出す。
+ */
+export function SmartCropPanel({
+  images,
+  disabled,
+  selectedIds,
+  onSelectedChange,
+  distanceById,
+  cropKinds,
+  onCropKindsChange,
+  onSmartCrop,
+  smartCropBusy,
+  smartCropProgress,
+}: {
+  images: DatasetImage[];
+  disabled: boolean;
+  selectedIds: Set<string>;
+  onSelectedChange: (next: Set<string>) => void;
+  /** 画像id -> キャプションから判定した距離バケットid（候補の絞り込み用）。 */
+  distanceById?: Record<string, string[]>;
+  cropKinds: Set<SmartCropKind>;
+  onCropKindsChange: (next: Set<SmartCropKind>) => void;
+  onSmartCrop: (ids: string[], kinds: SmartCropKind[]) => void;
+  smartCropBusy?: boolean;
+  smartCropProgress?: { done: number; total: number } | null;
+}) {
+  const selected = selectedIds;
+  const setCropKinds = (v: Set<SmartCropKind> | ((p: Set<SmartCropKind>) => Set<SmartCropKind>)) =>
+    onCropKindsChange(typeof v === "function" ? v(cropKinds) : v);
+
+  // 切り出しは「引き画を寄せる」ことしかできない。キャプションから分かって
+  // いる元画像の距離より**寄り側**の構図だけを候補にする。距離が分からない
+  // 画像は判断できないので通す。
+  const DIST_ORDER: Record<string, number> = { closeup: 0, bust: 1, upper: 2, full: 3 };
+  const KIND_DIST: Record<SmartCropKind, number> = { face: 0, upper: 2, full: 3 };
+  const canProduce = (imgId: string, kind: SmartCropKind) => {
+    const src = distanceById?.[imgId];
+    if (!src || src.length === 0) return true;
+    const widest = Math.max(...src.map((b) => DIST_ORDER[b] ?? 3));
+    return widest > KIND_DIST[kind];
+  };
+  const cropPool =
+    selected.size > 0
+      ? images.filter((i) => selected.has(i.id) && !i.cropKind)
+      : images.filter((i) => !i.cropKind);
+  const cropTargetIds = cropPool
+    .filter((i) => [...cropKinds].some((k) => canProduce(i.id, k)))
+    .map((i) => i.id);
+  const cropEstimate = [...cropKinds].reduce(
+    (t, k) => t + cropPool.filter((i) => canProduce(i.id, k)).length,
+    0,
+  );
+
+  if (images.length === 0 || disabled) return null;
+
+  return (
+    <>
+{/* スマートクロップ。**対象と種類を選べる**（2026-09-21）。全画像×3種を
+    一括で切り出すと 165枚 → +495枚 で上限500枚を超えてしまい、必要の
+    ない構図まで増える。選択中があればそれだけを、無ければ未クロップ
+    全部を対象にする。 */}
+{onSmartCrop && !disabled && (
+  <div
+    id={SMART_CROP_PANEL_ID}
+    className="mt-2 scroll-mt-24 rounded-lg border border-border bg-background/60 px-3 py-2"
+  >
+    {/* 対象がどこまでか（＝何を母数に数えているか）を最初に言う。
+        診断から飛んでくると被写体が強制選択されるので、その状態が
+        見えないと数字の意味が分からない（2026-09-22、ホスト指摘）。 */}
+    <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border/60 pb-1.5 text-[11px]">
+      <span className="font-medium text-foreground">スマートクロップ</span>
+      {selected.size > 0 ? (
+        <>
+          <span className="text-neon-violet">
+            対象: 選択中の {cropPool.length} 枚だけ
+          </span>
+          <button
+            type="button"
+            onClick={() => onSelectedChange(new Set())}
+            className={quickSelectBtnCls}
+          >
+            選択を解除して全画像を対象にする
+          </button>
+        </>
+      ) : (
+        <span className="text-muted">対象: 未クロップの全画像 {cropPool.length} 枚</span>
+      )}
+    </div>
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px]">
+      <span className="text-muted">切り出す構図:</span>
+      {(["face", "upper", "full"] as SmartCropKind[]).map((k) => {
+        const on = cropKinds.has(k);
+        const n = cropPool.filter((i) => canProduce(i.id, k)).length;
+        return (
+          <button
+            key={k}
+            type="button"
+            disabled={n === 0}
+            title={
+              n === 0
+                ? "対象の中に、この構図より引いて写っている元画像がありません。"
+                : `対象 ${cropPool.length} 枚のうち ${n} 枚から作れます。`
+            }
+            onClick={() =>
+              setCropKinds((prev) => {
+                const next = new Set(prev);
+                if (next.has(k)) next.delete(k);
+                else next.add(k);
+                return next.size ? next : prev; // 全部オフは無意味
+              })
+            }
+            className={`rounded-full border px-2 py-0.5 text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+              on
+                ? "border-neon-violet/60 bg-neon-violet/15 text-neon-violet"
+                : "border-border bg-background/60 text-muted hover:text-foreground"
+            }`}
+          >
+            {SMART_CROP_KIND_LABEL[k]}
+            <span className="ml-1 font-mono opacity-70">{n}</span>
+          </button>
+        );
+      })}
+      <button
+        type="button"
+        onClick={() => onSmartCrop(cropTargetIds, [...cropKinds])}
+        disabled={smartCropBusy || cropTargetIds.length === 0}
+        title="骨格・顔の座標を見て、選んだ構図に切り出してデータセットに追加します。"
+        className="inline-flex items-center gap-1.5 rounded-lg border border-neon-violet/40 bg-neon-violet/5 px-2.5 py-1 text-[11px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/10 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {smartCropBusy ? <Loader2 size={12} className="animate-spin" /> : <Scissors size={12} />}
+        ✂️ {[...cropKinds].map((k) => SMART_CROP_KIND_LABEL[k]).join("・")} を{" "}
+        {cropTargetIds.length} 枚から切り出す（最大 +{cropEstimate} 枚）
+      </button>
+      {smartCropBusy && smartCropProgress && (
+        <span className="text-muted">
+          {smartCropProgress.done}/{smartCropProgress.total} 枚 処理中…
+        </span>
+      )}
+    </div>
+    <p
+      className={`mt-1.5 text-[10px] leading-relaxed ${
+        images.length + cropEstimate > MAX_IMAGES ? "text-amber-400" : "text-muted"
+      }`}
+    >
+      {cropTargetIds.length === 0 ? (
+        <>
+          選んだ構図を作れる元画像がありません。切り出しは
+          <strong className="text-foreground">引いた画を寄せることしかできない</strong>
+          ので、たとえば「全身」は元画像より引いた画が無いと作れません。
+          「上半身」なら全身の画像から、「顔」なら全身・上半身・バストの画像から作れます。
+        </>
+      ) : (
+        <>
+          構図の横の数字は「対象 {cropPool.length} 枚のうち、その構図を作れる枚数」です
+          （切り出しは引いた画を寄せることしかできないため）。現在 {images.length} 枚 / 上限{" "}
+          {MAX_IMAGES} 枚。
+          <strong className="text-foreground">実際に増える枚数はこれよりかなり少なくなります</strong>
+          ——切り出し元が小さすぎるもの（全身写真からの顔アップが典型）と、人物の骨格を検出できな
+          かった画像は自動で除外されるためです。実行後に内訳が出ます。
+          {selected.size === 0 &&
+            " 被写体で絞るには、下の一括選択チップで選んでからこのボタンを押してください。"}
+        </>
+      )}
+    </p>
+  </div>
+)}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
 // 2026-09-15: 性別/人数タグ（1girl/1boy/1man/1woman、+solo+性別語 自動付与）を
 // AI任せにせず固定するピッカー。keep_tokens=4（trigger+3タグ）の運用に合わせ、
 // プリセット4種は選ぶだけで`"{value}, solo, female|male"`になる。単独写りの
@@ -1203,7 +1227,12 @@ export function GenderTagPicker({
   const preset = presetKeyFromFixedTags(value);
   return (
     <div className="mt-1.5 flex items-center gap-1.5">
-      <span className="shrink-0 text-[10px] text-muted">性別/人数タグ:</span>
+      <span
+        className="shrink-0 text-[10px] text-muted"
+        title="全キャプションの先頭に固定で入るタグです。指定しないとAIが画像ごとに判定するため、1girl と 1woman が混ざったり solo が抜けたりして、トリガーワードとの対応が崩れます。"
+      >
+        性別/人数タグ:
+      </span>
       <select
         value={preset}
         onChange={(e) => {
@@ -1215,7 +1244,7 @@ export function GenderTagPicker({
         disabled={disabled}
         className="rounded-md border border-border bg-background/70 px-1.5 py-1 text-[11px] text-foreground outline-none focus:border-neon-violet/50 disabled:opacity-50"
       >
-        <option value="">（AIに判定させる・非推奨）</option>
+        <option value="">指定しない（AIが1枚ずつ判定 — 表記がブレるので非推奨）</option>
         {GENDER_TAG_PRESETS.map((p) => (
           <option key={p} value={p}>
             {p} (+solo, {GENDER_TAG_SEX_WORD[p]})

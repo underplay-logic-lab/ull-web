@@ -149,7 +149,7 @@ export type DiagnosticIssue = {
    */
   fixableWith: "multi_angle" | "smart_crop" | null;
   /** smart_crop のとき、どの構図で切り出せば埋まるか（UI の初期選択に使う）。 */
-  cropKind?: "face" | "upper";
+  cropKinds?: ("face" | "upper")[];
 };
 
 export type DatasetDiagnostic = {
@@ -345,15 +345,20 @@ const CROPPABLE_DISTANCE: Record<string, "face" | "upper"> = {
 };
 const DISTANCE_ORDER = ["closeup", "bust", "upper", "full"];
 
+function canCrop(bucketId: string, axes: Record<string, number>): "face" | "upper" | null {
+  const kind = CROPPABLE_DISTANCE[bucketId];
+  if (!kind) return null;
+  const idx = DISTANCE_ORDER.indexOf(bucketId);
+  const wider = DISTANCE_ORDER.slice(idx + 1).reduce((n, b) => n + (axes[b] ?? 0), 0);
+  return wider > 0 ? kind : null;
+}
+
 function distanceFix(
   bucketId: string,
   axes: Record<string, number>,
-): { fixableWith: "smart_crop" | "multi_angle"; cropKind?: "face" | "upper" } {
-  const kind = CROPPABLE_DISTANCE[bucketId];
-  if (!kind) return { fixableWith: "multi_angle" };
-  const idx = DISTANCE_ORDER.indexOf(bucketId);
-  const wider = DISTANCE_ORDER.slice(idx + 1).reduce((n, b) => n + (axes[b] ?? 0), 0);
-  return wider > 0 ? { fixableWith: "smart_crop", cropKind: kind } : { fixableWith: "multi_angle" };
+): { fixableWith: "smart_crop" | "multi_angle"; cropKinds?: ("face" | "upper")[] } {
+  const kind = canCrop(bucketId, axes);
+  return kind ? { fixableWith: "smart_crop", cropKinds: [kind] } : { fixableWith: "multi_angle" };
 }
 
 function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
@@ -431,12 +436,29 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
       if (share < DIAGNOSTIC_TARGETS.bucketDominanceRatio) continue;
       // 他のバケットが全部0なら「1つだけ」の指摘と重複するので出さない。
       if (counts.filter((c) => c.n > 0).length <= 1) continue;
+      // 距離軸なら、薄いほうの構図を**引き画から切り出して実際に増やせる**
+      // （2026-09-22、ホスト指摘「全身に偏っているという指摘だけ出て、
+      // crop ボタンが出てこない」）。学習回数での調整もできるが、実物が
+      // 増えるほうが常に上位なので両方を案内する。
+      const thin =
+        axis === "distance"
+          ? (Object.keys(CROPPABLE_DISTANCE) as string[])
+              .filter((b) => (s.axes.distance[b] ?? 0) < top.n / 2)
+              .map((b) => canCrop(b, s.axes.distance))
+              .filter((k): k is "face" | "upper" => Boolean(k))
+          : [];
+      const uniqThin = [...new Set(thin)];
       issues.push({
         level: "warn",
         subject: s.trigger,
-        message: `${DIAGNOSTIC_AXES[axis].label}が「${top.b.label}」に偏っています（${top.n}枚 / 分類できた ${classified}枚 の ${Math.round(share * 100)}%）。この構図以外での再現性が落ちます。多い側の学習回数を上げない、または少ない側を上げて比率を整えてください。`,
+        message:
+          `${DIAGNOSTIC_AXES[axis].label}が「${top.b.label}」に偏っています（${top.n}枚 / 分類できた ${classified}枚 の ${Math.round(share * 100)}%）。この構図以外での再現性が落ちます。` +
+          (uniqThin.length
+            ? "薄いほうの構図は、引いた画からスマートクロップで増やせます。学習回数での調整も併用できます。"
+            : "多い側の学習回数を上げない、または少ない側を上げて比率を整えてください。"),
         notFixableByRepeats: false,
-        fixableWith: null,
+        fixableWith: uniqThin.length ? "smart_crop" : null,
+        ...(uniqThin.length ? { cropKinds: uniqThin } : {}),
       });
     }
   }
@@ -457,7 +479,7 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
           // 距離軸の不足は、より引いた画が在庫にあればクロップで埋まる
           // （2026-09-22）。以前は一律でマルチアングルへ誘導しており、
           // 無料・即時で作れるものにクレジットを使わせる案内になっていた。
-          const fix: { fixableWith: DiagnosticIssue["fixableWith"]; cropKind?: "face" | "upper" } =
+          const fix: { fixableWith: DiagnosticIssue["fixableWith"]; cropKinds?: ("face" | "upper")[] } =
             axis === "distance"
               ? distanceFix(bucket.id, s.axes.distance)
               : { fixableWith: MULTI_ANGLE_AXES.includes(axis) ? "multi_angle" : null };

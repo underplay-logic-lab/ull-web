@@ -119,6 +119,7 @@ import {
   LORA_SETTINGS_ANCHOR_ID,
   SUBJECT_HINT_SEEN_KEY,
   RepeatWeightPanel,
+  SmartCropPanel,
   MIN_SHORT_EDGE_ERROR,
   MAX_TOTAL_BYTES,
   MAX_FILE_BYTES,
@@ -3304,12 +3305,6 @@ export function LoraStudioTab({
             }
             selectedIds={selectedImageIds}
             onSelectedChange={setSelectedImageIds}
-            distanceById={distanceById}
-            cropKindSelection={cropKindSelection}
-            onCropKindsChange={setCropKindSelection}
-            smartCropBusy={smartCropBusy}
-            smartCropProgress={smartCropProgress}
-            onSmartCrop={(ids, kinds) => void runSmartCropForDataset(ids, kinds)}
           />
 
           {/* 短辺が足りない画像の警告と、超解像タブへの導線（2026-09-21）。
@@ -3343,6 +3338,48 @@ export function LoraStudioTab({
               </p>
             </div>
           )}
+
+          {addNotice && (
+            <p className="flex items-start justify-between gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] text-neon-violet">
+              <span>{addNotice}</span>
+              <button
+                type="button"
+                onClick={() => setAddNotice(null)}
+                className="shrink-0 text-muted transition-colors hover:text-foreground"
+              >
+                ✕
+              </button>
+            </p>
+          )}
+
+          {/* データセット構成の自動診断（2026-09-21）。キャプションが1枚でも
+              揃った時点から出す。「この構成だと誰がどう弱くなるか」を焼く前に
+              知らせるのが目的で、オートモードでのクレーム防止が本題。
+              src/lib/datasetDiagnostics.ts のヘッダに動機と実データの検証あり。 */}
+          {diagnosticItems.length > 0 && (
+            <DatasetDiagnosticsPanel
+              provisional={autoCap.running || pendingCaptionCount > 0}
+              items={diagnosticItems}
+              subjects={allSubjects}
+              onOpenMultiAngle={onOpenMultiAngle}
+              onPrepareCrop={prepareCropForSubject}
+            />
+          )}
+
+          {/* 診断の下にクロップ欄を置く（2026-09-22、ホスト指摘）。
+              何が足りないかを見てから切り出す、という順番にする。 */}
+          <SmartCropPanel
+            images={images}
+            disabled={busy}
+            selectedIds={selectedImageIds}
+            onSelectedChange={setSelectedImageIds}
+            distanceById={distanceById}
+            cropKinds={cropKindSelection}
+            onCropKindsChange={setCropKindSelection}
+            smartCropBusy={smartCropBusy}
+            smartCropProgress={smartCropProgress}
+            onSmartCrop={(ids, kinds) => void runSmartCropForDataset(ids, kinds)}
+          />
 
           {/* 切り出した画像は人手で点検しないと使えない（2026-09-22、ホスト
               指摘「クロップ後に削除の説明が必要」）。何を基準に消すのかが
@@ -3379,33 +3416,6 @@ export function LoraStudioTab({
                 切り出した {croppedImages.length} 枚を選択して目立たせる
               </button>
             </div>
-          )}
-
-          {addNotice && (
-            <p className="flex items-start justify-between gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] text-neon-violet">
-              <span>{addNotice}</span>
-              <button
-                type="button"
-                onClick={() => setAddNotice(null)}
-                className="shrink-0 text-muted transition-colors hover:text-foreground"
-              >
-                ✕
-              </button>
-            </p>
-          )}
-
-          {/* データセット構成の自動診断（2026-09-21）。キャプションが1枚でも
-              揃った時点から出す。「この構成だと誰がどう弱くなるか」を焼く前に
-              知らせるのが目的で、オートモードでのクレーム防止が本題。
-              src/lib/datasetDiagnostics.ts のヘッダに動機と実データの検証あり。 */}
-          {diagnosticItems.length > 0 && (
-            <DatasetDiagnosticsPanel
-              provisional={autoCap.running || pendingCaptionCount > 0}
-              items={diagnosticItems}
-              subjects={allSubjects}
-              onOpenMultiAngle={onOpenMultiAngle}
-              onPrepareCrop={prepareCropForSubject}
-            />
           )}
 
           {/* データセットを触る工程の最後（2026-09-22、ホスト指摘）。
