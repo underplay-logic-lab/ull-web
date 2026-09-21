@@ -3170,6 +3170,13 @@ export function LoraStudioTab({
             onAdd={addImages}
             onRemove={removeImage}
             disabled={busy || (!yamlMode && !triggerWord.trim())}
+            onRejectedDrop={() =>
+              setErrorMessage(
+                busy
+                  ? "処理中は画像を追加できません。完了までお待ちください。"
+                  : "先に上の「トリガーワード」を入力してください。キャプションの作り方がトリガーワードで変わるため、入力前の取り込みは受け付けていません。",
+              )
+            }
             recaptioningIds={recaptioningIds}
             onRecaption={(id) => void recaptionOne(id)}
             captionState={(id) =>

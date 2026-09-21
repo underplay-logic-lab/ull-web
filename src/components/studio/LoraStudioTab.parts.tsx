@@ -595,6 +595,7 @@ export function ImageDropzone({
   selectionGroups,
   selectedIds,
   onSelectedChange,
+  onRejectedDrop,
 }: {
   images: DatasetImage[];
   onAdd: (files: FileList | File[]) => void;
@@ -617,6 +618,8 @@ export function ImageDropzone({
   selectionGroups?: { key: string; title: string; options: { id: string; label: string; ids: string[] }[] }[];
   selectedIds: Set<string>;
   onSelectedChange: (next: Set<string>) => void;
+  /** 受け付けられない状態でドロップ／クリックされたときに理由を出す。 */
+  onRejectedDrop?: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [filters, setFilters] = useState<Record<string, string | null>>({});
@@ -699,12 +702,21 @@ export function ImageDropzone({
         onDrop={(e) => {
           e.preventDefault();
           setDragOver(false);
-          if (!disabled && e.dataTransfer.files.length) onAdd(e.dataTransfer.files);
+          if (!e.dataTransfer.files.length) return;
+          // 受け付けられない状態でも**無反応にしない**（2026-09-21）。
+          // ここで黙ると、ユーザーはドロップゾーンの外に落としたのだと思って
+          // やり直し、そちらはブラウザが画像を開いてしまう（FileDropGuard で
+          // 止めてはいるが、そもそも理由が分からないのが問題）。
+          if (disabled) {
+            onRejectedDrop?.();
+            return;
+          }
+          onAdd(e.dataTransfer.files);
         }}
-        onClick={() => !disabled && inputRef.current?.click()}
+        onClick={() => (disabled ? onRejectedDrop?.() : inputRef.current?.click())}
         className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors ${
           dragOver ? "border-neon-pink/60 bg-neon-pink/5" : "border-border bg-background/60 hover:border-neon-violet/40"
-        } ${disabled ? "pointer-events-none opacity-50" : ""}`}
+        } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
       >
         <ImagePlus size={26} className="text-neon-violet" />
         <p className="text-sm font-medium text-foreground">画像 / ZIP をドラッグ＆ドロップ / クリックで選択</p>

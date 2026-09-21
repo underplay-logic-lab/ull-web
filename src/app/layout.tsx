@@ -8,6 +8,7 @@ import { LiveInspector } from "@/components/LiveInspector";
 import { SourceTextEditor } from "@/components/SourceTextEditor";
 import { SiteContentEditorProvider } from "@/components/SiteContentEditorProvider";
 import { siteConfig } from "@/lib/data";
+import { FileDropGuard } from "@/components/FileDropGuard";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -64,6 +65,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           process.env.NODE_ENV === "development" ? process.cwd().replace(/\\/g, "/") : undefined
         }
       >
+        <FileDropGuard />
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationJsonLd) }}
