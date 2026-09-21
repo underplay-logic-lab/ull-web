@@ -218,6 +218,8 @@ export type LoraFormDraft = {
   // vs. comma tags), 'dense' / 'tags' pin it. See resolveCaptionMode().
   captionMode: CaptionMode;
   curationEnabled: boolean;
+  /** キャプションが反映している captionSpecKey（空なら不明）。 */
+  reflectedSpecKey: string;
   // Expert / model settings — persisted so a reload, a component re-mount, or
   // a switch back to the form after a failed run never drops a hand-tuned
   // Rank / Steps / LR / resolution / base model.
@@ -246,6 +248,7 @@ export function buildFormDraft(v: {
   captionPromptOverride: string;
   captionMode: CaptionMode;
   curationEnabled: boolean;
+  reflectedSpecKey: string;
   mode: Mode;
   modelChoice: string;
   customModelId: string;
@@ -267,6 +270,10 @@ export function buildFormDraft(v: {
     captionPromptOverride: v.captionPromptOverride,
     captionMode: v.captionMode,
     curationEnabled: v.curationEnabled,
+    // キャッシュから戻したキャプションが「どの指示で作られたか」（2026-09-22）。
+    // これを保存していなかったため、リロード後は常に未反映とみなされ、
+    // 取り込み直すたびに全画像のキャプションが作り直されていた。
+    reflectedSpecKey: v.reflectedSpecKey,
     mode: v.mode,
     modelChoice: v.modelChoice,
     customModelId: v.customModelId,
@@ -424,6 +431,7 @@ export const DEFAULT_FORM_DRAFT: LoraFormDraft = buildFormDraft({
   captionPromptOverride: "",
   captionMode: "auto",
   curationEnabled: false,
+  reflectedSpecKey: "",
   mode: "auto",
   modelChoice: "minimax_h3",
   customModelId: "",

@@ -566,6 +566,13 @@ export function LoraStudioTab({
         if (typeof d.captionPromptOverride === "string") setCaptionPromptOverride(d.captionPromptOverride);
         if (isCaptionMode(d.captionMode)) setCaptionMode(d.captionMode);
         if (typeof d.curationEnabled === "boolean") setCurationEnabled(d.curationEnabled);
+        // キャッシュから戻すキャプションが反映している指示（2026-09-22）。
+        // 保存していなかったため、リロード後は常に「指示が変わった」と判定され、
+        // 取り込み直すたびに全画像のキャプションが作り直されていた。
+        if (typeof d.reflectedSpecKey === "string" && d.reflectedSpecKey) {
+          lastCaptionSpecKeyRef.current = d.reflectedSpecKey;
+          setReflectedSpecKey(d.reflectedSpecKey);
+        }
 
         // --- expert / model settings ---------------------------------------
         if (d.mode === "auto" || d.mode === "pro") setMode(d.mode);
@@ -643,6 +650,7 @@ export function LoraStudioTab({
       captionPromptOverride,
       captionMode,
       curationEnabled,
+      reflectedSpecKey,
       mode,
       modelChoice,
       customModelId,
