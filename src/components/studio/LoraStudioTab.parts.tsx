@@ -612,6 +612,8 @@ export function ImageDropzone({
     lastClickedRef.current = id;
   };
 
+  const croppedCount = images.filter((i) => i.cropKind).length;
+
   const applyRepeats = (n: number) => {
     if (!onSetRepeats || selected.size === 0) return;
     onSetRepeats([...selected], n);
@@ -658,7 +660,15 @@ export function ImageDropzone({
         <>
           <div className="mt-3 flex items-center justify-between text-[11px] text-muted">
             <span>
-              {images.length} 枚 ・ 合計 {(totalBytes / 1024 / 1024).toFixed(1)} MB
+              {images.length} 枚
+              {/* スマートクロップで増えた分は内訳を出す。合計だけだと
+                  「取り込んだ枚数と違う」と混乱する（2026-09-21）。 */}
+              {croppedCount > 0 && (
+                <>
+                  （取り込み {images.length - croppedCount} ＋ 切り出し {croppedCount}）
+                </>
+              )}{" "}
+              ・ 合計 {(totalBytes / 1024 / 1024).toFixed(1)} MB
             </span>
             {!disabled && (
               <button

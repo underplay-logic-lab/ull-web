@@ -328,6 +328,8 @@ export function LoraStudioTab({
   // dismissible banner on the form and the user chooses to open it.
   const [recoveredJob, setRecoveredJob] = useState<LoraJobStatus | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // 取り込み結果（何枚増えて合計何枚になったか）。エラーではないので別枠。
+  const [addNotice, setAddNotice] = useState<string | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
   // Seconds since the current job entered 'queued' — drives the cold-start
   // provisioning copy in ProgressPanel. Only ever written from the interval
@@ -691,6 +693,7 @@ export function LoraStudioTab({
     }
     // Reject any single image over the per-file cap (the total-size cap is
     // enforced separately by the submit gate).
+    let dupes = 0;
     const oversized = entries.filter((e) => e.file.size > MAX_FILE_BYTES);
     if (oversized.length) {
       setErrorMessage(
@@ -715,9 +718,18 @@ export function LoraStudioTab({
       if (file.size > MAX_FILE_BYTES) continue;
       if (room <= 0) break;
       room--;
+      // ファイル名・サイズ・更新日時が完全一致するものは、同じ画像を二度
+      // 取り込んだとみなして弾く（2026-09-21）。以前は ::2 の連番を付けて
+      // 別物として追加していたため、同じフォルダをもう一度ドロップすると
+      // 枚数が黙って増えた。データセットに同一画像が二重に入るのは学習上も
+      // 有害なので、追加せずに理由を出す。
       const base = `${file.name}::${file.size}::${file.lastModified}`;
-      let id = base;
-      for (let n = 2; used.has(id); n++) id = `${base}::${n}`;
+      if (used.has(base)) {
+        dupes++;
+        room++; // 枠は消費していない
+        continue;
+      }
+      const id = base;
       used.add(id);
       newImgs.push({ id, file, url: URL.createObjectURL(file), cropKind });
       if ((caption ?? "").trim()) {
@@ -735,6 +747,13 @@ export function LoraStudioTab({
         }
       }
     }
+    // 何枚増えて合計いくつになったかを毎回出す。取り込み直後に数が合わない
+    // という混乱が実際に起きたため、内訳を必ず可視化する。
+    const before = imagesRef.current.length;
+    setAddNotice(
+      `${newImgs.length} 枚を追加しました（合計 ${before + newImgs.length} 枚）` +
+        (dupes > 0 ? ` ／ 取り込み済みと同じ画像 ${dupes} 枚は除外` : ""),
+    );
     if (newImgs.length) setImages((prev) => [...prev, ...newImgs]);
     if (Object.keys(newCaps).length) setCaptions((prev) => ({ ...prev, ...newCaps }));
     if (Object.keys(newCapsJa).length) setCaptionsJa((prev) => ({ ...prev, ...newCapsJa }));
@@ -3013,6 +3032,19 @@ export function LoraStudioTab({
             smartCropProgress={smartCropProgress}
             onSmartCrop={() => void runSmartCropForDataset()}
           />
+
+          {addNotice && (
+            <p className="flex items-start justify-between gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] text-neon-violet">
+              <span>{addNotice}</span>
+              <button
+                type="button"
+                onClick={() => setAddNotice(null)}
+                className="shrink-0 text-muted transition-colors hover:text-foreground"
+              >
+                ✕
+              </button>
+            </p>
+          )}
 
           {/* データセット構成の自動診断（2026-09-21）。キャプションが1枚でも
               揃った時点から出す。「この構成だと誰がどう弱くなるか」を焼く前に
