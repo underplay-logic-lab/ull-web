@@ -884,15 +884,43 @@ export function ImageDropzone({
               id={SMART_CROP_PANEL_ID}
               className="mt-2 scroll-mt-24 rounded-lg border border-border bg-background/60 px-3 py-2"
             >
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px]">
+              {/* 対象がどこまでか（＝何を母数に数えているか）を最初に言う。
+                  診断から飛んでくると被写体が強制選択されるので、その状態が
+                  見えないと数字の意味が分からない（2026-09-22、ホスト指摘）。 */}
+              <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border/60 pb-1.5 text-[11px]">
                 <span className="font-medium text-foreground">スマートクロップ</span>
+                {selected.size > 0 ? (
+                  <>
+                    <span className="text-neon-violet">
+                      対象: 選択中の {cropPool.length} 枚だけ
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onSelectedChange(new Set())}
+                      className={quickSelectBtnCls}
+                    >
+                      選択を解除して全画像を対象にする
+                    </button>
+                  </>
+                ) : (
+                  <span className="text-muted">対象: 未クロップの全画像 {cropPool.length} 枚</span>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px]">
                 <span className="text-muted">切り出す構図:</span>
                 {(["face", "upper", "full"] as SmartCropKind[]).map((k) => {
                   const on = cropKinds.has(k);
+                  const n = cropPool.filter((i) => canProduce(i.id, k)).length;
                   return (
                     <button
                       key={k}
                       type="button"
+                      disabled={n === 0}
+                      title={
+                        n === 0
+                          ? "対象の中に、この構図より引いて写っている元画像がありません。"
+                          : `対象 ${cropPool.length} 枚のうち ${n} 枚から作れます。`
+                      }
                       onClick={() =>
                         setCropKinds((prev) => {
                           const next = new Set(prev);
@@ -901,13 +929,14 @@ export function ImageDropzone({
                           return next.size ? next : prev; // 全部オフは無意味
                         })
                       }
-                      className={`rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+                      className={`rounded-full border px-2 py-0.5 text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                         on
                           ? "border-neon-violet/60 bg-neon-violet/15 text-neon-violet"
                           : "border-border bg-background/60 text-muted hover:text-foreground"
                       }`}
                     >
                       {SMART_CROP_KIND_LABEL[k]}
+                      <span className="ml-1 font-mono opacity-70">{n}</span>
                     </button>
                   );
                 })}
@@ -942,8 +971,9 @@ export function ImageDropzone({
                   </>
                 ) : (
                   <>
-                    対象は「選んだ構図より引いて写っている元画像」だけです（{cropPool.length} 枚中{" "}
-                    {cropTargetIds.length} 枚）。現在 {images.length} 枚 / 上限 {MAX_IMAGES} 枚。
+                    構図の横の数字は「対象 {cropPool.length} 枚のうち、その構図を作れる枚数」です
+                    （切り出しは引いた画を寄せることしかできないため）。現在 {images.length} 枚 / 上限{" "}
+                    {MAX_IMAGES} 枚。
                     切り出し元が小さすぎるもの（全身から顔アップ等）はさらに自動で除外されます。
                     {selected.size === 0 &&
                       " 被写体で絞るには、下の一括選択チップで選んでからこのボタンを押してください。"}
