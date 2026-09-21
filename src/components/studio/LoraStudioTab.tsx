@@ -3501,8 +3501,11 @@ export function LoraStudioTab({
                 <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
                   <p className="text-[10px] leading-relaxed text-amber-400">
                     このうち <strong>{multiSubjectCrops.length} 枚</strong>{" "}
-                    は、切り出したあとも2人以上写っていると判定されました（下で枠が付いています）。
-                    <strong>両方の顔が写っているなら残してください</strong>——2人が同じ絵にいる構図は貴重な素材です。
+                    は、切り出したあとも2人以上写っていると判定されました。
+                    <strong>下のサムネイルのうち、琥珀色の枠が付いているものがそれです。</strong>
+                    <br />
+                    <strong>両方の顔がはっきり写っているなら残してください</strong>
+                    ——2人が同じ絵にいる構図は貴重な素材です。
                     <strong>腕や服の端だけが残っているものは削除してください</strong>
                     ——その人物の学習には使えないうえ、主役の特徴として吸収されてしまいます。
                   </p>
