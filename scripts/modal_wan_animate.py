@@ -1258,9 +1258,14 @@ class WanAnimateUltra(_WanAnimateBase):
 # だけ返すようにしても体感速度が変わらなかった実機報告の真因はこちら
 # （ホスト指摘、2026-09-19）。実際に必要なのは git（_install_node の
 # `git clone`用）とfastapiだけなので、専用の軽量imageに切り出す。
-admin_storage_image = modal.Image.debian_slim(python_version="3.13").apt_install("git").pip_install(
-    "fastapi[standard]"
-)
+# 2026-09-21: ffmpeg を追加。admin ファイルエクスプローラーのサムネイル
+# （_thumbnail）用。動画プレビューが「開いた瞬間に本体を全部ダウンロードする」
+# ため重かった（ホスト指摘）。1フレームだけ抜いた小さな JPEG を先に見せ、
+# 再生ボタンを押したときだけ本体を取りに行く形にするために必要。
+# 画像のサムネイルも同じ経路で作る（20MB の PNG をそのまま中継しないため）。
+admin_storage_image = modal.Image.debian_slim(python_version="3.13").apt_install(
+    "git", "ffmpeg"
+).pip_install("fastapi[standard]")
 
 
 @app.cls(
@@ -1370,7 +1375,23 @@ class ModalStorage:
                     entry_rel = f"{rel}/{entry.name}" if rel else entry.name
                     try:
                         if entry.is_dir(follow_symlinks=True):
-                            dirs.append({"name": entry.name, "path": entry_rel})
+                            # 2026-09-21: ディレクトリの更新日時も返す。
+                            # ⚠️ Linux では「作成日時」は取れない（st_birthtime は
+                            # BSD/macOS のみ、ext4 の crtime は Python から読めない）。
+                            # ここで返す st_mtime は「直下の中身が最後に変わった
+                            # 時刻」。ジョブフォルダの本当の作成日時は
+                            # generation_jobs.created_at 側で解決している
+                            # （/api/admin/modal/storage/labels）。
+                            d_st = entry.stat(follow_symlinks=True)
+                            dirs.append(
+                                {
+                                    "name": entry.name,
+                                    "path": entry_rel,
+                                    "modified_at": time.strftime(
+                                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(d_st.st_mtime)
+                                    ),
+                                }
+                            )
                         else:
                             st = entry.stat(follow_symlinks=True)
                             files.append(
@@ -1475,6 +1496,76 @@ class ModalStorage:
                     break
             stats[rel] = {"files": n_files, "bytes": total, "truncated": truncated}
         return {"stats": stats}
+
+    # サムネイルのキャッシュ置き場（Volume 上）。1枚数十KBなので容量は無視できる。
+    THUMB_CACHE_DIR = f"{MODELS_DIR}/_thumbs"
+    THUMB_MAX_WIDTH = 480
+
+    def _thumbnail(self, item: dict) -> dict:
+        """画像・動画の小さな JPEG サムネイルを返す（2026-09-21 追加）。
+
+        経緯: admin エクスプローラーの動画プレビューは
+        `?inline=1`（Vercel 経由でバイトを中継）で本体をそのまま読んでいたため、
+        開いた瞬間に数十MBを転送していて遅かった（ホスト指摘）。1フレームだけ
+        ffmpeg で抜いた JPEG を先に見せ、本体は再生ボタンを押したときだけ
+        取りに行く形にする。
+
+        生成結果は `_thumbs/<sha1(path)>.jpg` にキャッシュするので、2回目以降は
+        ffmpeg を起動しない。元ファイルが差し替わった場合に備えて mtime も
+        ハッシュに混ぜる。
+        """
+        import hashlib
+        import subprocess
+
+        rel = str(item.get("file_path") or "").strip().strip("/")
+        if not rel or ".." in rel.split("/"):
+            raise fastapi.HTTPException(status_code=400, detail="invalid file_path")
+        _reload_volume("admin-thumb")
+        src = os.path.join(MODELS_DIR, rel)
+        if not os.path.isfile(src):
+            raise fastapi.HTTPException(status_code=404, detail="file not found")
+
+        st = os.stat(src)
+        key = hashlib.sha1(f"{rel}:{int(st.st_mtime)}:{self.THUMB_MAX_WIDTH}".encode()).hexdigest()
+        os.makedirs(self.THUMB_CACHE_DIR, exist_ok=True)
+        cached = os.path.join(self.THUMB_CACHE_DIR, f"{key}.jpg")
+
+        if not os.path.isfile(cached):
+            # -ss 0 の1フレーム。動画でも画像でも同じコマンドで通る。
+            # -an で音声を捨て、scale は縦横比維持（幅だけ指定）。
+            cmd = [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                src,
+                "-frames:v",
+                "1",
+                "-an",
+                "-vf",
+                f"scale='min({self.THUMB_MAX_WIDTH},iw)':-2",
+                "-f",
+                "image2",
+                cached,
+            ]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            except subprocess.TimeoutExpired as exc:
+                raise fastapi.HTTPException(status_code=504, detail="thumbnail timed out") from exc
+            if proc.returncode != 0 or not os.path.isfile(cached):
+                raise fastapi.HTTPException(
+                    status_code=415,
+                    detail=f"thumbnail failed: {(proc.stderr or '').strip()[:300]}",
+                )
+            try:
+                vol.commit()
+            except Exception as exc:  # noqa: BLE001 — キャッシュできなくても表示はできる
+                print(f"[thumb] commit skipped: {exc}", flush=True)
+
+        with open(cached, "rb") as f:
+            data = f.read()
+        return {"filename": f"{key}.jpg", "base64": base64.b64encode(data).decode()}
 
     def _download_async(self, item: dict) -> dict:
         """
@@ -1621,6 +1712,8 @@ class ModalStorage:
             return self._total_usage()
         if action == "dir_stats":
             return self._dir_stats(item)
+        if action == "thumbnail":
+            return self._thumbnail(item)
         if action == "download_async":
             return self._download_async(item)
         if action == "download_repo_async":

@@ -13,7 +13,11 @@ export type VolumeFile = {
   modified_at: string;
 };
 
-export type VolumeDirEntry = { name: string; path: string };
+// modified_at は「直下の中身が最後に変わった時刻」。Linux では作成日時
+// （st_birthtime）が取れないため、フォルダについてはこれが出せる唯一の日時。
+// 学習ジョブフォルダの本当の作成日時は generation_jobs.created_at 側
+// （/api/admin/modal/storage/labels）で解決している。
+export type VolumeDirEntry = { name: string; path: string; modified_at?: string };
 
 export type VolumeDirListing = {
   path: string;
@@ -36,6 +40,7 @@ type ModalStorageAction =
   | { action: "list_dir"; path: string }
   | { action: "total_usage" }
   | { action: "dir_stats"; paths: string[] }
+  | { action: "thumbnail"; file_path: string }
   | { action: "download_async"; download_id: string; url: string; subfolder: string; filename: string }
   | { action: "download_repo_async"; download_id: string; repo_id: string; save_dir: string }
   | { action: "read_file"; file_path: string }
@@ -99,6 +104,16 @@ export async function listVolumeDir(path: string): Promise<VolumeDirListing> {
     return { ...f, size_bytes: bytes, size: bytes, formattedSize: formatBytes(bytes) };
   });
   return { path: result.path ?? path, dirs: result.dirs ?? [], files };
+}
+
+// 画像・動画の小さな JPEG サムネイル（Modal 側で ffmpeg が1フレーム抜き、
+// Volume にキャッシュする）。動画プレビューで本体を丸ごと中継しないために使う。
+export async function getVolumeThumbnail(filePath: string): Promise<Buffer> {
+  const result = await callModalStorage<{ filename: string; base64: string }>({
+    action: "thumbnail",
+    file_path: filePath,
+  });
+  return Buffer.from(result.base64 ?? "", "base64");
 }
 
 export type VolumeDirStat = { files: number; bytes: number; truncated: boolean };

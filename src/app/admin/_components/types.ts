@@ -75,7 +75,10 @@ export type VolumeFile = {
   modified_at: string;
 };
 
-export type VolumeDirEntry = { name: string; path: string };
+// modified_at は「直下の中身が最後に変わった時刻」。Linux では作成日時が
+// 取れないため、フォルダに出せる日時はこれだけ（src/lib/modalStorage.ts の
+// 同名型のコメント参照）。
+export type VolumeDirEntry = { name: string; path: string; modified_at?: string };
 
 export type ModelDownload = {
   id: string;

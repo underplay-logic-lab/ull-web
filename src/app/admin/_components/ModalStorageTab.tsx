@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { ArrowDownUp, CheckCircle2, ChevronDown, Download, Eye, Folder, GitBranch, HardDrive, Loader2, RefreshCw, Search, Trash2, XCircle } from "lucide-react";
+import { ArrowDownUp, CheckCircle2, ChevronDown, Download, Eye, Folder, GitBranch, HardDrive, Loader2, Play, RefreshCw, Search, Trash2, XCircle } from "lucide-react";
 import { GpuCostReferenceCard } from "@/components/admin/GpuCostReferenceCard";
 import type { ModelDownload, VolumeDirEntry, VolumeFile } from "./types";
 
@@ -23,9 +23,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 const PREVIEW_IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "gif"];
 const PREVIEW_VIDEO_EXTS = ["mp4", "webm", "mov"];
-// プレビューは /api/admin/modal/storage/download?inline=1 が Vercel 経由で
-// バイトを中継する経路なので、大きいファイルは開かせない（ダウンロードは
-// 署名付きの直リンクなので上限なし）。
+// 「原寸/本体」を出すときだけの上限。?inline=1 は Vercel 経由でバイトを
+// 中継するため、大きいファイルは通さない（ダウンロードは署名付きの直リンク
+// なので上限なし）。サムネイル経路（/thumb）はサイズに関係なく使える。
 const PREVIEW_MAX_BYTES = 25 * 1024 * 1024;
 
 function extOf(name: string): string {
@@ -33,11 +33,15 @@ function extOf(name: string): string {
 }
 
 function previewKindOf(file: VolumeFile): "image" | "video" | null {
-  if (file.size_bytes > PREVIEW_MAX_BYTES) return null;
   const ext = extOf(file.path);
   if (PREVIEW_IMAGE_EXTS.includes(ext)) return "image";
   if (PREVIEW_VIDEO_EXTS.includes(ext)) return "video";
   return null;
+}
+
+// 原寸/本体をブラウザへ中継してよいサイズか（サムネイルには無関係）。
+function canStreamFull(file: VolumeFile): boolean {
+  return file.size_bytes <= PREVIEW_MAX_BYTES;
 }
 
 // 長いファイル名は「中央」を省略する。末尾（_step0001000.safetensors /
@@ -208,10 +212,11 @@ function filterSortDirs(
   sort: SortState,
   stats: Record<string, VolumeDirStat>,
   labels: Record<string, VolumePathLabel>,
-): VolumeDirEntry[] {
-  if (!dirs) return [];
+  hideEmpty: boolean,
+): { rows: VolumeDirEntry[]; hiddenEmpty: number } {
+  if (!dirs) return { rows: [], hiddenEmpty: 0 };
   const q = query.trim().toLowerCase();
-  const rows = q
+  let rows = q
     ? dirs.filter((d) => {
         const l = labels[d.name];
         return (
@@ -221,14 +226,31 @@ function filterSortDirs(
         );
       })
     : dirs;
-  if (sort.key === "name") return sortedDirEntries(rows);
-  return [...rows].sort((a, b) =>
-    compareBy(
-      sort,
-      { name: a.name, size: stats[a.path]?.bytes ?? -1, modified: "" },
-      { name: b.name, size: stats[b.path]?.bytes ?? -1, modified: "" },
-    ),
-  );
+  // 空フォルダ（ファイル0件）の非表示。集計が返ってきているものだけ判定する
+  // ので、集計前は消えない（= 誤って隠すことがない）。
+  let hiddenEmpty = 0;
+  if (hideEmpty) {
+    const kept = rows.filter((d) => {
+      const st = stats[d.path];
+      if (st && st.files === 0) {
+        hiddenEmpty += 1;
+        return false;
+      }
+      return true;
+    });
+    rows = kept;
+  }
+  const sorted =
+    sort.key === "name"
+      ? sortedDirEntries(rows)
+      : [...rows].sort((a, b) =>
+          compareBy(
+            sort,
+            { name: a.name, size: stats[a.path]?.bytes ?? -1, modified: a.modified_at ?? "" },
+            { name: b.name, size: stats[b.path]?.bytes ?? -1, modified: b.modified_at ?? "" },
+          ),
+        );
+  return { rows: sorted, hiddenEmpty };
 }
 
 function filterFiles(files: VolumeFile[] | null, query: string): VolumeFile[] {
@@ -283,15 +305,74 @@ function SortHeader({
   );
 }
 
+// 2026-09-21: まずサムネイル（Modal 側で ffmpeg が1フレーム抜いた数十KBの
+// JPEG。Volume にキャッシュ）だけを出し、動画の本体は再生ボタンを押した
+// ときに初めて読む（ホスト指摘「動画の読み込みが遅い」）。
+// <video preload="none" poster=...> なので、poster を出している間は本体への
+// リクエストが1バイトも飛ばない。
 function FilePreview({ file }: { file: VolumeFile }) {
   const kind = previewKindOf(file);
-  const src = `/api/admin/modal/storage/download?file_path=${encodeURIComponent(file.path)}&inline=1`;
+  const [playing, setPlaying] = useState(false);
+  const thumbSrc = `/api/admin/modal/storage/thumb?file_path=${encodeURIComponent(file.path)}`;
+  const fullSrc = `/api/admin/modal/storage/download?file_path=${encodeURIComponent(file.path)}&inline=1`;
+
   if (kind === "image") {
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img src={src} alt={file.path} className="max-h-72 rounded-lg border border-border" />;
+    // 画像も一旦サムネイル。原寸は「原寸で開く」で読む（20MB の PNG を
+    // そのまま中継しないため）。
+    return (
+      <div className="flex flex-col items-start gap-2">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={playing ? fullSrc : thumbSrc}
+          alt={file.path}
+          className="max-h-72 rounded-lg border border-border"
+        />
+        {!playing && canStreamFull(file) && (
+          <button
+            type="button"
+            onClick={() => setPlaying(true)}
+            className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+          >
+            <Eye size={12} />
+            原寸で開く
+          </button>
+        )}
+        {!playing && !canStreamFull(file) && (
+          <span className="text-[11px] text-muted opacity-70">
+            原寸は {formatSize(PREVIEW_MAX_BYTES)} を超えるため、ダウンロードで確認してください。
+          </span>
+        )}
+      </div>
+    );
   }
+
   if (kind === "video") {
-    return <video src={src} controls className="max-h-72 rounded-lg border border-border" />;
+    if (!playing) {
+      return (
+        <button
+          type="button"
+          onClick={() => canStreamFull(file) && setPlaying(true)}
+          className="group relative inline-block overflow-hidden rounded-lg border border-border"
+          title={
+            canStreamFull(file)
+              ? "クリックで本体を読み込んで再生します"
+              : `本体が ${formatSize(PREVIEW_MAX_BYTES)} を超えるため、ダウンロードで確認してください`
+          }
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={thumbSrc} alt={file.path} className="max-h-72" />
+          <span className="absolute inset-0 flex items-center justify-center bg-black/30 transition-colors group-hover:bg-black/15">
+            <span className="flex items-center gap-1.5 rounded-full bg-black/70 px-3 py-1.5 text-xs font-medium text-white">
+              <Play size={12} />
+              {canStreamFull(file) ? "再生（本体を読み込む）" : "サイズ超過 — DLで確認"}
+            </span>
+          </span>
+        </button>
+      );
+    }
+    return (
+      <video src={fullSrc} controls autoPlay preload="none" className="max-h-72 rounded-lg border border-border" />
+    );
   }
   return null;
 }
@@ -415,9 +496,11 @@ function FolderRow({
   sort,
   onSort,
   query,
+  hideEmpty,
   stat,
   label,
   statLoading,
+  modifiedAt,
 }: {
   path: string;
   name: string;
@@ -426,9 +509,11 @@ function FolderRow({
   sort: SortState;
   onSort: (key: SortKey) => void;
   query: string;
+  hideEmpty: boolean;
   stat?: VolumeDirStat;
   label?: VolumePathLabel;
   statLoading?: boolean;
+  modifiedAt?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [dirs, setDirs] = useState<VolumeDirEntry[] | null>(null);
@@ -464,9 +549,9 @@ function FolderRow({
   }, [open]);
 
   const { stats: childStats, labels: childLabels, statsLoading: childStatsLoading } = useDirMeta(dirs, open);
-  const visibleDirs = useMemo(
-    () => filterSortDirs(dirs, query, sort, childStats, childLabels),
-    [dirs, query, sort, childStats, childLabels],
+  const { rows: visibleDirs, hiddenEmpty } = useMemo(
+    () => filterSortDirs(dirs, query, sort, childStats, childLabels, hideEmpty),
+    [dirs, query, sort, childStats, childLabels, hideEmpty],
   );
   const visibleFiles = useMemo(() => filterFiles(files, query), [files, query]);
 
@@ -532,6 +617,14 @@ function FolderRow({
             ) : statLoading ? (
               <Loader2 size={10} className="shrink-0 animate-spin text-muted opacity-60" />
             ) : null}
+            {/* フォルダの日時。Linux では作成日時が取れないので「更新」=
+                直下の中身が最後に変わった時刻。ジョブフォルダは label.sub に
+                generation_jobs.created_at 由来の本当の作成日が入っている。 */}
+            {modifiedAt && (
+              <span className="shrink-0 font-mono text-[10px] text-muted opacity-70" title="フォルダの更新日時（Linux では作成日時を取得できません）">
+                更新 {formatDateTime(modifiedAt)}
+              </span>
+            )}
           </span>
         </button>
         <div className="flex shrink-0 items-center gap-2">
@@ -579,9 +672,11 @@ function FolderRow({
               sort={sort}
               onSort={onSort}
               query={query}
+              hideEmpty={hideEmpty}
               stat={childStats[d.path]}
               label={childLabels[d.name]}
               statLoading={childStatsLoading}
+              modifiedAt={d.modified_at}
             />
           ))}
 
@@ -593,6 +688,10 @@ function FolderRow({
               sort={sort}
               onSort={onSort}
             />
+          )}
+
+          {hiddenEmpty > 0 && (
+            <p className="text-[11px] text-muted opacity-60">空フォルダ {hiddenEmpty} 件を非表示にしています。</p>
           )}
 
           {dirs && files && visibleDirs.length === 0 && visibleFiles.length === 0 && (
@@ -765,6 +864,10 @@ export function ModalStorageTab() {
   // 並べ替えたか」が分からなくなるので、エクスプローラー全体で1つにする。
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
+  // 空フォルダ（ファイル0件）は既定で畳む。ジョブやアップロードの殻が大量に
+  // 残るため（ホスト指摘。lora_dataset_uploads/ は 12 個とも中身0件だった）。
+  // 消してはいない — トグルで出せる。
+  const [hideEmpty, setHideEmpty] = useState(true);
   const toggleSort = (key: SortKey) =>
     setSort((prev) => (prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
 
@@ -931,9 +1034,9 @@ export function ModalStorageTab() {
     labels: rootLabels,
     statsLoading: rootStatsLoading,
   } = useDirMeta(rootDirs, filesOpen);
-  const visibleRootDirs = useMemo(
-    () => filterSortDirs(rootDirs, query, sort, rootStats, rootLabels),
-    [rootDirs, query, sort, rootStats, rootLabels],
+  const { rows: visibleRootDirs, hiddenEmpty: rootHiddenEmpty } = useMemo(
+    () => filterSortDirs(rootDirs, query, sort, rootStats, rootLabels, hideEmpty),
+    [rootDirs, query, sort, rootStats, rootLabels, hideEmpty],
   );
   const visibleRootFiles = useMemo(() => filterFiles(rootFiles, query), [rootFiles, query]);
   const rootEmpty = rootDirs !== null && rootFiles !== null && rootDirs.length === 0 && rootFiles.length === 0;
@@ -1001,6 +1104,18 @@ export function ModalStorageTab() {
                     </button>
                   )}
                 </div>
+                <label
+                  className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-muted"
+                  title="ファイルが1件も入っていないフォルダを畳みます（削除はしません）。ジョブやアップロードの殻が大量に残るため既定でON。"
+                >
+                  <input
+                    type="checkbox"
+                    checked={hideEmpty}
+                    onChange={(e) => setHideEmpty(e.target.checked)}
+                    className="accent-neon-violet"
+                  />
+                  空フォルダを隠す
+                </label>
               </div>
               <button
                 type="button"
@@ -1044,11 +1159,18 @@ export function ModalStorageTab() {
                     sort={sort}
                     onSort={toggleSort}
                     query={query}
+                    hideEmpty={hideEmpty}
                     stat={rootStats[d.path]}
                     label={rootLabels[d.name]}
                     statLoading={rootStatsLoading}
+                    modifiedAt={d.modified_at}
                   />
                 ))}
+                {rootHiddenEmpty > 0 && (
+                  <p className="text-[11px] text-muted opacity-60">
+                    空フォルダ {rootHiddenEmpty} 件を非表示にしています。
+                  </p>
+                )}
                 {visibleRootFiles.length > 0 && (
                   <FileTable
                     files={visibleRootFiles}

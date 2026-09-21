@@ -100,6 +100,18 @@
     必ず残す）、画像・動画の**インラインプレビュー**（25MB まで。既存の
     `?inline=1` 経路）。
 
+- **エクスプローラー第2弾（2026-09-21・デプロイ済み）。**
+  - **フォルダの日時**を表示。⚠️ Linux では作成日時が取れない（`st_birthtime` は
+    BSD/macOS のみ）ので出しているのは mtime＝「直下の中身が最後に変わった時刻」。
+    学習ジョブフォルダは `generation_jobs.created_at` 由来の**本当の作成日**が
+    ラベル側に出る。
+  - **動画は先にサムネイル**。`thumbnail` アクション（ffmpeg で1フレーム→JPEG、
+    `_thumbs/<sha1>.jpg` に Volume キャッシュ）を新設し、`<video>` は再生を
+    押すまで本体を1バイトも読まない。実測 11MB の mp4 → **22KB の JPEG**。
+    画像も既定はサムネイルで、「原寸で開く」は 25MB まで。
+  - **空フォルダは既定で非表示**（トグルで表示・削除はしない）。「空フォルダ N 件を
+    非表示にしています」と件数を出す。
+
 ### ファイル配置の調査結果（2026-09-21、ホスト質問への回答）
 
 - `loras/<name>.safetensors`（直下）= ComfyUI から名前で引くための**モデル
@@ -110,6 +122,26 @@
   2000step なら8個ほど並ぶ。
 - `yukipas_v6`〜`v13_eager` が消えないのは、14日パージが **`ADMIN_USER_IDS` を
   スキップする**仕様のため。ホスト自身の実験は自動削除されない。
+- `lora_dataset_uploads/` は **12フォルダとも中身0件**（実測）。Smart Ingest が
+  最適化コピーを焼いた後に生画像を消すので、`<user_id>/<dataset_id>/` の殻だけが
+  残る。`studio_uploads/` も0バイト。**消しても害は無い**が、消さなくても容量は
+  食わない（inode だけ）。
+- `outputs/fc-xxx/<名前>/config.yaml` は **学習に実際に使われた ai-toolkit の
+  設定ファイル**。完了時に .safetensors だけを `loras/` へ move するので、
+  設定ファイルが残骸として残る。証跡として有用（今回の「中間が無い理由」も
+  これで確定できた）。掃除は `admin_cleanup_volume` の対象。
+- `outputs/all/a63a388a…_ComfyUI_00001.glb`（71.5MB・2026-09-14）は
+  **TRELLIS.2 画像→3D の実機テスト**の出力。`ull-wan-animate` の
+  `run_custom_workflow` → `_save_output_temp` が全生成物を
+  `outputs/all/<uuid hex>_<ComfyUI のファイル名>` で7日保管する経路。
+  機能自体は保留（メモリ `image-to-3d-feature-validation`）。
+- ⚠️ **`outputs/all` の7日自動削除が効いていない疑い**。`OUTPUTS_ALL_RETENTION_DAYS
+  = 7` に対し 2026-09-13 のファイルが残っている（18件・合計約150MB）。
+  `schedule=modal.Period(days=1)` はデプロイのたびにタイマーが巻き戻るため、
+  頻繁にデプロイする app では発火しにくい（リポジトリ内の5つの定期purgeが全部
+  `Period`）。**絶対時刻の `modal.Cron` に替えるべき。**未対応。
+
+
 - **「実効バッチ」の読み違いを docs で訂正**（`d150381`, §14.8.1 新設）。
 
 ### 反映状況 — 2026-09-21 時点ですべて適用済み
