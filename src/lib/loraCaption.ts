@@ -301,7 +301,13 @@ export async function generateDatasetCaptions(
     opts.signal?.addEventListener("abort", onAbort);
 
     let status = 0;
-    let data: { captions?: unknown; captionsJa?: unknown; safety?: unknown; retryAfterMs?: unknown } = {};
+    let data: {
+      captions?: unknown;
+      captionsJa?: unknown;
+      safety?: unknown;
+      retryAfterMs?: unknown;
+      reason?: unknown;
+    } = {};
     try {
       const res = await fetch("/api/studio/lora/caption", {
         method: "POST",
