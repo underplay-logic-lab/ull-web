@@ -1224,9 +1224,15 @@ export function GenderTagPicker({
   onChange: (next: string) => void;
   disabled?: boolean;
 }) {
-  const preset = presetKeyFromFixedTags(value);
+  const derived = presetKeyFromFixedTags(value);
+  // 「カスタム入力」は state で覚える（2026-09-22、ホスト指摘）。
+  // 以前は選んだ瞬間に "1girl, solo, female" を書き込んでいたため、その値が
+  // 1girl プリセットに一致してしまい、選択が即座にプリセットへ戻って
+  // **カスタム入力欄が永久に出せなかった**。
+  const [customMode, setCustomMode] = useState(derived === "custom");
+  const preset = customMode || derived === "custom" ? "custom" : derived;
   return (
-    <div className="mt-1.5 flex items-center gap-1.5">
+    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
       <span
         className="shrink-0 text-[10px] text-muted"
         title="全キャプションの先頭に固定で入るタグです。指定しないとAIが画像ごとに判定するため、1girl と 1woman が混ざったり solo が抜けたりして、トリガーワードとの対応が崩れます。"
@@ -1237,14 +1243,23 @@ export function GenderTagPicker({
         value={preset}
         onChange={(e) => {
           const v = e.target.value;
-          if (v === "") onChange("");
-          else if (v === "custom") onChange(value.trim() || "1girl, solo, female");
-          else onChange(`${v}, solo, ${GENDER_TAG_SEX_WORD[v as (typeof GENDER_TAG_PRESETS)[number]]}`);
+          if (v === "custom") {
+            // 値は触らない。空欄にしたい人はここを空にすればよい。
+            setCustomMode(true);
+            return;
+          }
+          setCustomMode(false);
+          onChange(`${v}, solo, ${GENDER_TAG_SEX_WORD[v as (typeof GENDER_TAG_PRESETS)[number]]}`);
         }}
         disabled={disabled}
-        className="rounded-md border border-border bg-background/70 px-1.5 py-1 text-[11px] text-foreground outline-none focus:border-neon-violet/50 disabled:opacity-50"
+        className="min-w-0 max-w-full rounded-md border border-border bg-background/70 px-1.5 py-1 text-[11px] text-foreground outline-none focus:border-neon-violet/50 disabled:opacity-50"
       >
-        <option value="">指定しない（AIが1枚ずつ判定 — 表記がブレるので非推奨）</option>
+        {/* 未選択はプレースホルダ扱い。AI 任せにすると 1girl と 1woman が
+            混ざる等でトリガーとの対応が崩れるので、選ばせる（ホスト判断）。
+            どうしても空にしたい場合は「カスタム入力」で空欄にできる。 */}
+        <option value="" disabled>
+          選択してください
+        </option>
         {GENDER_TAG_PRESETS.map((p) => (
           <option key={p} value={p}>
             {p} (+solo, {GENDER_TAG_SEX_WORD[p]})
@@ -1256,9 +1271,9 @@ export function GenderTagPicker({
         <input
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="1girl, solo, female"
+          placeholder="1girl, solo, female（空欄にすると AI 任せになります）"
           disabled={disabled}
-          className="min-w-0 flex-1 rounded-md border border-border bg-background/70 px-1.5 py-1 font-mono text-[11px] text-foreground outline-none focus:border-neon-violet/50 disabled:opacity-50"
+          className="min-w-0 flex-1 basis-full rounded-md border border-border bg-background/70 px-1.5 py-1 font-mono text-[11px] text-foreground outline-none focus:border-neon-violet/50 disabled:opacity-50 sm:basis-auto"
         />
       )}
     </div>
