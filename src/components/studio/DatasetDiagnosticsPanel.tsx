@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { AlertTriangle, ChevronDown, Stethoscope } from "lucide-react";
+import { AlertTriangle, ChevronDown, Stethoscope, Wand2 } from "lucide-react";
 import {
   analyzeDataset,
   DIAGNOSTIC_AXES,
@@ -18,9 +18,12 @@ import type { LoraSubject } from "@/lib/loraCaptionSpec";
 export function DatasetDiagnosticsPanel({
   items,
   subjects,
+  onOpenMultiAngle,
 }: {
   items: DiagnosticInput[];
   subjects: LoraSubject[];
+  /** 足りない構図を作りに行く導線（マルチアングルタブへ切り替える）。 */
+  onOpenMultiAngle?: () => void;
 }) {
   const [open, setOpen] = useState(true);
   const diag = useMemo(() => analyzeDataset(items, subjects), [items, subjects]);
@@ -30,6 +33,8 @@ export function DatasetDiagnosticsPanel({
   const errors = diag.issues.filter((i) => i.level === "error");
   const warns = diag.issues.filter((i) => i.level === "warn");
   const needMaterial = diag.issues.filter((i) => i.notFixableByRepeats).length;
+  // Multi-Angle Studio で作れる穴があるか（カメラ由来の軸＝距離・向き・仰角）。
+  const angleFixable = diag.issues.filter((i) => i.fixableWith === "multi_angle").length;
 
   return (
     <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5">
@@ -148,10 +153,32 @@ export function DatasetDiagnosticsPanel({
           )}
 
           {needMaterial > 0 && (
-            <p className="rounded-lg border border-border/60 bg-background/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted">
-              <strong className="text-foreground">学習回数を増やしても直らない指摘があります。</strong>
-              同じ画像を繰り返し見せても情報は増えないので、足りない構図の画像を追加してください。
-            </p>
+            <div className="space-y-1.5 rounded-lg border border-border/60 bg-background/60 px-2 py-1.5">
+              <p className="text-[10px] leading-relaxed text-muted">
+                <strong className="text-foreground">学習回数を増やしても直らない指摘があります。</strong>
+                同じ画像を繰り返し見せても情報は増えないので、足りない構図の画像を追加してください。
+              </p>
+              {angleFixable > 0 && onOpenMultiAngle && (
+                <>
+                  <p className="text-[10px] leading-relaxed text-muted">
+                    このうち <strong className="text-foreground">距離・向き・仰角</strong>{" "}
+                    の穴は、手持ちの1枚から マルチアングル で作れます（8方向・仰角4段・寄り引き3段）。
+                    生成した画像をこのデータセットに足してください。
+                  </p>
+                  <button
+                    type="button"
+                    onClick={onOpenMultiAngle}
+                    className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20"
+                  >
+                    <Wand2 size={11} />
+                    🎭 マルチアングルで足りない構図を作る
+                  </button>
+                </>
+              )}
+              <p className="text-[10px] leading-relaxed text-muted opacity-70">
+                ※ 姿勢（座り・寝）と背景は、カメラを動かしても変わりません。必要な場合は別途用意してください。
+              </p>
+            </div>
           )}
 
           {diag.uncaptioned > 0 && (

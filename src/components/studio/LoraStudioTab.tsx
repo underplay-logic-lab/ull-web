@@ -126,7 +126,14 @@ import {
   type Phase,
 } from "./LoraStudioTab.parts";
 
-export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string) => void }) {
+export function LoraStudioTab({
+  onUseLora,
+  onOpenMultiAngle,
+}: {
+  onUseLora?: (loraFilename: string) => void;
+  /** データセット診断から「足りない構図を作る」導線でタブを切り替える。 */
+  onOpenMultiAngle?: () => void;
+}) {
   const { user } = useSupabaseUser();
   const { credits, loading: creditsLoading } = useProfileCredits(user);
   const { knobs: pricingKnobs } = usePricingKnobs();
@@ -2817,7 +2824,11 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
               知らせるのが目的で、オートモードでのクレーム防止が本題。
               src/lib/datasetDiagnostics.ts のヘッダに動機と実データの検証あり。 */}
           {diagnosticItems.length > 0 && (
-            <DatasetDiagnosticsPanel items={diagnosticItems} subjects={allSubjects} />
+            <DatasetDiagnosticsPanel
+              items={diagnosticItems}
+              subjects={allSubjects}
+              onOpenMultiAngle={onOpenMultiAngle}
+            />
           )}
 
           {zipBusy && (

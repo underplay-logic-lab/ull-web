@@ -18,7 +18,7 @@
 
 import { matchLeadingSubjectTriggers, type LoraSubject } from "@/lib/loraCaptionSpec";
 
-export type DiagnosticAxis = "distance" | "view" | "pose" | "background";
+export type DiagnosticAxis = "distance" | "view" | "elevation" | "pose" | "background";
 
 type AxisDef = {
   label: string;
@@ -43,6 +43,16 @@ export const DIAGNOSTIC_AXES: Record<DiagnosticAxis, AxisDef> = {
       { id: "front", label: "正面", keywords: ["front view", "facing viewer", "looking at viewer", "from front"] },
       { id: "side", label: "斜め・横", keywords: ["three quarter", "3/4", "from the side", "side view", "profile"] },
       { id: "back", label: "後ろ", keywords: ["from behind", "back view", "rear view", "from back"] },
+    ],
+  },
+  // 仰角。Multi-Angle Studio の ELEVATION_OPTIONS（アオリ/水平/やや俯瞰/フカン）
+  // と対応させてある。ここが1種類しか無いと「常に目線の高さ」でしか出せない。
+  elevation: {
+    label: "仰角",
+    buckets: [
+      { id: "low", label: "アオリ", keywords: ["low angle", "from below", "worms eye", "worm's eye"] },
+      { id: "eye", label: "水平", keywords: ["eye level", "eye-level", "straight on"] },
+      { id: "high", label: "俯瞰", keywords: ["high angle", "from above", "overhead", "birds eye", "bird's eye", "top-down"] },
     ],
   },
   pose: {
@@ -109,6 +119,18 @@ export type DiagnosticIssue = {
   message: string;
   /** 学習回数を増やしても解決しない種類か（＝素材を足すしかない）。 */
   notFixableByRepeats: boolean;
+  /**
+   * 製品内で作れる出口があるか（2026-09-21、ホスト指摘「用意してくれと言う
+   * だけでなく、これを使って用意しろという出口を用意したい」）。
+   *
+   * "multi_angle" = Multi-Angle Studio で生成できる。あちらはカメラを動かす
+   * もので、方位角8方向 / 仰角4段 / 距離3段（顔アップ・バストアップ・全身）を
+   * 揃えられる＝診断の 距離 / 向き / 仰角 の3軸と1:1で対応する。
+   *
+   * null = 製品内に作る手段が無い（姿勢・背景）。**作れないものを 🔴 で
+   * 突きつけない** — 指摘のレベルも warn に落とす。
+   */
+  fixableWith: "multi_angle" | null;
 };
 
 export type DatasetDiagnostic = {
@@ -138,6 +160,7 @@ function emptyAxes(): Record<DiagnosticAxis, Record<string, number>> {
   return {
     distance: {},
     view: {},
+    elevation: {},
     pose: {},
     background: {},
   };
@@ -159,7 +182,7 @@ export function analyzeDataset(
         unique: 0,
         exposure: 0,
         axes: emptyAxes(),
-        unclassified: { distance: 0, view: 0, pose: 0, background: 0 },
+        unclassified: { distance: 0, view: 0, elevation: 0, pose: 0, background: 0 },
       };
       bySubject.set(trigger, d);
     }
@@ -210,26 +233,40 @@ export function analyzeDataset(
   };
 }
 
+// Multi-Angle Studio が担当できる軸。ここに無い軸（姿勢・背景）は製品内に
+// 作る手段が無いので、指摘は参考情報（warn）に留める。
+const MULTI_ANGLE_AXES: DiagnosticAxis[] = ["distance", "view", "elevation"];
+
 function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
   const issues: DiagnosticIssue[] = [];
   if (subjects.length === 0) return issues;
 
   for (const s of subjects) {
     // --- 構造的な欠落（仮値に依存しないので断定できる）---
-    for (const axis of ["view", "pose", "background"] as DiagnosticAxis[]) {
+    for (const axis of ["view", "elevation", "pose", "background"] as DiagnosticAxis[]) {
       const buckets = DIAGNOSTIC_AXES[axis].buckets;
       const covered = buckets.filter((b) => (s.axes[axis][b.id] ?? 0) > 0);
-      if (covered.length === 1 && s.unique >= 5) {
+      // 分類できた枚数が薄いのに「◯◯だけ」と断定しない。仰角はキャプションに
+      // 書かれないことが多く、66枚中65枚が未分類なのに「水平だけ」と言い切る
+      // 誤検出が実データで出た（2026-09-21）。
+      const classified = s.unique - s.unclassified[axis];
+      const enough = classified >= Math.max(5, Math.round(s.unique * 0.3));
+      if (covered.length === 1 && s.unique >= 5 && enough) {
+        const fixable = MULTI_ANGLE_AXES.includes(axis);
+        const missing = buckets
+          .filter((b) => (s.axes[axis][b.id] ?? 0) === 0)
+          .map((b) => b.label)
+          .join("・");
         issues.push({
-          level: "error",
+          // 製品内に作る手段が無い軸（姿勢・背景）は参考情報に留める。
+          // 作れないものを 🔴 で突きつけない（ホスト指摘）。
+          level: fixable ? "error" : "warn",
           subject: s.trigger,
-          message: `${DIAGNOSTIC_AXES[axis].label}が「${covered[0].label}」だけです（${
-            buckets
-              .filter((b) => (s.axes[axis][b.id] ?? 0) === 0)
-              .map((b) => b.label)
-              .join("・")
-          }が0枚）。生成時にその条件から外れると崩れやすくなります。`,
+          message: `${DIAGNOSTIC_AXES[axis].label}が「${covered[0].label}」だけです（${missing}が0枚）。生成時にその条件から外れると崩れやすくなります。${
+            fixable ? "" : "（用途によっては問題ありません）"
+          }`,
           notFixableByRepeats: true,
+          fixableWith: fixable ? "multi_angle" : null,
         });
       }
     }
@@ -246,6 +283,7 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
             got === 0 ? "この距離では生成できません。" : ""
           }`,
           notFixableByRepeats: true,
+          fixableWith: "multi_angle",
         });
       }
     }
@@ -256,6 +294,7 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
         subject: s.trigger,
         message: `ユニーク ${s.unique}枚 は少なめです（目安 ${DIAGNOSTIC_TARGETS.minUniquePerSubject}枚以上）。学習回数を増やしても同じ絵を繰り返すだけで、情報量は増えません。`,
         notFixableByRepeats: true,
+        fixableWith: "multi_angle",
       });
     }
   }
@@ -274,10 +313,11 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
           if (peak / n < DIAGNOSTIC_TARGETS.bucketImbalanceRatio) continue;
           const richer = counts.find((c) => c.n === peak)!.s.trigger;
           issues.push({
-            level: "error",
+            level: MULTI_ANGLE_AXES.includes(axis) ? "error" : "warn",
             subject: s.trigger,
             message: `${DIAGNOSTIC_AXES[axis].label}の「${bucket.label}」が ${n}枚しかありません（${richer} は ${peak}枚）。この構図では ${richer} に比べて明らかに弱くなります。`,
             notFixableByRepeats: true,
+            fixableWith: MULTI_ANGLE_AXES.includes(axis) ? "multi_angle" : null,
           });
         }
       }
@@ -294,6 +334,7 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
         subject: null,
         message: `露出量が ${top.trigger} と ${bottom.trigger} で ${(top.exposure / bottom.exposure).toFixed(1)}倍 違います。学習回数で調整できます。`,
         notFixableByRepeats: false,
+        fixableWith: null,
       });
     }
   }

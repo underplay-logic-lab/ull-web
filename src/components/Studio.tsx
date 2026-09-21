@@ -136,7 +136,10 @@ export function Studio() {
         ) : activeTab === "director" ? (
           <DirectorStudioTab />
         ) : activeTab === "lora" ? (
-          <LoraStudioTab onUseLora={() => setActiveTab("custom")} />
+          <LoraStudioTab
+            onUseLora={() => setActiveTab("custom")}
+            onOpenMultiAngle={() => setActiveTab("angle")}
+          />
         ) : (
           <ImageGenMaintenancePlaceholder />
         )}
