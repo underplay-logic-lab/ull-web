@@ -452,6 +452,7 @@ export function IdentityTagsField({
   valueJa,
   onChange,
   onTranslateTag,
+  onRedo,
   extracting,
   disabled,
 }: {
@@ -465,6 +466,8 @@ export function IdentityTagsField({
    * まま英側にも入ってしまい、LoRA の metadata に日本語タグが焼かれていた。
    */
   onTranslateTag: (ja: string) => Promise<string>;
+  /** 抽出をやり直す（結果がおかしかったとき用）。 */
+  onRedo?: () => void;
   /** 画像からの自動抽出が走っている間。抽出はボタンではなく自動実行。 */
   extracting: boolean;
   disabled: boolean;
@@ -508,6 +511,17 @@ export function IdentityTagsField({
     <div className="mt-1.5 rounded-lg border border-border/60 bg-background/60 p-2">
       <div className="mb-1 flex flex-wrap items-center gap-1.5">
         <span className="text-[10px] font-medium text-foreground">学習したい特徴</span>
+        {!extracting && tags.length > 0 && onRedo && (
+          <button
+            type="button"
+            onClick={onRedo}
+            disabled={disabled}
+            title="いまの画像で抽出し直します（今の内容は破棄されます）"
+            className="text-[10px] text-muted underline transition-colors hover:text-neon-violet disabled:opacity-40"
+          >
+            抽出し直す
+          </button>
+        )}
         {extracting && (
           <span className="inline-flex items-center gap-1 text-[10px] text-neon-violet">
             <Loader2 size={10} className="animate-spin" />

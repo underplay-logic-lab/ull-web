@@ -1038,7 +1038,11 @@ export function LoraStudioTab({
         setIdentityConfirmed(false);
       } catch (err) {
         console.warn("[lora] identity extraction failed:", err);
-        window.alert(err instanceof Error ? err.message : "特徴の抽出に失敗しました。");
+        // 失敗したら「実行済み」の印を消して、次の変化でやり直せるようにする。
+        autoExtractedRef.current.delete(`${index}:${t}:${fixedTags}`);
+        setErrorMessage(
+          err instanceof Error ? err.message : "特徴の抽出に失敗しました。手で入力してください。",
+        );
       } finally {
         setIdentityExtracting(null);
       }
@@ -1263,6 +1267,34 @@ export function LoraStudioTab({
   // 1回ずつ走らせる。effect の中で同期 setState はしない（非同期の完了時に
   // extractIdentityFor が自前で state を更新する）。
   const autoExtractedRef = useRef<Set<string>>(new Set());
+  // 抽出をやり直す（結果がおかしかったとき用）。自動実行は1回きりなので、
+  // これが無いと直す手段が手入力しか無くなる（2026-09-22）。
+  const redoIdentityExtract = useCallback(
+    (index: number) => {
+      const sub =
+        index < 0
+          ? { trigger: triggerWord.trim(), hint: primaryDescription, fixedTags: primaryFixedTags }
+          : {
+              trigger: (extraSubjects[index]?.trigger ?? "").trim(),
+              hint: extraSubjects[index]?.description ?? "",
+              fixedTags: extraSubjects[index]?.fixedTags ?? "",
+            };
+      if (!sub.trigger) return;
+      autoExtractedRef.current.delete(`${index}:${sub.trigger}:${sub.fixedTags}`);
+      if (index < 0) {
+        setPrimaryIdentityTags("");
+        setPrimaryIdentityTagsJa("");
+      } else {
+        setExtraSubjects((prev) =>
+          prev.map((p, k) => (k === index ? { ...p, identityTags: "", identityTagsJa: "" } : p)),
+        );
+      }
+      void extractIdentityFor(index, sub.trigger, sub.hint, sub.fixedTags);
+    },
+    // extractIdentityFor は毎レンダー作り直されるので依存から外す。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [triggerWord, primaryDescription, primaryFixedTags, extraSubjects],
+  );
   useEffect(() => {
     if (images.length === 0) return;
     const jobs = [
@@ -3744,6 +3776,7 @@ export function LoraStudioTab({
                           }}
                           extracting={identityExtracting === -1}
                           onTranslateTag={translateIdentityTag}
+                          onRedo={() => redoIdentityExtract(-1)}
                           disabled={busy}
                         />
                         )}
@@ -3777,6 +3810,7 @@ export function LoraStudioTab({
                     }}
                     extracting={identityExtracting === -1}
                     onTranslateTag={translateIdentityTag}
+                    onRedo={() => redoIdentityExtract(-1)}
                     disabled={busy}
                   />
                   )}
@@ -3856,6 +3890,7 @@ export function LoraStudioTab({
                     }}
                     extracting={identityExtracting === i}
                     onTranslateTag={translateIdentityTag}
+                    onRedo={() => redoIdentityExtract(i)}
                     disabled={busy}
                   />
                   )}
