@@ -78,9 +78,13 @@ export function DatasetDiagnosticsPanel({
               要確認 {errors.length}
             </span>
           )}
-          {errors.length === 0 && warns.length > 0 && (
+          {/* 赤だけでなく黄の件数も常に出す（2026-09-22、ホスト指摘）。
+              「要確認1」なのにクロップのボタンが2構図を提案するのは、
+              ボタンが赤・黄を問わず「クロップで埋まる穴」を拾うため。
+              黄の件数が見えないと数が合わないように見える。 */}
+          {warns.length > 0 && (
             <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
-              {warns.length}
+              注意 {warns.length}
             </span>
           )}
           {provisional && (
@@ -214,6 +218,9 @@ export function DatasetDiagnosticsPanel({
                     の穴は、すでに取り込んである引き画から{" "}
                     <strong className="text-foreground">無料で・その場で</strong> 切り出せます。
                     下のボタンを押すと、その被写体の元画像と切り出す構図がクロップ欄に自動でセットされます。
+                    <span className="opacity-70">
+                      （ボタンは「要確認」だけでなく「注意」の穴も一緒に埋めるので、赤の件数より多くの構図を提案することがあります）
+                    </span>
                   </p>
                   <div className="flex flex-wrap gap-1.5">
                     {[...cropPlan.entries()].map(([subj, kinds]) => (
