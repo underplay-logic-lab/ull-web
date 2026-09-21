@@ -32,9 +32,22 @@ CLAUDE.md §5（商用利用・SaaS再頒布・地域制限の3点を満たす�
   - Prohibited Uses は OpenRAIL 系の標準的な制限リスト（違法用途・未成年への害・虚偽情報・
     個人識別情報の悪用・嫌がらせ・差別・医療アドバイス・司法/執行/移民手続 等）。
     違反通知から **30日以内に是正すればライセンスを維持できる** Excuse 条項あり。
-  - **実務対応（未実施）**: 利用規約ページ等に「Illustrious 系ベースで学習した LoRA は
-    Fair AI Public License 1.0-SD 下で提供される」旨と条文リンクを載せる。
-    CLAUDE.md §2 の「NOTICE が必要なモデルは目立たない場所で義務を満たせば足りる」に合致。
+  - ✅ **Outputs 条項で「生成した画像」は対象外**:
+    *"The output of this software is not covered by this license, and no contributor
+    claims any rights to it."* → **画像は自由。**ただし LoRA は上記のとおり
+    「output」ではなく「derived model」なので、こちらは別。混同しないこと。
+  - ✅ **実務対応（2026-09-21 実施済み・3層）**:
+    1. 利用規約 **第3条の2**（`src/app/terms/page.tsx`）— サービスとしての告知
+    2. **.safetensors の metadata に焼き込み**（`modelspec.license` /
+       `ss_ull_license` / `ss_ull_license_url` / `ss_ull_base_model`）—
+       Civitai や ComfyUI へ持ち出されても付いて回る
+    3. **LICENSE.txt をジョブフォルダに同梱** — 一括DL の ZIP に入る
+    実装は `modal_sdxl_lora_worker.py` の `_PRESET_LICENSE` /
+    `_stamp_license_metadata` / `_write_license_file`。対象は
+    `illustrious_xl` と `wai_illustrious` のみ（ここに無い preset には何も
+    焼き込まない — 誤った表示を付ける方が害が大きい）。
+    ⚠️ 焼き込むのは**最終チェックポイントのみ**。中間チェックポイントは
+    LICENSE.txt が同じフォルダにあることでカバーする。
   - ⚠️ **版ごとに確認すること**: WAI 系は Civitai 配布で、成人向けのため現在は civitai.red
     側にページが移っている（通常の Civitai URL からはライセンス欄が読めない）。
     HF ミラー（`John6666/wai-nsfw-illustrious-v10-sdxl`）は

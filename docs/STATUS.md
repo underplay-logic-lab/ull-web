@@ -124,6 +124,18 @@
   デモ動画）。ai-toolkit の `LTX2Model.load_model()` をソースで確認済み。
   詳細と根拠コードは docs §14.8.2 の次（§14.8.3）。**削除は未実施。**
 
+- **納品する LoRA 自体にライセンス表示を焼き込んだ（2026-09-21）。** 規約ページ
+  だけでは「ファイル単体で人に渡った後」に何も残らない。Gemini のレビューでも
+  同じ指摘があり、3層にした:
+  1. 利用規約 第3条の2（サービスとしての告知）
+  2. `.safetensors` の metadata（`modelspec.license` 他4キー。Civitai や ComfyUI
+     へ持ち出されても付いて回る）
+  3. ジョブフォルダの `LICENSE.txt`（一括DL の ZIP に入る）
+  対象は `illustrious_xl` / `wai_illustrious` のみ。ローカルテストで
+  **既存メタデータとテンソル本体が無改変**であることを確認済み。
+  ⚠️ **生成した画像は Outputs 条項でライセンス対象外＝自由。** LoRA 本体
+  （derived model）だけが継承対象。この2つを混同しないこと。
+
 ### 次にやること（LTX-2 / SDXL 顧客対応）
 
 1. ~~LTX-2 の 158.94GB を削除~~ → **完了（2026-09-21）**。`_REPO_SNAPSHOT_IGNORE`

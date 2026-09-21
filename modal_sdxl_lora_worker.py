@@ -1072,6 +1072,88 @@ def _embed_metadata_tags(safetensors_path: str, target_tags: dict) -> list[str]:
     return changed_keys
 
 
+# --- 派生モデルのライセンス表示（2026-09-21）-------------------------------
+# Illustrious 系（Illustrious XL 本家と、WAI 等のマージ派生）は Fair AI Public
+# License 1.0-SD。同ライセンスは "To 'modify' also means to perform any training
+# on a model" と定義しており、**このベースで焼いた LoRA は「出力物」ではなく
+# 「派生モデル」** にあたる。したがって Notices 条項
+# （"all modifications must be provided under this license"）が LoRA 本体にも
+# かかる。
+#
+# ⚠️ 生成された「画像」は別扱いで、Outputs 条項
+# （"The output of this software is not covered by this license"）により
+# ライセンスの対象外＝自由。混同しないこと。
+#
+# 利用規約 第3条の2 でサービスとしての告知は済ませてあるが、**ファイル単体で
+# 配られた後も表示が残るように**、ここで2か所に焼き込む:
+#   1. .safetensors の metadata（modelspec.license / ss_ull_license）
+#      — Civitai や ComfyUI へ持ち出されても付いて回る
+#   2. 同梱の LICENSE.txt — 一括DLのZIPに入る
+# 判定の根拠は docs/model-licenses.md。
+FAIPL_LICENSE = {
+    "name": "Fair AI Public License 1.0-SD",
+    "url": "https://freedevproject.org/faipl-1.0-sd/",
+}
+# ベースモデルごとのライセンス。ここに無い arch/preset は何も焼き込まない
+# （誤った表示を付ける方が害が大きい）。
+# base_label は納品物（metadata / LICENSE.txt）に載るので、Volume の内部パスでは
+# なく人が読める名前にする。
+_PRESET_LICENSE: dict[str, dict] = {
+    "illustrious_xl": {**FAIPL_LICENSE, "base_label": "Illustrious XL"},
+    "wai_illustrious": {**FAIPL_LICENSE, "base_label": "WAI NSFW Illustrious v11"},
+}
+
+
+def _license_for(params: dict) -> dict | None:
+    return _PRESET_LICENSE.get(str(params.get("target_model") or "").strip())
+
+
+def _stamp_license_metadata(safetensors_path: str, license_info: dict, base_label: str) -> list[str]:
+    """.safetensors の metadata にライセンス表記を書き込む。テンソル本体は
+    一切触らない（_embed_metadata_tags と同じ save_file 経由の書き戻し）。
+    失敗しても学習結果を落とさないこと — 呼び出し側で握りつぶす。"""
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    with safe_open(safetensors_path, framework="pt") as f:
+        metadata = dict(f.metadata() or {})
+        tensors = {key: f.get_tensor(key) for key in f.keys()}
+
+    stamped = {
+        # modelspec.* は sd-scripts / ComfyUI / Civitai が読む標準キー。
+        "modelspec.license": license_info["name"],
+        "ss_ull_license": license_info["name"],
+        "ss_ull_license_url": license_info["url"],
+        "ss_ull_base_model": base_label,
+    }
+    metadata.update(stamped)
+    save_file(tensors, safetensors_path, metadata=metadata)
+    return list(stamped)
+
+
+def _write_license_file(job_dir: pathlib.Path, license_info: dict, base_label: str, lora_name: str) -> None:
+    """一括DL の ZIP に入る LICENSE.txt。ファイル単体で人に渡ったときに
+    「何のライセンスか」が読めるようにするためのもの。"""
+    lines = [
+        f"{lora_name}.safetensors",
+        "",
+        "このLoRAは次のベースモデルを学習して作られた派生モデルです:",
+        f"  {base_label}",
+        "",
+        f"ベースモデルのライセンス: {license_info['name']}",
+        f"  {license_info['url']}",
+        "",
+        "同ライセンスは「モデルに対して学習を行うこと」を改変と定義しており、",
+        "その結果であるこのLoRAも同ライセンス（または同等以上に寛容な条件）の",
+        "もとで提供されます。再配布する場合も同じ条件で提供してください。",
+        "",
+        "なお、このLoRAを使って生成した画像そのものは同ライセンスの対象外です",
+        "（The output of this software is not covered by this license.）。",
+        "",
+    ]
+    (job_dir / "LICENSE.txt").write_text(chr(10).join(lines), encoding="utf-8")
+
+
 def _stage_dataset(params: dict, dataset_dir: pathlib.Path, trigger: str) -> list[pathlib.Path]:
     """Materialises training images + same-stem .txt captions into
     `dataset_dir`. Mirrors modal_lora_worker.py's train_lora_job staging
@@ -1443,6 +1525,22 @@ def train_sdxl_lora_job(params: dict) -> dict:
             except TagParseError as exc:
                 print(f"[sdxl] embed_tags parse failed ({exc!r}) — skipping metadata embed", flush=True)
 
+        # ベースモデルのライセンスが派生モデル（= この LoRA）にも及ぶ場合は、
+        # ファイル自体にそれが残るよう metadata へ焼き込む（_PRESET_LICENSE の
+        # コメント参照）。embed_tags の後に実行すること — あちらも save_file で
+        # 書き戻すので、順序が逆だとライセンス表記が消える。
+        # ⚠️ 学習は成功しているので、ここで失敗しても絶対にジョブを落とさない。
+        license_info = _license_for(params)
+        license_keys: list[str] = []
+        if license_info:
+            try:
+                license_keys = _stamp_license_metadata(
+                    str(final_ckpt), license_info, license_info["base_label"]
+                )
+                print(f"[sdxl] stamped license metadata: {license_info['name']}", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[sdxl] license stamp skipped: {exc!r}", flush=True)
+
         os.makedirs(LORA_OUTPUT_DIR, exist_ok=True)
         dest_path = pathlib.Path(LORA_OUTPUT_DIR) / f"{lora_name}.safetensors"
         shutil.copy2(final_ckpt, dest_path)
@@ -1460,6 +1558,17 @@ def train_sdxl_lora_job(params: dict) -> dict:
         checkpoints = _persist_checkpoints(
             str(output_dir), lora_name, user_id, job_id, declared_steps
         )
+        # LICENSE.txt をジョブフォルダにも置く（一括DL の ZIP に入る）。
+        if license_info and user_id and job_id:
+            try:
+                _write_license_file(
+                    pathlib.Path(LORA_OUTPUT_DIR) / user_id / job_id,
+                    license_info,
+                    license_info["base_label"],
+                    lora_name,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[sdxl] LICENSE.txt skipped: {exc!r}", flush=True)
 
         try:
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -1473,6 +1582,11 @@ def train_sdxl_lora_job(params: dict) -> dict:
             metadata["vram_used_gb"] = final_vram
         if embedded_tag_keys:
             metadata["embedded_tag_keys"] = embedded_tag_keys
+        if license_info:
+            # 完了画面や監査で「どのライセンスで提供したか」を追えるようにする。
+            metadata["license"] = license_info["name"]
+            metadata["license_url"] = license_info["url"]
+            metadata["license_metadata_keys"] = license_keys
         _patch_job(
             job_id,
             {
