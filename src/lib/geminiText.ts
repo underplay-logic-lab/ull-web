@@ -64,7 +64,15 @@ type JsonMode = boolean | "enja";
 function genConfig(model: string, jsonArray: JsonMode, dropThinking: boolean): GenerationConfig {
   // Generous cap: a truncated response trips a full-call MAX_TOKENS retry
   // (a big chunk of the old caption latency). The EN+JA batch needs headroom.
-  const cfg: Record<string, unknown> = { temperature: 0.2, maxOutputTokens: 16384 };
+  // 構造化出力（キャプション／翻訳／タグ抽出）は「同じ入力なら同じ答え」で
+  // あってほしい決定的なタスクなので温度0（2026-09-21、ホスト指摘「解析結果が
+  // 毎回変わる」）。温度0でも完全な再現性は保証されないが、0.2 のままだと
+  // データセット診断の指摘件数が解析のたびに前後して信用できなくなる。
+  // 自由文（jsonArray=false）は従来どおり少しだけ揺らす。
+  const cfg: Record<string, unknown> = {
+    temperature: jsonArray ? 0 : 0.2,
+    maxOutputTokens: 16384,
+  };
   if (!dropThinking) {
     // The -latest aliases (flash / flash-lite / pro) now resolve to 3.x
     // models, which REJECT thinkingBudget:0 with a 400 ("invalid argument")

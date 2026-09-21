@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { AlertTriangle, ChevronDown, Scissors, Stethoscope, Wand2 } from "lucide-react";
+import { AlertTriangle, ChevronDown, Loader2, Scissors, Stethoscope, Wand2 } from "lucide-react";
 import {
   analyzeDataset,
   DIAGNOSTIC_AXES,
@@ -82,7 +82,8 @@ export function DatasetDiagnosticsPanel({
             </span>
           )}
           {provisional && (
-            <span className="rounded-full bg-neutral-500/20 px-2 py-0.5 text-[10px] font-semibold text-muted">
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
+              <Loader2 size={9} className="animate-spin" />
               解析中・暫定
             </span>
           )}
@@ -122,6 +123,22 @@ export function DatasetDiagnosticsPanel({
                 <div className="grid gap-1 sm:grid-cols-2">
                   {(Object.keys(DIAGNOSTIC_AXES) as DiagnosticAxis[]).map((axis) => {
                     const def = DIAGNOSTIC_AXES[axis];
+                    // キャプションにその軸のタグがほとんど無い場合、0 を赤く
+                    // 出すと「その構図が欠けている」と誤読される。実際は
+                    // **測れていない**だけ（仰角は水平が既定で、Danbooru 系の
+                    // キャプションにわざわざ書かれないのが典型）。
+                    // 指摘側も同じ条件で判断を止めている（datasetDiagnostics.ts）。
+                    const unmeasured = s.unique > 0 && s.unclassified[axis] / s.unique > 0.7;
+                    if (unmeasured) {
+                      return (
+                        <div key={axis} className="flex flex-wrap items-baseline gap-x-2 text-[10px] opacity-50">
+                          <span className="w-8 shrink-0 text-muted">{def.label}</span>
+                          <span className="text-muted">
+                            判定できません（キャプションに該当タグがほぼ無い / {s.unclassified[axis]}/{s.unique} 枚）
+                          </span>
+                        </div>
+                      );
+                    }
                     return (
                       <div key={axis} className="flex flex-wrap items-baseline gap-x-2 text-[10px]">
                         <span className="w-8 shrink-0 text-muted">{def.label}</span>
