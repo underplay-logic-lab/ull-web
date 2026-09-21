@@ -29,6 +29,8 @@ export async function uploadLoraDataset(
   userId: string,
   files: File[],
   onProgress?: (done: number, total: number) => void,
+  /** 送信済みバイト数（枚数カウンタより細かく動く）。 */
+  onBytes?: (sent: number, total: number) => void,
 ): Promise<{ datasetId: string; paths: string[] }> {
   const datasetId =
     typeof crypto !== "undefined" && crypto.randomUUID
@@ -78,6 +80,7 @@ export async function uploadLoraDataset(
   const UPLOAD_CONCURRENCY = 10;
 
   const startedAt = Date.now();
+  const totalBytes = files.reduce((t, f) => t + f.size, 0);
   const paths: string[] = new Array(files.length);
   let done = 0;
   let sentBytes = 0;
@@ -111,7 +114,25 @@ export async function uploadLoraDataset(
     return url.toString();
   };
 
-  const uploadBatch = async (indexes: number[]): Promise<void> => {
+  // 進捗はバイト単位で出す（2026-09-22、ホスト報告「0/209 のまま全然進まない」）。
+  // fetch だと送信の進捗が取れず、1リクエスト130〜150秒 x 16並列なので
+  // 最初の完了まで2分以上カウンタが 0 のまま動かない。XHR なら upload.onprogress
+  // で実際に送ったバイト数が分かるので、止まっているのか進んでいるのかが見える。
+  const inflightBytes = new Map<number, number>();
+  const reportBytes = (): void => {
+    let partial = 0;
+    for (const v of inflightBytes.values()) partial += v;
+    onBytes?.(sentBytes + partial, totalBytes);
+  };
+
+  // 1バッチの一時的な切断で全体を捨てない（2026-09-22、ホスト報告
+  // 「Failed to fetch（11/209 枚目〜）」）。サーバー側のログでは当該
+  // ハンドラは正常に完走しており、応答だけが返らなかった。16本の大きな
+  // multipart を同時に張るので、経路のどこかでストリームが落ちるのは
+  // 起こり得る。3分かけたアップロードを1回の瞬断で捨てるのは割に合わない。
+  const BATCH_ATTEMPTS = 3;
+
+  const uploadBatchOnce = async (indexes: number[]): Promise<unknown> => {
     const form = new FormData();
     let batchBytes = 0;
     for (const i of indexes) {
@@ -121,34 +142,65 @@ export async function uploadLoraDataset(
 
     const startedRequestAt = Date.now();
     let thrown: unknown = null;
+    const key = indexes[0];
     try {
-      const res = await fetch(signedUrl(ticket.batchUploadUrl as string), {
-        method: "POST",
-        body: form,
+      const status = await new Promise<number>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", signedUrl(ticket.batchUploadUrl as string), true);
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            inflightBytes.set(key, Math.min(e.loaded, batchBytes));
+            reportBytes();
+          }
+        };
+        xhr.onerror = () => reject(new Error("ネットワークエラー（接続が切れました）"));
+        xhr.ontimeout = () => reject(new Error("タイムアウトしました"));
+        xhr.onabort = () => reject(new Error("中断されました"));
+        xhr.onload = () => resolve(xhr.status);
+        // サーバー側は commit に最大30秒ほど使う。送信後の待ちも含めて余裕を取る。
+        xhr.timeout = 10 * 60 * 1000;
+        xhr.send(form);
       });
-      if (res.status === 404 || res.status === 405) {
+      if (status === 404 || status === 405) {
         batchUnsupported = true;
-        return;
+        inflightBytes.delete(key);
+        return null;
       }
-      if (!res.ok) {
-        const detail = await res.json().catch(() => ({}) as { detail?: string; error?: string });
-        thrown = new Error(detail?.detail || detail?.error || `HTTP ${res.status}`);
-      }
+      if (status < 200 || status >= 300) thrown = new Error(`HTTP ${status}`);
     } catch (err) {
       thrown = err;
     }
-
-    if (thrown) {
-      const first = indexes[0];
-      failAt(first, `${files[first].name}（${first + 1}/${files.length} 枚目〜）: ${errorText(thrown)}`);
-      return;
-    }
+    inflightBytes.delete(key);
+    if (thrown) return thrown;
 
     requestMs += Date.now() - startedRequestAt;
     sentBytes += batchBytes;
     for (const i of indexes) paths[i] = `${userId}/${datasetId}/${filenameFor(i)}`;
     done += indexes.length;
     onProgress?.(done, files.length);
+    reportBytes();
+    return null;
+  };
+
+  const uploadBatch = async (indexes: number[]): Promise<void> => {
+    let last: unknown = null;
+    for (let attempt = 1; attempt <= BATCH_ATTEMPTS; attempt++) {
+      last = await uploadBatchOnce(indexes);
+      if (last === null || batchUnsupported) return;
+      if (attempt < BATCH_ATTEMPTS) {
+        console.warn(
+          `[lora] upload batch @${indexes[0]} failed (attempt ${attempt}/${BATCH_ATTEMPTS}):`,
+          last,
+        );
+        await new Promise((r) => setTimeout(r, 1500 * attempt));
+      }
+    }
+    const first = indexes[0];
+    failAt(
+      first,
+      `${files[first].name}（${first + 1}/${files.length} 枚目〜）: ${errorText(last)}` +
+        `（${BATCH_ATTEMPTS} 回試しました）`,
+    );
   };
 
   const uploadOne = async (i: number): Promise<void> => {
