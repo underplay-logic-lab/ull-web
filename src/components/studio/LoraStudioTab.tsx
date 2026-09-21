@@ -79,6 +79,7 @@ import {
   type CaptionMode,
   type ResolvedCaptionMode,
 } from "@/lib/loraCaptionSpec";
+import { DatasetDiagnosticsPanel } from "@/components/studio/DatasetDiagnosticsPanel";
 import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
 import { generateDatasetCaptions, captionFileKey } from "@/lib/loraCaption";
 import { runSmartCrop, type SmartCropKind } from "@/lib/smartCrop";
@@ -870,6 +871,14 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
   // metadata へ埋め込むタグ。被写体レジストリから自動生成し、手入力欄は
   // 「追加分」として後ろに連結する（2026-09-21 — 以前は全部手入力だった）。
   const autoEmbedTags = useMemo(() => buildEmbedTagsFromSubjects(allSubjects), [allSubjects]);
+  // 診断の入力。キャプション済みの画像だけを渡す（未解析は数えても意味が無い）。
+  const diagnosticItems = useMemo(
+    () =>
+      images
+        .map((img) => ({ caption: (captions[img.id] ?? "").trim(), repeats: img.repeats ?? 1 }))
+        .filter((x) => x.caption.length > 0),
+    [images, captions],
+  );
   const effectiveEmbedTags = useMemo(() => {
     const extra = embedTagsInput.trim();
     return [autoEmbedTags, extra].filter(Boolean).join(", ");
@@ -2802,6 +2811,14 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             smartCropProgress={smartCropProgress}
             onSmartCrop={() => void runSmartCropForDataset()}
           />
+
+          {/* データセット構成の自動診断（2026-09-21）。キャプションが1枚でも
+              揃った時点から出す。「この構成だと誰がどう弱くなるか」を焼く前に
+              知らせるのが目的で、オートモードでのクレーム防止が本題。
+              src/lib/datasetDiagnostics.ts のヘッダに動機と実データの検証あり。 */}
+          {diagnosticItems.length > 0 && (
+            <DatasetDiagnosticsPanel items={diagnosticItems} subjects={allSubjects} />
+          )}
 
           {zipBusy && (
             <p className="flex items-center gap-1.5 text-[11px] text-neon-violet">
