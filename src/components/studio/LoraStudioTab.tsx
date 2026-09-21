@@ -2963,16 +2963,56 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
           </div>
 
           <div>
+            {/* 2026-09-21: 複数人物モードの見分けがつかない問題を直した
+                （ホスト指摘「一人目と二人目の境が無く、よく考えたらわかるん
+                だけどちょっと戸惑う」）。1人目だけ枠もラベルも無く、しかも
+                1人目の「特徴」欄は2人目を追加した瞬間に現れるので、2人目の
+                ブロックの一部に見えていた。複数人物のときは1人目も同じ枠で
+                囲んで「N人目」の見出しを付ける。1人だけのときは従来どおり
+                素のまま（枠と番号はノイズにしかならない）。 */}
             <label className="mb-1 block text-[11px] font-medium text-muted">トリガーワード（任意）</label>
-            <input
-              value={yamlMode ? (yamlIdentity?.triggerWord ?? "") : triggerWord}
-              onChange={(e) => setTriggerWord(e.target.value)}
-              placeholder={
-                yamlMode ? "生YAML の process[0].trigger_word" : "yukipas（空欄なら LoRA 名から自動）"
+            {(() => {
+              const multiSubject = !yamlMode && isSdxlJob && extraSubjects.length > 0;
+              const triggerInput = (
+                <input
+                  value={yamlMode ? (yamlIdentity?.triggerWord ?? "") : triggerWord}
+                  onChange={(e) => setTriggerWord(e.target.value)}
+                  placeholder={
+                    yamlMode
+                      ? "生YAML の process[0].trigger_word"
+                      : multiSubject
+                        ? "1人目のtrigger word（例: yukipas）"
+                        : "yukipas（空欄なら LoRA 名から自動）"
+                  }
+                  disabled={busy || yamlMode}
+                  className={`${fieldCls} font-mono ${yamlMode ? "opacity-60" : ""}`}
+                />
+              );
+              if (!multiSubject) {
+                return (
+                  <>
+                    {triggerInput}
+                    {!yamlMode && isSdxlJob && (
+                      <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
+                    )}
+                  </>
+                );
               }
-              disabled={busy || yamlMode}
-              className={`${fieldCls} font-mono ${yamlMode ? "opacity-60" : ""}`}
-            />
+              return (
+                <div className="rounded-lg border border-neon-violet/30 bg-neon-violet/5 p-2">
+                  <div className="mb-1 text-[10px] font-semibold text-neon-violet">1人目</div>
+                  {triggerInput}
+                  <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
+                  <input
+                    value={primaryDescription}
+                    onChange={(e) => setPrimaryDescription(e.target.value)}
+                    placeholder="1人目の特徴（AIが見分ける手がかり。例: 銀髪の女性）"
+                    disabled={busy}
+                    className={`${fieldCls} mt-1.5 text-[11px]`}
+                  />
+                </div>
+              );
+            })()}
             {yamlMode && (
               <p className="mt-1 text-[10px] text-muted">
                 生YAML モードでは YAML内の{" "}
@@ -2982,55 +3022,36 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
             {/* 性別/人数タグ・複数人物UIはSDXL（Danbooruタグ形式のkeep_tokens
                 運用）限定。それ以外のモデルはトリガーワード入力のみにする
                 （2026-09-15 ホスト指示）。 */}
-            {!yamlMode && isSdxlJob && (
-              <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
-            )}
-            {!yamlMode && isSdxlJob && extraSubjects.length > 0 && (
-              <input
-                value={primaryDescription}
-                onChange={(e) => setPrimaryDescription(e.target.value)}
-                placeholder="この人物の特徴（判別用。例: 銀髪の女性）"
-                disabled={busy}
-                className={`${fieldCls} mt-1.5 text-[11px]`}
-              />
-            )}
             {!yamlMode &&
               isSdxlJob &&
               extraSubjects.map((s, i) => (
-                <div key={i} className="mt-1.5 rounded-lg border border-border/60 p-1.5">
-                  <div className="flex gap-1.5">
-                    <input
-                      value={s.trigger}
-                      onChange={(e) =>
-                        setExtraSubjects((prev) =>
-                          prev.map((p, k) => (k === i ? { ...p, trigger: e.target.value } : p)),
-                        )
-                      }
-                      placeholder="追加のtrigger word（例: asdf）"
-                      disabled={busy}
-                      className={`${fieldCls} font-mono`}
-                    />
-                    <input
-                      value={s.description}
-                      onChange={(e) =>
-                        setExtraSubjects((prev) =>
-                          prev.map((p, k) => (k === i ? { ...p, description: e.target.value } : p)),
-                        )
-                      }
-                      placeholder="この人物の特徴（判別用。例: 黒コートの男性）"
-                      disabled={busy}
-                      className={`${fieldCls} text-[11px]`}
-                    />
+                <div
+                  key={i}
+                  className="mt-1.5 rounded-lg border border-neon-violet/30 bg-neon-violet/5 p-2"
+                >
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-[10px] font-semibold text-neon-violet">{i + 2}人目</span>
                     <button
                       type="button"
                       onClick={() => setExtraSubjects((prev) => prev.filter((_, k) => k !== i))}
                       disabled={busy}
                       title="この人物を削除"
-                      className="shrink-0 rounded-lg border border-border px-2 text-muted transition-colors hover:border-red-500/50 hover:text-red-400 disabled:opacity-50"
+                      className="rounded-lg border border-border px-1.5 py-0.5 text-muted transition-colors hover:border-red-500/50 hover:text-red-400 disabled:opacity-50"
                     >
-                      <Trash2 size={13} />
+                      <Trash2 size={12} />
                     </button>
                   </div>
+                  <input
+                    value={s.trigger}
+                    onChange={(e) =>
+                      setExtraSubjects((prev) =>
+                        prev.map((p, k) => (k === i ? { ...p, trigger: e.target.value } : p)),
+                      )
+                    }
+                    placeholder={`${i + 2}人目のtrigger word（例: kocho）`}
+                    disabled={busy}
+                    className={`${fieldCls} font-mono`}
+                  />
                   <GenderTagPicker
                     value={s.fixedTags ?? ""}
                     onChange={(next) =>
@@ -3038,8 +3059,27 @@ export function LoraStudioTab({ onUseLora }: { onUseLora?: (loraFilename: string
                     }
                     disabled={busy}
                   />
+                  <input
+                    value={s.description}
+                    onChange={(e) =>
+                      setExtraSubjects((prev) =>
+                        prev.map((p, k) => (k === i ? { ...p, description: e.target.value } : p)),
+                      )
+                    }
+                    placeholder={`${i + 2}人目の特徴（AIが見分ける手がかり。例: 黒コートの男性）`}
+                    disabled={busy}
+                    className={`${fieldCls} mt-1.5 text-[11px]`}
+                  />
                 </div>
               ))}
+            {!yamlMode && isSdxlJob && extraSubjects.length > 0 && (
+              <p className="mt-1.5 rounded-lg border border-border/60 bg-background/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted">
+                「特徴」は、自動キャプションのAIが画像ごとに
+                <strong className="text-foreground">どちらが写っているかを判定するための手がかり</strong>
+                です。髪色・性別・服装など、写真を見て区別できる見た目だけで十分です。
+                <strong className="text-foreground">空のままだとAIが2人を見分けられず、トリガーワードが取り違えられます。</strong>
+              </p>
+            )}
             {!yamlMode && isSdxlJob && (
               <button
                 type="button"
