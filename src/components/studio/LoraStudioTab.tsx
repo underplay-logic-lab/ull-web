@@ -78,7 +78,9 @@ import {
   type LoraSubject,
   type CaptionMode,
   type ResolvedCaptionMode,
+  matchLeadingSubjectTriggers,
 } from "@/lib/loraCaptionSpec";
+import { captionBuckets, DIAGNOSTIC_AXES } from "@/lib/datasetDiagnostics";
 import { DatasetDiagnosticsPanel } from "@/components/studio/DatasetDiagnosticsPanel";
 import { translateCaption } from "@/lib/loraTranslate";
 import { extractIdentityTags } from "@/lib/loraCaption";
@@ -1026,6 +1028,52 @@ export function LoraStudioTab({
         .filter((x) => x.caption.length > 0),
     [images, captions],
   );
+  // 学習回数の一括選択チップ（2026-09-21、ホスト指摘）。165枚を1枚ずつ
+  // shift+クリックするのは非現実的なので、キャプションから「被写体」と
+  // 「構図（距離）」の2軸を作る。判定は診断と同じ関数を通すので、
+  // 「診断が全身が多いと言う」→「全身チップで選べる」が必ず一致する。
+  const selectionGroups = useMemo(() => {
+    const captioned = images.filter((img) => (captions[img.id] ?? "").trim());
+    if (captioned.length === 0) return [];
+
+    const subjMap = new Map<string, { label: string; ids: string[] }>();
+    const distMap = new Map<string, { label: string; ids: string[] }>();
+    const push = (m: Map<string, { label: string; ids: string[] }>, id: string, label: string, imgId: string) => {
+      const e = m.get(id) ?? { label, ids: [] };
+      e.ids.push(imgId);
+      m.set(id, e);
+    };
+
+    for (const img of captioned) {
+      const cap = (captions[img.id] ?? "").trim();
+      const hits = matchLeadingSubjectTriggers(cap, allSubjects);
+      if (hits.length === 0) push(subjMap, "__none__", "未分類", img.id);
+      else if (hits.length === 1) push(subjMap, hits[0].trigger, hits[0].trigger, img.id);
+      else {
+        // 2人以上が同時に写っている画像（duo）。片方だけの画像と分けて
+        // 比率を触れるようにするのが目的なので、組み合わせごとに1つ。
+        const key = hits.map((h) => h.trigger).join("+");
+        push(subjMap, key, `${hits.map((h) => h.trigger).join(" + ")}（同時）`, img.id);
+      }
+      const buckets = captionBuckets(cap, "distance");
+      if (buckets.length === 0) push(distMap, "__none__", "未分類", img.id);
+      for (const b of buckets) {
+        const def = DIAGNOSTIC_AXES.distance.buckets.find((x) => x.id === b);
+        push(distMap, b, def?.label ?? b, img.id);
+      }
+    }
+
+    const toOptions = (m: Map<string, { label: string; ids: string[] }>) =>
+      [...m.entries()]
+        .map(([id, v]) => ({ id, label: v.label, ids: v.ids }))
+        .sort((a, b) => b.ids.length - a.ids.length);
+
+    const groups: { key: string; title: string; options: { id: string; label: string; ids: string[] }[] }[] = [];
+    if (subjMap.size > 1) groups.push({ key: "subject", title: "被写体", options: toOptions(subjMap) });
+    if (distMap.size > 1) groups.push({ key: "distance", title: "構図", options: toOptions(distMap) });
+    return groups;
+  }, [images, captions, allSubjects]);
+
   const effectiveEmbedTags = useMemo(() => {
     const extra = embedTagsInput.trim();
     return [autoEmbedTags, extra].filter(Boolean).join(", ");
@@ -3031,6 +3079,7 @@ export function LoraStudioTab({
                   : "pending"
             }
             onSetRepeats={setImageRepeats}
+            selectionGroups={selectionGroups}
             smartCropCandidateCount={images.filter((img) => !img.cropKind).length}
             smartCropBusy={smartCropBusy}
             smartCropProgress={smartCropProgress}

@@ -98,6 +98,18 @@ export const DIAGNOSTIC_TARGETS = {
   bucketImbalanceRatio: 3,
   /** 相手側がこの枚数以上あるときだけ比較する（1枚 vs 4枚で騒がないため）。 */
   bucketImbalanceMinPeer: 8,
+  /**
+   * 1つのバケットが軸全体に占める割合がこれを超えたら「偏りすぎ」とみなす
+   * （2026-09-21、ホスト指摘「足りない分は注意するけど、多いとは言わない」）。
+   *
+   * 不足と違い、**これは学習回数で直せる**（多い側を ×1 のまま、少ない側を
+   * 上げる／多い側の比率を下げる）ので notFixableByRepeats=false で出す。
+   * 0.7 という値は未校正。1軸が7割を超えると生成時にそこから外れた構図で
+   * 崩れやすい、という一般論からの出発点でしかない。
+   */
+  bucketDominanceRatio: 0.7,
+  /** 支配率を見る前に必要な、その軸で分類できた最低枚数。 */
+  bucketDominanceMinClassified: 10,
 };
 
 export type SubjectDiagnostic = {
@@ -169,6 +181,19 @@ function emptyAxes(): Record<DiagnosticAxis, Record<string, number>> {
     pose: {},
     background: {},
   };
+}
+
+/**
+ * キャプションが指定軸のどのバケットに当たるかを返す（0個・複数個あり）。
+ * 診断と同じ判定を UI の一括選択チップから使い回すために公開する
+ * （2026-09-21）。判定がズレると「診断で全身が多いと言われた」のに
+ * 「全身チップで選べない」という食い違いが起きるので、必ず同じ関数を通す。
+ */
+export function captionBuckets(caption: string, axis: DiagnosticAxis): string[] {
+  const tags = splitTags(caption);
+  return DIAGNOSTIC_AXES[axis].buckets
+    .filter((b) => tags.some((t) => b.keywords.some((k) => t.includes(k))))
+    .map((b) => b.id);
 }
 
 export function analyzeDataset(
@@ -305,6 +330,26 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
         message: `ユニーク ${s.unique}枚 は少なめです（目安 ${DIAGNOSTIC_TARGETS.minUniquePerSubject}枚以上）。学習回数を増やしても同じ絵を繰り返すだけで、情報量は増えません。`,
         notFixableByRepeats: true,
         fixableWith: "multi_angle",
+      });
+    }
+
+    // --- 1つの構図に偏りすぎ（不足ではなく「多すぎ」側）-----------------
+    // 不足しか言わないと「全身ばかり80枚」のような構成を素通りさせてしまう。
+    for (const axis of Object.keys(DIAGNOSTIC_AXES) as DiagnosticAxis[]) {
+      const counts = DIAGNOSTIC_AXES[axis].buckets.map((b) => ({ b, n: s.axes[axis][b.id] ?? 0 }));
+      const classified = counts.reduce((t, c) => t + c.n, 0);
+      if (classified < DIAGNOSTIC_TARGETS.bucketDominanceMinClassified) continue;
+      const top = counts.reduce((a, c) => (c.n > a.n ? c : a), counts[0]);
+      const share = top.n / classified;
+      if (share < DIAGNOSTIC_TARGETS.bucketDominanceRatio) continue;
+      // 他のバケットが全部0なら「1つだけ」の指摘と重複するので出さない。
+      if (counts.filter((c) => c.n > 0).length <= 1) continue;
+      issues.push({
+        level: "warn",
+        subject: s.trigger,
+        message: `${DIAGNOSTIC_AXES[axis].label}が「${top.b.label}」に偏っています（${top.n}枚 / 分類できた ${classified}枚 の ${Math.round(share * 100)}%）。この構図以外での再現性が落ちます。多い側の学習回数を上げない、または少ない側を上げて比率を整えてください。`,
+        notFixableByRepeats: false,
+        fixableWith: null,
       });
     }
   }
