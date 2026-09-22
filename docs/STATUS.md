@@ -317,9 +317,12 @@ GPU tier が検討できる。ただし CLAUDE.md §1 のとおり **1回あた�
 - **動画超解像のダウンロードをネイティブ保存に**（`ab23ce6`）。fetch→blob で無反応に見えていた。
 - **LoRA「フォームを初期化」が押せない詰み**（`d0b1693`）: 送信成功後に submitting が残っていた。
 
-**未着手（ホストと合意済み・次にやる）**: SDXL の固定既定として `min_snr_gamma` / `lr_scheduler`
-cosine+warmup / `conv_dim`+`conv_alpha`（LoCon） / `caption_tag_dropout_rate` の4つを sd-scripts 引数に
-配線する（ユーザーには見せない）。入れたら kocho 単体の 50〜300step で効きを見る。
+**【完了 2026-09-23】SDXL の固定既定**（`fc65d13`、smoke 済み・デプロイ済み）: `min_snr_gamma=5`（既存）
+＋ `lr_scheduler=cosine`（Prodigy なので warmup 無し）＋ LoCon `conv_dim=16 / conv_alpha=8`
+＋ `caption_tag_dropout_rate=0.1`（TOML `[general]`、keep_tokens 分は落ちない）。env
+`SDXL_LR_SCHEDULER / SDXL_LR_WARMUP_RATIO / SDXL_CONV_DIM / SDXL_TAG_DROPOUT` で個別に戻せる。
+smoke（L40S・合成5枚・20step、58.5s）で引数が通り、U-Net の LoRA モジュールが 722 → 788
+（Conv2d 3×3 に掛かった）ことを確認。**次は kocho 単体 50〜300step で効きを見る**（ホスト運用）。
 
 ### 実測: SDXL ワーカーのコールドスタート内訳（2026-09-22）
 
