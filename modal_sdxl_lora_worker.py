@@ -1595,6 +1595,7 @@ def train_sdxl_lora_job(params: dict) -> dict:
         last_total = 0
         aborted = ""
         last_ckpt_scan = 0.0
+        last_vram_log = 0.0
         committed_ckpts = 0
         for line in proc.stdout:
             # ⚠️ 読むだけで print していなかった（2026-09-22 発見）。sd-scripts の
@@ -1624,6 +1625,14 @@ def train_sdxl_lora_job(params: dict) -> dict:
                     if vram is not None:
                         fields["metadata"] = {"vram_used_gb": vram}
                     _patch_job(job_id, fields)
+                    # VRAM は Supabase へ送るだけでログに出していなかった
+                    # （2026-09-22、ホスト指摘「VRAM も20GBあれば良さそう」を
+                    # 検証しようとして気付いた）。完了後にテキストログだけを
+                    # 遡って解析する運用のために、ここでも1行出す。
+                    # 60秒おき——8秒ごとに出すとログがVRAMで埋まる。
+                    if now - last_vram_log > 60:
+                        last_vram_log = now
+                        log(f"学習中 {cur}/{total} ・ VRAM {vram if vram is not None else '?'} GB")
                     last_progress_patch = now
 
             # 中間チェックポイントを走行中に Volume へ commit しておく。
