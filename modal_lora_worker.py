@@ -38,6 +38,7 @@ import collections
 import copy
 import hashlib
 import hmac
+import json
 import os
 import pathlib
 import queue
@@ -365,6 +366,21 @@ LORA_OUTPUT_DIR = f"{MODELS_DIR}/loras"
 # table gained an explicit 10.3 entry for cu130 builds. `LORA_WORKER_GPU`
 # still pins a single tier when set.
 GPU_REQUEST = os.environ.get("LORA_WORKER_GPU", "").strip() or ["b300", "b200"]
+
+# arch 別 GPU tier（2026-09-23、docs/pricing-decision-sheet.md「決定 4」）: B300 への
+# こだわりは無く、VRAM が収まる最安 tier へ寄せる。dispatch 時に
+# `train_lora_job.with_options(gpu=...)` で差し替えるので再デプロイ無しで切り替わる
+# （Modal 1.5.4、gpu は単一文字列のみ）。既定は空＝全 arch が GPU_REQUEST（B300/B200）。
+# 実測で VRAM が判った arch から env `LORA_ARCH_GPU='{"flux2_klein_4b": "RTX-PRO-6000"}'`
+# で指定するか、ここに書く。⚠️ 単価 knob `lora_credits_per_gpu_second` は B300 時給で
+# 導出しているので、安い tier へ寄せた arch は arch 別の単価が要る（未対応）。
+LORA_ARCH_GPU: dict[str, str] = {}
+try:
+    LORA_ARCH_GPU.update(
+        {str(k): str(v) for k, v in json.loads(os.environ.get("LORA_ARCH_GPU", "") or "{}").items()}
+    )
+except Exception as _exc:  # noqa: BLE001 — 壊れた env で全体を止めない
+    print(f"[lora] LORA_ARCH_GPU ignored: {_exc!r}", flush=True)
 AI_TOOLKIT_REF = os.environ.get("AI_TOOLKIT_REF", "main")
 
 # 2026-09-20: 既定を False（無効）に変更（ホスト判断）。
@@ -5839,7 +5855,13 @@ def _prepare_and_spawn_training(item: dict) -> dict:
                         f"{str((ing or {}).get('error'))[:400]}"
                     )
 
-        call = train_lora_job.spawn(item)
+        _arch = _arch_for_target(
+            str(item.get("target_model") or ""), str(item.get("base_architecture") or "")
+        )
+        _tier = LORA_ARCH_GPU.get(_arch, "")
+        _train_fn = train_lora_job.with_options(gpu=_tier) if _tier else train_lora_job
+        print(f"[dispatch] arch={_arch} gpu={_tier or GPU_REQUEST}", flush=True)
+        call = _train_fn.spawn(item)
         _patch_job(
             job_id,
             {"modal_call_id": call.object_id, "progress_message": "starting training"},
