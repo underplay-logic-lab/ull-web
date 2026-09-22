@@ -1554,6 +1554,18 @@ export function LoraStudioTab({
   // 次へ進むと全キャプションを作り直していた。記録はキャプション解析が一度でも
   // 走れば埋まり、下書きにも保存されるので、空のままなのは初回だけ。
   const captionSpecStale = (key: string, reflected: string) => reflected !== "" && key !== reflected;
+  // 記録済みキーから「学習したい特徴」だけ取り出す（差分表示用）。キーは
+  // JSON.stringify([trigger, override, category, filled ? [fixed, varying] : null])。
+  const reflectedSpecSummary = useMemo(() => {
+    if (!reflectedSpecKey) return "";
+    try {
+      const parsed = JSON.parse(reflectedSpecKey) as unknown[];
+      const pair = parsed[3];
+      return Array.isArray(pair) ? String(pair[0] ?? "") : "";
+    } catch {
+      return "";
+    }
+  }, [reflectedSpecKey]);
 
   const captionSpecKey = useMemo(
     () =>
@@ -4358,22 +4370,24 @@ export function LoraStudioTab({
                 （2026-09-22、ホスト指摘）。以前はキャプション欄にあり、
                 設定を変えた本人が気付けなかった。 */}
             {aiCaptionedCount > 0 && captionSpecStale(captionSpecKey, reflectedSpecKey) && (
-              <p className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[10px] leading-relaxed text-amber-400">
-                <strong>「学習したい特徴」を変えたので、キャプションは作り直しになります。</strong>
-                「学習したい特徴」はキャプションに書いてはいけない言葉のリストとして使われるため、
-                変更すると既存のキャプションと食い違います。次へ進むと
-                {aiCaptionedCount} 枚ぶんを作り直すので、数分かかります。
-              </p>
+              <div className="mt-2 space-y-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[10px] leading-relaxed text-amber-400">
+                <p>
+                  <strong>キャプションを作り直します。</strong>
+                  いまのキャプションは、下に出ている「前回」の内容で作られています。
+                  「学習したい特徴」はキャプションに書いてはいけない言葉のリストとして使われるため、
+                  食い違ったままにはできません。次へ進むと {aiCaptionedCount} 枚ぶんを作り直します（数分）。
+                </p>
+                {/* 何が変わったのかを出す（2026-09-22、ホスト指摘「特に何もして
+                    いないのに出る」）。自分で変えていなくても、特徴の自動抽出が
+                    前回と違う結果を返せばここは変わる。差分が見えれば納得できる。 */}
+                <p className="text-muted">
+                  前回: <span className="text-foreground">{reflectedSpecSummary || "（記録なし）"}</span>
+                </p>
+                <p className="text-muted">
+                  いま: <span className="text-foreground">{captionSpec.fixed || "（なし）"}</span>
+                </p>
+              </div>
             )}
-          </div>
-
-
-          <div>
-            <label className="mb-1 block text-[11px] font-medium text-muted">学習解像度</label>
-            <p className={`${fieldCls} flex items-center text-muted`}>{LORA_RESOLUTION_LABELS[resolution]}</p>
-            <p className="mt-1 text-[10px] text-muted">
-              モデルに最適な解像度で自動的に学習します（選択の必要はありません）。
-            </p>
           </div>
 
           {/* SDXL/sd-scriptsワーカー限定: 完成した.safetensorsに書き込む
@@ -4477,6 +4491,15 @@ export function LoraStudioTab({
               )}
             </div>
           )}
+
+
+          <div>
+            <label className="mb-1 block text-[11px] font-medium text-muted">学習解像度</label>
+            <p className={`${fieldCls} flex items-center text-muted`}>{LORA_RESOLUTION_LABELS[resolution]}</p>
+            <p className="mt-1 text-[10px] text-muted">
+              モデルに最適な解像度で自動的に学習します（選択の必要はありません）。
+            </p>
+          </div>
 
           {/* LoRA-type-aware auto-caption spec — category + JP fixed/varying */}
           <div className={`rounded-xl border border-neon-violet/30 bg-neon-violet/5${flowRing("captionSpec")}`}>
