@@ -343,3 +343,20 @@ export async function downloadUpscaleImage(url: string, filename: string): Promi
   a.remove();
   setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
+
+/**
+ * 署名付き URL をブラウザのネイティブダウンロードに渡す（fetch→blob を経由しない）。
+ * 動画超解像の結果は Modal 直配信で数十 MB〜あり、fetch で全量を溜めてから保存する
+ * downloadUpscaleImage だと、回線が 3MB/s 程度のとき十数秒〜数分「押しても何も
+ * 起きない」ように見えた（2026-09-23、4K 38MB でホスト報告）。サーバーが
+ * Content-Disposition: attachment を返すので、アンカー遷移でそのまま保存ダイアログ
+ * ／ダウンロードバーに乗り、進捗もブラウザ側で見える。
+ */
+export function downloadViaBrowser(url: string): void {
+  const a = document.createElement("a");
+  a.href = url;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}

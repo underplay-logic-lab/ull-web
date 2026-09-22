@@ -2863,8 +2863,14 @@ def download_upscale_original(
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="GET")
-def download_upscale_video(user_id: str, job_id: str, expires: str, sig: str, request: fastapi.Request):
+def download_upscale_video(
+    user_id: str, job_id: str, expires: str, sig: str, request: fastapi.Request, dl_name: str = ""
+):
     filename = f"{job_id}.mp4"
+    # 保存時のファイル名だけ差し替えられる（署名対象外・表示用）。ブラウザの
+    # ネイティブダウンロードへ切り替えた際に、従来 fetch→blob 側で付けていた
+    # "ullstudio_upscale_video_<日時>.mp4" を維持するため（2026-09-23）。
+    download_name = dl_name if re.fullmatch(r"[A-Za-z0-9._-]{1,120}\.mp4", dl_name or "") else filename
     if not _verify_download_token(user_id, job_id, filename, expires, sig):
         raise fastapi.HTTPException(status_code=403, detail="invalid or expired download link")
     if not (_ORIG_DL_ID_RE.match(user_id) and _ORIG_DL_ID_RE.match(job_id)):
@@ -2876,7 +2882,7 @@ def download_upscale_video(user_id: str, job_id: str, expires: str, sig: str, re
     file_path = pathlib.Path(MODELS_DIR) / _upscale_video_result_rel_path(user_id, job_id)
     if not file_path.is_file():
         raise fastapi.HTTPException(status_code=404, detail="video not found (may have been auto-purged after 14 days)")
-    return _stream_download(file_path, download_name=filename, media_type="video/mp4", request=request)
+    return _stream_download(file_path, download_name=download_name, media_type="video/mp4", request=request)
 
 
 # ---------------------------------------------------------------------------

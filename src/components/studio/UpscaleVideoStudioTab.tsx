@@ -28,7 +28,7 @@ import {
   validateVideoInputResolution,
 } from "@/lib/upscaleStudio";
 import {
-  downloadUpscaleImage,
+  downloadViaBrowser,
   pollUpscaleJob,
   resolveUpscaleVideoUrl,
   startUpscaleVideoJob,
@@ -118,6 +118,17 @@ function useObjectUrl(file: File | null): string | null {
     [url],
   );
   return url;
+}
+
+// 署名付き Modal URL に保存名だけ付ける（worker 側 dl_name、署名対象外）。
+function withDownloadName(url: string, name: string): string {
+  try {
+    const u = new URL(url);
+    u.searchParams.set("dl_name", name);
+    return u.toString();
+  } catch {
+    return url;
+  }
 }
 
 function buildOutFilename() {
@@ -401,7 +412,7 @@ export function UpscaleVideoStudioTab() {
               // 永続化済みなので失敗しても致命的ではない）。
               if (next.resultUrl) {
                 resolveUpscaleVideoUrl(next.id, next.resultUrl)
-                  .then((url) => downloadUpscaleImage(url, buildOutFilename()))
+                  .then((url) => downloadViaBrowser(withDownloadName(url, buildOutFilename())))
                   .catch((err) => {
                     console.warn("[UpscaleVideoStudioTab] auto-download before next queued job failed:", err);
                   });
@@ -759,7 +770,9 @@ export function UpscaleVideoStudioTab() {
               <button
                 type="button"
                 disabled={!playableVideoUrl}
-                onClick={() => playableVideoUrl && downloadUpscaleImage(playableVideoUrl, buildOutFilename())}
+                onClick={() =>
+                  playableVideoUrl && downloadViaBrowser(withDownloadName(playableVideoUrl, buildOutFilename()))
+                }
                 className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-background px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:border-neon-violet/40 disabled:opacity-50"
               >
                 <Download size={16} />
