@@ -3732,17 +3732,9 @@ export function LoraStudioTab({
               </span>
               {captionSpecFilled && (
                 <span className="text-muted">
-                  {/* 何が起きるのか分からない文言だった（2026-09-22、ホスト指摘）。
-                      captionSpecKey が変わる＝トリガーワード／LoRAカテゴリ／
-                      学習したい特徴のどれかを、キャプションを作ったあとに
-                      変えた状態。次へ進むと全キャプションが作り直される。 */}
+                  {/* 警告は「変えた場所の近く」＝被写体の設定欄へ移した
+                      （2026-09-22、ホスト指摘）。ここには反映済みの事実だけ。 */}
                   ・「学習したい特徴」もキャプションに反映済み
-                  {captionSpecKey !== reflectedSpecKey && (
-                    <span className="text-amber-400">
-                      （トリガーワード・カテゴリ・学習したい特徴のどれかが、キャプションを作ったあとに変わりました。
-                      次へ進むとキャプションを全部作り直します）
-                    </span>
-                  )}
                 </span>
               )}
             </p>
@@ -4114,6 +4106,17 @@ export function LoraStudioTab({
                 <Plus size={12} />
                 別の人物を追加（複数人物・被写体を1つのLoRAで区別したい場合）
               </button>
+            )}
+            {/* キャプションが古くなった警告は、変えた場所の近くに出す
+                （2026-09-22、ホスト指摘）。以前はキャプション欄にあり、
+                設定を変えた本人が気付けなかった。 */}
+            {aiCaptionedCount > 0 && captionSpecKey !== reflectedSpecKey && (
+              <p className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[10px] leading-relaxed text-amber-400">
+                <strong>ここを変えたので、キャプションは作り直しになります。</strong>
+                「学習したい特徴」はキャプションに書いてはいけない言葉のリストとして使われるため、
+                変更すると既存のキャプションと食い違います。次へ進むと
+                {aiCaptionedCount} 枚ぶんを作り直すので、数分かかります。
+              </p>
             )}
           </div>
 
