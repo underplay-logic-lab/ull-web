@@ -136,28 +136,32 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
   if (v.pendingCaptionCount > 0) {
     return { targets: ["recaption"], hint: "解析できなかった画像を解析し直します" };
   }
-  if (v.needsIdentityConfirm) {
-    return {
-      targets: ["identityConfirm"],
-      hint: "埋め込むタグを確認してチェックします",
-    };
-  }
+  // --- ここから先は画面の並び順に沿って進める ---
+  //   クロップ → 学習回数 → （設定欄）メタデータの確認 → 実行
+  //
+  // ⚠️ メタデータの確認を「未解析の再解析」の直後に置いていたため、診断に赤が
+  // あってもクロップが光らなかった（2026-09-22、ホスト報告）。確認欄は設定側に
+  // あり、流れとしては学習回数より後。常に2箇所までに抑えるため「いまやる場所」
+  // と「飛ばして次へ行く場所」の2つを出す。
+  //
+  // 赤があってもクロップで埋まらない軸（向き・姿勢・背景）はここへ落ちるので、
+  // なぜクロップが光らないのかを文言で補う。
+  const next: LoraFlowTarget = v.needsIdentityConfirm ? "identityConfirm" : "submit";
+  const nextLabel = v.needsIdentityConfirm
+    ? "設定欄で埋め込むタグを確認する"
+    : "このまま学習へ進む";
 
-  // --- ここから先は選択肢。両方光らせて「どちらでもよい」と伝える ---
   if (v.diagnosticErrors > 0 && v.cropAvailable) {
     return {
-      targets: ["crop", "submit"],
-      hint: "足りない構図を切り出すか、このまま学習へ進むか選べます",
+      targets: ["crop", next],
+      hint: `足りない構図を切り出す ／ ${nextLabel}`,
     };
   }
-  // 赤はあるがクロップでは埋まらない（向き・姿勢・背景など）。黙って学習回数へ
-  // 送ると「なぜクロップが光らないのか」が分からないので、理由を書く
-  // （2026-09-22、ホスト指摘）。
-  if (v.diagnosticErrors > 0) {
-    return {
-      targets: ["repeats", "submit"],
-      hint: "診断の指摘は切り出しでは埋まりません（素材を足すか、学習回数で調整するか、このまま進みます）",
-    };
-  }
-  return { targets: ["repeats", "submit"], hint: "学習回数を調整するか、このまま学習へ進みます" };
+  return {
+    targets: ["repeats", next],
+    hint:
+      (v.diagnosticErrors > 0
+        ? "診断の指摘は切り出しでは埋まりません。学習回数で調整する"
+        : "学習回数を調整する") + ` ／ ${nextLabel}`,
+  };
 }
