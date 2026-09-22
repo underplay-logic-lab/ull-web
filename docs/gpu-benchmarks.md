@@ -1573,6 +1573,22 @@ WAN と同じ 220枚・1024px・batch 1・rank 32・block_compile。`metadata.me
 tier を寄せる前に、その tier での s/it を1本ずつ測る（B300 より遅ければ寄せる意味が無い）。
 `LORA_ARCH_PROFILE[arch].gpu` を書き換えるだけで価格と実行 tier が同時に切り替わる。
 
+### 14.23 SDXL 2本（juggernaut_xl / illustrious_xl）を固定既定込みで 50step（2026-09-23、L40S）
+
+同じ 220枚・1024px・rank 32/16・Prodigy。**cosine + LoCon(conv_dim 16/8) + tag_dropout 0.1 が初めて本番データで走った**。
+
+| | juggernaut_xl | illustrious_xl |
+|---|---|---|
+| コンテナ時間 | 201.4s | 201.3s |
+| 50step の tqdm | 1.31 s/it（65s） | 1.29〜1.32 s/it（64〜65s） |
+| VRAM peak | 19.2GB | 19.2GB（LoCon 無しの 18.7GB とほぼ同じ） |
+| U-Net LoRA modules | 788（Conv2d 込み。無しは 722） | 788 |
+| 課金 | 83C | 83C |
+
+- 50step の tqdm 平均は初回ステップの JIT を含むので、昨日の定常 0.74 s/it（3,490step）とは比べられない。
+  **LoCon 分の遅化は 300step 以上のランで確定させる**（`LORA_SPI_BASELINE.sdxl` 0.642 は据え置き）。
+- dataset.zip の自動生成（2.3s）と、中間チェックポイントへのメタデータ埋め込みもこの2本で動作。
+
 ## 15. LoRAデータセットのアップロード速度（2026-09-20）
 
 同一データセット（131枚 / 52.2MB、原本は全枚数が長辺1536超）を本番経路で計測。
