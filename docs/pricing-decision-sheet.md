@@ -109,3 +109,53 @@
 | 料金表記の修正（「月額固定費0円」「秒単位従量課金」） | 0 | 1時間 |
 
 料金ページは admin の Pricing タブと同じ knob を読ませ、値を変えても表が古くならない形にする。
+
+## 4. ホストの回答と決定（2026-09-23）
+
+| # | 論点 | 決定 |
+|---|---|---|
+| 1 | LoRA の範囲 | 現行7モデル（SDXL 2 + ai-toolkit 5）を出す。軽いモデルは需要薄でも並べる。**未実測5つは数本回して測る** |
+| 2 | LoRA とプランのズレ | 価格表自体が B300 以前の設計なので**表ごと作り直す**。ローンチ前なので既存値に縛られない |
+| 3 | Director 60秒 | **維持**。「他で出来ない」が売りなので高額でよい。やりたい人がやれる状態を作る |
+| 4 | GPU tier | **B300 へのこだわりは無し**。VRAM が収まる最安 tier を探す。B300 は minimax 60秒のような「力技コンテンツ」専用 |
+| 5 | 超解像 動画 4K | **含める**。所要時間を1本測る |
+| 6 | Custom タブ | タブは不要。**Wan Animate はコンテンツとして欲しい**（60秒つなぎ合わせ含む）。独立機能として設計し直す |
+| 7 | 粗利・為替 | **3× のまま。USD/JPY は 170**（カード決済の上乗せ分）。B300 は `modal billing rates` の $7.10 |
+
+### 反映済み（2026-09-23、コード＋DB）
+
+| knob | 旧 | 新 |
+|---|---|---|
+| usd_jpy_rate | 160 | **170** |
+| gpu_usd_per_hour_b300 | 7.5 | **7.10** |
+| director_per_second_fast | 14.9 | **16.0** |
+| director_per_second_quality | 25.7 | **27.5** |
+| director_qwen_script_credits | 84 | **91** |
+| lora_credits_per_gpu_second | 0.5648 | **0.606** |
+| upscale_video_base_credits | 4.30 | **4.87** |
+| upscale_video_per_frame | 0.30 | **0.34** |
+
+据え置き: `angle_pro_per_angle` 12（B200 warm 原価 ¥6 → 3× で 10.8C、cold 込みで 12 が妥当）、
+`upscale_per_mp` 3（B300 warm で 2.4C/MP。tier を変えたら再計算）、`lora_credits_per_gpu_second_sdxl`
+0.222（2026-09-20 のホスト判断「値下げしない」を維持、実測粗利 76%）。
+
+### 残る実測（GPU 代）
+
+| # | 対象 | 方法 | 概算 |
+|---|---|---|---|
+| A | 超解像 画像を RTX PRO 6000 / L40S で | `modal run modal_seedvr2_worker.py::main --gpu ...`（CLI） | ¥20 |
+| B | Multi-Angle B200 の再現性 | 既定が B200 なので**実運用ジョブから自動で溜まる**（generation_logs） | 0 |
+| C | 超解像 動画 4K の所要時間 | UI から1本（B300） | ¥300〜500 |
+| D | LoRA 未実測5 arch の s/it と VRAM | UI から各1本・300step・既存データセット（`metadata.metrics` に自動記録） | ¥2,500 |
+| D' | D で VRAM が小さかった arch を安い tier で再確認 | dispatch 時に `train_lora_job.with_options(gpu=…)`（要・小改修） | ¥1,000 |
+| E | Wan Animate 60秒 | UI から1本（B300） | ¥500 |
+
+合計 ¥4,500〜5,000。**A 以外は実ジョブとして UI から投げるのが最短**（計測は全部自動で残る）。
+
+### 決定 6 に伴う設計課題（未着手）
+
+- Wan Animate を Custom タブから独立させる。現行の `wan-animate-dance` 行は `default_gpu_tier=l4` で
+  そのままでは動かない可能性が高い。60秒つなぎ合わせは Director と同じ「シーン連結」の枠で設計するか要検討。
+- LoRA の per-arch GPU tier: 現在は app 全体で `GPU_REQUEST=["b300","b200"]` 固定。Modal 1.5.4 は
+  `Function.with_options(gpu=…)` を持つので、dispatch 側で arch → tier を引いて spawn すれば
+  再デプロイ無しで切り替えられる。SDXL は既に別ワーカー（L40S）。
