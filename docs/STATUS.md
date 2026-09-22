@@ -302,6 +302,25 @@ GPU tier が検討できる。ただし CLAUDE.md §1 のとおり **1回あた�
 「Image build terminated due to external shut-down」で落ちた（torch CPU wheel 196MB の
 取得中）。メタデータだけ触るなら torch は要らないので、今後もヘッダ書き換えで済ませる。
 
+### 【進行中 2026-09-23】ローンチ価格の確定作業で入れた変更
+
+- **動画超解像の課金を「課金前 ffprobe 実測」に変更**（`6229574`）。ブラウザは fps を取れず 30 を仮定
+  するため申告フレーム数と実ファイルがズレていた（4K 実ジョブで 151→121、62C 取り過ぎ）。
+  署名 URL を先に発行 → Modal の CPU 関数 `probe_upscale_video`（ffmpeg 入り軽量 image）で実測 →
+  その値で確定課金。返金運用にはしない（ホスト判断「最初から正しい額」）。失敗時は申告値へ
+  フォールバック。Vercel env `MODAL_SEEDVR2_VIDEO_PROBE_URL` 追加済み。
+- **静止画超解像を RTX PRO 6000 既定へ**（`80db087`、3 tier 実測は gpu-benchmarks §1）。短辺 3840 超は B300。
+- **LoRA の最低 step を 200→50**（UI `STEPS_MIN` と API クランプ）。s/it・VRAM を測る確認ランを UI から
+  投げるため。
+- **LoRA の arch 別 GPU tier**（`512b743`）: dispatch で `with_options(gpu=…)`。既定は空（全 B300/B200）。
+  単価 knob は B300 前提なので、安い tier へ寄せる arch には arch 別単価が要る（未対応）。
+- **動画超解像のダウンロードをネイティブ保存に**（`ab23ce6`）。fetch→blob で無反応に見えていた。
+- **LoRA「フォームを初期化」が押せない詰み**（`d0b1693`）: 送信成功後に submitting が残っていた。
+
+**未着手（ホストと合意済み・次にやる）**: SDXL の固定既定として `min_snr_gamma` / `lr_scheduler`
+cosine+warmup / `conv_dim`+`conv_alpha`（LoCon） / `caption_tag_dropout_rate` の4つを sd-scripts 引数に
+配線する（ユーザーには見せない）。入れたら kocho 単体の 50〜300step で効きを見る。
+
 ### 実測: SDXL ワーカーのコールドスタート内訳（2026-09-22）
 
 経過時間ログ（`_mk_logger`）を入れて初めて測れた。**コンテナに入ってからは
