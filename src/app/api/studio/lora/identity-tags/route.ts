@@ -90,6 +90,7 @@ function buildPrompt(trigger: string, hintJa: string, fixedTags: string): string
     "",
     "Answer as a JSON array of at most 12 objects, most distinctive first.",
     'Each object is {"en": <lowercase Danbooru-style tag>, "ja": <short natural Japanese>}.',
+    "Both fields are REQUIRED on every object. Never output an object with only one of them, and never merge two traits into one object.",
     'Example: [{"en":"bald","ja":"禿頭"},{"en":"fat","ja":"太っている"},{"en":"glasses","ja":"眼鏡"}]',
     "The Japanese is what the user reads; the English is what goes into the model prompt.",
     "Output ONLY the JSON array — no prose, no markdown fences.",
@@ -129,6 +130,9 @@ function parseTags(raw: string): IdentityTag[] {
       .join(" ")
       .trim()
       .slice(0, 40);
+    // ⚠️ 英語が空・長すぎ・重複のときに **ja だけ残す**ことは絶対にしない。
+    // 英日は並び順で対応させているので、片方だけ落とすと以降が全部ズレる
+    // （2026-09-22、ホスト報告「日本語8件に対し英語7件」）。
     if (!en || en.length > 40 || seen.has(en)) continue;
     seen.add(en);
     out.push({ en, ja: ja || en });

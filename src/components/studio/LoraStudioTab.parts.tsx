@@ -504,9 +504,15 @@ export function IdentityTagsField({
   // 英と日を同じ並びで持つ。日が欠けていれば英をそのまま見せる（表示は
   // 常に何か出す方が、空欄で「消えた？」と思わせるより安全）。
   const en = value.split(/\s*[,、]\s*/).map((t) => t.trim()).filter(Boolean);
-  const ja = valueJa.split(/\s*[,、]\s*/).map((t) => t.trim());
-  const tags = en.map((t, i) => ({ en: t, ja: ja[i] || t }));
+  const ja = valueJa.split(/\s*[,、]\s*/).map((t) => t.trim()).filter(Boolean);
+  // 日本語と英語は**並び順で対応**させている。数が食い違うと別の語と対応して
+  // 表示され、しかも気付けない（2026-09-22、ホスト報告「ちゃんと翻訳されて
+  // ないかも？」— 日本語8件に対し英語7件で、短髪だけ英語が無かった）。
+  // ズレているときは日本語側を信用せず、英語をそのまま出して警告する。
+  const pairsMisaligned = ja.length > 0 && ja.length !== en.length;
+  const tags = en.map((t, i) => ({ en: t, ja: pairsMisaligned ? t : ja[i] || t }));
   const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState("");
   const busy = disabled || extracting || adding;
 
   const setTags = (next: { en: string; ja: string }[]) => {
@@ -527,8 +533,15 @@ export function IdentityTagsField({
     }
     setAdding(true);
     try {
-      const en = (await onTranslateTag(t)).trim();
-      setTags([...tags, { en: en || t, ja: t }]);
+      const enTag = (await onTranslateTag(t)).trim();
+      // ⚠️ 翻訳に失敗したら**日本語を英語側へ入れない**（2026-09-22）。
+      // 以前は `en || t` で日本語がそのまま metadata へ焼かれていた。
+      if (!enTag) {
+        setAddError(`「${t}」を英語タグへ変換できませんでした。英語で入力してください（例: short hair）。`);
+        return;
+      }
+      setAddError("");
+      setTags([...tags, { en: enTag, ja: t }]);
       setDraft("");
     } finally {
       setAdding(false);
@@ -561,6 +574,13 @@ export function IdentityTagsField({
         )}
       </div>
 
+      {pairsMisaligned && (
+        <p className="mb-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] leading-relaxed text-amber-400">
+          日本語（{ja.length} 件）と英語（{en.length} 件）の数が合っていません。対応が取れないので
+          英語のまま表示しています。「抽出し直す」か、× で整理してください。
+          <strong className="text-foreground">LoRA に書き込まれるのは英語側です。</strong>
+        </p>
+      )}
       {tags.length > 0 ? (
         <div className="mb-1.5 flex flex-wrap gap-1">
           {tags.map((t) => (
@@ -616,6 +636,7 @@ export function IdentityTagsField({
           追加
         </button>
       </div>
+      {addError && <p className="mt-1 text-[10px] text-amber-400">{addError}</p>}
 
       <p className="mt-1 text-[10px] leading-relaxed text-muted">
         ここに残した特徴だけが<strong className="text-foreground">トリガーワードに焼き込まれ</strong>、キャプションには書かれません。
