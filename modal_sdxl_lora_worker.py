@@ -1269,7 +1269,12 @@ def _write_license_file(job_dir: pathlib.Path, license_info: dict, base_label: s
     (job_dir / "LICENSE.txt").write_text(chr(10).join(lines), encoding="utf-8")
 
 
-def _stage_dataset(params: dict, dataset_dir: pathlib.Path, trigger: str) -> list[pathlib.Path]:
+def _stage_dataset(
+    params: dict,
+    dataset_dir: pathlib.Path,
+    trigger: str,
+    log=None,
+) -> list[pathlib.Path]:
     """Materialises training images + same-stem .txt captions into
     `dataset_dir`. Mirrors modal_lora_worker.py's train_lora_job staging
     block (ingest_dir Smart Ingest fast-path -> storage_paths ->  inline
@@ -1359,7 +1364,10 @@ def _stage_dataset(params: dict, dataset_dir: pathlib.Path, trigger: str) -> lis
             cap = (supplied[idx] or "").strip()
         path.with_suffix(".txt").write_text(cap or trigger, encoding="utf-8")
 
-    print(f"[sdxl] staged {len(image_paths)} images + captions for training", flush=True)
+    if log:
+        log(f"データセット展開完了: {len(image_paths)} 枚 + キャプション")
+    else:
+        print(f"[sdxl] staged {len(image_paths)} images + captions for training", flush=True)
     return image_paths
 
 
@@ -1447,6 +1455,22 @@ def _persist_checkpoints(
         modal.Secret.from_name("huggingface-secret"),
     ],
 )
+def _mk_logger():
+    """経過時間つきの1行ログ（2026-09-22、ホスト指摘「開始まで7分は遅い。
+    どこで時間を使っているか分からない」「ログを吐いているのに見えていない
+    という状況は避けたい」）。
+
+    コンテナ起動からの秒数を毎行に付けるので、内訳が後から追える。
+    必ず flush する——しないと Modal のログに出るのが遅れ、crash-loop の
+    早期発見（CLAUDE.md §1）が成立しない。"""
+    t0 = time.time()
+
+    def log(msg: str) -> None:
+        print(f"[sdxl t={time.time() - t0:6.1f}s] {msg}", flush=True)
+
+    return log
+
+
 def train_sdxl_lora_job(params: dict) -> dict:
     """Production SDXL LoRA training entrypoint — the sd-scripts counterpart
     of modal_lora_worker.py's train_lora_job. Same job-row lifecycle
@@ -1477,10 +1501,13 @@ def train_sdxl_lora_job(params: dict) -> dict:
     2026-09-20 measurement — see that constant) and the L40S hourly rate.
     The hard `timeout=` below stays as the last-resort ceiling.
     """
+    log = _mk_logger()
+    log("コンテナ起動・import 完了（ここまでがコールドスタート）")
     try:
         vol.reload()
+        log("Volume マウント/リロード完了")
     except Exception as exc:  # noqa: BLE001
-        print(f"[sdxl] vol.reload() skipped: {exc}", flush=True)
+        log(f"vol.reload() skipped: {exc}")
 
     job_id = str(params.get("job_id") or "")
     user_id = str(params.get("user_id") or "")
@@ -1512,7 +1539,8 @@ def train_sdxl_lora_job(params: dict) -> dict:
             shutil.rmtree(work_dir)
         dataset_dir = work_dir / "dataset"
         output_dir = work_dir / "output"
-        image_paths = _stage_dataset(params, dataset_dir, trigger)
+        log("データセットの展開を開始（Volume から画像とキャプションを配置）")
+        image_paths = _stage_dataset(params, dataset_dir, trigger, log)
         _patch_job(job_id, {"progress_percent": 10, "progress_message": f"{len(image_paths)}枚を学習準備中"})
 
         # 画像ごとの学習回数（kohya のフォルダ名 "10_name" 相当）。
@@ -1531,7 +1559,7 @@ def train_sdxl_lora_job(params: dict) -> dict:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         pretrained_model, mixed_precision = _resolve_base_model(params)
-        print(f"[sdxl] base model -> {pretrained_model} (mixed_precision={mixed_precision})", flush=True)
+        log(f"ベースモデル選択 -> {pretrained_model} (mixed_precision={mixed_precision})")
         sys.path.insert(0, SD_SCRIPTS_DIR)
         args = [sys.executable, f"{SD_SCRIPTS_DIR}/sdxl_train_network.py"] + _build_train_args(
             lora_name,
@@ -1554,7 +1582,8 @@ def train_sdxl_lora_job(params: dict) -> dict:
         cost_cap_s, cap_reason = _cost_cap_seconds(
             credits_cost, declared_steps, override_s=cost_cap_override
         )
-        print(f"[sdxl] cost-guard: {cap_reason}", flush=True)
+        log(f"cost-guard: {cap_reason}")
+        log("sd-scripts を起動します（以降はその標準出力をそのまま流します）")
 
         _patch_job(job_id, {"progress_percent": 15, "progress_message": "学習開始"})
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -1568,6 +1597,11 @@ def train_sdxl_lora_job(params: dict) -> dict:
         last_ckpt_scan = 0.0
         committed_ckpts = 0
         for line in proc.stdout:
+            # ⚠️ 読むだけで print していなかった（2026-09-22 発見）。sd-scripts の
+            # 起動ログ・バケット情報・ステップ進捗が丸ごと飲み込まれており、
+            # 「ログを吐いているのに見えない」状態だった。CLAUDE.md §1 の
+            # 「標準出力をリアルタイムでストリームすること」にも反していた。
+            print(line.rstrip(), flush=True)
             tail_lines.append(line.rstrip("\n"))
             if len(tail_lines) > 200:
                 tail_lines = tail_lines[-200:]
