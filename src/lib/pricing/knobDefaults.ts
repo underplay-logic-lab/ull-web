@@ -187,7 +187,11 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // 原価計算を10倍誤って(¥19.9とすべきところ¥199.6)算出した値で、実際の
     // 原価に対し大幅な過小課金だった（本番60秒生成で36C≈¥60課金 vs 実原価
     // ¥187〜200）。2026-09-13/14のVDN-H3導入・実測し直しでこの誤りを解消。
-    value: 14.9,
+    // 2026-09-23 ローンチ価格の引き直し（ホスト判断）: USD/JPY 170（カード決済の
+    // 為替上乗せ分を見込む）・B300 $7.10/h（modal billing rates 実値）・原価 3.0×。
+    // 導出: docs/pricing-decision-sheet.md。
+    //   ¥1,207/h × 396.1s ÷ 15s = ¥8.85/秒 × 3 ÷ 1.66 = 16.0C/秒（旧 14.9）
+    value: 16.0,
     label: "Cinematic Director Fast（秒あたり）",
     category: "feature_credits",
     unit: "C/秒",
@@ -199,7 +203,11 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // (stage-b-step-2000、音声あり)。2026-09-13 B300実機（1024px相当）で
     // elapsed=681.3s → 原価≈¥213/15秒（¥14.19/秒）。原価の約3倍 ≈
     // ¥42.6/秒 ÷ 1.66 ≈ 25.7C/秒。
-    value: 25.7,
+    // 2026-09-23 ローンチ価格の引き直し（ホスト判断）: USD/JPY 170（カード決済の
+    // 為替上乗せ分を見込む）・B300 $7.10/h（modal billing rates 実値）・原価 3.0×。
+    // 導出: docs/pricing-decision-sheet.md。
+    //   ¥1,207/h × 681.3s ÷ 15s = ¥15.23/秒 × 3 ÷ 1.66 = 27.5C/秒（旧 25.7）
+    value: 27.5,
     label: "Cinematic Director Quality（秒あたり）",
     category: "feature_credits",
     unit: "C/秒",
@@ -240,7 +248,11 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // B300 gpu_jpy_per_hour_b300(¥1125/h) × 149.3/3600 ≈ ¥46.7（原価） ×
     // 3倍markup ≈ ¥140 ÷ credit_to_jpy(1.66) ≈ 84C。単発実測のため、実運用
     // データが増えたら再校正すること（CLAUDE.md §0）。
-    value: 84,
+    // 2026-09-23 ローンチ価格の引き直し（ホスト判断）: USD/JPY 170（カード決済の
+    // 為替上乗せ分を見込む）・B300 $7.10/h（modal billing rates 実値）・原価 3.0×。
+    // 導出: docs/pricing-decision-sheet.md。
+    //   ¥1,207/h × 149.3s = ¥50.1 × 3 ÷ 1.66 = 91C（旧 84）
+    value: 91,
     label: "Cinematic Director Advanced（Qwen台本生成）",
     category: "feature_credits",
     unit: "C",
@@ -322,7 +334,11 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // credit_to_jpy(1.66)/usd_jpy(150)/3倍markup換算で固定費4.30C
     // （旧L40S基準の4.31Cとほぼ同値・維持）・per_frame 0.30C/frame
     // （旧0.37Cから19%減、RTX PRO 6000がL40Sより速いため）。
-    value: 4.30,
+    // 2026-09-23 ローンチ価格の引き直し（ホスト判断）: USD/JPY 170（カード決済の
+    // 為替上乗せ分を見込む）・B300 $7.10/h（modal billing rates 実値）・原価 3.0×。
+    // 導出: docs/pricing-decision-sheet.md。
+    //   RTX PRO 6000 ¥515/h × 18.84s = ¥2.70 × 3 ÷ 1.66 = 4.87C（旧 4.30）
+    value: 4.87,
     label: "動画超解像（固定費・HD基準）",
     category: "feature_credits",
     unit: "C",
@@ -335,7 +351,11 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // 2点（74frame/114.92s, 362frame/488.84s）からの線形回帰で
     // 限界費用1.298s/frame、旧L40S基準(2.52s/frame)よりかなり軽い。
     // ⚠️ 2点のみからの外挿である点は変わらず、実績データが増えたら再校正。
-    value: 0.30,
+    // 2026-09-23 ローンチ価格の引き直し（ホスト判断）: USD/JPY 170（カード決済の
+    // 為替上乗せ分を見込む）・B300 $7.10/h（modal billing rates 実値）・原価 3.0×。
+    // 導出: docs/pricing-decision-sheet.md。
+    //   RTX PRO 6000 ¥515/h × 1.298s = ¥0.186 × 3 ÷ 1.66 = 0.34C/frame（旧 0.30）
+    value: 0.34,
     label: "動画超解像（1フレームあたり・限界費用分）",
     category: "feature_credits",
     unit: "C/frame",
@@ -408,7 +428,11 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // ⚠️ markup を動かすときは credit_to_jpy（= クレジットの実売単価）も
     // 見直すこと。1.66 は最上位サブスクの額面単価で、日次ログインボーナスと
     // Polar の決済手数料を織り込んだ実質単価はこれより2割ほど低い。
-    value: 0.5648,
+    // 2026-09-23 ローンチ価格の引き直し（ホスト判断）: USD/JPY 170（カード決済の
+    // 為替上乗せ分を見込む）・B300 $7.10/h（modal billing rates 実値）・原価 3.0×。
+    // 導出: docs/pricing-decision-sheet.md。
+    //   ¥1,207/h = ¥0.3353/GPU秒 × 3 ÷ 1.66 = 0.606C/GPU秒（旧 0.5648）
+    value: 0.606,
     label: "LoRA クレジット単価（ai-toolkit）",
     category: "lora_formula",
     unit: "C/GPU秒",
@@ -817,7 +841,8 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
   // 値上げ/値下げでのみ変わる）と為替レート（市況でのみ変わる）を分離するのが
   // 正しい——為替が動いた時に触るのは usd_jpy_rate 一箇所だけで済む。
   gpu_usd_per_hour_b300: {
-    value: 7.5,
+    // 2026-09-23: 7.5 → 7.10。`modal billing rates` の現在値に合わせる。
+    value: 7.1,
     label: "GPU 時給（B300, USD）",
     category: "rates",
     unit: "$/h",
@@ -912,7 +937,8 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // コード側の既定値が取り残されていた。実行時は DB が勝つので計算自体は
     // 正しく動いていたものの、DB 読み取りに失敗したときだけ原価が安く出て
     // 損切り閾値が緩む方向にズレる（costGuard の jpyPerSec の分母）。
-    value: 160,
+    // 2026-09-23: 160 → 170。カード決済の為替上乗せ（相場+5円前後）を見込む（ホスト判断）。
+    value: 170,
     label: "為替レート（USD/JPY）",
     category: "rates",
     unit: "円/$",
