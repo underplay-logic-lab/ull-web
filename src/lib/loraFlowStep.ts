@@ -22,6 +22,7 @@ export type LoraFlowTarget =
   | "addSubject"
   | "captionSpec"
   | "dropzone"
+  | "startAnalysis"
   | "diagnostics"
   | "identityConfirm"
   | "recaption"
@@ -60,6 +61,8 @@ export type LoraFlowInput = {
   /** 被写体のうち、「どんな人物か」が未記入のものがあるか。 */
   descriptionMissing: boolean;
   imageCount: number;
+  /** 「解析を開始」が押されたか。押すまで抽出も解析も走らない。 */
+  analysisStarted: boolean;
   /** metadata の目視確認が必要なのに未確認。 */
   needsIdentityConfirm: boolean;
   /** キャプション解析が走っている最中。 */
@@ -111,6 +114,15 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
     return {
       targets: v.isSdxlJob ? ["addSubject", "dropzone", "captionSpec"] : ["dropzone"],
       hint: "もう1人登録する / 画像を取り込む / キャプションの方針を変える — どれでも進めます",
+    };
+  }
+  // 取り込みが終わったら、ユーザー自身に開始を押してもらう。タイマーでは
+  // 「全部入れ終わった」を判定できず、途中で走らせると片方の被写体しか
+  // 写っていないサンプルで特徴を確定してしまう（2026-09-22、ホスト指摘）。
+  if (!v.analysisStarted) {
+    return {
+      targets: ["startAnalysis"],
+      hint: "画像を全部入れ終えたら押してください（ここから解析が始まります）",
     };
   }
   // 解析中は「終わったら診断を見る」とだけ伝える。ボタンは光らせない

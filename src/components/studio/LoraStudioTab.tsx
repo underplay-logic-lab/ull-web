@@ -109,7 +109,6 @@ const SMART_CROP_MIN_SHORT_EDGE = 384;
 // キャプション解析はこの抽出の完了を待つ（下の vision pass の identityPending
 // を参照）ので、この値がそのまま「取り込みが止まってから解析が始まるまで」に
 // なる。長くしすぎると待たされ、短すぎると偏ったサンプルで抽出する。
-const IDENTITY_EXTRACT_DEBOUNCE_MS = 6000;
 // 切り出し元が元画像のこの割合以上を占めるなら、中身がほぼ同じで情報が
 // 増えないので捨てる（全身写真から全身を切り出すケース）。
 const SMART_CROP_REDUNDANT_COVERAGE = 0.85;
@@ -1051,6 +1050,10 @@ export function LoraStudioTab({
   const [identityConfirmed, setIdentityConfirmed] = useState(false);
   // ベースモデルの選択欄を触ったか（導線の表示だけに使う。loraFlowStep 参照）。
   const [baseModelTouched, setBaseModelTouched] = useState(false);
+  // 「解析を開始」が押されたか（2026-09-22）。取り込みの途中で特徴抽出や
+  // キャプション解析が走らないようにするための、ユーザーからの明示的な合図。
+  // タイマーでは「取り込みが終わった」を判定できないため。
+  const [analysisStarted, setAnalysisStarted] = useState(false);
 
   // 画像から identity タグを抽出する（ホスト方針「画像解析結果から抽出される
   // が、最終的には不要なら削除・不足なら追加」）。返るのは候補で、確定は
@@ -1385,15 +1388,14 @@ export function LoraStudioTab({
   );
   useEffect(() => {
     if (images.length === 0) return;
-    // 取り込みが止まるまで待つ（2026-09-22、ホスト指摘「フォルダごとに
-    // ドロップしていると、1フォルダ目だけで抽出が走ってしまう」）。抽出は
-    // 全体から等間隔で6枚サンプリングするので、母集団が揃う前に走らせると
-    // 偏った6枚を見ることになる。
-    //
-    // ⚠️ 「自動解析（キャプション）が終わってから」にはできない。抽出結果は
-    // キャプションのブラックリストとして使われるので、順序が逆になると
-    // キャプションを全部作り直す羽目になる。あくまで取り込みの落ち着きを待つ。
-    const timer = setTimeout(() => {
+    // ⚠️ タイマーでは「取り込みが終わった」を判定できない（2026-09-22、
+    // ホスト指摘）。前半のフォルダに片方の被写体しか入っていない状態で発火
+    // すると、もう一方は1人も写っていない6枚を見ることになり、間違った特徴が
+    // 1回きりの抽出で確定する。フォルダ間の間隔は何秒でも空き得るので、
+    // 秒数をいくら伸ばしても解決しない。**ユーザーが明示的に開始を押すまで
+    // 走らせない。**
+    if (!analysisStarted) return;
+    {
     const jobs = [
       {
         index: -1,
@@ -1419,12 +1421,11 @@ export function LoraStudioTab({
       autoExtractedRef.current.add(key);
       void extractIdentityFor(j.index, j.trigger, j.hint, j.fixedTags);
     }
-    }, IDENTITY_EXTRACT_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
+    }
     // extractIdentityFor は毎レンダー作り直されるので依存から外す（キーで
     // 二重実行を防いでいる）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [images.length, triggerWord, primaryIdentityTags, primaryFixedTags, extraSubjects]);
+  }, [analysisStarted, images.length, triggerWord, primaryIdentityTags, primaryFixedTags, extraSubjects]);
 
   // 被写体の「特徴」欄の説明を読んだか（初回だけ出す）。初期値を lazy に
   // 読むので effect で setState する必要がない。SSR では false のまま。
@@ -2409,6 +2410,7 @@ export function LoraStudioTab({
         genderTagMissing: allSubjects.some((x) => !(x.fixedTags ?? "").trim()),
         descriptionMissing: allSubjects.some((x) => !(x.description ?? "").trim()),
         imageCount: images.length,
+        analysisStarted,
         needsIdentityConfirm,
         captionRunning: autoCap.running,
         pendingCaptionCount,
@@ -2427,6 +2429,7 @@ export function LoraStudioTab({
       effectiveTrigger,
       allSubjects,
       images.length,
+      analysisStarted,
       needsIdentityConfirm,
       autoCap.running,
       pendingCaptionCount,
@@ -2645,6 +2648,8 @@ export function LoraStudioTab({
   // a running pass) so a second drop mid-run doesn't abort the first.
   useEffect(() => {
     if (!user || phase !== "form" || autoCap.running) return;
+    // 取り込みの途中で走らせない（上の抽出と同じ理由）。
+    if (!analysisStarted) return;
     // ⚠️ **特徴の抽出が終わるまでキャプションを始めない**（2026-09-22）。
     // 抽出結果は「キャプションに書いてはいけない言葉」のリストとして使う。
     // 以前は解析の待ちが 500ms、抽出が 4秒で**解析のほうが先に始まっており**、
@@ -2684,7 +2689,7 @@ export function LoraStudioTab({
     // curationTrigger / currentCaptionPrompt / runVisionCaptions は毎レンダー
     // 作り直されるので依存に入れない（入れると取り込みのたびに解析が再起動する）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [images, captions, userCaptionIds, user, phase, autoCap.running, identityExtracting, allSubjects]);
+  }, [analysisStarted, images, captions, userCaptionIds, user, phase, autoCap.running, identityExtracting, allSubjects]);
 
   // Re-run the vision pass over every AI-captioned image with the current
   // trigger word + synthesised instruction (the "🔄 AI再解析" button, and
@@ -3188,6 +3193,7 @@ export function LoraStudioTab({
     // 既定は ON（2026-09-22、ホスト判断）。リセットで false に戻していたため
     // 「完全リセットするとチェックが外れている」状態になっていた。
     setCurationEnabled(true);
+    setAnalysisStarted(false);
     setCurationPairs([]);
     setErrorMessage(null);
     uploadedDatasetRef.current = null;
@@ -3634,6 +3640,32 @@ export function LoraStudioTab({
           />
           </div>
           {flowHint("dropzone")}
+
+          {/* 解析の開始はユーザーが決める（2026-09-22、ホスト判断）。タイマーで
+              「取り込みが終わった」を判定すると、前半のフォルダに片方の被写体
+              しか無い状態で特徴を確定してしまう。 */}
+          {images.length > 0 && !analysisStarted && !yamlMode && (
+            <div
+              className={`rounded-xl border border-neon-pink/40 bg-neon-pink/5 px-3 py-2.5${flowRing("startAnalysis")}`}
+            >
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setAnalysisStarted(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                <Sparkles size={13} />
+                解析を開始する（{images.length} 枚）
+              </button>
+              <p className="mt-1.5 text-[10px] leading-relaxed text-muted">
+                画像を<strong className="text-foreground">全部入れ終えてから</strong>押してください。
+                押すと、被写体の特徴を抽出してからキャプションを作ります。
+                途中で始めると、先に入れたフォルダにしか写っていない被写体の特徴が取れません。
+                <strong className="text-foreground">押したあとに画像を足しても構いません</strong>
+                （追加分だけ解析されます）。
+              </p>
+            </div>
+          )}
 
           {/* キャプションの状態は取り込み欄の真下に出す（2026-09-22、ホスト
               指摘）。取り込んだ直後に「いま解析している」「終わったら診断を
