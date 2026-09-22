@@ -14,8 +14,13 @@
 
 /** 光らせる対象の識別子。UI 側はこれと自分の id を突き合わせるだけ。 */
 export type LoraFlowTarget =
+  | "baseModel"
+  | "loraName"
   | "trigger"
   | "genderTag"
+  | "description"
+  | "addSubject"
+  | "captionSpec"
   | "dropzone"
   | "identityConfirm"
   | "recaption"
@@ -37,9 +42,22 @@ export type LoraFlowInput = {
   yamlMode: boolean;
   /** 送信中・学習中など、操作を受け付けない状態。 */
   busy: boolean;
+  /**
+   * ベースモデルの選択欄を一度でも触ったか。
+   *
+   * ベースモデルは常に既定値が入っているので「未選択」を状態から検出できない。
+   * ここだけは「触ったか」のフラグを持つ（2026-09-22）。false -> true にしか
+   * 動かず、光らせる位置以外には何も影響しないので、戻る操作でズレる心配は
+   * 無い。これが無いと LoRA 名が光る場面が存在しなくなる。
+   */
+  baseModelTouched: boolean;
+  /** LoRA 名が入っているか。 */
+  loraNameFilled: boolean;
   triggerFilled: boolean;
   /** 被写体のうち、性別/人数タグが未選択のものがあるか。 */
   genderTagMissing: boolean;
+  /** 被写体のうち、「どんな人物か」が未記入のものがあるか。 */
+  descriptionMissing: boolean;
   imageCount: number;
   /** metadata の目視確認が必要なのに未確認。 */
   needsIdentityConfirm: boolean;
@@ -61,8 +79,20 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
   if (v.yamlMode || v.busy) return { targets: [], hint: "" };
 
   // --- ここから先は「必須の未完了」を上から順に1つだけ ---
+  // ベースモデルは常に既定値が入っているので「未選択」を検出できない。
+  // 名前もトリガーも空＝まだ何も始めていない状態を、最初の一歩とみなす
+  // （2026-09-22、ホスト指摘「最初に光るべきはベースモデル」）。
+  if (!v.baseModelTouched && !v.loraNameFilled && !v.triggerFilled) {
+    return {
+      targets: ["baseModel"],
+      hint: "どのモデル向けの LoRA を作るか選びます（ここで下の項目の構成が変わります）",
+    };
+  }
+  if (!v.loraNameFilled) {
+    return { targets: ["loraName"], hint: "LoRA の名前を決めます" };
+  }
   if (!v.triggerFilled) {
-    return { targets: ["trigger"], hint: "まずトリガーワードを決めます" };
+    return { targets: ["trigger"], hint: "呼び出すためのトリガーワードを決めます" };
   }
   if (v.isSdxlJob && v.genderTagMissing) {
     return {
@@ -70,8 +100,17 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
       hint: "性別/人数タグを選びます（誰を学習するかの判定に使います）",
     };
   }
+  if (v.isSdxlJob && v.descriptionMissing) {
+    return {
+      targets: ["description"],
+      hint: "どんな人物かを書きます（画像から特徴を抽出するときの手がかりになります）",
+    };
+  }
   if (v.imageCount === 0) {
-    return { targets: ["dropzone"], hint: "学習させたい画像を取り込みます" };
+    return {
+      targets: v.isSdxlJob ? ["addSubject", "dropzone", "captionSpec"] : ["dropzone"],
+      hint: "もう1人登録する / 画像を取り込む / キャプションの方針を変える — どれでも進めます",
+    };
   }
   // 解析中は何も光らせない。待つしかない場面で点滅させると急かすだけ。
   if (v.captionRunning) return { targets: [], hint: "" };

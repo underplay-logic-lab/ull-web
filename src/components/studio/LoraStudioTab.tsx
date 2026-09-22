@@ -1040,6 +1040,8 @@ export function LoraStudioTab({
   // /api/studio/lora/translate（action "to_en" + caption_type "tags"）をそのまま
   // 使う——日本語→Danbooru タグ列はこのルートの本来の仕事なので新設不要。
   const [identityConfirmed, setIdentityConfirmed] = useState(false);
+  // ベースモデルの選択欄を触ったか（導線の表示だけに使う。loraFlowStep 参照）。
+  const [baseModelTouched, setBaseModelTouched] = useState(false);
 
   // 画像から identity タグを抽出する（ホスト方針「画像解析結果から抽出される
   // が、最終的には不要なら削除・不足なら追加」）。返るのは候補で、確定は
@@ -2367,8 +2369,11 @@ export function LoraStudioTab({
         isSdxlJob,
         yamlMode,
         busy: phase !== "form" || submitting,
+        baseModelTouched,
+        loraNameFilled: Boolean(effectiveLoraName.trim()),
         triggerFilled: Boolean(effectiveTrigger.trim()),
         genderTagMissing: allSubjects.some((x) => !(x.fixedTags ?? "").trim()),
+        descriptionMissing: allSubjects.some((x) => !(x.description ?? "").trim()),
         imageCount: images.length,
         needsIdentityConfirm,
         captionRunning: autoCap.running,
@@ -2383,6 +2388,8 @@ export function LoraStudioTab({
       yamlMode,
       phase,
       submitting,
+      baseModelTouched,
+      effectiveLoraName,
       effectiveTrigger,
       allSubjects,
       images.length,
@@ -3112,7 +3119,9 @@ export function LoraStudioTab({
     // Re-arm the zombie-draft prompt for the next fresh dataset.
     zombieDraftDecidedRef.current = false;
     setCaptionGen({ state: "idle", prompt: "", fromGemini: false, error: null });
-    setCurationEnabled(false);
+    // 既定は ON（2026-09-22、ホスト判断）。リセットで false に戻していたため
+    // 「完全リセットするとチェックが外れている」状態になっていた。
+    setCurationEnabled(true);
     setCurationPairs([]);
     setErrorMessage(null);
     uploadedDatasetRef.current = null;
@@ -3879,9 +3888,13 @@ export function LoraStudioTab({
               決めないと下の欄が出たり消えたりして混乱する。 */}
           <div className="space-y-2">
             <label className="block text-[11px] font-medium text-muted">ベースモデル</label>
+            <div className={`rounded-xl${flowRing("baseModel")}`}>
             <select
               value={modelChoice}
-              onChange={(e) => handleModelChange(e.target.value)}
+              onChange={(e) => {
+                setBaseModelTouched(true);
+                handleModelChange(e.target.value);
+              }}
               disabled={busy}
               className={fieldCls}
             >
@@ -3903,6 +3916,8 @@ export function LoraStudioTab({
                   "no matching preset" rather than a crash — nothing in this
                   UI can set modelChoice to "__custom__" any more. */}
             </select>
+            </div>
+            {flowHint("baseModel")}
           </div>
           <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
             <Cpu size={15} className="text-neon-violet" />
@@ -3922,8 +3937,9 @@ export function LoraStudioTab({
                   : loraName && !nameValid
                     ? "border-red-500/50"
                     : ""
-              }`}
+              }${flowRing("loraName")}`}
             />
+            {flowHint("loraName")}
             {yamlMode ? (
               <p className="mt-1 text-[10px] text-muted">
                 生YAML モードでは YAML内の <code className="text-neon-violet">config.name</code> が LoRA 名になります。
@@ -3974,6 +3990,8 @@ export function LoraStudioTab({
                 <>
                   {flowHint("trigger")}
                   {flowHint("genderTag")}
+                  {flowHint("description")}
+                  {flowHint("addSubject")}
                 </>
               );
               if (!multiSubject) {
@@ -3991,7 +4009,7 @@ export function LoraStudioTab({
                           onChange={(e) => setPrimaryDescription(e.target.value)}
                           placeholder="どんな人物か（例: 太った禿頭の男性）"
                           disabled={busy}
-                          className={`${fieldCls} mt-1.5 text-[11px]`}
+                          className={`${fieldCls} mt-1.5 text-[11px]${flowRing("description")}`}
                         />
                         <p className="mt-0.5 text-[10px] leading-relaxed text-muted">
                           下の特徴を画像から自動抽出するときの精度を上げるためのメモです。
@@ -4036,7 +4054,7 @@ export function LoraStudioTab({
                     onChange={(e) => setPrimaryDescription(e.target.value)}
                     placeholder="1人目を見分ける手がかり（例: 太った禿頭の男性）"
                     disabled={busy}
-                    className={`${fieldCls} mt-1.5 text-[11px]`}
+                    className={`${fieldCls} mt-1.5 text-[11px]${flowRing("description")}`}
                   />
                   <p className="mt-0.5 text-[10px] leading-relaxed text-muted">AI がどちらの人物かを判定するためのメモです。<strong className="text-foreground">学習内容には影響しません</strong>（学習させる特徴は下で決めます）。</p>
                   {/* 「画像から抽出」が主経路なので、画像が入るまで出さない（2026-09-21）。 */}
@@ -4127,7 +4145,7 @@ export function LoraStudioTab({
                     }
                     placeholder={`${i + 2}人目を見分ける手がかり（例: 銀髪ロングの女性）`}
                     disabled={busy}
-                    className={`${fieldCls} mt-1.5 text-[11px]`}
+                    className={`${fieldCls} mt-1.5 text-[11px]${flowRing("description")}`}
                   />
                   <p className="mt-0.5 text-[10px] leading-relaxed text-muted">AI がどちらの人物かを判定するためのメモです。<strong className="text-foreground">学習内容には影響しません</strong>（学習させる特徴は下で決めます）。</p>
                   {/* 「画像から抽出」が主経路なので、画像が入るまで出さない（2026-09-21）。 */}
@@ -4176,7 +4194,7 @@ export function LoraStudioTab({
                   })
                 }
                 disabled={busy}
-                className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-muted transition-colors hover:text-neon-violet disabled:opacity-50"
+                className={`mt-1.5 inline-flex items-center gap-1 rounded-lg px-1 text-[11px] text-muted transition-colors hover:text-neon-violet disabled:opacity-50${flowRing("addSubject")}`}
               >
                 <Plus size={12} />
                 別の人物を追加（複数人物・被写体を1つのLoRAで区別したい場合）
@@ -4289,7 +4307,7 @@ export function LoraStudioTab({
           )}
 
           {/* LoRA-type-aware auto-caption spec — category + JP fixed/varying */}
-          <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5">
+          <div className={`rounded-xl border border-neon-violet/30 bg-neon-violet/5${flowRing("captionSpec")}`}>
             <button
               type="button"
               onClick={() => setCaptionPromptOpen((v) => !v)}
