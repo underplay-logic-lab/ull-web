@@ -122,7 +122,6 @@ import {
   MAX_LONG_EDGE,
   SMART_CROP_PANEL_ID,
   CROP_REVIEW_PANEL_ID,
-  IMAGE_GRID_END_ID,
   LORA_SETTINGS_ANCHOR_ID,
   SUBJECT_HINT_SEEN_KEY,
   RepeatWeightPanel,
@@ -999,7 +998,9 @@ export function LoraStudioTab({
     // 画面外へ押し出される。切り出し結果の一覧まで戻す。
     requestAnimationFrame(() =>
       document
-        .getElementById(IMAGE_GRID_END_ID)
+        .getElementById(CROP_REVIEW_PANEL_ID)
+        // block:"end" で画面の下側に出す。上に切り出した画像が見えた状態で
+        // 「確認してください」が読める（2026-09-22、ホスト指摘）。
         ?.scrollIntoView({ behavior: "smooth", block: "end" }),
     );
     setAddNotice(
@@ -3499,6 +3500,56 @@ export function LoraStudioTab({
               ワーカーは bucket_no_upscale なので小さい画像は引き伸ばされず、
               そのまま小さく学習される＝甘い LoRA になる。ホスト方針:
               「小さいときは当サイトの超解像で大きくしてから再投入」。 */}
+          {/* 切り出した画像は人手で点検しないと使えない（2026-09-22）。
+              判断基準と**切り出した画像だけのグリッド**をクロップ欄の直下に
+              置く。上のサムネイル一覧まで戻って探させない（ホスト指摘）。 */}
+          {croppedImages.length > 0 && (
+            <div
+              id={CROP_REVIEW_PANEL_ID}
+              className="space-y-2 scroll-mt-24 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2"
+            >
+              <p className="text-[11px] font-medium text-neon-violet">
+                切り出した {croppedImages.length} 枚を確認してください
+              </p>
+              <ul className="space-y-0.5 text-[10px] leading-relaxed text-muted">
+                <li>
+                  ・
+                  <strong className="text-foreground">
+                    顔（目・鼻・口）がフレームから欠けている画像は削除してください。
+                  </strong>
+                  顔が欠けた絵を学習させると、その構図での再現性が落ちます。頭頂部が少し切れている程度は問題ありません。
+                </li>
+                <li>・体が胸や腰で切れているのは問題ありません。それが上半身クロップの目的です。</li>
+                <li>
+                  ・
+                  <strong className="text-foreground">
+                    別の被写体が顔なしで大きく写り込んでいる画像も削除してください。
+                  </strong>
+                  顔が無いとその被写体の学習には使えず、かといって主役の特徴として吸収されてしまいます。
+                </li>
+                <li>・端にわずかに他の被写体が入る程度（細い帯）は無視して構いません。</li>
+              </ul>
+              {multiSubjectCrops.length > 0 && (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
+                  <p className="text-[10px] leading-relaxed text-amber-400">
+                    このうち <strong>{multiSubjectCrops.length} 枚</strong>{" "}
+                    は、切り出したあとも2人以上写っていると判定されました。
+                    <strong>下のサムネイルのうち、琥珀色の枠が付いているものがそれです。</strong>
+                    <br />
+                    <strong>両方の顔がはっきり写っているなら残してください</strong>
+                    ——2人が同じ絵にいる構図は貴重な素材です。
+                    <strong>腕や服の端だけが残っているものは削除してください</strong>
+                    ——その人物の学習には使えないうえ、主役の特徴として吸収されてしまいます。
+                  </p>
+                </div>
+              )}
+              {/* 専用グリッドは廃止（2026-09-22、ホスト指摘）。切り出した画像は
+                  上のサムネイル一覧の末尾に入るので、そちらで確認する。被写体が
+                  2人以上いると、ここに一覧があると2人目のために上へ戻る往復が
+                  増えるため。 */}
+            </div>
+          )}
+
           {tooSmallImages.length > 0 && (
             <div className="space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
               <p className="text-[11px] leading-relaxed text-amber-400">
@@ -3717,55 +3768,6 @@ export function LoraStudioTab({
             onSmartCrop={(ids, kinds) => void runSmartCropForDataset(ids, kinds)}
           />
 
-          {/* 切り出した画像は人手で点検しないと使えない（2026-09-22）。
-              判断基準と**切り出した画像だけのグリッド**をクロップ欄の直下に
-              置く。上のサムネイル一覧まで戻って探させない（ホスト指摘）。 */}
-          {croppedImages.length > 0 && (
-            <div
-              id={CROP_REVIEW_PANEL_ID}
-              className="space-y-2 scroll-mt-24 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2"
-            >
-              <p className="text-[11px] font-medium text-neon-violet">
-                切り出した {croppedImages.length} 枚を確認してください
-              </p>
-              <ul className="space-y-0.5 text-[10px] leading-relaxed text-muted">
-                <li>
-                  ・
-                  <strong className="text-foreground">
-                    顔（目・鼻・口）がフレームから欠けている画像は削除してください。
-                  </strong>
-                  顔が欠けた絵を学習させると、その構図での再現性が落ちます。頭頂部が少し切れている程度は問題ありません。
-                </li>
-                <li>・体が胸や腰で切れているのは問題ありません。それが上半身クロップの目的です。</li>
-                <li>
-                  ・
-                  <strong className="text-foreground">
-                    別の被写体が顔なしで大きく写り込んでいる画像も削除してください。
-                  </strong>
-                  顔が無いとその被写体の学習には使えず、かといって主役の特徴として吸収されてしまいます。
-                </li>
-                <li>・端にわずかに他の被写体が入る程度（細い帯）は無視して構いません。</li>
-              </ul>
-              {multiSubjectCrops.length > 0 && (
-                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
-                  <p className="text-[10px] leading-relaxed text-amber-400">
-                    このうち <strong>{multiSubjectCrops.length} 枚</strong>{" "}
-                    は、切り出したあとも2人以上写っていると判定されました。
-                    <strong>下のサムネイルのうち、琥珀色の枠が付いているものがそれです。</strong>
-                    <br />
-                    <strong>両方の顔がはっきり写っているなら残してください</strong>
-                    ——2人が同じ絵にいる構図は貴重な素材です。
-                    <strong>腕や服の端だけが残っているものは削除してください</strong>
-                    ——その人物の学習には使えないうえ、主役の特徴として吸収されてしまいます。
-                  </p>
-                </div>
-              )}
-              {/* 専用グリッドは廃止（2026-09-22、ホスト指摘）。切り出した画像は
-                  上のサムネイル一覧の末尾に入るので、そちらで確認する。被写体が
-                  2人以上いると、ここに一覧があると2人目のために上へ戻る往復が
-                  増えるため。 */}
-            </div>
-          )}
 
           {/* データセットを触る工程の最後（2026-09-22、ホスト指摘）。
               取り込み → クロップ → 診断 を見てから比率を決める操作なので、
