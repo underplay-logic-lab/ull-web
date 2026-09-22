@@ -72,7 +72,9 @@ function buildPrompt(trigger: string, hintJa: string, fixedTags: string): string
       ? `**The character is ${gender.toUpperCase()}.** Several people may appear in an image. ` +
         `Describe ONLY the ${gender} person. Never describe anyone of another gender, ` +
         `and never mix traits from two people into one list. ` +
-        `If an image contains no ${gender} person, ignore that image entirely.`
+        `If an image contains no ${gender} person, ignore that image entirely. ` +
+        `**If NONE of the images contain a ${gender} person, output an empty array [] and nothing else.** ` +
+        `Never substitute the other person. An empty answer is correct and expected when this character is absent.`
       : "",
     hintJa ? `The user describes them in Japanese as: ${hintJa}` : "",
     "",
