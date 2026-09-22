@@ -2679,9 +2679,11 @@ export function LoraStudioTab({
       void runVisionCaptions(pending, curationTrigger, currentCaptionPrompt());
     }, 500);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     // identityExtracting / allSubjects を依存に入れて、抽出が終わった瞬間に
     // この effect が走り直すようにする（待ちが解ける）。
+    // curationTrigger / currentCaptionPrompt / runVisionCaptions は毎レンダー
+    // 作り直されるので依存に入れない（入れると取り込みのたびに解析が再起動する）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [images, captions, userCaptionIds, user, phase, autoCap.running, identityExtracting, allSubjects]);
 
   // Re-run the vision pass over every AI-captioned image with the current
