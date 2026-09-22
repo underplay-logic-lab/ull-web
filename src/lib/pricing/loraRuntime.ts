@@ -75,7 +75,9 @@ export const LORA_SPI_REFERENCE_RESOLUTION = 1024;
 export const LORA_SPI_BASELINE: Readonly<Record<string, number>> = {
   // --- ai-toolkit ワーカー ---
   minimax_h3: 1.80, // 実測（docs §14.15）。GUI 既定条件そのもので計測した値
-  wan22_14b: 1.44,
+  // 2026-09-23 実測 0.46（実写220枚・1024px・batch1・block_compile・50step、B300、docs §14.16）。
+  // 単発50stepなので 20% の安全側を乗せて 0.55。それでも旧推測 1.44 の 1/2.6。
+  wan22_14b: 0.55,
   wan21: 1.24,
   ltx2: 1.24,
   hunyuan: 1.44,

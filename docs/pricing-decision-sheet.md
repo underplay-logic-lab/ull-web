@@ -146,7 +146,7 @@
 | A | 超解像 画像を RTX PRO 6000 / L40S で | **完了 2026-09-23**: RTX PRO 6000 30.0s/¥12・L40S 58.0s/¥12.5・B300 49.0s/¥33（起動込み原価）。静止画の既定を RTX PRO 6000 へ変更・デプロイ済み（短辺 3840 超は B300）。`upscale_per_mp` 3 は据え置き（RTX で粗利 63〜87%） | 済 |
 | B | Multi-Angle B200 の再現性 | 既定が B200 なので**実運用ジョブから自動で溜まる**（generation_logs） | 0 |
 | C | 超解像 動画 4K の所要時間 | **完了 2026-09-22**: 121フレーム（5秒）8.08MP/frame → 生成 419s・VRAM 92.6GB・原価 ¥163・課金 339C（粗利 71%）。VRAM 的に **H200 で収まる**（未実測）。申告フレーム数での課金が実測より 62C 多かった問題を発見（要・完了時精算） | 済 |
-| D | LoRA 未実測5 arch の s/it と VRAM | UI から各1本・300step・既存データセット（`metadata.metrics` に自動記録） | ¥2,500 |
+| D | LoRA 未実測5 arch の s/it と VRAM | UI から各1本・50step・既存データセット（`metadata.metrics` に自動記録）。**wan22_14b 完了 2026-09-23**: s/it 0.46（knob 1.44 → 0.55 へ）・VRAM 119GB（B300/B200 据え置き）・prep 778s。残り ltx2 / flux2_klein_4b / zimage / anima | ¥2,500 |
 | D' | D で VRAM が小さかった arch を安い tier で再確認 | dispatch 時に `train_lora_job.with_options(gpu=…)`（要・小改修） | ¥1,000 |
 | E | Wan Animate 60秒 | UI から1本（B300） | ¥500 |
 
