@@ -117,11 +117,27 @@ export async function uploadLoraDataset(
     }
   };
 
-  const optimized: File[] = [];
-  for (let i = 0; i < files.length; i++) {
-    optimized.push(await toWebp(files[i]));
-    onOptimize?.(i + 1, files.length);
-  }
+  // 1枚ずつ待つと 259枚で1〜2分かかる（2026-09-22、ホスト指摘「開始まで7分は
+  // 遅い」）。createImageBitmap / toBlob はどちらも非同期でデコード・エンコード
+  // 自体はメインスレッド外なので、数枚を同時に走らせれば実時間が縮む。
+  // 並列度を上げすぎると画像を同時に何枚もメモリへ展開することになるので、
+  // 4 で止める（1枚 1024x1536 の RGBA ≒ 6MB、4枚で 24MB）。
+  const OPTIMIZE_CONCURRENCY = 4;
+  const optimized: File[] = new Array(files.length);
+  let optimizeCursor = 0;
+  let optimizeDone = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(OPTIMIZE_CONCURRENCY, files.length) }, async () => {
+      while (true) {
+        const i = optimizeCursor;
+        optimizeCursor += 1;
+        if (i >= files.length) return;
+        optimized[i] = await toWebp(files[i]);
+        optimizeDone += 1;
+        onOptimize?.(optimizeDone, files.length);
+      }
+    }),
+  );
   files = optimized;
 
   const startedAt = Date.now();
