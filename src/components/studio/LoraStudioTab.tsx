@@ -1440,20 +1440,6 @@ export function LoraStudioTab({
     }
   });
 
-  // 解析が終わった瞬間に診断へ送る（2026-09-22、ホスト指摘「取り込み終わった
-  // 後に何をすればいいか分からない」）。1データセットにつき1回だけ。
-  const scrolledToDiagRef = useRef(false);
-  const prevCapRunningRef = useRef(false);
-  useEffect(() => {
-    const finished = prevCapRunningRef.current && !autoCap.running;
-    prevCapRunningRef.current = autoCap.running;
-    if (!finished || scrolledToDiagRef.current || images.length === 0) return;
-    scrolledToDiagRef.current = true;
-    document
-      .getElementById(DIAGNOSTICS_PANEL_ID)
-      ?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [autoCap.running, images.length]);
-
   const multiSubjectCropIds = useMemo(
     () => new Set(multiSubjectCrops.map((i) => i.id)),
     [multiSubjectCrops],
@@ -2391,6 +2377,26 @@ export function LoraStudioTab({
     [images, captions, userCaptionIds],
   );
   const pendingCaptionCount = incompleteImages.length;
+
+  // 解析が終わった瞬間に診断へ送る（2026-09-22、ホスト指摘「取り込み終わった
+  // 後に何をすればいいか分からない」）。1データセットにつき1回だけ。
+  const scrolledToDiagRef = useRef(false);
+  const prevCapRunningRef = useRef(false);
+  useEffect(() => {
+    // 走っていた解析が止まった、または（キャッシュで解析が要らず）開始直後から
+    // 未解析ゼロ、のどちらでも送る。後者はホスト報告「すぐ終わってもスクロール
+    // しない」への対応。
+    const finished =
+      (prevCapRunningRef.current && !autoCap.running) ||
+      (analysisStarted && !autoCap.running && pendingCaptionCount === 0);
+    prevCapRunningRef.current = autoCap.running;
+    if (!finished || scrolledToDiagRef.current || images.length === 0 || !analysisStarted) return;
+    scrolledToDiagRef.current = true;
+    document
+      .getElementById(DIAGNOSTICS_PANEL_ID)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [autoCap.running, images.length, analysisStarted, pendingCaptionCount]);
+
 
   // 診断は DatasetDiagnosticsPanel も内部で同じ計算をするが、導線の判定にも
   // 要る。純関数なので二重に走っても実害は無い（数百件で数ms）。
@@ -3637,35 +3643,39 @@ export function LoraStudioTab({
             }
             selectedIds={selectedImageIds}
             onSelectedChange={setSelectedImageIds}
+            belowDropArea={
+              <>
+                {/* 解析の開始はユーザーが決める（2026-09-22、ホスト判断）。タイマーで
+                    「取り込みが終わった」を判定すると、前半のフォルダに片方の被写体
+                    しか無い状態で特徴を確定してしまう。 */}
+                {images.length > 0 && !analysisStarted && !yamlMode && (
+                  <div
+                    className={`rounded-xl border border-neon-pink/40 bg-neon-pink/5 px-3 py-2.5${flowRing("startAnalysis")}`}
+                  >
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => setAnalysisStarted(true)}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                    >
+                      <Sparkles size={13} />
+                      解析を開始する（{images.length} 枚）
+                    </button>
+                    <p className="mt-1.5 text-[10px] leading-relaxed text-muted">
+                      画像を<strong className="text-foreground">全部入れ終えてから</strong>押してください。
+                      押すと、被写体の特徴を抽出してからキャプションを作ります。
+                      途中で始めると、先に入れたフォルダにしか写っていない被写体の特徴が取れません。
+                      <strong className="text-foreground">押したあとに画像を足しても構いません</strong>
+                      （追加分だけ解析されます）。
+                    </p>
+                  </div>
+                )}
+              </>
+            }
           />
           </div>
           {flowHint("dropzone")}
 
-          {/* 解析の開始はユーザーが決める（2026-09-22、ホスト判断）。タイマーで
-              「取り込みが終わった」を判定すると、前半のフォルダに片方の被写体
-              しか無い状態で特徴を確定してしまう。 */}
-          {images.length > 0 && !analysisStarted && !yamlMode && (
-            <div
-              className={`rounded-xl border border-neon-pink/40 bg-neon-pink/5 px-3 py-2.5${flowRing("startAnalysis")}`}
-            >
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => setAnalysisStarted(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-              >
-                <Sparkles size={13} />
-                解析を開始する（{images.length} 枚）
-              </button>
-              <p className="mt-1.5 text-[10px] leading-relaxed text-muted">
-                画像を<strong className="text-foreground">全部入れ終えてから</strong>押してください。
-                押すと、被写体の特徴を抽出してからキャプションを作ります。
-                途中で始めると、先に入れたフォルダにしか写っていない被写体の特徴が取れません。
-                <strong className="text-foreground">押したあとに画像を足しても構いません</strong>
-                （追加分だけ解析されます）。
-              </p>
-            </div>
-          )}
 
           {/* キャプションの状態は取り込み欄の真下に出す（2026-09-22、ホスト
               指摘）。取り込んだ直後に「いま解析している」「終わったら診断を
@@ -4146,7 +4156,7 @@ export function LoraStudioTab({
                 <div className="rounded-lg border border-neon-violet/30 bg-neon-violet/5 p-2">
                   <div className="mb-1 text-[10px] font-semibold text-neon-violet">1人目</div>
                   {triggerInput}
-                  <div className={`rounded-xl${flowRing("genderTag")}`}>
+                  <div className={`rounded-xl${flowRingAt("genderTag", 0)}`}>
                           <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
                         </div>
                   {triggerHint}

@@ -5,7 +5,7 @@
 // コンポーネント本体（巨大な状態を持つ単一関数）はリスクが高いため分割せず
 // LoraStudioTab.tsx に残し、ここでは props だけで完結する部分のみを扱う。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   Check,
@@ -631,6 +631,7 @@ export function ImageDropzone({
   onSelectedChange,
   onRejectedDrop,
   warnIds,
+  belowDropArea,
   notice,
   onDismissNotice,
   selectable,
@@ -656,6 +657,8 @@ export function ImageDropzone({
   onRejectedDrop?: () => void;
   /** 要確認の画像（琥珀色の枠を付ける）。切り出したのに2人以上写っている等。 */
   warnIds?: Set<string>;
+  /** ドロップ領域の直下・サムネイル一覧の上に差し込む要素（解析開始ボタン等）。 */
+  belowDropArea?: ReactNode;
   /** 取り込み結果の通知（追加枚数・除外理由など）。 */
   notice?: string | null;
   onDismissNotice?: () => void;
@@ -757,6 +760,10 @@ export function ImageDropzone({
           )}
         </p>
       )}
+
+      {/* サムネイル一覧より上に出す。一覧は数十行になるので、その下に置くと
+          見えない（2026-09-22、ホスト指摘）。 */}
+      {belowDropArea && <div className="mt-2">{belowDropArea}</div>}
 
       {images.length > 0 && (
         <>
