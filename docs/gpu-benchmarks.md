@@ -1473,6 +1473,25 @@ markup がちょうど 3.0 倍になり、CLAUDE.md §3 の方針と一致する
 - 他の動画 arch（ltx2 / hunyuan / cogvideox）の s/it も minimax からの推測なので同程度に過大の可能性が高い。
   ラインナップの ltx2 は実測待ち。
 
+### 14.17 ltx2 の実ジョブ実測（2026-09-23、B300、GUI から 50step）
+
+WAN と同じ 220枚・1024px・batch 1・rank 32・block_compile。`metadata.metrics`:
+
+| 項目 | 実測 | それまでの knob / 推測 |
+|---|---|---|
+| **s/it** | **0.9173**（50step 観測） | 1.24 |
+| prep（metrics） | 78.9s（JIT のみ。model_load は未計測・latent cache 0） | 828 + 1.33×220 |
+| 全体 wall | 767s（processing_started → completed、コールド込み） | — |
+| VRAM peak | **87.0GB** | — |
+| 課金 / 原価 | 717C = ¥1,190 / 約 ¥257 | 粗利 78% |
+
+- `LORA_SPI_BASELINE.ltx2` を 1.24 → **1.10**。
+- **VRAM 87GB なら H200（141GB）に 38% のマージンで収まる**（$4.54/h、B300 の 64%）。LoRA の
+  arch 別 tier（`LORA_ARCH_GPU`）の最初の候補。ただし H200 での s/it は未実測で、Wan2.2-S2V では
+  B300 ≈ H100 だった前例があるので、寄せる前に1本（50step ¥150 程度）測る。
+- prep の metrics は model_load を拾えていない（null）。wall 767s − 50×0.92 − コールド ≈ 600s が実態で、
+  knob 828 は安全側。
+
 ## 15. LoRAデータセットのアップロード速度（2026-09-20）
 
 同一データセット（131枚 / 52.2MB、原本は全枚数が長辺1536超）を本番経路で計測。
