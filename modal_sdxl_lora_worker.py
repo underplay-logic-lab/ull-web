@@ -1596,6 +1596,7 @@ def train_sdxl_lora_job(params: dict) -> dict:
         aborted = ""
         last_ckpt_scan = 0.0
         last_vram_log = 0.0
+        vram_peak = 0.0  # 完了時に vram_peak_gb として残す（CLAUDE.md §6-3）
         committed_ckpts = 0
         for line in proc.stdout:
             # ⚠️ 読むだけで print していなかった（2026-09-22 発見）。sd-scripts の
@@ -1624,6 +1625,7 @@ def train_sdxl_lora_job(params: dict) -> dict:
                     fields: dict = {"progress_percent": min(95, pct), "progress_message": f"学習中 {cur}/{total}"}
                     if vram is not None:
                         fields["metadata"] = {"vram_used_gb": vram}
+                        vram_peak = max(vram_peak, vram)
                     _patch_job(job_id, fields)
                     # VRAM は Supabase へ送るだけでログに出していなかった
                     # （2026-09-22、ホスト指摘「VRAM も20GBあれば良さそう」を
@@ -1761,9 +1763,15 @@ def train_sdxl_lora_job(params: dict) -> dict:
             print(f"[sdxl] work dir cleanup skipped: {rm_exc}", flush=True)
         vol.commit()
 
+        # 学習プロセス終了後に測ると解放済みの値（実ジョブで 0.4GB）になり、完了画面の
+        # バッジがそれを出してしまっていた（2026-09-22 発見）。走行中の最大値を使う。
         final_vram = _current_effective_vram_gb()
         metadata: dict = {"checkpoints": checkpoints}
-        if final_vram is not None:
+        if vram_peak > 0:
+            metadata["vram_used_gb"] = round(vram_peak, 2)
+            metadata["vram_peak_gb"] = round(vram_peak, 2)
+            log(f"VRAM ピーク {vram_peak:.2f} GB")
+        elif final_vram is not None:
             metadata["vram_used_gb"] = final_vram
         if embedded_tag_keys:
             metadata["embedded_tag_keys"] = embedded_tag_keys
