@@ -2306,6 +2306,11 @@ export function LoraStudioTab({
         queue: null,
       });
       setPhase("tracking");
+      // 送信ロックはここで解く。以前は成功経路で true のまま残り、完了後に
+      // 「フォームに戻る」（ソフト復帰）で phase が form に戻っても busy が立ち
+      // 続け、それを解除できる唯一の「フォームを初期化」ボタン自身が busy で
+      // 無効化される詰みになっていた（2026-09-23、ホスト報告）。
+      setSubmitting(false);
       if (typeof window !== "undefined") localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, jobId);
       startPolling(jobId);
     } catch (err) {
@@ -3233,6 +3238,7 @@ export function LoraStudioTab({
       (job.status === "queued" || job.status === "processing" || job.status === "completed")
     ) {
       setPhase("form");
+      setSubmitting(false);
     } else {
       resetForm();
     }
