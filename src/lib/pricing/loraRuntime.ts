@@ -96,7 +96,10 @@ export const LORA_SPI_BASELINE: Readonly<Record<string, number>> = {
   // --- sd-scripts ワーカー（別 tier・別スタック）---
   // 0.642 は「step 数だけ変えた2回の実行の総経過時間を連立で分離」して出した
   // 値で、下記の tqdm パースのバグとは無関係。よって据え置く。
-  sdxl: 0.642,
+  // 2026-09-23 実ジョブ v7（rank 64/64・LoCon conv16・3,000step・220枚・L40S）で定常 1.23 s/it。
+  // 旧 0.642 は rank 32・LoCon 無しの実測。LoCon が既定になった分を含めて 1.0 へ（rank 64 は
+  // これでも 2 割過小だが、rank で s/it を変える式は持たないので許容。docs §14.24）。
+  sdxl: 1.0,
 };
 export type LoraWorkerBackend = "sd_scripts" | "ai_toolkit";
 
