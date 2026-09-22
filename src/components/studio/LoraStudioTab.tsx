@@ -19,6 +19,7 @@ import {
   LogIn,
   Plus,
   RotateCcw,
+  Scissors,
   Sparkles,
   Tag,
   Trash2,
@@ -194,6 +195,10 @@ export function LoraStudioTab({
   const [uploadBytes, setUploadBytes] = useState<{ sent: number; total: number } | null>(null);
   // 送信前の WebP 変換（実測で 317MB -> 35MB。ここが送信時間を9倍縮める）。
   const [optimizeProgress, setOptimizeProgress] = useState<{ done: number; total: number } | null>(null);
+  // 📐 の実行結果。ボタンのすぐ下に出す（2026-09-22、ホスト指摘「押した時に
+  // 終わっているのかどうか分からない」）。取り込み通知は画面のはるか上なので
+  // 気付けなかった。
+  const [repeatsNotice, setRepeatsNotice] = useState<string | null>(null);
   const smartCropWarmedRef = useRef(false);
   // English caption per image id. Filled by the AI-vision auto-caption pass on
   // drop, or straight from a .txt / ZIP the user brought.
@@ -1292,7 +1297,7 @@ export function LoraStudioTab({
       byRepeat.set(n, list);
     });
     for (const [n, ids] of byRepeat) setImageRepeats(ids, n);
-    setAddNotice(
+    setRepeatsNotice(
       "構図の偏りを均す学習回数を入れました: " +
         [...byRepeat.entries()]
           .sort((a, b) => a[0] - b[0])
@@ -2503,8 +2508,11 @@ export function LoraStudioTab({
     const want = t === "genderTag" ? genderMissingIdx : descMissingIdx;
     return want === idx ? " flow-next" : "";
   };
+  // ヒント文は「光る場所が1つ」のときだけ出す（2026-09-22、ホスト指摘）。
+  // 2つ光っている場面はボタンのラベル自体が選択肢になっているので、それを
+  // 並べ直した文は冗長なだけ。
   const flowHint = (t: LoraFlowTarget) =>
-    flow.targets.includes(t) ? (
+    flow.targets.length === 1 && flow.targets.includes(t) ? (
       <p className="mt-1 text-[10px] font-medium text-neon-pink">→ {flow.hint}</p>
     ) : null;
 
@@ -3899,6 +3907,32 @@ export function LoraStudioTab({
                   上のサムネイル一覧の末尾に入るので、そちらで確認する。被写体が
                   2人以上いると、ここに一覧があると2人目のために上へ戻る往復が
                   増えるため。 */}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedImageIds(new Set(croppedImages.map((i) => i.id)))}
+                  className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20"
+                >
+                  <Scissors size={11} />
+                  切り出した {croppedImages.length} 枚を選択して目立たせる
+                </button>
+                {/* 点検が済んだら次の工程へ送る（2026-09-22、ホスト指摘）。
+                    まだ切り出しが要るなら診断側の準備ボタンが光っているし、
+                    要らなければ学習回数と実行が光っている。どちらにせよ
+                    「次に光っている場所」へ着地させればよい。 */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedImageIds(new Set());
+                    document
+                      .getElementById(DIAGNOSTICS_PANEL_ID)
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-2.5 py-1 text-[10px] font-semibold text-white transition-opacity hover:opacity-90"
+                >
+                  点検が終わったので次へ進む →
+                </button>
+              </div>
             </div>
           )}
 
@@ -3992,6 +4026,7 @@ export function LoraStudioTab({
                   ?.scrollIntoView({ behavior: "smooth", block: "start" })
               }
               highlightSuggest={flow.targets.includes("suggestRepeats")}
+              suggestNotice={repeatsNotice}
             />
             </div>
           )}

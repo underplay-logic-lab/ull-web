@@ -909,6 +909,7 @@ export function RepeatWeightPanel({
   onGoToSettings,
   highlightSuggest,
   highlightGoToSettings,
+  suggestNotice,
 }: {
   images: DatasetImage[];
   disabled: boolean;
@@ -922,6 +923,8 @@ export function RepeatWeightPanel({
   /** 導線として光らせる対象（枠ではなく押すボタン）。 */
   highlightSuggest?: boolean;
   highlightGoToSettings?: boolean;
+  /** 📐 の実行結果。ボタンのすぐ下に出す。 */
+  suggestNotice?: string | null;
 }) {
   const [filters, setFilters] = useState<Record<string, string | null>>({});
   const selected = selectedIds;
@@ -1079,6 +1082,9 @@ export function RepeatWeightPanel({
             被写体ごとに、一番多い構図の枚数へ揃うよう回数を割り当てます（上限 ×4）。
             入れたあと個別に直せます。
           </span>
+          {suggestNotice && (
+            <p className="basis-full text-[10px] leading-relaxed text-neon-pink">✓ {suggestNotice}</p>
+          )}
         </div>
       )}
       {weighted > 0 && <p>{weighted} 枚に重み付けがかかっています。</p>}
