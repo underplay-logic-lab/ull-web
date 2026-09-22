@@ -145,7 +145,6 @@ import {
   DISMISSED_JOBS_STORAGE_KEY,
   RECENT_COMPLETED_MAX_AGE_MS,
   FORM_DRAFT_STORAGE_KEY,
-  MODES,
   PRESET_GROUPS,
   OPTIMIZERS,
   LORA_NAME_RE,
@@ -159,7 +158,6 @@ import {
   DEFAULT_PRO,
   DEFAULT_FORM_DRAFT,
   fieldCls,
-  type Mode,
   type DatasetImage,
   MAX_IMAGE_REPEATS,
   IdentityTagsField,
@@ -189,7 +187,6 @@ export function LoraStudioTab({
   // train payload from a normal account can't carry custom_yaml_override.
   const { isAdmin, loading: adminLoading } = useIsAdmin(user);
 
-  const [mode, setMode] = useState<Mode>("auto");
   const [images, setImages] = useState<DatasetImage[]>([]);
   const [smartCropBusy, setSmartCropBusy] = useState(false);
   const [smartCropProgress, setSmartCropProgress] = useState<{ done: number; total: number } | null>(null);
@@ -588,7 +585,6 @@ export function LoraStudioTab({
         }
 
         // --- expert / model settings ---------------------------------------
-        if (d.mode === "auto" || d.mode === "pro") setMode(d.mode);
         // "__custom__" is intentionally excluded — that entry point is sealed
         // out of the UI (see the model <select> below), so an old draft that
         // saved it degrades to the default preset instead of selecting a
@@ -664,7 +660,7 @@ export function LoraStudioTab({
       captionMode,
       curationEnabled,
       reflectedSpecKey,
-      mode,
+      mode: "pro" as const,
       modelChoice,
       customModelId,
       baseArchitecture,
@@ -698,7 +694,6 @@ export function LoraStudioTab({
     captionPromptOverride,
     captionMode,
     curationEnabled,
-    mode,
     modelChoice,
     customModelId,
     baseArchitecture,
@@ -1459,7 +1454,7 @@ export function LoraStudioTab({
   // devtools, …) still resolves to yamlMode === false, so every downstream
   // consumer — canSubmit, trainingConfig, price, effective name/trigger —
   // takes the GUI-slider path and custom_yaml_override is never sent.
-  const yamlMode = mode === "pro" && pro.useRawYaml && isAdmin;
+  const yamlMode = pro.useRawYaml && isAdmin;
 
   // オートが実際に使う値（= エキスパートの出発点であるべき値）。
   // rank/alpha は LoRA のカテゴリ、ステップ数は取り込んだ枚数で決まる。
@@ -1472,20 +1467,32 @@ export function LoraStudioTab({
   // 静かに変わっていた（DEFAULT_PRO が枚数もカテゴリも見ない固定値だった
   // ため）。まだ一度も触られていない場合に限り、オートの推奨値を初期値
   // として流し込む（2026-09-21、ホスト指摘）。
-  const enterProMode = useCallback(() => {
-    setPro((p) => {
-      const pristine =
-        p.rank === DEFAULT_PRO.rank &&
-        p.alpha === DEFAULT_PRO.alpha &&
-        p.steps === DEFAULT_PRO.steps &&
-        p.learningRate === DEFAULT_PRO.learningRate &&
-        !p.lrCustom &&
-        p.optimizer === DEFAULT_PRO.optimizer;
-      if (!pristine) return p;
-      return { ...p, rank: autoConfig.rank, alpha: autoConfig.alpha, alphaLinked: false, steps: autoConfig.steps };
-    });
-    setMode("pro");
-  }, [autoConfig]);
+  // オートモードは廃止（2026-09-22、ホスト判断）。経路は1本で、設定値は
+  // **入力画像から自動で決まる**。ユーザーはそれを見て、変えたければ変える。
+  //
+  // 「まだ一度も触っていない」間はオートの推奨値をそのまま見せ、触った瞬間に
+  // その値が確定する。state を書き換えずに導出するので、枚数やカテゴリが
+  // 変わればまだ触っていない項目は追従する（以前は『エキスパートに入った
+  // 瞬間に固定値へ切り替わる』という挙動で、alpha と steps が黙って変わった）。
+  const proPristine =
+    pro.rank === DEFAULT_PRO.rank &&
+    pro.alpha === DEFAULT_PRO.alpha &&
+    pro.steps === DEFAULT_PRO.steps &&
+    pro.learningRate === DEFAULT_PRO.learningRate &&
+    !pro.lrCustom &&
+    pro.optimizer === DEFAULT_PRO.optimizer;
+  const effPro: ProConfig = useMemo(
+    () =>
+      proPristine
+        ? { ...pro, rank: autoConfig.rank, alpha: autoConfig.alpha, alphaLinked: false, steps: autoConfig.steps }
+        : pro,
+    [proPristine, pro, autoConfig],
+  );
+  /** 設定を1つ変える。未編集だった場合はオートの推奨値ごと確定させる。 */
+  const updatePro = useCallback(
+    (patch: Partial<ProConfig>) => setPro((p) => ({ ...(proPristine ? effPro : p), ...patch })),
+    [proPristine, effPro],
+  );
   // Live YAML syntax check for the raw-YAML editor — drives the badge below
   // the textarea and gates the submit button. Only meaningful in yamlMode.
   const yamlCheck = useMemo(
@@ -1743,8 +1750,8 @@ export function LoraStudioTab({
       guiLoraPricingConfig({
         arch: pricedArch,
         resolution,
-        linearRank: mode === "pro" ? pro.rank : autoLoraRankAlpha(captionCategory).rank,
-        steps: mode === "pro" ? pro.steps : autoLoraSteps(images.length),
+        linearRank: effPro.rank,
+        steps: effPro.steps,
       }),
       {
         spiOverride: selectedPreset?.spiOverride,
@@ -1757,11 +1764,9 @@ export function LoraStudioTab({
     yamlCheck,
     pricedArch,
     resolution,
-    mode,
-    pro.rank,
-    pro.steps,
+    effPro.rank,
+    effPro.steps,
     images.length,
-    captionCategory,
     selectedPreset,
     pricingKnobs,
   ]);
@@ -2223,15 +2228,13 @@ export function LoraStudioTab({
 
       const trainingConfig = yamlMode
         ? { custom_yaml_override: pro.rawYaml }
-        : mode === "pro"
-          ? {
-              rank: pro.rank,
-              alpha: effectiveAlpha,
-              learning_rate: pro.learningRate,
-              steps: pro.steps,
-              optimizer: pro.optimizer,
-            }
-          : {};
+        : {
+            rank: effPro.rank,
+            alpha: effectiveAlpha,
+            learning_rate: effPro.learningRate,
+            steps: effPro.steps,
+            optimizer: effPro.optimizer,
+          };
 
       setUploadProgress({ done: imgs.length, total: imgs.length });
       console.log(`[lora] dataset uploaded (${paths.length} files) — calling /api/studio/lora/train`);
@@ -3224,7 +3227,6 @@ export function LoraStudioTab({
     setImages([]);
     setCaptions({});
     setCaptionsJa({});
-    setMode("auto");
     setModelChoice("minimax_h3");
     setCustomModelId("");
     setBaseArchitecture("sdxl");
@@ -3577,36 +3579,9 @@ export function LoraStudioTab({
         </button>
       </div>
 
-      {/* Mode switch */}
-      <div id={LORA_SETTINGS_ANCHOR_ID} className="grid gap-2 scroll-mt-24 sm:grid-cols-2">
-        {MODES.map((m) => (
-          <button
-            key={m.id}
-            type="button"
-            disabled={busy || (m.id === "pro" && images.length === 0)}
-            onClick={() => (m.id === "pro" ? enterProMode() : setMode(m.id))}
-            className={`rounded-xl border p-3 text-left transition-colors disabled:opacity-50 ${
-              mode === m.id
-                ? "border-neon-pink/50 bg-neon-pink/10"
-                : "border-border bg-surface/40 hover:border-neon-violet/40"
-            }`}
-          >
-            <p className={`text-sm font-semibold ${mode === m.id ? "text-neon-pink" : "text-foreground"}`}>{m.label}</p>
-            <p className="mt-0.5 text-[11px] leading-snug text-muted">{m.desc}</p>
-          </button>
-        ))}
-      </div>
-      {/* 画像が無いとエキスパートに入れない（2026-09-21、ホスト指摘）。
-          rank/alpha はカテゴリ、ステップ数は枚数から決まるので、素材ゼロの
-          段階で数字を並べても迷わせるだけ。しかも 0 枚で入ると推奨ステップ数
-          850 が初期値として焼き付いてしまう。 */}
-      {images.length === 0 && (
-        <p className="rounded-xl border border-border bg-surface/40 px-3 py-2 text-[11px] leading-relaxed text-muted">
-          rank・alpha・学習ステップ数などの
-          <strong className="text-foreground">推奨値は、取り込んだ画像から自動で決まります</strong>
-          。画像を取り込むとエキスパートを開けるようになり、実行前に自由に変更できます。
-        </p>
-      )}
+      {/* オートモードは廃止（2026-09-22、ホスト判断）。経路は1本で、設定値は
+          入力画像から自動で決まる。分からない人はそのまま進めばよく、変えたい
+          人だけ設定欄を触る。 */}
 
       <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr] lg:items-start">
         {/* Left column — dataset + captions */}
@@ -4789,14 +4764,23 @@ export function LoraStudioTab({
           {/* 画像を取り込む前は rank / ステップ数の欄を出さない（2026-09-21、
               ホスト指摘）。推奨値は枚数とカテゴリから決まるので、素材が無い
               段階で数字だけ並べても迷わせるだけ。 */}
-          {mode === "pro" && images.length > 0 && (
-            <div className="space-y-3 rounded-xl border border-neon-pink/30 bg-neon-pink/5 p-3">
+          {images.length > 0 && (
+            <div
+              id={LORA_SETTINGS_ANCHOR_ID}
+              className="space-y-3 scroll-mt-24 rounded-xl border border-neon-pink/30 bg-neon-pink/5 p-3"
+            >
+              {/* オートモード廃止後の説明（2026-09-22）。モード選択が無くなった
+                  ので、ここが「自動で決まった値」であることを明示する。 */}
+              <p className="text-[11px] leading-relaxed text-muted">
+                <strong className="text-foreground">学習設定は取り込んだ画像から自動で決まっています。</strong>
+                このままで問題ありません。変えたい場合だけ触ってください。
+              </p>
               {isAdmin ? (
                 <label className="flex items-center gap-2 text-[11px] font-medium text-neon-pink">
                   <input
                     type="checkbox"
                     checked={pro.useRawYaml}
-                    onChange={(e) => setPro((p) => ({ ...p, useRawYaml: e.target.checked }))}
+                    onChange={(e) => updatePro({ useRawYaml: e.target.checked })}
                     disabled={busy}
                     className="h-3.5 w-3.5 accent-neon-pink"
                   />
@@ -4821,7 +4805,7 @@ export function LoraStudioTab({
                   </p>
                   <textarea
                     value={pro.rawYaml}
-                    onChange={(e) => setPro((p) => ({ ...p, rawYaml: e.target.value }))}
+                    onChange={(e) => updatePro({ rawYaml: e.target.value })}
                     rows={12}
                     disabled={busy}
                     placeholder={"job: extension\nconfig:\n  name: my_lora\n  process:\n    - type: sd_trainer\n      ..."}
@@ -4872,14 +4856,13 @@ export function LoraStudioTab({
                           type="button"
                           disabled={busy}
                           onClick={() =>
-                            setPro((p) => ({
-                              ...p,
+                            updatePro({
                               rank: r,
-                              alpha: (p.alphaLinked ?? true) ? r : p.alpha,
-                            }))
+                              alpha: (effPro.alphaLinked ?? true) ? r : effPro.alpha,
+                            })
                           }
                           className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
-                            pro.rank === r
+                            effPro.rank === r
                               ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
                               : "border-border bg-background/60 text-muted hover:border-neon-violet/40"
                           }`}
@@ -4899,11 +4882,10 @@ export function LoraStudioTab({
                           type="checkbox"
                           checked={alphaLinked}
                           onChange={(e) =>
-                            setPro((p) => ({
-                              ...p,
+                            updatePro({
                               alphaLinked: e.target.checked,
-                              alpha: e.target.checked ? p.rank : p.alpha,
-                            }))
+                              alpha: e.target.checked ? effPro.rank : effPro.alpha,
+                            })
                           }
                           disabled={busy}
                           className="h-3 w-3 accent-neon-pink"
@@ -4917,7 +4899,7 @@ export function LoraStudioTab({
                           key={a}
                           type="button"
                           disabled={busy || alphaLinked}
-                          onClick={() => setPro((p) => ({ ...p, alpha: a, alphaLinked: false }))}
+                          onClick={() => updatePro({ alpha: a, alphaLinked: false })}
                           className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-40 ${
                             effectiveAlpha === a
                               ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
@@ -4939,8 +4921,8 @@ export function LoraStudioTab({
                         min={STEPS_MIN}
                         max={STEPS_MAX}
                         step={STEPS_STEP}
-                        value={pro.steps}
-                        onChange={(e) => setPro((p) => ({ ...p, steps: Number(e.target.value) }))}
+                        value={effPro.steps}
+                        onChange={(e) => updatePro({ steps: Number(e.target.value) })}
                         disabled={busy}
                         className="h-1.5 min-w-0 flex-1 accent-neon-pink"
                       />
@@ -4949,15 +4931,14 @@ export function LoraStudioTab({
                         min={STEPS_MIN}
                         max={STEPS_MAX}
                         step={STEPS_STEP}
-                        value={pro.steps}
+                        value={effPro.steps}
                         onChange={(e) => {
                           const v = Number(e.target.value);
-                          setPro((p) => ({
-                            ...p,
+                          updatePro({
                             steps: Number.isFinite(v)
                               ? Math.min(STEPS_MAX, Math.max(STEPS_MIN, Math.round(v)))
-                              : p.steps,
-                          }));
+                              : effPro.steps,
+                          });
                         }}
                         disabled={busy}
                         className="w-20 shrink-0 rounded-lg border border-border bg-background px-2 py-2 text-sm tabular-nums outline-none transition-colors focus:border-neon-violet/50"
@@ -4969,9 +4950,9 @@ export function LoraStudioTab({
                           key={s.value}
                           type="button"
                           disabled={busy}
-                          onClick={() => setPro((p) => ({ ...p, steps: s.value }))}
+                          onClick={() => updatePro({ steps: s.value })}
                           className={`rounded-lg border px-2.5 py-1 text-[10px] font-medium transition-colors disabled:opacity-50 ${
-                            pro.steps === s.value
+                            effPro.steps === s.value
                               ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
                               : "border-border bg-background/60 text-muted hover:border-neon-violet/40"
                           }`}
@@ -4987,19 +4968,19 @@ export function LoraStudioTab({
                       値は使われない（サーバー側で強制的に1.0扱いになる）。 */}
                   <div>
                     <label className="mb-1 block text-[10px] text-muted">Learning Rate</label>
-                    {pro.optimizer === "prodigy" ? (
+                    {effPro.optimizer === "prodigy" ? (
                       <p className="rounded-lg border border-border bg-background/60 px-3 py-2 text-[10px] leading-relaxed text-muted">
                         Prodigy は学習率を自動推定するため、この設定は使用されません。
                       </p>
                     ) : (
                       <>
                         <select
-                          value={pro.lrCustom ? "custom" : String(pro.learningRate)}
+                          value={effPro.lrCustom ? "custom" : String(effPro.learningRate)}
                           onChange={(e) => {
                             if (e.target.value === "custom") {
-                              setPro((p) => ({ ...p, lrCustom: true }));
+                              updatePro({ lrCustom: true });
                             } else {
-                              setPro((p) => ({ ...p, lrCustom: false, learningRate: Number(e.target.value) }));
+                              updatePro({ lrCustom: false, learningRate: Number(e.target.value) });
                             }
                           }}
                           disabled={busy}
@@ -5012,14 +4993,14 @@ export function LoraStudioTab({
                           ))}
                           <option value="custom">カスタム（手動入力）</option>
                         </select>
-                        {pro.lrCustom && (
+                        {effPro.lrCustom && (
                           <input
                             type="number"
                             step="0.00001"
                             min={0}
-                            value={pro.learningRate}
+                            value={effPro.learningRate}
                             onChange={(e) =>
-                              setPro((p) => ({ ...p, learningRate: Number(e.target.value) || p.learningRate }))
+                              updatePro({ learningRate: Number(e.target.value) || effPro.learningRate })
                             }
                             disabled={busy}
                             placeholder="0.0001"
@@ -5034,8 +5015,8 @@ export function LoraStudioTab({
                   <div>
                     <label className="mb-1 block text-[10px] text-muted">Optimizer</label>
                     <select
-                      value={pro.optimizer}
-                      onChange={(e) => setPro((p) => ({ ...p, optimizer: e.target.value }))}
+                      value={effPro.optimizer}
+                      onChange={(e) => updatePro({ optimizer: e.target.value })}
                       disabled={busy}
                       className={fieldCls}
                     >
