@@ -375,6 +375,16 @@ GPU_REQUEST = os.environ.get("LORA_WORKER_GPU", "").strip() or ["b300", "b200"]
 # で指定するか、ここに書く。⚠️ 単価 knob `lora_credits_per_gpu_second` は B300 時給で
 # 導出しているので、安い tier へ寄せた arch は arch 別の単価が要る（未対応）。
 LORA_ARCH_GPU: dict[str, str] = {}
+# Next 側 tier id（knob `gpu_usd_per_hour_<tier>` の綴り）→ Modal の GPU 文字列。
+_MODAL_GPU_NAME: dict[str, str] = {
+    "b300": "B300",
+    "b200": "B200",
+    "h200": "H200",
+    "h100": "H100",
+    "rtx_pro_6000": "RTX-PRO-6000",
+    "a100_80gb": "A100-80GB",
+    "l40s": "L40S",
+}
 try:
     LORA_ARCH_GPU.update(
         {str(k): str(v) for k, v in json.loads(os.environ.get("LORA_ARCH_GPU", "") or "{}").items()}
@@ -5858,7 +5868,13 @@ def _prepare_and_spawn_training(item: dict) -> dict:
         _arch = _arch_for_target(
             str(item.get("target_model") or ""), str(item.get("base_architecture") or "")
         )
-        _tier = LORA_ARCH_GPU.get(_arch, "")
+        # Next の価格式（loraArchGpuTier）が payload の gpu_tier で tier を指定してくる。
+        # 課金がその tier の時給で計算されているので、実行 tier もそれに合わせる（SSOT は Next 側）。
+        # 既定の b300 は従来どおり GPU_REQUEST（B300/B200 のフォールバック付き）で回す。
+        _req = str(item.get("gpu_tier") or "").strip().lower()
+        _tier = _MODAL_GPU_NAME.get(_req, "") if _req and _req != "b300" else ""
+        if not _tier:
+            _tier = LORA_ARCH_GPU.get(_arch, "")
         _train_fn = train_lora_job.with_options(gpu=_tier) if _tier else train_lora_job
         print(f"[dispatch] arch={_arch} gpu={_tier or GPU_REQUEST}", flush=True)
         call = _train_fn.spawn(item)

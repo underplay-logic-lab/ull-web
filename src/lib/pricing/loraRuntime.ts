@@ -97,6 +97,54 @@ export const LORA_SPI_BASELINE: Readonly<Record<string, number>> = {
 };
 export type LoraWorkerBackend = "sd_scripts" | "ai_toolkit";
 
+/** 価格式が知っている GPU tier。knob `gpu_usd_per_hour_<tier>` と同じ綴り。 */
+export type LoraGpuTier = "b300" | "b200" | "h200" | "h100" | "rtx_pro_6000" | "a100_80gb" | "l40s";
+
+/**
+ * arch 別プロファイル（2026-09-23）。実ジョブの `metadata.metrics` で測れた arch から順に埋める。
+ * 無い arch は従来どおり knob（minimax_h3 基準の prep 828s + 1.33s/枚、B300）へフォールバック。
+ *
+ * 背景: prep の knob は minimax_h3（逆量子化＋巨大 compile）で測った固定費で、軽い arch には
+ * 9倍過大だった（flux2_klein_4b: 実 124s に対し 1,120s → 50step が 692C、粗利 95%）。
+ * s/it は以前から arch 別（LORA_SPI_BASELINE）だったが、prep と GPU 単価が一律だった。
+ *
+ * gpu: その arch を回す tier（VRAM が収まる最安、ホスト判断 2026-09-23）。ここが SSOT で、
+ * dispatch payload の `gpu_tier` 経由で worker の with_options(gpu=…) に渡る。tier を変える
+ * ときは必ずその tier で s/it を測り直してから（Wan2.2-S2V で B300 ≈ H100 の前例あり）。
+ * 実測値の出典は docs/gpu-benchmarks.md §14.16〜。
+ */
+export const LORA_ARCH_PROFILE: Readonly<
+  Record<string, { prepLoadS?: number; prepPerImageS?: number; gpu?: LoraGpuTier }>
+> = {
+  // §14.16: prep 778s（JIT 629 + latent 149 = 0.675s/枚）、VRAM 119GB → B300/B200 のまま。
+  wan22_14b: { prepLoadS: 650, prepPerImageS: 0.7, gpu: "b300" },
+  // §14.17: wall 767s − 50×0.92 − cold ≈ 600s、VRAM 87GB（H200 候補、要実測）。
+  ltx2: { prepLoadS: 550, prepPerImageS: 0.5, gpu: "b300" },
+  // §14.18: prep 124s（load 28 + JIT 48 + latent 0.215s/枚）、VRAM 38GB（RTX PRO 6000 候補、要実測）。
+  flux2_klein_4b: { prepLoadS: 100, prepPerImageS: 0.25, gpu: "b300" },
+};
+
+/** arch を回す GPU tier。sd-scripts 系は L40S 固定、ai-toolkit 系はプロファイル、無ければ B300。 */
+export function loraArchGpuTier(arch: string | null | undefined): LoraGpuTier {
+  const key = String(arch ?? "").trim().toLowerCase();
+  if (loraWorkerBackend(key) === "sd_scripts") return "l40s";
+  return LORA_ARCH_PROFILE[key]?.gpu ?? "b300";
+}
+
+function gpuUsdPerHour(tier: LoraGpuTier, knobs: PricingKnobs): number {
+  const map: Record<LoraGpuTier, number> = {
+    b300: knobs.gpu_usd_per_hour_b300,
+    b200: knobs.gpu_usd_per_hour_b200,
+    h200: knobs.gpu_usd_per_hour_h200,
+    h100: knobs.gpu_usd_per_hour_h100,
+    rtx_pro_6000: knobs.gpu_usd_per_hour_rtx_pro_6000,
+    a100_80gb: knobs.gpu_usd_per_hour_a100_80gb,
+    l40s: knobs.gpu_usd_per_hour_l40s,
+  };
+  const v = map[tier];
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : knobs.gpu_usd_per_hour_b300;
+}
+
 // arch "sdxl"（illustrious_xl / juggernaut_xl プリセット、または
 // custom_model_id + base_architecture="sdxl"）だけが sd-scripts ワーカー
 // （modal_sdxl_lora_worker.py）へ、それ以外は ai-toolkit ワーカー
@@ -120,9 +168,12 @@ export function loraCreditsPerGpuSecond(
   arch: string | null | undefined,
   knobs: PricingKnobs = DEFAULT_KNOBS,
 ): number {
-  return loraWorkerBackend(arch) === "sd_scripts"
-    ? knobs.lora_credits_per_gpu_second_sdxl
-    : knobs.lora_credits_per_gpu_second;
+  if (loraWorkerBackend(arch) === "sd_scripts") return knobs.lora_credits_per_gpu_second_sdxl;
+  // ai-toolkit 側の knob は B300 時給で導出した「B300 の 1 GPU 秒」の単価。arch を安い tier で
+  // 回すときは時給比で比例縮小する（markup は据え置き）。B300 なら比 1.0 で従来どおり。
+  const tier = loraArchGpuTier(arch);
+  const ratio = gpuUsdPerHour(tier, knobs) / gpuUsdPerHour("b300", knobs);
+  return knobs.lora_credits_per_gpu_second * (Number.isFinite(ratio) && ratio > 0 ? ratio : 1);
 }
 
 /**
@@ -138,6 +189,8 @@ export function loraPrepLoadSeconds(
   knobs: PricingKnobs = DEFAULT_KNOBS,
 ): number {
   if (loraWorkerBackend(arch) === "sd_scripts") return knobs.lora_prep_load_s_sdxl;
+  const profile = LORA_ARCH_PROFILE[String(arch ?? "").trim().toLowerCase()];
+  if (profile && typeof profile.prepLoadS === "number") return profile.prepLoadS;
   const base = knobs.lora_prep_load_s;
   return DEQUANTIZED_ARCHES.has(String(arch ?? "").trim().toLowerCase())
     ? base + knobs.lora_prep_dequant_s
@@ -157,6 +210,16 @@ export function loraPrepLoadSeconds(
  * つまりこの逆量子化コストは毎ジョブ恒久的に発生する。
  */
 const DEQUANTIZED_ARCHES: ReadonlySet<string> = new Set(["minimax_h3"]);
+
+/** 画像1枚あたりの準備時間（latent キャッシュ等）。プロファイルがあればそれ、無ければ knob。 */
+export function loraPrepPerImageSeconds(
+  arch: string | null | undefined,
+  knobs: PricingKnobs = DEFAULT_KNOBS,
+): number {
+  const profile = LORA_ARCH_PROFILE[String(arch ?? "").trim().toLowerCase()];
+  if (profile && typeof profile.prepPerImageS === "number") return profile.prepPerImageS;
+  return knobs.lora_prep_per_image_s;
+}
 
 // 壊れた／悪意ある YAML が桁違いの数値を持ち込んでも見積もりが発散しない
 // ようにするためのガード。上限に張り付いた時点で LORA_ABS_MAX_RUN_S 側の
@@ -250,7 +313,7 @@ export function loraEstimatedSeconds(input: LoraRuntimeInput): LoraRuntimeEstima
   const imageCount = clamp(Math.round(finite(input.imageCount, 0)), 0, MAX_IMAGE_COUNT);
   const prepSeconds =
     Math.max(0, finite(loraPrepLoadSeconds(arch, knobs), 0)) +
-    Math.max(0, finite(knobs.lora_prep_per_image_s, 0)) * imageCount;
+    Math.max(0, finite(loraPrepPerImageSeconds(arch, knobs), 0)) * imageCount;
 
   const rawTotal = prepSeconds + trainSeconds;
   const cappedByAbsMax = rawTotal > LORA_ABS_MAX_RUN_S;

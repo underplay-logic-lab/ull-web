@@ -44,6 +44,8 @@ export type SpawnLoraTrainingParams = {
   targetModel: string;
   customModelId?: string;
   baseArchitecture?: LoraBaseArchitecture;
+  /** arch 別 GPU tier（loraArchGpuTier）。worker の dispatch が with_options(gpu=…) に使う。 */
+  gpuTier?: string;
   trainingConfig: LoraTrainingConfig;
   resolution?: number;
   outputLoraName: string;
@@ -98,6 +100,7 @@ export type LoraDispatchPayload = {
   target_model: string;
   custom_model_id: string;
   base_architecture: string;
+  gpu_tier?: string;
   training_config: LoraTrainingConfig;
   resolution: number;
   output_lora_name: string;
@@ -122,6 +125,7 @@ export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraD
     target_model: params.targetModel,
     custom_model_id: params.customModelId ?? "",
     base_architecture: params.baseArchitecture ?? "",
+    ...(params.gpuTier ? { gpu_tier: params.gpuTier } : {}),
     training_config: params.trainingConfig,
     resolution: params.resolution ?? 768,
     output_lora_name: params.outputLoraName,

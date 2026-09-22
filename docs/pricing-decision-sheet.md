@@ -152,6 +152,22 @@
 
 合計 ¥4,500〜5,000。**A 以外は実ジョブとして UI から投げるのが最短**（計測は全部自動で残る）。
 
+### LoRA 価格式の arch 別化（2026-09-23 実装）
+
+`src/lib/pricing/loraRuntime.ts` の `LORA_ARCH_PROFILE` に arch 別の prep 固定費・枚数あたり秒・GPU tier を
+持たせた（s/it は従来から arch 別）。無い arch は従来の knob（minimax 基準）へフォールバック。
+credits/GPU秒は「B300 の knob × tier 時給比」で自動縮小、実行 tier は dispatch payload `gpu_tier` で
+worker へ渡す（SSOT は Next）。
+
+| arch | prep 固定 / 枚 | s/it | tier | 50step・220枚 | 2000step・220枚 |
+|---|---|---|---|---|---|
+| wan22_14b | 650s / 0.70 | 0.55 | B300 | 504C（旧 723C） | 1,285C |
+| ltx2 | 550s / 0.50 | 1.10 | B300（H200 候補） | 433C（旧 717C） | 1,750C |
+| flux2_klein_4b | 100s / 0.25 | 0.35 | B300（RTX PRO 6000 候補） | **105C（旧 692C）** | 518C |
+| その他（未実測） | knob 828s / 1.33 | 推測 | B300 | — | — |
+
+tier を安い方へ寄せるのは、その tier で s/it を1本測ってから（プロファイルの `gpu` を書き換えるだけ）。
+
 ### 決定 6 に伴う設計課題（未着手）
 
 - Wan Animate を Custom タブから独立させる。現行の `wan-animate-dance` 行は `default_gpu_tier=l4` で

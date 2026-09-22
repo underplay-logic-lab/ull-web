@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { spawnLoraTrainingJob, buildLoraDispatchPayload } from "@/lib/modalLoraTrain";
+import { loraArchGpuTier } from "@/lib/pricing/loraRuntime";
 import { DEFAULT_LORA_STEPS, LORA_MAX_STEPS, autoLoraSteps, autoLoraRankAlpha } from "@/lib/loraCredits";
 import { guiLoraPricingConfig, loraPriceBreakdown } from "@/lib/loraPricing";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
@@ -575,6 +576,8 @@ async function handlePost(request: Request): Promise<NextResponse> {
     userId: user.id,
     creditsCost: requiredCredits,
     costCapSeconds: costCap.seconds,
+    // 課金に使った arch の GPU tier をそのまま実行 tier にする（SSOT は loraArchGpuTier）。
+    gpuTier: loraArchGpuTier(priceBreakdown ? priceBreakdown.arch : pricedArch),
     storagePaths,
     datasetId,
     captions,
