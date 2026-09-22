@@ -1439,22 +1439,6 @@ def _persist_checkpoints(
     return checkpoints
 
 
-@app.function(
-    image=train_image,
-    gpu=GPU_REQUEST,
-    volumes={MODELS_DIR: vol},
-    timeout=10800,
-    scaledown_window=2,
-    # ⚠️ secrets が丸ごと抜けていた（2026-09-22）。学習ジョブから Supabase へ
-    # 進捗・完了を書けず、`[sdxl-worker] Supabase env not configured, skipping
-    # request.` を出して黙って捨てていた。UI 側はいつまでも完了を受け取れない。
-    # modal_lora_worker.py の train_lora_job と同じ3つを付ける。
-    secrets=[
-        modal.Secret.from_name("supabase-model-downloads"),
-        modal.Secret.from_name("wan-animate-auth"),
-        modal.Secret.from_name("huggingface-secret"),
-    ],
-)
 def _mk_logger():
     """経過時間つきの1行ログ（2026-09-22、ホスト指摘「開始まで7分は遅い。
     どこで時間を使っているか分からない」「ログを吐いているのに見えていない
@@ -1471,6 +1455,22 @@ def _mk_logger():
     return log
 
 
+@app.function(
+    image=train_image,
+    gpu=GPU_REQUEST,
+    volumes={MODELS_DIR: vol},
+    timeout=10800,
+    scaledown_window=2,
+    # ⚠️ secrets が丸ごと抜けていた（2026-09-22）。学習ジョブから Supabase へ
+    # 進捗・完了を書けず、`[sdxl-worker] Supabase env not configured, skipping
+    # request.` を出して黙って捨てていた。UI 側はいつまでも完了を受け取れない。
+    # modal_lora_worker.py の train_lora_job と同じ3つを付ける。
+    secrets=[
+        modal.Secret.from_name("supabase-model-downloads"),
+        modal.Secret.from_name("wan-animate-auth"),
+        modal.Secret.from_name("huggingface-secret"),
+    ],
+)
 def train_sdxl_lora_job(params: dict) -> dict:
     """Production SDXL LoRA training entrypoint — the sd-scripts counterpart
     of modal_lora_worker.py's train_lora_job. Same job-row lifecycle
