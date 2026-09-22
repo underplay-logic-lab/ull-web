@@ -1521,6 +1521,14 @@ export function LoraStudioTab({
 
   // A stable identity for "what the captions currently reflect": trigger +
   // spec + any manual override. Re-analysis is only needed when this changes.
+  // キャプションが「どの設定で作られたか」の記録（reflectedSpecKey）が空のとき
+  // は**不明**であって「変わった」ではない（2026-09-22、ホスト報告「何も変えて
+  // ないのに作り直しの警告が出た」）。キャッシュからキャプションを戻しただけの
+  // 状態がこれに当たり、以前は毎回「食い違っているかも」と判定して警告を出し、
+  // 次へ進むと全キャプションを作り直していた。記録はキャプション解析が一度でも
+  // 走れば埋まり、下書きにも保存されるので、空のままなのは初回だけ。
+  const captionSpecStale = (key: string, reflected: string) => reflected !== "" && key !== reflected;
+
   const captionSpecKey = useMemo(
     () =>
       JSON.stringify([
@@ -2816,7 +2824,7 @@ export function LoraStudioTab({
     // (2) Did the fixed/varying spec (or manual override) actually change since
     //     the captions were last generated? A bare trigger-word edit does NOT
     //     count — that was already swapped in client-side.
-    const specChanged = captionSpecKey !== reflectedSpecKey;
+    const specChanged = captionSpecStale(captionSpecKey, reflectedSpecKey);
 
     // (3) Synthesise the LoRA-type instruction for the worker's VLM gap-fill,
     //     and — only when the spec changed — re-run the vision pass so the new
@@ -4110,9 +4118,9 @@ export function LoraStudioTab({
             {/* キャプションが古くなった警告は、変えた場所の近くに出す
                 （2026-09-22、ホスト指摘）。以前はキャプション欄にあり、
                 設定を変えた本人が気付けなかった。 */}
-            {aiCaptionedCount > 0 && captionSpecKey !== reflectedSpecKey && (
+            {aiCaptionedCount > 0 && captionSpecStale(captionSpecKey, reflectedSpecKey) && (
               <p className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[10px] leading-relaxed text-amber-400">
-                <strong>ここを変えたので、キャプションは作り直しになります。</strong>
+                <strong>「学習したい特徴」を変えたので、キャプションは作り直しになります。</strong>
                 「学習したい特徴」はキャプションに書いてはいけない言葉のリストとして使われるため、
                 変更すると既存のキャプションと食い違います。次へ進むと
                 {aiCaptionedCount} 枚ぶんを作り直すので、数分かかります。
