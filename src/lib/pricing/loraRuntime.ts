@@ -88,7 +88,8 @@ export const LORA_SPI_BASELINE: Readonly<Record<string, number>> = {
   // 2026-09-23 実測 0.57（実写220枚・1024px・batch1・block_compile・50step、B300、docs §14.19）。20% 上乗せで 0.69。
   krea2: 0.69,
   anima: 0.50,
-  zimage: 0.42,
+  // 2026-09-23 実測 0.27（実写220枚・1024px・batch1・block_compile・50step、B300、docs §14.20）。20% 上乗せで 0.32。
+  zimage: 0.32,
   // 2026-09-23 実測 0.295（実写220枚・1024px・batch1・compile 無し・50step、B300、docs §14.18）。20% 上乗せで 0.35。
   flux2_klein_4b: 0.35,
   // --- sd-scripts ワーカー（別 tier・別スタック）---
@@ -125,6 +126,8 @@ export const LORA_ARCH_PROFILE: Readonly<
   flux2_klein_4b: { prepLoadS: 100, prepPerImageS: 0.25, gpu: "b300" },
   // §14.19: prep 194s（load 52 + JIT 84 + latent 59 = 0.27s/枚）、VRAM 71GB（RTX PRO 6000 は余裕 26%、H200 候補）。
   krea2: { prepLoadS: 150, prepPerImageS: 0.3, gpu: "b300" },
+  // §14.20: prep 120s（load 36 + JIT 51 + latent 33 = 0.15s/枚）、VRAM 46.5GB（L40S は不可、RTX PRO 6000 候補）。
+  zimage: { prepLoadS: 100, prepPerImageS: 0.15, gpu: "b300" },
 };
 
 /** arch を回す GPU tier。sd-scripts 系は L40S 固定、ai-toolkit 系はプロファイル、無ければ B300。 */

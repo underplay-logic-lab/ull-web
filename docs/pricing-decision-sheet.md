@@ -146,7 +146,7 @@
 | A | 超解像 画像を RTX PRO 6000 / L40S で | **完了 2026-09-23**: RTX PRO 6000 30.0s/¥12・L40S 58.0s/¥12.5・B300 49.0s/¥33（起動込み原価）。静止画の既定を RTX PRO 6000 へ変更・デプロイ済み（短辺 3840 超は B300）。`upscale_per_mp` 3 は据え置き（RTX で粗利 63〜87%） | 済 |
 | B | Multi-Angle B200 の再現性 | 既定が B200 なので**実運用ジョブから自動で溜まる**（generation_logs） | 0 |
 | C | 超解像 動画 4K の所要時間 | **完了 2026-09-22**: 121フレーム（5秒）8.08MP/frame → 生成 419s・VRAM 92.6GB・原価 ¥163・課金 339C（粗利 71%）。VRAM 的に **H200 で収まる**（未実測）。申告フレーム数での課金が実測より 62C 多かった問題を発見（要・完了時精算） | 済 |
-| D | LoRA 未実測5 arch の s/it と VRAM | UI から各1本・50step・既存データセット（`metadata.metrics` に自動記録）。**wan22_14b 完了 2026-09-23**: s/it 0.46（knob 1.44 → 0.55 へ）・VRAM 119GB（B300/B200 据え置き）・prep 778s。**ltx2 完了**: s/it 0.92（knob 1.24 → 1.10）・VRAM 87GB（**H200 候補**、要1本実測）。**flux2_klein_4b 完了**: s/it 0.29・prep 124s・VRAM 38GB（**RTX PRO 6000 候補**）。prep knob 1,120s が9倍過大で粗利 95% → **prep を arch 別に**。**krea2 完了**: s/it 0.57・prep 194s・VRAM 71GB（プロファイル化、152C）。残り zimage / anima | ¥2,500 |
+| D | LoRA 未実測5 arch の s/it と VRAM | UI から各1本・50step・既存データセット（`metadata.metrics` に自動記録）。**wan22_14b 完了 2026-09-23**: s/it 0.46（knob 1.44 → 0.55 へ）・VRAM 119GB（B300/B200 据え置き）・prep 778s。**ltx2 完了**: s/it 0.92（knob 1.24 → 1.10）・VRAM 87GB（**H200 候補**、要1本実測）。**flux2_klein_4b 完了**: s/it 0.29・prep 124s・VRAM 38GB（**RTX PRO 6000 候補**）。prep knob 1,120s が9倍過大で粗利 95% → **prep を arch 別に**。**krea2 完了**: s/it 0.57・prep 194s・VRAM 71GB（プロファイル化、152C）。**zimage 完了**: s/it 0.27・prep 120s・VRAM 46.5GB（91C）。残り anima | ¥2,500 |
 | D' | D で VRAM が小さかった arch を安い tier で再確認 | dispatch 時に `train_lora_job.with_options(gpu=…)`（要・小改修） | ¥1,000 |
 | E | Wan Animate 60秒 | UI から1本（B300） | ¥500 |
 
@@ -165,6 +165,7 @@ worker へ渡す（SSOT は Next）。
 | ltx2 | 550s / 0.50 | 1.10 | B300（H200 候補） | 433C（旧 717C） | 1,750C |
 | flux2_klein_4b | 100s / 0.25 | 0.35 | B300（RTX PRO 6000 候補） | **105C（旧 692C）** | 518C |
 | krea2 | 150s / 0.30 | 0.69 | B300（H200 候補） | 152C（旧 701C） | 989C |
+| zimage | 100s / 0.15 | 0.32 | B300（RTX PRO 6000 候補） | 91C（旧 692C） | 469C |
 | その他（未実測） | knob 828s / 1.33 | 推測 | B300 | — | — |
 
 tier を安い方へ寄せるのは、その tier で s/it を1本測ってから（プロファイルの `gpu` を書き換えるだけ）。
