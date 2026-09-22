@@ -907,6 +907,8 @@ export function RepeatWeightPanel({
   onSelectedChange,
   onSuggestRepeats,
   onGoToSettings,
+  highlightSuggest,
+  highlightGoToSettings,
 }: {
   images: DatasetImage[];
   disabled: boolean;
@@ -917,6 +919,9 @@ export function RepeatWeightPanel({
   onSuggestRepeats?: () => void;
   /** 次の工程（設定）へ送る導線。 */
   onGoToSettings?: () => void;
+  /** 導線として光らせる対象（枠ではなく押すボタン）。 */
+  highlightSuggest?: boolean;
+  highlightGoToSettings?: boolean;
 }) {
   const [filters, setFilters] = useState<Record<string, string | null>>({});
   const selected = selectedIds;
@@ -1063,7 +1068,11 @@ export function RepeatWeightPanel({
       </p>
       {onSuggestRepeats && (
         <div className="flex flex-wrap items-center gap-2 pt-0.5">
-          <button type="button" onClick={onSuggestRepeats} className={quickSelectBtnCls}>
+          <button
+            type="button"
+            onClick={onSuggestRepeats}
+            className={`${quickSelectBtnCls}${highlightSuggest ? " flow-next" : ""}`}
+          >
             📐 構図の偏りを均す回数を自動で入れる
           </button>
           <span className="opacity-70">
@@ -1084,7 +1093,9 @@ export function RepeatWeightPanel({
           <button
             type="button"
             onClick={onGoToSettings}
-            className="inline-flex items-center gap-1 rounded-lg border border-neon-pink/40 bg-neon-pink/10 px-2.5 py-1 text-[11px] font-medium text-neon-pink transition-colors hover:bg-neon-pink/20"
+            className={`inline-flex items-center gap-1 rounded-lg border border-neon-pink/40 bg-neon-pink/10 px-2.5 py-1 text-[11px] font-medium text-neon-pink transition-colors hover:bg-neon-pink/20${
+              highlightGoToSettings ? " flow-next" : ""
+            }`}
           >
             学習設定へ進む
           </button>
@@ -1115,6 +1126,7 @@ export function SmartCropPanel({
   onSmartCrop,
   smartCropBusy,
   smartCropProgress,
+  highlightRun,
 }: {
   images: DatasetImage[];
   disabled: boolean;
@@ -1127,6 +1139,8 @@ export function SmartCropPanel({
   onSmartCrop: (ids: string[], kinds: SmartCropKind[]) => void;
   smartCropBusy?: boolean;
   smartCropProgress?: { done: number; total: number } | null;
+  /** 導線として実行ボタンを光らせるか（枠ではなく押すボタン）。 */
+  highlightRun?: boolean;
 }) {
   const selected = selectedIds;
   const setCropKinds = (v: Set<SmartCropKind> | ((p: Set<SmartCropKind>) => Set<SmartCropKind>)) =>
@@ -1229,7 +1243,9 @@ export function SmartCropPanel({
         onClick={() => onSmartCrop(cropTargetIds, [...cropKinds])}
         disabled={smartCropBusy || cropTargetIds.length === 0}
         title="骨格・顔の座標を見て、選んだ構図に切り出してデータセットに追加します。"
-        className="inline-flex items-center gap-1.5 rounded-lg border border-neon-violet/40 bg-neon-violet/5 px-2.5 py-1 text-[11px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/10 disabled:cursor-not-allowed disabled:opacity-50"
+        className={`inline-flex items-center gap-1.5 rounded-lg border border-neon-violet/40 bg-neon-violet/5 px-2.5 py-1 text-[11px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/10 disabled:cursor-not-allowed disabled:opacity-50${
+          highlightRun ? " flow-next" : ""
+        }`}
       >
         {smartCropBusy ? <Loader2 size={12} className="animate-spin" /> : <Scissors size={12} />}
         ✂️ {[...cropKinds].map((k) => SMART_CROP_KIND_LABEL[k]).join("・")} を{" "}

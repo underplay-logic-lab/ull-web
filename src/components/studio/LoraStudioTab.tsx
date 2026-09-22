@@ -3981,7 +3981,7 @@ export function LoraStudioTab({
 
           {/* 診断の下にクロップ欄を置く（2026-09-22、ホスト指摘）。
               何が足りないかを見てから切り出す、という順番にする。 */}
-          <div className={`rounded-xl${flowRing("crop")}`}>
+          <div>
           <SmartCropPanel
             images={images}
             disabled={busy}
@@ -3993,6 +3993,7 @@ export function LoraStudioTab({
             smartCropBusy={smartCropBusy}
             smartCropProgress={smartCropProgress}
             onSmartCrop={(ids, kinds) => void runSmartCropForDataset(ids, kinds)}
+            highlightRun={flow.targets.includes("crop")}
           />
           </div>
           {flowHint("crop")}
@@ -4001,7 +4002,7 @@ export function LoraStudioTab({
               取り込み → クロップ → 診断 を見てから比率を決める操作なので、
               順番として最後でないと「これで終わりなのか」が分からなくなる。 */}
           {images.length > 0 && (
-            <div className={`rounded-xl${flowRing("repeats")}`}>
+            <div>
             <RepeatWeightPanel
               images={images}
               disabled={busy}
@@ -4015,10 +4016,11 @@ export function LoraStudioTab({
                   .getElementById(LORA_SETTINGS_ANCHOR_ID)
                   ?.scrollIntoView({ behavior: "smooth", block: "start" })
               }
+              highlightSuggest={flow.targets.includes("suggestRepeats")}
             />
             </div>
           )}
-          {flowHint("repeats")}
+          {flowHint("suggestRepeats")}
 
           {zipBusy && (
             <p className="flex items-center gap-1.5 text-[11px] text-neon-violet">

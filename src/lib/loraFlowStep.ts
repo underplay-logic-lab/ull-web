@@ -28,7 +28,8 @@ export type LoraFlowTarget =
   | "recaption"
   | "cropPrepare"
   | "crop"
-  | "repeats"
+  | "suggestRepeats"
+  | "goToSettings"
   | "submit";
 
 export type LoraFlowState = {
@@ -164,8 +165,11 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
   // 赤があってもクロップで埋まらない軸（向き・姿勢・背景）はここへ落ちるので、
   // なぜクロップが光らないのかを文言で補う。
   // ここへ来る時点で確認は済んでいる（上で返しているため）。
+  // 飛び先は実行ボタン。メタデータの確認を解析前へ移したので、設定欄に用が
+  // ある人だけが「学習設定へ進む」を使えばよく、導線としては実行へ送る
+  // （2026-09-22、ホスト指摘）。
   const next: LoraFlowTarget = "submit";
-  const nextLabel = "このまま学習へ進む";
+  const nextLabel = "次へ進む";
 
   if (v.diagnosticErrors > 0 && v.cropAvailable) {
     // 切り出しは「準備をする → 切り出す」の2手（2026-09-22、ホスト指摘）。
@@ -178,11 +182,13 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
           hint: `足りない構図を切り出す準備をする ／ ${nextLabel}`,
         };
   }
+  // 「構図の偏りを均す回数を自動で入れる」を名指しで光らせる。パネル全体だと
+  // この操作を見逃す（2026-09-22、ホスト指摘）。
   return {
-    targets: ["repeats", next],
+    targets: ["suggestRepeats", next],
     hint:
       (v.diagnosticErrors > 0
-        ? "診断の指摘は切り出しでは埋まりません。学習回数で調整する"
-        : "学習回数を調整する") + ` ／ ${nextLabel}`,
+        ? "診断の指摘は切り出しでは埋まりません。構図の偏りを学習回数で均す"
+        : "構図の偏りを学習回数で均す") + ` ／ ${nextLabel}`,
   };
 }
