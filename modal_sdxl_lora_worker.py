@@ -1724,15 +1724,25 @@ def train_sdxl_lora_job(params: dict) -> dict:
         # per-job archive inherit the same rewritten metadata. A parse failure
         # here must never sink an otherwise-successful training run — the
         # checkpoint still ships with sd-scripts' own native metadata intact.
+        # ⚠️ final だけでなく中間チェックポイント全部に掛ける。250刻みの中間を
+        # 見比べて採用するのが普通の運用なのに final にしか入っておらず、ホストが
+        # ファイルを開いて気付いた（2026-09-22）。
         embedded_tag_keys: list[str] = []
         embed_tags_raw = str(params.get("embed_tags") or "").strip()
         if embed_tags_raw:
             try:
                 embed_tags = _parse_embed_tags(embed_tags_raw)
-                embedded_tag_keys = _embed_metadata_tags(str(final_ckpt), embed_tags)
-                print(f"[sdxl] embedded metadata tags {list(embed_tags)} -> keys {embedded_tag_keys}", flush=True)
+                for ckpt in produced:
+                    embedded_tag_keys = _embed_metadata_tags(str(ckpt), embed_tags)
+                print(
+                    f"[sdxl] embedded metadata tags {list(embed_tags)} -> keys {embedded_tag_keys} "
+                    f"into {len(produced)} checkpoint(s)",
+                    flush=True,
+                )
             except TagParseError as exc:
                 print(f"[sdxl] embed_tags parse failed ({exc!r}) — skipping metadata embed", flush=True)
+            except Exception as exc:  # noqa: BLE001 — 学習は成功しているので落とさない
+                print(f"[sdxl] metadata embed skipped: {exc!r}", flush=True)
 
         # ベースモデルのライセンスが派生モデル（= この LoRA）にも及ぶ場合は、
         # ファイル自体にそれが残るよう metadata へ焼き込む（_PRESET_LICENSE の
@@ -1743,10 +1753,15 @@ def train_sdxl_lora_job(params: dict) -> dict:
         license_keys: list[str] = []
         if license_info:
             try:
-                license_keys = _stamp_license_metadata(
-                    str(final_ckpt), license_info, license_info["base_label"]
+                for ckpt in produced:
+                    license_keys = _stamp_license_metadata(
+                        str(ckpt), license_info, license_info["base_label"]
+                    )
+                print(
+                    f"[sdxl] stamped license metadata: {license_info['name']} "
+                    f"into {len(produced)} checkpoint(s)",
+                    flush=True,
                 )
-                print(f"[sdxl] stamped license metadata: {license_info['name']}", flush=True)
             except Exception as exc:  # noqa: BLE001
                 print(f"[sdxl] license stamp skipped: {exc!r}", flush=True)
 

@@ -284,6 +284,24 @@ GPU tier が検討できる。ただし CLAUDE.md §1 のとおり **1回あた�
    Volume でもリージョンでもない。実測と選択肢は `docs/gpu-benchmarks.md` §16。
    **対策はホスト判断待ち**（R2 へ配信を逃がすのが本命だが新規依存）。
 
+### 【完了 2026-09-22】メタデータ埋め込みが final にしか掛かっていなかった
+
+ホストが LoRA ファイルを開いて発見。`_embed_metadata_tags`（ss_trained_words 等）と
+`_stamp_license_metadata` を `final_ckpt` にだけ掛けていた。250刻みの中間を見比べて
+採用するのが普通の運用なので、中間にも入っていないと困る。`produced`（sd-scripts が
+出した全 .safetensors）をループするよう修正・デプロイ済み。
+
+完走済み job `c3d2cfc6` の中間13本は、**ヘッダだけを書き換える**使い捨てスクリプトで
+後付け済み（safetensors は先頭 JSON ヘッダにメタデータを持ち、テンソル本体は
+ヘッダ直後からの相対オフセットなので、ヘッダ差し替え＋本体コピーで `save_file` と
+同じ結果になる。ワーカーの純粋関数 `_clean_tag_frequency` 等をそのまま使用）。
+13本とも検証 OK、サイズも final と同一の 228,480,492 バイトに揃った。
+`metadata.checkpoints[].size_bytes` も更新済み。
+
+⚠️ torch 入り image を新規ビルドする案は Modal 側で2回続けて
+「Image build terminated due to external shut-down」で落ちた（torch CPU wheel 196MB の
+取得中）。メタデータだけ触るなら torch は要らないので、今後もヘッダ書き換えで済ませる。
+
 ### 実測: SDXL ワーカーのコールドスタート内訳（2026-09-22）
 
 経過時間ログ（`_mk_logger`）を入れて初めて測れた。**コンテナに入ってからは
