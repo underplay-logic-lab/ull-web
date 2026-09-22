@@ -103,6 +103,9 @@ export const CROP_REVIEW_PANEL_ID = "lora-crop-review-panel";
 /** データセット構成の診断パネル。解析が終わったらここへ送る。 */
 export const DIAGNOSTICS_PANEL_ID = "lora-diagnostics-panel";
 
+/** メタデータ確認パネル。特徴の抽出が終わったらここへ送る。 */
+export const METADATA_PANEL_ID = "lora-metadata-panel";
+
 
 /** 被写体の「特徴」欄の説明を一度読んだか（2回目以降は出さない）。 */
 export const SUBJECT_HINT_SEEN_KEY = "ull.lora.subjectHintSeen";

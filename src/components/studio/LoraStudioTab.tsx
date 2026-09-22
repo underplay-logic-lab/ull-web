@@ -131,6 +131,7 @@ import {
   SMART_CROP_PANEL_ID,
   CROP_REVIEW_PANEL_ID,
   DIAGNOSTICS_PANEL_ID,
+  METADATA_PANEL_ID,
   LORA_SETTINGS_ANCHOR_ID,
   SUBJECT_HINT_SEEN_KEY,
   RepeatWeightPanel,
@@ -2378,6 +2379,33 @@ export function LoraStudioTab({
   );
   const pendingCaptionCount = incompleteImages.length;
 
+  // 抽出が終わったらメタデータの確認へ送る（2026-09-22、ホスト提案）。
+  // ここで確定させてからキャプションを作るので、作り直しが起きない。
+  const scrolledToMetaRef = useRef(false);
+  const prevIdentityRunningRef = useRef(false);
+  useEffect(() => {
+    const running = identityExtracting !== null;
+    const finished = prevIdentityRunningRef.current && !running;
+    prevIdentityRunningRef.current = running;
+    if (!finished || scrolledToMetaRef.current || !needsIdentityConfirm) return;
+    scrolledToMetaRef.current = true;
+    setEmbedTagsOpen(true);
+    document
+      .getElementById(METADATA_PANEL_ID)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [identityExtracting, needsIdentityConfirm]);
+
+  // 確認が済んだら診断へ送る（キャプション解析はここから始まる）。
+  const scrolledAfterConfirmRef = useRef(false);
+  useEffect(() => {
+    if (!analysisStarted || needsIdentityConfirm || scrolledAfterConfirmRef.current) return;
+    if (!scrolledToMetaRef.current) return; // 確認欄を経由していないなら送らない
+    scrolledAfterConfirmRef.current = true;
+    document
+      .getElementById(DIAGNOSTICS_PANEL_ID)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [analysisStarted, needsIdentityConfirm]);
+
   // 解析が終わった瞬間に診断へ送る（2026-09-22、ホスト指摘「取り込み終わった
   // 後に何をすればいいか分からない」）。1データセットにつき1回だけ。
   const scrolledToDiagRef = useRef(false);
@@ -2418,6 +2446,7 @@ export function LoraStudioTab({
         imageCount: images.length,
         analysisStarted,
         needsIdentityConfirm,
+        identityRunning: identityExtracting !== null,
         captionRunning: autoCap.running,
         pendingCaptionCount,
         diagnosticErrors: flowDiag.issues.filter((x) => x.level === "error").length,
@@ -2437,6 +2466,7 @@ export function LoraStudioTab({
       images.length,
       analysisStarted,
       needsIdentityConfirm,
+      identityExtracting,
       autoCap.running,
       pendingCaptionCount,
       flowDiag,
@@ -2656,6 +2686,10 @@ export function LoraStudioTab({
     if (!user || phase !== "form" || autoCap.running) return;
     // 取り込みの途中で走らせない（上の抽出と同じ理由）。
     if (!analysisStarted) return;
+    // ⚠️ メタデータの確認が済むまで待つ（2026-09-22、ホスト提案）。特徴は
+    // 「キャプションに書いてはいけない言葉」のリストなので、確認時に直されると
+    // 解析済みのキャプションが全部作り直しになる。確定してから作れば起きない。
+    if (needsIdentityConfirm) return;
     // ⚠️ **特徴の抽出が終わるまでキャプションを始めない**（2026-09-22）。
     // 抽出結果は「キャプションに書いてはいけない言葉」のリストとして使う。
     // 以前は解析の待ちが 500ms、抽出が 4秒で**解析のほうが先に始まっており**、
@@ -2695,7 +2729,7 @@ export function LoraStudioTab({
     // curationTrigger / currentCaptionPrompt / runVisionCaptions は毎レンダー
     // 作り直されるので依存に入れない（入れると取り込みのたびに解析が再起動する）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analysisStarted, images, captions, userCaptionIds, user, phase, autoCap.running, identityExtracting, allSubjects]);
+  }, [analysisStarted, needsIdentityConfirm, images, captions, userCaptionIds, user, phase, autoCap.running, identityExtracting, allSubjects]);
 
   // Re-run the vision pass over every AI-captioned image with the current
   // trigger word + synthesised instruction (the "🔄 AI再解析" button, and
@@ -4340,7 +4374,10 @@ export function LoraStudioTab({
               「画像から抽出」が主経路なので、素材が無い状態で見せても
               できることが無い。 */}
           {!yamlMode && isSdxlJob && images.length > 0 && (
-            <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5">
+            <div
+              id={METADATA_PANEL_ID}
+              className="scroll-mt-24 rounded-xl border border-neon-violet/30 bg-neon-violet/5"
+            >
               <button
                 type="button"
                 onClick={() => setEmbedTagsOpen((v) => !v)}

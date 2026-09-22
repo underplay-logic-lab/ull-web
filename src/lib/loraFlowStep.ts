@@ -65,6 +65,8 @@ export type LoraFlowInput = {
   analysisStarted: boolean;
   /** metadata の目視確認が必要なのに未確認。 */
   needsIdentityConfirm: boolean;
+  /** 特徴の抽出が走っている最中。 */
+  identityRunning: boolean;
   /** キャプション解析が走っている最中。 */
   captionRunning: boolean;
   /** キャプションがまだ付いていない枚数。 */
@@ -125,6 +127,18 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
       hint: "画像を全部入れ終えたら押してください（ここから解析が始まります）",
     };
   }
+  // 抽出中は待つだけ。何も光らせない。
+  if (v.identityRunning) return { targets: [], hint: "" };
+  // ⚠️ メタデータの確認は**キャプション解析より前**（2026-09-22、ホスト提案）。
+  // 特徴は「キャプションに書いてはいけない言葉」のリストなので、確認時に直すと
+  // 解析済みのキャプションは全部作り直しになる。解析前に確定させれば、その
+  // 作り直しが構造的に起きない。キャプション解析側もこの確認を待つ。
+  if (v.needsIdentityConfirm) {
+    return {
+      targets: ["identityConfirm"],
+      hint: "抽出した特徴を確認してください。ここを確定させてからキャプションを作ります",
+    };
+  }
   // 解析中は「終わったら診断を見る」とだけ伝える。ボタンは光らせない
   // （待つしかない場面で押せるものを点滅させると急かすだけ）。
   if (v.captionRunning) {
@@ -146,10 +160,9 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
   //
   // 赤があってもクロップで埋まらない軸（向き・姿勢・背景）はここへ落ちるので、
   // なぜクロップが光らないのかを文言で補う。
-  const next: LoraFlowTarget = v.needsIdentityConfirm ? "identityConfirm" : "submit";
-  const nextLabel = v.needsIdentityConfirm
-    ? "設定欄で埋め込むタグを確認する"
-    : "このまま学習へ進む";
+  // ここへ来る時点で確認は済んでいる（上で返しているため）。
+  const next: LoraFlowTarget = "submit";
+  const nextLabel = "このまま学習へ進む";
 
   if (v.diagnosticErrors > 0 && v.cropAvailable) {
     return {
