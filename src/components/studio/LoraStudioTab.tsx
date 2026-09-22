@@ -4448,15 +4448,21 @@ export function LoraStudioTab({
                       <label
                         className={`mt-2 flex cursor-pointer items-start gap-1.5 rounded-lg p-1 text-[10px] leading-relaxed text-foreground${flowRing("identityConfirm")}`}
                       >
+                        {/* 抽出が終わる前に確認させない（2026-09-22、ホスト報告
+                            「何もしていないのに作り直しの警告が出る」）。先に
+                            チェックするとキャプション解析が特徴の空な状態で
+                            始まり、直後に抽出が入って必ず食い違う。 */}
                         <input
                           type="checkbox"
                           checked={identityConfirmed}
                           onChange={(e) => setIdentityConfirmed(e.target.checked)}
-                          disabled={busy}
+                          disabled={busy || identityExtracting !== null}
                           className="mt-0.5 accent-neon-violet"
                         />
                         <span>
-                          この内容で書き込むことを確認しました
+                          {identityExtracting !== null
+                            ? "特徴を抽出しています… 終わるまでお待ちください"
+                            : "この内容で書き込むことを確認しました"}
                           {!identityConfirmed && (
                             <span className="ml-1 text-amber-400">（チェックするまで学習を開始できません）</span>
                           )}
