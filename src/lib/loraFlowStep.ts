@@ -22,6 +22,7 @@ export type LoraFlowTarget =
   | "addSubject"
   | "captionSpec"
   | "dropzone"
+  | "diagnostics"
   | "identityConfirm"
   | "recaption"
   | "crop"
@@ -112,8 +113,14 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
       hint: "もう1人登録する / 画像を取り込む / キャプションの方針を変える — どれでも進めます",
     };
   }
-  // 解析中は何も光らせない。待つしかない場面で点滅させると急かすだけ。
-  if (v.captionRunning) return { targets: [], hint: "" };
+  // 解析中は「終わったら診断を見る」とだけ伝える。ボタンは光らせない
+  // （待つしかない場面で押せるものを点滅させると急かすだけ）。
+  if (v.captionRunning) {
+    return {
+      targets: ["diagnostics"],
+      hint: "画像を解析しています。終わると、この下の診断に何が足りないかが出ます",
+    };
+  }
   if (v.pendingCaptionCount > 0) {
     return { targets: ["recaption"], hint: "解析できなかった画像を解析し直します" };
   }

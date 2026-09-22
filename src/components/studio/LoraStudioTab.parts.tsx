@@ -100,6 +100,9 @@ export const LORA_SETTINGS_ANCHOR_ID = "lora-settings-anchor";
 /** 切り出し結果の点検パネルの DOM id（クロップ実行後にここへ戻す）。 */
 export const CROP_REVIEW_PANEL_ID = "lora-crop-review-panel";
 
+/** データセット構成の診断パネル。解析が終わったらここへ送る。 */
+export const DIAGNOSTICS_PANEL_ID = "lora-diagnostics-panel";
+
 
 /** 被写体の「特徴」欄の説明を一度読んだか（2回目以降は出さない）。 */
 export const SUBJECT_HINT_SEEN_KEY = "ull.lora.subjectHintSeen";

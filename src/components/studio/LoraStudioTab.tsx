@@ -102,6 +102,11 @@ const SMART_CROP_MAX_UPSCALE = 1.35;
 // 未校正。ここを上げすぎると顔アップが足りない被写体ほど作れなくなる
 // （まさにそれで 1024 固定＋拡大率1.35 が破綻した）。
 const SMART_CROP_MIN_SHORT_EDGE = 384;
+// 画像の取り込みが落ち着いてから特徴を抽出するまでの待ち時間（2026-09-22）。
+// フォルダを何回かに分けてドロップする使い方が普通なので、最初のドロップだけで
+// 走らせると偏ったサンプルを見ることになる。images.length が変わるたびに
+// タイマーが張り直されるので、連続ドロップ中は発火しない。
+const IDENTITY_EXTRACT_DEBOUNCE_MS = 4000;
 // 切り出し元が元画像のこの割合以上を占めるなら、中身がほぼ同じで情報が
 // 増えないので捨てる（全身写真から全身を切り出すケース）。
 const SMART_CROP_REDUNDANT_COVERAGE = 0.85;
@@ -123,6 +128,7 @@ import {
   MAX_LONG_EDGE,
   SMART_CROP_PANEL_ID,
   CROP_REVIEW_PANEL_ID,
+  DIAGNOSTICS_PANEL_ID,
   LORA_SETTINGS_ANCHOR_ID,
   SUBJECT_HINT_SEEN_KEY,
   RepeatWeightPanel,
@@ -1376,6 +1382,15 @@ export function LoraStudioTab({
   );
   useEffect(() => {
     if (images.length === 0) return;
+    // 取り込みが止まるまで待つ（2026-09-22、ホスト指摘「フォルダごとに
+    // ドロップしていると、1フォルダ目だけで抽出が走ってしまう」）。抽出は
+    // 全体から等間隔で6枚サンプリングするので、母集団が揃う前に走らせると
+    // 偏った6枚を見ることになる。
+    //
+    // ⚠️ 「自動解析（キャプション）が終わってから」にはできない。抽出結果は
+    // キャプションのブラックリストとして使われるので、順序が逆になると
+    // キャプションを全部作り直す羽目になる。あくまで取り込みの落ち着きを待つ。
+    const timer = setTimeout(() => {
     const jobs = [
       {
         index: -1,
@@ -1401,6 +1416,8 @@ export function LoraStudioTab({
       autoExtractedRef.current.add(key);
       void extractIdentityFor(j.index, j.trigger, j.hint, j.fixedTags);
     }
+    }, IDENTITY_EXTRACT_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
     // extractIdentityFor は毎レンダー作り直されるので依存から外す（キーで
     // 二重実行を防いでいる）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1418,6 +1435,20 @@ export function LoraStudioTab({
       return false; // プライベートウィンドウ等。出し続けても害は無い
     }
   });
+
+  // 解析が終わった瞬間に診断へ送る（2026-09-22、ホスト指摘「取り込み終わった
+  // 後に何をすればいいか分からない」）。1データセットにつき1回だけ。
+  const scrolledToDiagRef = useRef(false);
+  const prevCapRunningRef = useRef(false);
+  useEffect(() => {
+    const finished = prevCapRunningRef.current && !autoCap.running;
+    prevCapRunningRef.current = autoCap.running;
+    if (!finished || scrolledToDiagRef.current || images.length === 0) return;
+    scrolledToDiagRef.current = true;
+    document
+      .getElementById(DIAGNOSTICS_PANEL_ID)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [autoCap.running, images.length]);
 
   const multiSubjectCropIds = useMemo(
     () => new Set(multiSubjectCrops.map((i) => i.id)),
@@ -2400,6 +2431,15 @@ export function LoraStudioTab({
     ],
   );
   const flowRing = (t: LoraFlowTarget) => (flow.targets.includes(t) ? " flow-next" : "");
+  // 被写体ごとの欄は「未入力の最初の1人」だけ光らせる（2026-09-22、ホスト指摘
+  // 「2人目を追加すると1人目の欄も光る」）。allSubjects の 0 番が1人目。
+  const genderMissingIdx = allSubjects.findIndex((x) => !(x.fixedTags ?? "").trim());
+  const descMissingIdx = allSubjects.findIndex((x) => !(x.description ?? "").trim());
+  const flowRingAt = (t: "genderTag" | "description", idx: number) => {
+    if (!flow.targets.includes(t)) return "";
+    const want = t === "genderTag" ? genderMissingIdx : descMissingIdx;
+    return want === idx ? " flow-next" : "";
+  };
   const flowHint = (t: LoraFlowTarget) =>
     flow.targets.includes(t) ? (
       <p className="mt-1 text-[10px] font-medium text-neon-pink">→ {flow.hint}</p>
@@ -3569,91 +3609,9 @@ export function LoraStudioTab({
           </div>
           {flowHint("dropzone")}
 
-          {/* 短辺が足りない画像の警告と、超解像タブへの導線（2026-09-21）。
-              ワーカーは bucket_no_upscale なので小さい画像は引き伸ばされず、
-              そのまま小さく学習される＝甘い LoRA になる。ホスト方針:
-              「小さいときは当サイトの超解像で大きくしてから再投入」。 */}
-          {/* 切り出した画像は人手で点検しないと使えない（2026-09-22）。
-              判断基準と**切り出した画像だけのグリッド**をクロップ欄の直下に
-              置く。上のサムネイル一覧まで戻って探させない（ホスト指摘）。 */}
-          {croppedImages.length > 0 && (
-            <div
-              id={CROP_REVIEW_PANEL_ID}
-              className="space-y-2 scroll-mt-24 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2"
-            >
-              <p className="text-[11px] font-medium text-neon-violet">
-                切り出した {croppedImages.length} 枚を確認してください
-              </p>
-              <ul className="space-y-0.5 text-[10px] leading-relaxed text-muted">
-                <li>
-                  ・
-                  <strong className="text-foreground">
-                    顔（目・鼻・口）がフレームから欠けている画像は削除してください。
-                  </strong>
-                  顔が欠けた絵を学習させると、その構図での再現性が落ちます。頭頂部が少し切れている程度は問題ありません。
-                </li>
-                <li>・体が胸や腰で切れているのは問題ありません。それが上半身クロップの目的です。</li>
-                <li>
-                  ・
-                  <strong className="text-foreground">
-                    別の被写体が顔なしで大きく写り込んでいる画像も削除してください。
-                  </strong>
-                  顔が無いとその被写体の学習には使えず、かといって主役の特徴として吸収されてしまいます。
-                </li>
-                <li>・端にわずかに他の被写体が入る程度（細い帯）は無視して構いません。</li>
-              </ul>
-              {multiSubjectCrops.length > 0 && (
-                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
-                  <p className="text-[10px] leading-relaxed text-amber-400">
-                    このうち <strong>{multiSubjectCrops.length} 枚</strong>{" "}
-                    は、切り出したあとも2人以上写っていると判定されました。
-                    <strong>上のサムネイル一覧で琥珀色の枠が付いているものがそれです。</strong>
-                    <br />
-                    <strong>両方の顔がはっきり写っているなら残してください</strong>
-                    ——2人が同じ絵にいる構図は貴重な素材です。
-                    <strong>腕や服の端だけが残っているものは削除してください</strong>
-                    ——その人物の学習には使えないうえ、主役の特徴として吸収されてしまいます。
-                  </p>
-                </div>
-              )}
-              {/* 専用グリッドは廃止（2026-09-22、ホスト指摘）。切り出した画像は
-                  上のサムネイル一覧の末尾に入るので、そちらで確認する。被写体が
-                  2人以上いると、ここに一覧があると2人目のために上へ戻る往復が
-                  増えるため。 */}
-            </div>
-          )}
-
-          {tooSmallImages.length > 0 && (
-            <div className="space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
-              <p className="text-[11px] leading-relaxed text-amber-400">
-                <strong>{tooSmallImages.length} 枚</strong> は短辺が {MIN_SHORT_EDGE_ERROR}px
-                 未満です。このまま学習すると、その画像だけ解像度が足りないまま学習され、仕上がりが甘くなります
-                （引き伸ばしはしません。ぼけた絵を学習するほうが害が大きいため）。
-              </p>
-              {onOpenUpscale && (
-                <button
-                  type="button"
-                  onClick={onOpenUpscale}
-                  className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-400 transition-colors hover:bg-amber-500/20"
-                >
-                  <Wand2 size={11} />
-                  ✨ 超解像で拡大してから入れ直す
-                </button>
-              )}
-              <p className="text-[10px] leading-relaxed text-muted">
-                該当:{" "}
-                {tooSmallImages
-                  .slice(0, 5)
-                  .map((i) => i.file.name)
-                  .join(", ")}
-                {tooSmallImages.length > 5 ? " ほか" : ""}
-              </p>
-            </div>
-          )}
-
-
-          {/* キャプションの状態は画像一覧の直下に出す（2026-09-22、ホスト
-              指摘）。設定側にあると、どの画像の話なのかが結び付かない。 */}
+          {/* キャプションの状態は取り込み欄の真下に出す（2026-09-22、ホスト
+              指摘）。取り込んだ直後に「いま解析している」「終わったら診断を
+              見る」が見えていないと、何をすればいいか分からない。 */}
           {/* Resume: re-analyze every image that has no caption yet (never
               started, timed out, or errored). Always visible while any remain. */}
           {!autoCap.running && images.length > 0 && pendingCaptionCount > 0 && (
@@ -3805,11 +3763,95 @@ export function LoraStudioTab({
             </p>
           )}
 
+          {/* 短辺が足りない画像の警告と、超解像タブへの導線（2026-09-21）。
+              ワーカーは bucket_no_upscale なので小さい画像は引き伸ばされず、
+              そのまま小さく学習される＝甘い LoRA になる。ホスト方針:
+              「小さいときは当サイトの超解像で大きくしてから再投入」。 */}
+          {/* 切り出した画像は人手で点検しないと使えない（2026-09-22）。
+              判断基準と**切り出した画像だけのグリッド**をクロップ欄の直下に
+              置く。上のサムネイル一覧まで戻って探させない（ホスト指摘）。 */}
+          {croppedImages.length > 0 && (
+            <div
+              id={CROP_REVIEW_PANEL_ID}
+              className="space-y-2 scroll-mt-24 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2"
+            >
+              <p className="text-[11px] font-medium text-neon-violet">
+                切り出した {croppedImages.length} 枚を確認してください
+              </p>
+              <ul className="space-y-0.5 text-[10px] leading-relaxed text-muted">
+                <li>
+                  ・
+                  <strong className="text-foreground">
+                    顔（目・鼻・口）がフレームから欠けている画像は削除してください。
+                  </strong>
+                  顔が欠けた絵を学習させると、その構図での再現性が落ちます。頭頂部が少し切れている程度は問題ありません。
+                </li>
+                <li>・体が胸や腰で切れているのは問題ありません。それが上半身クロップの目的です。</li>
+                <li>
+                  ・
+                  <strong className="text-foreground">
+                    別の被写体が顔なしで大きく写り込んでいる画像も削除してください。
+                  </strong>
+                  顔が無いとその被写体の学習には使えず、かといって主役の特徴として吸収されてしまいます。
+                </li>
+                <li>・端にわずかに他の被写体が入る程度（細い帯）は無視して構いません。</li>
+              </ul>
+              {multiSubjectCrops.length > 0 && (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
+                  <p className="text-[10px] leading-relaxed text-amber-400">
+                    このうち <strong>{multiSubjectCrops.length} 枚</strong>{" "}
+                    は、切り出したあとも2人以上写っていると判定されました。
+                    <strong>上のサムネイル一覧で琥珀色の枠が付いているものがそれです。</strong>
+                    <br />
+                    <strong>両方の顔がはっきり写っているなら残してください</strong>
+                    ——2人が同じ絵にいる構図は貴重な素材です。
+                    <strong>腕や服の端だけが残っているものは削除してください</strong>
+                    ——その人物の学習には使えないうえ、主役の特徴として吸収されてしまいます。
+                  </p>
+                </div>
+              )}
+              {/* 専用グリッドは廃止（2026-09-22、ホスト指摘）。切り出した画像は
+                  上のサムネイル一覧の末尾に入るので、そちらで確認する。被写体が
+                  2人以上いると、ここに一覧があると2人目のために上へ戻る往復が
+                  増えるため。 */}
+            </div>
+          )}
+
+          {tooSmallImages.length > 0 && (
+            <div className="space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+              <p className="text-[11px] leading-relaxed text-amber-400">
+                <strong>{tooSmallImages.length} 枚</strong> は短辺が {MIN_SHORT_EDGE_ERROR}px
+                 未満です。このまま学習すると、その画像だけ解像度が足りないまま学習され、仕上がりが甘くなります
+                （引き伸ばしはしません。ぼけた絵を学習するほうが害が大きいため）。
+              </p>
+              {onOpenUpscale && (
+                <button
+                  type="button"
+                  onClick={onOpenUpscale}
+                  className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-400 transition-colors hover:bg-amber-500/20"
+                >
+                  <Wand2 size={11} />
+                  ✨ 超解像で拡大してから入れ直す
+                </button>
+              )}
+              <p className="text-[10px] leading-relaxed text-muted">
+                該当:{" "}
+                {tooSmallImages
+                  .slice(0, 5)
+                  .map((i) => i.file.name)
+                  .join(", ")}
+                {tooSmallImages.length > 5 ? " ほか" : ""}
+              </p>
+            </div>
+          )}
+
+
           {/* データセット構成の自動診断（2026-09-21）。キャプションが1枚でも
               揃った時点から出す。「この構成だと誰がどう弱くなるか」を焼く前に
               知らせるのが目的で、オートモードでのクレーム防止が本題。
               src/lib/datasetDiagnostics.ts のヘッダに動機と実データの検証あり。 */}
           {diagnosticItems.length > 0 && (
+            <div id={DIAGNOSTICS_PANEL_ID} className={`scroll-mt-24 rounded-xl${flowRing("diagnostics")}`}>
             <DatasetDiagnosticsPanel
               // 未解析が残っていないなら「解析中」と出す意味が無い（旗が
               // 立ちっぱなしでも診断が固まらないようにする二重の保険）。
@@ -3823,6 +3865,7 @@ export function LoraStudioTab({
               onOpenMultiAngle={onOpenMultiAngle}
               onPrepareCrop={prepareCropForSubject}
             />
+            </div>
           )}
 
           {/* 診断の下にクロップ欄を置く（2026-09-22、ホスト指摘）。
@@ -4000,7 +4043,7 @@ export function LoraStudioTab({
                     {triggerInput}
                     {!yamlMode && isSdxlJob && (
                       <>
-                        <div className={`rounded-xl${flowRing("genderTag")}`}>
+                        <div className={`rounded-xl${flowRingAt("genderTag", 0)}`}>
                           <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
                         </div>
                         {triggerHint}
@@ -4009,7 +4052,7 @@ export function LoraStudioTab({
                           onChange={(e) => setPrimaryDescription(e.target.value)}
                           placeholder="どんな人物か（例: 太った禿頭の男性）"
                           disabled={busy}
-                          className={`${fieldCls} mt-1.5 text-[11px]${flowRing("description")}`}
+                          className={`${fieldCls} mt-1.5 text-[11px]${flowRingAt("description", 0)}`}
                         />
                         <p className="mt-0.5 text-[10px] leading-relaxed text-muted">
                           下の特徴を画像から自動抽出するときの精度を上げるためのメモです。
@@ -4054,7 +4097,7 @@ export function LoraStudioTab({
                     onChange={(e) => setPrimaryDescription(e.target.value)}
                     placeholder="1人目を見分ける手がかり（例: 太った禿頭の男性）"
                     disabled={busy}
-                    className={`${fieldCls} mt-1.5 text-[11px]${flowRing("description")}`}
+                    className={`${fieldCls} mt-1.5 text-[11px]${flowRingAt("description", 0)}`}
                   />
                   <p className="mt-0.5 text-[10px] leading-relaxed text-muted">AI がどちらの人物かを判定するためのメモです。<strong className="text-foreground">学習内容には影響しません</strong>（学習させる特徴は下で決めます）。</p>
                   {/* 「画像から抽出」が主経路なので、画像が入るまで出さない（2026-09-21）。 */}
@@ -4127,7 +4170,7 @@ export function LoraStudioTab({
                     }}
                     className={`${fieldCls} font-mono`}
                   />
-                  <div className={`rounded-xl${flowRing("genderTag")}`}>
+                  <div className={`rounded-xl${flowRingAt("genderTag", i + 1)}`}>
                   <GenderTagPicker
                     value={s.fixedTags ?? ""}
                     onChange={(next) =>
@@ -4145,7 +4188,7 @@ export function LoraStudioTab({
                     }
                     placeholder={`${i + 2}人目を見分ける手がかり（例: 銀髪ロングの女性）`}
                     disabled={busy}
-                    className={`${fieldCls} mt-1.5 text-[11px]${flowRing("description")}`}
+                    className={`${fieldCls} mt-1.5 text-[11px]${flowRingAt("description", i + 1)}`}
                   />
                   <p className="mt-0.5 text-[10px] leading-relaxed text-muted">AI がどちらの人物かを判定するためのメモです。<strong className="text-foreground">学習内容には影響しません</strong>（学習させる特徴は下で決めます）。</p>
                   {/* 「画像から抽出」が主経路なので、画像が入るまで出さない（2026-09-21）。 */}
