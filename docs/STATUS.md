@@ -312,8 +312,12 @@ GPU tier が検討できる。ただし CLAUDE.md §1 のとおり **1回あた�
 - **静止画超解像を RTX PRO 6000 既定へ**（`80db087`、3 tier 実測は gpu-benchmarks §1）。短辺 3840 超は B300。
 - **LoRA の最低 step を 200→50**（UI `STEPS_MIN` と API クランプ）。s/it・VRAM を測る確認ランを UI から
   投げるため。
-- **LoRA の arch 別 GPU tier**（`512b743`）: dispatch で `with_options(gpu=…)`。既定は空（全 B300/B200）。
-  単価 knob は B300 前提なので、安い tier へ寄せる arch には arch 別単価が要る（未対応）。
+- **LoRA の価格式を arch 別プロファイルに**（`4a16778`〜`8392d20`）: ai-toolkit 5 arch（wan22_14b / ltx2 /
+  krea2 / flux2_klein_4b / zimage / anima）を GUI から 50step ずつ実測し、`LORA_ARCH_PROFILE`
+  （prep 固定費・枚数あたり秒・GPU tier）と `LORA_SPI_BASELINE` を実測に合わせた。credits/GPU秒は
+  B300 knob × tier 時給比、実行 tier は payload `gpu_tier` で worker へ（デプロイ済み）。
+  まとめは gpu-benchmarks §14.22。**次: 安い tier（H200 / RTX PRO 6000）で各 50step を1本ずつ測って
+  から `gpu` を切り替える**（ホスト承認待ち）。
 - **動画超解像のダウンロードをネイティブ保存に**（`ab23ce6`）。fetch→blob で無反応に見えていた。
 - **LoRA「フォームを初期化」が押せない詰み**（`d0b1693`）: 送信成功後に submitting が残っていた。
 
