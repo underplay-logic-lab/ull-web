@@ -89,6 +89,20 @@ SD_SCRIPTS_REF = os.environ.get("SD_SCRIPTS_REF", "v0.11.1")
 # option here.
 GPU_REQUEST = os.environ.get("SDXL_WORKER_GPU", "").strip() or "L40S"
 
+# 固定既定（ユーザーには見せない）— 2026-09-23、ホスト合意「選択はさせないが 3〜4 つ足す」。
+# duo LoRA の検証ベイクで男性被写体の再現が甘かったのを受け、sd-scripts 側で未配線だった
+# 定番設定を既定として入れる。min_snr_gamma=5 は以前から入っている。env で個別に戻せる。
+#   SDXL_LR_SCHEDULER      lr スケジューラ（既定 cosine。sd-scripts の既定は constant）
+#   SDXL_LR_WARMUP_RATIO   warmup 比率（既定 0.05。Prodigy は safeguard_warmup があるので 0）
+#   SDXL_CONV_DIM          LoCon の conv_dim（既定 16、0 で無効）。畳み込み層にも LoRA を掛け、
+#                          体型・輪郭のような「形」の再現に効きやすい。conv_alpha は半分。
+#   SDXL_TAG_DROPOUT       caption_tag_dropout_rate（既定 0.1）。keep_tokens 分（トリガー・性別）
+#                          は落ちないので、補助タグへの過依存だけを抑える。
+SDXL_LR_SCHEDULER = os.environ.get("SDXL_LR_SCHEDULER", "cosine").strip() or "cosine"
+SDXL_LR_WARMUP_RATIO = float(os.environ.get("SDXL_LR_WARMUP_RATIO", "0.05") or 0)
+SDXL_CONV_DIM = int(os.environ.get("SDXL_CONV_DIM", "16") or 0)
+SDXL_TAG_DROPOUT = float(os.environ.get("SDXL_TAG_DROPOUT", "0.1") or 0)
+
 # 2026-09-20: 既定 False（無効）。理由は _build_train_args() 内のコメント参照。
 # このワーカーは L40S(48GB) なので、OOM 時の逃げ道として env を残してある。
 SDXL_GRADIENT_CHECKPOINTING = os.environ.get("SDXL_GRADIENT_CHECKPOINTING", "0").strip() not in (
@@ -432,6 +446,8 @@ def _write_dataset_toml(
         "shuffle_caption = true",
         "caption_extension = '.txt'",
         f"keep_tokens = {int(keep_tokens)}",
+        # タグ dropout（固定既定）。keep_tokens 分は落ちない。0 なら書かない。
+        *( [f"caption_tag_dropout_rate = {SDXL_TAG_DROPOUT}"] if SDXL_TAG_DROPOUT > 0 else [] ),
         "",
         "[[datasets]]",
         f"resolution = {int(resolution)}",
@@ -608,6 +624,15 @@ def _build_train_args(
     # 本筋は modal_lora_benchmark.py で L40S の peak VRAM を実測してから確定する。
     if SDXL_GRADIENT_CHECKPOINTING:
         args.append("--gradient_checkpointing")
+    # 固定既定（ファイル冒頭の SDXL_LR_SCHEDULER 等を参照）。
+    if SDXL_LR_SCHEDULER and SDXL_LR_SCHEDULER != "constant":
+        args.append(f"--lr_scheduler={SDXL_LR_SCHEDULER}")
+        # Prodigy は safeguard_warmup で立ち上がりを守るので lr warmup は付けない。
+        if optimizer_key != "prodigy" and SDXL_LR_WARMUP_RATIO > 0:
+            args.append(f"--lr_warmup_steps={max(1, int(steps * SDXL_LR_WARMUP_RATIO))}")
+    if SDXL_CONV_DIM > 0:
+        conv_dim = min(SDXL_CONV_DIM, rank)
+        args += ["--network_args", f"conv_dim={conv_dim}", f"conv_alpha={max(1, conv_dim // 2)}"]
     if optimizer_key == "prodigy":
         # sd-scripts' own Prodigy guidance (README / --help): decouple +
         # safeguard_warmup is the standard pairing, same as most Prodigy
@@ -618,7 +643,9 @@ def _build_train_args(
         args += ["--optimizer_args", "decouple=True", "weight_decay=0.01", "safeguard_warmup=True"]
     print(
         f"[sdxl] built train args -> {lora_name}: {steps} steps, rank {rank}/{alpha}, "
-        f"{optimizer_type}@lr={lr}, {res}px, save_every={save_every}",
+        f"{optimizer_type}@lr={lr}, {res}px, save_every={save_every}, "
+        f"scheduler={SDXL_LR_SCHEDULER}, conv_dim={min(SDXL_CONV_DIM, rank) if SDXL_CONV_DIM > 0 else 0}, "
+        f"tag_dropout={SDXL_TAG_DROPOUT}",
         flush=True,
     )
     return args
