@@ -100,6 +100,9 @@ export const LORA_SETTINGS_ANCHOR_ID = "lora-settings-anchor";
 /** 切り出し結果の点検パネルの DOM id（クロップ実行後にここへ戻す）。 */
 export const CROP_REVIEW_PANEL_ID = "lora-crop-review-panel";
 
+/** サムネイル一覧の末尾。切り出し直後にここへ戻す。 */
+export const IMAGE_GRID_END_ID = "lora-image-grid-end";
+
 /** 被写体の「特徴」欄の説明を一度読んだか（2回目以降は出さない）。 */
 export const SUBJECT_HINT_SEEN_KEY = "ull.lora.subjectHintSeen";
 // Raw upload budget. The worker's Smart Ingest stage downscales / re-encodes
@@ -855,6 +858,10 @@ export function ImageDropzone({
               );
             })}
           </div>
+          {/* 切り出した直後にここへスクロールして戻す（2026-09-22、ホスト指摘）。
+              新しい画像は一覧の末尾に足されるので、結果を見る場所はここ。
+              被写体が2人以上いると、専用の一覧を下に置くより往復が減る。 */}
+          <div id={IMAGE_GRID_END_ID} className="scroll-mt-24" />
         </>
       )}
     </div>

@@ -86,7 +86,7 @@ import { translateCaption } from "@/lib/loraTranslate";
 import { extractIdentityTags } from "@/lib/loraCaption";
 import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
 import { generateDatasetCaptions, captionFileKey } from "@/lib/loraCaption";
-import { runSmartCrop, SMART_CROP_KIND_LABEL, type SmartCropKind } from "@/lib/smartCrop";
+import { runSmartCrop, type SmartCropKind } from "@/lib/smartCrop";
 import { prepareDatasetImage, type ImageSizeVerdict } from "@/lib/datasetImagePrep";
 
 // 切り出し結果を捨てる閾値（2026-09-21、ホスト指摘「粗い画像を学習しちゃう
@@ -122,6 +122,7 @@ import {
   MAX_LONG_EDGE,
   SMART_CROP_PANEL_ID,
   CROP_REVIEW_PANEL_ID,
+  IMAGE_GRID_END_ID,
   LORA_SETTINGS_ANCHOR_ID,
   SUBJECT_HINT_SEEN_KEY,
   RepeatWeightPanel,
@@ -998,8 +999,8 @@ export function LoraStudioTab({
     // 画面外へ押し出される。切り出し結果の一覧まで戻す。
     requestAnimationFrame(() =>
       document
-        .getElementById(CROP_REVIEW_PANEL_ID)
-        ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+        .getElementById(IMAGE_GRID_END_ID)
+        ?.scrollIntoView({ behavior: "smooth", block: "end" }),
     );
     setAddNotice(
       `元画像 ${candidates.length} 枚から ${kept} 枚を切り出してデータセットに追加しました。` +
@@ -3759,37 +3760,10 @@ export function LoraStudioTab({
                   </p>
                 </div>
               )}
-              <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
-                {croppedImages.map((img) => (
-                  <div
-                    key={img.id}
-                    className={`group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border bg-neutral-900 ${
-                      multiSubjectCrops.some((m) => m.id === img.id)
-                        ? "border-amber-500/70 ring-1 ring-amber-500/40"
-                        : "border-border"
-                    }`}
-                  >
-                    {/* object-cover だと縦長の上半身クロップが正方形に切り抜かれて
-                        頭が落ちる（2026-09-22、ホスト指摘）。顔の欠けを目視する
-                        ための一覧なので、必ず全体を出す。 */}
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={img.url} alt="" className="h-full w-full object-contain" />
-                    <span className="absolute bottom-1 right-1 rounded bg-neon-violet/85 px-1 py-0.5 text-[8px] font-medium text-white">
-                      {img.cropKind ? SMART_CROP_KIND_LABEL[img.cropKind] : ""}
-                    </span>
-                    {!busy && (
-                      <button
-                        type="button"
-                        onClick={() => removeImage(img.id)}
-                        className="absolute right-1 top-1 rounded-md bg-black/70 p-1 text-white opacity-0 transition-opacity group-hover:opacity-100"
-                        aria-label="削除"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
+              {/* 専用グリッドは廃止（2026-09-22、ホスト指摘）。切り出した画像は
+                  上のサムネイル一覧の末尾に入るので、そちらで確認する。被写体が
+                  2人以上いると、ここに一覧があると2人目のために上へ戻る往復が
+                  増えるため。 */}
             </div>
           )}
 
