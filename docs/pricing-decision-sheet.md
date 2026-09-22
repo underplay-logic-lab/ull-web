@@ -143,7 +143,7 @@
 
 | # | 対象 | 方法 | 概算 |
 |---|---|---|---|
-| A | 超解像 画像を RTX PRO 6000 / L40S で | `modal run modal_seedvr2_worker.py::main --gpu ...`（CLI） | ¥20 |
+| A | 超解像 画像を RTX PRO 6000 / L40S で | **完了 2026-09-23**: RTX PRO 6000 30.0s/¥12・L40S 58.0s/¥12.5・B300 49.0s/¥33（起動込み原価）。静止画の既定を RTX PRO 6000 へ変更・デプロイ済み（短辺 3840 超は B300）。`upscale_per_mp` 3 は据え置き（RTX で粗利 63〜87%） | 済 |
 | B | Multi-Angle B200 の再現性 | 既定が B200 なので**実運用ジョブから自動で溜まる**（generation_logs） | 0 |
 | C | 超解像 動画 4K の所要時間 | UI から1本（B300） | ¥300〜500 |
 | D | LoRA 未実測5 arch の s/it と VRAM | UI から各1本・300step・既存データセット（`metadata.metrics` に自動記録） | ¥2,500 |

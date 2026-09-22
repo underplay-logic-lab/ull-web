@@ -231,16 +231,40 @@ UPSCALE_IMAGE_MODEL_GPU: dict[str, str] = {
 }
 
 
-def _resolve_image_gpu_tier(model_key: str) -> str:
+# SeedVR2 系の静止画は RTX PRO 6000 を既定にする（2026-09-23 実測、docs/gpu-benchmarks.md
+# §1「超解像 静止画 3 tier 比較」）。同じ 1280x720→3412x1920（6.55MP・2段カスケード）で
+#   RTX PRO 6000: 30.0s / VRAM 23.0GB / 起動込み原価 ¥12
+#   L40S:         58.0s / VRAM 22.3GB / ¥12.5
+#   B300:         49.0s / VRAM 22.9GB / ¥33（cold の1段目が 37s と遅い）
+# B300 は 3C/MP の売上（¥33）に対して cold で粗利ゼロだった。VRAM は出力画素に比例して
+# 増えるので、短辺 SEEDVR2_IMAGE_RTX_MAX_SHORT（既定 3840、4K 短辺）までを RTX PRO 6000
+# に載せ、それより大きい出力（×8 大判など）は従来どおり B300 へ回す。
+# ⚠️ 3840 超の静止画を RTX PRO 6000 で流した実測は無い（6.55MP で 23GB、7B 重み分を
+# 除くと約 1.2GB/MP なので 26MP でも 50GB 弱の見込みだが未確認）。
+UPSCALE_IMAGE_SEEDVR2_GPU = _env_str("SEEDVR2_IMAGE_GPU_SEEDVR2", "RTX-PRO-6000")
+UPSCALE_IMAGE_RTX_MAX_SHORT = _env_int("SEEDVR2_IMAGE_RTX_MAX_SHORT", 3840)
+
+
+def _resolve_image_gpu_tier(model_key: str, params: dict | None = None) -> str:
     """SEEDVR2_WORKER_GPU が明示されていればそれを最優先（既存の実機検証
-    フローを壊さない）。そうでなければモデル別マッピング、未知・SeedVR2系
-    モデルは既定のGPU_REQUEST（B300）にフォールバックする。バッチ処理は
+    フローを壊さない）。そうでなければモデル別マッピング（ESRGAN/SwinIR は T4）、
+    SeedVR2 系は出力短辺が UPSCALE_IMAGE_RTX_MAX_SHORT 以下なら RTX PRO 6000、
+    それより大きければ既定の GPU_REQUEST（B300）。バッチ処理は
     1リクエスト=単一model_key前提（Next側 upscale/batch/route.ts で保証済み）
     なのでバッチ全体に同じGPU tierを適用してよい。"""
     forced = os.environ.get("SEEDVR2_WORKER_GPU", "").strip()
     if forced:
         return forced
-    return UPSCALE_IMAGE_MODEL_GPU.get(str(model_key or "").lower(), "") or list(_DEFAULT_GPU)[0]
+    mapped = UPSCALE_IMAGE_MODEL_GPU.get(str(model_key or "").lower(), "")
+    if mapped:
+        return mapped
+    try:
+        short = int(float((params or {}).get("target_short") or 0))
+    except (TypeError, ValueError):
+        short = 0
+    if 0 < short <= UPSCALE_IMAGE_RTX_MAX_SHORT:
+        return UPSCALE_IMAGE_SEEDVR2_GPU
+    return list(_DEFAULT_GPU)[0]
 
 
 COMFYUI_REF = _env_str("SEEDVR2_COMFYUI_REF", "master")
@@ -2608,7 +2632,7 @@ def upscale_generate_dispatch(item: dict, request: fastapi.Request):
 
     # 2026-09-17（CLAUDE.md §1）: Real-ESRGAN/SwinIR-L系はT4、SeedVR2系は
     # 既定のGPU_REQUEST（B300/B200）。モデル別に実測で決めたGPU tierへ動的切替。
-    gpu_tier = _resolve_image_gpu_tier(item.get("model_key") or "")
+    gpu_tier = _resolve_image_gpu_tier(item.get("model_key") or "", item.get("params") or {})
     worker = SeedVR2Worker.with_options(gpu=gpu_tier)
     call = worker().run_upscale_job.spawn(item)
     print(
@@ -2655,7 +2679,7 @@ def upscale_batch_generate_dispatch(item: dict, request: fastapi.Request):
     # 2026-09-17（CLAUDE.md §1）: バッチは1リクエスト=単一model_key前提
     # （Next側 upscale/batch/route.ts が全itemに同じmodelKeyを書き込む）。
     # 先頭itemのmodel_keyを代表としてGPU tierを決定する。
-    gpu_tier = _resolve_image_gpu_tier(items[0].get("model_key") or "")
+    gpu_tier = _resolve_image_gpu_tier(items[0].get("model_key") or "", items[0].get("params") or {})
     worker = SeedVR2Worker.with_options(timeout=modal_timeout, gpu=gpu_tier)
     call = worker().run_upscale_batch_job.spawn(item)
     print(
