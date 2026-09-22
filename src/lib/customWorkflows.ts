@@ -45,9 +45,9 @@ export const WORKFLOW_FIELD_COL_SPANS: WorkflowFieldColSpan[] = [3, 4, 6, 12];
 
 // Subscription tier gate for a field or section — a value below `minTier`
 // hides/locks it in the Studio renderer (server also enforces it, Phase 2).
-export type WorkflowFieldTier = "free" | "entry" | "standard" | "pro" | "master";
+export type WorkflowFieldTier = "free" | "entry" | "standard" | "pro" | "master" | "studio";
 
-export const WORKFLOW_FIELD_TIERS: WorkflowFieldTier[] = ["free", "entry", "standard", "pro", "master"];
+export const WORKFLOW_FIELD_TIERS: WorkflowFieldTier[] = ["free", "entry", "standard", "pro", "master", "studio"];
 
 export const WORKFLOW_FIELD_TIER_LABELS: Record<WorkflowFieldTier, string> = {
   free: "Free",
@@ -55,6 +55,7 @@ export const WORKFLOW_FIELD_TIER_LABELS: Record<WorkflowFieldTier, string> = {
   standard: "Standard",
   pro: "Pro",
   master: "Master",
+  studio: "Studio",
 };
 
 const TIER_RANK: Record<WorkflowFieldTier, number> = {
@@ -63,6 +64,7 @@ const TIER_RANK: Record<WorkflowFieldTier, number> = {
   standard: 2,
   pro: 3,
   master: 4,
+  studio: 5,
 };
 
 export function tierRank(tier: string | null | undefined): number {

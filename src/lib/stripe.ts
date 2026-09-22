@@ -10,7 +10,7 @@ if (!stripeSecretKey) {
 
 export const stripe = new Stripe(stripeSecretKey);
 
-export type SubscriptionTier = "free" | "entry" | "standard" | "pro" | "master";
+export type SubscriptionTier = "free" | "entry" | "standard" | "pro" | "master" | "studio";
 
 export type StripePlan = {
   name: string;
@@ -83,24 +83,29 @@ export const TIER_BY_PRICE_ID: Record<string, SubscriptionTier> = Object.fromEnt
 );
 
 // Discounted one-time top-up price by the buyer's current subscription tier.
+// 2026-09-23 改定: 都度 ¥1,000 / 300C。会員割引 10/20/30/40/50%。
 export const TOPUP_PRICE_BY_TIER: Record<SubscriptionTier, number> = {
-  free: 500,
-  entry: 450,
-  standard: 400,
-  pro: 350,
-  master: 250,
+  free: 1000,
+  entry: 900,
+  standard: 800,
+  pro: 700,
+  master: 600,
+  studio: 500,
 };
 
 // "Opening campaign" fixed daily login bonus for paid subscribers, credited
 // every login day regardless of streak (see the /api/daily-bonus route).
 // "free" is unused here — free members get FREE_STREAK_DAY_BONUS's 7-day
 // cyclical bonus instead.
+// 2026-09-23 改定: 有料は一律 10C/日（月 300C。どの段でも実質 ¥/C が床 1.66 を割らない）。
+// 無料の 7 日ストリークは廃止（貯めるだけ貯めて使う層を作らない・ホスト判断）。
 export const DAILY_BONUS_BY_TIER: Record<SubscriptionTier, number> = {
   free: 0,
-  entry: 4,
-  standard: 8,
-  pro: 15,
-  master: 30,
+  entry: 10,
+  standard: 10,
+  pro: 10,
+  master: 10,
+  studio: 10,
 };
 
 // Free member's 7-day cyclical login-streak bonus: days 1-6 grant a small
@@ -127,6 +132,7 @@ export const SUBSCRIPTION_TIER_RANK: Record<SubscriptionTier, number> = {
   standard: 2,
   pro: 3,
   master: 4,
+  studio: 5,
 };
 
 // Shared by /api/stripe/portal and /api/stripe/checkout's existing-subscriber

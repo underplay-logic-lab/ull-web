@@ -33,6 +33,7 @@ const TIER_LABEL: Record<WorkflowFieldTier, string> = {
   standard: "Standard",
   pro: "Pro",
   master: "Master",
+  studio: "Studio",
 };
 
 const inputCls =

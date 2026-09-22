@@ -12,6 +12,7 @@ const TIER_LABEL: Record<SubscriptionTier, string> = {
   standard: "Standard",
   pro: "Pro",
   master: "Master",
+  studio: "Studio",
 };
 
 // "manage"   → opened from the "サブスクリプションの管理・解約" button; confirm

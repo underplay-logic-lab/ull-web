@@ -45,7 +45,7 @@ export function getPolarClient(): Polar {
 // profiles.subscription_tier on payment (see the webhook) — same convention
 // the retired Stripe catalog used. "topup" is the one-time 120-credit charge
 // and never touches subscription_tier.
-export type PolarTier = "topup" | "entry" | "standard" | "pro" | "master";
+export type PolarTier = "topup" | "entry" | "standard" | "pro" | "master" | "studio";
 
 export type PolarProductConfig = {
   tier: PolarTier;
@@ -58,11 +58,13 @@ export type PolarProductConfig = {
 // overridable). Any id not in this map fails closed: the checkout route
 // rejects it as an unknown product and the webhook ignores its events.
 const PRODUCT_SPECS: { id: string; config: PolarProductConfig }[] = [
-  { id: POLAR_PRODUCT_IDS.topup, config: { tier: "topup", credits: 120, isSubscription: false } },
-  { id: POLAR_PRODUCT_IDS.entry, config: { tier: "entry", credits: 300, isSubscription: true } },
-  { id: POLAR_PRODUCT_IDS.standard, config: { tier: "standard", credits: 1000, isSubscription: true } },
-  { id: POLAR_PRODUCT_IDS.pro, config: { tier: "pro", credits: 2500, isSubscription: true } },
-  { id: POLAR_PRODUCT_IDS.master, config: { tier: "master", credits: 6000, isSubscription: true } },
+  // 2026-09-23 改定: 床は Studio の 1.66 ¥/C（= credit_to_jpy knob）。段差は 2.48 → 1.66。
+  { id: POLAR_PRODUCT_IDS.topup, config: { tier: "topup", credits: 300, isSubscription: false } },
+  { id: POLAR_PRODUCT_IDS.entry, config: { tier: "entry", credits: 800, isSubscription: true } },
+  { id: POLAR_PRODUCT_IDS.standard, config: { tier: "standard", credits: 2200, isSubscription: true } },
+  { id: POLAR_PRODUCT_IDS.pro, config: { tier: "pro", credits: 5000, isSubscription: true } },
+  { id: POLAR_PRODUCT_IDS.master, config: { tier: "master", credits: 11000, isSubscription: true } },
+  { id: POLAR_PRODUCT_IDS.studio, config: { tier: "studio", credits: 18000, isSubscription: true } },
 ];
 
 export const POLAR_PRODUCT_CONFIG: Record<string, PolarProductConfig> = Object.fromEntries(
@@ -90,8 +92,9 @@ export function tierForPolarProduct(productId: string | null | undefined): Polar
 // The Polar equivalent of the retired Stripe TOPUP_PRICE_BY_TIER dynamic
 // pricing. Each id below is a Polar **Discount** (percentage, duration
 // "once", restricted to the top-up product):
-//   entry 10% / standard 20% / pro 30% / master 50%  off the ¥500 top-up
-//   → ¥450 / ¥400 / ¥350 / ¥250
+//   entry 10% / standard 20% / pro 30% / master 40% / studio 50%  off the ¥1,000 top-up
+//   → ¥900 / ¥800 / ¥700 / ¥600 / ¥500（割引後の ¥/C がそのプラン自身の ¥/C を下回らない刻み）
+//   2026-09-23 改定で作り直し（scripts/setup-polar-plans-2026-09.mjs）。
 //
 // Hardcoded (not env-driven) for the same reason as POLAR_PRODUCT_IDS: a
 // stale POLAR_DISCOUNT_ID_TOPUP_* on Vercel was passing a *product* id as a
@@ -100,10 +103,11 @@ export function tierForPolarProduct(productId: string | null | undefined): Polar
 // checkout route also retries without the discount if Polar ever rejects it,
 // so a bad id can never block a purchase.
 export const POLAR_TOPUP_DISCOUNT_BY_TIER: Partial<Record<PolarTier, string>> = {
-  entry: "c5909070-dea3-4f4a-8eb9-b782c5e0a0cd",
-  standard: "05049632-034e-42c9-86ea-b121761150f8",
-  pro: "c72ee18a-10cc-403c-8efc-52b6dcee8ec9",
-  master: "9275be13-4a6b-4f2c-83d1-142a74eeb2c1",
+  entry: "f2649294-2ba1-4bb8-a047-4bfbaa7390b7",
+  standard: "a53d227c-b6d2-4c03-b52d-bb454942074c",
+  pro: "5202a661-44d6-450f-8676-f857938bd91f",
+  master: "f24bd029-0f58-4ca2-9562-d779a8fe1992",
+  studio: "7ce887f0-6fc1-4599-8a45-2d93fca1743c",
 };
 
 export function topupDiscountForTier(tier: string | null | undefined): string | null {

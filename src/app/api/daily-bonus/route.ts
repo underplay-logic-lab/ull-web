@@ -4,8 +4,6 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import {
   DAILY_BONUS_BY_TIER,
-  FREE_STREAK_DAY_BONUS,
-  STREAK_CYCLE_LENGTH,
   type SubscriptionTier,
 } from "@/lib/stripe";
 
@@ -106,15 +104,12 @@ export async function POST(request: Request) {
     const newStreak = daysSinceLastBonus === 1 ? rawStreak + 1 : 1;
 
     let bonus = 0;
-    let dayInCycle: number | null = null;
+    const dayInCycle: number | null = null;
 
     if (!cancelAtPeriodEnd) {
-      if (tier === "free") {
-        dayInCycle = ((newStreak - 1) % STREAK_CYCLE_LENGTH) + 1;
-        bonus = FREE_STREAK_DAY_BONUS[dayInCycle] ?? 0;
-      } else {
-        bonus = DAILY_BONUS_BY_TIER[tier] ?? 0;
-      }
+      // 2026-09-23: 無料の 7 日ストリークは廃止（ホスト判断）。有料は一律 10C/日。
+      // dayInCycle は残しておく（レスポンス形状を変えない）が常に null。
+      bonus = tier === "free" ? 0 : DAILY_BONUS_BY_TIER[tier] ?? 0;
     }
 
     // A reserved cancellation zeroes the bonus, but the login streak itself

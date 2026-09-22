@@ -6,17 +6,18 @@ import { supabase } from "@/lib/supabaseClient";
 
 // Duplicated from lib/stripe.ts (marked "server-only") rather than imported,
 // since this hook runs in the browser.
-export type SubscriptionTier = "free" | "entry" | "standard" | "pro" | "master";
+export type SubscriptionTier = "free" | "entry" | "standard" | "pro" | "master" | "studio";
 
 // Mirrors lib/stripe.ts's TOPUP_PRICE_BY_TIER — the discounted top-up price
 // this tier currently gets, for display only (the checkout route is the
 // actual source of truth and re-derives this server-side).
 export const TOPUP_PRICE_BY_TIER: Record<SubscriptionTier, number> = {
-  free: 500,
-  entry: 450,
-  standard: 400,
-  pro: 350,
-  master: 250,
+  free: 1000,
+  entry: 900,
+  standard: 800,
+  pro: 700,
+  master: 600,
+  studio: 500,
 };
 
 type FetchStatus = "idle" | "ready" | "error";

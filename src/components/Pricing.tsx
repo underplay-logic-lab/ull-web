@@ -15,7 +15,7 @@ const TOPUP_FULL_PRICE = TOPUP_PRICE_BY_TIER.free;
 
 // Numeric order of the subscription tiers — lets us tell an upgrade (skip
 // straight to checkout) from a downgrade (warn first, then checkout).
-const TIER_RANK: Record<string, number> = { free: 0, entry: 1, standard: 2, pro: 3, master: 4 };
+const TIER_RANK: Record<string, number> = { free: 0, entry: 1, standard: 2, pro: 3, master: 4, studio: 5 };
 
 type WarningState =
   | { mode: "downgrade"; plan: PricingPlan }
