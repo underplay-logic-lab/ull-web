@@ -347,7 +347,9 @@ export function LoraStudioTab({
   const [datasetZipBusy, setDatasetZipBusy] = useState(false);
   // Opt-in visual dataset curation: after upload, review/cull images and
   // review/edit captions (with JP round-trip translation) before training.
-  const [curationEnabled, setCurationEnabled] = useState(false);
+  // 既定 ON（2026-09-22、ホスト判断）。キャプションは学習結果を決める要素で、
+  // 一度も見ずに焼くほうが例外であるべき。下書きがあればそちらが優先される。
+  const [curationEnabled, setCurationEnabled] = useState(true);
   const [curationPairs, setCurationPairs] = useState<CurationPair[]>([]);
   const [zipBusy, setZipBusy] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
@@ -1413,6 +1415,11 @@ export function LoraStudioTab({
       return false; // プライベートウィンドウ等。出し続けても害は無い
     }
   });
+
+  const multiSubjectCropIds = useMemo(
+    () => new Set(multiSubjectCrops.map((i) => i.id)),
+    [multiSubjectCrops],
+  );
 
   const tooSmallImages = useMemo(() => images.filter((i) => i.sizeVerdict === "tooSmall"), [images]);
 
@@ -3474,6 +3481,7 @@ export function LoraStudioTab({
             onAdd={addImages}
             onRemove={removeImage}
             disabled={busy || (!yamlMode && !triggerWord.trim())}
+            warnIds={multiSubjectCropIds}
             notice={addNotice}
             onDismissNotice={() => setAddNotice(null)}
             onRejectedDrop={() =>
@@ -3724,9 +3732,16 @@ export function LoraStudioTab({
               </span>
               {captionSpecFilled && (
                 <span className="text-muted">
-                  ・固定/変化の特徴指示も反映
+                  {/* 何が起きるのか分からない文言だった（2026-09-22、ホスト指摘）。
+                      captionSpecKey が変わる＝トリガーワード／LoRAカテゴリ／
+                      学習したい特徴のどれかを、キャプションを作ったあとに
+                      変えた状態。次へ進むと全キャプションが作り直される。 */}
+                  ・「学習したい特徴」もキャプションに反映済み
                   {captionSpecKey !== reflectedSpecKey && (
-                    <span className="text-amber-400">（変更あり — 「次へ」で更新）</span>
+                    <span className="text-amber-400">
+                      （トリガーワード・カテゴリ・学習したい特徴のどれかが、キャプションを作ったあとに変わりました。
+                      次へ進むとキャプションを全部作り直します）
+                    </span>
                   )}
                 </span>
               )}

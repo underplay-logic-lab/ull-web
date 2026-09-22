@@ -627,6 +627,7 @@ export function ImageDropzone({
   selectedIds,
   onSelectedChange,
   onRejectedDrop,
+  warnIds,
   notice,
   onDismissNotice,
   selectable,
@@ -650,6 +651,8 @@ export function ImageDropzone({
   onSelectedChange: (next: Set<string>) => void;
   /** 受け付けられない状態でドロップ／クリックされたときに理由を出す。 */
   onRejectedDrop?: () => void;
+  /** 要確認の画像（琥珀色の枠を付ける）。切り出したのに2人以上写っている等。 */
+  warnIds?: Set<string>;
   /** 取り込み結果の通知（追加枚数・除外理由など）。 */
   notice?: string | null;
   onDismissNotice?: () => void;
@@ -788,8 +791,8 @@ export function ImageDropzone({
                   key={img.id}
                   onClick={canSelect ? (e) => toggleSelect(img.id, e.shiftKey) : undefined}
                   className={`group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border bg-neutral-900 ${
-                    canSelect ? "cursor-pointer" : ""
-                  } ${
+                    warnIds?.has(img.id) ? "border-amber-500/70 ring-1 ring-amber-500/40" : ""
+                  } ${canSelect ? "cursor-pointer" : ""} ${
                     isSelected
                       ? "border-neon-violet ring-2 ring-neon-violet/60"
                       : st === "error"
