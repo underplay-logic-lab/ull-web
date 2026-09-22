@@ -4373,18 +4373,21 @@ export function LoraStudioTab({
               <div className="mt-2 space-y-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[10px] leading-relaxed text-amber-400">
                 <p>
                   <strong>キャプションを作り直します。</strong>
-                  いまのキャプションは、下に出ている「前回」の内容で作られています。
+                  いまのキャプションは「作成時」の内容で作られていて、「現在」と食い違っています。
                   「学習したい特徴」はキャプションに書いてはいけない言葉のリストとして使われるため、
-                  食い違ったままにはできません。次へ進むと {aiCaptionedCount} 枚ぶんを作り直します（数分）。
+                  ずれたままにはできません。次へ進むと {aiCaptionedCount} 枚ぶんを作り直します（数分）。
                 </p>
                 {/* 何が変わったのかを出す（2026-09-22、ホスト指摘「特に何もして
                     いないのに出る」）。自分で変えていなくても、特徴の自動抽出が
                     前回と違う結果を返せばここは変わる。差分が見えれば納得できる。 */}
+                {/* 「前回」だと前のセッションと誤解される（2026-09-22、ホスト指摘）。
+                    比べているのは同じセッション内の「キャプションを作った時点」と
+                    「現在」。リセット時は記録も消すので、前のセッションは残らない。 */}
                 <p className="text-muted">
-                  前回: <span className="text-foreground">{reflectedSpecSummary || "（記録なし）"}</span>
+                  作成時: <span className="text-foreground">{reflectedSpecSummary || "（なし）"}</span>
                 </p>
                 <p className="text-muted">
-                  いま: <span className="text-foreground">{captionSpec.fixed || "（なし）"}</span>
+                  現在: <span className="text-foreground">{captionSpec.fixed || "（なし）"}</span>
                 </p>
               </div>
             )}
