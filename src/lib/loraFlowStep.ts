@@ -26,6 +26,7 @@ export type LoraFlowTarget =
   | "diagnostics"
   | "identityConfirm"
   | "recaption"
+  | "cropPrepare"
   | "crop"
   | "repeats"
   | "submit";
@@ -75,6 +76,8 @@ export type LoraFlowInput = {
   diagnosticErrors: number;
   /** クロップで埋められる穴があるか。 */
   cropAvailable: boolean;
+  /** 診断の「◯◯ の…を切り出す準備をする」を押して対象が選ばれているか。 */
+  cropPrepared: boolean;
 };
 
 /**
@@ -165,10 +168,15 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
   const nextLabel = "このまま学習へ進む";
 
   if (v.diagnosticErrors > 0 && v.cropAvailable) {
-    return {
-      targets: ["crop", next],
-      hint: `足りない構図を切り出す ／ ${nextLabel}`,
-    };
+    // 切り出しは「準備をする → 切り出す」の2手（2026-09-22、ホスト指摘）。
+    // いきなりクロップ欄を光らせると、対象も構図も選ばれていない状態で
+    // 押させることになる。まず診断側の準備ボタンへ送る。
+    return v.cropPrepared
+      ? { targets: ["crop"], hint: `切り出しを実行する（対象と構図はセット済み）` }
+      : {
+          targets: ["cropPrepare", next],
+          hint: `足りない構図を切り出す準備をする ／ ${nextLabel}`,
+        };
   }
   return {
     targets: ["repeats", next],

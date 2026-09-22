@@ -2466,6 +2466,7 @@ export function LoraStudioTab({
         captionRunning: autoCap.running,
         pendingCaptionCount,
         diagnosticErrors: flowDiag.issues.filter((x) => x.level === "error").length,
+        cropPrepared: selectedImageIds.size > 0,
         cropAvailable: flowDiag.issues.some(
           (x) => x.fixableWith === "smart_crop" && (x.cropKinds?.length ?? 0) > 0,
         ),
@@ -2486,6 +2487,7 @@ export function LoraStudioTab({
       autoCap.running,
       pendingCaptionCount,
       flowDiag,
+      selectedImageIds,
     ],
   );
   const flowRing = (t: LoraFlowTarget) => (flow.targets.includes(t) ? " flow-next" : "");
@@ -3830,16 +3832,6 @@ export function LoraStudioTab({
                     。
                   </span>
                 </span>
-                <button
-                  type="button"
-                  disabled={busy || autoCap.running}
-                  onClick={() => void recaptionAll()}
-                  title="現在のトリガーワード・こだわり設定で全画像を解析し直します"
-                  className="inline-flex items-center gap-1 rounded-md border border-green-500/40 px-2 py-1 text-[10px] font-medium text-green-400 transition-colors hover:bg-green-500/10 disabled:opacity-50"
-                >
-                  <RotateCcw size={10} />
-                  AI再解析
-                </button>
               </div>
             ) : (
               <p className="flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
@@ -3982,6 +3974,7 @@ export function LoraStudioTab({
               subjects={allSubjects}
               onOpenMultiAngle={onOpenMultiAngle}
               onPrepareCrop={prepareCropForSubject}
+              highlightPrepare={flow.targets.includes("cropPrepare")}
             />
             </div>
           )}
@@ -4759,6 +4752,34 @@ export function LoraStudioTab({
                     )}
                   </div>
                 </details>
+
+                {/* 再解析はここに置く（2026-09-22、ホスト指摘）。押す理由は
+                    「この欄の設定を変えたから」しかないので、解析完了バッジの
+                    横にあると誤爆するだけで、なぜそこにあるのかも分からない。 */}
+                {aiCaptionedCount > 0 && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-neon-violet/20 pt-2">
+                    <button
+                      type="button"
+                      disabled={busy || autoCap.running}
+                      onClick={() => {
+                        if (
+                          !window.confirm(
+                            `この設定で ${aiCaptionedCount} 枚のキャプションを作り直します。数分かかります。よろしいですか？`,
+                          )
+                        )
+                          return;
+                        void recaptionAll();
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md border border-neon-violet/40 bg-neon-violet/10 px-2 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20 disabled:opacity-50"
+                    >
+                      <RotateCcw size={10} />
+                      この設定でキャプションを作り直す（{aiCaptionedCount} 枚）
+                    </button>
+                    <span className="text-[10px] text-muted">
+                      上の設定を変えたときだけ押してください。数分かかります。
+                    </span>
+                  </div>
+                )}
               </div>
             )}
           </div>

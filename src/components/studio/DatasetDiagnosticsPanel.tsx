@@ -22,6 +22,7 @@ export function DatasetDiagnosticsPanel({
   onPrepareCrop,
   provisional = false,
   stalledCount = 0,
+  highlightPrepare = false,
 }: {
   items: DiagnosticInput[];
   subjects: LoraSubject[];
@@ -44,6 +45,8 @@ export function DatasetDiagnosticsPanel({
   provisional?: boolean;
   /** 解析が走っていないのに未解析のまま残っている枚数（0なら正常）。 */
   stalledCount?: number;
+  /** 導線として「切り出す準備をする」を光らせるか（loraFlowStep が決める）。 */
+  highlightPrepare?: boolean;
 }) {
   const [open, setOpen] = useState(true);
   const diag = useMemo(() => analyzeDataset(items, subjects), [items, subjects]);
@@ -233,7 +236,9 @@ export function DatasetDiagnosticsPanel({
                     key={subj}
                     type="button"
                     onClick={() => onPrepareCrop(subj, [...kinds])}
-                    className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/15 px-2.5 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/25"
+                    className={`inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/15 px-2.5 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/25${
+                      highlightPrepare ? " flow-next" : ""
+                    }`}
                   >
                     <Scissors size={11} />
                     <span className="font-mono">{subj}</span> の{" "}
