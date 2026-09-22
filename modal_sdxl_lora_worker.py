@@ -60,6 +60,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 
 import fastapi
 import modal
@@ -1543,6 +1544,27 @@ def train_sdxl_lora_job(params: dict) -> dict:
         image_paths = _stage_dataset(params, dataset_dir, trigger, log)
         _patch_job(job_id, {"progress_percent": 10, "progress_message": f"{len(image_paths)}枚を学習準備中"})
 
+        # キャプション付きデータセットの ZIP（完了画面の「キャプション付き
+        # データセットDL」用）。ai-toolkit 側ワーカーは作っていたが、こちらは
+        # 作っておらず、実ジョブで「データセット ZIP が見つかりません」になった
+        # （2026-09-22 発見）。_group_by_repeats がサブフォルダへ移す前、かつ
+        # sd-scripts が latent キャッシュ（.npz）を横に吐く前のここで作る。
+        # 中身は 0000_x.png / 0000_x.txt が並ぶ平坦な構成で、そのまま再学習に使える。
+        dataset_zip_path = work_dir / "dataset.zip"
+        try:
+            members = sorted(
+                p for p in dataset_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in (".txt", ".png", ".jpg", ".jpeg", ".webp")
+            )
+            n_txt = sum(1 for p in members if p.suffix.lower() == ".txt")
+            with zipfile.ZipFile(dataset_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for m in members:
+                    zf.write(m, arcname=m.name)
+            log(f"dataset.zip 作成: 画像 {len(members) - n_txt} 枚 + キャプション {n_txt} 件")
+        except Exception as exc:  # noqa: BLE001 — 無くても学習は成立する
+            print(f"[sdxl] dataset.zip build skipped: {exc!r}", flush=True)
+            dataset_zip_path = None
+
         # 画像ごとの学習回数（kohya のフォルダ名 "10_name" 相当）。
         # 全部 1 なら従来どおり単一サブセット。
         repeats = _normalize_repeats(params, len(image_paths))
@@ -1745,6 +1767,26 @@ def train_sdxl_lora_job(params: dict) -> dict:
         checkpoints = _persist_checkpoints(
             str(output_dir), lora_name, user_id, job_id, declared_steps
         )
+        # dataset.zip も loras/<user>/<job>/ へ置き、metadata.checkpoints に
+        # is_caption_archive で登録する（ai-toolkit 側ワーカーと同じ形。
+        # フロントは is_caption_archive を見て重みの一覧から除外している）。
+        if dataset_zip_path is not None and dataset_zip_path.is_file() and user_id and job_id:
+            try:
+                ds_dest = pathlib.Path(LORA_OUTPUT_DIR) / user_id / job_id / "dataset.zip"
+                shutil.copy2(dataset_zip_path, ds_dest)
+                checkpoints.append(
+                    {
+                        "step": 0,
+                        "filename": "dataset.zip",
+                        "size_bytes": ds_dest.stat().st_size,
+                        "is_final": False,
+                        "is_caption_archive": True,
+                        "path": f"loras/{user_id}/{job_id}/dataset.zip",
+                    }
+                )
+                log(f"dataset.zip を保存 ({ds_dest.stat().st_size / 1e6:.1f} MB)")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[sdxl] dataset.zip persist skipped: {exc!r}", flush=True)
         # LICENSE.txt をジョブフォルダにも置く（一括DL の ZIP に入る）。
         if license_info and user_id and job_id:
             try:

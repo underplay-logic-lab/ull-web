@@ -269,6 +269,21 @@
 GPU tier が検討できる。ただし CLAUDE.md §1 のとおり **1回あたりの実コスト
 （時間単価×所要時間）で判断**すること。速度が落ちれば安い tier でも高くなる。
 
+### 【完了 2026-09-22】完走後のダウンロードで見つかった2件
+
+1. **「キャプション付きデータセットDL」が「データセット ZIP が見つかりません」** —
+   SDXL ワーカー（sd-scripts）が dataset.zip を作っていなかった（ai-toolkit 側の
+   ワーカーだけが作っていた）。ステージング直後（サブフォルダ振り分け前・latent
+   キャッシュ生成前）に作り、完了時に `loras/<user>/<job>/dataset.zip` へ置いて
+   `metadata.checkpoints` に `is_caption_archive` で登録するよう修正・デプロイ済み。
+   完走済みの job `c3d2cfc6` は、ジョブ行の dispatch payload（storage_paths＋captions）
+   からワーカーの `_stage_dataset` を呼び直して**後付けで作成済み**（220枚＋220件、34MB。
+   probe で found:true を確認）。salvage を使わなかったのは、完了ジョブに対して
+   走らせると 3.2GB の checkpoints_all.zip を Volume に追加してしまうため。
+2. **一括 ZIP のダウンロードが 5MB/s** — 原因は Modal の Web 入口で、ZIP 化でも
+   Volume でもリージョンでもない。実測と選択肢は `docs/gpu-benchmarks.md` §16。
+   **対策はホスト判断待ち**（R2 へ配信を逃がすのが本命だが新規依存）。
+
 ### 実測: SDXL ワーカーのコールドスタート内訳（2026-09-22）
 
 経過時間ログ（`_mk_logger`）を入れて初めて測れた。**コンテナに入ってからは
