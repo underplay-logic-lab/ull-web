@@ -106,7 +106,10 @@ const SMART_CROP_MIN_SHORT_EDGE = 384;
 // フォルダを何回かに分けてドロップする使い方が普通なので、最初のドロップだけで
 // 走らせると偏ったサンプルを見ることになる。images.length が変わるたびに
 // タイマーが張り直されるので、連続ドロップ中は発火しない。
-const IDENTITY_EXTRACT_DEBOUNCE_MS = 4000;
+// キャプション解析はこの抽出の完了を待つ（下の vision pass の identityPending
+// を参照）ので、この値がそのまま「取り込みが止まってから解析が始まるまで」に
+// なる。長くしすぎると待たされ、短すぎると偏ったサンプルで抽出する。
+const IDENTITY_EXTRACT_DEBOUNCE_MS = 6000;
 // 切り出し元が元画像のこの割合以上を占めるなら、中身がほぼ同じで情報が
 // 増えないので捨てる（全身写真から全身を切り出すケース）。
 const SMART_CROP_REDUNDANT_COVERAGE = 0.85;
@@ -2642,6 +2645,25 @@ export function LoraStudioTab({
   // a running pass) so a second drop mid-run doesn't abort the first.
   useEffect(() => {
     if (!user || phase !== "form" || autoCap.running) return;
+    // ⚠️ **特徴の抽出が終わるまでキャプションを始めない**（2026-09-22）。
+    // 抽出結果は「キャプションに書いてはいけない言葉」のリストとして使う。
+    // 以前は解析の待ちが 500ms、抽出が 4秒で**解析のほうが先に始まっており**、
+    // 抽出が届いた時点で「設定が変わった」と判定されて全キャプションを作り
+    // 直していた。抽出は被写体あたり1リクエスト、作り直しは165枚で42リクエスト
+    // なので、待つほうが圧倒的に安い。
+    //
+    // 待つのは「抽出が走る条件が揃っているのに、まだ結果が無い」間だけ。
+    // 性別タグ未選択などで抽出自体が走らない場合は待たない（デッドロック防止）。
+    const identityPending =
+      identityExtracting !== null ||
+      allSubjects.some((sub) => {
+        const trigger = (sub.trigger ?? "").trim();
+        if (!trigger || !(sub.fixedTags ?? "").trim()) return false;
+        if ((sub.identityTags ?? "").trim()) return false;
+        const idx = allSubjects.indexOf(sub) - 1; // 0番=1人目は index -1 で登録
+        return !autoExtractedRef.current.has(`${idx}:${trigger}:${sub.fixedTags ?? ""}`);
+      });
+    if (identityPending) return;
     const pending = images.filter(
       (img) =>
         !captionAttemptedRef.current.has(img.id) &&
@@ -2658,7 +2680,9 @@ export function LoraStudioTab({
     }, 500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [images, captions, userCaptionIds, user, phase, autoCap.running]);
+    // identityExtracting / allSubjects を依存に入れて、抽出が終わった瞬間に
+    // この effect が走り直すようにする（待ちが解ける）。
+  }, [images, captions, userCaptionIds, user, phase, autoCap.running, identityExtracting, allSubjects]);
 
   // Re-run the vision pass over every AI-captioned image with the current
   // trigger word + synthesised instruction (the "🔄 AI再解析" button, and
