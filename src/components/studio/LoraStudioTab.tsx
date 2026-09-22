@@ -4480,14 +4480,25 @@ export function LoraStudioTab({
                             .getElementById(SUBJECTS_PANEL_ID)
                             ?.scrollIntoView({ behavior: "smooth", block: "start" })
                         }
-                        className="mt-1 inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20"
+                        className="mt-1 inline-flex items-center gap-1 rounded-lg border border-neon-pink/50 bg-neon-pink/15 px-2.5 py-1 text-[10px] font-semibold text-neon-pink transition-colors hover:bg-neon-pink/25"
                       >
                         ↑ 抽出した特徴を見に行く（直せます）
                       </button>
                     )}
                     <p className="mt-1 text-[10px] leading-relaxed text-muted">
-                      トリガーワード＋性別/人数タグ＋下の「見た目の固定特徴」から組み立てています。
-                      <strong className="text-foreground">キャプションには書かれない（＝トリガーに焼き込む）特徴を、生成時にプロンプトへ戻すための欄</strong>です。
+                      {/* 日本語で入れた特徴が英タグへ変換されて入ることを明示する
+                          （2026-09-22、ホスト指摘）。ここだけ見ると英語がどこから
+                          来たのか分からない。 */}
+                      トリガーワード＋性別/人数タグ＋
+                      <strong className="text-foreground">「学習したい特徴」</strong>
+                      から組み立てています。特徴は日本語で表示していますが、
+                      <strong className="text-foreground">
+                        ここには英語のタグへ自動変換されたものが入ります
+                      </strong>
+                      （例:「禿頭」→ <code className="text-neon-violet">bald</code>）。
+                      これらは
+                      <strong className="text-foreground">キャプションには書かれず（＝トリガーに焼き込まれ）</strong>
+                      、生成時にプロンプトへ戻して使います。
                     </p>
                   </div>
                   {/* 2026-09-22: 「追加で埋め込むタグ」欄は廃止（ホスト判断）。
