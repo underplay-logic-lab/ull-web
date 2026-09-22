@@ -132,6 +132,7 @@ import {
   CROP_REVIEW_PANEL_ID,
   DIAGNOSTICS_PANEL_ID,
   METADATA_PANEL_ID,
+  SUBJECTS_PANEL_ID,
   LORA_SETTINGS_ANCHOR_ID,
   SUBJECT_HINT_SEEN_KEY,
   RepeatWeightPanel,
@@ -2418,12 +2419,15 @@ export function LoraStudioTab({
       (prevCapRunningRef.current && !autoCap.running) ||
       (analysisStarted && !autoCap.running && pendingCaptionCount === 0);
     prevCapRunningRef.current = autoCap.running;
+    // 確認待ちの間は診断へ送らない（2026-09-22、ホスト報告「開始直後に診断へ
+    // 飛んでから確認欄へ飛ぶ」）。確認後の遷移は scrolledAfterConfirmRef が担う。
+    if (needsIdentityConfirm || scrolledToMetaRef.current) return;
     if (!finished || scrolledToDiagRef.current || images.length === 0 || !analysisStarted) return;
     scrolledToDiagRef.current = true;
     document
       .getElementById(DIAGNOSTICS_PANEL_ID)
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [autoCap.running, images.length, analysisStarted, pendingCaptionCount]);
+  }, [autoCap.running, images.length, analysisStarted, pendingCaptionCount, needsIdentityConfirm]);
 
 
   // 診断は DatasetDiagnosticsPanel も内部で同じ計算をするが、導線の判定にも
@@ -4113,7 +4117,12 @@ export function LoraStudioTab({
                 ブロックの一部に見えていた。複数人物のときは1人目も同じ枠で
                 囲んで「N人目」の見出しを付ける。1人だけのときは従来どおり
                 素のまま（枠と番号はノイズにしかならない）。 */}
-            <label className="mb-1 block text-[11px] font-medium text-muted">トリガーワード（任意）</label>
+            <label
+              id={SUBJECTS_PANEL_ID}
+              className="mb-1 block scroll-mt-24 text-[11px] font-medium text-muted"
+            >
+              トリガーワード（任意）
+            </label>
             {(() => {
               const multiSubject = !yamlMode && isSdxlJob && extraSubjects.length > 0;
               const triggerInput = (
@@ -4438,6 +4447,21 @@ export function LoraStudioTab({
                       </label>
                     )}
                     {flowHint("identityConfirm")}
+                    {/* 確認して直す場所は上の「学習したい特徴」（2026-09-22、
+                        ホスト指摘）。ここからジャンプできるようにする。 */}
+                    {needsIdentityConfirm && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          document
+                            .getElementById(SUBJECTS_PANEL_ID)
+                            ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                        }
+                        className="mt-1 inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20"
+                      >
+                        ↑ 抽出した特徴を見に行く（直せます）
+                      </button>
+                    )}
                     <p className="mt-1 text-[10px] leading-relaxed text-muted">
                       トリガーワード＋性別/人数タグ＋下の「見た目の固定特徴」から組み立てています。
                       <strong className="text-foreground">キャプションには書かれない（＝トリガーに焼き込む）特徴を、生成時にプロンプトへ戻すための欄</strong>です。

@@ -106,6 +106,9 @@ export const DIAGNOSTICS_PANEL_ID = "lora-diagnostics-panel";
 /** メタデータ確認パネル。特徴の抽出が終わったらここへ送る。 */
 export const METADATA_PANEL_ID = "lora-metadata-panel";
 
+/** トリガーワード〜学習したい特徴のブロック。確認欄からここへ戻れるように。 */
+export const SUBJECTS_PANEL_ID = "lora-subjects-panel";
+
 
 /** 被写体の「特徴」欄の説明を一度読んだか（2回目以降は出さない）。 */
 export const SUBJECT_HINT_SEEN_KEY = "ull.lora.subjectHintSeen";
@@ -536,7 +539,10 @@ export function IdentityTagsField({
     <div className="mt-1.5 rounded-lg border border-border/60 bg-background/60 p-2">
       <div className="mb-1 flex flex-wrap items-center gap-1.5">
         <span className="text-[10px] font-medium text-foreground">学習したい特徴</span>
-        {!extracting && tags.length > 0 && onRedo && (
+        {/* タグが0件でも出す（2026-09-22、ホスト報告「kocho の特徴が抽出されて
+            いなかった」）。空のまま確定させると、その被写体の特徴がキャプション
+            へ書かれてトリガーに焼き込まれない。やり直す手段が要る。 */}
+        {!extracting && onRedo && (
           <button
             type="button"
             onClick={onRedo}
@@ -544,7 +550,7 @@ export function IdentityTagsField({
             title="いまの画像で抽出し直します（今の内容は破棄されます）"
             className="text-[10px] text-muted underline transition-colors hover:text-neon-violet disabled:opacity-40"
           >
-            抽出し直す
+            {tags.length > 0 ? "抽出し直す" : "抽出する"}
           </button>
         )}
         {extracting && (
@@ -581,7 +587,8 @@ export function IdentityTagsField({
         <p className={`mb-1.5 text-[10px] ${blockedReason && !extracting ? "text-amber-400" : "text-muted"}`}>
           {extracting
             ? "画像を解析しています…"
-            : (blockedReason ?? "画像を取り込むと、この人物の変わらない特徴を自動で抽出します。")}
+            : (blockedReason ??
+              "まだ特徴がありません。この被写体が写っている画像が取り込まれているか確認して、右上の「抽出する」を押してください。空のままだと、この人物の特徴がキャプションに書かれてトリガーに焼き込まれません。")}
         </p>
       )}
 
