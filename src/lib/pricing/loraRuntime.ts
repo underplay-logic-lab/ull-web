@@ -87,7 +87,8 @@ export const LORA_SPI_BASELINE: Readonly<Record<string, number>> = {
   qwen_image: 0.72,
   // 2026-09-23 実測 0.57（実写220枚・1024px・batch1・block_compile・50step、B300、docs §14.19）。20% 上乗せで 0.69。
   krea2: 0.69,
-  anima: 0.50,
+  // 2026-09-23 実測 0.51（実写220枚・1024px・batch1・block_compile・50step、B300、docs §14.21）。20% 上乗せで 0.61。
+  anima: 0.61,
   // 2026-09-23 実測 0.27（実写220枚・1024px・batch1・block_compile・50step、B300、docs §14.20）。20% 上乗せで 0.32。
   zimage: 0.32,
   // 2026-09-23 実測 0.295（実写220枚・1024px・batch1・compile 無し・50step、B300、docs §14.18）。20% 上乗せで 0.35。
@@ -128,6 +129,8 @@ export const LORA_ARCH_PROFILE: Readonly<
   krea2: { prepLoadS: 150, prepPerImageS: 0.3, gpu: "b300" },
   // §14.20: prep 120s（load 36 + JIT 51 + latent 33 = 0.15s/枚）、VRAM 46.5GB（L40S は不可、RTX PRO 6000 候補）。
   zimage: { prepLoadS: 100, prepPerImageS: 0.15, gpu: "b300" },
+  // §14.21: prep 127s（load 27 + JIT 56 + latent 44 = 0.20s/枚）、VRAM 30.6GB（L40S に 33% 余裕、RTX PRO 6000 候補）。
+  anima: { prepLoadS: 100, prepPerImageS: 0.2, gpu: "b300" },
 };
 
 /** arch を回す GPU tier。sd-scripts 系は L40S 固定、ai-toolkit 系はプロファイル、無ければ B300。 */
