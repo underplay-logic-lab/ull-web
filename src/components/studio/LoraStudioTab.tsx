@@ -3084,7 +3084,22 @@ export function LoraStudioTab({
       }
     });
 
-    const keptImages: DatasetImage[] = kept.map((p) => ({ id: p.id, file: p.file, url: p.url }));
+    // ⚠️ ここで画像オブジェクトを作り直すと **repeats（学習回数）と cropKind が
+    // 落ちる**（2026-09-22、ホスト報告「構図の偏りはやっているのにログが
+    // repeats x1」）。キュレーションを既定 ON にしたので全ジョブがこの経路を
+    // 通り、学習回数は毎回失われていた。元の画像から id で引いて引き継ぐ。
+    const srcById = new Map(images.map((i) => [i.id, i]));
+    const keptImages: DatasetImage[] = kept.map((p) => {
+      const src = srcById.get(p.id);
+      return {
+        id: p.id,
+        file: p.file,
+        url: p.url,
+        repeats: src?.repeats,
+        cropKind: src?.cropKind,
+        sizeVerdict: src?.sizeVerdict,
+      };
+    });
     // Keep the async-read refs consistent immediately (their sync effects only
     // run after the next commit, but runTraining / an in-flight pass may read
     // them before that).
@@ -3109,7 +3124,8 @@ export function LoraStudioTab({
         ja: p.captionJa.trim(),
       })),
     );
-  }, []);
+    // images は repeats / cropKind を引き継ぐために読む。
+  }, [images]);
 
   // While the curation screen is open, mirror every caption edit / removal
   // back to the form state + the localStorage cache on a short debounce. This
@@ -3147,7 +3163,22 @@ export function LoraStudioTab({
     const kept = curationPairs.filter((p) => !p.excluded);
     if (!kept.length) return;
     flushCurationToForm(curationPairs);
-    const keptImages: DatasetImage[] = kept.map((p) => ({ id: p.id, file: p.file, url: p.url }));
+    // ⚠️ ここで画像オブジェクトを作り直すと **repeats（学習回数）と cropKind が
+    // 落ちる**（2026-09-22、ホスト報告「構図の偏りはやっているのにログが
+    // repeats x1」）。キュレーションを既定 ON にしたので全ジョブがこの経路を
+    // 通り、学習回数は毎回失われていた。元の画像から id で引いて引き継ぐ。
+    const srcById = new Map(images.map((i) => [i.id, i]));
+    const keptImages: DatasetImage[] = kept.map((p) => {
+      const src = srcById.get(p.id);
+      return {
+        id: p.id,
+        file: p.file,
+        url: p.url,
+        repeats: src?.repeats,
+        cropKind: src?.cropKind,
+        sizeVerdict: src?.sizeVerdict,
+      };
+    });
     const caps = kept.map((p) => p.caption.trim());
     // A .txt/ZIP dataset stays "bring your own" (blank = intentional). An
     // AI-captioned one keeps its VLM gap-fill even after culling images.
