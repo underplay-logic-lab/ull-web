@@ -3598,7 +3598,7 @@ export function LoraStudioTab({
                   <p className="text-[10px] leading-relaxed text-amber-400">
                     このうち <strong>{multiSubjectCrops.length} 枚</strong>{" "}
                     は、切り出したあとも2人以上写っていると判定されました。
-                    <strong>下のサムネイルのうち、琥珀色の枠が付いているものがそれです。</strong>
+                    <strong>上のサムネイル一覧で琥珀色の枠が付いているものがそれです。</strong>
                     <br />
                     <strong>両方の顔がはっきり写っているなら残してください</strong>
                     ——2人が同じ絵にいる構図は貴重な素材です。

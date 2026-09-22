@@ -554,6 +554,40 @@ export function applySubjectFixedTags(caption: string, subjects: LoraSubject[]):
  * LoraStudioTab.tsx's live `captions` state and DatasetCurationUI.tsx's
  * `CurationPair[]` reuse this one implementation).
  */
+/**
+ * キャプション中のどこにあっても被写体トリガーを**先頭へ寄せる**（2026-09-22）。
+ *
+ * `matchLeadingSubjectTriggers` は先頭から連続するトリガーしか見ない。AI が
+ * `hitozuma, 1woman, kocho, ...` のように間へ別のタグを挟むと 2人目が数えられ
+ * ず、①診断の被写体集計が単独扱いになる ②keep_tokens が足りず
+ * `shuffle_caption` でトリガーが後方へ飛ぶ ③「2人写っている切り出し」の警告が
+ * 出ない、という3つの不具合が同時に起きる（ホスト報告「枠が付いていないのに
+ * duo のキャプションが付いているものがそれなりに出てくる」）。
+ *
+ * 並びは**被写体の登録順**に揃える。毎回同じ順序にしないと keep_tokens が
+ * 画像ごとにブレる。重複して現れたトリガーは1つに畳む。
+ */
+export function hoistSubjectTriggers(caption: string, subjects: LoraSubject[]): string {
+  const text = caption.trim();
+  if (!text) return text;
+  const tokens = text.split(/\s*[,、]\s*/).filter(Boolean);
+  const found = new Set<string>();
+  const rest: string[] = [];
+  for (const tok of tokens) {
+    const hit = subjects.find((x) => x.trigger.trim() && isSubjectToken(tok, x));
+    if (hit) {
+      found.add(hit.trigger.trim());
+      continue;
+    }
+    rest.push(tok);
+  }
+  if (found.size === 0) return text;
+  const ordered = subjects
+    .map((x) => x.trigger.trim())
+    .filter((t) => t && found.has(t));
+  return [...ordered, ...rest].join(", ");
+}
+
 export function normalizeSubjectTags(
   entries: { id: string; caption: string }[],
   subjects: LoraSubject[],
@@ -562,20 +596,23 @@ export function normalizeSubjectTags(
   const counts = new Map<string, Map<string, number>>(); // trigger -> tag -> count
   const soloForVote = new Map<string, { trigger: string; tokens: string[] }>(); // id -> parsed
 
-  for (const { id, caption } of entries) {
-    if (!caption.trim()) continue;
+  for (const { id, caption: raw } of entries) {
+    if (!raw.trim()) continue;
+    // 先頭に寄せてから判定する（hoistSubjectTriggers のコメント参照）。
+    const caption = hoistSubjectTriggers(raw, subjects);
+    if (caption !== raw.trim()) fixes.set(id, caption);
     const present = matchLeadingSubjectTriggers(caption, subjects);
     if (present.length === 0) continue;
 
     if (present.every((s) => s.fixedTags?.trim())) {
       const fixed = applySubjectFixedTags(caption, subjects);
-      if (fixed !== caption.trim()) fixes.set(id, fixed);
+      if (fixed !== caption) fixes.set(id, fixed);
       continue;
     }
     if (present.length !== 1) continue; // group shot, not fully fixed-tagged — leave as-is
     const subject = present[0];
 
-    const tokens = caption.trim().split(/\s*[,、]\s*/);
+    const tokens = caption.split(/\s*[,、]\s*/);
     const tag = tokens[1]?.trim();
     if (!tag || !GENDER_AGE_TAG_RE.test(tag)) continue;
     soloForVote.set(id, { trigger: subject.trigger, tokens });
