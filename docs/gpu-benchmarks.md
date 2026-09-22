@@ -1492,6 +1492,25 @@ WAN と同じ 220枚・1024px・batch 1・rank 32・block_compile。`metadata.me
 - prep の metrics は model_load を拾えていない（null）。wall 767s − 50×0.92 − コールド ≈ 600s が実態で、
   knob 828 は安全側。
 
+### 14.18 flux2_klein_4b の実ジョブ実測（2026-09-23、B300、GUI から 50step）
+
+同じ 220枚・1024px・batch 1・rank 32。compile 無し。`metadata.metrics`:
+
+| 項目 | 実測 | それまでの knob / 推測 |
+|---|---|---|
+| **s/it** | **0.2948** | 0.40 |
+| prep 合計 | **123.6s**（model load 27.8 + JIT 48.4 + latent 47.4 = **0.215秒/枚**） | 828 + 1.33×220 = **1,120s** |
+| 全体 wall | **176s**（コールド込み） | — |
+| VRAM peak | **38.2GB** | — |
+| 課金 / 原価 | 692C = ¥1,149 / 約 **¥59** | 粗利 **95%（取り過ぎ）** |
+
+- **prep の knob が軽い arch では 9倍の過大**。692C のうち 679C が prep 分（1,120s × 0.606）で、
+  s/it はほぼ効いていない。minimax（逆量子化・巨大 compile）基準の固定費を全 arch に掛けているため。
+  → **prep_load / per_image を arch 別にする**必要がある（s/it は既に arch 別）。
+- **VRAM 38GB は RTX PRO 6000（96GB）に余裕で収まる**。L40S（46GB）は 17% しか余らず薄い。
+  arch 別 tier の本命候補。ただし tier を変えると GPU 時給も変わるので、**credits/GPU秒も arch 別**が要る。
+- `LORA_SPI_BASELINE.flux2_klein_4b` 0.40 → **0.35**。
+
 ## 15. LoRAデータセットのアップロード速度（2026-09-20）
 
 同一データセット（131枚 / 52.2MB、原本は全枚数が長辺1536超）を本番経路で計測。

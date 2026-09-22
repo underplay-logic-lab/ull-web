@@ -88,7 +88,8 @@ export const LORA_SPI_BASELINE: Readonly<Record<string, number>> = {
   krea2: 0.72,
   anima: 0.50,
   zimage: 0.42,
-  flux2_klein_4b: 0.40,
+  // 2026-09-23 実測 0.295（実写220枚・1024px・batch1・compile 無し・50step、B300、docs §14.18）。20% 上乗せで 0.35。
+  flux2_klein_4b: 0.35,
   // --- sd-scripts ワーカー（別 tier・別スタック）---
   // 0.642 は「step 数だけ変えた2回の実行の総経過時間を連立で分離」して出した
   // 値で、下記の tqdm パースのバグとは無関係。よって据え置く。
