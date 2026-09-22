@@ -3274,3 +3274,89 @@ def bench(
     print(f"{'image':<40} {'sec':>8} {'peak GB':>9} {'end GB':>8}")
     for tag, sec, peak, end in rows:
         print(f"{tag:<40} {sec:>8} {str(peak):>9} {str(end):>8}")
+
+
+# ---------------------------------------------------------------------------
+# 動画超解像: 課金前の ffprobe 実測（2026-09-23、ホスト判断「確定課金で最初から正しい額」）
+# ---------------------------------------------------------------------------
+# ブラウザは動画の秒数は取れるが fps は取れない（HTML5 に API が無く、tab 側は
+# captureStream が効かないと 30 を仮定する）。実ジョブで申告 151フレーム@30fps に対し
+# 実ファイルが 121フレーム@24fps で 62C 取り過ぎた。課金はフレーム数で確定するので、
+# Next の generate route が課金する前にここで実測し、その値で値付けする。GPU は使わない。
+# ffprobe は URL を直接読む（moov が先頭にあれば数百 KB で済む）。
+probe_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("ffmpeg")
+    .pip_install("fastapi[standard]")
+)
+
+
+def _ffprobe_url(url: str, timeout_s: int = 40) -> dict:
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,r_frame_rate,avg_frame_rate,nb_frames",
+                "-show_entries", "format=duration",
+                "-of", "json", url,
+            ],
+            capture_output=True, text=True, timeout=timeout_s,
+        )
+        info = json.loads(out.stdout or "{}")
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"ffprobe failed: {exc}"}
+    stream = (info.get("streams") or [{}])[0]
+    fmt = info.get("format") or {}
+
+    def _rate(s) -> float:
+        try:
+            num, den = str(s).split("/")
+            return float(num) / float(den) if float(den) else 0.0
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    # avg_frame_rate は VFR でも実平均。r_frame_rate はタイムベース由来で大きめに出ることがある。
+    fps = _rate(stream.get("avg_frame_rate", "0/1")) or _rate(stream.get("r_frame_rate", "0/1"))
+    try:
+        duration = float(fmt.get("duration") or 0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    width = int(stream.get("width") or 0)
+    height = int(stream.get("height") or 0)
+    try:
+        frame_count = int(stream.get("nb_frames") or 0)
+    except (TypeError, ValueError):
+        frame_count = 0
+    if frame_count <= 0 and fps > 0 and duration > 0:
+        frame_count = int(round(fps * duration))
+    if not (width > 0 and height > 0 and duration > 0 and frame_count > 0):
+        return {"ok": False, "error": f"ffprobe returned no usable stream: {info}"[:400]}
+    return {
+        "ok": True,
+        "width": width,
+        "height": height,
+        "fps": round(fps, 3),
+        "duration": round(duration, 3),
+        "frame_count": frame_count,
+    }
+
+
+@app.function(
+    image=probe_image,
+    timeout=60,
+    scaledown_window=30,
+    secrets=[modal.Secret.from_name("wan-animate-auth")],
+)
+@modal.fastapi_endpoint(method="POST")
+def probe_upscale_video(item: dict, request: fastapi.Request):
+    """POST 同期。入力: { video: <署名付き URL> } → 出力: { ok, width, height, fps, duration, frame_count }。
+    失敗時は { ok: false, error } を 200 で返す（呼び出し側は申告値へフォールバック）。"""
+    _authorize(request)
+    url = str(item.get("video") or "").strip()
+    if not url.startswith(("http://", "https://")):
+        return {"ok": False, "error": "video must be an http(s) URL"}
+    t0 = time.time()
+    r = _ffprobe_url(url)
+    r["probe_s"] = round(time.time() - t0, 2)
+    print(f"[probe-video] {r}", flush=True)
+    return r

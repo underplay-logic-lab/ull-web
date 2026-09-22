@@ -283,3 +283,52 @@ export async function spawnUpscaleVideoJob(
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
+
+
+/** 課金前の動画 ffprobe 実測（modal_seedvr2_worker.py::probe_upscale_video）。
+ * ブラウザは fps を取れないので、申告値ではなくここで測った実フレーム数で値付けする
+ * （2026-09-23）。失敗時は null を返し、呼び出し側は申告値へフォールバックする。 */
+export type ProbedVideoMeta = {
+  width: number;
+  height: number;
+  fps: number;
+  duration: number;
+  frameCount: number;
+};
+
+export async function probeUpscaleVideo(videoUrl: string): Promise<ProbedVideoMeta | null> {
+  const url = process.env.MODAL_SEEDVR2_VIDEO_PROBE_URL?.trim();
+  const authToken = process.env.MODAL_AUTH_TOKEN?.trim();
+  if (!url || !authToken) return null;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-modal-secret": authToken,
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({ video: videoUrl }),
+      signal: AbortSignal.timeout(50_000),
+    });
+    const data = (await res.json().catch(() => null)) as
+      | { ok?: boolean; width?: number; height?: number; fps?: number; duration?: number; frame_count?: number; error?: string }
+      | null;
+    if (!res.ok || !data?.ok) {
+      console.warn("[modalUpscale] probeUpscaleVideo failed:", res.status, data?.error);
+      return null;
+    }
+    const meta = {
+      width: Number(data.width),
+      height: Number(data.height),
+      fps: Number(data.fps),
+      duration: Number(data.duration),
+      frameCount: Number(data.frame_count),
+    };
+    if (!Object.values(meta).every((v) => Number.isFinite(v) && v > 0)) return null;
+    return meta;
+  } catch (err) {
+    console.warn("[modalUpscale] probeUpscaleVideo error:", err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}

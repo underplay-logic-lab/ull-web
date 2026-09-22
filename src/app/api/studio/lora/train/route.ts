@@ -85,7 +85,7 @@ function sanitizeTrainingConfig(raw: unknown): Record<string, unknown> {
   // 構造的な健全性だけを見る素朴なクランプ（UI のスライダー上限と同値）。
   // 「この設定で 12時間に収まるか」は arch / 解像度 / 枚数が揃ってからでないと
   // 判定できないので、下の loraMaxSteps() による明示的な拒否で見る。
-  if (steps !== undefined) out.steps = Math.min(LORA_MAX_STEPS, Math.max(200, Math.round(steps)));
+  if (steps !== undefined) out.steps = Math.min(LORA_MAX_STEPS, Math.max(50, Math.round(steps))); // UI の STEPS_MIN と同値（2026-09-23: 200→50）
   if (typeof src.optimizer === "string" && src.optimizer.trim()) {
     out.optimizer = src.optimizer.trim().slice(0, 40);
   }

@@ -349,7 +349,8 @@ export const LORA_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 // stray keystroke on Rank/LR used to silently wreck a paid run).
 export const RANK_OPTIONS = [8, 16, 32, 64, 128] as const;
 export const ALPHA_OPTIONS = [8, 16, 32, 64, 128] as const;
-export const STEPS_MIN = 200;
+// 2026-09-23: 200 → 50。s/it や VRAM を測るだけの短い確認ランを UI から投げられるようにする（ホスト判断）。
+export const STEPS_MIN = 50;
 export const STEPS_MAX = LORA_MAX_STEPS;
 export const STEPS_STEP = 50;
 export const STEPS_QUICK: { value: number; label: string }[] = [

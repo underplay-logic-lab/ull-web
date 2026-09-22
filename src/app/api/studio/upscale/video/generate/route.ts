@@ -4,6 +4,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { spawnUpscaleVideoJob } from "@/lib/modalUpscale";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
+import { probeUpscaleVideo } from "@/lib/modalUpscale";
 import { upscaleVideoMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import { createStudioUploadSignedUrl } from "@/lib/studioUploads.server";
 import {
@@ -83,17 +84,37 @@ export async function POST(request: Request) {
     : DEFAULT_UPSCALE_VIDEO_PRESET;
   const preset = getUpscaleVideoPreset(presetId);
 
-  const durationSec = Number(body.durationSec);
-  const fps = Number(body.fps);
-  const width = Number(body.width);
-  const height = Number(body.height);
+  let durationSec = Number(body.durationSec);
+  let fps = Number(body.fps);
+  let width = Number(body.width);
+  let height = Number(body.height);
 
-  const hasValidMeta =
+  let hasValidMeta =
     Number.isFinite(durationSec) && durationSec > 0 &&
     Number.isFinite(fps) && fps > 0 &&
     Number.isFinite(width) && width > 0 &&
     Number.isFinite(height) && height > 0;
 
+  // 課金前に ffprobe で実測する（2026-09-23）。ブラウザは fps を取れず 30 を仮定する
+  // ことがあり、申告フレーム数で確定課金すると取り過ぎ／取り漏れが出る（実ジョブで
+  // 151→121 フレーム、62C の取り過ぎ）。署名 URL を先に発行し、Modal の CPU 関数で
+  // 実測した値で値付けする。失敗時は従来どおり申告値（無ければ worst-case）。
+  // 動画本体は Vercel 関数を経由させない — worker / probe に直接 fetch させる。
+  let videoUrl: string;
+  try {
+    videoUrl = await createStudioUploadSignedUrl(user.id, storagePath, SIGNED_URL_EXPIRES_S);
+  } catch (err) {
+    return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+  }
+  const claimed = { durationSec, fps, width, height, valid: hasValidMeta };
+  const probed = await probeUpscaleVideo(videoUrl);
+  if (probed) {
+    durationSec = probed.duration;
+    fps = probed.fps;
+    width = probed.width;
+    height = probed.height;
+    hasValidMeta = true;
+  }
   if (hasValidMeta && durationSec > UPSCALE_VIDEO_MAX_SECONDS + 0.5) {
     return NextResponse.json(
       { error: `動画は${UPSCALE_VIDEO_MAX_SECONDS}秒以内にしてください（${durationSec.toFixed(1)}秒でした）。` },
@@ -140,13 +161,6 @@ export async function POST(request: Request) {
   // 動画本体は Vercel 関数を経由させない — 署名付き URL を発行し、Modal
   // worker に直接 fetch させる（_load_input_bytes が URL をサポート済み・
   // supabase.co は _ALLOWED_IMAGE_HOSTS 許可済み）。
-  let videoUrl: string;
-  try {
-    videoUrl = await createStudioUploadSignedUrl(user.id, storagePath, SIGNED_URL_EXPIRES_S);
-  } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 400 });
-  }
-
   // --- credits ---------------------------------------------------------
   const { data: profile, error: profileError } = await getOrCreateProfile(
     user.id,
@@ -204,6 +218,10 @@ export async function POST(request: Request) {
         in_duration_claimed: hasValidMeta ? durationSec : null,
         in_fps_claimed: hasValidMeta ? fps : null,
         frame_count_claimed: frameCount || null,
+        meta_source: probed ? "ffprobe" : claimed.valid ? "client" : "worst_case",
+        client_claimed: claimed.valid
+          ? { duration: claimed.durationSec, fps: claimed.fps, width: claimed.width, height: claimed.height }
+          : null,
         preset: presetId,
         target_short: targetShort,
         model_label: model.label,
