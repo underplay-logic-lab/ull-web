@@ -150,5 +150,14 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
       hint: "足りない構図を切り出すか、このまま学習へ進むか選べます",
     };
   }
+  // 赤はあるがクロップでは埋まらない（向き・姿勢・背景など）。黙って学習回数へ
+  // 送ると「なぜクロップが光らないのか」が分からないので、理由を書く
+  // （2026-09-22、ホスト指摘）。
+  if (v.diagnosticErrors > 0) {
+    return {
+      targets: ["repeats", "submit"],
+      hint: "診断の指摘は切り出しでは埋まりません（素材を足すか、学習回数で調整するか、このまま進みます）",
+    };
+  }
   return { targets: ["repeats", "submit"], hint: "学習回数を調整するか、このまま学習へ進みます" };
 }
