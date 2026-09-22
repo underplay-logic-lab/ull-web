@@ -89,6 +89,32 @@ body {
   animation: pulse-glow 4s ease-in-out infinite;
 }
 
+/* LoRA Studio の「次にやること」を示す枠（2026-09-22）。
+   既存の警告色（赤＝要確認 / 琥珀＝注意）と混同しないようピンク系に統一する。
+   常に1〜2箇所しか付かない（src/lib/loraFlowStep.ts が決める）。
+   prefers-reduced-motion では点滅を止め、枠だけ残す。 */
+@keyframes flow-next {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px rgba(255, 42, 133, 0.55), 0 0 12px rgba(255, 42, 133, 0.25);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(255, 42, 133, 0.9), 0 0 22px rgba(255, 42, 133, 0.5);
+  }
+}
+
+.flow-next {
+  border-radius: 0.75rem;
+  animation: flow-next 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-next {
+    animation: none;
+    box-shadow: 0 0 0 2px rgba(255, 42, 133, 0.8);
+  }
+}
+
 @keyframes float {
   0%,
   100% {

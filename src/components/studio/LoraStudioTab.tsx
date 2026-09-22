@@ -80,13 +80,14 @@ import {
   type ResolvedCaptionMode,
   matchLeadingSubjectTriggers,
 } from "@/lib/loraCaptionSpec";
-import { captionBuckets, DIAGNOSTIC_AXES, suggestRepeats } from "@/lib/datasetDiagnostics";
+import { analyzeDataset, captionBuckets, DIAGNOSTIC_AXES, suggestRepeats } from "@/lib/datasetDiagnostics";
 import { DatasetDiagnosticsPanel } from "@/components/studio/DatasetDiagnosticsPanel";
 import { translateCaption } from "@/lib/loraTranslate";
 import { extractIdentityTags } from "@/lib/loraCaption";
 import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
 import { generateDatasetCaptions, captionFileKey } from "@/lib/loraCaption";
 import { runSmartCrop, type SmartCropKind } from "@/lib/smartCrop";
+import { loraFlowStep, type LoraFlowTarget } from "@/lib/loraFlowStep";
 import { prepareDatasetImage, type ImageSizeVerdict } from "@/lib/datasetImagePrep";
 
 // 切り出し結果を捨てる閾値（2026-09-21、ホスト指摘「粗い画像を学習しちゃう
@@ -2353,6 +2354,50 @@ export function LoraStudioTab({
     [images, captions, userCaptionIds],
   );
   const pendingCaptionCount = incompleteImages.length;
+
+  // 診断は DatasetDiagnosticsPanel も内部で同じ計算をするが、導線の判定にも
+  // 要る。純関数なので二重に走っても実害は無い（数百件で数ms）。
+  const flowDiag = useMemo(() => analyzeDataset(diagnosticItems, allSubjects), [diagnosticItems, allSubjects]);
+
+  // 「次にやること」を光らせる（2026-09-22、ホスト提案）。状態は持たず、
+  // 画面の状態から毎回導出する。判定は src/lib/loraFlowStep.ts。
+  const flow = useMemo(
+    () =>
+      loraFlowStep({
+        isSdxlJob,
+        yamlMode,
+        busy: phase !== "form" || submitting,
+        triggerFilled: Boolean(effectiveTrigger.trim()),
+        genderTagMissing: allSubjects.some((x) => !(x.fixedTags ?? "").trim()),
+        imageCount: images.length,
+        needsIdentityConfirm,
+        captionRunning: autoCap.running,
+        pendingCaptionCount,
+        diagnosticErrors: flowDiag.issues.filter((x) => x.level === "error").length,
+        cropAvailable: flowDiag.issues.some(
+          (x) => x.fixableWith === "smart_crop" && (x.cropKinds?.length ?? 0) > 0,
+        ),
+      }),
+    [
+      isSdxlJob,
+      yamlMode,
+      phase,
+      submitting,
+      effectiveTrigger,
+      allSubjects,
+      images.length,
+      needsIdentityConfirm,
+      autoCap.running,
+      pendingCaptionCount,
+      flowDiag,
+    ],
+  );
+  const flowRing = (t: LoraFlowTarget) => (flow.targets.includes(t) ? " flow-next" : "");
+  const flowHint = (t: LoraFlowTarget) =>
+    flow.targets.includes(t) ? (
+      <p className="mt-1 text-[10px] font-medium text-neon-pink">→ {flow.hint}</p>
+    ) : null;
+
   // Of the incomplete ones, how many actually errored out (vs. never started).
   const captionErrorCount = useMemo(
     () => incompleteImages.filter((img) => captionErrorIds.has(img.id)).length,
@@ -3484,6 +3529,7 @@ export function LoraStudioTab({
             </span>
           </label>
 
+          <div className={`rounded-xl${flowRing("dropzone")}`}>
           <ImageDropzone
             images={images}
             onAdd={addImages}
@@ -3511,6 +3557,8 @@ export function LoraStudioTab({
             selectedIds={selectedImageIds}
             onSelectedChange={setSelectedImageIds}
           />
+          </div>
+          {flowHint("dropzone")}
 
           {/* 短辺が足りない画像の警告と、超解像タブへの導線（2026-09-21）。
               ワーカーは bucket_no_upscale なので小さい画像は引き伸ばされず、
@@ -3611,7 +3659,7 @@ export function LoraStudioTab({
                 type="button"
                 disabled={busy}
                 onClick={() => void recaptionIncomplete()}
-                className="inline-flex items-center gap-1.5 rounded-md border border-amber-400/60 bg-amber-400/10 px-3 py-1.5 font-semibold text-amber-200 transition-colors hover:bg-amber-400/20 disabled:opacity-50"
+                className={`inline-flex items-center gap-1.5 rounded-md border border-amber-400/60 bg-amber-400/10 px-3 py-1.5 font-semibold text-amber-200 transition-colors hover:bg-amber-400/20 disabled:opacity-50${flowRing("recaption")}`}
               >
                 <RotateCcw size={12} />
                 🔄 未完了の画像（{pendingCaptionCount}枚）を再解析
@@ -3770,6 +3818,7 @@ export function LoraStudioTab({
 
           {/* 診断の下にクロップ欄を置く（2026-09-22、ホスト指摘）。
               何が足りないかを見てから切り出す、という順番にする。 */}
+          <div className={`rounded-xl${flowRing("crop")}`}>
           <SmartCropPanel
             images={images}
             disabled={busy}
@@ -3782,12 +3831,14 @@ export function LoraStudioTab({
             smartCropProgress={smartCropProgress}
             onSmartCrop={(ids, kinds) => void runSmartCropForDataset(ids, kinds)}
           />
-
+          </div>
+          {flowHint("crop")}
 
           {/* データセットを触る工程の最後（2026-09-22、ホスト指摘）。
               取り込み → クロップ → 診断 を見てから比率を決める操作なので、
               順番として最後でないと「これで終わりなのか」が分からなくなる。 */}
           {images.length > 0 && (
+            <div className={`rounded-xl${flowRing("repeats")}`}>
             <RepeatWeightPanel
               images={images}
               disabled={busy}
@@ -3802,7 +3853,9 @@ export function LoraStudioTab({
                   ?.scrollIntoView({ behavior: "smooth", block: "start" })
               }
             />
+            </div>
           )}
+          {flowHint("repeats")}
 
           {zipBusy && (
             <p className="flex items-center gap-1.5 text-[11px] text-neon-violet">
@@ -3914,8 +3967,14 @@ export function LoraStudioTab({
                         : "yukipas（空欄なら LoRA 名から自動）"
                   }
                   disabled={busy || yamlMode}
-                  className={`${fieldCls} font-mono ${yamlMode ? "opacity-60" : ""}`}
+                  className={`${fieldCls} font-mono ${yamlMode ? "opacity-60" : ""}${flowRing("trigger")}`}
                 />
+              );
+              const triggerHint = (
+                <>
+                  {flowHint("trigger")}
+                  {flowHint("genderTag")}
+                </>
               );
               if (!multiSubject) {
                 return (
@@ -3923,7 +3982,10 @@ export function LoraStudioTab({
                     {triggerInput}
                     {!yamlMode && isSdxlJob && (
                       <>
-                        <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
+                        <div className={`rounded-xl${flowRing("genderTag")}`}>
+                          <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
+                        </div>
+                        {triggerHint}
                         <input
                           value={primaryDescription}
                           onChange={(e) => setPrimaryDescription(e.target.value)}
@@ -3965,7 +4027,10 @@ export function LoraStudioTab({
                 <div className="rounded-lg border border-neon-violet/30 bg-neon-violet/5 p-2">
                   <div className="mb-1 text-[10px] font-semibold text-neon-violet">1人目</div>
                   {triggerInput}
-                  <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
+                  <div className={`rounded-xl${flowRing("genderTag")}`}>
+                          <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
+                        </div>
+                  {triggerHint}
                   <input
                     value={primaryDescription}
                     onChange={(e) => setPrimaryDescription(e.target.value)}
@@ -4044,6 +4109,7 @@ export function LoraStudioTab({
                     }}
                     className={`${fieldCls} font-mono`}
                   />
+                  <div className={`rounded-xl${flowRing("genderTag")}`}>
                   <GenderTagPicker
                     value={s.fixedTags ?? ""}
                     onChange={(next) =>
@@ -4051,6 +4117,7 @@ export function LoraStudioTab({
                     }
                     disabled={busy}
                   />
+                  </div>
                   <input
                     value={s.description}
                     onChange={(e) =>
@@ -4186,7 +4253,9 @@ export function LoraStudioTab({
                         ユーザーの手元へ渡るものなので、目視確認するまで学習を
                         開始させない（ホスト方針）。 */}
                     {effectiveEmbedTags.trim() && (
-                      <label className="mt-2 flex cursor-pointer items-start gap-1.5 text-[10px] leading-relaxed text-foreground">
+                      <label
+                        className={`mt-2 flex cursor-pointer items-start gap-1.5 rounded-lg p-1 text-[10px] leading-relaxed text-foreground${flowRing("identityConfirm")}`}
+                      >
                         <input
                           type="checkbox"
                           checked={identityConfirmed}
@@ -4202,6 +4271,7 @@ export function LoraStudioTab({
                         </span>
                       </label>
                     )}
+                    {flowHint("identityConfirm")}
                     <p className="mt-1 text-[10px] leading-relaxed text-muted">
                       トリガーワード＋性別/人数タグ＋下の「見た目の固定特徴」から組み立てています。
                       <strong className="text-foreground">キャプションには書かれない（＝トリガーに焼き込む）特徴を、生成時にプロンプトへ戻すための欄</strong>です。
@@ -4780,7 +4850,7 @@ export function LoraStudioTab({
                 (Boolean(user) && autoCap.running) ||
                 (Boolean(user) && !insufficientCredits && needsIdentityConfirm)
               }
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              className={`flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50${flowRing("submit")}`}
             >
               {submitting ? (
                 <>
