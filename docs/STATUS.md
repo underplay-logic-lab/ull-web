@@ -838,6 +838,10 @@ worker を先に上げると `r2_keys` が付いた瞬間に Volume 側が消え
   トップページのセクション `support` として登録（`HomeSections` / `DEFAULT_PAGE_SECTIONS` で pricing の次。**DB に保存済みの並びには
   末尾に足されるので、位置は admin の SectionManager で pricing の下へ動かす** → ホストが 2026-09-24 に移動済み）。金額指定のチェックアウト作成は Polar で確認済み（未決済）。
 
+- **同日追加（ホスト要望）**: Director の出力解像度（route が `metadata.out_width/out_height` を記録、画質モード欄で予告・完了画面に
+  W×H・秒数・24fps）／動画超解像に Before/After 比較（`VideoCompare`、after の controls に before を追従。このセッションで投げた
+  ジョブのみ）／支援セクションに「要望・リクエストはお問い合わせへ」の誘導（`support_request_copy`、CMS 編集可）。
+
 ### 残課題: LoRA の「結果がいまいちな時」ヒント（2026-09-23、ホスト発案・未着手）
 
 置き場は 2 つ: ①ローンチ時に作る FAQ ページ（AI クローラー対策の FAQ と兼用、`launch-checklist-ai-seo`）、
