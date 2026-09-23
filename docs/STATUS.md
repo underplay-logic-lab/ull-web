@@ -317,8 +317,10 @@ GPU tier が検討できる。ただし CLAUDE.md §1 のとおり **1回あた�
   （prep 固定費・枚数あたり秒・GPU tier）と `LORA_SPI_BASELINE` を実測に合わせた。credits/GPU秒は
   B300 knob × tier 時給比、実行 tier は payload `gpu_tier` で worker へ（デプロイ済み）。
   まとめは gpu-benchmarks §14.22。**【完了 2026-09-23】tier 確認ラン**（§14.26）: ltx2 / krea2 → H200、
-  klein / zimage / anima → RTX PRO 6000 に切り替え済み（原価 −15〜60%）。klein / zimage は所要時間 2 倍なので
-  ホストが体感を優先するなら B300 へ戻す（`LORA_ARCH_PROFILE` 1 行）。
+  klein / zimage / anima → RTX PRO 6000 に切り替え済み（原価 −15〜60%）。ホスト判断「その程度なら安くていい」。
+  **L40S / A100 40GB / A100 80GB も実測して全部不採用**（§14.27、速度が 1.6〜2.3 倍落ちて原価は同額か高い）。
+  下限は RTX PRO 6000。**選択制（安い・遅い／高い・速い）はホストの元々の構想**で、klein/zimage の
+  「B300 で 2 倍速・20% 高」が唯一の選択肢になる。機能化は未着手（UI 2 択 + route の gpuTier 上書き）。
 - **動画超解像のダウンロードをネイティブ保存に**（`ab23ce6`）。fetch→blob で無反応に見えていた。
 - **LoRA「フォームを初期化」が押せない詰み**（`d0b1693`）: 送信成功後に submitting が残っていた。
 
