@@ -81,18 +81,23 @@ export const LORA_SPI_BASELINE: Readonly<Record<string, number>> = {
   wan21: 1.24,
   // 2026-09-23 実測 0.92（実写220枚・1024px・batch1・block_compile・50step、B300、docs §14.17）。
   // 単発50stepなので 20% 上乗せで 1.10。
+  // 2026-09-23 tier 確認: H200 でも 0.92（§14.26）。据え置き。
   ltx2: 1.10,
   hunyuan: 1.44,
   cogvideox: 1.44,
   qwen_image: 0.72,
   // 2026-09-23 実測 0.57（実写220枚・1024px・batch1・block_compile・50step、B300、docs §14.19）。20% 上乗せで 0.69。
-  krea2: 0.69,
+  // 2026-09-23 tier 確認: H200 で 0.742（§14.26）。20% 上乗せで 0.89。
+  krea2: 0.89,
   // 2026-09-23 実測 0.51（実写220枚・1024px・batch1・block_compile・50step、B300、docs §14.21）。20% 上乗せで 0.61。
-  anima: 0.61,
+  // 2026-09-23 tier 確認: RTX PRO 6000 で 0.477（§14.26、B300 より速い）。20% 上乗せで 0.57。
+  anima: 0.57,
   // 2026-09-23 実測 0.27（実写220枚・1024px・batch1・block_compile・50step、B300、docs §14.20）。20% 上乗せで 0.32。
-  zimage: 0.32,
+  // 2026-09-23 tier 確認: RTX PRO 6000 で 0.535（§14.26）。20% 上乗せで 0.64。
+  zimage: 0.64,
   // 2026-09-23 実測 0.295（実写220枚・1024px・batch1・compile 無し・50step、B300、docs §14.18）。20% 上乗せで 0.35。
-  flux2_klein_4b: 0.35,
+  // 2026-09-23 tier 確認: RTX PRO 6000 で 0.555（§14.26）。20% 上乗せで 0.67。
+  flux2_klein_4b: 0.67,
   // --- sd-scripts ワーカー（別 tier・別スタック）---
   // 0.642 は「step 数だけ変えた2回の実行の総経過時間を連立で分離」して出した
   // 値で、下記の tqdm パースのバグとは無関係。よって据え置く。
@@ -149,16 +154,16 @@ export const LORA_ARCH_PROFILE: Readonly<
 > = {
   // §14.16: prep 778s（JIT 629 + latent 149 = 0.675s/枚）、VRAM 119GB → B300/B200 のまま。
   wan22_14b: { prepLoadS: 650, prepPerImageS: 0.7, gpu: "b300" },
-  // §14.17: wall 767s − 50×0.92 − cold ≈ 600s、VRAM 87GB（H200 候補、要実測）。
-  ltx2: { prepLoadS: 550, prepPerImageS: 0.5, gpu: "b300" },
-  // §14.18: prep 124s（load 28 + JIT 48 + latent 0.215s/枚）、VRAM 38GB（RTX PRO 6000 候補、要実測）。
-  flux2_klein_4b: { prepLoadS: 100, prepPerImageS: 0.25, gpu: "b300" },
-  // §14.19: prep 194s（load 52 + JIT 84 + latent 59 = 0.27s/枚）、VRAM 71GB（RTX PRO 6000 は余裕 26%、H200 候補）。
-  krea2: { prepLoadS: 150, prepPerImageS: 0.3, gpu: "b300" },
-  // §14.20: prep 120s（load 36 + JIT 51 + latent 33 = 0.15s/枚）、VRAM 46.5GB（L40S は不可、RTX PRO 6000 候補）。
-  zimage: { prepLoadS: 100, prepPerImageS: 0.15, gpu: "b300" },
-  // §14.21: prep 127s（load 27 + JIT 56 + latent 44 = 0.20s/枚）、VRAM 30.6GB（L40S に 33% 余裕、RTX PRO 6000 候補）。
-  anima: { prepLoadS: 100, prepPerImageS: 0.2, gpu: "b300" },
+  // §14.26（2026-09-23 tier 確認ラン）: H200 で s/it 0.92（B300 と同じ）、VRAM 86.8GB → H200。1step 原価 −36%。
+  ltx2: { prepLoadS: 550, prepPerImageS: 0.5, gpu: "h200" },
+  // §14.26: RTX PRO 6000 で s/it 0.555（B300 0.295 の 1.9 倍遅い）、VRAM 38GB。1step 原価 −20%、所要時間は約 2 倍。
+  flux2_klein_4b: { prepLoadS: 100, prepPerImageS: 0.25, gpu: "rtx_pro_6000" },
+  // §14.26: H200 で s/it 0.742（B300 0.57 の 1.3 倍）、VRAM 70.8GB。1step 原価 −17%。
+  krea2: { prepLoadS: 150, prepPerImageS: 0.3, gpu: "h200" },
+  // §14.26: RTX PRO 6000 で s/it 0.535（B300 0.266 の 2.0 倍）、VRAM 46.3GB。1step 原価 −15%、所要時間は約 2 倍。
+  zimage: { prepLoadS: 100, prepPerImageS: 0.15, gpu: "rtx_pro_6000" },
+  // §14.26: RTX PRO 6000 で s/it 0.477（B300 0.509 より速い）、VRAM 30.3GB。1step 原価 −60%。
+  anima: { prepLoadS: 100, prepPerImageS: 0.2, gpu: "rtx_pro_6000" },
 };
 
 /** arch を回す GPU tier。sd-scripts 系は L40S 固定、ai-toolkit 系はプロファイル、無ければ B300。 */
