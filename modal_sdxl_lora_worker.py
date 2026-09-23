@@ -94,13 +94,15 @@ GPU_REQUEST = os.environ.get("SDXL_WORKER_GPU", "").strip() or "L40S"
 # 定番設定を既定として入れる。min_snr_gamma=5 は以前から入っている。env で個別に戻せる。
 #   SDXL_LR_SCHEDULER      lr スケジューラ（既定 cosine。sd-scripts の既定は constant）
 #   SDXL_LR_WARMUP_RATIO   warmup 比率（既定 0.05。Prodigy は safeguard_warmup があるので 0）
-#   SDXL_CONV_DIM          LoCon の conv_dim（既定 16、0 で無効）。畳み込み層にも LoRA を掛け、
-#                          体型・輪郭のような「形」の再現に効きやすい。conv_alpha は半分。
+#   SDXL_CONV_DIM          LoCon の conv_dim（既定 0＝無効、16 等で有効）。畳み込み層にも LoRA を掛け、
+#                          体型・輪郭のような「形」の再現に効きやすいとされるが、2026-09-23 の
+#                          同条件比較で品質差が確認できず s/it が +65% だったため既定から外した
+#                          （docs/gpu-benchmarks.md §14.25）。conv_alpha は半分。
 #   SDXL_TAG_DROPOUT       caption_tag_dropout_rate（既定 0.1）。keep_tokens 分（トリガー・性別）
 #                          は落ちないので、補助タグへの過依存だけを抑える。
 SDXL_LR_SCHEDULER = os.environ.get("SDXL_LR_SCHEDULER", "cosine").strip() or "cosine"
 SDXL_LR_WARMUP_RATIO = float(os.environ.get("SDXL_LR_WARMUP_RATIO", "0.05") or 0)
-SDXL_CONV_DIM = int(os.environ.get("SDXL_CONV_DIM", "16") or 0)
+SDXL_CONV_DIM = int(os.environ.get("SDXL_CONV_DIM", "0") or 0)
 SDXL_TAG_DROPOUT = float(os.environ.get("SDXL_TAG_DROPOUT", "0.1") or 0)
 
 # 2026-09-20: 既定 False（無効）。理由は _build_train_args() 内のコメント参照。
@@ -141,7 +143,7 @@ SDXL_COST_GUARD_MULTIPLIER = max(
 # 分離して 0.642 s/it・prep 43.2秒。ただし当時は AdamW8bit + gradient_checkpointing
 # 有効で、現在の既定（prodigy / gc 無効）より遅い条件なので、**実運用はこれより
 # 速い見込み＝過大見積もり＝安全側**。
-SDXL_SPI_BASELINE = float(os.environ.get("SDXL_SPI_BASELINE", "1.25"))
+SDXL_SPI_BASELINE = float(os.environ.get("SDXL_SPI_BASELINE", "0.80"))
 # 同じく prep（モデルロード + latent キャッシュ + 保存）の固定分。
 # knobDefaults.ts の lora_prep_load_s_sdxl（45秒）に対し、下限計算では
 # 取りこぼしが致命的なので厚めに取る。
