@@ -8,7 +8,7 @@ ULL データ保持ポリシー（CLAUDE.md §3）の実施 — 日次 purge。
     upscale-results … 超解像 出力（旧方式で保存済みの行のみ。2026-09-18〜、画像・動画とも
       新規生成分はVolume直接配信へ移行済み、下記参照。移行前の行が14日経過するまでの経過措置）
   Modal Volume (ull-wan-models)
-    loras/<lora_name>.safetensors      … 完成 LoRA の名前付きエイリアス
+    loras/<lora_name>.safetensors      … 完成 LoRA の名前付きエイリアス（2026-09-23 廃止。旧ジョブの残りだけ）
     loras/<user_id>/<job_id>/          … 学習ジョブごとの成果物（checkpoint 等）
     upscale_originals/<user_id>/<job_id>/  … WebP劣化前の元PNG（超解像、2026-09-14〜）
     director_results/<user_id>/<job_id>.mp4      … Cinematic Director 動画結果
@@ -320,7 +320,8 @@ def _purge_volume_loras(cutoff_epoch: float) -> dict:
         if row.get("user_id") in ADMIN_USER_IDS:
             continue
         rp = (row.get("result_path") or "").strip()
-        # 名前付きエイリアス（loras/ 直下のフラットファイルのみ）。
+        # 名前付きエイリアス（loras/ 直下のフラットファイルのみ。2026-09-23 以降のジョブは
+        # result_path が per-job ディレクトリ内を指すので、ここは旧ジョブ分だけ該当する）。
         if rp.endswith(".safetensors"):
             p = pathlib.Path(rp if rp.startswith("/") else f"{MODELS_DIR}/{rp}")
             try:

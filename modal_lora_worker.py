@@ -4311,18 +4311,15 @@ def train_lora_job(params: dict) -> dict:
         # Directory contract: EVERY per-job artifact (all .safetensors,
         # dataset.zip, on-demand bundles) is isolated under
         #   loras/<user_id>/<job_id>/
-        # The ONLY file written to loras/ root is the named library entry
-        # `loras/<lora_name>.safetensors` — a deliberate, ComfyUI-resolvable
-        # alias for the finished model ("この LoRA を使う" / workflow LoraLoader
-        # references it by that clean name). It is not job clutter.
+        # 2026-09-23: loras/ 直下の `loras/<lora_name>.safetensors`（ComfyUI が名前で
+        # 引くためのエイリアス）は廃止。使う導線が無く（Custom タブ廃止・Director は
+        # director_user_loras/ 経由）、final が二重に置かれるだけだった。final が最良とは
+        # 限らない（ホスト判断）ので、特定の1本を特別扱いする理由も無い。
+        # result_path は loras/<user>/<job>/<name>_final.safetensors を指す。
         os.makedirs(LORA_OUTPUT_DIR, exist_ok=True)
 
-        # 1) The final LoRA -> named model-library alias (see contract above).
         final_lora = _collect_final_lora(lora_name, job_output_dir)
-        dest_path = pathlib.Path(LORA_OUTPUT_DIR) / f"{lora_name}.safetensors"
-        shutil.copy2(final_lora, dest_path)
-        size_mb = dest_path.stat().st_size / 1024**2
-        print(f"[train] committed LoRA -> {dest_path} ({size_mb:.1f} MB)")
+        dest_path: pathlib.Path | None = None
 
         # 2) Every checkpoint (periodic snapshots + final) -> the per-job folder
         #    loras/<user_id>/<job_id>/ so the user can download an earlier
@@ -4350,16 +4347,19 @@ def train_lora_job(params: dict) -> dict:
             if job_ckpt_dir is not None:
                 dst = job_ckpt_dir / fname
                 try:
-                    if is_final:
-                        # keep the source for the model-library copy already made
-                        shutil.copy2(path, dst)
-                    else:
-                        shutil.move(str(path), str(dst))  # rename on the same Volume
+                    shutil.move(str(path), str(dst))  # rename on the same Volume
                     entry["path"] = f"loras/{user_id}/{job_id}/{fname}"
+                    if is_final:
+                        dest_path = dst
                 except Exception as exc:  # noqa: BLE001 — one bad file must not block completion
                     print(f"[train] checkpoint relocate skipped ({fname}): {exc}", flush=True)
             checkpoints.append(entry)
         checkpoints.sort(key=lambda c: c["step"])
+        if dest_path is None:
+            # user_id / job_id が無い経路（本番では起きない）だけ旧来の平置きに落とす。
+            dest_path = pathlib.Path(LORA_OUTPUT_DIR) / f"{lora_name}.safetensors"
+            shutil.copy2(final_lora, dest_path)
+        print(f"[train] final LoRA -> {dest_path} ({dest_path.stat().st_size / 1024**2:.1f} MB)")
 
         # NOTE: no more synchronous `checkpoints_all.zip` here. A 14GB
         # ZIP_STORED write on B300 was pure GPU idle. Users download the

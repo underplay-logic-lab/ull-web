@@ -1793,8 +1793,10 @@ def train_sdxl_lora_job(params: dict) -> dict:
                 print(f"[sdxl] license stamp skipped: {exc!r}", flush=True)
 
         os.makedirs(LORA_OUTPUT_DIR, exist_ok=True)
-        dest_path = pathlib.Path(LORA_OUTPUT_DIR) / f"{lora_name}.safetensors"
-        shutil.copy2(final_ckpt, dest_path)
+        # 2026-09-23: loras/ 直下への final の平置きコピー（ComfyUI が名前で引くための
+        # エイリアス）は廃止。使う導線が無く（Custom タブ廃止・Director は別経路）、
+        # 228MB が二重になるだけだった。しかも final が最良とは限らない（ホスト判断）。
+        # result_path は loras/<user>/<job>/<name>_final.safetensors を指す。
         # 中間チェックポイントも含めて全部 loras/<user_id>/<job_id>/ へ残す
         # （CLAUDE.md §3「中間 .safetensors を永続化し、完了画面で個別
         # ダウンロードを可能にする」）。
@@ -1809,6 +1811,13 @@ def train_sdxl_lora_job(params: dict) -> dict:
         checkpoints = _persist_checkpoints(
             str(output_dir), lora_name, user_id, job_id, declared_steps
         )
+        _final_entry = next((c for c in checkpoints if c.get("is_final") and c.get("path")), None)
+        if _final_entry is not None:
+            dest_path = pathlib.Path(MODELS_DIR) / _final_entry["path"]
+        else:
+            # user_id / job_id が無い経路（本番では起きない）だけ旧来の平置きに落とす。
+            dest_path = pathlib.Path(LORA_OUTPUT_DIR) / f"{lora_name}.safetensors"
+            shutil.copy2(final_ckpt, dest_path)
         # dataset.zip も loras/<user>/<job>/ へ置き、metadata.checkpoints に
         # is_caption_archive で登録する（ai-toolkit 側ワーカーと同じ形。
         # フロントは is_caption_archive を見て重みの一覧から除外している）。
