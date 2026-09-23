@@ -40,6 +40,7 @@ import {
 } from "@/lib/upscaleApi";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
+import { studioHandoffToFile, takeStudioHandoff } from "@/lib/studioHandoff";
 import {
   loadStudioSession,
   saveStudioSession,
@@ -370,6 +371,27 @@ export function UpscaleVideoStudioTab() {
     setVideo(null);
     setVideoMeta(null);
     setVideoError(null);
+  }, []);
+
+  // 他タブ（Cinematic Director の動画）からの「動画超解像へ」導線: マウント時に
+  // 1 回だけ取り出し、署名付き URL を fetch して File にし、ローカル選択と同じ経路へ。
+  useEffect(() => {
+    const handoff = takeStudioHandoff("video");
+    if (!handoff) return;
+    let cancelled = false;
+    studioHandoffToFile(handoff)
+      .then((file) => {
+        if (!cancelled) void handleVideoSelected(file);
+      })
+      .catch((err) => {
+        console.warn("[UpscaleVideoStudioTab] handoff failed:", err);
+        if (!cancelled) setVideoError("前のタブの結果を取り込めませんでした。動画を選び直してください。");
+      });
+    return () => {
+      cancelled = true;
+    };
+    // マウント時のみ
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // snapshot を明示的に渡す設計: キュー待ちの「次の1件」は予約した時点の

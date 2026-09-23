@@ -61,6 +61,7 @@ import {
   type StudioSessionEntry,
 } from "@/components/studio/StudioSessionList";
 import { VramBadge } from "@/components/studio/VramBadge";
+import { requestStudioHandoff } from "@/lib/studioHandoff";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
@@ -1263,6 +1264,20 @@ export function DirectorStudioTab() {
             >
               <Download size={14} />
               ダウンロード
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                job.videoUrl &&
+                requestStudioHandoff(
+                  { kind: "video", url: job.videoUrl, filename: "ull_cinematic_director.mp4", source: "Cinematic Director" },
+                  "upscale_video",
+                )
+              }
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-neon-pink/40 bg-neon-pink/10 px-4 py-2.5 text-sm font-medium text-neon-pink transition-colors hover:bg-neon-pink/20"
+            >
+              <Sparkles size={14} />
+              この動画を 4K 動画超解像へ
             </button>
             {job.vramUsedGb != null && (
               <div className="mt-2 flex justify-center">

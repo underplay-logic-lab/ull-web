@@ -10,24 +10,30 @@ import { MultiAngleStudioTab } from "@/components/studio/MultiAngleStudioTab";
 import { UpscaleStudioTab } from "@/components/studio/UpscaleStudioTab";
 import { UpscaleVideoStudioTab } from "@/components/studio/UpscaleVideoStudioTab";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
+import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { EditableText } from "@/components/EditableText";
+import { STUDIO_TAB_EVENT, type StudioHandoffTab } from "@/lib/studioHandoff";
 
 // 2026-09-09: Wan Animate 2 / Cinematic Video タブは廃止。汎用の動画・特殊要望は
 // すべて「特化ワークフロー」で対応する方針（管理者がワークフローを登録）。
 // 2026-09-12: 動画超解像（v1・最小スコープ）を専用タブとして追加。
 type StudioTab = "image" | "custom" | "lora" | "angle" | "upscale" | "upscale_video" | "director";
 
-const STUDIO_TABS: { id: StudioTab; label: string }[] = [
+// 2026-09-24: 特化ワークフローは admin だけに表示し、末尾へ寄せた（ホスト判断:
+// ComfyUI で作り込んだワークフローの展開先として用意したが、まだ効果的な
+// 使い方に至っていない。一般ユーザーには出さず、admin の実験用に残す）。
+const STUDIO_TABS: { id: StudioTab; label: string; adminOnly?: boolean }[] = [
   // "image" (画像生成) is temporarily hidden from navigation — the engine
   // behind it is mid-swap and ImageGenMaintenancePlaceholder is the only
   // thing it currently renders. Re-add here once the new engine ships.
-  { id: "custom", label: "特化ワークフロー" },
   { id: "angle", label: "🎭 マルチアングル" },
   { id: "upscale", label: "✨ 4K/8K超解像" },
   { id: "upscale_video", label: "🎬 4K動画超解像" },
   { id: "director", label: "🎥 Cinematic Director" },
   { id: "lora", label: "🎨 LoRA Studio" },
+  { id: "custom", label: "🔧 特化ワークフロー（admin）", adminOnly: true },
 ];
+const DEFAULT_TAB: StudioTab = "angle";
 
 function ImageGenMaintenancePlaceholder() {
   return (
@@ -43,7 +49,9 @@ function ImageGenMaintenancePlaceholder() {
 
 export function Studio() {
   const { user } = useSupabaseUser();
-  const [activeTab, setActiveTab] = useState<StudioTab>("custom");
+  const { isAdmin } = useIsAdmin(user);
+  const [activeTab, setActiveTab] = useState<StudioTab>(DEFAULT_TAB);
+  const visibleTabs = STUDIO_TABS.filter((tab) => !tab.adminOnly || isAdmin);
 
   // LoRA Studio だけは一度開いたら**アンマウントしない**（2026-09-21）。
   // このタブはユーザーがローカルから取り込んだ File と object URL を
@@ -54,10 +62,29 @@ export function Studio() {
   // 他タブは失っても困る state が無いので従来どおり。
   // 一度でも lora を開いたか。タブ遷移は必ず goTab を通す。
   const [loraMounted, setLoraMounted] = useState(false);
-  const goTab = useCallback((id: StudioTab) => {
-    if (id === "lora") setLoraMounted(true);
-    setActiveTab(id);
-  }, []);
+  const goTab = useCallback(
+    (id: StudioTab) => {
+      // admin 限定タブは非 admin からの遷移（LoRA 完了画面の旧導線等）でも開かない。
+      if (STUDIO_TABS.find((t) => t.id === id)?.adminOnly && !isAdmin) return;
+      if (id === "lora") setLoraMounted(true);
+      setActiveTab(id);
+    },
+    [isAdmin],
+  );
+
+  // 他タブからの「この結果を超解像へ」導線（src/lib/studioHandoff.ts）。
+  useEffect(() => {
+    const onSwitch = (e: Event) => {
+      const tab = (e as CustomEvent<{ tab: StudioHandoffTab }>).detail?.tab;
+      if (tab === "upscale" || tab === "upscale_video") goTab(tab);
+    };
+    window.addEventListener(STUDIO_TAB_EVENT, onSwitch);
+    return () => window.removeEventListener(STUDIO_TAB_EVENT, onSwitch);
+  }, [goTab]);
+
+  // admin 判定が false のまま admin 限定タブに居る状態（ログアウト等）は既定へ戻す。
+  const activeIsHidden = Boolean(STUDIO_TABS.find((t) => t.id === activeTab)?.adminOnly) && !isAdmin;
+  const shownTab: StudioTab = activeIsHidden ? DEFAULT_TAB : activeTab;
 
   // タブを切り替えると中身の高さが大きく変わるため、スクロール位置を据え置くと
   // フッター（問い合わせ）まで飛んだように見える。毎回タブの頭へ戻す。
@@ -69,7 +96,7 @@ export function Studio() {
       return;
     }
     tabsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [activeTab]);
+  }, [shownTab]);
 
   return (
     <section id="studio" data-source-file="src/components/Studio.tsx" className="relative py-24 sm:py-32">
@@ -134,13 +161,15 @@ export function Studio() {
           )}
 
           <div ref={tabsRef} className="mt-8 flex flex-wrap items-center justify-center gap-2 scroll-mt-20">
-            {STUDIO_TABS.map((tab) => (
+            {visibleTabs.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => goTab(tab.id)}
                 className={`rounded-full border px-4 py-1.5 text-xs font-mono font-medium transition-colors ${
-                  activeTab === tab.id
+                  tab.adminOnly ? "ml-3 opacity-70 " : ""
+                }${
+                  shownTab === tab.id
                     ? "border-neon-pink/40 bg-neon-pink/10 text-neon-pink"
                     : "border-border bg-surface/40 text-muted hover:border-neon-violet/40 hover:text-foreground"
                 }`}
@@ -153,7 +182,7 @@ export function Studio() {
 
         {/* 一度開いた LoRA Studio は hidden で残す（state を捨てないため）。 */}
         {loraMounted && (
-          <div className={activeTab === "lora" ? undefined : "hidden"}>
+          <div className={shownTab === "lora" ? undefined : "hidden"}>
             <LoraStudioTab
               onUseLora={() => goTab("custom")}
               onOpenMultiAngle={() => goTab("angle")}
@@ -162,17 +191,17 @@ export function Studio() {
           </div>
         )}
 
-        {activeTab === "custom" ? (
+        {shownTab === "custom" ? (
           <CustomWorkflowsTab />
-        ) : activeTab === "angle" ? (
+        ) : shownTab === "angle" ? (
           <MultiAngleStudioTab />
-        ) : activeTab === "upscale" ? (
+        ) : shownTab === "upscale" ? (
           <UpscaleStudioTab />
-        ) : activeTab === "upscale_video" ? (
+        ) : shownTab === "upscale_video" ? (
           <UpscaleVideoStudioTab />
-        ) : activeTab === "director" ? (
+        ) : shownTab === "director" ? (
           <DirectorStudioTab />
-        ) : activeTab === "lora" ? null : (
+        ) : shownTab === "lora" ? null : (
           <ImageGenMaintenancePlaceholder />
         )}
       </div>

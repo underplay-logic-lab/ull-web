@@ -809,14 +809,25 @@ worker を先に上げると `r2_keys` が付いた瞬間に Volume 側が消え
 - Director `56ef36fe`: mp4 10.9MB を 11.5s（CPU コンテナからは 1〜4 MB/s。小ファイルは並列が効かず、この速度帯で妥当）
 これら 4 行は Volume 側の実体が消えており、**Next の新コード（R2 優先）で配信される最初の行**になる。
 
+**UI からの実地確認 完了（2026-09-24、ホスト）**: 4 タブのプレビューを確認し「どれも速くなっている。他のサイトと遜色ない。これで OK」。
+特化 WF（同期・GPU 直 put）だけは新規ジョブでしか確認できないが、同日に admin 限定タブへ格下げしたので急がない。
+
 **残り（この順で）**
-1. **UI からの実地確認（ホスト、タブを再読み込みしてから）**: (a) 超解像 画像 `af14dbfe` の表示・DL・元 PNG の DL、(b) 超解像 動画
-   `c71685d5` の再生と「ダウンロード」の保存名（`ullstudio_upscale_video_*.mp4` になるか）、(c) Multi-Angle `e937c987` の表示と
-   一括 ZIP、(d) Director `56ef36fe`（結果画面の再生・DL）、(e) admin「最近の生成物」のサムネ 4 件。
-   新規ジョブ 1 本を流したら Modal ログで `[r2] publish spawned` → CPU 関数の `[r2] put ... MB/s` を見る。特化 WF（同期・GPU 直 put）
-   だけは新規ジョブでしか確認できない。
-2. 計画 5（R2 ライフサイクルは適用済み。`modal_retention_purge.py` は据え置き）・6（admin バケットブラウザ）・7（切替は実装済みなので
+1. 計画 5（R2 ライフサイクルは適用済み。`modal_retention_purge.py` は据え置き）・6（admin バケットブラウザ）・7（切替は実装済みなので
    「確認して閉じる」だけ）・8-②・9。
+
+### 【実装 2026-09-24】特化 WF を admin 限定に・超解像への導線・寄付（ホスト要望）
+
+- **特化ワークフロー タブは admin だけに表示**（`Studio.tsx`、`useIsAdmin`）。タブ列の末尾に「🔧 特化ワークフロー（admin）」として
+  少し離して置く。既定タブは「マルチアングル」。非 admin からの `goTab("custom")` は無視。理由（ホスト）: ComfyUI で作り込んだ
+  ワークフローの展開先として用意したが、まだ効果的な使い方に至っていない。API route・worker はそのまま。
+- **Multi-Angle → 4K/8K 超解像、Director → 4K 動画超解像の導線**: `src/lib/studioHandoff.ts`（sessionStorage に URL とファイル名を置き、
+  `ull:studio-tab` イベントで `Studio.tsx` がタブを切替。受け側の超解像タブがマウント時に 1 回だけ取り出し、署名付き URL を
+  fetch → File にしてローカル選択と同じ経路へ）。Multi-Angle は各構図のホバー操作とライトボックスに「超解像へ」、Director は完了画面に
+  「この動画を 4K 動画超解像へ」。R2 / Modal とも CORS は * なので fetch できる。
+- **寄付（未着手・ホスト判断待ち）**: Claude の推奨は「Polar の Pay-what-you-want 商品を 1 つ作り、UI はプリセット 3 つ＋自由入力」。
+  webhook は未知の productId を `skipped: unknown_product` で無視するので、寄付商品を足してもクレジット付与は起きない（安全）。
+  置き場は料金セクションの下に小さな「維持費と機能追加の支援」カード。Polar 商品はホストがダッシュボードで作る（API でも可）。
 
 ### 残課題: LoRA の「結果がいまいちな時」ヒント（2026-09-23、ホスト発案・未着手）
 

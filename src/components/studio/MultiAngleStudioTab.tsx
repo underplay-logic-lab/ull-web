@@ -54,6 +54,7 @@ import {
 } from "@/lib/angleApi";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { VramBadge } from "@/components/studio/VramBadge";
+import { requestStudioHandoff } from "@/lib/studioHandoff";
 import {
   QueueChoiceModal,
   QueuedNextBanner,
@@ -438,6 +439,25 @@ function AngleLightbox({
           </span>
         </span>
         <div className="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              onClose();
+              requestStudioHandoff(
+                {
+                  kind: "image",
+                  url: item.url,
+                  filename: `${String(index + 1).padStart(2, "0")}_angle.png`,
+                  source: "マルチアングル",
+                },
+                "upscale",
+              );
+            }}
+            className="inline-flex items-center gap-1 rounded-md border border-neon-pink/40 bg-neon-pink/10 px-2 py-1 text-[11px] text-neon-pink transition-colors hover:bg-neon-pink/20"
+          >
+            <Sparkles size={12} />
+            超解像へ
+          </button>
           <button
             type="button"
             onClick={() =>
@@ -1391,6 +1411,25 @@ export function MultiAngleStudioTab() {
                         <RefreshCw size={13} />
                       </button>
                     )}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        requestStudioHandoff(
+                          {
+                            kind: "image",
+                            url,
+                            filename: `${String(i + 1).padStart(2, "0")}_angle.png`,
+                            source: "マルチアングル",
+                          },
+                          "upscale",
+                        )
+                      }
+                      aria-label="超解像へ"
+                      title="この構図を 4K/8K 超解像へ"
+                      className="rounded-md bg-black/50 p-1 text-neon-pink transition-colors hover:bg-black/80"
+                    >
+                      <Sparkles size={13} />
+                    </button>
                     <button
                       type="button"
                       onClick={() =>

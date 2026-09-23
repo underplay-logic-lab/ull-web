@@ -42,6 +42,7 @@ import {
 } from "@/lib/upscaleApi";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
+import { studioHandoffToFile, takeStudioHandoff } from "@/lib/studioHandoff";
 import {
   loadStudioSession,
   saveStudioSession,
@@ -449,6 +450,27 @@ export function UpscaleStudioTab() {
     setImage(null);
     setInputSize(null);
     setImageError(null);
+  }, []);
+
+  // 他タブ（Multi-Angle の構図等）からの「超解像へ」導線: マウント時に 1 回だけ
+  // 取り出し、署名付き URL を fetch して File にし、ローカル選択と同じ経路へ流す。
+  useEffect(() => {
+    const handoff = takeStudioHandoff("image");
+    if (!handoff) return;
+    let cancelled = false;
+    studioHandoffToFile(handoff)
+      .then((file) => {
+        if (!cancelled) handleImageSelected(file);
+      })
+      .catch((err) => {
+        console.warn("[UpscaleStudioTab] handoff failed:", err);
+        if (!cancelled) setImageError("前のタブの結果を取り込めませんでした。画像を選び直してください。");
+      });
+    return () => {
+      cancelled = true;
+    };
+    // マウント時のみ
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // --- バッチ（複数画像） ----------------------------------------------
