@@ -1947,7 +1947,19 @@ class QwenImageEditWorker:
                 # metadata キー自体を送らない（PATCHはJSONBカラム丸ごと
                 # 置き換えのため、ここで乗せた値が完了時までそのまま残る）。
                 if vram_gb is not None:
-                    _patch_angle_job(job_id, {"metadata": {"vram_used_gb": vram_gb, "gpu_tier": _gpu_tier_label()}})
+                    # PATCH は jsonb 丸ごと置き換えなので、route が書いた ref_image_count
+                    # が消えていた（2026-09-23 発見、admin の粗利分析で参照枚数が追えない）。
+                    # worker 側で知っている値をここで一緒に乗せ直す。
+                    _patch_angle_job(
+                        job_id,
+                        {
+                            "metadata": {
+                                "vram_used_gb": vram_gb,
+                                "gpu_tier": _gpu_tier_label(),
+                                "ref_image_count": len(refs),
+                            }
+                        },
+                    )
                 print(
                     f"[angle-job] {job_id} {done}/{n_total} "
                     f"({time.time() - t0:.1f}s cum) VRAM={vram_gb}GB",

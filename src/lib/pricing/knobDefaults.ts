@@ -17,6 +17,7 @@ export type KnobKey =
   | "angle_pro_per_angle"
   | "angle_ref_multiplier_per_sub"
   | "angle_priority_parallel_surcharge"
+  | "angle_priority_parallel_rate"
   | "cinematic_speed"
   | "cinematic_standard"
   | "cinematic_cinema_master"
@@ -138,6 +139,17 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     description: "サブ参照1枚ごとに 1構図単価へ乗せる係数（係数 = 1 + これ×枚数）。0で無料。",
     isPublic: true,
   },
+  angle_priority_parallel_rate: {
+    // 2026-09-23 ホスト決定「実際のクレジットの 2 倍とかそういう感じ」:
+    // 並列実行の上乗せ = ceil(通常料金 × これ) + 固定分。1.0 なら合計が通常の 2 倍。
+    // 目的は混雑料金（枠の占有時間はジョブの大きさに比例するので、比例で取る）。
+    value: 1.0,
+    label: "Multi-Angle 並列実行 上乗せ率",
+    category: "feature_credits",
+    unit: "×",
+    description: "並列実行時に通常料金へ掛けて上乗せする割合（1.0 = 通常料金と同額を追加 = 合計 2 倍）。固定分と合算。",
+    isPublic: true,
+  },
   angle_priority_parallel_surcharge: {
     // 2026-09-14: 「実行中でも並列で今すぐ実行」を選んだ時の追加料金。
     // 順番待ち（無料・既定）は完了済みの温かいコンテナを再利用するが、並列は
@@ -148,13 +160,14 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // 2026-09-23 ホスト方針: この上乗せは原価回収ではなく「同じ値段だと皆が
     // 並列を使って GPU 枠がすぐ枯渇する」ための混雑料金（急ぎたいなら金を払う）
     // なので、B200 の実コールド原価（約 13C）に合わせて下げる提案はしないこと。
-    // ただし 340 という値と「ジョブの大きさに関係なく一律」という形が妥当かは
-    // 未決（ホストは構図数に比例する形を想定）。
-    value: 340,
-    label: "Multi-Angle 並列実行 追加料金",
+    // 同日、形を「固定 + 通常料金 × 率」に変更（angle_priority_parallel_rate）。
+    // ホストの想定は「実際のクレジットの 2 倍」＝率 1.0 なので、この固定分は
+    // 0 にしてよい（DB の既存行 340 は admin で下げる。ここは既定値のみ 0 に）。
+    value: 0,
+    label: "Multi-Angle 並列実行 固定追加料金",
     category: "feature_credits",
     unit: "C",
-    description: "実行中のジョブを待たず並列で今すぐ実行する場合の追加コールドスタート分の上乗せ。",
+    description: "並列実行時に 1 ジョブへ一律で足す固定分。率（angle_priority_parallel_rate）と合算。0 で比例分のみ。",
     isPublic: true,
   },
   cinematic_speed: {

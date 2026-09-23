@@ -665,11 +665,14 @@ export function MultiAngleStudioTab() {
     selection: AngleSelection;
     combos: AngleCombo[];
   };
-  const [queuedNext, setQueuedNext] = useState<QueuedSnapshot | null>(null);
+  // 2026-09-23: 予約は 1 件だけ → 先入れ先出しのリストへ。1 件だと後から予約した
+  // ものが前の予約を黙って上書きし、ホストがサブ参照 1/2/3 枚を続けて予約したら
+  // 最後の 1 本しか走らなかった。順番待ちは無料なので件数上限は設けない。
+  const [queuedNext, setQueuedNext] = useState<QueuedSnapshot[]>([]);
   // ポーリングの長寿命な useEffect から「今すぐ最新の予約」を読めるようにする
   // ref。イベントハンドラ（予約する/取り消す）でだけ state と一緒に書き込み、
-  // effect 内では書き込まない。
-  const queuedNextRef = useRef<QueuedSnapshot | null>(null);
+  // effect 内では書き込まない（完了時の先頭取り出しは例外 — 下のコメント参照）。
+  const queuedNextRef = useRef<QueuedSnapshot[]>([]);
 
   const elapsedMs = useElapsedTimer(phase === "running");
   // Angle worker の scaledown_window=30秒（CLAUDE.md §1）に合わせたローカル
@@ -761,7 +764,7 @@ export function MultiAngleStudioTab() {
             // ここでは読むだけ（clear は同じ非同期コールバック内で行う —
             // ポーリング応答というイベントに対する反応であり、レンダー毎の
             // 同期的な副作用ではない）。
-            const queued = queuedNextRef.current;
+            const [queued, ...restQueued] = queuedNextRef.current;
             if (queued) {
               // 次のジョブが画面を上書きする前に、今完了した全構図を1つの
               // ZIPとしてブラウザへ自動保存する（連続キュー時、手動DLの
@@ -777,8 +780,8 @@ export function MultiAngleStudioTab() {
                     console.warn("[MultiAngleStudioTab] auto-download before next queued job failed:", err);
                   });
               }
-              queuedNextRef.current = null;
-              setQueuedNext(null);
+              queuedNextRef.current = restQueued;
+              setQueuedNext(restQueued);
               void runGenerate(queued);
             }
             return;
@@ -931,20 +934,21 @@ export function MultiAngleStudioTab() {
   const handleQueueWait = () => {
     if (!image) return;
     const snapshot = { image, subImages, selection, combos };
-    queuedNextRef.current = snapshot;
-    setQueuedNext(snapshot);
+    const next = [...queuedNextRef.current, snapshot];
+    queuedNextRef.current = next;
+    setQueuedNext(next);
     setQueueChoiceOpen(false);
   };
 
   const handleCancelQueue = () => {
-    queuedNextRef.current = null;
-    setQueuedNext(null);
+    queuedNextRef.current = [];
+    setQueuedNext([]);
   };
 
   const handleQueueParallel = () => {
     if (!image) return;
     setQueueChoiceOpen(false);
-    const surcharge = anglePriorityParallelSurcharge(knobs);
+    const surcharge = anglePriorityParallelSurcharge(knobs, cost);
     if (!creditsLoading && (credits ?? 0) < cost + surcharge) {
       setChargeOpen(true);
       return;
@@ -1146,14 +1150,14 @@ export function MultiAngleStudioTab() {
             </button>
           </div>
 
-          {busy && !queuedNext && (
+          {busy && queuedNext.length === 0 && (
             <p className="-mt-2 flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-xs leading-relaxed text-neon-violet">
               <Sparkles size={14} className="mt-0.5 shrink-0" />
-              バックグラウンドで生成中です。このタブを閉じたり再読み込みしても生成は継続し、次に開いたときに途中から表示されます。もう一度ボタンを押すと、次の生成を予約できます。
+              バックグラウンドで生成中です。このタブを閉じたり再読み込みしても生成は継続し、次に開いたときに途中から表示されます。もう一度ボタンを押すと、次の生成を予約できます（複数件を順番に予約できます）。
             </p>
           )}
 
-          {queuedNext && <QueuedNextBanner onCancel={handleCancelQueue} />}
+          {queuedNext.length > 0 && <QueuedNextBanner count={queuedNext.length} onCancel={handleCancelQueue} />}
 
           <p className="-mt-2 flex items-start gap-2 text-xs leading-relaxed text-muted">
             <Sparkles size={14} className="mt-0.5 shrink-0 text-neon-violet" />
@@ -1394,7 +1398,8 @@ export function MultiAngleStudioTab() {
       />
       <QueueChoiceModal
         open={queueChoiceOpen}
-        surcharge={anglePriorityParallelSurcharge(knobs)}
+        surcharge={anglePriorityParallelSurcharge(knobs, cost)}
+        total={cost + anglePriorityParallelSurcharge(knobs, cost)}
         onCancel={() => setQueueChoiceOpen(false)}
         onQueue={handleQueueWait}
         onParallel={handleQueueParallel}

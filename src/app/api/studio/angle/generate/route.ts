@@ -8,6 +8,7 @@ import { angleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import { downloadStudioUpload, deleteStudioUploads } from "@/lib/studioUploads.server";
 import {
   angleCreditsPerAngle,
+  anglePriorityParallelSurcharge,
   buildAngleCombos,
   MAX_ANGLES,
   MAX_SUB_REFERENCE_IMAGES,
@@ -240,11 +241,9 @@ export async function POST(request: Request) {
   // サブ参照ぶんの生成コスト増（B300 実測 ~3.0x @ サブ3枚）を単価へ反映。
   const knobs = await getPricingKnobs();
   const baseCost = combos.length * angleCreditsPerAngle(knobs, subImageCount);
-  // 「実行中でも並列で今すぐ実行」を選んだ場合の追加コールドスタート分（順番
-  // 待ち=無料の既定に対するオプトインの上乗せ。knobDefaults.ts参照）。
-  const generationCost = priority
-    ? baseCost + Math.round(knobs.angle_priority_parallel_surcharge)
-    : baseCost;
+  // 「実行中でも並列で今すぐ実行」を選んだ場合の上乗せ（順番待ち=無料の既定に
+  // 対するオプトイン。通常料金 × 率 + 固定分。フロントと同じ関数・同じ baseCost）。
+  const generationCost = priority ? baseCost + anglePriorityParallelSurcharge(knobs, baseCost) : baseCost;
   const maxAllowedTime = angleMaxAllowedTime({ creditsCost: generationCost, knobs });
 
   const { data: profile, error: profileError } = await getOrCreateProfile(

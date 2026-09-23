@@ -330,9 +330,14 @@ export function angleGenerationCost(
 }
 
 // 実行中のジョブを待たず並列で今すぐ実行する場合の追加料金（既定の「順番待ち」
-// は無料）。knobDefaults.ts の angle_priority_parallel_surcharge 参照。
-export function anglePriorityParallelSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS): number {
-  return Math.round(knobs.angle_priority_parallel_surcharge);
+// は無料）。2026-09-23: 通常料金に比例する形へ（混雑料金。枠の占有時間はジョブの
+// 大きさに比例するので、固定ではなく率で取る。ホスト決定「実際のクレジットの 2 倍」
+// ＝ rate 1.0）。上乗せ = ceil(通常料金 × rate) + 固定分。フロント表示と API 検証は
+// 同じ baseCost と同じ knob をここへ渡すこと。
+export function anglePriorityParallelSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS, baseCost = 0): number {
+  const rate = Math.max(0, knobs.angle_priority_parallel_rate);
+  const flat = Math.max(0, Math.round(knobs.angle_priority_parallel_surcharge));
+  return Math.ceil(Math.max(0, baseCost) * rate) + flat;
 }
 
 // --- クイックプリセット -------------------------------------------------
