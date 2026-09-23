@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Heart, Loader2 } from "lucide-react";
+import { ArrowRight, Heart, Loader2, MessageSquare } from "lucide-react";
 import { EditableText } from "@/components/EditableText";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -160,6 +160,25 @@ export function Support() {
             <br />
             寄付は返金・クレジット付与の対象外です。
           </p>
+
+          {/* 要望・リクエストはお問い合わせへ（2026-09-24 ホスト要望） */}
+          <a
+            href="#contact"
+            className="mt-5 flex flex-col items-center justify-between gap-3 rounded-xl border border-neon-violet/30 bg-neon-violet/5 px-5 py-4 text-left transition-colors hover:bg-neon-violet/10 sm:flex-row"
+          >
+            <span className="flex items-start gap-2 text-sm leading-relaxed text-foreground/90">
+              <MessageSquare size={16} className="mt-0.5 shrink-0 text-neon-violet" />
+              <EditableText
+                as="span"
+                siteKey="support_request_copy"
+                fallback="「こんな機能が欲しい」「この設定を増やしてほしい」などの要望・リクエストはお問い合わせからお送りください。ご支援と合わせて、次に作る機能の優先度を決める材料にします。"
+              />
+            </span>
+            <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-neon-violet/40 px-4 py-2 text-xs font-semibold text-neon-violet">
+              お問い合わせへ
+              <ArrowRight size={14} />
+            </span>
+          </a>
         </div>
       </div>
     </section>
