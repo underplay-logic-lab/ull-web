@@ -40,9 +40,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "filename が必要です。" }, { status: 400 });
   }
   const sizeBytes = typeof body.sizeBytes === "number" && Number.isFinite(body.sizeBytes) ? body.sizeBytes : undefined;
+  // 2026-09-23 の切替前に読み込まれたタブ（古い JS バンドル）は sizeBytes を
+  // 送ってこない。そのクライアントは R2 の URL に Modal 方式の POST を投げて
+  // CORS プリフライト（POST は不許可）で「Failed to fetch」になるので、
+  // 古いクライアントには従来の Modal チケットを返す。再読み込みで新経路になる。
+  const legacyClient = !("sizeBytes" in body);
 
   try {
-    const ticket = await createStudioUploadTicket(userData.user.id, filename, { sizeBytes });
+    const ticket = await createStudioUploadTicket(userData.user.id, filename, { sizeBytes, forceModal: legacyClient });
     return NextResponse.json(ticket);
   } catch (err) {
     console.error("[studio/uploads/token] failed:", err);

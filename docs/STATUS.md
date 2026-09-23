@@ -719,8 +719,14 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
   データセット（2 枚）で直接呼び、**R2 読み出し → 最適化 → R2 原本の削除まで通し OK**（11.7 秒、GPU 不使用）。
   Volume に `_lora_persist/r2probe-*/_ingest` の小さな残骸あり（数 KB、latent cache の掃除で消える）。**順序は Modal → Next**（Next を先に上げると SeedVR2 が R2 の URL を host 不許可で弾く）。
 
+- **事故（2026-09-23、反映直後）**: ホストの超解像 画像で `Failed to fetch`。原因は **切替前から開いていたタブの古い JS
+  バンドル**が、新チケットの R2 URL に Modal 方式の `POST` を投げていたこと（R2 の CORS は GET/HEAD/PUT のみ →
+  プリフライト 403 → `Failed to fetch`）。サーバー側・R2 側は正常（本番 Vercel 発行の URL で Node と実 Chromium
+  （本番オリジン）から PUT 200 を確認）。対処: `sizeBytes` を送ってこない古いクライアントには Modal チケットを返す
+  互換フォールバックを追加（LoRA 側は `filenames` 無し → Modal チケットで最初から互換）。**ホストはタブを再読み込み。**
+
 **残り（この順で）**
-1. **ホストが実地で 1 本ずつ**（本番反映済みなので今すぐ試せる）: (a) 超解像 画像（署名付き GET を worker が fetch）、
+1. **ホストが実地で 1 本ずつ**（本番反映済み。**タブを再読み込みしてから**）: (a) 超解像 画像（署名付き GET を worker が fetch）、
    (b) 超解像 動画（ffprobe + worker、1GB 級）、(c) Multi-Angle / Director / 特化 WF（Next が R2 から Buffer 取得）、
    (d) LoRA データセット 100 枚超（`[lora-upload]` のコンソール行で Mbps を見る。§15 の 18.1 Mbps が基準）。
 2. (d) の実測を `docs/gpu-benchmarks.md` §15 に追記し、`R2_CONCURRENCY`（16）を必要なら調整。

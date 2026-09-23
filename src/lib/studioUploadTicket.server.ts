@@ -62,7 +62,7 @@ export type StudioUploadTicket =
 export async function createStudioUploadTicket(
   userId: string,
   filename: string,
-  opts: { sizeBytes?: number } = {},
+  opts: { sizeBytes?: number; forceModal?: boolean } = {},
 ): Promise<StudioUploadTicket> {
   if (!SAFE_FILENAME_RE.test(filename)) {
     throw new Error("不正なファイル名です。");
@@ -72,7 +72,7 @@ export async function createStudioUploadTicket(
   }
   const path = `${userId}/${filename}`;
 
-  if (r2UploadsEnabled()) {
+  if (r2UploadsEnabled() && !opts.forceModal) {
     const expiresAt = Math.floor(Date.now() / 1000) + R2_PUT_TTL_SECONDS;
     const uploadUrl = await presignR2Put(studioUploadR2Key(userId, filename), {
       expiresIn: R2_PUT_TTL_SECONDS,
