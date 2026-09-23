@@ -546,13 +546,13 @@ function RegenerateConfirmModal({
     >
       <div className="w-full max-w-sm rounded-2xl border-gradient bg-surface p-8" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
-          <h3 className="text-lg font-bold">今の結果は消えます</h3>
+          <h3 className="text-lg font-bold">表示が新しい生成に切り替わります</h3>
           <button type="button" onClick={onCancel} aria-label="閉じる" className="text-muted transition-colors hover:text-foreground">
             <X size={20} />
           </button>
         </div>
         <p className="mt-2 text-sm leading-relaxed text-muted">
-          新しく生成すると、現在表示されている結果は上書きされて見えなくなります（ダウンロード済みなら消えません）。続けますか？
+          新しく生成すると、画面は新しい結果に切り替わります。今の結果は 14 日間保存され、下の「最近の生成」からいつでも表示し直せます。続けますか？
         </p>
         <div className="mt-6 flex gap-2">
           <button
