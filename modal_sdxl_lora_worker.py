@@ -244,12 +244,15 @@ def probe_imports() -> dict:
 # failed/finished job silently never leaves
 # "processing" in the UI, exactly the modal_lora_worker.py pitfall its own
 # dispatch_image comment warns about.
-train_image = image.pip_install("xformers==0.0.29.post3", "Pillow", "requests").env(
-    {
-        # Cache HF downloads (the ~7GB SDXL base checkpoint) on the persistent
-        # Volume so repeated smoke-test runs don't re-download it every time.
-        "HF_HOME": f"{MODELS_DIR}/hf_home_sdxl",
-    }
+train_image = (
+    image.pip_install("xformers==0.0.29.post3", "Pillow", "requests")
+    .env(
+        {
+            # Cache HF downloads (the ~7GB SDXL base checkpoint) on the persistent
+            # Volume so repeated smoke-test runs don't re-download it every time.
+            "HF_HOME": f"{MODELS_DIR}/hf_home_sdxl",
+        }
+    )
     # R2 成果物ストア（ull_r2.py、2026-09-23）
     .pip_install("boto3>=1.35")
     .add_local_python_source("ull_r2")

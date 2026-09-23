@@ -639,7 +639,7 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
 
 規模: 2 が半日〜1 日、3 と 4 が 1〜2 日、5〜7 が半日。順に PR を分ける。
 
-#### 【進行中 2026-09-23 夜】1（共通層）と 2（LoRA 成果物）を実装 — **コミット前・Modal 未デプロイ**
+#### 【完了 2026-09-23 夜】1（共通層）と 2（LoRA 成果物）を実装・**本番反映済み**（`dbe9752` + 修正コミット、Vercel READY、Modal 2 本デプロイ済み）
 
 **できたこと（ローカル検証済み）**
 - 共通層: `ull_r2.py`（boto3、`TransferConfig` 64MB×16 固定、`put_file/put_bytes/presign_get/head/list_keys/delete_prefix`、
@@ -662,10 +662,11 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
 **残り（この順で）**
 1. ~~バケット設定~~ **完了（2026-09-23 夜）**: トークンを Admin 権限に上げて `scripts/r2_bucket_setup.py` を再実行。
    ライフサイクル 14 日＋不完全マルチパート 1 日＋CORS（GET/HEAD/PUT、Range/ETag 公開）が適用済み（読み戻しで確認）。
-2. コミット → push（Vercel 自動デプロイで Next 側が先に本番へ）→ **その後に** `modal deploy` を 2 本
-   （`modal_lora_worker.py`・`modal_sdxl_lora_worker.py`）。**順序を逆にすると** worker が Volume から消した
-   ファイルを本番 route がまだ Modal 経路で探して 404 になる。
-3. デプロイ後、実 LoRA ジョブを 1 本流して R2 経路を実地確認（同時に「次の一手」1 の metrics も取れる）。
+2. ~~コミット → push → modal deploy~~ **完了**: Vercel READY 確認後に `modal_lora_worker.py`（27 秒）と
+   `modal_sdxl_lora_worker.py` をデプロイ。SDXL は初回 `train_image` のチェーン位置ミス（`.env({...}` の dict に
+   `.pip_install`）で落ち、修正して再デプロイ（10 秒）。**py_compile では見つからない種類のミス**なので image 変更後は
+   必ず `modal deploy` の結果まで見る。
+3. **次**: 実 LoRA ジョブを 1 本流して R2 経路を実地確認（同時に「次の一手」1 の metrics も取れる）。
 4. 計画 3（生成物）以降は未着手。admin「最近の生成物」（計画 6）が R2 対応するまで、新規 LoRA 成果物は admin のバケット
    ブラウザに出ない（rclone マウント `R:` で見る）。
 
