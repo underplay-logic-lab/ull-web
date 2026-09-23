@@ -3,6 +3,7 @@ import { validateEvent, WebhookVerificationError } from "@polar-sh/sdk/webhooks"
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { polarProductConfig, tierForPolarProduct } from "@/lib/polar";
+import { POLAR_DONATION_PRODUCT_ID } from "@/lib/polarProducts";
 import { apiErrorResponse } from "@/lib/apiError";
 
 const LOG_PREFIX = "[webhooks/polar]";
@@ -94,6 +95,15 @@ async function handleOrderPaid(order: OrderData) {
   // renewal orders where Polar may only carry it on the subscription.
   const productId = order.productId ?? order.subscription?.productId ?? null;
   const config = polarProductConfig(productId);
+
+  // 寄付（/api/checkout/donation）: クレジット付与も tier 変更もしない。ログだけ。
+  if (productId === POLAR_DONATION_PRODUCT_ID) {
+    console.log(
+      `${LOG_PREFIX} donation received: order ${order.id} amount=${order.totalAmount ?? "?"} ` +
+        `${order.currency ?? ""} user=${userId ?? "anonymous"}`,
+    );
+    return NextResponse.json({ ok: true, skipped: "donation", orderId: order.id });
+  }
 
   if (!userId) {
     console.error(

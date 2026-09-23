@@ -26,14 +26,16 @@ const STUDIO_TABS: { id: StudioTab; label: string; adminOnly?: boolean }[] = [
   // "image" (画像生成) is temporarily hidden from navigation — the engine
   // behind it is mid-swap and ImageGenMaintenancePlaceholder is the only
   // thing it currently renders. Re-add here once the new engine ships.
+  // 2026-09-24 ホスト: メインは Cinematic Director（先頭に置き、開いたときに最初に出す）。
+  { id: "director", label: "🎥 Cinematic Director" },
   { id: "angle", label: "🎭 マルチアングル" },
   { id: "upscale", label: "✨ 4K/8K超解像" },
   { id: "upscale_video", label: "🎬 4K動画超解像" },
-  { id: "director", label: "🎥 Cinematic Director" },
   { id: "lora", label: "🎨 LoRA Studio" },
   { id: "custom", label: "🔧 特化ワークフロー（admin）", adminOnly: true },
 ];
-const DEFAULT_TAB: StudioTab = "angle";
+// Studio を開いたときに最初に表示するタブ。
+const DEFAULT_TAB: StudioTab = "director";
 
 function ImageGenMaintenancePlaceholder() {
   return (

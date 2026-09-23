@@ -812,9 +812,14 @@ worker を先に上げると `r2_keys` が付いた瞬間に Volume 側が消え
 **UI からの実地確認 完了（2026-09-24、ホスト）**: 4 タブのプレビューを確認し「どれも速くなっている。他のサイトと遜色ない。これで OK」。
 特化 WF（同期・GPU 直 put）だけは新規ジョブでしか確認できないが、同日に admin 限定タブへ格下げしたので急がない。
 
-**残り（この順で）**
-1. 計画 5（R2 ライフサイクルは適用済み。`modal_retention_purge.py` は据え置き）・6（admin バケットブラウザ）・7（切替は実装済みなので
-   「確認して閉じる」だけ）・8-②・9。
+**計画 5〜9 は 2026-09-24 に閉じた（ホスト「終わってるなら閉じて」）**:
+- 5 保持: R2 ライフサイクル 14 日 適用済み。`modal_retention_purge.py` の Volume 側は旧データが尽きるまで据え置き（`DEFAULT_BUCKETS` から外さない）。**完了**。
+- 6 admin: 「最近の生成物」のサムネは計画 3 で R2 対応済み。バケットブラウザに仮想バケット **「R2（2026-09-23〜 成果物・持ち込み）」**を追加
+  （`storage/objects` route の `bucket=r2`、`r2.server.ts::listR2Prefix / listR2Keys`。階層 `<kind>/<user_id>/<job_id>/…`、user_id フォルダの
+  email 解決、署名付き GET で開く、prefix 一括削除）。**完了**。
+- 7 切替: `ARTIFACT_STORE` / `UPLOAD_STORE` は実装済み。**完了**（戻し先は残す）。
+- 8 DL/UL: ①URL 一覧コピーは LoRA で済み。②ブラウザ内転送パネルは**ローンチ後の改善枠**として保留（要望が出たら着手）。
+- 9 整理作業は rclone マウント `R:`。admin にファイル操作 UI を作り込まない。**方針として確定**。
 
 ### 【実装 2026-09-24】特化 WF を admin 限定に・超解像への導線・寄付（ホスト要望）
 
@@ -825,9 +830,13 @@ worker を先に上げると `r2_keys` が付いた瞬間に Volume 側が消え
   `ull:studio-tab` イベントで `Studio.tsx` がタブを切替。受け側の超解像タブがマウント時に 1 回だけ取り出し、署名付き URL を
   fetch → File にしてローカル選択と同じ経路へ）。Multi-Angle は各構図のホバー操作とライトボックスに「超解像へ」、Director は完了画面に
   「この動画を 4K 動画超解像へ」。R2 / Modal とも CORS は * なので fetch できる。
-- **寄付（未着手・ホスト判断待ち）**: Claude の推奨は「Polar の Pay-what-you-want 商品を 1 つ作り、UI はプリセット 3 つ＋自由入力」。
-  webhook は未知の productId を `skipped: unknown_product` で無視するので、寄付商品を足してもクレジット付与は起きない（安全）。
-  置き場は料金セクションの下に小さな「維持費と機能追加の支援」カード。Polar 商品はホストがダッシュボードで作る（API でも可）。
+- **メインタブは Cinematic Director**（2026-09-24 ホスト）: タブ列の先頭に置き、Studio を開いたときに最初に表示する（`DEFAULT_TAB`）。
+- **寄付（実装済み 2026-09-24）**: Polar に Pay-what-you-want 商品「ULL Studio への支援（寄付）」（`531c0cda-…`、JPY・下限 ¥100・
+  プリセット ¥1,000）を `scripts/create-polar-donation-product.mjs` で作成。`POLAR_DONATION_PRODUCT_ID`（`polarProducts.ts`）。
+  UI は `src/components/Support.tsx`（プリセット ¥500 / ¥1,000 / ¥3,000 ＋ 自由入力、ログイン不要）、route は `/api/checkout/donation`
+  （`amount` を渡す。Bearer があれば Polar customer に紐付け）。webhook は寄付商品なら `skipped: "donation"` でログだけ（クレジット付与なし）。
+  トップページのセクション `support` として登録（`HomeSections` / `DEFAULT_PAGE_SECTIONS` で pricing の次。**DB に保存済みの並びには
+  末尾に足されるので、位置は admin の SectionManager で pricing の下へ動かす**）。金額指定のチェックアウト作成は Polar で確認済み（未決済）。
 
 ### 残課題: LoRA の「結果がいまいちな時」ヒント（2026-09-23、ホスト発案・未着手）
 

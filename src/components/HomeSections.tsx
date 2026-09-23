@@ -5,6 +5,7 @@ import { Hero } from "@/components/Hero";
 import { Studio } from "@/components/Studio";
 import { Pricing } from "@/components/Pricing";
 import { Contact } from "@/components/Contact";
+import { Support } from "@/components/Support";
 import { Articles } from "@/components/Articles";
 import { ComparisonSection } from "@/components/landing/ComparisonSection";
 import { ShowcaseSection } from "@/components/landing/ShowcaseSection";
@@ -22,6 +23,7 @@ const SECTION_REGISTRY: Record<string, { label: string; Component: ComponentType
   devicezerowaste: { label: "デバイスフリー / 死に金ゼロ", Component: DeviceZeroWasteSection },
   trustmedia: { label: "信頼・メディア導線", Component: TrustMediaSection },
   pricing: { label: "Pricing", Component: Pricing },
+  support: { label: "支援（寄付）", Component: Support },
   contact: { label: "Contact", Component: Contact },
   articles: { label: "Articles", Component: Articles },
 };

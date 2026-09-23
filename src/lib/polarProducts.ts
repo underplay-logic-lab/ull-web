@@ -23,3 +23,9 @@ export const POLAR_PRODUCT_IDS = {
 } as const;
 
 export type PolarProductKey = keyof typeof POLAR_PRODUCT_IDS;
+
+// 支援（寄付）— Pay-what-you-want（JPY、下限 ¥100、プリセット ¥1,000）。
+// 2026-09-24 に scripts/create-polar-donation-product.mjs で作成。クレジット
+// 付与の対象外なので POLAR_PRODUCT_IDS / POLAR_PRODUCT_CONFIG には入れない
+// （webhook は productId がこれなら "donation" として記録だけして終わる）。
+export const POLAR_DONATION_PRODUCT_ID = "531c0cda-ab5e-4078-a8cd-a62d82c31fd6";

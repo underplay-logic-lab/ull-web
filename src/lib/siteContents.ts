@@ -48,6 +48,9 @@ export const DEFAULT_PAGE_SECTIONS: PageSectionConfig[] = [
   { id: "devicezerowaste", visible: true },
   { id: "trustmedia", visible: true },
   { id: "pricing", visible: true },
+  // 2026-09-24: 支援（寄付）。DB に保存済みの並びに無い id は末尾に足されるので、
+  // 位置は admin の SectionManager で調整する。
+  { id: "support", visible: true },
   { id: "contact", visible: true },
   { id: "articles", visible: false },
 ];

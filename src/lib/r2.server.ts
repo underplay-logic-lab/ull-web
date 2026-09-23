@@ -1,5 +1,12 @@
 import "server-only";
-import { DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectsCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 // Cloudflare R2 artifact store — server-side twin of ull_r2.py.
@@ -173,6 +180,63 @@ export async function presignPublishedArtifact(
     console.error("[r2] presign failed for", relPath, err);
     return null;
   }
+}
+
+// admin bucket browser (migration plan step 6, 2026-09-24): one directory
+// level under `prefix` ("" = bucket root → the <kind>/ folders). Folders are
+// CommonPrefixes, files are Contents. Paginated; ordering folders first.
+export type R2Entry = {
+  name: string;
+  path: string;
+  isFolder: boolean;
+  sizeBytes: number | null;
+  updatedAt: string | null;
+};
+
+export async function listR2Prefix(prefix: string): Promise<R2Entry[]> {
+  const clean = prefix.replace(/^\/+/, "").replace(/\/+$/, "");
+  const base = clean ? `${clean}/` : "";
+  const out: R2Entry[] = [];
+  let token: string | undefined;
+  do {
+    const res = await r2Client().send(
+      new ListObjectsV2Command({ Bucket: r2Bucket(), Prefix: base, Delimiter: "/", ContinuationToken: token, MaxKeys: 1000 }),
+    );
+    for (const cp of res.CommonPrefixes ?? []) {
+      const p = (cp.Prefix ?? "").replace(/\/$/, "");
+      if (!p) continue;
+      out.push({ name: p.slice(base.length), path: p, isFolder: true, sizeBytes: null, updatedAt: null });
+    }
+    for (const obj of res.Contents ?? []) {
+      const key = obj.Key ?? "";
+      if (!key || key === base) continue;
+      out.push({
+        name: key.slice(base.length),
+        path: key,
+        isFolder: false,
+        sizeBytes: typeof obj.Size === "number" ? obj.Size : null,
+        updatedAt: obj.LastModified ? obj.LastModified.toISOString() : null,
+      });
+    }
+    token = res.IsTruncated ? res.NextContinuationToken : undefined;
+  } while (token);
+  out.sort((a, b) => (a.isFolder !== b.isFolder ? (a.isFolder ? -1 : 1) : a.name.localeCompare(b.name)));
+  return out;
+}
+
+/** Every key under `prefix` (recursive, capped). */
+export async function listR2Keys(prefix: string, cap = 5000): Promise<string[]> {
+  const base = prefix.replace(/^\/+/, "").replace(/\/+$/, "") + "/";
+  const keys: string[] = [];
+  let token: string | undefined;
+  do {
+    const res = await r2Client().send(
+      new ListObjectsV2Command({ Bucket: r2Bucket(), Prefix: base, ContinuationToken: token, MaxKeys: 1000 }),
+    );
+    for (const obj of res.Contents ?? []) if (obj.Key) keys.push(obj.Key);
+    token = res.IsTruncated && keys.length < cap ? res.NextContinuationToken : undefined;
+  } while (token);
+  return keys.slice(0, cap);
 }
 
 // Best-effort bulk delete (≤1000 keys per call, the S3 limit). Missing keys
