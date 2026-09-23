@@ -389,11 +389,13 @@ export function UpscaleStudioTab() {
 
   const [queueChoiceOpen, setQueueChoiceOpen] = useState(false);
   type QueuedSnapshot = { image: File; modelKey: string; modeId: UpscaleModeId };
-  const [queuedNext, setQueuedNext] = useState<QueuedSnapshot | null>(null);
+  // 2026-09-23: 予約は 1 件 → 先入れ先出しのリスト（Multi-Angle と同じ。1 件だと
+  // 後の予約が前の予約を黙って上書きする）。順番待ちは無料なので件数上限は無し。
+  const [queuedNext, setQueuedNext] = useState<QueuedSnapshot[]>([]);
   // ポーリングの長寿命な useEffect から「今すぐ最新の予約」を読めるようにする
   // ref。イベントハンドラ（予約する/取り消す）でだけ state と一緒に書き込み、
-  // effect 内では書き込まない（CLAUDE.md §6 参照）。
-  const queuedNextRef = useRef<QueuedSnapshot | null>(null);
+  // effect 内では書き込まない（CLAUDE.md §6 参照。完了時の先頭取り出しは例外）。
+  const queuedNextRef = useRef<QueuedSnapshot[]>([]);
 
   useEffect(() => {
     saveFormState(FORM_ID, { modeId, modelKey } satisfies PersistedForm);
@@ -714,7 +716,7 @@ export function UpscaleStudioTab() {
             // 「順番待ち」で予約されていた次の1件を、コンテナがまだ温かい
             // うちに自動発火する。ref はイベントハンドラでのみ書かれるので
             // ここでは読むだけ（clear は同じ非同期コールバック内で行う）。
-            const queued = queuedNextRef.current;
+            const [queued, ...restQueued] = queuedNextRef.current;
             if (queued) {
               // 次のジョブが画面を上書きする前に今の結果をブラウザへ自動
               // 保存する（連続キュー時、手動ダウンロードの間もなく次の
@@ -728,8 +730,8 @@ export function UpscaleStudioTab() {
                     console.warn("[UpscaleStudioTab] auto-download before next queued job failed:", err);
                   });
               }
-              queuedNextRef.current = null;
-              setQueuedNext(null);
+              queuedNextRef.current = restQueued;
+              setQueuedNext(restQueued);
               void runGenerate(queued);
             }
             return;
@@ -832,14 +834,15 @@ export function UpscaleStudioTab() {
   const handleQueueWait = () => {
     if (!image) return;
     const snapshot: QueuedSnapshot = { image, modelKey, modeId };
-    queuedNextRef.current = snapshot;
-    setQueuedNext(snapshot);
+    const next = [...queuedNextRef.current, snapshot];
+    queuedNextRef.current = next;
+    setQueuedNext(next);
     setQueueChoiceOpen(false);
   };
 
   const handleCancelQueue = () => {
-    queuedNextRef.current = null;
-    setQueuedNext(null);
+    queuedNextRef.current = [];
+    setQueuedNext([]);
   };
 
   const handleQueueParallel = () => {
@@ -1036,16 +1039,16 @@ export function UpscaleStudioTab() {
 
           {!busy && gpuWarm && <WarmCountdownBanner remainingMs={gpuWarmMs} />}
 
-          {busy && !queuedNext && (
+          {busy && queuedNext.length === 0 && (
             <p className="mt-2 flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-xs leading-relaxed text-neon-violet">
               <Sparkles size={14} className="mt-0.5 shrink-0" />
               バックグラウンドで処理中です。もう一度ボタンを押すと、次の生成を予約できます。
             </p>
           )}
 
-          {queuedNext && (
+          {queuedNext.length > 0 && (
             <div className="mt-2">
-              <QueuedNextBanner onCancel={handleCancelQueue} />
+              <QueuedNextBanner count={queuedNext.length} onCancel={handleCancelQueue} />
             </div>
           )}
 

@@ -45,10 +45,12 @@ import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import {
   AngleJobNotFoundError,
   downloadAngleImage,
+  listAngleJobs,
   pollAngleJob,
   startAngleJob,
   type AngleApiError,
   type AngleJob,
+  type AngleJobSummary,
 } from "@/lib/angleApi";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { VramBadge } from "@/components/studio/VramBadge";
@@ -673,6 +675,36 @@ export function MultiAngleStudioTab() {
   // ref。イベントハンドラ（予約する/取り消す）でだけ state と一緒に書き込み、
   // effect 内では書き込まない（完了時の先頭取り出しは例外 — 下のコメント参照）。
   const queuedNextRef = useRef<QueuedSnapshot[]>([]);
+
+  // 「最近の生成」（2026-09-23）: 予約や並列実行で画面が次のジョブへ切り替わると、
+  // 前の結果に戻る手段が無かった（サーバーには 14 日残っている）。一覧から選ぶと
+  // そのジョブを読み直して結果ギャラリーに出す。
+  const [history, setHistory] = useState<AngleJobSummary[]>([]);
+
+  // ログイン時と、ジョブが終端（done / error）に達するたびに一覧を更新する
+  // （非同期応答でのみ setState する — 効果内の同期 setState は lint 禁止）。
+  useEffect(() => {
+    if (!user || phase === "submitting" || phase === "running") return;
+    let alive = true;
+    listAngleJobs()
+      .then((rows) => {
+        if (alive) setHistory(rows);
+      })
+      .catch((err) => console.warn("[MultiAngleStudioTab] history fetch failed:", err));
+    return () => {
+      alive = false;
+    };
+  }, [user, phase]);
+
+  const handleShowHistory = (id: string) => {
+    if (busy || id === jobId) return;
+    setErrorMessage(null);
+    setSubmittedCombos([]);
+    setJob(null);
+    saveFormState(JOB_KEY, { jobId: id });
+    setJobId(id);
+    setPhase("running"); // ポーリングが 1 回で completed を検知して done に落とす
+  };
 
   const elapsedMs = useElapsedTimer(phase === "running");
   // Angle worker の scaledown_window=30秒（CLAUDE.md §1）に合わせたローカル
@@ -1375,6 +1407,41 @@ export function MultiAngleStudioTab() {
           onIndexChange={setLightboxIndex}
           onClose={() => setLightboxIndex(null)}
         />
+      )}
+
+      {user && history.length > 0 && (
+        <div className="mt-8 border-t border-border pt-6">
+          <p className="text-xs font-medium text-muted">
+            最近の生成
+            <span className="ml-2 text-muted/60">生成から 14 日間保存されます。予約や並列実行で切り替わった結果もここから戻れます。</span>
+          </p>
+          <ul className="mt-3 divide-y divide-border rounded-lg border border-border bg-surface/40">
+            {history.map((h) => {
+              const current = h.id === jobId;
+              const when = h.createdAt ? new Date(h.createdAt).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+              const statusLabel =
+                h.status === "completed" ? "完了" : h.status === "failed" ? "失敗" : h.status === "processing" ? "生成中" : "起動待ち";
+              return (
+                <li key={h.id} className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
+                  <span className="flex min-w-0 items-center gap-3">
+                    <span className="shrink-0 tabular-nums text-muted">{when}</span>
+                    <span className="truncate">
+                      {h.completedAngles}/{h.totalAngles} 構図 ・ {h.creditsCost}C ・ {statusLabel}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleShowHistory(h.id)}
+                    disabled={busy || current}
+                    className="shrink-0 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-foreground transition-colors hover:border-neon-pink/50 hover:bg-surface-hover disabled:opacity-50"
+                  >
+                    {current ? "表示中" : "表示"}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       )}
 
       <LoginModal

@@ -406,11 +406,13 @@ export function DirectorStudioTab() {
         quality: DirectorQualityMode;
         lora: DirectorLoraSelection;
       };
-  const [queuedNext, setQueuedNext] = useState<QueuedSnapshot | null>(null);
+  // 2026-09-23: 予約は 1 件 → 先入れ先出しのリスト（Multi-Angle と同じ。1 件だと
+  // 後の予約が前の予約を黙って上書きする）。順番待ちは無料なので件数上限は無し。
+  const [queuedNext, setQueuedNext] = useState<QueuedSnapshot[]>([]);
   // ポーリングの長寿命な useEffect から「今すぐ最新の予約」を読めるようにする
   // ref。イベントハンドラでだけ書き込み、effect 内では書き込まない
-  // （CLAUDE.md §6）。
-  const queuedNextRef = useRef<QueuedSnapshot | null>(null);
+  // （CLAUDE.md §6。完了時の先頭取り出しは例外）。
+  const queuedNextRef = useRef<QueuedSnapshot[]>([]);
 
   const sceneBreakdown = useMemo(
     () => directorCostBreakdown({ scenes, mode: qualityMode, knobs }),
@@ -541,14 +543,15 @@ export function DirectorStudioTab() {
   const handleQueueWait = () => {
     const snapshot = buildSnapshot();
     if (!snapshot) return;
-    queuedNextRef.current = snapshot;
-    setQueuedNext(snapshot);
+    const next = [...queuedNextRef.current, snapshot];
+    queuedNextRef.current = next;
+    setQueuedNext(next);
     setQueueChoiceOpen(false);
   };
 
   const handleCancelQueue = () => {
-    queuedNextRef.current = null;
-    setQueuedNext(null);
+    queuedNextRef.current = [];
+    setQueuedNext([]);
   };
 
   const handleQueueParallel = () => {
@@ -642,7 +645,7 @@ export function DirectorStudioTab() {
           if (next.status === "completed") {
             setPhase("done");
             if (sawInProgress) markGpuWarm();
-            const queued = queuedNextRef.current;
+            const [queued, ...restQueued] = queuedNextRef.current;
             if (queued) {
               // 次のジョブが即座に画面を上書きしてしまう前に、今完了した
               // 分をブラウザへ自動保存しておく（連続キュー時、ユーザーが
@@ -656,8 +659,8 @@ export function DirectorStudioTab() {
                   console.warn("[DirectorStudioTab] auto-download before next queued job failed:", err);
                 });
               }
-              queuedNextRef.current = null;
-              setQueuedNext(null);
+              queuedNextRef.current = restQueued;
+              setQueuedNext(restQueued);
               void runGenerate(queued);
             }
             return;
@@ -1170,7 +1173,7 @@ export function DirectorStudioTab() {
             <p className="mt-2 text-center text-[11px] text-muted">初回登録で10クレジットが付与されます。</p>
           )}
           {!busy && gpuWarm && <WarmCountdownBanner remainingMs={gpuWarmMs} />}
-          {busy && !queuedNext && (
+          {busy && queuedNext.length === 0 && (
             // 2026-09-19: LoRAアップロードは生成ボタンを押す前の別操作
             // （handleUploadLora）に分離済みなので、ここに来る時点では
             // ジョブは既にサーバー側へ発行済み——ブラウザを閉じても継続する。
@@ -1179,9 +1182,9 @@ export function DirectorStudioTab() {
               バックグラウンドで生成中です。もう一度ボタンを押すと、次の生成を予約できます。
             </p>
           )}
-          {queuedNext && (
+          {queuedNext.length > 0 && (
             <div className="mt-2">
-              <QueuedNextBanner onCancel={handleCancelQueue} />
+              <QueuedNextBanner count={queuedNext.length} onCancel={handleCancelQueue} />
             </div>
           )}
         </div>

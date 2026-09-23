@@ -156,6 +156,41 @@ async function fetchAngleImageUrls(jobId: string): Promise<string[]> {
  * 表示・ダウンロードに使える実URLの配列へ解決する。未解決の要素が1つも
  * 無ければAPIを呼ばずそのまま返す（ポーリングのたびの無駄な呼び出しを
  * 避ける）。 */
+// 「最近の生成」一覧（2026-09-23）。予約や並列実行で画面が次のジョブに切り替わると、
+// 前のジョブの結果に UI から戻る手段が無かった（サーバー側には 14 日残っている）。
+// 一覧から選ぶと pollAngleJob で丸ごと読み直して結果ギャラリーに出す。
+export type AngleJobSummary = {
+  id: string;
+  status: AngleJobStatus;
+  mode: AngleMode;
+  totalAngles: number;
+  completedAngles: number;
+  creditsCost: number;
+  createdAt: string;
+};
+
+export async function listAngleJobs(): Promise<AngleJobSummary[]> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) return [];
+  const res = await fetch("/api/studio/angle/jobs", { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!res.ok) return [];
+  const body = (await res.json().catch(() => ({}))) as { jobs?: unknown };
+  if (!Array.isArray(body.jobs)) return [];
+  return body.jobs
+    .filter((j): j is Record<string, unknown> => Boolean(j) && typeof j === "object")
+    .map((j) => ({
+      id: String(j.id ?? ""),
+      status: String(j.status ?? "pending") as AngleJobStatus,
+      mode: String(j.mode ?? "standard") as AngleMode,
+      totalAngles: Number(j.total_angles ?? 0),
+      completedAngles: Number(j.completed_angles ?? 0),
+      creditsCost: Number(j.credits_cost ?? 0),
+      createdAt: String(j.created_at ?? ""),
+    }))
+    .filter((j) => j.id);
+}
+
 async function resolveAngleImages(jobId: string, rawImages: string[]): Promise<string[]> {
   if (rawImages.length === 0) return rawImages;
   const needsResolve = rawImages.some(
