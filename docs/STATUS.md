@@ -596,6 +596,14 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 
 5. **画像系 arch の prep 実測**（2 の仕組みで自然に溜まるので、能動的にやる必要は薄い）。
 
+### 【決定 2026-09-23】R2 を成果物ストレージにする（速度テスト済み・移行は未着手）
+
+R2 → PC 34〜46 MB/s（Modal 直の 10 倍）、Modal → R2 は 64MB part × 16 で 48〜53 MB/s（gpu-benchmarks §16.5）。
+資格情報は `.env.local` の `R2_*` と Modal secret `r2-artifacts`（メモリ `r2-artifact-storage`）。
+**移行の順番**: ①LoRA 成果物（worker 完了処理で R2 へ put、`/api/studio/lora/checkpoint` を R2 署名付き URL へ、
+purge を R2 ライフサイクル 14 日へ）→ ②超解像・Director の生成物 → ③ユーザーデータセット。
+Volume（939GB/1TB）にはモデル重みだけ残す。
+
 ### 残課題: LoRA の「結果がいまいちな時」ヒント（2026-09-23、ホスト発案・未着手）
 
 置き場は 2 つ: ①ローンチ時に作る FAQ ページ（AI クローラー対策の FAQ と兼用、`launch-checklist-ai-seo`）、
