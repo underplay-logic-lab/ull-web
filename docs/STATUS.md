@@ -686,7 +686,7 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
    に修復（ホスト承認）。(b) デプロイ済みの CPU 関数 `publish_sdxl_artifacts_r2` を過去ジョブ `e1204316`（SDXL、Volume
    上に 4 ckpt + dataset.zip + LICENSE.txt）に直接呼び、**5 ファイル 1,009MB を 70 秒で移行**（CPU コンテナから
    10〜20 MB/s、コールド込み 87 秒）。metadata に `r2_key` / `artifact_store` / `r2_publish` が入り、HEAD と Range 付き
-   署名 GET（206）まで確認。**残る未確認は UI 側**（完了画面の並列 DL・URL 一覧コピー）で、ホストがブラウザで見る。
+   署名 GET（206）まで確認。**UI 側もホストが確認済み（2026-09-23 20:10 JST）**: 完了画面で 4 本選択 → 並列 DL、**1 本あたり約 20 MB/s（合計 約 80 MB/s）**。Modal 直の 3〜7 MB/s から 10 倍超。
    (c) minimax_h3 の s/it・prep を §14.15 と突き合わせて knob を引き直すかは**未判断**。
    - 速度メモ: Modal → R2 は GPU/CPU どちらのコンテナからも 2〜33 MB/s で、§16.5 の 48〜53 MB/s は再現していない
      （§16.5 は Volume 上の大きい 1 ファイルを測った値。ファイル 230〜590MB だと 64MB パートが 4〜10 個で並列が
