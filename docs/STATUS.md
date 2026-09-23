@@ -8,7 +8,7 @@
 **更新のタイミング**: 作業の区切りごと（コミットした／方針が決まった／実測が
 出た／残課題が増減した）。セッションの終わりに必ず見直す。
 
-最終更新: 2026-09-23
+最終更新: 2026-09-23（夜・R2 移行 1〜2 実装）
 
 ---
 
@@ -638,6 +638,39 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
    admin が遅い真因は Next → Modal エンドポイント → Volume の経路でコンテナ起動を毎回踏むことで、R2 で経路ごと消える。
 
 規模: 2 が半日〜1 日、3 と 4 が 1〜2 日、5〜7 が半日。順に PR を分ける。
+
+#### 【進行中 2026-09-23 夜】1（共通層）と 2（LoRA 成果物）を実装 — **コミット前・Modal 未デプロイ**
+
+**できたこと（ローカル検証済み）**
+- 共通層: `ull_r2.py`（boto3、`TransferConfig` 64MB×16 固定、`put_file/put_bytes/presign_get/head/list_keys/delete_prefix`、
+  `publish_job_dir()` = ジョブフォルダを R2 へ上げて `checkpoints[].r2_key` を焼き込み、サイズ検証後に Volume 側を unlink）と
+  `src/lib/r2.server.ts`（`@aws-sdk/client-s3` + presigner、`presignR2Get/presignR2Put/headR2`、`r2Enabled()`）。
+  切替は両側とも env `ARTIFACT_STORE=volume` で Volume 経路へ戻る（既定 `r2`）。資格情報が無ければ fail-open で Volume。
+- worker: `modal_lora_worker.py`（train image 末尾に `boto3` + `add_local_python_source("ull_r2")`、`train_lora_job` に
+  secret `r2-artifacts`、完了処理で `publish_job_dir` → `metadata.artifact_store="r2"` / `r2_prefix` / `r2_extra_keys`）。
+  `modal_sdxl_lora_worker.py` も同様（`_publish_r2()` を成功・安全停止・失敗救出の 3 経路から呼ぶ。LICENSE.txt も同 prefix）。
+  ai-toolkit 側の CPU salvage（`salvage_lora_job`）は Volume のまま（失敗ジョブのみ・後回し）。
+- Next: `checkpoint` route は `r2_key` があれば R2 署名付き URL（15 分、`Content-Disposition: attachment`）、無ければ従来 Modal。
+  `selection` route は全件 `r2_key` なら `{store:"r2", files:[{filename,url,sizeBytes}]}` を返し、UI が **iframe で並列 DL**
+  （ZIP 化しない）。混在・旧ジョブは従来の ZIP。`bundle` route は `want=final|dataset` を metadata の R2 エントリから
+  直接解決（Modal probe を踏まない）。完了画面に「📋 選択したファイルの URL 一覧をコピー」を追加（計画 8-①、両ストア対応）。
+- 検証: `ull_r2` をローカルで実バケット往復 OK。`modal run modal_r2_probe.py`（CPU）で secret・image・96MB マルチパート・
+  署名 GET・ローカル削除まで OK。`tsc --noEmit` / eslint グリーン。
+- Vercel 環境変数 `R2_*` 4 つを REST API で production/preview/development に追加済み（2026-09-23）。
+- R2 バケットのライフサイクル（14 日）と CORS を適用済み（`scripts/r2_bucket_setup.py`、冪等なので再実行可）。
+
+**残り（この順で）**
+1. ~~バケット設定~~ **完了（2026-09-23 夜）**: トークンを Admin 権限に上げて `scripts/r2_bucket_setup.py` を再実行。
+   ライフサイクル 14 日＋不完全マルチパート 1 日＋CORS（GET/HEAD/PUT、Range/ETag 公開）が適用済み（読み戻しで確認）。
+2. コミット → push（Vercel 自動デプロイで Next 側が先に本番へ）→ **その後に** `modal deploy` を 2 本
+   （`modal_lora_worker.py`・`modal_sdxl_lora_worker.py`）。**順序を逆にすると** worker が Volume から消した
+   ファイルを本番 route がまだ Modal 経路で探して 404 になる。
+3. デプロイ後、実 LoRA ジョブを 1 本流して R2 経路を実地確認（同時に「次の一手」1 の metrics も取れる）。
+4. 計画 3（生成物）以降は未着手。admin「最近の生成物」（計画 6）が R2 対応するまで、新規 LoRA 成果物は admin のバケット
+   ブラウザに出ない（rclone マウント `R:` で見る）。
+
+**実測メモ**: CPU probe（96MB・2 パート）は put 5.5 MB/s・GET 19.8 MB/s と §16.5 より遅いが、ファイルが小さく並列が
+効かない条件なので参考値。実ジョブ（数百 MB〜GB）で再確認する。
 
 ### 残課題: LoRA の「結果がいまいちな時」ヒント（2026-09-23、ホスト発案・未着手）
 

@@ -721,16 +721,41 @@ export async function downloadLoraCheckpoint(jobId: string, filename: string): P
   triggerBrowserDownload(await getLoraCheckpointDownloadUrl(jobId, filename));
 }
 
-// Signed URL for the server-side "bundle these exact checkpoints into ONE
-// uncompressed (ZIP_STORED) zip" endpoint. The Next.js route validates every
-// name against generation_jobs.metadata.checkpoints for the owning job, then
-// mints the HMAC token the Modal worker verifies. Used for a 2+ file
-// selection so the browser pulls a single stream instead of racing the
-// same-origin connection cap.
-export async function getLoraSelectionZipUrl(
+// Kicks off several cross-origin attachment downloads at once. Each URL goes
+// into its own hidden <iframe>: an iframe navigation is not gated behind
+// transient user activation (a programmatic <a>.click() after the signing
+// round-trip is, and gets silently dropped), and the `Content-Disposition:
+// attachment` response hands each one to the browser's download manager.
+// Chrome asks once for "download multiple files" permission on this origin.
+function triggerMultiDownload(urls: string[]): void {
+  if (typeof document === "undefined") return;
+  urls.forEach((url, i) => {
+    window.setTimeout(() => {
+      const f = document.createElement("iframe");
+      f.style.display = "none";
+      f.src = url;
+      document.body.appendChild(f);
+      // Keep it around long enough for the download to be handed off.
+      window.setTimeout(() => f.remove(), 120_000);
+    }, i * 300);
+  });
+}
+
+export type LoraSelectionDownload =
+  // Legacy (Volume) jobs: the worker stitches the selection into one
+  // uncompressed zip and streams it — a single URL.
+  | { bundled: true; url: string }
+  // R2 jobs: one presigned URL per file; nothing to unzip.
+  | { bundled: false; files: { filename: string; url: string; sizeBytes: number | null }[] };
+
+// Asks the selection route for the download(s) of a 2+ file selection. The
+// route validates every name against generation_jobs.metadata.checkpoints for
+// the owning job, then either mints N presigned R2 URLs (post-migration jobs)
+// or one HMAC-signed Modal zip URL (pre-migration jobs).
+export async function getLoraSelectionDownload(
   jobId: string,
   filenames: string[],
-): Promise<string> {
+): Promise<LoraSelectionDownload> {
   const accessToken = await freshAccessToken();
   const res = await fetch(
     `/api/studio/lora/checkpoint/selection?jobId=${encodeURIComponent(jobId)}&files=${encodeURIComponent(
@@ -739,12 +764,44 @@ export async function getLoraSelectionZipUrl(
     { headers: { Authorization: `Bearer ${accessToken}` }, cache: "no-store" },
   );
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || typeof data?.downloadUrl !== "string") throw mapDownloadError(res.status, data?.error);
-  return data.downloadUrl as string;
+  if (!res.ok) throw mapDownloadError(res.status, data?.error);
+  if (data?.store === "r2" && Array.isArray(data.files)) {
+    const files = (data.files as { filename?: unknown; url?: unknown; sizeBytes?: unknown }[])
+      .filter((f) => typeof f.filename === "string" && typeof f.url === "string")
+      .map((f) => ({
+        filename: f.filename as string,
+        url: f.url as string,
+        sizeBytes: typeof f.sizeBytes === "number" ? f.sizeBytes : null,
+      }));
+    if (files.length === 0) throw mapDownloadError(res.status, data?.error);
+    return { bundled: false, files };
+  }
+  if (typeof data?.downloadUrl !== "string") throw mapDownloadError(res.status, data?.error);
+  return { bundled: true, url: data.downloadUrl as string };
 }
 
-export async function downloadLoraSelectionZip(jobId: string, filenames: string[]): Promise<void> {
-  triggerBrowserDownload(await getLoraSelectionZipUrl(jobId, filenames));
+// Starts the selection download. Returns whether the server bundled it into
+// one zip (legacy) — the caller uses that to decide how long "preparing"
+// should show, since a zip build blocks the browser for ~30-60s first.
+export async function downloadLoraSelection(
+  jobId: string,
+  filenames: string[],
+): Promise<{ bundled: boolean }> {
+  const sel = await getLoraSelectionDownload(jobId, filenames);
+  if (sel.bundled) {
+    triggerBrowserDownload(sel.url);
+    return { bundled: true };
+  }
+  triggerMultiDownload(sel.files.map((f) => f.url));
+  return { bundled: false };
+}
+
+// One signed URL per file, in the order given — for the "URL 一覧をコピー"
+// button (paste into aria2 / a download manager). Works for both stores: the
+// checkpoint route returns an R2 presigned URL when the entry has r2_key and
+// a Modal signed URL otherwise. All links are valid for ~15 minutes.
+export async function getLoraCheckpointDownloadUrls(jobId: string, filenames: string[]): Promise<string[]> {
+  return Promise.all(filenames.map((f) => getLoraCheckpointDownloadUrl(jobId, f)));
 }
 
 // One-shot smart artefact download. The API probes the Volume server-side

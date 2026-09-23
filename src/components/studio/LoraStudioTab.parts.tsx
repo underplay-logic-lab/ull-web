@@ -26,7 +26,8 @@ import { QueueStatusPanel } from "@/components/studio/QueueStatusPanel";
 import { VramBadge } from "@/components/studio/VramBadge";
 import {
   downloadLoraCheckpoint,
-  downloadLoraSelectionZip,
+  downloadLoraSelection,
+  getLoraCheckpointDownloadUrls,
   downloadLoraJobBundle,
   probeLoraJobArtifact,
   getLoraCheckpointDownloadUrl,
@@ -1842,12 +1843,17 @@ export function ProgressPanel({
         setBulkDl({ jobId: job.jobId, state: "done", bundle: false });
         return;
       }
-      // The signed URL is minted in ~1s, but the browser then blocks on the
-      // worker writing a multi-GB ZIP_STORED bundle (~30-60s) before the
-      // download actually begins. Hold the "まとめています" copy across that
-      // window instead of flashing "開始しました" a minute early — we can't
-      // observe the cross-origin response, so approximate with a timer.
-      await downloadLoraSelectionZip(job.jobId, files);
+      // R2 jobs: N presigned URLs, downloads start immediately, done.
+      // Legacy jobs: the signed URL is minted in ~1s, but the browser then
+      // blocks on the worker writing a multi-GB ZIP_STORED bundle (~30-60s)
+      // before the download actually begins. Hold the "まとめています" copy
+      // across that window instead of flashing "開始しました" a minute early —
+      // we can't observe the cross-origin response, so approximate with a timer.
+      const { bundled } = await downloadLoraSelection(job.jobId, files);
+      if (!bundled) {
+        setBulkDl({ jobId: job.jobId, state: "done", bundle: false });
+        return;
+      }
       window.setTimeout(() => {
         setBulkDl((prev) =>
           prev.jobId === job.jobId && prev.state === "preparing" && prev.bundle
@@ -1858,6 +1864,25 @@ export function ProgressPanel({
     } catch (err) {
       setBulkDl({ jobId: job.jobId, state: "idle", bundle: false });
       setCkptError(err instanceof Error ? err.message : "ダウンロードの開始に失敗しました。");
+    }
+  };
+
+  // 「URL 一覧をコピー」— one signed link per selected file, newline-joined,
+  // for aria2 / a download manager (docs/STATUS.md R2 plan #8-①). Links are
+  // valid ~15 min. Reuses the per-file copy spinner state with a sentinel.
+  const URL_LIST_COPY_KEY = "__url_list__";
+  const handleCopyUrlList = async (files: string[]) => {
+    if (files.length === 0) return;
+    setCopyingCkpt(URL_LIST_COPY_KEY);
+    setCkptError(null);
+    try {
+      const urls = await getLoraCheckpointDownloadUrls(job.jobId, files);
+      await navigator.clipboard.writeText(urls.join("\n"));
+      pushToast(`${urls.length} 件のダウンロードURLをコピーしました（約15分有効）`);
+    } catch (err) {
+      setCkptError(err instanceof Error ? err.message : "URLのコピーに失敗しました。");
+    } finally {
+      setCopyingCkpt(null);
     }
   };
 
@@ -2158,7 +2183,7 @@ export function ProgressPanel({
                   type="button"
                   onClick={() => handleSelectionDownload(selectedFiles)}
                   disabled={selectedCount === 0 || bulk.state === "preparing"}
-                  title="チェックを入れたチェックポイントをまとめて1つのファイルとしてダウンロードします（解凍不要・そのまま取り込み可）。"
+                  title="チェックを入れたチェックポイントをまとめてダウンロードします（ファイルごとに直通リンクで並列取得・解凍不要）。"
                   className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-3 text-sm font-bold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {bulk.state === "preparing" ? (
@@ -2179,12 +2204,25 @@ export function ProgressPanel({
                     </>
                   )}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => handleCopyUrlList(selectedFiles)}
+                  disabled={selectedCount === 0 || copyingCkpt === URL_LIST_COPY_KEY}
+                  title="選択したファイルの直通ダウンロードURLを1行ずつコピーします。aria2 や Model Downloader 等に貼り付けて並列・レジューム付きで取得できます（約15分有効）。"
+                  className="mt-1.5 flex w-full items-center justify-center gap-2 rounded-lg border border-border px-4 py-2 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {copyingCkpt === URL_LIST_COPY_KEY ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <ClipboardCopy size={13} />
+                  )}
+                  📋 選択したファイルの URL 一覧をコピー ({selectedCount} 件)
+                </button>
                 <p className="mt-1.5 text-[10px] leading-relaxed text-muted opacity-70">
-                  まず 1 個だけ各行の「⬇️」でテスト取得し、良ければ必要な数件をチェックして一括ダウンロードできます。2
-                  件以上は自動で 1
-                  つのファイルにまとめて配信されます。
+                  まず 1 個だけ各行の「⬇️」でテスト取得し、良ければ必要な数件をチェックして一括ダウンロードできます。
+                  ファイルごとに直通リンクで並列に取得するので解凍は不要です（ブラウザが「複数ファイルのダウンロードを許可しますか」と尋ねたら許可してください）。
                   <br />
-                  ※複数ファイルのまとめ処理（数GB）を行うため、ブラウザのダウンロードが実際に開始されるまで30〜60秒ほど準備時間がかかります。
+                  ※以前のジョブは 1 つのファイルにまとめて配信されるため、開始まで30〜60秒ほどかかります。
                 </p>
 
                 <div className="mt-2 flex flex-col gap-1.5">

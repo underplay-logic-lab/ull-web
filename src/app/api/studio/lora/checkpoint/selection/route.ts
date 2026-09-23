@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { signJobSelectionZipUrl } from "@/lib/modalStorage";
+import { isSafeR2Key, presignR2Get, r2Enabled } from "@/lib/r2.server";
 
 // Mints a short-lived signed URL for download_lora_selection — the Modal
 // worker bundles the named checkpoints into ONE uncompressed (ZIP_STORED) zip
@@ -9,7 +10,15 @@ import { signJobSelectionZipUrl } from "@/lib/modalStorage";
 // and validates every requested filename against the job's
 // metadata.checkpoints list before signing; the browser then hits Modal
 // directly so GB-scale bytes never cross this Vercel function.
+//
+// 2026-09-23 (R2): when EVERY selected entry carries `r2_key`, there is no
+// zip at all — the response is `{ store: "r2", files: [{filename, url,
+// sizeBytes}] }`, one presigned GET per file, and the browser downloads them
+// in parallel (4 streams reach ~70 MB/s vs one Modal stream at 3〜7 MB/s, so
+// bundling would only slow it down). Mixed / legacy selections keep the zip.
 export const maxDuration = 30;
+
+const R2_URL_TTL_S = 900;
 
 const SAFE_NAME_RE = /^[A-Za-z0-9._-]{1,120}\.safetensors$/;
 
@@ -75,18 +84,38 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   const checkpoints = (job.metadata as { checkpoints?: unknown })?.checkpoints;
-  const known = new Set(
-    Array.isArray(checkpoints)
-      ? checkpoints
-          .map((c) => (c as { filename?: unknown })?.filename)
-          .filter((f): f is string => typeof f === "string")
-      : [],
-  );
-  if (files.some((f) => !known.has(f))) {
+  type Entry = { filename?: unknown; r2_key?: unknown; size_bytes?: unknown };
+  const byName = new Map<string, Entry>();
+  if (Array.isArray(checkpoints)) {
+    for (const c of checkpoints as Entry[]) {
+      if (typeof c?.filename === "string") byName.set(c.filename, c);
+    }
+  }
+  if (files.some((f) => !byName.has(f))) {
     return NextResponse.json(
       { error: "選択したファイルの一部が見つかりません。画面を再読み込みしてお試しください。" },
       { status: 404 },
     );
+  }
+
+  // --- R2 path: every file has r2_key -> N presigned URLs, no zip ----------
+  if (r2Enabled() && files.every((f) => isSafeR2Key(byName.get(f)?.r2_key))) {
+    try {
+      const out = await Promise.all(
+        files.map(async (f) => {
+          const e = byName.get(f) as Entry;
+          return {
+            filename: f,
+            url: await presignR2Get(e.r2_key as string, { expiresIn: R2_URL_TTL_S, downloadName: f }),
+            sizeBytes: typeof e.size_bytes === "number" ? e.size_bytes : null,
+          };
+        }),
+      );
+      return NextResponse.json({ store: "r2", files: out });
+    } catch (err) {
+      console.error("[studio/lora/checkpoint/selection] R2 presign failed:", err);
+      return NextResponse.json({ error: "ダウンロードURLの生成に失敗しました。" }, { status: 500 });
+    }
   }
 
   try {

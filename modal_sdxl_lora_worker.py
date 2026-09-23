@@ -250,6 +250,9 @@ train_image = image.pip_install("xformers==0.0.29.post3", "Pillow", "requests").
         # Volume so repeated smoke-test runs don't re-download it every time.
         "HF_HOME": f"{MODELS_DIR}/hf_home_sdxl",
     }
+    # R2 成果物ストア（ull_r2.py、2026-09-23）
+    .pip_install("boto3>=1.35")
+    .add_local_python_source("ull_r2")
 )
 
 SDXL_BASE_REPO = "stabilityai/stable-diffusion-xl-base-1.0"
@@ -1480,6 +1483,23 @@ def _persist_checkpoints(
     return checkpoints
 
 
+def _publish_r2(user_id: str, job_id: str, checkpoints: list[dict]) -> dict | None:
+    """loras/<user>/<job>/ の中身を R2 へ（ull_r2.publish_job_dir）。checkpoints
+    に r2_key を焼き込み、上がった分は Volume から消す。失敗は握って Volume
+    のまま残す（DL API が Modal 経路へ落ちる）。成功・安全停止・失敗救出の
+    3 経路すべてから呼ぶ。"""
+    if not (user_id and job_id) or not checkpoints:
+        return None
+    try:
+        from ull_r2 import publish_job_dir
+
+        job_dir = pathlib.Path(LORA_OUTPUT_DIR) / user_id / job_id
+        return publish_job_dir(job_dir, checkpoints, f"loras/{user_id}/{job_id}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r2] publish skipped: {exc!r}", flush=True)
+        return None
+
+
 def _mk_logger():
     """経過時間つきの1行ログ（2026-09-22、ホスト指摘「開始まで7分は遅い。
     どこで時間を使っているか分からない」「ログを吐いているのに見えていない
@@ -1510,6 +1530,7 @@ def _mk_logger():
         modal.Secret.from_name("supabase-model-downloads"),
         modal.Secret.from_name("wan-animate-auth"),
         modal.Secret.from_name("huggingface-secret"),
+        modal.Secret.from_name("r2-artifacts"),  # R2 成果物ストア（ull_r2.py）
     ],
 )
 def train_sdxl_lora_job(params: dict) -> dict:
@@ -1739,6 +1760,7 @@ def train_sdxl_lora_job(params: dict) -> dict:
             # 途中までのチェックポイントを Volume に残してから投げる
             # （ai-toolkit 側の salvage と同じ趣旨）。
             salvaged = _persist_checkpoints(str(output_dir), lora_name, user_id, job_id, last_step)
+            _publish_r2(user_id, job_id, salvaged)
             try:
                 vol.commit()
             except Exception as commit_exc:  # noqa: BLE001
@@ -1863,6 +1885,9 @@ def train_sdxl_lora_job(params: dict) -> dict:
             except Exception as exc:  # noqa: BLE001
                 print(f"[sdxl] LICENSE.txt skipped: {exc!r}", flush=True)
 
+        # R2 へ publish（LICENSE.txt も同じ prefix に載る）。
+        r2_stats = _publish_r2(user_id, job_id, checkpoints)
+
         try:
             shutil.rmtree(work_dir, ignore_errors=True)
         except Exception as rm_exc:  # noqa: BLE001
@@ -1873,6 +1898,11 @@ def train_sdxl_lora_job(params: dict) -> dict:
         # バッジがそれを出してしまっていた（2026-09-22 発見）。走行中の最大値を使う。
         final_vram = _current_effective_vram_gb()
         metadata: dict = {"checkpoints": checkpoints}
+        if r2_stats and r2_stats.get("uploaded"):
+            metadata["artifact_store"] = "r2"
+            metadata["r2_prefix"] = f"loras/{user_id}/{job_id}"
+            if r2_stats.get("extra_keys"):
+                metadata["r2_extra_keys"] = r2_stats["extra_keys"]
         if vram_peak > 0:
             metadata["vram_used_gb"] = round(vram_peak, 2)
             metadata["vram_peak_gb"] = round(vram_peak, 2)
@@ -1935,6 +1965,7 @@ def train_sdxl_lora_job(params: dict) -> dict:
                     str(output_dir), lora_name, user_id, job_id, 0
                 )
                 if rescued:
+                    _publish_r2(user_id, job_id, rescued)
                     vol.commit()
                     failure_meta["checkpoints"] = rescued
                     print(f"[sdxl] rescued {len(rescued)} checkpoint(s) from a failed run", flush=True)
@@ -1983,6 +2014,8 @@ train_image_blackwell = (
     )
     .pip_install("Pillow", "requests")
     .env({"HF_HOME": f"{MODELS_DIR}/hf_home_sdxl"})
+    .pip_install("boto3>=1.35")
+    .add_local_python_source("ull_r2")
 )
 _BLACKWELL_TIERS = {"rtx_pro_6000", "b300", "b200"}
 _raw_train_sdxl = train_sdxl_lora_job.get_raw_f()
@@ -1998,6 +2031,7 @@ _raw_train_sdxl = train_sdxl_lora_job.get_raw_f()
         modal.Secret.from_name("supabase-model-downloads"),
         modal.Secret.from_name("wan-animate-auth"),
         modal.Secret.from_name("huggingface-secret"),
+        modal.Secret.from_name("r2-artifacts"),  # R2 成果物ストア（ull_r2.py）
     ],
 )
 def train_sdxl_lora_job_blackwell(params: dict) -> dict:

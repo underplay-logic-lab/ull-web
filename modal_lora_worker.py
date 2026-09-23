@@ -1111,6 +1111,11 @@ image = (
             # for it. Do not re-add these without re-verifying on real HW.
         }
     )
+    # R2 成果物ストア（2026-09-23、docs/STATUS.md）。完了した checkpoint /
+    # dataset.zip は Volume ではなく R2 へ置く。末尾に足す = 既存レイヤーは
+    # 再ビルドされない。
+    .pip_install("boto3>=1.35")
+    .add_local_python_source("ull_r2")
 )
 
 
@@ -3785,6 +3790,7 @@ def _persist_latent_cache(dataset_id: str, key: str) -> int:
         modal.Secret.from_name("supabase-model-downloads"),
         modal.Secret.from_name("wan-animate-auth"),
         modal.Secret.from_name("huggingface-secret"),
+        modal.Secret.from_name("r2-artifacts"),  # R2 成果物ストア（ull_r2.py）
     ],
 )
 def train_lora_job(params: dict) -> dict:
@@ -4394,11 +4400,28 @@ def train_lora_job(params: dict) -> dict:
         except Exception as _rm_exc:  # noqa: BLE001
             print(f"[train] job output cleanup skipped: {_rm_exc}", flush=True)
 
+        # 4) R2 へ publish（2026-09-23）。checkpoints[].r2_key を焼き込み、
+        #    アップロードできた分は Volume から消す（Volume は重み専用へ）。
+        #    失敗した分は Volume に残り、DL API は自動で Modal 経路に落ちる。
+        r2_stats = None
+        if job_ckpt_dir is not None:
+            try:
+                from ull_r2 import publish_job_dir
+
+                r2_stats = publish_job_dir(job_ckpt_dir, checkpoints, f"loras/{user_id}/{job_id}")
+            except Exception as r2_exc:  # noqa: BLE001 — storage must never kill a finished job
+                print(f"[r2] publish skipped: {r2_exc!r}", flush=True)
+
         vol.commit()
         print(f"[train] persisted {len(checkpoints)} checkpoint(s) -> {job_ckpt_dir or '(local, skipped)'}")
 
         final_vram = _current_effective_vram_gb()
         metadata = {"checkpoints": checkpoints, "gpu_tier": _gpu_tier_label()}
+        if r2_stats and r2_stats.get("uploaded"):
+            metadata["artifact_store"] = "r2"
+            metadata["r2_prefix"] = f"loras/{user_id}/{job_id}"
+            if r2_stats.get("extra_keys"):
+                metadata["r2_extra_keys"] = r2_stats["extra_keys"]
         if final_vram is not None:
             metadata["vram_used_gb"] = final_vram
         # 完了時の瞬間値は学習プロセス終了後なのでほぼ空（実測 0.6GB）。

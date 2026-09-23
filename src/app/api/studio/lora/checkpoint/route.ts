@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { isSafeR2Key, presignR2Get, r2Enabled } from "@/lib/r2.server";
 
 // Mints a short-lived signed download URL for one LoRA checkpoint (an
 // intermediate save_every snapshot, or the final weights) rather than
@@ -28,9 +29,15 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 // modal_lora_worker.py's download_lora_checkpoint endpoint verifies the
 // signature itself (see _verify_download_token there) since the browser
 // never sends this app's own Supabase session or MODAL_AUTH_TOKEN to Modal.
+//
+// 2026-09-23: jobs finished after the R2 migration carry `r2_key` on each
+// metadata.checkpoints entry (docs/STATUS.md). For those this route returns a
+// presigned R2 GET (15 min) — 34〜46 MB/s browser<->R2 — and never touches
+// Modal. Entries without `r2_key` (pre-migration jobs, or a file whose R2
+// upload failed and stayed on the Volume) keep the Modal path below.
 export const maxDuration = 30;
 
-const SAFE_NAME_RE = /^[A-Za-z0-9._-]{1,120}\.(?:safetensors|zip)$/;
+const SAFE_NAME_RE = /^(?:[A-Za-z0-9._-]{1,120}\.(?:safetensors|zip)|LICENSE\.txt)$/;
 // 15 minutes — long enough to paste the link into an external Model
 // Downloader and start the transfer, short enough that a leaked link
 // expires quickly. The Modal endpoint re-checks this `expires` timestamp.
@@ -97,19 +104,47 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
   const ownerId = job.user_id;
 
-  const checkpoints = (job.metadata as { checkpoints?: unknown })?.checkpoints;
-  const known =
-    Array.isArray(checkpoints) &&
-    checkpoints.some((c) => (c as { filename?: unknown })?.filename === file);
+  const meta = (job.metadata ?? {}) as { checkpoints?: unknown; r2_extra_keys?: unknown };
+  const checkpoints = meta.checkpoints;
+  const entry = Array.isArray(checkpoints)
+    ? (checkpoints as { filename?: unknown; r2_key?: unknown }[]).find((c) => c?.filename === file)
+    : undefined;
+  const known = entry !== undefined;
+  // LICENSE.txt is not a checkpoint entry; the worker lists its key in
+  // metadata.r2_extra_keys (R2 jobs only).
+  const licenseKey =
+    file === "LICENSE.txt" && Array.isArray(meta.r2_extra_keys)
+      ? (meta.r2_extra_keys as unknown[]).find((k) => typeof k === "string" && k.endsWith("/LICENSE.txt"))
+      : undefined;
   // dataset.zip / bundle names are always valid targets for an owned job even
   // if a stale metadata row hasn't listed them yet (salvage merges them in).
   const wellKnown = /^(dataset(_salvaged)?|checkpoints_all)\.zip$/.test(file);
-  if (!known && !wellKnown) {
+  if (!known && !wellKnown && !licenseKey) {
     return NextResponse.json(
       { error: "このファイルはまだ準備されていません。「一括DL」で復元してください。" },
       { status: 404 },
     );
   }
+
+  // --- R2 path -------------------------------------------------------------
+  const r2Key = entry?.r2_key ?? licenseKey;
+  if (r2Enabled() && isSafeR2Key(r2Key)) {
+    try {
+      const downloadUrl = await presignR2Get(r2Key, {
+        expiresIn: DOWNLOAD_TOKEN_TTL_SECONDS,
+        downloadName: file,
+      });
+      return NextResponse.json({ downloadUrl, store: "r2" });
+    } catch (err) {
+      console.error("[studio/lora/checkpoint] R2 presign failed:", err);
+      return NextResponse.json({ error: "ダウンロードURLの生成に失敗しました。" }, { status: 500 });
+    }
+  }
+  if (licenseKey) {
+    return NextResponse.json({ error: "このファイルは現在取得できません。" }, { status: 404 });
+  }
+
+  // --- legacy Modal Volume path -------------------------------------------
 
   const modalUrl = process.env.MODAL_LORA_CHECKPOINT_DOWNLOAD_URL;
   const modalAuthToken = process.env.MODAL_AUTH_TOKEN;

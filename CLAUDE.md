@@ -143,6 +143,7 @@ Supabase Free の月間送信量5GBは、動画・画像を配信するという
 - **認証**: `MODAL_AUTH_TOKEN` そのものはブラウザに渡さない。Next.js 側が短命のHMAC署名付きトークンを発行し、Modal 側で再計算・検証する。
 - **Modal Volume (NFS) は1回あたりの読み書きオーバーヘッドが大きい。読み書きとも4MiB単位でバッファし、`vol.commit()` はまとめて1回にする。**
 - 既存の生成系タブは**1回あたりの容量が大きい機能から**段階的に移行してよい。
+- **完成した成果物の置き場は R2**（2026-09-23〜）: worker は `ull_r2.publish_job_dir()` で上げて `r2_key` を metadata に残し、Next は `src/lib/r2.server.ts` の署名付き URL を返す。Volume に成果物を新規に残さない。ロールバックは env `ARTIFACT_STORE=volume`。
 
 > 手本にするコード・経緯・ハマりどころは `docs/studio-tab-patterns.md` の同名の節。
 

@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { signJobArtifactUrl } from "@/lib/modalStorage";
 import { loraCallIdOf } from "@/lib/loraJobHealth";
+import { isSafeR2Key, presignR2Get, r2Enabled } from "@/lib/r2.server";
 
 // Smart one-shot artefact download for a finished LoRA job — no salvage
 // round-trip. The Modal endpoint (admin_download_job_artifact) recursively
@@ -13,7 +14,38 @@ import { loraCallIdOf } from "@/lib/loraJobHealth";
 //   want=dataset -> dataset*.zip / caption*.zip
 // This route does the owner-OR-admin check, then a `probe` call so a genuine
 // miss is a 404 JSON (visible toast) rather than a silent iframe 404.
+//
+// 2026-09-23 (R2): if the job's metadata.checkpoints already names the wanted
+// artefact with an `r2_key`, answer from there (presigned GET, no Modal
+// round-trip, no cold container). Only jobs without R2 entries reach the
+// Modal probe below. `want=bundle` has no R2 equivalent (there is no zip on
+// R2 — the UI downloads per file) and always goes to Modal.
 export const maxDuration = 30;
+
+type CkptEntry = {
+  filename?: unknown;
+  r2_key?: unknown;
+  size_bytes?: unknown;
+  step?: unknown;
+  is_final?: unknown;
+  is_caption_archive?: unknown;
+  is_bundle?: unknown;
+};
+
+function pickR2Entry(meta: unknown, want: "final" | "dataset"): CkptEntry | null {
+  const list = (meta as { checkpoints?: unknown })?.checkpoints;
+  if (!Array.isArray(list)) return null;
+  const withKey = (list as CkptEntry[]).filter(
+    (c) => isSafeR2Key(c?.r2_key) && typeof c?.filename === "string",
+  );
+  if (want === "dataset") return withKey.find((c) => c.is_caption_archive === true) ?? null;
+  const weights = withKey.filter((c) => c.is_caption_archive !== true && c.is_bundle !== true);
+  return (
+    weights.find((c) => c.is_final === true) ??
+    weights.sort((a, b) => (Number(b.step) || 0) - (Number(a.step) || 0))[0] ??
+    null
+  );
+}
 
 export async function GET(request: Request): Promise<NextResponse> {
   const url = new URL(request.url);
@@ -59,6 +91,25 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
   const ownerId = job.user_id as string;
   const callId = loraCallIdOf(job as never);
+
+  // --- R2 path -------------------------------------------------------------
+  if (want !== "bundle" && r2Enabled()) {
+    const hit = pickR2Entry(job.metadata, want);
+    if (hit) {
+      try {
+        const filename = hit.filename as string;
+        return NextResponse.json({
+          downloadUrl: await presignR2Get(hit.r2_key as string, { downloadName: filename }),
+          filename,
+          sizeBytes: typeof hit.size_bytes === "number" ? hit.size_bytes : null,
+          store: "r2",
+        });
+      } catch (err) {
+        console.error(`[studio/lora/checkpoint/bundle] R2 presign failed job=${jobId} want=${want}`, err);
+        return NextResponse.json({ error: "ダウンロードURLの生成に失敗しました。" }, { status: 500 });
+      }
+    }
+  }
 
   try {
     // 1) probe — did the worker actually leave this artefact anywhere?
