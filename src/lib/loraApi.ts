@@ -20,6 +20,9 @@ export type LoraTrainingConfigInput = {
 // は移行前と互換のまま — /api/studio/lora/train route.ts の dataset_id
 // 抽出ロジック（storagePaths[0].split("/")[1]）や Smart Ingest Engine
 // （modal_lora_worker.py::_derive_dataset_id）は無改修で動く。
+// 2026-09-23: 既定を Cloudflare R2 への直 PUT に切替（R2 移行 計画 4）。
+// チケットが store: "r2" なら 1 枚ごとの署名付き PUT URL へ並列で送る。
+// "modal" なら従来のバッチ/単枚 POST。path の形はどちらも同じ。
 
 // Uploads the raw image files straight to Modal (bypassing Vercel's 4.5 MB
 // request body cap) under "<userId>/<datasetId>/NNNN_name". The zero-padded
@@ -43,14 +46,6 @@ export async function uploadLoraDataset(
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) throw new Error("ログインが必要です。");
-
-  const ticketRes = await fetch("/api/studio/lora/dataset-upload-token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-    body: JSON.stringify({ datasetId }),
-  });
-  const ticket = await ticketRes.json().catch(() => ({}));
-  if (!ticketRes.ok) throw new Error(ticket?.error || "アップロード準備に失敗しました。");
 
   // 2026-09-20: 律速は帯域ではなく「1リクエストあたりの固定コスト」だった。
   // 400KB の送信に 4.3秒（=0.74Mbps/接続）かかっており、並列度を6->10に
@@ -140,6 +135,33 @@ export async function uploadLoraDataset(
   );
   files = optimized;
 
+  // "NNNN_<元のファイル名>"。ゼロ埋めの連番でサーバー側のソートが captions
+  // 配列の順序と一致する（崩れると別画像のキャプションで学習が回る）。
+  // WebP 変換で名前が変わるので、チケットの取得は変換の後。
+  const filenameFor = (i: number): string => {
+    const safe = files[i].name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "image";
+    return `${String(i).padStart(4, "0")}_${safe}`;
+  };
+
+  // R2 経路はファイルごとに署名付き PUT URL が要るので、ファイル名の一覧を
+  // 渡して 1 往復で全部もらう（500 枚でもサーバー内の署名計算だけ）。
+  const ticketRes = await fetch("/api/studio/lora/dataset-upload-token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify({ datasetId, filenames: files.map((_, i) => filenameFor(i)) }),
+  });
+  const ticket = await ticketRes.json().catch(() => ({}));
+  if (!ticketRes.ok) throw new Error(ticket?.error || "アップロード準備に失敗しました。");
+  const r2Files =
+    ticket.store === "r2" && Array.isArray(ticket.files) && ticket.files.length === files.length
+      ? (ticket.files as { filename: string; path: string; url: string }[])
+      : null;
+  // R2 は Cloudflare のエッジ終端なので、Modal（米国）への HTTP/2 フロー制御
+  // × 日米間 RTT の頭打ち（§15、1 ストリーム 2.2Mbps）が無い。並列度は
+  // バッチ経路と同じ 16 から始め、実測で調整する。
+  const R2_CONCURRENCY = 16;
+  const R2_ATTEMPTS = 3;
+
   const startedAt = Date.now();
   const totalBytes = files.reduce((t, f) => t + f.size, 0);
   const paths: string[] = new Array(files.length);
@@ -157,13 +179,6 @@ export async function uploadLoraDataset(
 
   const failAt = (index: number, message: string): void => {
     if (!failure || index < failure.index) failure = { index, message };
-  };
-
-  // "NNNN_<元のファイル名>"。ゼロ埋めの連番でサーバー側のソートが captions
-  // 配列の順序と一致する（崩れると別画像のキャプションで学習が回る）。
-  const filenameFor = (i: number): string => {
-    const safe = files[i].name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "image";
-    return `${String(i).padStart(4, "0")}_${safe}`;
   };
 
   const signedUrl = (base: string): string => {
@@ -312,6 +327,56 @@ export async function uploadLoraDataset(
     onProgress?.(done, files.length);
   };
 
+  // R2 直 PUT（1 枚 1 リクエスト）。XHR なのは送信進捗を取るため。
+  // 瞬断は 3 回まで再送し、4xx（署名切れ・キー不正）は即座に諦める。
+  const uploadOneR2 = async (i: number): Promise<void> => {
+    const file = files[i];
+    const entry = (r2Files as { filename: string; path: string; url: string }[])[i];
+    let last: unknown = null;
+    for (let attempt = 1; attempt <= R2_ATTEMPTS; attempt++) {
+      const startedRequestAt = Date.now();
+      try {
+        const status = await new Promise<number>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("PUT", entry.url, true);
+          xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              inflightBytes.set(i, Math.min(e.loaded, file.size));
+              reportBytes();
+            }
+          };
+          xhr.onerror = () => reject(new Error("ネットワークエラー（接続が切れました）"));
+          xhr.ontimeout = () => reject(new Error("タイムアウトしました"));
+          xhr.onabort = () => reject(new Error("中断されました"));
+          xhr.onload = () => resolve(xhr.status);
+          xhr.timeout = 10 * 60 * 1000;
+          xhr.send(file);
+        });
+        if (status >= 200 && status < 300) {
+          inflightBytes.delete(i);
+          requestMs += Date.now() - startedRequestAt;
+          sentBytes += file.size;
+          paths[i] = entry.path;
+          done += 1;
+          onProgress?.(done, files.length);
+          reportBytes();
+          return;
+        }
+        last = new Error(`HTTP ${status}`);
+        if (status >= 400 && status < 500) break;
+      } catch (err) {
+        last = err;
+      }
+      inflightBytes.delete(i);
+      if (attempt < R2_ATTEMPTS) {
+        console.warn(`[lora] R2 upload #${i} failed (attempt ${attempt}/${R2_ATTEMPTS}):`, last);
+        await new Promise((r) => setTimeout(r, 1000 * attempt));
+      }
+    }
+    failAt(i, `${file.name}（${i + 1}/${files.length} 枚目）: ${errorText(last)}`);
+  };
+
   const runPool = async <T,>(
     items: T[],
     concurrency: number,
@@ -335,7 +400,10 @@ export async function uploadLoraDataset(
   let route = "single";
   let batchCount = 0;
 
-  if (ticket.batchUploadUrl) {
+  if (r2Files) {
+    route = "r2";
+    await runPool(indexes, R2_CONCURRENCY, uploadOneR2);
+  } else if (ticket.batchUploadUrl) {
     const batches: number[][] = [];
     let current: number[] = [];
     let currentBytes = 0;
@@ -368,7 +436,7 @@ export async function uploadLoraDataset(
     }
   }
 
-  if (route !== "batch") {
+  if (route !== "batch" && route !== "r2") {
     batchUnsupported = false;
     await runPool(indexes, UPLOAD_CONCURRENCY, uploadOne);
   }

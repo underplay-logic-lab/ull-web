@@ -3,10 +3,12 @@ import { createClient } from "@supabase/supabase-js";
 import { createLoraDatasetUploadTicket } from "@/lib/loraDatasetUpload.server";
 
 // LoRA学習用データセット画像の直アップロード用チケットを発行する
-// （2026-09-19導入）。ブラウザはこのチケットを使って
-// modal_lora_worker.py::upload_lora_dataset_image へ画像を1枚ずつ直接POST
-// する（Vercelのリクエストボディ上限もSupabaseの月間送信量クォータも
-// 経由しない）。
+// （2026-09-19導入）。2026-09-23 からは既定で R2 への署名付き PUT URL を
+// ファイルごとに返し（store: "r2"、body.filenames が必要）、ブラウザは
+// そこへ直接送る。UPLOAD_STORE=volume のときは従来どおり
+// modal_lora_worker.py::upload_lora_dataset_batch/_image への HMAC チケット
+// （store: "modal"）。どちらも Vercel のリクエストボディ上限も Supabase の
+// 月間送信量クォータも経由しない。
 export const maxDuration = 15;
 
 export async function POST(request: Request) {
@@ -27,9 +29,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "認証に失敗しました。" }, { status: 401 });
   }
 
-  let body: { datasetId?: unknown } = {};
+  let body: { datasetId?: unknown; filenames?: unknown } = {};
   try {
-    body = (await request.json()) as { datasetId?: unknown };
+    body = (await request.json()) as { datasetId?: unknown; filenames?: unknown };
   } catch {
     // datasetId 必須なので下の型チェックで弾かれる。
   }
@@ -37,9 +39,12 @@ export async function POST(request: Request) {
   if (!datasetId) {
     return NextResponse.json({ error: "datasetId が必要です。" }, { status: 400 });
   }
+  const filenames = Array.isArray(body.filenames)
+    ? body.filenames.filter((f): f is string => typeof f === "string")
+    : [];
 
   try {
-    const ticket = createLoraDatasetUploadTicket(userData.user.id, datasetId);
+    const ticket = await createLoraDatasetUploadTicket(userData.user.id, datasetId, filenames);
     return NextResponse.json(ticket);
   } catch (err) {
     console.error("[studio/lora/dataset-upload-token] failed:", err);

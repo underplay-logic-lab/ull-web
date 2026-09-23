@@ -4,9 +4,11 @@ import { createStudioUploadTicket } from "@/lib/studioUploadTicket.server";
 
 // Studio共通の一時アップロード（Director・Multi-Angle・超解像・特化ワーク
 // フロー）用の署名付きアップロードチケットを発行する（2026-09-19導入）。
-// ブラウザはこのチケットを使って modal_studio_uploads.py::upload へ直接
-// ファイルをPOSTする（Vercelのリクエストボディ上限もSupabaseの月間送信量
-// クォータも経由しない）。
+// 2026-09-23 からは既定で R2 への署名付き PUT URL（store: "r2"）を返し、
+// ブラウザはそこへ直接ファイルを送る。UPLOAD_STORE=volume のときは従来の
+// modal_studio_uploads.py::upload への POST チケット（store: "modal"）。
+// どちらも Vercel のリクエストボディ上限も Supabase の月間送信量クォータも
+// 経由しない。
 export const maxDuration = 15;
 
 export async function POST(request: Request) {
@@ -27,9 +29,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "認証に失敗しました。" }, { status: 401 });
   }
 
-  let body: { filename?: unknown } = {};
+  let body: { filename?: unknown; sizeBytes?: unknown } = {};
   try {
-    body = (await request.json()) as { filename?: unknown };
+    body = (await request.json()) as { filename?: unknown; sizeBytes?: unknown };
   } catch {
     // filename 必須なので下の型チェックで弾かれる。
   }
@@ -37,9 +39,10 @@ export async function POST(request: Request) {
   if (!filename) {
     return NextResponse.json({ error: "filename が必要です。" }, { status: 400 });
   }
+  const sizeBytes = typeof body.sizeBytes === "number" && Number.isFinite(body.sizeBytes) ? body.sizeBytes : undefined;
 
   try {
-    const ticket = createStudioUploadTicket(userData.user.id, filename);
+    const ticket = await createStudioUploadTicket(userData.user.id, filename, { sizeBytes });
     return NextResponse.json(ticket);
   } catch (err) {
     console.error("[studio/uploads/token] failed:", err);

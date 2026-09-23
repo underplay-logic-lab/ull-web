@@ -8,7 +8,7 @@
 **更新のタイミング**: 作業の区切りごと（コミットした／方針が決まった／実測が
 出た／残課題が増減した）。セッションの終わりに必ず見直す。
 
-最終更新: 2026-09-23（夜・R2 移行 1〜2 実装）
+最終更新: 2026-09-23（深夜・R2 移行 4 実装）
 
 ---
 
@@ -691,8 +691,39 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
    - 速度メモ: Modal → R2 は GPU/CPU どちらのコンテナからも 2〜33 MB/s で、§16.5 の 48〜53 MB/s は再現していない
      （§16.5 は Volume 上の大きい 1 ファイルを測った値。ファイル 230〜590MB だと 64MB パートが 4〜10 個で並列が
      効き切らない可能性）。CPU に逃がしたので原価への影響は無いが、DL 開始までの待ちにはなる（1GB で 1〜2 分）。
-5. 計画 3（生成物）以降は未着手。admin「最近の生成物」（計画 6）が R2 対応するまで、新規 LoRA 成果物は admin のバケット
+5. 計画 3（生成物）・5〜9 は未着手（4 は下）。admin「最近の生成物」（計画 6）が R2 対応するまで、新規 LoRA 成果物は admin のバケット
    ブラウザに出ない（rclone マウント `R:` で見る）。
+
+#### 【実装 2026-09-23 深夜】4（ユーザー持ち込み）— ブラウザ → R2 直 PUT へ切替（ホスト指示で 3 より先に着手）
+
+**できたこと（ローカル検証・Modal 3 本デプロイ済み・Next は push 待ち → push 後に Vercel READY を確認）**
+- **Studio 共通の一時アップロード**（超解像 単発/バッチ/動画・Multi-Angle・特化ワークフロー・Director の 5 route）:
+  `uploads/token` route が既定で **R2 の署名付き PUT URL**（`store:"r2"`、TTL 30 分）を返し、`studioUploads.ts` が
+  そこへ `fetch(PUT)`（瞬断 3 回再送）。`storagePath` の形 `<userId>/<filename>` は不変。読む側
+  （`studioUploads.server.ts`）は **R2 に HEAD → あれば R2 の署名付き GET、無ければ従来の Modal**（切替をまたいでも壊れない）。
+  後片付けは R2 を常に削除、Modal の delete は `UPLOAD_STORE=volume` のときだけ（コンテナ起動を避ける）。
+- **LoRA データセット**: `dataset-upload-token` route が `filenames[]` を受けて **1 枚ごとの署名付き PUT URL** を返す
+  （500 枚でも署名は Vercel 内の CPU だけ、往復 1 回）。`loraApi.ts::uploadLoraDataset` は WebP 変換 → チケット →
+  XHR PUT ×16 並列（進捗はバイト単位のまま）。`store:"modal"` が返れば従来のバッチ/単枚 POST にそのまま落ちる。
+- **worker**: `_read_lora_dataset_upload` は **Volume に無ければ R2**（`lora_dataset_uploads/<key>`、Volume と同じ相対パス）。
+  `_delete_lora_dataset_uploads` は R2 側も消す。`ingest_image` に boto3 + `ull_r2` と secret `r2-artifacts` を追加。
+  SDXL worker も同じフォールバック。SeedVR2 の `_ALLOWED_IMAGE_HOSTS` に `r2.cloudflarestorage.com` を追加
+  （超解像 画像/動画は Next が署名付き GET を worker に渡す経路。ffprobe も同 URL で Range が効く）。
+- **切替 knob**: Next 側 `UPLOAD_STORE=r2|volume`（未設定なら `ARTIFACT_STORE` に従う）。成果物側と独立に戻せる。
+  worker 側に knob は無く「両方見る」だけなので、戻すときは Vercel の env だけでよい。
+- **実測（2026-09-23、ローカル Node → R2）**: 署名付き PUT の `X-Amz-SignedHeaders=host` のみで **Content-Type は署名に
+  含まれない**（別の Content-Type で PUT しても 200）。3MB 単発 PUT 7.2 MB/s（TLS 込み）。Range GET 206 OK。
+  `ull_r2.get_bytes` 300KB 0.47 秒、欠損キーは `NoSuchKey` を `RuntimeError` に包んで train/ingest の既存の失敗経路へ。
+- **デプロイ**: `modal_sdxl_lora_worker.py`（4.9 秒）、`modal_seedvr2_worker.py`（image 変更なし）、`modal_lora_worker.py`
+  （ingest_image 再ビルド）。**順序は Modal → Next**（Next を先に上げると SeedVR2 が R2 の URL を host 不許可で弾く）。
+
+**残り（この順で）**
+1. Next を push → Vercel READY を確認 → **ホストが実地で 1 本ずつ**: (a) 超解像 画像（署名付き GET を worker が fetch）、
+   (b) 超解像 動画（ffprobe + worker、1GB 級）、(c) Multi-Angle / Director / 特化 WF（Next が R2 から Buffer 取得）、
+   (d) LoRA データセット 100 枚超（`[lora-upload]` のコンソール行で Mbps を見る。§15 の 18.1 Mbps が基準）。
+2. (d) の実測を `docs/gpu-benchmarks.md` §15 に追記し、`R2_CONCURRENCY`（16）を必要なら調整。
+3. `modal_studio_uploads.py` と `upload_lora_dataset_batch/_image` は **消さない**（`UPLOAD_STORE=volume` の受け皿。
+   Volume 側の残りは `modal_retention_purge.py` の 14 日パージが拾う）。
 
 **実測メモ**: CPU probe（96MB・2 パート）は put 5.5 MB/s・GET 19.8 MB/s と §16.5 より遅いが、ファイルが小さく並列が
 効かない条件なので参考値。実ジョブ（数百 MB〜GB）で再確認する。

@@ -1,5 +1,5 @@
 import "server-only";
-import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 // Cloudflare R2 artifact store — server-side twin of ull_r2.py.
@@ -15,7 +15,12 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 // path on the Next side (routes then ignore r2_key and use Modal) — the
 // rollback knob named in docs/STATUS.md.
 
-export type R2ArtifactKind = "loras" | "upscale" | "director" | "angle" | "uploads";
+// `studio_uploads` / `lora_dataset_uploads` are the user-supplied inputs
+// (migration plan step 4, 2026-09-23): the browser PUTs them straight to R2
+// with a presigned URL and the workers read them back by the same key. The
+// kind names equal the Volume sub-directories so a `<userId>/<file>`
+// storagePath maps to `<kind>/<userId>/<file>` on both stores.
+export type R2ArtifactKind = "loras" | "upscale" | "director" | "angle" | "studio_uploads" | "lora_dataset_uploads";
 
 const DEFAULT_GET_TTL_S = 900; // 15 min — same as the Modal signed-link TTL
 
@@ -36,6 +41,20 @@ export function r2Configured(): boolean {
 
 export function r2Enabled(): boolean {
   return artifactStore() === "r2" && r2Configured();
+}
+
+// User uploads (step 4) get their own override so they can be rolled back to
+// the Modal endpoints without touching finished-artifact delivery:
+// UPLOAD_STORE=volume. Unset → follows ARTIFACT_STORE.
+export function uploadStore(): "r2" | "volume" {
+  const v = (process.env.UPLOAD_STORE ?? "").trim().toLowerCase();
+  if (v === "volume" || v === "modal") return "volume";
+  if (v === "r2") return "r2";
+  return artifactStore();
+}
+
+export function r2UploadsEnabled(): boolean {
+  return uploadStore() === "r2" && r2Configured();
 }
 
 export function r2Bucket(): string {
@@ -122,4 +141,22 @@ export async function headR2(key: string): Promise<number | null> {
     if (status === 404 || name === "NotFound" || name === "NoSuchKey") return null;
     throw err;
   }
+}
+
+// Best-effort bulk delete (≤1000 keys per call, the S3 limit). Missing keys
+// are not an error. Returns the number of keys sent.
+export async function deleteR2Keys(keys: string[]): Promise<number> {
+  const safe = keys.filter(isSafeR2Key);
+  let sent = 0;
+  for (let i = 0; i < safe.length; i += 1000) {
+    const chunk = safe.slice(i, i + 1000);
+    await r2Client().send(
+      new DeleteObjectsCommand({
+        Bucket: r2Bucket(),
+        Delete: { Objects: chunk.map((Key) => ({ Key })), Quiet: true },
+      }),
+    );
+    sent += chunk.length;
+  }
+  return sent;
 }

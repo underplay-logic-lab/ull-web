@@ -151,7 +151,11 @@ INPUT_IMG_MULTIPLE = int(os.environ.get("ULL_INPUT_IMG_MULTIPLE", "16"))
 # Supabase Storageから Modal直配信（modal_studio_uploads.py::download）へ
 # 移行（CLAUDE.md §1標準）。createStudioUploadSignedUrl が返すURLをこの
 # workerが直接fetchする経路（studioUploads.server.ts参照）。
-_ALLOWED_IMAGE_HOSTS = ("huggingface.co", "supabase.co", "supabase.in", "amazonaws.com", "modal.run")
+# r2.cloudflarestorage.com: 2026-09-23、一時アップロードが R2 へ移行（署名付き
+# GET を Next が発行、docs/STATUS.md R2 計画 4）。
+_ALLOWED_IMAGE_HOSTS = (
+    "huggingface.co", "supabase.co", "supabase.in", "amazonaws.com", "modal.run", "r2.cloudflarestorage.com",
+)
 
 
 def _env_str(name: str, default: str) -> str:

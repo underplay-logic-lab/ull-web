@@ -998,13 +998,24 @@ LORA_DATASET_UPLOADS_DIR = f"{MODELS_DIR}/lora_dataset_uploads"
 
 
 def _read_lora_dataset_upload(key: str) -> bytes:
-    """"<user_id>/<dataset_id>/<filename>" 形式のkeyでVolumeから直接読む。"""
+    """"<user_id>/<dataset_id>/<filename>" 形式のkeyで読む。Volume に無ければ
+    R2（`lora_dataset_uploads/<key>`）— 2026-09-23 からブラウザは R2 へ直接
+    PUT する（modal_lora_worker.py::_read_lora_dataset_upload と同じ規約）。"""
     if ".." in key:
         raise ValueError(f"illegal storage key: {key!r}")
     p = pathlib.Path(LORA_DATASET_UPLOADS_DIR) / key
-    if not p.is_file():
-        raise RuntimeError(f"dataset upload not found on Volume: {key}")
-    return p.read_bytes()
+    if p.is_file():
+        return p.read_bytes()
+    try:
+        import ull_r2
+    except ImportError:
+        ull_r2 = None
+    if ull_r2 is not None and ull_r2.r2_configured():
+        try:
+            return ull_r2.get_bytes(f"lora_dataset_uploads/{key}")
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"dataset upload not found on Volume or R2: {key} ({exc})") from exc
+    raise RuntimeError(f"dataset upload not found on Volume: {key}")
 
 
 def _patch_job(job_id: str, fields: dict) -> None:

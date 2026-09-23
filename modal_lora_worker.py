@@ -4579,7 +4579,10 @@ dispatch_image = (
 # Smart Ingest image = dispatch_image (tiny, warm base) + Pillow. Inherits
 # dispatch_image rather than rebuilding from debian_slim so this module's
 # top-level `import fastapi / modal / yaml` still resolve inside the container.
-ingest_image = dispatch_image.pip_install("Pillow>=10.2")
+# 2026-09-23: + boto3 / ull_r2 — dataset uploads now land in R2 (browser →
+# presigned PUT, docs/STATUS.md R2 plan step 4) and Smart Ingest reads /
+# purges them there. `add_local_python_source` must stay the last step.
+ingest_image = dispatch_image.pip_install("Pillow>=10.2", "boto3>=1.35").add_local_python_source("ull_r2")
 
 # R2 publish image = dispatch_image + boto3 + ull_r2 (CPU only, tiny).
 publish_image = dispatch_image.pip_install("boto3>=1.35").add_local_python_source("ull_r2")
@@ -5621,7 +5624,10 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
     memory=8192,
     # RW: writes the optimised images to PERSIST_ROOT (vol_ro can't).
     volumes={MODELS_DIR: vol},
-    secrets=[modal.Secret.from_name("supabase-model-downloads")],
+    secrets=[
+        modal.Secret.from_name("supabase-model-downloads"),
+        modal.Secret.from_name("r2-artifacts"),  # dataset uploads live in R2 (2026-09-23)
+    ],
     # LoRA worker は全関数一律2秒即切り（CLAUDE.md §1）。
     scaledown_window=2,
 )
@@ -6197,7 +6203,8 @@ async def upload_user_lora(
 # 署名ではなく、dataset_id 単位でまとめて署名する（Next.jsへの往復を1回に
 # 抑える）。filename 自体は署名対象に含めないが、正規表現で安全な文字と
 # 画像拡張子のみに制限しているため、user_id/dataset_id 配下から出られない。
-LORA_DATASET_UPLOADS_DIR = f"{MODELS_DIR}/lora_dataset_uploads"
+LORA_DATASET_UPLOADS_SUBDIR = "lora_dataset_uploads"
+LORA_DATASET_UPLOADS_DIR = f"{MODELS_DIR}/{LORA_DATASET_UPLOADS_SUBDIR}"
 _DATASET_IMG_FILENAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,140}\.(?:png|jpe?g|webp)$", re.IGNORECASE)
 
 
@@ -6216,33 +6223,60 @@ def _verify_dataset_upload_token(user_id: str, dataset_id: str, expires: str, si
     return hmac.compare_digest(expected, sig)
 
 
+def _r2_dataset_upload_key(key: str) -> str:
+    """R2 側のキー。Volume の相対パスと同じ `lora_dataset_uploads/<user_id>/
+    <dataset_id>/<filename>`（src/lib/loraDatasetUpload.server.ts と一致）。"""
+    return f"{LORA_DATASET_UPLOADS_SUBDIR}/{key}"
+
+
 def _read_lora_dataset_upload(key: str) -> bytes:
-    """アップロード済みデータセット画像をVolumeから直接読む
-    （"<user_id>/<dataset_id>/<filename>"）。Smart Ingest（_one）と
-    train_lora_job/train_sdxl_lora_job のフォールバック経路の両方が使う。"""
+    """アップロード済みデータセット画像を読む（"<user_id>/<dataset_id>/
+    <filename>"）。Smart Ingest（_one）と train_lora_job/train_sdxl_lora_job
+    のフォールバック経路の両方が使う。
+
+    2026-09-23: ブラウザは R2 へ直接 PUT する（docs/STATUS.md R2 計画 4）ので、
+    Volume に無ければ R2 から読む。Volume 側は UPLOAD_STORE=volume で戻した
+    ときと、切替前にアップロードされた分のため。"""
     if ".." in key:
         raise ValueError(f"illegal storage key: {key!r}")
     p = pathlib.Path(LORA_DATASET_UPLOADS_DIR) / key
-    if not p.is_file():
-        raise RuntimeError(f"dataset upload not found on Volume: {key}")
-    return p.read_bytes()
+    if p.is_file():
+        return p.read_bytes()
+    try:
+        import ull_r2
+    except ImportError:
+        ull_r2 = None
+    if ull_r2 is not None and ull_r2.r2_configured():
+        try:
+            return ull_r2.get_bytes(_r2_dataset_upload_key(key))
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"dataset upload not found on Volume or R2: {key} ({exc})") from exc
+    raise RuntimeError(f"dataset upload not found on Volume: {key}")
 
 
 def _delete_lora_dataset_uploads(keys: list) -> int:
     """ベストエフォート削除。Smart Ingestが最適化コピーをVolumeへ焼き
     終えた直後に呼ぶ——アップロード原本はもう不要（_purge_storage_objects
-    のVolume版）。失敗してもジョブは止めない。"""
+    のVolume版）。失敗してもジョブは止めない。R2 側も同じキーで消す
+    （存在しないキーの削除は無害）。"""
     removed = 0
-    for k in keys or []:
-        if not k or ".." in str(k):
-            continue
-        p = pathlib.Path(LORA_DATASET_UPLOADS_DIR) / str(k)
+    clean = [str(k) for k in (keys or []) if k and ".." not in str(k)]
+    for k in clean:
+        p = pathlib.Path(LORA_DATASET_UPLOADS_DIR) / k
         try:
             if p.is_file():
                 p.unlink()
                 removed += 1
         except OSError:
             pass
+    if clean:
+        try:
+            import ull_r2
+
+            if ull_r2.r2_configured():
+                removed += ull_r2.delete_keys(_r2_dataset_upload_key(k) for k in clean)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[dataset-upload] R2 delete skipped: {exc}", flush=True)
     return removed
 
 

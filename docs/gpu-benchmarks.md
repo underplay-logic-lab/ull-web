@@ -1707,6 +1707,12 @@ rank 32/16・LoCon 既定込み・300step）を `gpu_tier=rtx_pro_6000` で投�
 
 ## 15. LoRAデータセットのアップロード速度（2026-09-20）
 
+> **2026-09-23 追記**: 送信先を Modal（米国）から **Cloudflare R2 の署名付き PUT**（1 枚 1 リクエスト・16 並列、
+> `src/lib/loraApi.ts` の `R2_CONCURRENCY`）へ切り替えた（docs/STATUS.md R2 計画 4）。下の実測はすべて Modal 直
+> 時代のもので、律速だった「HTTP/2 フロー制御 × 日米間 RTT」は R2 のエッジ終端では条件が変わる。
+> **R2 経路の実測はまだ無い** — ホストの実地（100 枚超）で `[lora-upload]` のコンソール行を取り、ここに追記する。
+> 比較の基準は現行の **18.1 Mbps / 131 枚 52.2MB 24.2 秒**。
+
 同一データセット（131枚 / 52.2MB、原本は全枚数が長辺1536超）を本番経路で計測。
 クライアントは `src/lib/loraApi.ts::uploadLoraDataset`、サーバーは
 `modal_lora_worker.py::upload_lora_dataset_image`（1枚1リクエスト、毎回 `vol.commit()`）。

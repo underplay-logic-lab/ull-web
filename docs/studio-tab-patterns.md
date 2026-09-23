@@ -296,6 +296,26 @@ Supabase Free プランの月間送信量は5GB（DB・Storage・Realtime・Auth
   `src/app/api/studio/lora/checkpoint/route.ts` の `signDownloadToken` /
   `modal_lora_worker.py` の `_verify_download_token`・`_verify_upload_token`。
 
+### 2026-09-23 以降の既定は R2（Modal 直は `UPLOAD_STORE=volume` のフォールバック）
+
+成果物・持ち込みファイルとも **Cloudflare R2** に置く（CLAUDE.md §1「完成した成果物の置き場は R2」、
+docs/STATUS.md「R2 を成果物ストレージにする」）。上の Modal 直パターンは戻し先として残す。
+
+- **持ち込み（ブラウザ → R2）**: Next が `presignR2Put()`（`src/lib/r2.server.ts`）で署名付き PUT URL を発行し、
+  ブラウザが直接 PUT。手本は `src/lib/studioUploads.ts`（単発）と `src/lib/loraApi.ts::uploadLoraDataset`
+  （1 枚ごとの URL を `filenames[]` でまとめて取得し XHR PUT ×16 並列）。チケットの `store` で経路を分岐し、
+  `"modal"` なら従来の POST に落ちる。**`storagePath` の形は両ストアで同じ**（`<userId>/<file>` /
+  `<userId>/<datasetId>/<file>`）にして、route・worker の検証ロジックを触らない。
+- **読む側は「R2 に HEAD → 無ければ Volume」**（`studioUploads.server.ts::locateStudioUpload`、
+  `modal_lora_worker.py::_read_lora_dataset_upload`）。切替をまたいだアップロードや、戻した直後でも壊れない。
+- **キーは Volume の相対パスと同一**（`studio_uploads/<userId>/<file>`、`lora_dataset_uploads/<userId>/<datasetId>/<file>`）。
+- **署名付き PUT は host しか署名しない**（2026-09-23 実測、`X-Amz-SignedHeaders=host`）。ブラウザ側の
+  Content-Type を決め打ちする必要は無く、送った値がそのままオブジェクトの Content-Type になる。
+- **worker が署名付き GET を fetch する経路**（SeedVR2 の `_load_input_bytes` 等）は、URL ホストの許可リストに
+  `r2.cloudflarestorage.com` が要る。忘れると `image URL host not allowed` で落ちる。**Next より先に worker をデプロイ**する。
+- **バケットの CORS**（`scripts/r2_bucket_setup.py`）は GET/HEAD/PUT・全ヘッダー許可・ETag/Range 公開で適用済み。
+  PUT を増やすときに触る必要は無い。ライフサイクルは全キー一律 14 日。
+
 ## ハマりどころ
 
 - **Modal Volume (NFS) は1回あたりの読み書きオーバーヘッドが大きい。**
