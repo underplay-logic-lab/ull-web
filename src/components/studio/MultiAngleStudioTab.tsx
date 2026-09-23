@@ -69,6 +69,10 @@ type Phase = "idle" | "submitting" | "running" | "done" | "error";
 
 const FORM_ID = "multi-angle-studio";
 const JOB_KEY = "multi-angle-active-job";
+// 「今回の生成」= 順番待ち・並列で続けて出したジョブの並び（2026-09-23 ホスト方針）。
+// 改めて生成するときは確認のうえこの並びを空にする。サーバー側の保持は安全弁で、
+// ユーザーには「都度 DL しなければ消える」感覚でいてもらう（保持期間は UI に出さない）。
+const SESSION_KEY = "multi-angle-session-jobs";
 // アップロード前の生ファイルの受け入れ上限。これを超えるとブラウザでの
 // 縮小（createImageBitmap → canvas）でメモリを食い過ぎるうえ、縮小に失敗
 // した場合にサーバーの 12MB 制限に確実に弾かれる。縮小後は数百KBになる。
@@ -546,13 +550,13 @@ function RegenerateConfirmModal({
     >
       <div className="w-full max-w-sm rounded-2xl border-gradient bg-surface p-8" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
-          <h3 className="text-lg font-bold">表示が新しい生成に切り替わります</h3>
+          <h3 className="text-lg font-bold">これまでの生成結果は消去されます</h3>
           <button type="button" onClick={onCancel} aria-label="閉じる" className="text-muted transition-colors hover:text-foreground">
             <X size={20} />
           </button>
         </div>
         <p className="mt-2 text-sm leading-relaxed text-muted">
-          新しく生成すると、画面は新しい結果に切り替わります。今の結果は下の「最近の生成」から表示し直せます。続けますか？
+          新しく生成すると、今表示している結果と「今回の生成」の一覧は消去されます。必要なものは先にダウンロードしてください。続けますか？
         </p>
         <div className="mt-6 flex gap-2">
           <button
@@ -680,6 +684,11 @@ export function MultiAngleStudioTab() {
   // 前の結果に戻る手段が無かった（サーバーには 14 日残っている）。一覧から選ぶと
   // そのジョブを読み直して結果ギャラリーに出す。
   const [history, setHistory] = useState<AngleJobSummary[]>([]);
+  const [sessionIds, setSessionIds] = useState<string[]>(
+    () => loadFormState<{ ids: string[] }>(SESSION_KEY)?.ids?.filter((x): x is string => typeof x === "string") ?? [],
+  );
+  // runGenerate（useCallback、依存は user のみ）から最新値を読むための ref。
+  const sessionIdsRef = useRef<string[]>(sessionIds);
 
   // ログイン時と、ジョブが終端（done / error）に達するたびに一覧を更新する
   // （非同期応答でのみ setState する — 効果内の同期 setState は lint 禁止）。
@@ -695,6 +704,11 @@ export function MultiAngleStudioTab() {
       alive = false;
     };
   }, [user, phase]);
+
+  const sessionHistory = useMemo(
+    () => sessionIds.map((id) => history.find((h) => h.id === id)).filter((h): h is AngleJobSummary => Boolean(h)),
+    [sessionIds, history],
+  );
 
   const handleShowHistory = (id: string) => {
     if (busy || id === jobId) return;
@@ -724,7 +738,9 @@ export function MultiAngleStudioTab() {
   const runGenerate = useCallback(
     async (
       snapshot: { image: File; subImages: File[]; selection: AngleSelection; combos: AngleCombo[] },
-      opts: { priority?: boolean } = {},
+      // continuation: 順番待ち／並列で「今回の生成」に続けて出す（一覧に足す）。
+      // false = 改めて生成（一覧を新しいジョブ 1 件に置き換える）。
+      opts: { priority?: boolean; continuation?: boolean } = {},
     ) => {
       if (!user) return;
       setPhase("submitting");
@@ -743,6 +759,13 @@ export function MultiAngleStudioTab() {
         });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
         saveFormState(JOB_KEY, { jobId: res.jobId });
+        {
+          const prev = sessionIdsRef.current;
+          const ids = opts.continuation ? [...prev.filter((x) => x !== res.jobId), res.jobId] : [res.jobId];
+          sessionIdsRef.current = ids;
+          setSessionIds(ids);
+          saveFormState(SESSION_KEY, { ids });
+        }
         setJob({
           id: res.jobId,
           status: "pending",
@@ -798,23 +821,12 @@ export function MultiAngleStudioTab() {
             // 同期的な副作用ではない）。
             const [queued, ...restQueued] = queuedNextRef.current;
             if (queued) {
-              // 次のジョブが画面を上書きする前に、今完了した全構図を1つの
-              // ZIPとしてブラウザへ自動保存する（連続キュー時、手動DLの
-              // 間もなく次の生成中表示に切り替わり過去の結果に戻れなく
-              // なるUI上のギャップへの対策。angle-results バケットへは
-              // 既に永続化済みなので失敗しても致命的ではない。1件ずつ
-              // 個別ダウンロードだと最大96件でブラウザにブロックされうる
-              // ため、既存の「ZIPで一括」導線をそのまま流用する）。
-              if (next.images.length) {
-                zipAngleImages(next.images)
-                  .then((blob) => triggerBlobDownload(blob, buildZipFilename()))
-                  .catch((err) => {
-                    console.warn("[MultiAngleStudioTab] auto-download before next queued job failed:", err);
-                  });
-              }
+              // 2026-09-23: 以前はここで完了分を ZIP 自動 DL していた（次のジョブが
+              // 画面を上書きして戻れなくなる対策）。「今回の生成」一覧から戻れる
+              // ようになったので自動 DL はやめ、DL はユーザーの操作に任せる。
               queuedNextRef.current = restQueued;
               setQueuedNext(restQueued);
-              void runGenerate(queued);
+              void runGenerate(queued, { continuation: true });
             }
             return;
           }
@@ -956,7 +968,7 @@ export function MultiAngleStudioTab() {
     // 既に結果が表示されている状態で再生成すると、new job で即座に上書き
     // されて消える（setJob(null) が doGenerate の先頭にある）。気づかず
     // 前回の結果を失わないよう、表示中の結果があるときだけ一度確認する。
-    if ((job?.images?.length ?? 0) > 0) {
+    if ((job?.images?.length ?? 0) > 0 || sessionIdsRef.current.length > 0) {
       setRegenConfirmOpen(true);
       return;
     }
@@ -985,7 +997,7 @@ export function MultiAngleStudioTab() {
       setChargeOpen(true);
       return;
     }
-    void runGenerate({ image, subImages, selection, combos }, { priority: true });
+    void runGenerate({ image, subImages, selection, combos }, { priority: true, continuation: true });
   };
 
   const handleReroll = async (index: number) => {
@@ -1409,14 +1421,14 @@ export function MultiAngleStudioTab() {
         />
       )}
 
-      {user && history.length > 0 && (
+      {user && sessionHistory.length > 1 && (
         <div className="mt-8 border-t border-border pt-6">
           <p className="text-xs font-medium text-muted">
-            最近の生成
-            <span className="ml-2 text-muted/60">予約や並列実行で切り替わった結果もここから表示し直せます。</span>
+            今回の生成
+            <span className="ml-2 text-muted/60">続けて出した生成はここから表示し直せます。改めて生成すると一覧は消去されます。</span>
           </p>
           <ul className="mt-3 divide-y divide-border rounded-lg border border-border bg-surface/40">
-            {history.map((h) => {
+            {sessionHistory.map((h) => {
               const current = h.id === jobId;
               const when = h.createdAt ? new Date(h.createdAt).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
               const statusLabel =
