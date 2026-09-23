@@ -141,7 +141,7 @@ SDXL_COST_GUARD_MULTIPLIER = max(
 # 分離して 0.642 s/it・prep 43.2秒。ただし当時は AdamW8bit + gradient_checkpointing
 # 有効で、現在の既定（prodigy / gc 無効）より遅い条件なので、**実運用はこれより
 # 速い見込み＝過大見積もり＝安全側**。
-SDXL_SPI_BASELINE = float(os.environ.get("SDXL_SPI_BASELINE", "0.642"))
+SDXL_SPI_BASELINE = float(os.environ.get("SDXL_SPI_BASELINE", "1.25"))
 # 同じく prep（モデルロード + latent キャッシュ + 保存）の固定分。
 # knobDefaults.ts の lora_prep_load_s_sdxl（45秒）に対し、下限計算では
 # 取りこぼしが致命的なので厚めに取る。

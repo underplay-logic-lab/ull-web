@@ -529,6 +529,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
     resolution: priceBreakdown?.maxResolution,
     effectiveBatch: priceBreakdown?.effectiveBatch,
     imageCount: priceBreakdown?.imageCount,
+    rank: priceBreakdown?.linearRank || undefined,
     knobs,
   });
 

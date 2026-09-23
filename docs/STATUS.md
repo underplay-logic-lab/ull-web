@@ -328,10 +328,13 @@ GPU tier が検討できる。ただし CLAUDE.md §1 のとおり **1回あた�
 smoke（L40S・合成5枚・20step、58.5s）で引数が通り、U-Net の LoRA モジュールが 722 → 788
 （Conv2d 3×3 に掛かった）ことを確認。**WAI v7（kocho ×5・rank 64/alpha 64・3,000step）を焼いた結果、
 ホスト評価は「v6 よりかなり良い」＝この 220 枚での頭打ち圏**（gpu-benchmarks §14.24）。
-**残る価格側の宿題**: v7 の 1.23 s/it は rank 64 と LoCon が混ざっていて `LORA_SPI_BASELINE.sdxl=1.0` は
-当て推量。**rank 32 + LoCon の 300step を1本**（L40S・約 50C）で基準を確定し、そこから rank 係数
-（`1 + k×(rank/32−1)`）を式に足して価格を所要時間に連動させる（ホスト指摘 2026-09-23、未着手。
-CLAUDE.md §3「rank は課金に効かない」も同時に書き換える）。
+**【完了 2026-09-23】rank 32 + LoCon 300step で基準確定**（gpu-benchmarks §14.25）: 定常 1.21 s/it、
+rank 64 の 1.23 と 2% 差＝**rank は時間を動かさない。遅くなったのは LoCon（+65%）**。
+`LORA_SPI_BASELINE.sdxl` 1.0 → 1.25。価格式に rank 係数 `loraRankFactor()`（arch 別 k、
+`LORA_RANK_MARGINAL`）を追加したが SDXL の k は実測 0。cost-guard も arch 別 GPU tier の時給で
+割るよう修正（B300 固定のままだと安い tier で二重に厳しかった）。
+**残る判断: LoCon を既定に残すか**（+65% の時間＝価格に見合う品質差があるかはホスト評価待ち。
+v7 の改善は kocho ×5・alpha=rank と同時に入れたため未分離）。
 
 ### 実測: SDXL ワーカーのコールドスタート内訳（2026-09-22）
 

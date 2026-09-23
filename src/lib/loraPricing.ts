@@ -140,8 +140,8 @@ export function loraPriceBreakdown(
     Math.max(1, asNumber(train.batch_size) ?? 1) *
     Math.max(1, asNumber(train.gradient_accumulation) ?? 1);
 
-  // rank は課金には効かない（LoRA アダプタは基盤モデルに対して十分小さく、
-  // 所要秒をほとんど動かさない）。表示と将来の実測用に拾うだけ。
+  // rank は arch 別の係数 k（LORA_RANK_MARGINAL）で s/it に効く。k=0 の arch では価格に影響
+  // しない。SDXL は rank 32→64 で実測 +2%（誤差）なので k=0（docs §14.25）。式だけ先に用意。
   const linearRank = asNumber(network.linear) ?? 0;
 
   const imageCount = Math.max(0, Math.round(opts.imageCount ?? 0));
@@ -152,6 +152,7 @@ export function loraPriceBreakdown(
     resolution: maxResolution,
     effectiveBatch,
     imageCount,
+    rank: linearRank > 0 ? linearRank : undefined,
     spiOverride: opts.spiOverride,
     knobs,
   });

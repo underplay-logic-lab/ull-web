@@ -173,7 +173,7 @@ Modalジョブを完全に止めたい時は `modal container stop` ではなく
   - サーバーは `getPricingKnobs()`（`knobs.server.ts`）、クライアントは `usePricingKnobs()` で公開knob（`is_public`）を取得し純関数へ渡す。損切り閾値・レートは非公開（サーバーのみ）。
 - **LoRA 学習は「推定GPU秒 × クレジット単価」で課金**（SSOT は `src/lib/pricing/loraRuntime.ts`、入口は `loraPricing.ts`）:
   - `credits = ceil( (固定prep + prep/枚×枚数 + steps × s/it × 解像度係数 × 実効バッチ) × 単価 )`。設定が変われば推定秒が動き価格が自動追従するので、**設定値の確定を待たずに価格を運用できる**。
-  - **課金と損切りは同じ見積もり関数を通すこと。** 係数の掛け算方式は 2026-09-20 廃止。**rank は課金に効かない**（所要秒を動かさないため）。arch `sdxl` のみ sd-scripts ワーカーで単価 knob が別（判定は `isSdxlJob` と揃える）。
+  - **課金と損切りは同じ見積もり関数を通すこと。** 係数の掛け算方式は 2026-09-20 廃止。**rank は `LORA_RANK_MARGINAL`（arch 別 k）経由で効く。SDXL は実測で rank 32→64 が +2% なので k=0**（2026-09-23、docs §14.25）。arch `sdxl` のみ sd-scripts ワーカーで単価 knob が別（判定は `isSdxlJob` と揃える）。
   - **フロント表示と API 検証は、同一config ＋ 同一knob ＋ 同一の画像枚数を `loraPriceBreakdown()` に渡す。** 枚数はサーバーの実データを使い、クライアント申告を信用しない。GUIモードは `guiLoraPricingConfig()` で等価configを合成して同じ関数へ。
   - 生YAMLがパース不能なら上限 `loraCreditWorstCase(knobs)`（＝コンテナのハード上限秒 × 単価）を課金。
   - **実測が出たら `LORA_SPI_BASELINE`、価格水準を動かすなら単価 knob を触る。係数の手校正はもう不要。**

@@ -96,12 +96,36 @@ export const LORA_SPI_BASELINE: Readonly<Record<string, number>> = {
   // --- sd-scripts ワーカー（別 tier・別スタック）---
   // 0.642 は「step 数だけ変えた2回の実行の総経過時間を連立で分離」して出した
   // 値で、下記の tqdm パースのバグとは無関係。よって据え置く。
-  // 2026-09-23 実ジョブ v7（rank 64/64・LoCon conv16・3,000step・220枚・L40S）で定常 1.23 s/it。
-  // 旧 0.642 は rank 32・LoCon 無しの実測。LoCon が既定になった分を含めて 1.0 へ（rank 64 は
-  // これでも 2 割過小だが、rank で s/it を変える式は持たないので許容。docs §14.24）。
-  sdxl: 1.0,
+  // 2026-09-23 実測（同一 220枚・1024px・L40S・LoCon conv16 既定込み、docs §14.24/§14.25）:
+  //   rank 32/16・300step → 定常 1.21 s/it（100→300step）
+  //   rank 64/64・3,000step → 定常 1.23 s/it
+  // rank の寄与は 2%（誤差）。旧 0.642（v6・LoCon 無し）→ 1.21 の差 +65% は LoCon そのもの。
+  // 両方を覆う 1.25。
+  sdxl: 1.25,
 };
 export type LoraWorkerBackend = "sd_scripts" | "ai_toolkit";
+
+/** LORA_SPI_BASELINE を測った rank。全 arch とも rank 32（docs §14.16〜14.25）。 */
+export const LORA_SPI_REFERENCE_RANK = 32;
+
+/**
+ * rank が s/it に効く割合 k（arch 別、2026-09-23 追加）。
+ *   rank係数 = 1 + k × (rank / 32 − 1)
+ * rank 32 で必ず 1.0 なので LORA_SPI_BASELINE のアンカーはずれない。k=0 は「rank で所要秒が
+ * 動かない」＝旧挙動。実測が無い arch は 0 のままにし、測れた arch から埋める。
+ * 背景: 「時間が変わるのに価格が変わらない」のは歪み（ホスト指摘 2026-09-23）。
+ */
+export const LORA_RANK_MARGINAL: Readonly<Record<string, number>> = {
+  // sd-scripts / L40S / LoCon 既定込み、同一 220枚で実測: rank 32 → 1.21 s/it、rank 64 → 1.23 s/it
+  // （docs §14.24・§14.25）。rank 2倍で +2% ＝ 誤差なので 0（式は残す。他 arch で効いたら埋める）。
+  sdxl: 0,
+};
+
+export function loraRankFactor(arch: string | null | undefined, rank: number | undefined): number {
+  const k = LORA_RANK_MARGINAL[String(arch ?? "").trim().toLowerCase()] ?? 0;
+  const r = typeof rank === "number" && Number.isFinite(rank) && rank > 0 ? rank : LORA_SPI_REFERENCE_RANK;
+  return Math.max(0.25, 1 + k * (r / LORA_SPI_REFERENCE_RANK - 1));
+}
 
 /** 価格式が知っている GPU tier。knob `gpu_usd_per_hour_<tier>` と同じ綴り。 */
 export type LoraGpuTier = "b300" | "b200" | "h200" | "h100" | "rtx_pro_6000" | "a100_80gb" | "l40s";
@@ -143,7 +167,7 @@ export function loraArchGpuTier(arch: string | null | undefined): LoraGpuTier {
   return LORA_ARCH_PROFILE[key]?.gpu ?? "b300";
 }
 
-function gpuUsdPerHour(tier: LoraGpuTier, knobs: PricingKnobs): number {
+export function gpuUsdPerHour(tier: LoraGpuTier, knobs: PricingKnobs): number {
   const map: Record<LoraGpuTier, number> = {
     b300: knobs.gpu_usd_per_hour_b300,
     b200: knobs.gpu_usd_per_hour_b200,
@@ -253,6 +277,8 @@ export type LoraRuntimeEstimate = {
   resolutionFactor: number;
   /** 実効バッチによる s/it の倍率（バッチ1で 1.0）。正比例ではない — §14.7。 */
   batchFactor: number;
+  /** rank による s/it の倍率（rank 32 で 1.0）。LORA_RANK_MARGINAL 参照。 */
+  rankFactor: number;
   /** 実際の1ステップ所要秒（解像度・実効バッチ込み）。 */
   secondsPerStep: number;
   /** 純学習時間。 */
@@ -275,6 +301,8 @@ export type LoraRuntimeInput = {
   effectiveBatch?: number;
   /** データセットの画像枚数。prep の可変分に効く。 */
   imageCount?: number;
+  /** LoRA の linear rank（network_dim）。0/不明なら基準 rank として扱う。 */
+  rank?: number;
   /**
    * arch の s/it を直接上書きする（秒/it）。同じ ai-toolkit の arch 文字列を
    * 共有しつつ実体がずっと軽いプリセット用（例: WAN 2.1 1.3B は loader class
@@ -317,7 +345,9 @@ export function loraEstimatedSeconds(input: LoraRuntimeInput): LoraRuntimeEstima
   const batchMarginal = clamp(finite(knobs.lora_batch_marginal_ratio, 1), 0, 1);
   const batchFactor = 1 - batchMarginal + batchMarginal * effectiveBatch;
 
-  const secondsPerStep = spi * resolutionFactor * batchFactor;
+  const rankFactor = loraRankFactor(arch, input.rank);
+
+  const secondsPerStep = spi * resolutionFactor * batchFactor * rankFactor;
 
   const steps = clamp(Math.round(finite(input.steps, 0)), 0, MAX_STEPS_GUARD);
   const trainSeconds = steps * secondsPerStep;
@@ -335,6 +365,7 @@ export function loraEstimatedSeconds(input: LoraRuntimeInput): LoraRuntimeEstima
     spi,
     resolutionFactor,
     batchFactor,
+    rankFactor,
     secondsPerStep,
     trainSeconds,
     prepSeconds,

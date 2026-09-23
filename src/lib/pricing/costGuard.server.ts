@@ -3,8 +3,9 @@ import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";
 import {
   LORA_ABS_MAX_RUN_S,
   LORA_RUNTIME_CUSHION,
+  gpuUsdPerHour,
+  loraArchGpuTier,
   loraEstimatedSeconds,
-  loraWorkerBackend,
 } from "@/lib/pricing/loraRuntime";
 
 // Central computation of the "原価割れ損切り" (cost-guard) seconds handed to the
@@ -38,10 +39,10 @@ function creditCoveredSeconds(
 ): number {
   const revenueJpy = Math.max(0, creditsCost) * knobs.credit_to_jpy;
   const maxCostJpy = revenueJpy * knobs.lora_margin_target;
-  const usdPerHour =
-    loraWorkerBackend(arch) === "sd_scripts"
-      ? knobs.gpu_usd_per_hour_l40s
-      : knobs.gpu_usd_per_hour_b300;
+  // 2026-09-23: arch 別 GPU tier（LORA_ARCH_PROFILE）を課金側と同じ関数で引く。課金の
+  // credits/GPU秒は tier 時給比で縮むので、ここも同じ tier の時給で割らないと許容秒が
+  // 過小になる（B300 固定のままだと安い tier ほど二重に厳しくなる）。
+  const usdPerHour = gpuUsdPerHour(loraArchGpuTier(arch), knobs);
   const jpyPerSec = (usdPerHour * knobs.usd_jpy_rate) / 3600;
   const secs = jpyPerSec > 0 ? maxCostJpy / jpyPerSec : 0;
   return Math.floor(Math.max(1800, Math.min(secs, LORA_ABS_MAX_RUN_S)));
@@ -53,7 +54,14 @@ function creditCoveredSeconds(
 // 見積もりに対する 1.3 倍は、実測のばらつきぶんの余裕（CLAUDE.md §0
 // 「タイムアウトは多めに」）。
 function expectedRunFloorSeconds(
-  args: { arch: string; steps: number; resolution?: number; effectiveBatch?: number; imageCount?: number },
+  args: {
+    arch: string;
+    steps: number;
+    resolution?: number;
+    effectiveBatch?: number;
+    imageCount?: number;
+    rank?: number;
+  },
   knobs: PricingKnobs,
 ): number {
   if (args.steps <= 0) return 0;
@@ -71,6 +79,7 @@ export function loraCostCapSeconds(args: {
   resolution?: number;
   effectiveBatch?: number;
   imageCount?: number;
+  rank?: number;
   knobs?: PricingKnobs;
 }): LoraCostCap {
   const knobs = args.knobs ?? DEFAULT_KNOBS;
@@ -90,6 +99,7 @@ export function loraCostCapSeconds(args: {
       resolution: args.resolution,
       effectiveBatch: args.effectiveBatch,
       imageCount: args.imageCount,
+      rank: args.rank,
     },
     knobs,
   );
