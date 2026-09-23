@@ -144,8 +144,11 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // 新規コンテナのコールドスタートを追加で1回発生させる。その原価を
     // angle_cold_start_grace_s（600s、実測ベース）× gpu_jpy_per_hour_b300
     // (¥1125/h) ÷ credit_to_jpy(1.66) ≈ 113C に、他の単価と同じ3倍markup
-    // （director系の導出と同じ慣例）を掛けた概算値。実測ではなく理論値なので
-    // 実際の並列利用が増えたら admin で調整すること。
+    // （director系の導出と同じ慣例）を掛けた概算値。
+    // 2026-09-23 ホスト決定: B200 の実測コールド（約 70 秒 ≈ 原価 13C）に対して
+    // 大幅に高いが**意図的**。これは原価回収ではなく「同じ値段だと皆が並列を
+    // 使って GPU 枠がすぐ枯渇する」ための混雑料金（急ぎたいなら金を払う）。
+    // 原価に合わせて下げる提案はしないこと。
     value: 340,
     label: "Multi-Angle 並列実行 追加料金",
     category: "feature_credits",
