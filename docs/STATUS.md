@@ -596,13 +596,39 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 
 5. **画像系 arch の prep 実測**（2 の仕組みで自然に溜まるので、能動的にやる必要は薄い）。
 
-### 【決定 2026-09-23】R2 を成果物ストレージにする（速度テスト済み・移行は未着手）
+### 【決定 2026-09-23】R2 を成果物ストレージにする — **ローンチ直前の最終工程**（着手はホスト合図で）
 
-R2 → PC 34〜46 MB/s（Modal 直の 10 倍）、Modal → R2 は 64MB part × 16 で 48〜53 MB/s（gpu-benchmarks §16.5）。
+ホスト: 「ローンチ前というよりローンチの直前に。これが終わったら本当にローンチするというタイミングで」。
+それまでは現状（Modal Volume）のまま。**既存の成果物は移行せず Modal に置いたまま 14 日パージで消える**。
+ローンチ後の新規はすべて R2。速度テスト済み（gpu-benchmarks §16.5、R2 → PC 34〜46 MB/s、Modal → R2 48〜53 MB/s）。
 資格情報は `.env.local` の `R2_*` と Modal secret `r2-artifacts`（メモリ `r2-artifact-storage`）。
-**移行の順番**: ①LoRA 成果物（worker 完了処理で R2 へ put、`/api/studio/lora/checkpoint` を R2 署名付き URL へ、
-purge を R2 ライフサイクル 14 日へ）→ ②超解像・Director の生成物 → ③ユーザーデータセット。
-Volume（939GB/1TB）にはモデル重みだけ残す。
+Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、ホスト申告 2026-09-23）で、モデル重みだけ残す。
+
+**実装計画（着手時にここから始める。対象コードは調査済み）**
+
+1. **共通層**: `src/lib/r2.server.ts`（S3 クライアント・署名付き GET/PUT・キー規約 `<kind>/<user_id>/<job_id>/<file>`）と
+   worker 側 `ull_r2.py`（boto3、`TransferConfig(multipart_chunksize=64MB, max_concurrency=16)` 固定、
+   `put_file` / `put_bytes` / `presign_get`）。Modal secret `r2-artifacts` を各ワーカーへ付与。
+2. **LoRA 成果物**（最初）: `modal_lora_worker.py` / `modal_sdxl_lora_worker.py` の完了処理
+   （`loras/<user>/<job>/` へ書く箇所）で R2 へ put し、`metadata.checkpoints[].r2_key` を持たせる。
+   `src/app/api/studio/lora/checkpoint/route.ts` は `r2_key` があれば R2 署名付き URL（15 分）を返し、
+   無ければ従来の Modal `download_lora_checkpoint`（14 日で自然消滅する旧ジョブ用）。
+   一括 ZIP（`download_lora_selection`）は R2 上のオブジェクトを CPU 関数で束ねるか、UI 側で並列 DL に置換
+   （4 並列で 70 MB/s 出るので ZIP 化しない方が速い）。dataset.zip / LICENSE.txt も同じ経路。
+3. **生成物**: `modal_seedvr2_worker.py`（`upscale_image_results` / `upscale_video_results` / `upscale_originals`）、
+   `modal_wan_animate_blackwell.py`（`director_results/<user>/<job>.mp4`）、angle / custom_workflow の結果を
+   R2 へ。`download_upscale_*` / `download_director_video` の呼び出し元（`src/lib/directorVideoDownload.server.ts`、
+   `src/app/api/studio/upscale/*/result`）を R2 署名付き URL へ。
+4. **ユーザー持ち込み**（`studio_uploads` / `lora_dataset_uploads`）: ブラウザ → R2 署名付き PUT へ切替、
+   worker はジョブ開始時に R2 から取得。`studioUploadTicket.server.ts` / `studioUploads.server.ts` /
+   `upload_lora_dataset_batch` が対象。§15 のアップロード速度（18 Mbps 頭打ち）もここで解消見込み。
+5. **保持**: R2 バケットにライフサイクルルール「14 日で削除」。`modal_retention_purge.py` の Volume 側は
+   旧データが尽きるまで残す（`DEFAULT_BUCKETS` から外さない、CLAUDE.md §6-5）。
+6. **admin**: 「最近の生成物」タブとバケットブラウザ（`src/lib/generatedStorage.ts`、`admin_zip_volume_folder`）を
+   R2 の一覧・署名付き URL に向ける。`GpuCostReferenceCard` 同様に Volume 残量表示はモデル分だけになる。
+7. **切替**: 環境変数 `ARTIFACT_STORE=r2|volume` で全ワーカー・全 route を一括切替（ロールバック可能に）。
+
+規模: 2 が半日〜1 日、3 と 4 が 1〜2 日、5〜7 が半日。順に PR を分ける。
 
 ### 残課題: LoRA の「結果がいまいちな時」ヒント（2026-09-23、ホスト発案・未着手）
 
