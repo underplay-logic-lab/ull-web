@@ -52,6 +52,13 @@ import {
 } from "@/lib/directorApi";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
+import {
+  loadStudioSession,
+  saveStudioSession,
+  SessionResetConfirmModal,
+  StudioSessionList,
+  type StudioSessionEntry,
+} from "@/components/studio/StudioSessionList";
 import { VramBadge } from "@/components/studio/VramBadge";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
@@ -67,6 +74,7 @@ import {
 type Phase = "idle" | "submitting" | "running" | "done" | "error";
 
 const JOB_KEY = "director-active-job";
+const SESSION_KEY = "director-session-jobs";
 const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_CONSECUTIVE_ERRORS = 8;
 
@@ -373,6 +381,18 @@ export function DirectorStudioTab() {
   const [jobId, setJobId] = useState<string | null>(resumedJobId);
   const [job, setJob] = useState<DirectorJobStatus | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // 「今回の生成」（2026-09-23 ホスト方針）: 順番待ち・並列で続けて出したジョブだけを
+  // 並べ、改めて生成するときは確認のうえ空にする。自動 DL は廃止（一覧から戻れる）。
+  const [sessionJobs, setSessionJobs] = useState<StudioSessionEntry[]>(() => loadStudioSession(SESSION_KEY));
+  const sessionJobsRef = useRef<StudioSessionEntry[]>(sessionJobs);
+  const commitSession = useCallback((next: StudioSessionEntry[]) => {
+    sessionJobsRef.current = next;
+    setSessionJobs(next);
+    saveStudioSession(SESSION_KEY, next);
+  }, []);
+  const [sessionResetOpen, setSessionResetOpen] = useState(false);
+  const pendingFreshRef = useRef<QueuedSnapshot | null>(null);
+
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
@@ -432,6 +452,14 @@ export function DirectorStudioTab() {
   const cost = breakdown.credits + (uiMode === "advanced" ? directorQwenScriptSurcharge(knobs) : 0);
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
   const busy = phase === "submitting" || phase === "running";
+
+  const handleShowSession = (id: string) => {
+    if (busy || id === jobId) return;
+    setErrorMessage(null);
+    setJob(null);
+    setJobId(id);
+    setPhase("running"); // ポーリングが 1 回で completed を検知して done に落とす
+  };
 
   const canAddScene =
     scenes.length < DIRECTOR_MAX_SCENES &&
@@ -537,6 +565,11 @@ export function DirectorStudioTab() {
       return;
     }
     if (insufficientCredits) return setChargeOpen(true);
+    if (sessionJobsRef.current.length > 0) {
+      pendingFreshRef.current = snapshot;
+      setSessionResetOpen(true);
+      return;
+    }
     void runGenerate(snapshot);
   };
 
@@ -563,7 +596,7 @@ export function DirectorStudioTab() {
       setChargeOpen(true);
       return;
     }
-    void runGenerate(snapshot, { priority: true });
+    void runGenerate(snapshot, { priority: true, continuation: true });
   };
 
   // snapshot を明示的に渡す設計: キュー待ちの「次の1件」は予約した時点の
@@ -571,7 +604,7 @@ export function DirectorStudioTab() {
   // かもしれない）現在の state を読んではいけない。ポーリングの長寿命な
   // useEffect からも呼ぶため、参照が安定するよう useCallback にする。
   const runGenerate = useCallback(
-    async (snapshot: QueuedSnapshot, opts: { priority?: boolean } = {}) => {
+    async (snapshot: QueuedSnapshot, opts: { priority?: boolean; continuation?: boolean } = {}) => {
       if (!user) return;
       setPhase("submitting");
       setErrorMessage(null);
@@ -609,6 +642,12 @@ export function DirectorStudioTab() {
                   lora: snapshot.lora,
                 });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
+        {
+          const entry: StudioSessionEntry = { id: res.jobId, createdAt: new Date().toISOString(), label: snapshot.image instanceof File ? snapshot.image.name : "" };
+          commitSession(
+            opts.continuation ? [...sessionJobsRef.current.filter((e) => e.id !== res.jobId), entry] : [entry],
+          );
+        }
         setJobId(res.jobId);
         setPhase("running");
       } catch (err) {
@@ -621,7 +660,7 @@ export function DirectorStudioTab() {
         if (e.message?.includes("クレジット")) setChargeOpen(true);
       }
     },
-    [user],
+    [user, commitSession],
   );
 
   // --- ポーリングループ（画像/動画タブと同じ規約: 完了後も job key をクリアしない） --
@@ -647,21 +686,11 @@ export function DirectorStudioTab() {
             if (sawInProgress) markGpuWarm();
             const [queued, ...restQueued] = queuedNextRef.current;
             if (queued) {
-              // 次のジョブが即座に画面を上書きしてしまう前に、今完了した
-              // 分をブラウザへ自動保存しておく（連続キュー時、ユーザーが
-              // 手動ダウンロードボタンを押す間もなく次の生成中表示に
-              // 切り替わってしまい、過去の結果に戻る手段が無いUI上の
-              // ギャップへの対策。失敗しても致命的ではない — サーバー側
-              // には director-results バケットへ既に永続化済みなので、
-              // ここが失敗しても「消える」わけではない）。
-              if (next.videoUrl) {
-                downloadDirectorVideo(next.videoUrl, `ull_cinematic_director_${next.jobId}.mp4`).catch((err) => {
-                  console.warn("[DirectorStudioTab] auto-download before next queued job failed:", err);
-                });
-              }
+              // 2026-09-23: 以前はここで動画を自動 DL していたが廃止（「今回の生成」
+              // 一覧から戻れる。DL はユーザー操作に任せる）。
               queuedNextRef.current = restQueued;
               setQueuedNext(restQueued);
-              void runGenerate(queued);
+              void runGenerate(queued, { continuation: true });
             }
             return;
           }
@@ -1231,6 +1260,23 @@ export function DirectorStudioTab() {
             )}
           </div>
         )}
+
+        {user && sessionJobs.length > 1 && (
+          <StudioSessionList entries={sessionJobs} currentId={jobId} busy={busy} onShow={handleShowSession} />
+        )}
+        <SessionResetConfirmModal
+          open={sessionResetOpen}
+          onCancel={() => {
+            pendingFreshRef.current = null;
+            setSessionResetOpen(false);
+          }}
+          onConfirm={() => {
+            setSessionResetOpen(false);
+            const snap = pendingFreshRef.current;
+            pendingFreshRef.current = null;
+            if (snap) void runGenerate(snap);
+          }}
+        />
 
         {/* プロンプト表示は動画の完成を待たない: シーン合成(Gemini)はジョブ
             作成と同時に終わっており、動画のレンダリングより先に

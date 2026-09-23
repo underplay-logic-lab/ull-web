@@ -42,6 +42,13 @@ import {
 } from "@/lib/upscaleApi";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
+import {
+  loadStudioSession,
+  saveStudioSession,
+  SessionResetConfirmModal,
+  StudioSessionList,
+  type StudioSessionEntry,
+} from "@/components/studio/StudioSessionList";
 import { VramBadge } from "@/components/studio/VramBadge";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
@@ -58,6 +65,7 @@ type Phase = "idle" | "submitting" | "running" | "done" | "error";
 
 const FORM_ID = "upscale-studio";
 const JOB_KEY = "upscale-active-job";
+const SESSION_KEY = "upscale-session-jobs";
 const BATCH_JOB_KEY = "upscale-active-batch";
 const POLL_INTERVAL_MS = 2500;
 const POLL_MAX_CONSECUTIVE_ERRORS = 8;
@@ -376,6 +384,18 @@ export function UpscaleStudioTab() {
   const [job, setJob] = useState<UpscaleJob | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [resultBeforeUrl, setResultBeforeUrl] = useState<string | null>(null);
+  // 「今回の生成」（2026-09-23 ホスト方針）: 順番待ち・並列で続けて出したジョブだけを
+  // 並べ、改めて生成するときは確認のうえ空にする。自動 DL は廃止（一覧から戻れる）。
+  const [sessionJobs, setSessionJobs] = useState<StudioSessionEntry[]>(() => loadStudioSession(SESSION_KEY));
+  const sessionJobsRef = useRef<StudioSessionEntry[]>(sessionJobs);
+  const commitSession = useCallback((next: StudioSessionEntry[]) => {
+    sessionJobsRef.current = next;
+    setSessionJobs(next);
+    saveStudioSession(SESSION_KEY, next);
+  }, []);
+  const [sessionResetOpen, setSessionResetOpen] = useState(false);
+  const pendingFreshRef = useRef<QueuedSnapshot | null>(null);
+
   // job.resultUrl は超解像画像の結果（2026-09-18〜）だとURLではなくVolume
   // 相対パスなので、表示・ダウンロードで使える実URLへ都度解決する
   // （resolveUpscaleImageUrl、CLAUDE.md §1）。旧方式の行はそのまま素通し。
@@ -656,7 +676,7 @@ export function UpscaleStudioTab() {
   // しれない）現在の state を読んではいけない。ポーリングの長寿命な
   // useEffect からも呼ぶため、参照が安定するよう useCallback にする。
   const runGenerate = useCallback(
-    async (snapshot: QueuedSnapshot, opts: { priority?: boolean } = {}) => {
+    async (snapshot: QueuedSnapshot, opts: { priority?: boolean; continuation?: boolean } = {}) => {
       if (!user) return;
       setPhase("submitting");
       setErrorMessage(null);
@@ -672,6 +692,12 @@ export function UpscaleStudioTab() {
           priority: opts.priority,
         });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
+        {
+          const entry: StudioSessionEntry = { id: res.jobId, createdAt: new Date().toISOString(), label: snapshot.image.name };
+          commitSession(
+            opts.continuation ? [...sessionJobsRef.current.filter((e) => e.id !== res.jobId), entry] : [entry],
+          );
+        }
         setJobId(res.jobId);
         setPhase("running");
       } catch (err) {
@@ -684,7 +710,7 @@ export function UpscaleStudioTab() {
         if (e.message?.includes("クレジット")) setChargeOpen(true);
       }
     },
-    [user],
+    [user, commitSession],
   );
 
   // --- ポーリングループ ----------------------------------------------
@@ -718,21 +744,11 @@ export function UpscaleStudioTab() {
             // ここでは読むだけ（clear は同じ非同期コールバック内で行う）。
             const [queued, ...restQueued] = queuedNextRef.current;
             if (queued) {
-              // 次のジョブが画面を上書きする前に今の結果をブラウザへ自動
-              // 保存する（連続キュー時、手動ダウンロードの間もなく次の
-              // 生成中表示に切り替わり過去の結果に戻れなくなるUI上の
-              // ギャップへの対策。Volumeへは既に永続化済みなので失敗しても
-              // 致命的ではない）。
-              if (next.resultUrl) {
-                resolveUpscaleImageUrl(next.id, next.resultUrl)
-                  .then((url) => downloadUpscaleImage(url, buildOutFilename(next.resultUrl as string)))
-                  .catch((err) => {
-                    console.warn("[UpscaleStudioTab] auto-download before next queued job failed:", err);
-                  });
-              }
+              // 2026-09-23: 以前はここで結果を自動 DL していたが廃止（「今回の生成」
+              // 一覧から戻れる。DL はユーザー操作に任せる）。
               queuedNextRef.current = restQueued;
               setQueuedNext(restQueued);
-              void runGenerate(queued);
+              void runGenerate(queued, { continuation: true });
             }
             return;
           }
@@ -816,6 +832,15 @@ export function UpscaleStudioTab() {
   const busy = phase === "submitting" || phase === "running";
   const canRun = Boolean(image) && cost > 0;
 
+  const handleShowSession = (id: string) => {
+    if (busy || id === jobId) return;
+    setErrorMessage(null);
+    setJob(null);
+    setResultBeforeUrl(null);
+    setJobId(id);
+    setPhase("running"); // ポーリングが 1 回で completed を検知して done に落とす
+  };
+
   const handleRun = () => {
     if (!user) return setLoginOpen(true);
     if (!image) return;
@@ -828,7 +853,13 @@ export function UpscaleStudioTab() {
       return;
     }
     if (insufficientCredits) return setChargeOpen(true);
-    void runGenerate({ image, modelKey, modeId });
+    const snapshot: QueuedSnapshot = { image, modelKey, modeId };
+    if (sessionJobsRef.current.length > 0) {
+      pendingFreshRef.current = snapshot;
+      setSessionResetOpen(true);
+      return;
+    }
+    void runGenerate(snapshot);
   };
 
   const handleQueueWait = () => {
@@ -853,7 +884,7 @@ export function UpscaleStudioTab() {
       setChargeOpen(true);
       return;
     }
-    void runGenerate({ image, modelKey, modeId }, { priority: true });
+    void runGenerate({ image, modelKey, modeId }, { priority: true, continuation: true });
   };
 
   const [originalDownloading, setOriginalDownloading] = useState(false);
@@ -1398,6 +1429,22 @@ export function UpscaleStudioTab() {
       </div>
       )}
 
+      {user && sessionJobs.length > 1 && (
+        <StudioSessionList entries={sessionJobs} currentId={jobId} busy={busy} onShow={handleShowSession} />
+      )}
+      <SessionResetConfirmModal
+        open={sessionResetOpen}
+        onCancel={() => {
+          pendingFreshRef.current = null;
+          setSessionResetOpen(false);
+        }}
+        onConfirm={() => {
+          setSessionResetOpen(false);
+          const snap = pendingFreshRef.current;
+          pendingFreshRef.current = null;
+          if (snap) void runGenerate(snap);
+        }}
+      />
       <LoginModal
         open={loginOpen}
         onClose={() => setLoginOpen(false)}

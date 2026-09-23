@@ -38,6 +38,13 @@ import {
 } from "@/lib/upscaleApi";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
+import {
+  loadStudioSession,
+  saveStudioSession,
+  SessionResetConfirmModal,
+  StudioSessionList,
+  type StudioSessionEntry,
+} from "@/components/studio/StudioSessionList";
 import { VramBadge } from "@/components/studio/VramBadge";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
@@ -53,6 +60,7 @@ import {
 type Phase = "idle" | "submitting" | "running" | "done" | "error";
 
 const JOB_KEY = "upscale-video-active-job";
+const SESSION_KEY = "upscale-video-session-jobs";
 const POLL_INTERVAL_MS = 2500;
 const POLL_MAX_CONSECUTIVE_ERRORS = 8;
 const FALLBACK_FPS = 30;
@@ -277,6 +285,18 @@ export function UpscaleVideoStudioTab() {
   const [jobId, setJobId] = useState<string | null>(resumedJobId);
   const [job, setJob] = useState<UpscaleJob | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // 「今回の生成」（2026-09-23 ホスト方針）: 順番待ち・並列で続けて出したジョブだけを
+  // 並べ、改めて生成するときは確認のうえ空にする。自動 DL は廃止（一覧から戻れる）。
+  const [sessionJobs, setSessionJobs] = useState<StudioSessionEntry[]>(() => loadStudioSession(SESSION_KEY));
+  const sessionJobsRef = useRef<StudioSessionEntry[]>(sessionJobs);
+  const commitSession = useCallback((next: StudioSessionEntry[]) => {
+    sessionJobsRef.current = next;
+    setSessionJobs(next);
+    saveStudioSession(SESSION_KEY, next);
+  }, []);
+  const [sessionResetOpen, setSessionResetOpen] = useState(false);
+  const pendingFreshRef = useRef<QueuedSnapshot | null>(null);
+
   // job.resultUrl は超解像動画の結果（2026-09-18〜）だとURLではなくVolume
   // 相対パスなので、<video src>・ダウンロードで使える実URLへ都度解決する
   // （resolveUpscaleVideoUrl、CLAUDE.md §1）。旧方式（Supabase公開URL）の
@@ -352,7 +372,7 @@ export function UpscaleVideoStudioTab() {
   // しれない）現在の state を読んではいけない。ポーリングの長寿命な
   // useEffect からも呼ぶため、参照が安定するよう useCallback にする。
   const runGenerate = useCallback(
-    async (snapshot: QueuedSnapshot, opts: { priority?: boolean } = {}) => {
+    async (snapshot: QueuedSnapshot, opts: { priority?: boolean; continuation?: boolean } = {}) => {
       if (!user) return;
       setPhase("submitting");
       setErrorMessage(null);
@@ -371,6 +391,12 @@ export function UpscaleVideoStudioTab() {
           priority: opts.priority,
         });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
+        {
+          const entry: StudioSessionEntry = { id: res.jobId, createdAt: new Date().toISOString(), label: snapshot.video.name };
+          commitSession(
+            opts.continuation ? [...sessionJobsRef.current.filter((e) => e.id !== res.jobId), entry] : [entry],
+          );
+        }
         setJobId(res.jobId);
         setPhase("running");
       } catch (err) {
@@ -383,7 +409,7 @@ export function UpscaleVideoStudioTab() {
         if (e.message?.includes("クレジット")) setChargeOpen(true);
       }
     },
-    [user],
+    [user, commitSession],
   );
 
   // --- ポーリングループ（画像タブと同じ規約: 完了後も job key をクリアしない） --
@@ -409,19 +435,11 @@ export function UpscaleVideoStudioTab() {
             if (sawInProgress) markGpuWarm();
             const [queued, ...restQueued] = queuedNextRef.current;
             if (queued) {
-              // 次のジョブが画面を上書きする前に今の結果をブラウザへ自動
-              // 保存する（連続キュー時のUI上のギャップ対策。Volumeへは既に
-              // 永続化済みなので失敗しても致命的ではない）。
-              if (next.resultUrl) {
-                resolveUpscaleVideoUrl(next.id, next.resultUrl)
-                  .then((url) => downloadViaBrowser(withDownloadName(url, buildOutFilename())))
-                  .catch((err) => {
-                    console.warn("[UpscaleVideoStudioTab] auto-download before next queued job failed:", err);
-                  });
-              }
+              // 2026-09-23: 以前はここで結果を自動 DL していたが廃止（「今回の生成」
+              // 一覧から戻れる。DL はユーザー操作に任せる）。
               queuedNextRef.current = restQueued;
               setQueuedNext(restQueued);
-              void runGenerate(queued);
+              void runGenerate(queued, { continuation: true });
             }
             return;
           }
@@ -503,6 +521,14 @@ export function UpscaleVideoStudioTab() {
   const busy = phase === "submitting" || phase === "running";
   const canRun = Boolean(video) && cost > 0 && !videoError;
 
+  const handleShowSession = (id: string) => {
+    if (busy || id === jobId) return;
+    setErrorMessage(null);
+    setJob(null);
+    setJobId(id);
+    setPhase("running"); // ポーリングが 1 回で completed を検知して done に落とす
+  };
+
   const buildSnapshot = (): QueuedSnapshot | null => {
     if (!video || !videoMeta) return null;
     return {
@@ -527,6 +553,11 @@ export function UpscaleVideoStudioTab() {
       return;
     }
     if (insufficientCredits) return setChargeOpen(true);
+    if (sessionJobsRef.current.length > 0) {
+      pendingFreshRef.current = snapshot;
+      setSessionResetOpen(true);
+      return;
+    }
     void runGenerate(snapshot);
   };
 
@@ -553,7 +584,7 @@ export function UpscaleVideoStudioTab() {
       setChargeOpen(true);
       return;
     }
-    void runGenerate(snapshot, { priority: true });
+    void runGenerate(snapshot, { priority: true, continuation: true });
   };
 
   const progressPct = phase === "running" ? (job?.status === "processing" ? 70 : 25) : 0;
@@ -793,6 +824,22 @@ export function UpscaleVideoStudioTab() {
         </div>
       </div>
 
+      {user && sessionJobs.length > 1 && (
+        <StudioSessionList entries={sessionJobs} currentId={jobId} busy={busy} onShow={handleShowSession} />
+      )}
+      <SessionResetConfirmModal
+        open={sessionResetOpen}
+        onCancel={() => {
+          pendingFreshRef.current = null;
+          setSessionResetOpen(false);
+        }}
+        onConfirm={() => {
+          setSessionResetOpen(false);
+          const snap = pendingFreshRef.current;
+          pendingFreshRef.current = null;
+          if (snap) void runGenerate(snap);
+        }}
+      />
       <LoginModal
         open={loginOpen}
         onClose={() => setLoginOpen(false)}
