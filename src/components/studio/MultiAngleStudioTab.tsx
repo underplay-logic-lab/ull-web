@@ -845,7 +845,7 @@ export function MultiAngleStudioTab() {
             // データを指す古い参照は消しておく。
             setPhase("error");
             setErrorMessage(
-              "このジョブの記録が見つかりませんでした（生成から14日以上経つと自動的に削除されます）。お手数ですが新しく生成してください。",
+              "このジョブの記録が見つかりませんでした。お手数ですが新しく生成してください。",
             );
             saveFormState(JOB_KEY, { jobId: "" });
             return;
@@ -899,7 +899,7 @@ export function MultiAngleStudioTab() {
           if (err instanceof AngleJobNotFoundError) {
             setReroll(null);
             setErrorMessage(
-              "このジョブの記録が見つかりませんでした（生成から14日以上経つと自動的に削除されます）。",
+              "このジョブの記録が見つかりませんでした。",
             );
             return;
           }
@@ -1407,7 +1407,7 @@ export function MultiAngleStudioTab() {
           </div>
 
           <p className="mt-3 text-[11px] leading-relaxed text-muted/70">
-            ※生成画像は一定期間後に自動削除されます。必要なものはダウンロードしてください。
+            ※必要な画像はダウンロードして保存してください。
           </p>
         </div>
       )}

@@ -3553,7 +3553,7 @@ export function LoraStudioTab({
                   }
                 }
               }}
-              title="ダウンロード済みの場合はこれで閉じられます（成果物はサーバー側に14日間保持されます）"
+              title="ダウンロード済みの場合はこれで閉じられます"
               className="rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted transition-colors hover:text-foreground"
             >
               閉じる

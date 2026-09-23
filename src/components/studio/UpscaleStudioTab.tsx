@@ -629,7 +629,7 @@ export function UpscaleStudioTab() {
           if (err instanceof UpscaleJobNotFoundError) {
             setBatchPhase("error");
             setBatchError(
-              "このバッチの記録が見つかりませんでした（生成から14日以上経つと自動的に削除されます）。お手数ですが新しく生成してください。",
+              "このバッチの記録が見つかりませんでした。お手数ですが新しく生成してください。",
             );
             saveFormState(BATCH_JOB_KEY, { jobIds: [] });
             return;
@@ -751,7 +751,7 @@ export function UpscaleStudioTab() {
             // データを指す古い参照は消しておく。
             setPhase("error");
             setErrorMessage(
-              "このジョブの記録が見つかりませんでした（生成から14日以上経つと自動的に削除されます）。お手数ですが新しく生成してください。",
+              "このジョブの記録が見つかりませんでした。お手数ですが新しく生成してください。",
             );
             saveFormState(JOB_KEY, { jobId: "" });
             return;

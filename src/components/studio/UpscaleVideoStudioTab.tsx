@@ -437,7 +437,7 @@ export function UpscaleVideoStudioTab() {
           if (err instanceof UpscaleJobNotFoundError) {
             setPhase("error");
             setErrorMessage(
-              "このジョブの記録が見つかりませんでした（生成から14日以上経つと自動的に削除されます）。お手数ですが新しく生成してください。",
+              "このジョブの記録が見つかりませんでした。お手数ですが新しく生成してください。",
             );
             saveFormState(JOB_KEY, { jobId: "" });
             return;
