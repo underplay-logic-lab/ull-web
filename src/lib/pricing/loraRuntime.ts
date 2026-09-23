@@ -100,9 +100,9 @@ export const LORA_SPI_BASELINE: Readonly<Record<string, number>> = {
   //   LoCon 無し・rank 32/16・3,490step（v6） → 定常 0.74 s/it
   //   LoCon 有り・rank 32/16・300step        → 1.21 s/it
   //   LoCon 有り・rank 64/64・3,000step      → 1.23 s/it
-  // rank の寄与は 2%（誤差）。LoCon は +65% だが同条件比較で品質差が無く既定から外した
-  // （SDXL_CONV_DIM=0）。v6 の 0.74 に 8% の余裕で 0.80。
-  sdxl: 0.8,
+  // rank の寄与は 2%（誤差）。LoCon は +65% だが、同条件比較で顔の再現性が段違いだったため
+  // 既定で有効（SDXL_CONV_DIM=16）。LoCon 有りの両実測を覆う 1.25。
+  sdxl: 1.25,
 };
 export type LoraWorkerBackend = "sd_scripts" | "ai_toolkit";
 

@@ -552,7 +552,7 @@ LORA_SPI_BASELINE: dict[str, float] = {
     "anima": 0.5,
     "zimage": 0.42,
     "flux2_klein_4b": 0.4,
-    "sdxl": 0.80,  # 2026-09-23 実測 0.74（LoCon 無し・rank 32、docs §14.25）＋余裕
+    "sdxl": 1.25,  # 2026-09-23 実測 1.21〜1.23（LoCon 既定込み、docs §14.25）
 }
 # 未知 arch（カスタムモデル）の s/it フォールバック。pricing_knobs の
 # lora_spi_baseline_default と同じ意図・同じ値に保つこと（2026-09-20: 2.0）。
