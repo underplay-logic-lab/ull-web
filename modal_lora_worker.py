@@ -4400,28 +4400,15 @@ def train_lora_job(params: dict) -> dict:
         except Exception as _rm_exc:  # noqa: BLE001
             print(f"[train] job output cleanup skipped: {_rm_exc}", flush=True)
 
-        # 4) R2 へ publish（2026-09-23）。checkpoints[].r2_key を焼き込み、
-        #    アップロードできた分は Volume から消す（Volume は重み専用へ）。
-        #    失敗した分は Volume に残り、DL API は自動で Modal 経路に落ちる。
-        r2_stats = None
-        if job_ckpt_dir is not None:
-            try:
-                from ull_r2 import publish_job_dir
-
-                r2_stats = publish_job_dir(job_ckpt_dir, checkpoints, f"loras/{user_id}/{job_id}")
-            except Exception as r2_exc:  # noqa: BLE001 — storage must never kill a finished job
-                print(f"[r2] publish skipped: {r2_exc!r}", flush=True)
-
+        # 4) R2 への publish は GPU ではやらない（2026-09-23 初回ジョブで 327s の
+        #    B300 アイドルを踏んだ）。完了行を書いた直後に CPU 関数
+        #    publish_lora_artifacts_r2 を spawn し、そちらが Volume → R2 へ
+        #    上げて metadata.checkpoints[].r2_key を焼き込み、Volume 側を消す。
         vol.commit()
         print(f"[train] persisted {len(checkpoints)} checkpoint(s) -> {job_ckpt_dir or '(local, skipped)'}")
 
         final_vram = _current_effective_vram_gb()
         metadata = {"checkpoints": checkpoints, "gpu_tier": _gpu_tier_label()}
-        if r2_stats and r2_stats.get("uploaded"):
-            metadata["artifact_store"] = "r2"
-            metadata["r2_prefix"] = f"loras/{user_id}/{job_id}"
-            if r2_stats.get("extra_keys"):
-                metadata["r2_extra_keys"] = r2_stats["extra_keys"]
         if final_vram is not None:
             metadata["vram_used_gb"] = final_vram
         # 完了時の瞬間値は学習プロセス終了後なのでほぼ空（実測 0.6GB）。
@@ -4480,10 +4467,14 @@ def train_lora_job(params: dict) -> dict:
                 "completed_at": _now_iso(),
             },
         )
+        _spawn_r2_publish(job_id)
         return {
             "lora_path": str(dest_path),
             "lora_filename": dest_path.name,
-            "size_bytes": dest_path.stat().st_size,
+            # 2026-09-23: 初回 R2 ジョブは完了 PATCH の後にここで unlink 済みファイルを
+            # stat して例外 → except 側が failed + 返金で上書きした。ファイルの有無に
+            # 依存しない値を使う。
+            "size_bytes": next((c.get("size_bytes", 0) for c in checkpoints if c.get("is_final")), 0),
             "num_images": len(image_paths),
             "target_model": target_model,
             "trigger_word": trigger,
@@ -4548,6 +4539,8 @@ def train_lora_job(params: dict) -> dict:
                 "completed_at": _now_iso(),
             },
         )
+        if meta.get("checkpoints"):
+            _spawn_r2_publish(job_id)
         if should_refund:
             _refund_credits(user_id, credits_cost)
             reason = "safety-stop" if is_safety_stop else ("infra" if infra else "system")
@@ -4587,6 +4580,69 @@ dispatch_image = (
 # dispatch_image rather than rebuilding from debian_slim so this module's
 # top-level `import fastapi / modal / yaml` still resolve inside the container.
 ingest_image = dispatch_image.pip_install("Pillow>=10.2")
+
+# R2 publish image = dispatch_image + boto3 + ull_r2 (CPU only, tiny).
+publish_image = dispatch_image.pip_install("boto3>=1.35").add_local_python_source("ull_r2")
+
+
+def _spawn_r2_publish(job_id: str) -> None:
+    """Fire-and-forget: hand the Volume -> R2 upload to the CPU function.
+    Never raises — a spawn failure just leaves the files on the Volume, where
+    the download routes still find them."""
+    try:
+        from ull_r2 import r2_enabled
+
+        if not r2_enabled():
+            print(f"[r2] disabled — job {job_id[:8]} stays on the Volume", flush=True)
+            return
+        publish_lora_artifacts_r2.spawn(job_id)
+        print(f"[r2] publish spawned for job {job_id[:8]}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r2] publish spawn failed for job {job_id[:8]}: {exc!r}", flush=True)
+
+
+@app.function(
+    image=publish_image,
+    volumes={MODELS_DIR: vol},
+    timeout=3600,
+    scaledown_window=2,
+    secrets=[
+        modal.Secret.from_name("supabase-model-downloads"),
+        modal.Secret.from_name("r2-artifacts"),
+    ],
+)
+def publish_lora_artifacts_r2(job_id: str) -> dict:
+    """CPU: upload a finished (or salvaged) job's loras/<user>/<job>/ files to
+    R2, stamp `r2_key` on metadata.checkpoints, delete the Volume copies.
+    Spawned by train_lora_job right after it PATCHes the job row, so the row
+    is the source of truth for what to upload (docs/STATUS.md R2 計画 2)."""
+    import ull_r2
+
+    if not ull_r2.r2_enabled():
+        return {"skipped": "r2 disabled"}
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r2] vol.reload() skipped: {exc}", flush=True)
+    res = _supabase_request(
+        "GET", "/rest/v1/generation_jobs", params={"id": f"eq.{job_id}", "select": "user_id,metadata"}
+    )
+    rows = res.json() if res is not None and res.ok else []
+    if not rows:
+        print(f"[r2] job {job_id} not found", flush=True)
+        return {"error": "job not found"}
+    user_id = rows[0]["user_id"]
+    meta = rows[0].get("metadata") or {}
+    merged = ull_r2.publish_job_meta_from_volume(MODELS_DIR, "loras", user_id, job_id, meta)
+    if merged is None:
+        return {"uploaded": 0}
+    try:
+        vol.commit()  # persist the unlinks
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r2] vol.commit() skipped: {exc}", flush=True)
+    # metadata だけの PATCH（status は触らない → generation_logs のトリガーは発火しない）
+    _patch_job(job_id, {"metadata": merged})
+    return merged.get("r2_publish", {})
 
 
 # TEST HARNESS: a GPU-less no-op that never touches generation_jobs, so the

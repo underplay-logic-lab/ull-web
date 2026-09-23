@@ -666,8 +666,26 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
    `modal_sdxl_lora_worker.py` をデプロイ。SDXL は初回 `train_image` のチェーン位置ミス（`.env({...}` の dict に
    `.pip_install`）で落ち、修正して再デプロイ（10 秒）。**py_compile では見つからない種類のミス**なので image 変更後は
    必ず `modal deploy` の結果まで見る。
-3. **次**: 実 LoRA ジョブを 1 本流して R2 経路を実地確認（同時に「次の一手」1 の metrics も取れる）。
-4. 計画 3（生成物）以降は未着手。admin「最近の生成物」（計画 6）が R2 対応するまで、新規 LoRA 成果物は admin のバケット
+3. **実 LoRA ジョブ 1 本目（minimax_h3・500step・220枚・job `cbeb0865`、2026-09-23 18:38〜19:09 JST）の結果**:
+   - **R2 への put は 5 ファイル全部成功**（591MB×4 + dataset.zip 31MB = 2,396MB）。ただし GPU コンテナからの速度は
+     14.6 / 2.4 / 33.5 / 32.0 / 7.6 MB/s とバラつき、合計 327 秒 = **B300 が 5.5 分アイドル（約 $0.65）**。
+   - **バグ**: publish が Volume 側を unlink した後、`return` 内の `dest_path.stat()` が `[Errno 2]` → except が
+     failed + 1,389C 返金で completed 行を上書き（metadata.checkpoints も消えた）。ファイルは R2 に揃っている。
+     → **行の手動修復はまだ**（Claude の DB PATCH が権限で止まった。ホストが許可すれば `status=completed` と
+     `checkpoints[].r2_key` を R2 の一覧から復元できる）。返金は済んでいるのでそのままでよい。
+   - **対策（実装・デプロイ済み、同日 19:40 JST）**: アップロードを GPU から外した。GPU 関数はジョブ行を PATCH して
+     即 return し、CPU 関数 `publish_lora_artifacts_r2(job_id)` / `publish_sdxl_artifacts_r2(job_id)` を spawn。
+     そちらが行の `checkpoints[].path` を見て Volume → R2 へ上げ、`r2_key` を焼き込んで metadata だけ PATCH し、
+     Volume 側を消す（`ull_r2.publish_job_meta_from_volume`）。上がるまでの間は DL route が Modal 経路に落ちるので
+     ユーザーからは切れ目なし。`return` の `size_bytes` もファイルに依存しない値にした。
+   - **metrics（prep 校正用・冷キャッシュ寄り）**: prep_s 863.7（model_load 682.6 + latent_cache 110.7）、jit_s 70.4、
+     s_per_it **0.31**（tqdm の trimmed 平均）。stage 2 全体 1,138s → 学習部分は壁時計で約 0.41〜0.55 s/it。
+     **knob の 1.80（docs §14.15）と 3〜6 倍ずれる**。§14.15 の条件（枚数・rank・実効バッチ・compile）と突き合わせて
+     から判断する。1 点で knob は動かさない（CLAUDE.md §0）。preemption（CPU 準備段階）も 1 回踏んだ。
+4. **次**: (a) `cbeb0865` の行修復（ホスト許可待ち）→ 完了画面で並列 DL / URL 一覧コピーを確認、
+   (b) もう 1 本（安い arch で可）流して **CPU publish の経路**（spawn → r2_key 焼き込み → Volume 削除）を実地確認、
+   (c) minimax_h3 の s/it・prep を §14.15 と突き合わせて knob を引き直すか判断。（同時に「次の一手」1 の metrics も取れる）。
+5. 計画 3（生成物）以降は未着手。admin「最近の生成物」（計画 6）が R2 対応するまで、新規 LoRA 成果物は admin のバケット
    ブラウザに出ない（rclone マウント `R:` で見る）。
 
 **実測メモ**: CPU probe（96MB・2 パート）は put 5.5 MB/s・GET 19.8 MB/s と §16.5 より遅いが、ファイルが小さく並列が

@@ -202,6 +202,52 @@ def delete_prefix(prefix: str) -> int:
 # ---------------------------------------------------------------------------
 # LoRA-style job folder publish
 # ---------------------------------------------------------------------------
+def publish_job_meta_from_volume(
+    models_dir: str | pathlib.Path,
+    kind: str,
+    user_id: str,
+    job_id: str,
+    meta: dict,
+    *,
+    log=print,
+) -> dict | None:
+    """CPU-side publish driven by a generation_jobs row: every
+    `meta.checkpoints[]` entry that has a Volume `path` but no `r2_key` yet is
+    uploaded from `<models_dir>/<path>` (plus LICENSE.txt if present), and a
+    NEW metadata dict with `r2_key`s / `artifact_store` / `r2_prefix` is
+    returned for the caller to PATCH back. Returns None when nothing changed.
+
+    Why CPU (2026-09-23): the first R2 job uploaded 2.4GB from the B300
+    container at 2〜33 MB/s = 327s of idle GPU (~$0.65) — the same "GPU idle
+    on I/O" class as the old checkpoints_all.zip. The GPU function now writes
+    the row and returns; this runs on a $0.0x CPU container afterwards.
+    Until it finishes, the Next.js routes fall back to the Modal/Volume path
+    (files are still there), so the user never sees a gap.
+    """
+    checkpoints = list(meta.get("checkpoints") or [])
+    todo = [c for c in checkpoints if c.get("path") and not c.get("r2_key")]
+    job_dir = pathlib.Path(models_dir) / kind / user_id / job_id
+    if not todo and not (job_dir / "LICENSE.txt").is_file():
+        return None
+    prefix = f"{kind}/{user_id}/{job_id}"
+    stats = publish_job_dir(job_dir, todo, prefix, log=log)
+    if not stats.get("uploaded") and not stats.get("extra_keys"):
+        return None
+    merged = dict(meta)
+    merged["checkpoints"] = checkpoints  # entries were stamped in place
+    merged["artifact_store"] = "r2"
+    merged["r2_prefix"] = prefix
+    if stats.get("extra_keys"):
+        merged["r2_extra_keys"] = sorted(set(list(meta.get("r2_extra_keys") or []) + stats["extra_keys"]))
+    merged["r2_publish"] = {
+        "uploaded": stats["uploaded"],
+        "failed": stats["failed"],
+        "bytes": stats["bytes"],
+        "elapsed_s": stats["elapsed_s"],
+    }
+    return merged
+
+
 def publish_job_dir(
     job_dir: str | pathlib.Path,
     checkpoints: list[dict],

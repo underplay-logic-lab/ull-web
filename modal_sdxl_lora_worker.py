@@ -1486,21 +1486,23 @@ def _persist_checkpoints(
     return checkpoints
 
 
-def _publish_r2(user_id: str, job_id: str, checkpoints: list[dict]) -> dict | None:
-    """loras/<user>/<job>/ の中身を R2 へ（ull_r2.publish_job_dir）。checkpoints
-    に r2_key を焼き込み、上がった分は Volume から消す。失敗は握って Volume
-    のまま残す（DL API が Modal 経路へ落ちる）。成功・安全停止・失敗救出の
-    3 経路すべてから呼ぶ。"""
-    if not (user_id and job_id) or not checkpoints:
-        return None
+def _spawn_r2_publish(job_id: str) -> None:
+    """Volume → R2 のアップロードを CPU 関数 publish_sdxl_artifacts_r2 に渡す
+    （GPU ではやらない。2026-09-23 の初回 R2 ジョブで B300 が 327s アイドルに
+    なった）。成功・安全停止・失敗救出の 3 経路とも、ジョブ行を PATCH した
+    **後**に呼ぶ（行が「何を上げるか」の正）。失敗しても Volume に残るだけ。"""
+    if not job_id:
+        return
     try:
-        from ull_r2 import publish_job_dir
+        from ull_r2 import r2_enabled
 
-        job_dir = pathlib.Path(LORA_OUTPUT_DIR) / user_id / job_id
-        return publish_job_dir(job_dir, checkpoints, f"loras/{user_id}/{job_id}")
+        if not r2_enabled():
+            print(f"[r2] disabled — job {job_id[:8]} stays on the Volume", flush=True)
+            return
+        publish_sdxl_artifacts_r2.spawn(job_id)
+        print(f"[r2] publish spawned for job {job_id[:8]}", flush=True)
     except Exception as exc:  # noqa: BLE001
-        print(f"[r2] publish skipped: {exc!r}", flush=True)
-        return None
+        print(f"[r2] publish spawn failed for job {job_id[:8]}: {exc!r}", flush=True)
 
 
 def _mk_logger():
@@ -1763,7 +1765,6 @@ def train_sdxl_lora_job(params: dict) -> dict:
             # 途中までのチェックポイントを Volume に残してから投げる
             # （ai-toolkit 側の salvage と同じ趣旨）。
             salvaged = _persist_checkpoints(str(output_dir), lora_name, user_id, job_id, last_step)
-            _publish_r2(user_id, job_id, salvaged)
             try:
                 vol.commit()
             except Exception as commit_exc:  # noqa: BLE001
@@ -1888,9 +1889,6 @@ def train_sdxl_lora_job(params: dict) -> dict:
             except Exception as exc:  # noqa: BLE001
                 print(f"[sdxl] LICENSE.txt skipped: {exc!r}", flush=True)
 
-        # R2 へ publish（LICENSE.txt も同じ prefix に載る）。
-        r2_stats = _publish_r2(user_id, job_id, checkpoints)
-
         try:
             shutil.rmtree(work_dir, ignore_errors=True)
         except Exception as rm_exc:  # noqa: BLE001
@@ -1901,11 +1899,6 @@ def train_sdxl_lora_job(params: dict) -> dict:
         # バッジがそれを出してしまっていた（2026-09-22 発見）。走行中の最大値を使う。
         final_vram = _current_effective_vram_gb()
         metadata: dict = {"checkpoints": checkpoints}
-        if r2_stats and r2_stats.get("uploaded"):
-            metadata["artifact_store"] = "r2"
-            metadata["r2_prefix"] = f"loras/{user_id}/{job_id}"
-            if r2_stats.get("extra_keys"):
-                metadata["r2_extra_keys"] = r2_stats["extra_keys"]
         if vram_peak > 0:
             metadata["vram_used_gb"] = round(vram_peak, 2)
             metadata["vram_peak_gb"] = round(vram_peak, 2)
@@ -1931,10 +1924,11 @@ def train_sdxl_lora_job(params: dict) -> dict:
                 "completed_at": _now_iso(),
             },
         )
+        _spawn_r2_publish(job_id)
         return {
             "lora_path": str(dest_path),
             "lora_filename": dest_path.name,
-            "size_bytes": dest_path.stat().st_size,
+            "size_bytes": next((c.get("size_bytes", 0) for c in checkpoints if c.get("is_final")), 0),
             "num_images": len(image_paths),
             "trigger_word": trigger,
             "total_seconds": round(time.time() - started, 1),
@@ -1968,7 +1962,6 @@ def train_sdxl_lora_job(params: dict) -> dict:
                     str(output_dir), lora_name, user_id, job_id, 0
                 )
                 if rescued:
-                    _publish_r2(user_id, job_id, rescued)
                     vol.commit()
                     failure_meta["checkpoints"] = rescued
                     print(f"[sdxl] rescued {len(rescued)} checkpoint(s) from a failed run", flush=True)
@@ -1983,6 +1976,8 @@ def train_sdxl_lora_job(params: dict) -> dict:
                 "completed_at": _now_iso(),
             },
         )
+        if failure_meta.get("checkpoints"):
+            _spawn_r2_publish(job_id)
         if should_refund:
             _refund_credits(user_id, credits_cost)
             print(f"[sdxl] job {job_id} failed — refunded {credits_cost}C", flush=True)
@@ -1994,6 +1989,50 @@ def train_sdxl_lora_job(params: dict) -> dict:
 # shape (auth -> .spawn() -> immediate ACK) so the Next.js side can treat
 # both workers identically once wired up.
 dispatch_image = modal.Image.debian_slim(python_version="3.11").pip_install("fastapi[standard]", "modal", "requests")
+# R2 publish image = dispatch_image + boto3 + ull_r2（CPU 専用）
+publish_image = dispatch_image.pip_install("boto3>=1.35").add_local_python_source("ull_r2")
+
+
+@app.function(
+    image=publish_image,
+    volumes={MODELS_DIR: vol},
+    timeout=3600,
+    scaledown_window=2,
+    secrets=[
+        modal.Secret.from_name("supabase-model-downloads"),
+        modal.Secret.from_name("r2-artifacts"),
+    ],
+)
+def publish_sdxl_artifacts_r2(job_id: str) -> dict:
+    """CPU: loras/<user>/<job>/ を R2 へ上げ、metadata.checkpoints[].r2_key を
+    焼き込み、Volume 側を消す。train_sdxl_lora_job が行を PATCH した直後に
+    spawn される（modal_lora_worker.py の publish_lora_artifacts_r2 と同形）。"""
+    import ull_r2
+
+    if not ull_r2.r2_enabled():
+        return {"skipped": "r2 disabled"}
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r2] vol.reload() skipped: {exc}", flush=True)
+    res = _supabase_request(
+        "GET", "/rest/v1/generation_jobs", params={"id": f"eq.{job_id}", "select": "user_id,metadata"}
+    )
+    rows = res.json() if res is not None and res.ok else []
+    if not rows:
+        print(f"[r2] job {job_id} not found", flush=True)
+        return {"error": "job not found"}
+    user_id = rows[0]["user_id"]
+    meta = rows[0].get("metadata") or {}
+    merged = ull_r2.publish_job_meta_from_volume(MODELS_DIR, "loras", user_id, job_id, meta)
+    if merged is None:
+        return {"uploaded": 0}
+    try:
+        vol.commit()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r2] vol.commit() skipped: {exc}", flush=True)
+    _patch_job(job_id, {"metadata": merged})
+    return merged.get("r2_publish", {})
 
 
 # --- Blackwell 用 image（2026-09-23、tier 確認ラン用）-------------------------
