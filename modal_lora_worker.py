@@ -383,6 +383,7 @@ _MODAL_GPU_NAME: dict[str, str] = {
     "h100": "H100",
     "rtx_pro_6000": "RTX-PRO-6000",
     "a100_80gb": "A100-80GB",
+    "a100_40gb": "A100-40GB",
     "l40s": "L40S",
 }
 try:
