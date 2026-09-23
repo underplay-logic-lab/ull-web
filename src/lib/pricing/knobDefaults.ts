@@ -122,7 +122,7 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // 2026-09-09: 12C ≈ ¥20/構図（credit_to_jpy 1.66）。B300 実測でコールドスタート
     // + 1構図(60s)でも黒字になる下限。最低 3 構図（MIN_ANGLES）と併せて原価割れを
     // 防ぐ。値は /admin の Pricing で調整可（¥25 なら 15C 等）。
-    value: 12,
+    value: 14, // 2026-09-23 ホストが admin で 12 → 14 に変更（DB が正）。フォールバックも揃える
     label: "Multi-Angle（1構図）",
     category: "feature_credits",
     unit: "C/構図",

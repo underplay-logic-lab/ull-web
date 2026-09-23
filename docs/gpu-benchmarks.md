@@ -1463,8 +1463,9 @@ markup がちょうど 3.0 倍になり、CLAUDE.md §3 の方針と一致する
 
 ### 14.6 未実測（次の宿題）
 
-- SDXL（sd-scripts / L40S）の s/it と prep。現行値は旧設定（AdamW8bit + gradient_checkpointing有効）由来で、本番条件を表していない。
-- 画像系 arch（qwen_image / flux2_klein_4b 等）。`lora_prep_load_s = 280` は minimax_h3 基準で、軽いモデルでは過大な可能性。
+- ~~SDXL（sd-scripts / L40S）の s/it と prep~~ **実測済み（2026-09-23、§14.23〜14.25・14.28）**。
+- ~~画像系 arch（flux2_klein_4b 等）~~ **実測済み（2026-09-23、§14.16〜14.22、arch 別 prep は `LORA_ARCH_PROFILE`）**。
+  qwen_image は選択肢から外れているので未実測のまま。
 - ~~解像度スケール指数（768/1024/1280 の3点）~~ **優先度を下げた（2026-09-20）**。
   UI の学習解像度は 2026-09-14 に全アーキ 1024 固定へ統一済み（`recommendedResolution()`。
   「768より1024が良い・1280は無意味」という実測と、選択肢自体がユーザーの混乱の
