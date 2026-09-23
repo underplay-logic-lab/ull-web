@@ -836,7 +836,7 @@ worker を先に上げると `r2_keys` が付いた瞬間に Volume 側が消え
   UI は `src/components/Support.tsx`（プリセット ¥500 / ¥1,000 / ¥3,000 ＋ 自由入力、ログイン不要）、route は `/api/checkout/donation`
   （`amount` を渡す。Bearer があれば Polar customer に紐付け）。webhook は寄付商品なら `skipped: "donation"` でログだけ（クレジット付与なし）。
   トップページのセクション `support` として登録（`HomeSections` / `DEFAULT_PAGE_SECTIONS` で pricing の次。**DB に保存済みの並びには
-  末尾に足されるので、位置は admin の SectionManager で pricing の下へ動かす**）。金額指定のチェックアウト作成は Polar で確認済み（未決済）。
+  末尾に足されるので、位置は admin の SectionManager で pricing の下へ動かす** → ホストが 2026-09-24 に移動済み）。金額指定のチェックアウト作成は Polar で確認済み（未決済）。
 
 ### 残課題: LoRA の「結果がいまいちな時」ヒント（2026-09-23、ホスト発案・未着手）
 
