@@ -7,7 +7,7 @@ import {
   markLoraJobContainerDead,
   markLoraJobCompletedFromModal,
 } from "@/lib/loraJobHealth";
-import { isDirectorVideoVolumePath, signDirectorVideoUrl } from "@/lib/directorVideoDownload.server";
+import { isDirectorVideoVolumePath, resolveDirectorVideoUrl } from "@/lib/directorVideoDownload.server";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -192,7 +192,7 @@ export async function GET(request: Request, { params }: RouteParams) {
     !videoUrl.startsWith("data:") &&
     isDirectorVideoVolumePath(videoUrl)
   ) {
-    videoUrl = signDirectorVideoUrl(userData.user.id, String(effJob.id)) ?? videoUrl;
+    videoUrl = (await resolveDirectorVideoUrl(userData.user.id, String(effJob.id), effJob.metadata)) ?? videoUrl;
   }
 
   return NextResponse.json({

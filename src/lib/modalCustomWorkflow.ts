@@ -15,6 +15,9 @@ export type CustomWorkflowResult = {
    *  （2026-09-18導入、CLAUDE.md §1）。userId/jobIdを渡さなかった場合や
    *  保存に失敗した場合は null。 */
   result_volume_path?: string | null;
+  /** 2026-09-23〜（R2 移行 計画 3）: worker が R2 へ直接置けたときはそのキー
+   *  （= result_volume_path と同じ相対パス）。Volume に落ちたときは null。 */
+  result_r2_key?: string | null;
 };
 
 export type CustomWorkflowExecConfig = {

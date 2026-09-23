@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { presignPublishedArtifact } from "@/lib/r2.server";
 
 // Multi-Angle の結果配信（2026-09-18導入）。
 //
@@ -71,10 +72,10 @@ export async function GET(request: Request): Promise<NextResponse> {
 
   const { data: job, error } = (await supabaseAdmin
     .from("angle_jobs")
-    .select("images, user_id")
+    .select("images, user_id, metadata")
     .eq("id", jobId)
     .maybeSingle()) as {
-    data: { images: unknown; user_id: string } | null;
+    data: { images: unknown; user_id: string; metadata: unknown } | null;
     error: { message: string } | null;
   };
 
@@ -96,8 +97,16 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   const expiresAt = Math.floor(Date.now() / 1000) + DOWNLOAD_TOKEN_TTL_SECONDS;
-  const images = rawImages.map((raw) => {
+  // 2026-09-23〜（R2 移行 計画 3）: worker の CPU publish が終わった構図は
+  // metadata.r2_keys に入る → R2 の署名付き GET（15 分）。publish が途中でも
+  // 上がった分だけ R2、残りは Modal（Volume）で、ユーザーからは切れ目なし。
+  const r2Urls = await Promise.all(
+    rawImages.map((raw) => (isVolumePath(raw) ? presignPublishedArtifact(job.metadata, raw) : Promise.resolve(null))),
+  );
+  const images = rawImages.map((raw, i) => {
     if (!isVolumePath(raw)) return raw;
+    const r2Url = r2Urls[i];
+    if (r2Url) return r2Url;
     const filename = raw.split("/").pop() ?? "";
     if (!/^[0-9]{2}\.png$/.test(filename) || !modalUrl || !modalAuthToken) return raw;
     const sig = signDownloadToken(ownerId, jobId, filename, expiresAt, modalAuthToken);

@@ -275,13 +275,15 @@ export function isUpscaleResultVolumePath(resultUrl: string): boolean {
 /** 超解像動画の署名付きダウンロードURLを発行する
  * （/api/studio/upscale/video/result）。job.resultUrl が
  * isUpscaleResultVolumePath() で true と判定された場合にのみ呼ぶこと。 */
-export async function fetchUpscaleVideoResultUrl(jobId: string): Promise<string> {
+export async function fetchUpscaleVideoResultUrl(jobId: string, downloadName?: string): Promise<string> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) throw new Error("ログインが必要です。");
 
   const url = new URL("/api/studio/upscale/video/result", window.location.origin);
   url.searchParams.set("jobId", jobId);
+  // 保存名は route 側で URL に焼き込む（R2 の署名付き URL はクエリを後付けできない）。
+  if (downloadName) url.searchParams.set("dlName", downloadName);
 
   const res = await fetch(url.toString(), {
     headers: { Authorization: `Bearer ${accessToken}` },

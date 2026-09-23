@@ -1421,6 +1421,86 @@ def _save_upscale_video(user_id: str, job_id: str, video_bytes: bytes):
         return None
 
 
+# ---------------------------------------------------------------------------
+# R2 publish（成果物ストレージ移行 計画 3、2026-09-23）— GPU 関数は Volume へ
+# 書いて completed を PATCH したら即 return し、CPU 関数がそのあと Volume → R2
+# へ上げて metadata.r2_keys に焼き込み、Volume 側を消す（LoRA worker の
+# publish_lora_artifacts_r2 と同じ分業。GPU から直接上げると 2〜33 MB/s の
+# アップロード中 GPU が遊ぶ）。上がるまでの間は Next の result route が
+# 従来の Modal 直配信に落ちるのでユーザーからは切れ目なし。
+# 戻し方: Modal secret r2-artifacts の ARTIFACT_STORE=volume（この関数が no-op）。
+# ---------------------------------------------------------------------------
+publish_image = dispatch_image.pip_install("boto3>=1.35").add_local_python_source("ull_r2")
+
+
+def _spawn_r2_publish(job_id: str) -> None:
+    """Fire-and-forget。失敗しても Volume に残るだけなので絶対に raise しない。
+    r2 の有効判定は CPU 側で行う（GPU image は boto3 / secret を持たない）。"""
+    try:
+        publish_upscale_artifacts_r2.spawn(job_id)
+        print(f"[r2] publish spawned for upscale job {job_id[:8]}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r2] publish spawn failed for upscale job {job_id[:8]}: {exc!r}", flush=True)
+
+
+@app.function(
+    image=publish_image,
+    volumes={MODELS_DIR: vol},
+    timeout=3600,
+    scaledown_window=2,
+    secrets=[
+        modal.Secret.from_name("supabase-model-downloads"),
+        modal.Secret.from_name("r2-artifacts"),
+    ],
+)
+def publish_upscale_artifacts_r2(job_id: str) -> dict:
+    """CPU: upscale_jobs 行の result_url（Volume 相対パス）と、あれば
+    upscale_originals/<user>/<job>/<original_filename> を R2 へ上げ、
+    metadata.r2_keys を焼き込んで Volume 側を unlink する。"""
+    import ull_r2
+
+    if not ull_r2.r2_enabled():
+        return {"skipped": "r2 disabled"}
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r2] vol.reload() skipped: {exc}", flush=True)
+    res = _supabase_request(
+        "GET",
+        "/rest/v1/upscale_jobs",
+        params={"id": f"eq.{job_id}", "select": "user_id,status,result_url,metadata"},
+    )
+    rows = res.json() if res is not None and res.ok else []
+    if not rows:
+        print(f"[r2] upscale job {job_id} not found", flush=True)
+        return {"error": "job not found"}
+    row = rows[0]
+    user_id = str(row.get("user_id") or "")
+    meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    already = set(meta.get("r2_keys") or [])
+    rel_paths: list = []
+    result_url = str(row.get("result_url") or "")
+    if result_url and not result_url.startswith(("http://", "https://", "data:")):
+        rel_paths.append(result_url)
+    if meta.get("original_available") and isinstance(meta.get("original_filename"), str):
+        rel_paths.append(f"{_UPSCALE_ORIGINALS_SUBDIR}/{user_id or 'anon'}/{job_id}/{meta['original_filename']}")
+    rel_paths = [p for p in rel_paths if p not in already]
+    if not rel_paths:
+        return {"uploaded": 0}
+    stats = ull_r2.publish_volume_files(MODELS_DIR, rel_paths)
+    merged = ull_r2.stamp_r2_keys(meta, stats)
+    if merged is None:
+        return {"uploaded": 0, "failed": len(stats["failed"])}
+    try:
+        vol.commit()  # persist the unlinks
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r2] vol.commit() skipped: {exc}", flush=True)
+    # metadata だけ（status は触らない → generation_logs のトリガーは発火しない）。
+    # GPU 側は completed を打ち終わっているので GET→merge→PATCH の競合相手はいない。
+    _merge_upscale_metadata(job_id, {k: merged[k] for k in ("r2_keys", "artifact_store", "r2_publish")})
+    return merged["r2_publish"]
+
+
 def _refund_upscale_credits(user_id: str, amount: int) -> None:
     """失敗ジョブの返金（best-effort・最大 1 回）。profiles.credits に加算。"""
     if not user_id or not amount or amount <= 0:
@@ -2310,6 +2390,7 @@ class SeedVR2Worker:
         if url:
             _finish_upscale_job(job_id, {"status": "completed", "result_url": url}, meta)
             print(f"[upscale-job] {job_id} completed -> {url}", flush=True)
+            _spawn_r2_publish(job_id)
             return {"ok": True, "result_url": url}
 
         # ストレージ不通 — 課金しておいて結果を返せないのは避ける。返金 + failed。
@@ -2402,6 +2483,7 @@ class SeedVR2Worker:
         if url:
             _finish_upscale_job(job_id, {"status": "completed", "result_url": url}, meta)
             print(f"[upscale-video-job] {job_id} completed -> {url}", flush=True)
+            _spawn_r2_publish(job_id)
             return {"ok": True, "result_url": url}
 
         _finish_upscale_job(

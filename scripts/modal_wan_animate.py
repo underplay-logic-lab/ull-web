@@ -223,6 +223,13 @@ image = (
         f" {COMFY_DIR}/custom_nodes/ComfyUI-KJNodes",
         f"pip install -r {COMFY_DIR}/custom_nodes/ComfyUI-KJNodes/requirements.txt",
     )
+    # 特化ワークフローの結果を R2 へ直接置くため（成果物ストレージ移行 計画 3、
+    # 2026-09-23）。この app は同期呼び出しで、generation_jobs 行は Next が
+    # 応答後に insert するので CPU publish の分業ができない（行がまだ無い）。
+    # 結果は 1 ファイル数十 MB までなので GPU 関数から put_bytes する。
+    # チェーン末尾の薄い層（上の重いビルド層は無効化しない）。
+    .pip_install("boto3>=1.35")
+    .add_local_file(pathlib.Path(__file__).resolve().parent.parent / "ull_r2.py", "/root/ull_r2.py")
 )
 
 # Same five Wan 2.1 / Wan Animate 2 weights the RunPod Dockerfile downloads,
@@ -307,6 +314,30 @@ def _save_custom_workflow_result(user_id: str, job_id: str, filename: str, data:
         return rel_path
     except Exception as exc:  # noqa: BLE001 — best-effort, never fails the main response
         print(f"[custom-workflow] result save to volume failed ({rel_path}): {exc}", flush=True)
+        return None
+
+
+def _put_custom_workflow_result_r2(user_id: str, job_id: str, filename: str, data: bytes) -> str | None:
+    """R2 版（成果物ストレージ移行 計画 3、2026-09-23）。キー = Volume 相対パス
+    （custom_workflow_results/<user_id>/<job_id>.<ext>）。成功したらそのキーを返し、
+    呼び出し側は Volume へ書かない。R2 無効・失敗時は None（Volume にフォールバック）。
+    Next は generation_jobs.video_url にこのパスを、metadata.r2_keys にキーを残す。"""
+    if not user_id or not job_id:
+        return None
+    try:
+        import ull_r2
+    except Exception as exc:  # noqa: BLE001 — image に無い（旧デプロイ）
+        print(f"[custom-workflow] ull_r2 unavailable: {exc}", flush=True)
+        return None
+    if not ull_r2.r2_enabled():
+        return None
+    key = _custom_workflow_result_rel_path(user_id, job_id, filename)
+    try:
+        r = ull_r2.put_bytes(data, key)
+        print(f"[r2] put {key} ({r['size_bytes'] / 1048576:.1f} MB, {r['mb_s']} MB/s)", flush=True)
+        return key
+    except Exception as exc:  # noqa: BLE001 — Volume にフォールバック
+        print(f"[r2] put FAILED {key}: {exc!r} — falling back to Volume", flush=True)
         return None
 
 
@@ -1186,7 +1217,14 @@ class _WanAnimateBase:
         if save_to_volume:
             self._save_output_to_volume(filename, result_bytes)
         output_path = self._save_output_temp(filename, result_bytes)
-        result_volume_path = _save_custom_workflow_result(user_id, job_id, filename, result_bytes)
+        # R2 が使えればそちらへ（Volume に成果物を新規に残さない、CLAUDE.md §1）。
+        # 無理なら従来どおり Volume。どちらでも result_volume_path は同じ相対パス。
+        result_r2_key = _put_custom_workflow_result_r2(user_id, job_id, filename, result_bytes)
+        result_volume_path = (
+            result_r2_key
+            if result_r2_key
+            else _save_custom_workflow_result(user_id, job_id, filename, result_bytes)
+        )
         return {
             "filename": filename,
             "result_base64": base64.b64encode(result_bytes).decode("ascii"),
@@ -1194,6 +1232,7 @@ class _WanAnimateBase:
             "output_path": output_path,
             "vram_used_gb": vram_used_gb,
             "result_volume_path": result_volume_path,
+            "result_r2_key": result_r2_key,
         }
 
     @modal.fastapi_endpoint(method="POST")
@@ -1220,7 +1259,7 @@ class _WanAnimateBase:
     timeout=600,  # 10 min
     scaledown_window=30,
     volumes={MODELS_DIR: vol},
-    secrets=[modal.Secret.from_name("wan-animate-auth")],
+    secrets=[modal.Secret.from_name("wan-animate-auth"), modal.Secret.from_name("r2-artifacts")],
 )
 class WanAnimate(_WanAnimateBase):
     GPU_TIER = "standard"
@@ -1232,7 +1271,7 @@ class WanAnimate(_WanAnimateBase):
     timeout=600,
     scaledown_window=30,  # 30s Keep-Warm 規格（CLAUDE.md §1）
     volumes={MODELS_DIR: vol},
-    secrets=[modal.Secret.from_name("wan-animate-auth")],
+    secrets=[modal.Secret.from_name("wan-animate-auth"), modal.Secret.from_name("r2-artifacts")],
 )
 class WanAnimateUltra(_WanAnimateBase):
     GPU_TIER = "ultra"

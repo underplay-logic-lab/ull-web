@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { presignPublishedArtifact } from "@/lib/r2.server";
 
 // 超解像画像の結果配信（2026-09-18導入）。src/app/api/studio/upscale/video/
 // result/route.ts と同一設計 — 唯一の違いは拡張子がジョブごとに変わる点
@@ -58,10 +59,10 @@ export async function GET(request: Request): Promise<NextResponse> {
 
   const { data: job, error } = (await supabaseAdmin
     .from("upscale_jobs")
-    .select("result_url, user_id, status")
+    .select("result_url, user_id, status, metadata")
     .eq("id", jobId)
     .maybeSingle()) as {
-    data: { result_url: string | null; user_id: string; status: string } | null;
+    data: { result_url: string | null; user_id: string; status: string; metadata: unknown } | null;
     error: { message: string } | null;
   };
 
@@ -80,6 +81,13 @@ export async function GET(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: "この画像は署名URLの発行対象ではありません。" }, { status: 400 });
   }
   const ownerId = job.user_id;
+
+  // 2026-09-23〜（R2 移行 計画 3）: worker の CPU publish が R2 へ上げ終わった
+  // 行は metadata.r2_keys に result_url が入る → R2 の署名付き GET（15 分）を
+  // 返す。表示（<img src>）と fetch→blob の両方で使うので attachment は付けない。
+  // まだ Volume にある行（publish 前・旧行・ARTIFACT_STORE=volume）は従来の Modal。
+  const r2Url = await presignPublishedArtifact(job.metadata, job.result_url);
+  if (r2Url) return NextResponse.json({ downloadUrl: r2Url, store: "r2" });
 
   // result_url は "upscale_image_results/<user_id>/<job_id>.<ext>" — 末尾の
   // ファイル名部分だけを署名対象にする（拡張子はここで初めて分かる）。

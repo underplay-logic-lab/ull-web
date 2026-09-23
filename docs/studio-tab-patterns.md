@@ -322,6 +322,19 @@ docs/STATUS.md「R2 を成果物ストレージにする」）。上の Modal �
   `r2.cloudflarestorage.com` が要る。忘れると `image URL host not allowed` で落ちる。**Next より先に worker をデプロイ**する。
 - **バケットの CORS**（`scripts/r2_bucket_setup.py`）は GET/HEAD/PUT・全ヘッダー許可・ETag/Range 公開で適用済み。
   PUT を増やすときに触る必要は無い。ライフサイクルは全キー一律 14 日。
+- **生成物（超解像 / Director / Multi-Angle、2026-09-23 計画 3）は「GPU は Volume に書いて completed を PATCH → CPU 関数が
+  Volume → R2 → `metadata.r2_keys[]` に相対パスを焼き込み → Volume 側 unlink」**。DB の列（`result_url` / `video_url` /
+  `images[]`）は Volume 相対パスのまま変えない。手本は `modal_seedvr2_worker.py::publish_upscale_artifacts_r2` と
+  `ull_r2.publish_volume_files` / `stamp_r2_keys`。Next は `r2.server.ts::presignPublishedArtifact(meta, relPath)` を
+  **先に**試し、null なら従来の Modal 署名リンク（publish 中・旧行・戻した直後も切れ目なし）。
+  - GPU から直接上げない（2〜33 MB/s のアップロード中 GPU が遊ぶ。LoRA で 5.5 分 ≒ $0.65 を踏んだ）。例外は同期応答の
+    特化 WF（行が応答後に insert されるので CPU 分業が組めない）だけ。
+  - **CPU publish は metadata だけ PATCH する**（status を触ると generation_logs のトリガーが二重に走る）。Angle のように
+    PATCH が jsonb 丸ごと置換の worker は GET → merge → PATCH。
+  - **R2 の署名付き URL にクエリを後付けしない**（署名が壊れて 403）。保存名が要るなら route 側で `downloadName` を
+    焼き込んで発行し直す（超解像 動画の `dlName`）。
+  - **新しい生成物種別を足すときのデプロイ順は Next → Modal**（worker が先だと `r2_keys` が付いた瞬間に Volume 側が消え、
+    旧 Next が Modal 直へ落として 404）。持ち込み（PUT）側は逆に Modal → Next。
 
 ## ハマりどころ
 

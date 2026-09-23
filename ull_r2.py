@@ -329,3 +329,84 @@ def publish_job_dir(
         flush=True,
     )
     return stats
+
+
+# ---------------------------------------------------------------------------
+# Generated artifacts (migration plan step 3, 2026-09-23): 超解像 / Director /
+# Multi-Angle / 特化ワークフロー. These rows keep a Volume-relative path in
+# a plain column (`upscale_jobs.result_url`, `generation_jobs.video_url`,
+# `angle_jobs.images[]`) rather than a `checkpoints[]` list, so the publish
+# is keyed by path: the R2 key *is* the relative path, and the row's
+# metadata gets `r2_keys: [<rel_path>, ...]` listing what has been moved.
+# The Next.js routes presign a key only when it appears in `r2_keys`, and
+# fall back to the Modal endpoint otherwise (files still on the Volume).
+# ---------------------------------------------------------------------------
+def publish_volume_files(
+    models_dir: str | pathlib.Path,
+    rel_paths: Iterable[str],
+    *,
+    remove_local: bool = True,
+    log=print,
+) -> dict:
+    """Upload `<models_dir>/<rel_path>` to key `<rel_path>` for every path.
+    Returns {keys: [uploaded rel paths], failed: [...], skipped: [...],
+    bytes, elapsed_s}. Fail-open per file, never raises."""
+    stats: dict = {"keys": [], "failed": [], "skipped": [], "bytes": 0, "elapsed_s": 0.0}
+    paths = [str(p).strip().strip("/") for p in rel_paths if p]
+    if not paths:
+        return stats
+    if not r2_enabled():
+        log(f"[r2] disabled (ARTIFACT_STORE={artifact_store()!r}, configured={r2_configured()}) — Volume only", flush=True)
+        return stats
+    t0 = time.time()
+    root = pathlib.Path(models_dir)
+    for rel in paths:
+        if ".." in rel.split("/"):
+            stats["skipped"].append(rel)
+            continue
+        local = root / rel
+        if not local.is_file():
+            stats["skipped"].append(rel)
+            continue
+        try:
+            r = put_file(local, rel)
+            remote = head(rel)
+            if remote != local.stat().st_size:
+                raise RuntimeError(f"size mismatch after upload: local={local.stat().st_size} remote={remote}")
+            log(f"[r2] put {rel} ({r['size_bytes'] / _MB:.1f} MB, {r['mb_s']} MB/s)", flush=True)
+            stats["bytes"] += r["size_bytes"]
+            stats["keys"].append(rel)
+            if remove_local:
+                try:
+                    local.unlink()
+                except Exception as rm_exc:  # noqa: BLE001
+                    log(f"[r2] local unlink skipped ({rel}): {rm_exc}", flush=True)
+        except Exception as exc:  # noqa: BLE001 — never let storage kill a finished job
+            log(f"[r2] put FAILED {rel}: {exc!r} — keeping Volume copy", flush=True)
+            stats["failed"].append(rel)
+    stats["elapsed_s"] = round(time.time() - t0, 1)
+    mb = stats["bytes"] / _MB
+    log(
+        f"[r2] publish {len(stats['keys'])} ok / {len(stats['failed'])} failed / "
+        f"{len(stats['skipped'])} skipped, {mb:.0f} MB in {stats['elapsed_s']}s"
+        + (f" ({mb / max(stats['elapsed_s'], 1e-6):.1f} MB/s)" if mb else ""),
+        flush=True,
+    )
+    return stats
+
+
+def stamp_r2_keys(meta: dict | None, stats: dict) -> dict | None:
+    """Merge `publish_volume_files()` stats into a metadata dict (new dict;
+    the input is not mutated). Returns None when nothing was uploaded."""
+    if not stats.get("keys"):
+        return None
+    merged = dict(meta or {})
+    merged["r2_keys"] = sorted(set(list(merged.get("r2_keys") or []) + list(stats["keys"])))
+    merged["artifact_store"] = "r2"
+    merged["r2_publish"] = {
+        "uploaded": len(stats["keys"]),
+        "failed": len(stats["failed"]),
+        "bytes": stats["bytes"],
+        "elapsed_s": stats["elapsed_s"],
+    }
+    return merged

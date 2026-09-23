@@ -143,6 +143,38 @@ export async function headR2(key: string): Promise<number | null> {
   }
 }
 
+// Generated artifacts (migration plan step 3, 2026-09-23): 超解像 / Director /
+// Multi-Angle / 特化ワークフロー rows keep their Volume-relative path in a
+// plain column (`result_url` / `video_url` / `images[]`); the worker-side
+// CPU publish uploads each file to the key == relative path and lists the
+// moved paths in `metadata.r2_keys`. A route presigns a path only when it is
+// listed there — otherwise the Volume copy still exists and the Modal
+// endpoint keeps serving it (no gap while the publish is in flight).
+export function r2KeysFromMetadata(meta: unknown): string[] {
+  const keys = (meta as { r2_keys?: unknown } | null)?.r2_keys;
+  return Array.isArray(keys) ? keys.filter(isSafeR2Key) : [];
+}
+
+export function isPublishedToR2(meta: unknown, relPath: string): boolean {
+  return r2Enabled() && isSafeR2Key(relPath) && r2KeysFromMetadata(meta).includes(relPath);
+}
+
+/** Presigned GET for `relPath` when the row says it lives in R2, else null
+ * (caller falls back to the Modal signed link). Never throws. */
+export async function presignPublishedArtifact(
+  meta: unknown,
+  relPath: string,
+  opts: { expiresIn?: number; downloadName?: string; contentType?: string } = {},
+): Promise<string | null> {
+  if (!isPublishedToR2(meta, relPath)) return null;
+  try {
+    return await presignR2Get(relPath, opts);
+  } catch (err) {
+    console.error("[r2] presign failed for", relPath, err);
+    return null;
+  }
+}
+
 // Best-effort bulk delete (≤1000 keys per call, the S3 limit). Missing keys
 // are not an error. Returns the number of keys sent.
 export async function deleteR2Keys(keys: string[]): Promise<number> {

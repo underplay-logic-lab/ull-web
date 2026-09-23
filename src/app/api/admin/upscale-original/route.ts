@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/adminApiGuard";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { presignPublishedArtifact } from "@/lib/r2.server";
 
 // admin「生成物 & ストレージ」タブ用 — /api/studio/upscale/original と同じ
 // 署名付きURL方式だが、こちらは cookie ベースの管理者セッション
@@ -46,6 +47,12 @@ export async function GET(request: Request): Promise<NextResponse> {
   if (!meta?.original_available || meta.original_filename !== file) {
     return NextResponse.json({ error: "元画質のファイルは保存されていません。" }, { status: 404 });
   }
+
+  // 2026-09-23〜（R2 移行 計画 3）: publish 済みなら R2 の署名付き GET（attachment）。
+  const r2Url = await presignPublishedArtifact(job.metadata, `upscale_originals/${job.user_id}/${jobId}/${file}`, {
+    downloadName: file,
+  });
+  if (r2Url) return NextResponse.json({ downloadUrl: r2Url, store: "r2" });
 
   const modalUrl = process.env.MODAL_SEEDVR2_ORIGINAL_DOWNLOAD_URL;
   const modalAuthToken = process.env.MODAL_AUTH_TOKEN;

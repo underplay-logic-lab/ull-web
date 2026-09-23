@@ -831,6 +831,80 @@ def _save_angle_image(user_id: str, job_id: str, index: int, png_bytes: bytes):
         return None
 
 
+# ---------------------------------------------------------------------------
+# R2 publish（成果物ストレージ移行 計画 3、2026-09-23）— GPU 側は各構図を Volume へ
+# 書いて completed を PATCH したら即 return し、この CPU 関数が Volume → R2 へ上げて
+# angle_jobs.metadata.r2_keys に焼き込み、Volume 側を消す（LoRA worker の
+# publish_lora_artifacts_r2 と同じ分業）。上がるまでは images route が従来の
+# Modal 直配信 URL を返すのでユーザーからは切れ目なし。
+# 戻し方: Modal secret r2-artifacts の ARTIFACT_STORE=volume（この関数が no-op）。
+# ---------------------------------------------------------------------------
+publish_image = dispatch_image.pip_install("boto3>=1.35").add_local_python_source("ull_r2")
+
+
+def _spawn_r2_publish(job_id: str) -> None:
+    """Fire-and-forget。失敗しても Volume に残るだけなので絶対に raise しない。"""
+    try:
+        publish_angle_artifacts_r2.spawn(job_id)
+        print(f"[r2] publish spawned for angle job {job_id[:8]}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r2] publish spawn failed for angle job {job_id[:8]}: {exc!r}", flush=True)
+
+
+@app.function(
+    image=publish_image,
+    volumes={MODELS_DIR: vol},
+    timeout=3600,
+    scaledown_window=2,
+    secrets=[
+        modal.Secret.from_name("supabase-model-downloads"),
+        modal.Secret.from_name("r2-artifacts"),
+    ],
+)
+def publish_angle_artifacts_r2(job_id: str) -> dict:
+    """CPU: angle_jobs.images[] の Volume 相対パス（angle_results/<user>/<job>/NN.png）を
+    R2 へ上げ、metadata.r2_keys を焼き込んで Volume 側を unlink する。"""
+    import ull_r2
+
+    if not ull_r2.r2_enabled():
+        return {"skipped": "r2 disabled"}
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r2] vol.reload() skipped: {exc}", flush=True)
+    res = _supabase_request(
+        "GET",
+        "/rest/v1/angle_jobs",
+        params={"id": f"eq.{job_id}", "select": "user_id,images,metadata"},
+    )
+    rows = res.json() if res is not None and res.ok else []
+    if not rows:
+        print(f"[r2] angle job {job_id} not found", flush=True)
+        return {"error": "job not found"}
+    row = rows[0]
+    meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    already = set(meta.get("r2_keys") or [])
+    images = row.get("images") if isinstance(row.get("images"), list) else []
+    rel_paths = [
+        p for p in images
+        if isinstance(p, str) and p.startswith(f"{ANGLE_RESULTS_SUBDIR}/") and p not in already
+    ]
+    if not rel_paths:
+        return {"uploaded": 0}
+    stats = ull_r2.publish_volume_files(MODELS_DIR, rel_paths)
+    merged = ull_r2.stamp_r2_keys(meta, stats)
+    if merged is None:
+        return {"uploaded": 0, "failed": len(stats["failed"])}
+    try:
+        vol.commit()  # persist the unlinks
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r2] vol.commit() skipped: {exc}", flush=True)
+    # metadata だけ（status は触らない → generation_logs のトリガーは発火しない）。
+    # PATCH は jsonb 丸ごと置き換えなので、GET した現物にマージした merged を送る。
+    _patch_angle_job(job_id, {"metadata": merged})
+    return merged["r2_publish"]
+
+
 # ブラウザから直接 download_angle_image を叩くための短命HMACトークン。
 # 他ワーカーの _verify_download_token と同じ方式——Next.js側の署名は
 # src/app/api/studio/angle/images/route.ts。
@@ -2015,6 +2089,8 @@ class QwenImageEditWorker:
         _patch_angle_job(job_id, completed_fields)
         if done < n_total:
             _refund_remaining("db-write-failed")
+        if done > 0:
+            _spawn_r2_publish(job_id)
         print(f"[angle-job] {job_id} completed {done}/{n_total} angle(s) in {elapsed}s", flush=True)
         return {"ok": True, "completed": done, "total": n_total, "elapsed_time": elapsed}
 

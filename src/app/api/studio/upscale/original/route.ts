@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { presignPublishedArtifact } from "@/lib/r2.server";
 
 // modal_seedvr2_worker.py が WebP 再エンコード（20MB超のPNG出力）で失う元の
 // 無劣化 PNG を、modal_lora_worker.py の checkpoint ダウンロードと全く同じ
@@ -78,6 +79,12 @@ export async function GET(request: Request): Promise<NextResponse> {
       { status: 404 },
     );
   }
+
+  // 2026-09-23〜（R2 移行 計画 3）: publish 済みなら R2 の署名付き GET（attachment）。
+  const r2Url = await presignPublishedArtifact(job.metadata, `upscale_originals/${ownerId}/${jobId}/${file}`, {
+    downloadName: file,
+  });
+  if (r2Url) return NextResponse.json({ downloadUrl: r2Url, store: "r2" });
 
   const modalUrl = process.env.MODAL_SEEDVR2_ORIGINAL_DOWNLOAD_URL;
   const modalAuthToken = process.env.MODAL_AUTH_TOKEN;

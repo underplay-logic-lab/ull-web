@@ -900,6 +900,82 @@ def _save_director_video(user_id: str, job_id: str, video_bytes: bytes) -> str |
         return None
 
 
+# ---------------------------------------------------------------------------
+# R2 publish（成果物ストレージ移行 計画 3、2026-09-23）— GPU 側は Volume へ書いて
+# completed を PATCH したら即 return し、この CPU 関数が Volume → R2 へ上げて
+# generation_jobs.metadata.r2_keys に焼き込み、Volume 側を消す（LoRA worker の
+# publish_lora_artifacts_r2 と同じ分業）。上がるまでは /api/jobs/[id] が従来の
+# Modal 直配信 URL を返すのでユーザーからは切れ目なし。
+# 専用の軽量 image を使う（ComfyUI 入りの `image` を CPU 関数に使うと巨大な
+# コールドスタートを毎回引く — メモリ modal-admin-endpoint-image-isolation）。
+# 戻し方: Modal secret r2-artifacts の ARTIFACT_STORE=volume（この関数が no-op）。
+# ---------------------------------------------------------------------------
+publish_image = (
+    modal.Image.debian_slim(python_version="3.13")
+    .pip_install("fastapi[standard]", "requests", "boto3>=1.35")
+    .add_local_python_source("ull_r2")
+)
+
+
+def _spawn_r2_publish(job_id: str) -> None:
+    """Fire-and-forget。失敗しても Volume に残るだけなので絶対に raise しない。"""
+    try:
+        publish_director_artifacts_r2.spawn(job_id)
+        print(f"[r2] publish spawned for director job {job_id[:8]}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r2] publish spawn failed for director job {job_id[:8]}: {exc!r}", flush=True)
+
+
+@app.function(
+    image=publish_image,
+    volumes={MODELS_DIR: vol},
+    timeout=3600,
+    scaledown_window=2,
+    secrets=[
+        modal.Secret.from_name("supabase-model-downloads"),
+        modal.Secret.from_name("r2-artifacts"),
+    ],
+)
+def publish_director_artifacts_r2(job_id: str) -> dict:
+    """CPU: generation_jobs 行の video_url（director_results/<user>/<job>.mp4）を
+    R2 へ上げ、metadata.r2_keys を焼き込んで Volume 側を unlink する。"""
+    import ull_r2
+
+    if not ull_r2.r2_enabled():
+        return {"skipped": "r2 disabled"}
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r2] vol.reload() skipped: {exc}", flush=True)
+    res = _supabase_request(
+        "GET",
+        "/rest/v1/generation_jobs",
+        params={"id": f"eq.{job_id}", "select": "user_id,video_url,metadata"},
+    )
+    rows = res.json() if res is not None and res.ok else []
+    if not rows:
+        print(f"[r2] director job {job_id} not found", flush=True)
+        return {"error": "job not found"}
+    row = rows[0]
+    meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    video_url = str(row.get("video_url") or "")
+    if not video_url.startswith(f"{DIRECTOR_RESULTS_SUBDIR}/"):
+        return {"uploaded": 0, "skipped": "not a volume path"}
+    if video_url in set(meta.get("r2_keys") or []):
+        return {"uploaded": 0, "skipped": "already published"}
+    stats = ull_r2.publish_volume_files(MODELS_DIR, [video_url])
+    merged = ull_r2.stamp_r2_keys(meta, stats)
+    if merged is None:
+        return {"uploaded": 0, "failed": len(stats["failed"])}
+    try:
+        vol.commit()  # persist the unlink
+    except Exception as exc:  # noqa: BLE001
+        print(f"[r2] vol.commit() skipped: {exc}", flush=True)
+    # metadata だけ（status は触らない → generation_logs のトリガーは発火しない）。
+    _supabase_patch_job(job_id, {"metadata": merged})
+    return merged["r2_publish"]
+
+
 # ブラウザから直接 download_director_video を叩くための短命HMACトークン。
 # _verify_download_token（modal_lora_worker.py、LoRAチェックポイント配信）と
 # 同じ方式——Next.js側の署名は src/lib/directorVideoDownload.server.ts。
@@ -2028,6 +2104,8 @@ class WanAnimateBlackwell:
             if _vram_used_gb is not None:
                 _completed_fields["metadata"]["vram_used_gb"] = _vram_used_gb
             _supabase_patch_job(job_id, _completed_fields)
+            if saved_rel_path:
+                _spawn_r2_publish(job_id)
             _extend_gpu_warm(user_id)
             _clear_active_job(active_job_id)
         return result

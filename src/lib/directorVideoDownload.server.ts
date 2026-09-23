@@ -1,5 +1,6 @@
 import "server-only";
 import crypto from "crypto";
+import { presignPublishedArtifact } from "@/lib/r2.server";
 
 // ULL Cinematic Director: 生成済み動画の配信（2026-09-18導入）。
 //
@@ -47,4 +48,14 @@ export function signDirectorVideoUrl(userId: string, jobId: string): string | nu
   target.searchParams.set("expires", String(expiresAt));
   target.searchParams.set("sig", sig);
   return target.toString();
+}
+
+/** 2026-09-23〜（R2 移行 計画 3）: worker の CPU publish が R2 へ上げ終わった
+ * 行は metadata.r2_keys に `director_results/<user_id>/<job_id>.mp4` が入る →
+ * R2 の署名付き GET（15 分）。まだ Volume にある行は従来の Modal 直リンク。
+ * <video src> と fetch→blob の両方で使うので attachment は付けない。 */
+export async function resolveDirectorVideoUrl(userId: string, jobId: string, metadata: unknown): Promise<string | null> {
+  const relPath = `director_results/${userId}/${jobId}.mp4`;
+  const r2Url = await presignPublishedArtifact(metadata, relPath, { contentType: "video/mp4" });
+  return r2Url ?? signDirectorVideoUrl(userId, jobId);
 }

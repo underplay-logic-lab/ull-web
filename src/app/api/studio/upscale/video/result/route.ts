@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { presignPublishedArtifact } from "@/lib/r2.server";
 
 // 超解像動画の結果配信（2026-09-18導入）。
 //
@@ -21,6 +22,9 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 export const maxDuration = 30;
 
 const DOWNLOAD_TOKEN_TTL_SECONDS = 900;
+// 保存名（任意、表示用）。R2 の署名付き URL はクエリを後から足せない（署名が
+// 壊れる）ので、ダウンロード用の URL はここで Content-Disposition を焼き込む。
+const DL_NAME_RE = /^[A-Za-z0-9._-]{1,120}\.mp4$/;
 
 /** upscale_jobs.result_url がURLではなくVolume相対パスかどうか判定する。
  * http(s) で始まらなければ新方式（Volume直接配信）とみなす。 */
@@ -36,6 +40,8 @@ function signDownloadToken(userId: string, jobId: string, file: string, expiresA
 export async function GET(request: Request): Promise<NextResponse> {
   const url = new URL(request.url);
   const jobId = url.searchParams.get("jobId") ?? "";
+  const dlNameRaw = url.searchParams.get("dlName") ?? "";
+  const dlName = DL_NAME_RE.test(dlNameRaw) ? dlNameRaw : null;
   if (!jobId) {
     return NextResponse.json({ error: "パラメータが不正です。" }, { status: 400 });
   }
@@ -66,10 +72,10 @@ export async function GET(request: Request): Promise<NextResponse> {
 
   const { data: job, error } = (await supabaseAdmin
     .from("upscale_jobs")
-    .select("result_url, user_id, status")
+    .select("result_url, user_id, status, metadata")
     .eq("id", jobId)
     .maybeSingle()) as {
-    data: { result_url: string | null; user_id: string; status: string } | null;
+    data: { result_url: string | null; user_id: string; status: string; metadata: unknown } | null;
     error: { message: string } | null;
   };
 
@@ -91,6 +97,14 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
   const ownerId = job.user_id;
 
+  // 2026-09-23〜（R2 移行 計画 3）: metadata.r2_keys に result_url があれば R2 の
+  // 署名付き GET（15 分）。dlName 付きなら attachment、無ければ <video src> 用。
+  const r2Url = await presignPublishedArtifact(job.metadata, job.result_url, {
+    downloadName: dlName ?? undefined,
+    contentType: "video/mp4",
+  });
+  if (r2Url) return NextResponse.json({ downloadUrl: r2Url, store: "r2" });
+
   const modalUrl = process.env.MODAL_SEEDVR2_VIDEO_RESULT_DOWNLOAD_URL;
   const modalAuthToken = process.env.MODAL_AUTH_TOKEN;
   if (!modalUrl || !modalAuthToken) {
@@ -106,6 +120,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   target.searchParams.set("job_id", jobId);
   target.searchParams.set("expires", String(expiresAt));
   target.searchParams.set("sig", sig);
+  if (dlName) target.searchParams.set("dl_name", dlName);
 
   return NextResponse.json({ downloadUrl: target.toString() });
 }

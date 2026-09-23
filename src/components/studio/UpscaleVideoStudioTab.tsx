@@ -29,6 +29,8 @@ import {
 } from "@/lib/upscaleStudio";
 import {
   downloadViaBrowser,
+  fetchUpscaleVideoResultUrl,
+  isUpscaleResultVolumePath,
   pollUpscaleJob,
   resolveUpscaleVideoUrl,
   startUpscaleVideoJob,
@@ -128,7 +130,8 @@ function useObjectUrl(file: File | null): string | null {
   return url;
 }
 
-// 署名付き Modal URL に保存名だけ付ける（worker 側 dl_name、署名対象外）。
+// 旧方式（Supabase 公開 URL）用: URL に保存名だけ付ける。新方式は route が
+// 保存名を焼き込んだ URL を返す（R2 の署名付き URL はクエリを後付けできない）。
 function withDownloadName(url: string, name: string): string {
   try {
     const u = new URL(url);
@@ -811,9 +814,20 @@ export function UpscaleVideoStudioTab() {
               <button
                 type="button"
                 disabled={!playableVideoUrl}
-                onClick={() =>
-                  playableVideoUrl && downloadViaBrowser(withDownloadName(playableVideoUrl, buildOutFilename()))
-                }
+                onClick={() => {
+                  if (!playableVideoUrl || !job) return;
+                  const name = buildOutFilename();
+                  if (job.resultUrl && isUpscaleResultVolumePath(job.resultUrl)) {
+                    fetchUpscaleVideoResultUrl(job.id, name)
+                      .then(downloadViaBrowser)
+                      .catch((err) => {
+                        console.warn("[UpscaleVideoStudioTab] download url failed:", err);
+                        downloadViaBrowser(playableVideoUrl);
+                      });
+                  } else {
+                    downloadViaBrowser(withDownloadName(playableVideoUrl, name));
+                  }
+                }}
                 className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-background px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:border-neon-violet/40 disabled:opacity-50"
               >
                 <Download size={16} />

@@ -63,6 +63,7 @@ async function persistCustomWorkflowResult(args: {
   jobId: string;
   userId: string;
   resultVolumePath: string | null;
+  resultR2Key: string | null;
   workflowId: string;
   workflowSlug: string;
   promptSummary: string;
@@ -82,6 +83,8 @@ async function persistCustomWorkflowResult(args: {
       },
       credits_cost: args.creditsCost,
       video_url: args.resultVolumePath,
+      // R2 に置けた行は metadata.r2_keys（admin の一覧が署名付き GET に解決する）。
+      ...(args.resultR2Key ? { metadata: { artifact_store: "r2", r2_keys: [args.resultR2Key] } } : {}),
     });
     if (jobInsertError) {
       console.error("[studio/custom-workflows/generate] job row insert failed:", jobInsertError.message);
@@ -364,6 +367,7 @@ export async function POST(request: Request) {
       jobId,
       userId: user.id,
       resultVolumePath: result.result_volume_path ?? null,
+      resultR2Key: result.result_r2_key ?? null,
       workflowId: workflowRow.id as string,
       workflowSlug: slug,
       promptSummary,

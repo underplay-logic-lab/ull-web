@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/adminApiGuard";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { presignPublishedArtifact } from "@/lib/r2.server";
 
 // admin「生成物 & ストレージ」— 最近の生成物ビュー。
 // angle_jobs / upscale_jobs / generation_jobs を横断し、共通形に正規化して
@@ -16,6 +17,9 @@ const RETURN_LIMIT = 100;
 // ここで各ワーカーの署名スキームに合わせてModal直リンクへ変換する。
 // 既にこの一覧はrequireAdmin済み・行データも既にメモリ上にあるので、
 // 追加のDBラウンドトリップ無しでHMAC計算だけで済む。
+// 2026-09-23〜（R2 移行 計画 3）: worker の CPU publish が済んだ行は
+// metadata.r2_keys に相対パスが入り、Volume 側の実体は消えている。先に
+// presignPublishedArtifact()（R2 の署名付き GET）を試し、無ければ従来の Modal。
 const RESULT_TOKEN_TTL_SECONDS = 900;
 
 function isVolumePath(v: string): boolean {
@@ -131,7 +135,9 @@ export async function GET() {
   const [angle, upscale, gen] = await Promise.all([
     supabaseAdmin
       .from("angle_jobs")
-      .select("id, user_id, status, mode, total_angles, completed_angles, images, credits_cost, error_message, created_at")
+      .select(
+        "id, user_id, status, mode, total_angles, completed_angles, images, credits_cost, error_message, created_at, metadata",
+      )
       .order("created_at", { ascending: false })
       .limit(PER_TABLE),
     supabaseAdmin
@@ -148,7 +154,7 @@ export async function GET() {
       // ジョブの強制終了ボタンにも辿り着けなくなっていた。サムネイルは
       // video_url を読まなくても signDirectorVideoUrl(user_id, job_id) で
       // 作れる（HMAC のみ・DB 非依存）。
-      .select("id, user_id, status, workflow_type, result_path, credits_cost, error_message, created_at")
+      .select("id, user_id, status, workflow_type, result_path, credits_cost, error_message, created_at, metadata")
       .order("created_at", { ascending: false })
       .limit(PER_TABLE),
   ]);
@@ -177,7 +183,9 @@ export async function GET() {
     const rawThumb = imgs[0] ?? null;
     const thumbUrl =
       rawThumb && isVolumePath(rawThumb)
-        ? signAngleImageUrl(r.user_id as string, r.id as string, rawThumb) ?? rawThumb
+        ? (await presignPublishedArtifact(r.metadata, rawThumb)) ??
+          signAngleImageUrl(r.user_id as string, r.id as string, rawThumb) ??
+          rawThumb
         : rawThumb;
     rows.push({
       id: r.id as string,
@@ -204,7 +212,9 @@ export async function GET() {
     const rawResult = firstString(r.result_url);
     const thumbUrl =
       rawResult && isVolumePath(rawResult)
-        ? signUpscaleResultUrl(r.user_id as string, r.id as string, rawResult) ?? rawResult
+        ? (await presignPublishedArtifact(r.metadata, rawResult)) ??
+          signUpscaleResultUrl(r.user_id as string, r.id as string, rawResult) ??
+          rawResult
         : rawResult;
     rows.push({
       id: r.id as string,
@@ -231,9 +241,13 @@ export async function GET() {
     const rawResultPath = isLora ? null : firstString(r.result_path);
     let thumbUrl: string | null = null;
     if (wt === "director") {
-      thumbUrl = signDirectorVideoUrl(r.user_id as string, r.id as string);
+      thumbUrl =
+        (await presignPublishedArtifact(r.metadata, `director_results/${r.user_id as string}/${r.id as string}.mp4`)) ??
+        signDirectorVideoUrl(r.user_id as string, r.id as string);
     } else if (wt === "custom" && rawResultPath && isVolumePath(rawResultPath)) {
-      thumbUrl = signCustomWorkflowResultUrl(r.user_id as string, r.id as string, rawResultPath);
+      thumbUrl =
+        (await presignPublishedArtifact(r.metadata, rawResultPath)) ??
+        signCustomWorkflowResultUrl(r.user_id as string, r.id as string, rawResultPath);
     }
     rows.push({
       id: r.id as string,

@@ -691,8 +691,8 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
    - 速度メモ: Modal → R2 は GPU/CPU どちらのコンテナからも 2〜33 MB/s で、§16.5 の 48〜53 MB/s は再現していない
      （§16.5 は Volume 上の大きい 1 ファイルを測った値。ファイル 230〜590MB だと 64MB パートが 4〜10 個で並列が
      効き切らない可能性）。CPU に逃がしたので原価への影響は無いが、DL 開始までの待ちにはなる（1GB で 1〜2 分）。
-5. 計画 3（生成物）・5〜9 は未着手（4 は下）。admin「最近の生成物」（計画 6）が R2 対応するまで、新規 LoRA 成果物は admin のバケット
-   ブラウザに出ない（rclone マウント `R:` で見る）。
+5. ~~計画 3（生成物）~~ は下（2026-09-23 深夜に実装）。5〜9 は未着手。admin「最近の生成物」（計画 6）が R2 対応するまで、
+   新規 LoRA 成果物は admin のバケットブラウザに出ない（rclone マウント `R:` で見る）。
 
 #### 【実装 2026-09-23 深夜】4（ユーザー持ち込み）— ブラウザ → R2 直 PUT へ切替（ホスト指示で 3 より先に着手）
 
@@ -774,6 +774,38 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
 
 **実測メモ**: CPU probe（96MB・2 パート）は put 5.5 MB/s・GET 19.8 MB/s と §16.5 より遅いが、ファイルが小さく並列が
 効かない条件なので参考値。実ジョブ（数百 MB〜GB）で再確認する。
+
+#### 【実装 2026-09-23 深夜】3（生成物）— 超解像 / Director / Multi-Angle / 特化 WF の結果を R2 へ
+
+**できたこと（ローカル検証済み。tsc / eslint / py_compile グリーン、`ull_r2` の新ヘルパーは実バケット往復 OK）**
+- **共通**: `ull_r2.publish_volume_files(models_dir, rel_paths)`（キー = Volume 相対パス、サイズ検証後に unlink、fail-open）と
+  `stamp_r2_keys(meta, stats)`（`metadata.r2_keys[]` / `artifact_store` / `r2_publish` を焼き込む）。Next 側は
+  `r2.server.ts::presignPublishedArtifact(meta, relPath)` — **`r2_keys` に載っている相対パスだけ** R2 の署名付き GET（15 分）を返し、
+  無ければ null → 各 route が従来の Modal 直リンクに落ちる。DB の列（`result_url` / `video_url` / `images[]`）は**不変**。
+- **分業は LoRA と同じ「GPU は Volume に書いて completed を PATCH → CPU 関数が Volume → R2」**:
+  `modal_seedvr2_worker.py::publish_upscale_artifacts_r2`（result_url ＋ `upscale_originals/<user>/<job>/<original_filename>`）、
+  `modal_wan_animate_blackwell.py::publish_director_artifacts_r2`（`director_results/<user>/<job>.mp4`、専用の軽量 image）、
+  `modal_angle_worker.py::publish_angle_artifacts_r2`（`images[]` の `angle_results/...` 全部）。いずれも completed の直後に
+  `_spawn_r2_publish(job_id)`（絶対に raise しない）。metadata だけの PATCH なので generation_logs のトリガーは発火しない。
+- **特化 WF（`scripts/modal_wan_animate.py`、同期）だけは GPU から `put_bytes` で直接 R2**（行は Next が応答後に insert するので
+  CPU 分業が組めない。1 ファイル数十 MB まで）。応答に `result_r2_key` を足し、Next が `metadata.r2_keys` 付きで行を insert。
+  R2 に置けたら Volume には書かない。両 GPU クラスに secret `r2-artifacts` を付与、image 末尾に boto3 + `ull_r2.py`（`add_local_file`）。
+- **Next の配信 route**: 超解像 画像/動画 result・original（user/admin）・`/api/jobs/[id]`（`resolveDirectorVideoUrl`）・Angle images・
+  admin「最近の生成物」（angle / upscale / director / custom のサムネ）が R2 優先。超解像 動画の保存名は route の `dlName` で
+  Content-Disposition を焼き込む（R2 の署名付き URL はクエリを後付けできない → 旧 `dl_name` 後付けは旧方式の URL だけに限定）。
+- **戻し方**: Modal secret `r2-artifacts` の `ARTIFACT_STORE=volume`（CPU publish が no-op、特化 WF は Volume へ）／Next は env
+  `ARTIFACT_STORE=volume`（`r2_keys` を無視して Modal 直へ。ただし publish 済みの Volume 側は既に消えているので、戻すのは
+  「これから」の分だけ）。
+
+**残り（この順で）**
+1. **デプロイ順は Next → Modal**（持ち込みの計画 4 とは逆）。worker を先に上げると `r2_keys` が付いた瞬間に Volume 側が消え、
+   旧 Next が Modal 直へ落として 404 になる。push → Vercel READY を確認 → `modal deploy` を 4 本
+   （`modal_seedvr2_worker.py` / `modal_wan_animate_blackwell.py` / `modal_angle_worker.py` / `scripts/modal_wan_animate.py`）。
+2. 実地確認（ホストがタブを再読み込みしてから 1 本ずつ）: (a) 超解像 画像（result + 元 PNG）、(b) 超解像 動画（再生と「ダウンロード」の
+   保存名）、(c) Multi-Angle（構図ごとの表示と一括 ZIP）、(d) Director、(e) 特化 WF（admin 一覧のサムネ）。Modal のログで
+   `[r2] publish spawned` → CPU 関数の `[r2] put ... MB/s` を見る。
+3. 計画 5（R2 ライフサイクルは適用済み。`modal_retention_purge.py` は据え置き）・6（admin バケットブラウザ）・7（切替は実装済みなので
+   「確認して閉じる」だけ）・8-②・9。
 
 ### 残課題: LoRA の「結果がいまいちな時」ヒント（2026-09-23、ホスト発案・未着手）
 
