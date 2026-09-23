@@ -726,7 +726,10 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
   互換フォールバックを追加（LoRA 側は `filenames` 無し → Modal チケットで最初から互換）。**ホストはタブを再読み込み。**
 
 **残り（この順で）**
-1. **ホストが実地で 1 本ずつ**（本番反映済み。**タブを再読み込みしてから**）: (a) 超解像 画像（署名付き GET を worker が fetch）、
+1. **実地確認 (a) 超解像 画像は OK（2026-09-23 20:42〜20:45 JST、ジョブ `af14dbfe`）**: 3.8MB PNG がブラウザ → R2
+   `studio_uploads/` に着地 → Next が R2 に HEAD → 署名付き GET を worker に渡し、worker（SeedVR2 app、Real-ESRGAN anime）
+   が R2 から取得して 38 秒で完了（入力 1088×1920）。R2 経路で初の本番ジョブ成功。
+   **残りをホストが実地で 1 本ずつ**（本番反映済み。**タブを再読み込みしてから**）: (a) 超解像 画像（署名付き GET を worker が fetch）、
    (b) 超解像 動画（ffprobe + worker、1GB 級）、(c) Multi-Angle / Director / 特化 WF（Next が R2 から Buffer 取得）、
    (d) LoRA データセット 100 枚超（`[lora-upload]` のコンソール行で Mbps を見る。§15 の 18.1 Mbps が基準）。
 2. (d) の実測を `docs/gpu-benchmarks.md` §15 に追記し、`R2_CONCURRENCY`（16）を必要なら調整。
