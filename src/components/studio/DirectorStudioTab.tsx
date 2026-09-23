@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DIRECTOR_LORA_ENABLED } from "@/lib/featureFlags";
 import { createPortal } from "react-dom";
 import {
   AlertTriangle,
@@ -1032,6 +1033,7 @@ export function DirectorStudioTab() {
           </div>
         </div>
 
+        {DIRECTOR_LORA_ENABLED && (
         <div className="rounded-xl border border-border bg-background p-4">
           <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">LoRA（任意）</p>
           <div className="grid grid-cols-3 gap-1.5">
@@ -1049,7 +1051,7 @@ export function DirectorStudioTab() {
               type="button"
               disabled={busy || loraOptions.length === 0}
               onClick={() => selectLoraSource("trained")}
-              title={loraOptions.length === 0 ? "LoRA Studioで学習済みのMiniMax H3 LoRAがありません" : undefined}
+              title={loraOptions.length === 0 ? "LoRA Studio で学習済みの LoRA がありません" : undefined}
               className={`rounded-lg px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                 loraSource === "trained" ? "bg-neon-violet/15 text-foreground" : "bg-surface text-muted hover:text-foreground"
               }`}
@@ -1083,7 +1085,7 @@ export function DirectorStudioTab() {
                   </option>
                 ))}
               </select>
-              <p className="mt-2 text-[11px] text-muted">LoRA Studio で学習済みの MiniMax H3 LoRA を生成に適用します。</p>
+              <p className="mt-2 text-[11px] text-muted">LoRA Studio で学習済みの LoRA を生成に適用します。</p>
             </>
           )}
 
@@ -1160,11 +1162,12 @@ export function DirectorStudioTab() {
                 </p>
               )}
               <p className="mt-2 text-[11px] text-muted">
-                外部で用意した MiniMax H3 LoRA（.safetensors）を持ち込んで適用します。先にアップロードを完了させてから生成してください。
+                外部で用意した LoRA（.safetensors）を持ち込んで適用します。先にアップロードを完了させてから生成してください。
               </p>
             </>
           )}
         </div>
+        )}
 
         <div className="rounded-xl border border-border bg-background p-4">
           <div className="flex items-center justify-between text-sm">

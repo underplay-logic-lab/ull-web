@@ -2097,7 +2097,7 @@ export function ProgressPanel({
           {filename || "(生成済みモデルライブラリに保存されました)"}
         </p>
         <p className="mt-1 text-[11px] text-muted">
-          この LoRA はモデルライブラリに保存され、動画生成ワークフローからすぐに利用できます。
+          この LoRA はモデルライブラリに保存されました。
         </p>
 
         {/* Completed jobs don't get the single 完成版 button — final (Step 3000)

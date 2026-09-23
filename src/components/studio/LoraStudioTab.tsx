@@ -6,6 +6,7 @@
 // LoraStudioTab コンポーネントそのものだけを残している。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DIRECTOR_LORA_ENABLED } from "@/lib/featureFlags";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -3379,7 +3380,11 @@ export function LoraStudioTab({
                 )}
               </div>
             )}
-            <ProgressPanel job={job} queuedElapsedSec={queuedElapsedSec} onUseLora={onUseLora} />
+            <ProgressPanel
+              job={job}
+              queuedElapsedSec={queuedElapsedSec}
+              onUseLora={DIRECTOR_LORA_ENABLED ? onUseLora : undefined}
+            />
 
             {/* Transient poll failure — still retrying with backoff. A light,
                 non-alarming hint; the progress bar above keeps its last value. */}
