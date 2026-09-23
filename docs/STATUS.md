@@ -797,14 +797,25 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
   `ARTIFACT_STORE=volume`（`r2_keys` を無視して Modal 直へ。ただし publish 済みの Volume 側は既に消えているので、戻すのは
   「これから」の分だけ）。
 
+**本番反映済み（2026-09-23 23:50 JST）**: `65b272b` を push → Vercel READY（23:49）→ `modal deploy` 4 本
+（seedvr2 8s / wan_animate_blackwell 16s / angle 8s / 旧 wan_animate 22s）。**順序は Next → Modal**（持ち込みの計画 4 とは逆。
+worker を先に上げると `r2_keys` が付いた瞬間に Volume 側が消え、旧 Next が Modal 直へ落として 404 になる）。
+
+**実地確認 (worker → R2 → DB、2026-09-23 23:55 JST)**: デプロイ済みの CPU publish 関数を過去ジョブに直接呼び（GPU 不使用）、
+4 系統とも Volume → R2 → `metadata.r2_keys` → HEAD 一致 → 署名付き Range GET 206 まで確認:
+- 超解像 画像 `af14dbfe`: webp 2.5MB ＋ 元 PNG 29.3MB = 2 ファイル 31.7MB を 8.3s
+- 超解像 動画 `c71685d5`: mp4 4.9MB を 3.4s
+- Multi-Angle `e937c987`: PNG ×3 = 3.2MB を 9.9s
+- Director `56ef36fe`: mp4 10.9MB を 11.5s（CPU コンテナからは 1〜4 MB/s。小ファイルは並列が効かず、この速度帯で妥当）
+これら 4 行は Volume 側の実体が消えており、**Next の新コード（R2 優先）で配信される最初の行**になる。
+
 **残り（この順で）**
-1. **デプロイ順は Next → Modal**（持ち込みの計画 4 とは逆）。worker を先に上げると `r2_keys` が付いた瞬間に Volume 側が消え、
-   旧 Next が Modal 直へ落として 404 になる。push → Vercel READY を確認 → `modal deploy` を 4 本
-   （`modal_seedvr2_worker.py` / `modal_wan_animate_blackwell.py` / `modal_angle_worker.py` / `scripts/modal_wan_animate.py`）。
-2. 実地確認（ホストがタブを再読み込みしてから 1 本ずつ）: (a) 超解像 画像（result + 元 PNG）、(b) 超解像 動画（再生と「ダウンロード」の
-   保存名）、(c) Multi-Angle（構図ごとの表示と一括 ZIP）、(d) Director、(e) 特化 WF（admin 一覧のサムネ）。Modal のログで
-   `[r2] publish spawned` → CPU 関数の `[r2] put ... MB/s` を見る。
-3. 計画 5（R2 ライフサイクルは適用済み。`modal_retention_purge.py` は据え置き）・6（admin バケットブラウザ）・7（切替は実装済みなので
+1. **UI からの実地確認（ホスト、タブを再読み込みしてから）**: (a) 超解像 画像 `af14dbfe` の表示・DL・元 PNG の DL、(b) 超解像 動画
+   `c71685d5` の再生と「ダウンロード」の保存名（`ullstudio_upscale_video_*.mp4` になるか）、(c) Multi-Angle `e937c987` の表示と
+   一括 ZIP、(d) Director `56ef36fe`（結果画面の再生・DL）、(e) admin「最近の生成物」のサムネ 4 件。
+   新規ジョブ 1 本を流したら Modal ログで `[r2] publish spawned` → CPU 関数の `[r2] put ... MB/s` を見る。特化 WF（同期・GPU 直 put）
+   だけは新規ジョブでしか確認できない。
+2. 計画 5（R2 ライフサイクルは適用済み。`modal_retention_purge.py` は据え置き）・6（admin バケットブラウザ）・7（切替は実装済みなので
    「確認して閉じる」だけ）・8-②・9。
 
 ### 残課題: LoRA の「結果がいまいちな時」ヒント（2026-09-23、ホスト発案・未着手）
