@@ -696,7 +696,7 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
 
 #### 【実装 2026-09-23 深夜】4（ユーザー持ち込み）— ブラウザ → R2 直 PUT へ切替（ホスト指示で 3 より先に着手）
 
-**できたこと（ローカル検証・Modal 3 本デプロイ済み・Next は push 待ち → push 後に Vercel READY を確認）**
+**できたこと（ローカル検証・Modal 3 本デプロイ済み・Next は `e895814` を push、Vercel production READY 確認済み）**
 - **Studio 共通の一時アップロード**（超解像 単発/バッチ/動画・Multi-Angle・特化ワークフロー・Director の 5 route）:
   `uploads/token` route が既定で **R2 の署名付き PUT URL**（`store:"r2"`、TTL 30 分）を返し、`studioUploads.ts` が
   そこへ `fetch(PUT)`（瞬断 3 回再送）。`storagePath` の形 `<userId>/<filename>` は不変。読む側
@@ -715,10 +715,12 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
   含まれない**（別の Content-Type で PUT しても 200）。3MB 単発 PUT 7.2 MB/s（TLS 込み）。Range GET 206 OK。
   `ull_r2.get_bytes` 300KB 0.47 秒、欠損キーは `NoSuchKey` を `RuntimeError` に包んで train/ingest の既存の失敗経路へ。
 - **デプロイ**: `modal_sdxl_lora_worker.py`（4.9 秒）、`modal_seedvr2_worker.py`（image 変更なし）、`modal_lora_worker.py`
-  （ingest_image 再ビルド）。**順序は Modal → Next**（Next を先に上げると SeedVR2 が R2 の URL を host 不許可で弾く）。
+  （ingest_image 再ビルド、18 秒）。デプロイ後にデプロイ済みの CPU `ingest_and_optimize_dataset_cpu` を R2 上の probe
+  データセット（2 枚）で直接呼び、**R2 読み出し → 最適化 → R2 原本の削除まで通し OK**（11.7 秒、GPU 不使用）。
+  Volume に `_lora_persist/r2probe-*/_ingest` の小さな残骸あり（数 KB、latent cache の掃除で消える）。**順序は Modal → Next**（Next を先に上げると SeedVR2 が R2 の URL を host 不許可で弾く）。
 
 **残り（この順で）**
-1. Next を push → Vercel READY を確認 → **ホストが実地で 1 本ずつ**: (a) 超解像 画像（署名付き GET を worker が fetch）、
+1. **ホストが実地で 1 本ずつ**（本番反映済みなので今すぐ試せる）: (a) 超解像 画像（署名付き GET を worker が fetch）、
    (b) 超解像 動画（ffprobe + worker、1GB 級）、(c) Multi-Angle / Director / 特化 WF（Next が R2 から Buffer 取得）、
    (d) LoRA データセット 100 枚超（`[lora-upload]` のコンソール行で Mbps を見る。§15 の 18.1 Mbps が基準）。
 2. (d) の実測を `docs/gpu-benchmarks.md` §15 に追記し、`R2_CONCURRENCY`（16）を必要なら調整。
