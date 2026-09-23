@@ -1247,6 +1247,32 @@ def _merge_upscale_metadata(job_id: str, extra: dict) -> None:
         print(f"[upscale-job] metadata merge failed {job_id}: {exc}", flush=True)
 
 
+def _finish_upscale_job(job_id: str, fields: dict, extra_meta: dict) -> None:
+    """終端 PATCH（completed / failed）は metadata と **同じ UPDATE** で打つ。
+
+    2026-09-23: `_patch_upscale_job({"status": ...})` → `_merge_upscale_metadata(
+    {"gpu_tier": ...})` の 2 段だと、generation_logs へコピーする AFTER UPDATE
+    トリガー（20260881000000）が最初の UPDATE で走り、その時点の metadata には
+    gpu_tier が無いので常に 'standard'（admin の Logs タブで "-"）になっていた。
+    GET→merge→PATCH を 1 回にまとめ、status の変化と gpu_tier を同じ行更新に乗せる。"""
+    if not job_id:
+        return
+    current: dict = {}
+    try:
+        res = _supabase_request(
+            "GET",
+            "/rest/v1/upscale_jobs",
+            params={"id": f"eq.{job_id}", "select": "metadata"},
+        )
+        if res is not None and res.ok:
+            rows = res.json()
+            if rows and isinstance(rows[0].get("metadata"), dict):
+                current = rows[0]["metadata"]
+    except Exception as exc:  # noqa: BLE001
+        print(f"[upscale-job] metadata read failed {job_id}: {exc}", flush=True)
+    _patch_upscale_job(job_id, {**fields, "metadata": {**current, **extra_meta}})
+
+
 def _gpu_tier_label() -> str:
     """実行中コンテナが実際に割り当てられたGPUの短い正規化ラベルを返す
     （torch.cuda.get_device_name() ベース）。このワーカーはプリセット別に
@@ -2253,8 +2279,7 @@ class SeedVR2Worker:
             _vram_stop.set()
             msg = f"{type(exc).__name__}: {exc}"[:500]
             print(f"[upscale-job] {job_id} FAILED: {msg}", flush=True)
-            _patch_upscale_job(job_id, {"status": "failed", "error_message": msg})
-            _merge_upscale_metadata(job_id, {"gpu_tier": _gpu_tier_label()})
+            _finish_upscale_job(job_id, {"status": "failed", "error_message": msg}, {"gpu_tier": _gpu_tier_label()})
             _refund_upscale_credits(user_id, credits_cost)
             return {"ok": False, "error": msg}
         _vram_stop.set()
@@ -2283,17 +2308,16 @@ class SeedVR2Worker:
                 meta["original_filename"] = saved_name
                 meta["original_bytes"] = len(original_data)
         if url:
-            _patch_upscale_job(job_id, {"status": "completed", "result_url": url})
-            _merge_upscale_metadata(job_id, meta)
+            _finish_upscale_job(job_id, {"status": "completed", "result_url": url}, meta)
             print(f"[upscale-job] {job_id} completed -> {url}", flush=True)
             return {"ok": True, "result_url": url}
 
         # ストレージ不通 — 課金しておいて結果を返せないのは避ける。返金 + failed。
-        _patch_upscale_job(
+        _finish_upscale_job(
             job_id,
             {"status": "failed", "error_message": "結果画像の保存に失敗しました。"},
+            meta,
         )
-        _merge_upscale_metadata(job_id, meta)
         _refund_upscale_credits(user_id, credits_cost)
         return {"ok": False, "error": "upload failed"}
 
@@ -2345,16 +2369,14 @@ class SeedVR2Worker:
             _vram_stop.set()
             msg = str(exc.detail)[:500]
             print(f"[upscale-video-job] {job_id} FAILED (validation): {msg}", flush=True)
-            _patch_upscale_job(job_id, {"status": "failed", "error_message": msg})
-            _merge_upscale_metadata(job_id, {"gpu_tier": _gpu_tier_label()})
+            _finish_upscale_job(job_id, {"status": "failed", "error_message": msg}, {"gpu_tier": _gpu_tier_label()})
             _refund_upscale_credits(user_id, credits_cost)
             return {"ok": False, "error": msg}
         except Exception as exc:  # noqa: BLE001
             _vram_stop.set()
             msg = f"{type(exc).__name__}: {exc}"[:500]
             print(f"[upscale-video-job] {job_id} FAILED: {msg}", flush=True)
-            _patch_upscale_job(job_id, {"status": "failed", "error_message": msg})
-            _merge_upscale_metadata(job_id, {"gpu_tier": _gpu_tier_label()})
+            _finish_upscale_job(job_id, {"status": "failed", "error_message": msg}, {"gpu_tier": _gpu_tier_label()})
             _refund_upscale_credits(user_id, credits_cost)
             return {"ok": False, "error": msg}
         _vram_stop.set()
@@ -2378,16 +2400,15 @@ class SeedVR2Worker:
             "gpu_tier": _gpu_tier_label(),
         }
         if url:
-            _patch_upscale_job(job_id, {"status": "completed", "result_url": url})
-            _merge_upscale_metadata(job_id, meta)
+            _finish_upscale_job(job_id, {"status": "completed", "result_url": url}, meta)
             print(f"[upscale-video-job] {job_id} completed -> {url}", flush=True)
             return {"ok": True, "result_url": url}
 
-        _patch_upscale_job(
+        _finish_upscale_job(
             job_id,
             {"status": "failed", "error_message": "結果動画の保存に失敗しました。"},
+            meta,
         )
-        _merge_upscale_metadata(job_id, meta)
         _refund_upscale_credits(user_id, credits_cost)
         return {"ok": False, "error": "upload failed"}
 

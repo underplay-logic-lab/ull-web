@@ -725,6 +725,16 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
   （本番オリジン）から PUT 200 を確認）。対処: `sizeBytes` を送ってこない古いクライアントには Modal チケットを返す
   互換フォールバックを追加（LoRA 側は `filenames` 無し → Modal チケットで最初から互換）。**ホストはタブを再読み込み。**
 
+- **実地確認 (b) 超解像 動画も OK（20:51〜20:54 JST、ジョブ `c71685d5`、SeedVR2 7B シャープ / HD）**: 0.9MB mp4 → R2 →
+  Next が R2 の署名付き URL で ffprobe（`meta_source: ffprobe`）→ worker（RTX PRO 6000）が R2 から取得、117.5 秒で完了。
+- **副産物のバグ修正（2026-09-23 夜）: admin Logs タブの GPU 名が超解像で常に "-"**。SeedVR2 worker が
+  `status: completed/failed` の PATCH を先に打ち、その後で metadata（gpu_tier）をマージしていたため、generation_logs
+  へコピーする AFTER UPDATE トリガーが走る時点で gpu_tier が無く 'standard' になっていた。`_finish_upscale_job()` で
+  status と merge 済み metadata を **同じ UPDATE** に乗せるよう修正（completed / failed 全経路）。SDXL worker は
+  gpu_tier の報告自体が無かったので `_gpu_tier_label()` を追加。両 worker デプロイ済み。今日の超解像 2 行は metadata の
+  値（T4 / RTX-PRO-6000）で手動補正。**新しい非同期テーブルを増やすときは「トリガーが読む列は status と同じ UPDATE で
+  書く」を守ること**（studio-tab-patterns §9 に追記）。
+
 **残り（この順で）**
 1. **実地確認 (a) 超解像 画像は OK（2026-09-23 20:42〜20:45 JST、ジョブ `af14dbfe`）**: 3.8MB PNG がブラウザ → R2
    `studio_uploads/` に着地 → Next が R2 に HEAD → 署名付き GET を worker に渡し、worker（SeedVR2 app、Real-ESRGAN anime）

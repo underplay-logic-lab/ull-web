@@ -242,6 +242,13 @@ Next.js側にフックできる箇所が無いので、**Postgres の `AFTER UPD
 **新規の非同期ジョブテーブルを追加したときは、同じパターンのトリガーをそのマイグレーションに含めること**
 （ワーカー側 Python コードの変更は一切不要 — 既存の PATCH 経路をそのまま拾える）。
 
+### トリガーが読む列は status と同じ UPDATE で書く（2026-09-23）
+
+`generation_logs` へのコピーは **status が completed/failed に変わった UPDATE** で 1 回だけ走る。その UPDATE に
+`metadata.gpu_tier` 等が乗っていないと、後から metadata をマージしても取り込まれない（SeedVR2 worker で
+admin Logs の GPU 名が常に "-" になっていた原因）。終端 PATCH は「GET → merge → status と metadata を 1 回の PATCH」
+にする（`modal_seedvr2_worker.py::_finish_upscale_job`）。
+
 ### `execution_time_ms` の起点
 
 `processing_started_at`（`pending`/`queued` → `processing` に変わった瞬間。

@@ -842,6 +842,41 @@ PERSIST_ROOT = f"{MODELS_DIR}/datasets"
 LORA_OUTPUT_DIR = f"{MODELS_DIR}/loras"
 
 
+def _gpu_tier_label() -> str:
+    """実際に割り当てられた GPU の正規化ラベル（torch.cuda.get_device_name()
+    ベース）。generation_jobs.metadata.gpu_tier → generation_logs.gpu_tier 経由で
+    admin「実稼働ログ & 粗利監視」の原価計算に使う。modal_lora_worker.py の
+    同名関数と同一内容（2026-09-23、この worker だけ報告が無く常に 'standard' だった）。
+    src/lib/pricing/gpuRates.ts の正規化パターンと対応させること。"""
+    try:
+        import torch
+
+        name = torch.cuda.get_device_name(0).lower()
+    except Exception:  # noqa: BLE001 — telemetry only, never fatal
+        return "unknown"
+    if "b300" in name:
+        return "B300"
+    if "b200" in name:
+        return "B200"
+    if "h200" in name:
+        return "H200"
+    if "h100" in name:
+        return "H100"
+    if "rtx pro 6000" in name or "rtx_pro_6000" in name:
+        return "RTX-PRO-6000"
+    if "a100" in name:
+        return "A100-80GB" if "80gb" in name else "A100-40GB"
+    if "l40s" in name:
+        return "L40S"
+    if "a10g" in name or "a10" in name:
+        return "A10"
+    if "l4" in name:
+        return "L4"
+    if "t4" in name:
+        return "T4"
+    return name
+
+
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -1909,7 +1944,7 @@ def train_sdxl_lora_job(params: dict) -> dict:
         # 学習プロセス終了後に測ると解放済みの値（実ジョブで 0.4GB）になり、完了画面の
         # バッジがそれを出してしまっていた（2026-09-22 発見）。走行中の最大値を使う。
         final_vram = _current_effective_vram_gb()
-        metadata: dict = {"checkpoints": checkpoints}
+        metadata: dict = {"checkpoints": checkpoints, "gpu_tier": _gpu_tier_label()}
         if vram_peak > 0:
             metadata["vram_used_gb"] = round(vram_peak, 2)
             metadata["vram_peak_gb"] = round(vram_peak, 2)
@@ -1978,6 +2013,7 @@ def train_sdxl_lora_job(params: dict) -> dict:
                     print(f"[sdxl] rescued {len(rescued)} checkpoint(s) from a failed run", flush=True)
             except Exception as rescue_exc:  # noqa: BLE001 — best effort only
                 print(f"[sdxl] checkpoint rescue skipped: {rescue_exc!r}", flush=True)
+        failure_meta.setdefault("gpu_tier", _gpu_tier_label())
         _patch_job(
             job_id,
             {
