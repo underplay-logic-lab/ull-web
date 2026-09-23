@@ -88,6 +88,17 @@ SD_SCRIPTS_REF = os.environ.get("SD_SCRIPTS_REF", "v0.11.1")
 # (scripts/modal_wan_animate.py's "Standard" tier) as the go-to non-Blackwell
 # option here.
 GPU_REQUEST = os.environ.get("SDXL_WORKER_GPU", "").strip() or "L40S"
+# Next 側 tier id（knob `gpu_usd_per_hour_<tier>` の綴り）→ Modal の GPU 文字列（modal_lora_worker.py と同じ表）。
+_MODAL_GPU_NAME: dict[str, str] = {
+    "b300": "B300",
+    "b200": "B200",
+    "h200": "H200",
+    "h100": "H100",
+    "rtx_pro_6000": "RTX-PRO-6000",
+    "a100_80gb": "A100-80GB",
+    "a100_40gb": "A100-40GB",
+    "l40s": "L40S",
+}
 
 # 固定既定（ユーザーには見せない）— 2026-09-23、ホスト合意「選択はさせないが 3〜4 つ足す」。
 # duo LoRA の検証ベイクで男性被写体の再現が甘かったのを受け、sd-scripts 側で未配線だった
@@ -1962,7 +1973,14 @@ def train_sdxl_lora_dispatch(item: dict, request: fastapi.Request):
     _authorize(request)
     if not item.get("output_lora_name"):
         raise fastapi.HTTPException(status_code=400, detail="output_lora_name is required")
-    call = train_sdxl_lora_job.spawn(item)
+    # 2026-09-23: Next の価格式（loraArchGpuTier）が payload の gpu_tier で tier を指定してくる。
+    # 既定の l40s は従来どおり GPU_REQUEST。それ以外は with_options で差し替える（tier 確認ラン用）。
+    _req = str(item.get("gpu_tier") or "").strip().lower()
+    _gpu = _MODAL_GPU_NAME.get(_req, "") if _req and _req != "l40s" else ""
+    _fn = train_sdxl_lora_job.with_options(gpu=_gpu) if _gpu else train_sdxl_lora_job
+    if _gpu:
+        print(f"[dispatch] gpu_tier={_req} -> {_gpu}", flush=True)
+    call = _fn.spawn(item)
     return {
         "ok": True,
         "spawned": True,
@@ -1970,6 +1988,7 @@ def train_sdxl_lora_dispatch(item: dict, request: fastapi.Request):
         "modal_call_id": call.object_id,
         "job_id": item.get("job_id"),
         "status": "queued",
+        "gpu": _gpu or GPU_REQUEST,
     }
 
 
