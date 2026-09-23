@@ -395,6 +395,8 @@ export function UpscaleStudioTab() {
   }, []);
   const [sessionResetOpen, setSessionResetOpen] = useState(false);
   const pendingFreshRef = useRef<QueuedSnapshot | null>(null);
+  // 改めて生成したジョブの id。完了時に前の並びを消すための印。
+  const freshJobIdRef = useRef<string | null>(null);
 
   // job.resultUrl は超解像画像の結果（2026-09-18〜）だとURLではなくVolume
   // 相対パスなので、表示・ダウンロードで使える実URLへ都度解決する
@@ -694,9 +696,8 @@ export function UpscaleStudioTab() {
         broadcastCreditsUpdate(user.id, res.remainingCredits);
         {
           const entry: StudioSessionEntry = { id: res.jobId, createdAt: new Date().toISOString(), label: snapshot.image.name };
-          commitSession(
-            opts.continuation ? [...sessionJobsRef.current.filter((e) => e.id !== res.jobId), entry] : [entry],
-          );
+          commitSession([...sessionJobsRef.current.filter((e) => e.id !== res.jobId), entry]);
+          freshJobIdRef.current = opts.continuation ? null : res.jobId;
         }
         setJobId(res.jobId);
         setPhase("running");
@@ -742,6 +743,12 @@ export function UpscaleStudioTab() {
             // 「順番待ち」で予約されていた次の1件を、コンテナがまだ温かい
             // うちに自動発火する。ref はイベントハンドラでのみ書かれるので
             // ここでは読むだけ（clear は同じ非同期コールバック内で行う）。
+            // 改めて生成したジョブが完了したら、前の「今回の生成」を消して
+            // このジョブ 1 件から始める（確認時点では消さない）。
+            if (freshJobIdRef.current === jobId) {
+              freshJobIdRef.current = null;
+              commitSession(sessionJobsRef.current.filter((e) => e.id === jobId));
+            }
             const [queued, ...restQueued] = queuedNextRef.current;
             if (queued) {
               // 2026-09-23: 以前はここで結果を自動 DL していたが廃止（「今回の生成」
@@ -787,7 +794,7 @@ export function UpscaleStudioTab() {
     return () => {
       cancelled = true;
     };
-  }, [jobId, markGpuWarm, runGenerate]);
+  }, [jobId, markGpuWarm, runGenerate, commitSession]);
 
   // job完了後、resultUrlを実際に表示・ダウンロードできるURLへ解決する
   // （Volume相対パスなら署名付きModal URLを発行、旧方式のURLはそのまま）。

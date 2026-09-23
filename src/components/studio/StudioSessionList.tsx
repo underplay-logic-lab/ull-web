@@ -5,7 +5,8 @@ import { X } from "lucide-react";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 
 // 「今回の生成」一覧（2026-09-23、ホスト方針）。順番待ち・並列で続けて出したジョブ
-// だけをブラウザ側（localStorage）に並べ、改めて生成するときは確認のうえ空にする。
+// だけをブラウザ側（localStorage）に並べる。改めて生成するときは確認を出し、その新しい
+// 生成が**完了した時点**で前の並びを消す（ホスト指示: 確認時点では消さない）。
 // サーバー側の保持はユーザーに見せない安全弁で、ユーザーには「都度ダウンロード
 // しなければ消える」感覚でいてもらう。保持期間は UI に書かない。
 // Multi-Angle はサーバー一覧を id で絞る実装、超解像 画像/動画・Director はこの
@@ -53,7 +54,7 @@ export function StudioSessionList({
     <div className="mt-8 border-t border-border pt-6">
       <p className="text-xs font-medium text-muted">
         今回の生成
-        <span className="ml-2 text-muted/60">続けて出した生成はここから表示し直せます。改めて生成すると一覧は消去されます。</span>
+        <span className="ml-2 text-muted/60">続けて出した生成はここから表示し直せます。改めて生成した結果が完了すると一覧は消去されます。</span>
       </p>
       <ul className="mt-3 divide-y divide-border rounded-lg border border-border bg-surface/40">
         {entries.map((e) => {
@@ -103,7 +104,7 @@ export function SessionResetConfirmModal({
           </button>
         </div>
         <p className="mt-2 text-sm leading-relaxed text-muted">
-          新しく生成すると、今表示している結果と「今回の生成」の一覧は消去されます。必要なものは先にダウンロードしてください。続けますか？
+          新しい生成が完了すると、今表示している結果と「今回の生成」の一覧は消去されます。必要なものは先にダウンロードしてください。続けますか？
         </p>
         <div className="mt-6 flex flex-col gap-2">
           <button
@@ -111,7 +112,7 @@ export function SessionResetConfirmModal({
             onClick={onConfirm}
             className="rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
           >
-            消去して生成する
+            生成する
           </button>
           <button
             type="button"

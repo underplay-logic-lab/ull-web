@@ -556,7 +556,7 @@ function RegenerateConfirmModal({
           </button>
         </div>
         <p className="mt-2 text-sm leading-relaxed text-muted">
-          新しく生成すると、今表示している結果と「今回の生成」の一覧は消去されます。必要なものは先にダウンロードしてください。続けますか？
+          新しい生成が完了すると、今表示している結果と「今回の生成」の一覧は消去されます。必要なものは先にダウンロードしてください。続けますか？
         </p>
         <div className="mt-6 flex gap-2">
           <button
@@ -689,6 +689,8 @@ export function MultiAngleStudioTab() {
   );
   // runGenerate（useCallback、依存は user のみ）から最新値を読むための ref。
   const sessionIdsRef = useRef<string[]>(sessionIds);
+  // 改めて生成したジョブの id。完了時に前の並びを消す（確認時点では消さない）。
+  const freshJobIdRef = useRef<string | null>(null);
 
   // ログイン時と、ジョブが終端（done / error）に達するたびに一覧を更新する
   // （非同期応答でのみ setState する — 効果内の同期 setState は lint 禁止）。
@@ -760,11 +762,11 @@ export function MultiAngleStudioTab() {
         broadcastCreditsUpdate(user.id, res.remainingCredits);
         saveFormState(JOB_KEY, { jobId: res.jobId });
         {
-          const prev = sessionIdsRef.current;
-          const ids = opts.continuation ? [...prev.filter((x) => x !== res.jobId), res.jobId] : [res.jobId];
+          const ids = [...sessionIdsRef.current.filter((x) => x !== res.jobId), res.jobId];
           sessionIdsRef.current = ids;
           setSessionIds(ids);
           saveFormState(SESSION_KEY, { ids });
+          freshJobIdRef.current = opts.continuation ? null : res.jobId;
         }
         setJob({
           id: res.jobId,
@@ -819,6 +821,15 @@ export function MultiAngleStudioTab() {
             // ここでは読むだけ（clear は同じ非同期コールバック内で行う —
             // ポーリング応答というイベントに対する反応であり、レンダー毎の
             // 同期的な副作用ではない）。
+            // 改めて生成したジョブが完了したら、前の「今回の生成」を消して
+            // このジョブ 1 件から始める（確認時点では消さない）。
+            if (freshJobIdRef.current === jobId) {
+              freshJobIdRef.current = null;
+              const ids = sessionIdsRef.current.filter((x) => x === jobId);
+              sessionIdsRef.current = ids;
+              setSessionIds(ids);
+              saveFormState(SESSION_KEY, { ids });
+            }
             const [queued, ...restQueued] = queuedNextRef.current;
             if (queued) {
               // 2026-09-23: 以前はここで完了分を ZIP 自動 DL していた（次のジョブが
@@ -1425,7 +1436,7 @@ export function MultiAngleStudioTab() {
         <div className="mt-8 border-t border-border pt-6">
           <p className="text-xs font-medium text-muted">
             今回の生成
-            <span className="ml-2 text-muted/60">続けて出した生成はここから表示し直せます。改めて生成すると一覧は消去されます。</span>
+            <span className="ml-2 text-muted/60">続けて出した生成はここから表示し直せます。改めて生成した結果が完了すると一覧は消去されます。</span>
           </p>
           <ul className="mt-3 divide-y divide-border rounded-lg border border-border bg-surface/40">
             {sessionHistory.map((h) => {
