@@ -25,7 +25,8 @@ const GPU_SPECS: GpuSpec[] = [
   { name: "B200", vram: "180GB", bandwidth: "8.0TB/s", hourly: 6.25, offload: false },
   { name: "H200", vram: "141GB", bandwidth: "4.8TB/s", hourly: 4.54, offload: false },
   { name: "H100", vram: "80GB", bandwidth: "3.35TB/s", hourly: 3.95, offload: false },
-  { name: "RTX PRO 6000", vram: "48GB", bandwidth: "0.96TB/s", hourly: 3.03, offload: true },
+  // Blackwell 世代の 96GB GDDR7（2026-09-23 訂正: 旧 Ada の RTX 6000 と混同して 48GB になっていた）。
+  { name: "RTX PRO 6000", vram: "96GB", bandwidth: "1.6TB/s", hourly: 3.03, offload: false },
   { name: "A100 80GB", vram: "80GB", bandwidth: "2.04TB/s", hourly: 2.5, offload: false },
   { name: "A100 40GB", vram: "40GB", bandwidth: "1.55TB/s", hourly: 2.1, offload: true },
   { name: "L40S", vram: "48GB", bandwidth: "0.86TB/s", hourly: 1.95, offload: true },
@@ -45,22 +46,21 @@ type EffRow = {
 };
 
 // Effective cost = hourly × actual wall-clock (not the sticker hourly).
-// Short job — one 2.5-minute video generation.
+// 2026-09-23: 以前の行は推定値で実測と食い違っていた（L40S「4時間」等）ので、
+// 実測（docs/gpu-benchmarks.md）に差し替え。USD/JPY 170。
+// Short job — 静止画超解像 ×2（6.55MP 出力、cold 起動込み）。§1 の 3 tier 実測。
 const SHORT_JOB: EffRow[] = [
-  { gpu: "B300", duration: "2分30秒", usd: "$0.296", jpy: "約44円" },
-  { gpu: "B200", duration: "2分32秒", usd: "$0.264", jpy: "約40円" },
-  { gpu: "A100 80G", duration: "5分10秒", usd: "$0.215", jpy: "約32円" },
-  { gpu: "RTX 6000", duration: "8分20秒", usd: "$0.421", jpy: "約63円", note: "オフロードで割高" },
-  { gpu: "L40S", duration: "9分00秒", usd: "$0.293", jpy: "約44円", note: "同額で激遅" },
+  { gpu: "RTX PRO 6000", duration: "30秒（wall 86秒）", usd: "$0.072", jpy: "約12円", note: "最安・最速", best: true },
+  { gpu: "L40S", duration: "58秒（wall 136秒）", usd: "$0.074", jpy: "約12.5円" },
+  { gpu: "B300", duration: "49秒（wall 99秒）", usd: "$0.195", jpy: "約33円", note: "cold JIT が支配的で粗利ゼロ" },
 ];
 
-// Long job — one LoRA training run, 2000 steps.
+// Long job — LoRA 学習 anima 2,000step・220枚（§14.21/§14.26 の s/it と prep から算出）。
 const LONG_JOB: EffRow[] = [
-  { gpu: "B300", duration: "30分", usd: "$3.550", jpy: "約533円" },
-  { gpu: "B200", duration: "32分", usd: "$3.333", jpy: "約500円", note: "実質最安", best: true },
-  { gpu: "H100", duration: "1時間05分", usd: "$4.279", jpy: "約642円", note: "割高" },
-  { gpu: "A100 80G", duration: "1時間50分", usd: "$4.583", jpy: "約687円", note: "割高" },
-  { gpu: "L40S", duration: "4時間00分", usd: "$7.800", jpy: "約1,170円", note: "2倍以上割高" },
+  { gpu: "RTX PRO 6000", duration: "18分", usd: "$0.91", jpy: "約155円", note: "B300 より速くて 60% 安い", best: true },
+  { gpu: "B300", duration: "19分", usd: "$2.26", jpy: "約384円" },
+  { gpu: "H200（ltx2 の例）", duration: "41分", usd: "$3.08", jpy: "約524円", note: "ltx2 は B300 と同速で 36% 安" },
+  { gpu: "B300（ltx2 の例）", duration: "41分", usd: "$4.81", jpy: "約818円" },
 ];
 
 function EffectiveCostTable({ title, subtitle, rows }: { title: string; subtitle: string; rows: EffRow[] }) {
@@ -195,13 +195,13 @@ export function GpuCostReferenceCard() {
 
           {/* 2. Effective-cost comparison (B300 baseline) */}
           <EffectiveCostTable
-            title="実効コスト比較 ① 短時間ジョブ（動画生成 2.5分・B300基準）"
-            subtitle="所要時間が短いジョブは、時給が安いGPUでも総額が逆転しやすい。"
+            title="実効コスト比較 ① 短時間ジョブ（静止画超解像 ×2・6.55MP・cold 込み実測）"
+            subtitle="短いジョブは起動と初回 JIT が支配的。B300 は時給に加えて cold が遅く、単発では粗利が出ない。"
             rows={SHORT_JOB}
           />
           <EffectiveCostTable
-            title="実効コスト比較 ② 長時間ジョブ（LoRA学習 2000 steps・B300基準）"
-            subtitle="長時間ジョブほど「遅い＝高い」が顕著。B200が実質最安。"
+            title="実効コスト比較 ② 長時間ジョブ（LoRA 学習 2,000 steps・実測 s/it から算出）"
+            subtitle="VRAM が収まる限り安い tier が勝つ arch が多い（anima は RTX PRO 6000 の方が速い）。Blackwell が常に最速ではない。"
             rows={LONG_JOB}
           />
 
@@ -228,7 +228,10 @@ export function GpuCostReferenceCard() {
           <p className="text-[10px] text-muted opacity-70">
             ※ 数値は Modal の GPU 料金表 ＋ 自社ベンチマークに基づく参考値。料金・実測が変わったら本カード（
             <span className="font-mono">src/components/admin/GpuCostReferenceCard.tsx</span>）を更新。
-          </p>
+          
+                ※ これは動画生成（数十〜数百 GB のモデル常駐）の話。LoRA 学習と超解像は VRAM が収まる
+                最安 tier を arch ごとに実測で選んでいる（docs/gpu-benchmarks.md §1・§14.26）。
+              </p>
         </div>
       )}
     </div>
