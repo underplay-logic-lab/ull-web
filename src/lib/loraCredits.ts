@@ -59,9 +59,21 @@ export const LORA_AUTO_STEPS_MIN = 500;
 // 高額ジョブを組めるようになるべきではない（枚数上限は 500 枚）。
 export const LORA_AUTO_STEPS_MAX = 5000;
 
-export function autoLoraSteps(imageCount: number): number {
+// 2026-09-23: SDXL（sd-scripts ワーカー）は別の式。実案件 WAI v7（220枚・LoCon 既定込み・
+// 3,000step）をホストが中間チェックポイントで見比べた結果、ベストは step 1,750 で、
+// 3,000 まで回す意味が無かった。ただし「毎回 1,750 が最良とは限らないので最低 2,000 は
+// 回す」（ホスト）。上の式（850 + 12×枚数）だと 220 枚で 3,490 なので、220 枚で約 2,000
+// になるよう 600 + 6.5×枚数 にする（100 枚 → 1,250、50 枚 → 925。MIN/MAX は共通）。
+// ai-toolkit 系（動画・FLUX 等）は実測が無いので従来の式のまま。
+export const LORA_AUTO_STEPS_BASE_SDXL = 600;
+export const LORA_AUTO_STEPS_PER_IMAGE_SDXL = 6.5;
+
+export function autoLoraSteps(imageCount: number, arch?: string | null): number {
   const n = Math.max(1, Math.round(imageCount) || 1);
-  const raw = LORA_AUTO_STEPS_BASE + n * LORA_AUTO_STEPS_PER_IMAGE;
+  const sdxl = String(arch ?? "").trim().toLowerCase() === "sdxl";
+  const raw = sdxl
+    ? LORA_AUTO_STEPS_BASE_SDXL + n * LORA_AUTO_STEPS_PER_IMAGE_SDXL
+    : LORA_AUTO_STEPS_BASE + n * LORA_AUTO_STEPS_PER_IMAGE;
   return Math.min(LORA_AUTO_STEPS_MAX, Math.max(LORA_AUTO_STEPS_MIN, Math.round(raw)));
 }
 
@@ -79,8 +91,12 @@ export function autoLoraSteps(imageCount: number): number {
 // 「特定のディテールを忠実に再現したい」という点で画風LoRAに近いと判断し
 // 高rank側にまとめた。captionSpec未選択（custom modelフロー等）は保守的に
 // characterと同じ扱いにする。
+// 2026-09-23: 人物は alpha = rank（32/32）へ（ホスト判断）。実案件 WAI v7 で alpha=rank に
+// 揃えた構成が良好で、ai-toolkit の既定も alpha=rank。rank は所要時間・価格に効かない
+// （docs/gpu-benchmarks.md §14.25）ので 32 のまま（64 はファイルが 2 倍になるだけ）。
+// detail 側（64/32）は未検証のため据え置き。
 export const LORA_AUTO_RANK_ALPHA: Record<"character" | "detail", { rank: number; alpha: number }> = {
-  character: { rank: 32, alpha: 16 },
+  character: { rank: 32, alpha: 32 },
   detail: { rank: 64, alpha: 32 },
 };
 

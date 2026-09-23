@@ -1465,8 +1465,10 @@ export function LoraStudioTab({
   // rank/alpha は LoRA のカテゴリ、ステップ数は取り込んだ枚数で決まる。
   const autoConfig = useMemo(() => {
     const { rank, alpha } = autoLoraRankAlpha(captionCategory);
-    return { rank, alpha, steps: autoLoraSteps(images.length) };
-  }, [captionCategory, images.length]);
+    // SDXL は step の式が別（loraCredits.ts）。pricedArch はこの下で定義されるので同じ式をここで引く。
+    const archForSteps = modelChoice === "__custom__" ? baseArchitecture : (loraPresetById(modelChoice)?.arch ?? "");
+    return { rank, alpha, steps: autoLoraSteps(images.length, archForSteps) };
+  }, [captionCategory, images.length, modelChoice, baseArchitecture]);
 
   // エキスパートへ入った瞬間に alpha 16→32 / steps 2830→2000 のように値が
   // 静かに変わっていた（DEFAULT_PRO が枚数もカテゴリも見ない固定値だった

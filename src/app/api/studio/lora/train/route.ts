@@ -451,7 +451,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
     : {
         ...trainingConfig,
         ...(typeof trainingConfig.steps !== "number"
-          ? { steps: autoLoraSteps(storagePaths.length) }
+          ? { steps: autoLoraSteps(storagePaths.length, pricedArch) }
           : {}),
         ...(typeof trainingConfig.rank !== "number"
           ? autoLoraRankAlpha(captionSpec?.category)
