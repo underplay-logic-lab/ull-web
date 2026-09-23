@@ -765,7 +765,7 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
    (b) 超解像 動画（ffprobe + worker、1GB 級）、(c) Multi-Angle / Director / 特化 WF（Next が R2 から Buffer 取得）、
    (d) LoRA データセット 100 枚超（`[lora-upload]` のコンソール行で Mbps を見る。§15 の 18.1 Mbps が基準）。
 2. (d) の実測を `docs/gpu-benchmarks.md` §15 に追記し、`R2_CONCURRENCY`（16）を必要なら調整。
-2'. **(d) LoRA データセットも OK（2026-09-23 23:22 JST）**: 220 枚 / 32.7MB がブラウザ → R2 に約 20 秒で着地（§15 追記）→
+2'. **(d) LoRA データセットも OK（2026-09-23 23:22 JST）**: 220 枚 / 32.7MB がブラウザ → R2 に 20.7 秒・13.2 Mbps・1 リクエスト平均 1.46 秒（ブラウザ実測、§15）→
    Smart Ingest（CPU）が R2 から読んで最適化（3 分 9 秒。Volume 時代の同条件の実測は無く、次回比較）→ B300 投入まで通った
    （ジョブ `9b4c9577` はモデル読み込み中にホストが Modal 側で手動停止。DB 行は failed に閉じた。返金はホスト対応）。
    **計画 4 の実地確認はこれで全経路完了。**
