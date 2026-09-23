@@ -8,7 +8,7 @@
 **更新のタイミング**: 作業の区切りごと（コミットした／方針が決まった／実測が
 出た／残課題が増減した）。セッションの終わりに必ず見直す。
 
-最終更新: 2026-09-21
+最終更新: 2026-09-23
 
 ---
 
@@ -326,7 +326,12 @@ GPU tier が検討できる。ただし CLAUDE.md §1 のとおり **1回あた�
 ＋ `caption_tag_dropout_rate=0.1`（TOML `[general]`、keep_tokens 分は落ちない）。env
 `SDXL_LR_SCHEDULER / SDXL_LR_WARMUP_RATIO / SDXL_CONV_DIM / SDXL_TAG_DROPOUT` で個別に戻せる。
 smoke（L40S・合成5枚・20step、58.5s）で引数が通り、U-Net の LoRA モジュールが 722 → 788
-（Conv2d 3×3 に掛かった）ことを確認。**次は kocho 単体 50〜300step で効きを見る**（ホスト運用）。
+（Conv2d 3×3 に掛かった）ことを確認。**WAI v7（kocho ×5・rank 64/alpha 64・3,000step）を焼いた結果、
+ホスト評価は「v6 よりかなり良い」＝この 220 枚での頭打ち圏**（gpu-benchmarks §14.24）。
+**残る価格側の宿題**: v7 の 1.23 s/it は rank 64 と LoCon が混ざっていて `LORA_SPI_BASELINE.sdxl=1.0` は
+当て推量。**rank 32 + LoCon の 300step を1本**（L40S・約 50C）で基準を確定し、そこから rank 係数
+（`1 + k×(rank/32−1)`）を式に足して価格を所要時間に連動させる（ホスト指摘 2026-09-23、未着手。
+CLAUDE.md §3「rank は課金に効かない」も同時に書き換える）。
 
 ### 実測: SDXL ワーカーのコールドスタート内訳（2026-09-22）
 
