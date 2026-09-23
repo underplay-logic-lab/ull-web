@@ -18,6 +18,7 @@ import {
   resolveTargetShort,
   upscaleCostBreakdown,
   upscaleCreditsWorstCase,
+  upscalePriorityParallelSurcharge,
 } from "@/lib/upscaleStudio";
 
 // 非同期: この route は寸法から課金額を出し、クレジットを引き落とし、
@@ -167,7 +168,7 @@ export async function POST(request: Request) {
   // 「実行中でも並列で今すぐ実行」を選んだ場合の追加コールドスタート分
   // （順番待ち=無料の既定に対するオプトインの上乗せ。CLAUDE.md §6参照）。
   if (priority) {
-    creditsCost += Math.round(knobs.upscale_priority_parallel_surcharge);
+    creditsCost += upscalePriorityParallelSurcharge(knobs, creditsCost);
   }
 
   // --- credits ---------------------------------------------------------

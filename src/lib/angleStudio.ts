@@ -17,6 +17,7 @@
 // 3 軸マトリクス（直積）で構図を展開する構造は据え置き。
 
 import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";
+import { parallelSurcharge } from "@/lib/pricing/parallelSurcharge";
 
 // 2026-09-09: turbo(35)/pro(40) の 2 モードは廃止。35 と 40 の差は誤差なうえ
 // 課金が 1C/2C と乖離していた → **40 ステップ単一モード**に統一。`AngleMode` 型は
@@ -335,9 +336,7 @@ export function angleGenerationCost(
 // ＝ rate 1.0）。上乗せ = ceil(通常料金 × rate) + 固定分。フロント表示と API 検証は
 // 同じ baseCost と同じ knob をここへ渡すこと。
 export function anglePriorityParallelSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS, baseCost = 0): number {
-  const rate = Math.max(0, knobs.angle_priority_parallel_rate);
-  const flat = Math.max(0, Math.round(knobs.angle_priority_parallel_surcharge));
-  return Math.ceil(Math.max(0, baseCost) * rate) + flat;
+  return parallelSurcharge(baseCost, knobs.angle_priority_parallel_rate, knobs.angle_priority_parallel_surcharge);
 }
 
 // --- クイックプリセット -------------------------------------------------

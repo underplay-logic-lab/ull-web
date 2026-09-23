@@ -19,6 +19,7 @@ import {
   upscaleVideoCostBreakdown,
   upscaleVideoCreditsWorstCase,
   validateVideoInputResolution,
+  upscalePriorityParallelSurcharge,
 } from "@/lib/upscaleStudio";
 
 // 署名付き URL の有効期限。動画は画像よりジョブが長く、GPU がコールド/
@@ -147,7 +148,7 @@ export async function POST(request: Request) {
   // （順番待ち=無料の既定に対するオプトインの上乗せ。CLAUDE.md §6参照）。
   const priority = body.priority === true || body.priority === "true";
   if (priority) {
-    creditsCost += Math.round(knobs.upscale_priority_parallel_surcharge);
+    creditsCost += upscalePriorityParallelSurcharge(knobs, creditsCost);
   }
 
   // 固定倍率モデル（ESRGAN/SwinIR）は HD/2K/4K プリセットを見ず「入力短辺×

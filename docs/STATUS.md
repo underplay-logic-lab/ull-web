@@ -806,7 +806,8 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
   理由: 並列が奪うのは GPU 時間ではなく枠（10 台）の同時占有で、固定だけだと枠を長く占有する大きいジョブほど
   相対的に安くなる。knob `angle_priority_parallel_rate` = 1.0（コード既定、DB 行は migration 20260882 で追加）、
   `angle_priority_parallel_surcharge` = 50（**DB 行を 340 → 50 に更新済み**）。モーダル表記は「通常料金に +○C、合計 △C」。
-  超解像（100C）・Director（115C）の並列は固定のままで、後で同じ「率 + 小さい固定」に揃える候補。
+  **超解像（画像・動画共通）と Director も同夜に同じ「率 1.0 + 固定 50C」へ統一**（DB 行 100 / 115 → 50、率の行は
+  migration 20260882 に同梱、未適用でもコード既定 1.0 で効く）。共通式は `src/lib/pricing/parallelSurcharge.ts`。
   **1 構図単価は 12 → 14C にホストが admin で変更済み（同夜）。**
 
 - LoRA の値上げ（1.6倍 → 3.0倍 markup）は**ホスト判断で受け入れ済み**。

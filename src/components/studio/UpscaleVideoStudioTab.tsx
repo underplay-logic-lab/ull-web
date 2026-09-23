@@ -586,7 +586,7 @@ export function UpscaleVideoStudioTab() {
     const snapshot = buildSnapshot();
     if (!snapshot) return;
     setQueueChoiceOpen(false);
-    const surcharge = upscalePriorityParallelSurcharge(knobs);
+    const surcharge = upscalePriorityParallelSurcharge(knobs, cost);
     if (!creditsLoading && (credits ?? 0) < cost + surcharge) {
       setChargeOpen(true);
       return;
@@ -860,7 +860,8 @@ export function UpscaleVideoStudioTab() {
       />
       <QueueChoiceModal
         open={queueChoiceOpen}
-        surcharge={upscalePriorityParallelSurcharge(knobs)}
+        surcharge={upscalePriorityParallelSurcharge(knobs, cost)}
+        total={cost + upscalePriorityParallelSurcharge(knobs, cost)}
         onCancel={() => setQueueChoiceOpen(false)}
         onQueue={handleQueueWait}
         onParallel={handleQueueParallel}

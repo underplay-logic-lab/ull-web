@@ -27,6 +27,7 @@
 //   適用できる（前段は必ず最終段より小さい）。
 
 import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";
+import { parallelSurcharge } from "@/lib/pricing/parallelSurcharge";
 
 // アップロード先バケット・アップロード/ダウンロードのヘルパーは
 // src/lib/studioUploads.ts（クライアント）/ studioUploads.server.ts
@@ -352,9 +353,10 @@ export function upscaleCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): nu
 }
 
 // 実行中のジョブを待たず並列で今すぐ実行する場合の追加料金（既定の「順番待ち」
-// は無料）。knobDefaults.ts の upscale_priority_parallel_surcharge 参照。
-export function upscalePriorityParallelSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS): number {
-  return Math.round(knobs.upscale_priority_parallel_surcharge);
+// は無料）。全タブ共通の「通常料金 × 率 + 固定」（src/lib/pricing/parallelSurcharge.ts）。
+// フロント表示と API 検証は同じ baseCost を渡すこと。画像・動画で共通の knob。
+export function upscalePriorityParallelSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS, baseCost = 0): number {
+  return parallelSurcharge(baseCost, knobs.upscale_priority_parallel_rate, knobs.upscale_priority_parallel_surcharge);
 }
 
 // --- 動画アップスケール v1（最小スコープ） ---------------------------------

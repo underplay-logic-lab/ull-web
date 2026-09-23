@@ -14,3 +14,21 @@ set value = 50,
     label = 'Multi-Angle 並列実行 固定追加料金',
     description = '並列実行時に 1 ジョブへ一律で足す固定分。率（angle_priority_parallel_rate）と合算。0 で比例分のみ。'
 where key = 'angle_priority_parallel_surcharge';
+
+-- 2026-09-23 同夜: 超解像（画像・動画共通）と Director も同じ「率 + 固定 50C」へ揃える。
+insert into public.pricing_knobs (key, value, label, category, unit, description, is_public) values
+  ('upscale_priority_parallel_rate', 1.0, '超解像 並列実行 上乗せ率', 'feature_credits', '×', '並列実行時に通常料金へ掛けて上乗せする割合（1.0 = 通常料金と同額を追加 = 合計 2 倍）。固定分と合算。', true),
+  ('director_priority_parallel_rate', 1.0, 'Cinematic Director 並列実行 上乗せ率', 'feature_credits', '×', '並列実行時に通常料金へ掛けて上乗せする割合（1.0 = 通常料金と同額を追加 = 合計 2 倍）。固定分と合算。', true)
+on conflict (key) do nothing;
+
+update public.pricing_knobs
+set value = 50,
+    label = '超解像 並列実行 固定追加料金',
+    description = '並列実行時に 1 ジョブへ一律で足す固定分（コールドスタート分）。率と合算。'
+where key = 'upscale_priority_parallel_surcharge';
+
+update public.pricing_knobs
+set value = 50,
+    label = 'Cinematic Director 並列実行 固定追加料金',
+    description = '並列実行時に 1 ジョブへ一律で足す固定分（コールドスタート分）。率と合算。'
+where key = 'director_priority_parallel_surcharge';

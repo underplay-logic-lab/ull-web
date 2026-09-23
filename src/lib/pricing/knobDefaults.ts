@@ -25,10 +25,12 @@ export type KnobKey =
   | "director_per_second_quality"
   | "director_min_credits"
   | "director_priority_parallel_surcharge"
+  | "director_priority_parallel_rate"
   | "director_qwen_script_credits"
   | "upscale_per_mp"
   | "upscale_min_credits"
   | "upscale_priority_parallel_surcharge"
+  | "upscale_priority_parallel_rate"
   | "upscale_mult_power"
   | "upscale_cascade_mult_2stage"
   | "upscale_cascade_mult_3stage"
@@ -240,18 +242,23 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     description: "1本あたりの最低消費クレジット（秒課金の下限）",
     isPublic: true,
   },
+  director_priority_parallel_rate: {
+    // 2026-09-23: 全タブ共通「通常料金 × 率 + 固定」（src/lib/pricing/parallelSurcharge.ts）。
+    value: 1.0,
+    label: "Cinematic Director 並列実行 上乗せ率",
+    category: "feature_credits",
+    unit: "×",
+    description: "並列実行時に通常料金へ掛けて上乗せする割合（1.0 = 通常料金と同額を追加 = 合計 2 倍）。固定分と合算。",
+    isPublic: true,
+  },
   director_priority_parallel_surcharge: {
-    // 2026-09-14: 「実行中でも並列で今すぐ実行」を選んだ時の追加料金。
-    // directorPollDeadlineS() の固定オーバーヘッド分（+200s、実測ベース）を
-    // 他の priority_parallel_surcharge 系と同じ導出方法で概算:
-    // 200s × gpu_jpy_per_hour_b300(¥1125/h) ÷ credit_to_jpy(1.66) ≈ 38C
-    // （原価） × 3倍markup ≈ 115C。理論値なので、実際の利用が増えたら
-    // admin で調整すること。
-    value: 115,
-    label: "Cinematic Director 並列実行 追加料金",
+    // 2026-09-14 は固定 115C（理論値）。2026-09-23 に全タブ共通の「率 + 固定 50C」へ
+    // （Multi-Angle と同じ。DB 行も 50 に更新済み）。
+    value: 50,
+    label: "Cinematic Director 並列実行 固定追加料金",
     category: "feature_credits",
     unit: "C",
-    description: "実行中のジョブを待たず並列で今すぐ実行する場合の追加コールドスタート分の上乗せ。",
+    description: "並列実行時に 1 ジョブへ一律で足す固定分（コールドスタート分）。率と合算。",
     isPublic: true,
   },
   director_qwen_script_credits: {
@@ -298,17 +305,24 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     description: "1枚あたりの消費クレジット下限（コールドスタート償却）",
     isPublic: true,
   },
+  upscale_priority_parallel_rate: {
+    // 2026-09-23: 全タブ共通「通常料金 × 率 + 固定」（src/lib/pricing/parallelSurcharge.ts）。
+    // 画像・動画で共通。
+    value: 1.0,
+    label: "超解像 並列実行 上乗せ率",
+    category: "feature_credits",
+    unit: "×",
+    description: "並列実行時に通常料金へ掛けて上乗せする割合（1.0 = 通常料金と同額を追加 = 合計 2 倍）。固定分と合算。",
+    isPublic: true,
+  },
   upscale_priority_parallel_surcharge: {
-    // 2026-09-14: 「実行中でも並列で今すぐ実行」を選んだ時の追加料金。
-    // angle_priority_parallel_surcharge と同じ導出方法（CLAUDE.md §6）:
-    // upscale_cold_start_grace_s(180s) × gpu_jpy_per_hour_b300(¥1125/h) ÷
-    // credit_to_jpy(1.66) ≈ 34C（原価） × 3倍markup ≈ 100C。理論値なので
-    // 実際の利用が増えたら admin で調整すること。
-    value: 100,
-    label: "超解像 並列実行 追加料金",
+    // 2026-09-14 は固定 100C（理論値）。2026-09-23 に全タブ共通の「率 + 固定 50C」へ
+    // （Multi-Angle と同じ。DB 行も 50 に更新済み）。画像・動画で共通。
+    value: 50,
+    label: "超解像 並列実行 固定追加料金",
     category: "feature_credits",
     unit: "C",
-    description: "実行中のジョブを待たず並列で今すぐ実行する場合の追加コールドスタート分の上乗せ。",
+    description: "並列実行時に 1 ジョブへ一律で足す固定分（コールドスタート分）。率と合算。",
     isPublic: true,
   },
   upscale_mult_power: {

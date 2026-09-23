@@ -12,6 +12,7 @@
 // に渡すだけで成立する。
 
 import { DEFAULT_KNOBS, type KnobKey, type PricingKnobs } from "@/lib/pricing/knobDefaults";
+import { parallelSurcharge } from "@/lib/pricing/parallelSurcharge";
 
 export const DIRECTOR_CAMERA_MOVES = [
   { id: "push_in", label: "Push in（寄る）", en: "a slow, smooth camera push-in" },
@@ -163,9 +164,10 @@ export function directorCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): n
  * -> 68s/video-sec。Modal関数自体のハードタイムアウト(7200s)より必ず小さく
  * 収まるよう上限3600sでクランプ。 */
 // 実行中のジョブを待たず並列で今すぐ実行する場合の追加料金（既定の「順番待ち」
-// は無料）。knobDefaults.ts の director_priority_parallel_surcharge 参照。
-export function directorPriorityParallelSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS): number {
-  return Math.round(knobs.director_priority_parallel_surcharge);
+// は無料）。全タブ共通の「通常料金 × 率 + 固定」（src/lib/pricing/parallelSurcharge.ts）。
+// フロント表示と API 検証は同じ baseCost を渡すこと。
+export function directorPriorityParallelSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS, baseCost = 0): number {
+  return parallelSurcharge(baseCost, knobs.director_priority_parallel_rate, knobs.director_priority_parallel_surcharge);
 }
 
 /** Advanced（Qwen3.8-27B-abliteratedによる台本自動生成）モード使用時に

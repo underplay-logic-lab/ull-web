@@ -593,7 +593,7 @@ export function DirectorStudioTab() {
     const snapshot = buildSnapshot();
     if (!snapshot) return;
     setQueueChoiceOpen(false);
-    const surcharge = directorPriorityParallelSurcharge(knobs);
+    const surcharge = directorPriorityParallelSurcharge(knobs, cost);
     if (!creditsLoading && (credits ?? 0) < cost + surcharge) {
       setChargeOpen(true);
       return;
@@ -740,7 +740,8 @@ export function DirectorStudioTab() {
       <InsufficientCreditsModal open={chargeOpen} onClose={() => setChargeOpen(false)} credits={credits} cost={cost} />
       <QueueChoiceModal
         open={queueChoiceOpen}
-        surcharge={directorPriorityParallelSurcharge(knobs)}
+        surcharge={directorPriorityParallelSurcharge(knobs, cost)}
+        total={cost + directorPriorityParallelSurcharge(knobs, cost)}
         onCancel={() => setQueueChoiceOpen(false)}
         onQueue={handleQueueWait}
         onParallel={handleQueueParallel}

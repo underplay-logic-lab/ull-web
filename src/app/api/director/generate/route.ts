@@ -218,7 +218,7 @@ export async function POST(request: Request) {
   // （順番待ち=無料の既定に対するオプトインの上乗せ。CLAUDE.md §6参照）。
   const priority = body.priority === true || body.priority === "true";
   const creditsCost = priority
-    ? baseCreditsCost + directorPriorityParallelSurcharge(knobs)
+    ? baseCreditsCost + directorPriorityParallelSurcharge(knobs, baseCreditsCost)
     : baseCreditsCost;
 
   // --- credits ---------------------------------------------------------
