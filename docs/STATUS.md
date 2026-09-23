@@ -333,6 +333,10 @@ rank 64 の 1.23 と 2% 差＝**rank は時間を動かさない。遅くなっ�
 `LORA_SPI_BASELINE.sdxl` 1.0 → 1.25。価格式に rank 係数 `loraRankFactor()`（arch 別 k、
 `LORA_RANK_MARGINAL`）を追加したが SDXL の k は実測 0。cost-guard も arch 別 GPU tier の時給で
 割るよう修正（B300 固定のままだと安い tier で二重に厳しかった）。
+**【完了 2026-09-23】loras/ 直下への final 平置きコピーを廃止**（`31c23fa`、両ワーカー）: ComfyUI 用の
+名前エイリアスだったが導線が無く二重保存なだけ。result_path は `loras/<user>/<job>/<name>_final.safetensors`。
+**【一時状態】SDXL ワーカーは LoCon 比較ラン用に `SDXL_CONV_DIM` 既定 0 でデプロイ中**（作業ツリーのみ、
+未コミット）。ホストが v7 同条件（kocho ×5・rank 64/64・3,000step）を投げて評価したら **16 に戻して再デプロイ**。
 **残る判断: LoCon を既定に残すか**（+65% の時間＝価格に見合う品質差があるかはホスト評価待ち。
 v7 の改善は kocho ×5・alpha=rank と同時に入れたため未分離）。
 
