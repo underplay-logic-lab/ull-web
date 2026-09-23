@@ -682,9 +682,15 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
      s_per_it **0.31**（tqdm の trimmed 平均）。stage 2 全体 1,138s → 学習部分は壁時計で約 0.41〜0.55 s/it。
      **knob の 1.80（docs §14.15）と 3〜6 倍ずれる**。§14.15 の条件（枚数・rank・実効バッチ・compile）と突き合わせて
      から判断する。1 点で knob は動かさない（CLAUDE.md §0）。preemption（CPU 準備段階）も 1 回踏んだ。
-4. **次**: (a) `cbeb0865` の行修復（ホスト許可待ち）→ 完了画面で並列 DL / URL 一覧コピーを確認、
-   (b) もう 1 本（安い arch で可）流して **CPU publish の経路**（spawn → r2_key 焼き込み → Volume 削除）を実地確認、
-   (c) minimax_h3 の s/it・prep を §14.15 と突き合わせて knob を引き直すか判断。（同時に「次の一手」1 の metrics も取れる）。
+4. **実地確認 完了（2026-09-23 19:50 JST）**: (a) `cbeb0865` の行を R2 の一覧から `completed` + `checkpoints[].r2_key`
+   に修復（ホスト承認）。(b) デプロイ済みの CPU 関数 `publish_sdxl_artifacts_r2` を過去ジョブ `e1204316`（SDXL、Volume
+   上に 4 ckpt + dataset.zip + LICENSE.txt）に直接呼び、**5 ファイル 1,009MB を 70 秒で移行**（CPU コンテナから
+   10〜20 MB/s、コールド込み 87 秒）。metadata に `r2_key` / `artifact_store` / `r2_publish` が入り、HEAD と Range 付き
+   署名 GET（206）まで確認。**残る未確認は UI 側**（完了画面の並列 DL・URL 一覧コピー）で、ホストがブラウザで見る。
+   (c) minimax_h3 の s/it・prep を §14.15 と突き合わせて knob を引き直すかは**未判断**。
+   - 速度メモ: Modal → R2 は GPU/CPU どちらのコンテナからも 2〜33 MB/s で、§16.5 の 48〜53 MB/s は再現していない
+     （§16.5 は Volume 上の大きい 1 ファイルを測った値。ファイル 230〜590MB だと 64MB パートが 4〜10 個で並列が
+     効き切らない可能性）。CPU に逃がしたので原価への影響は無いが、DL 開始までの待ちにはなる（1GB で 1〜2 分）。
 5. 計画 3（生成物）以降は未着手。admin「最近の生成物」（計画 6）が R2 対応するまで、新規 LoRA 成果物は admin のバケット
    ブラウザに出ない（rclone マウント `R:` で見る）。
 
