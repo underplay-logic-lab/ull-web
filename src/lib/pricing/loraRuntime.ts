@@ -106,8 +106,10 @@ export const LORA_SPI_BASELINE: Readonly<Record<string, number>> = {
   //   LoCon 有り・rank 32/16・300step        → 1.21 s/it
   //   LoCon 有り・rank 64/64・3,000step      → 1.23 s/it
   // rank の寄与は 2%（誤差）。LoCon は +65% だが、同条件比較で顔の再現性が段違いだったため
-  // 既定で有効（SDXL_CONV_DIM=16）。LoCon 有りの両実測を覆う 1.25。
-  sdxl: 1.25,
+  // 既定で有効（SDXL_CONV_DIM=16）。L40S なら 1.25。
+  // 2026-09-23 RTX PRO 6000（Blackwell image）で同条件 300step → 定常 0.645 s/it（§14.28）。300step の定常値
+  // なので余裕は L40S の 1.25（実測 1.21 の +3%）と同じ水準の +4% で 0.67（+20% だと prep 込みで L40S より高くなる）。
+  sdxl: 0.67,
 };
 export type LoraWorkerBackend = "sd_scripts" | "ai_toolkit";
 
@@ -167,9 +169,14 @@ export const LORA_ARCH_PROFILE: Readonly<
 };
 
 /** arch を回す GPU tier。sd-scripts 系は L40S 固定、ai-toolkit 系はプロファイル、無ければ B300。 */
+/** SDXL（sd-scripts ワーカー）の実行 tier。l40s に戻すと cu124 の従来関数で回る。 */
+export const SDXL_GPU_TIER: LoraGpuTier = "rtx_pro_6000";
+
 export function loraArchGpuTier(arch: string | null | undefined): LoraGpuTier {
   const key = String(arch ?? "").trim().toLowerCase();
-  if (loraWorkerBackend(key) === "sd_scripts") return "l40s";
+  // 2026-09-23: SDXL（sd-scripts）も RTX PRO 6000 へ（docs §14.28: L40S 1.21 → 0.645 s/it、1step 原価 −17%）。
+  // worker 側は payload の gpu_tier で Blackwell image（torch 2.8/cu128）の関数に振り分ける。
+  if (loraWorkerBackend(key) === "sd_scripts") return SDXL_GPU_TIER;
   return LORA_ARCH_PROFILE[key]?.gpu ?? "b300";
 }
 
@@ -210,7 +217,11 @@ export function loraCreditsPerGpuSecond(
   arch: string | null | undefined,
   knobs: PricingKnobs = DEFAULT_KNOBS,
 ): number {
-  if (loraWorkerBackend(arch) === "sd_scripts") return knobs.lora_credits_per_gpu_second_sdxl;
+  if (loraWorkerBackend(arch) === "sd_scripts") {
+    // sdxl の knob は L40S 時給で導出した単価。tier を変えたら L40S 比で比例させる（markup 据え置き）。
+    const r = gpuUsdPerHour(loraArchGpuTier(arch), knobs) / gpuUsdPerHour("l40s", knobs);
+    return knobs.lora_credits_per_gpu_second_sdxl * (Number.isFinite(r) && r > 0 ? r : 1);
+  }
   // ai-toolkit 側の knob は B300 時給で導出した「B300 の 1 GPU 秒」の単価。arch を安い tier で
   // 回すときは時給比で比例縮小する（markup は据え置き）。B300 なら比 1.0 で従来どおり。
   const tier = loraArchGpuTier(arch);

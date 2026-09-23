@@ -154,7 +154,7 @@ SDXL_COST_GUARD_MULTIPLIER = max(
 # 分離して 0.642 s/it・prep 43.2秒。ただし当時は AdamW8bit + gradient_checkpointing
 # 有効で、現在の既定（prodigy / gc 無効）より遅い条件なので、**実運用はこれより
 # 速い見込み＝過大見積もり＝安全側**。
-SDXL_SPI_BASELINE = float(os.environ.get("SDXL_SPI_BASELINE", "1.25"))
+SDXL_SPI_BASELINE = float(os.environ.get("SDXL_SPI_BASELINE", "0.67"))  # RTX PRO 6000 実測 0.645 + 4%（L40S は 1.21）
 # 同じく prep（モデルロード + latent キャッシュ + 保存）の固定分。
 # knobDefaults.ts の lora_prep_load_s_sdxl（45秒）に対し、下限計算では
 # 取りこぼしが致命的なので厚めに取る。
@@ -1962,6 +1962,49 @@ def train_sdxl_lora_job(params: dict) -> dict:
 dispatch_image = modal.Image.debian_slim(python_version="3.11").pip_install("fastapi[standard]", "modal", "requests")
 
 
+# --- Blackwell 用 image（2026-09-23、tier 確認ラン用）-------------------------
+# 本番の train_image は torch 2.6 / cu124 で、sm_120（RTX PRO 6000 / B300 / B200）の
+# カーネルを含まない（実測: `CUDA error: no kernel image is available`）。sd-scripts が
+# Blackwell 向けに案内する torch 2.8.0 + cu128 の別 image を、同じ本体で別関数として持つ。
+# 学習は `--sdpa` なので xformers は不要（本番 image にも入っているが未使用）。
+# L40S の本番経路（train_image / train_sdxl_lora_job）は一切触らない。
+train_image_blackwell = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("git", "ffmpeg", "libgl1", "libglib2.0-0", "wget", "build-essential")
+    .pip_install(
+        "torch==2.8.0",
+        "torchvision==0.23.0",
+        extra_index_url="https://download.pytorch.org/whl/cu128",
+    )
+    .pip_install("modal", "fastapi[standard]")
+    .run_commands(
+        f"git clone --depth 1 --branch {SD_SCRIPTS_REF} https://github.com/kohya-ss/sd-scripts.git {SD_SCRIPTS_DIR}",
+        f"cd {SD_SCRIPTS_DIR} && pip install -r requirements.txt",
+    )
+    .pip_install("Pillow", "requests")
+    .env({"HF_HOME": f"{MODELS_DIR}/hf_home_sdxl"})
+)
+_BLACKWELL_TIERS = {"rtx_pro_6000", "b300", "b200"}
+_raw_train_sdxl = train_sdxl_lora_job.get_raw_f()
+
+
+@app.function(
+    image=train_image_blackwell,
+    gpu="RTX-PRO-6000",
+    volumes={MODELS_DIR: vol},
+    timeout=10800,
+    scaledown_window=2,
+    secrets=[
+        modal.Secret.from_name("supabase-model-downloads"),
+        modal.Secret.from_name("wan-animate-auth"),
+        modal.Secret.from_name("huggingface-secret"),
+    ],
+)
+def train_sdxl_lora_job_blackwell(params: dict) -> dict:
+    """train_sdxl_lora_job と同じ本体を Blackwell image で回す（dispatch の gpu_tier で選択）。"""
+    return _raw_train_sdxl(params)
+
+
 @app.function(
     image=dispatch_image,
     timeout=30,
@@ -1977,7 +2020,11 @@ def train_sdxl_lora_dispatch(item: dict, request: fastapi.Request):
     # 既定の l40s は従来どおり GPU_REQUEST。それ以外は with_options で差し替える（tier 確認ラン用）。
     _req = str(item.get("gpu_tier") or "").strip().lower()
     _gpu = _MODAL_GPU_NAME.get(_req, "") if _req and _req != "l40s" else ""
-    _fn = train_sdxl_lora_job.with_options(gpu=_gpu) if _gpu else train_sdxl_lora_job
+    if _gpu and _req in _BLACKWELL_TIERS:
+        # sm_120 は cu124 の本番 image では動かない → Blackwell image の関数へ。
+        _fn = train_sdxl_lora_job_blackwell.with_options(gpu=_gpu)
+    else:
+        _fn = train_sdxl_lora_job.with_options(gpu=_gpu) if _gpu else train_sdxl_lora_job
     if _gpu:
         print(f"[dispatch] gpu_tier={_req} -> {_gpu}", flush=True)
     call = _fn.spawn(item)

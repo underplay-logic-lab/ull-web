@@ -1683,6 +1683,28 @@ DB から複製し `gpu_tier` だけ差し替えて同じエンドポイント�
   klein/zimage/anima=RTX PRO 6000。選択制（安い・遅い／高い・速い）を作る余地は
   「B300 に戻す」方向にしか無く、klein/zimage で 2 倍速くなる代わりに 20% 高い、という選択肢になる。
 
+### 14.28 SDXL を RTX PRO 6000 で（2026-09-23、Blackwell image、300step）
+
+ホスト発案「L40S にしている SDXL も RTX PRO 6000 の方が安いのでは」。§14.25 と同じジョブ（220 枚・
+rank 32/16・LoCon 既定込み・300step）を `gpu_tier=rtx_pro_6000` で投げた。
+
+- **1 回目は落ちた**: 本番 image が torch 2.6 / cu124 で sm_120 のカーネルが無い
+  （`CUDA error: no kernel image is available for execution on the device`、VAE の latent キャッシュで即死）。
+- **Blackwell 用 image を別関数で追加**（`train_image_blackwell` = torch 2.8.0 / cu128、xformers 無し・
+  学習は `--sdpa` なので不要。`train_sdxl_lora_job_blackwell`）。dispatch が `gpu_tier` が
+  rtx_pro_6000 / b300 / b200 のときだけそちらへ振る。L40S の本番経路は無改変。
+
+| tier | 時給 | 定常 s/it（100→300） | VRAM | 1step 原価 | 300step 学習時間 |
+|---|---|---|---|---|---|
+| L40S（従来） | $1.95 | 1.21 | 19.3GB | 2.36 | 363s |
+| **RTX PRO 6000** | $3.03 | **0.645** | 19.6GB | **1.95（−17%）** | **199s** |
+
+- 1.9 倍速くて 17% 安い → **SDXL の既定 tier を RTX PRO 6000 に**（`SDXL_GPU_TIER`）。sdxl の単価 knob は
+  L40S 時給で導出した値なので、tier 比（3.03/1.95）で比例させる。`LORA_SPI_BASELINE.sdxl` 1.25 → **0.67**（定常 0.645 の +4%。+20% にすると prep の秒数が同じまま単価だけ上がる分で L40S より高くなる）。
+- Blackwell image は torch 2.8 なので本番 image（2.6）と数値が完全一致する保証は無い。出力の品質差は
+  ホストが次の実案件で確認する。問題があれば `SDXL_GPU_TIER = "l40s"` で従来経路へ戻る（1 行）。
+- v7 条件（3,000step）の見積もり: L40S 61.5 分 → RTX PRO 6000 約 32 分、原価 ¥356 → ¥296。
+
 ## 15. LoRAデータセットのアップロード速度（2026-09-20）
 
 同一データセット（131枚 / 52.2MB、原本は全枚数が長辺1536超）を本番経路で計測。
