@@ -552,7 +552,7 @@ function RegenerateConfirmModal({
           </button>
         </div>
         <p className="mt-2 text-sm leading-relaxed text-muted">
-          新しく生成すると、画面は新しい結果に切り替わります。今の結果は 14 日間保存され、下の「最近の生成」からいつでも表示し直せます。続けますか？
+          新しく生成すると、画面は新しい結果に切り替わります。今の結果は下の「最近の生成」から表示し直せます。続けますか？
         </p>
         <div className="mt-6 flex gap-2">
           <button
@@ -1413,7 +1413,7 @@ export function MultiAngleStudioTab() {
         <div className="mt-8 border-t border-border pt-6">
           <p className="text-xs font-medium text-muted">
             最近の生成
-            <span className="ml-2 text-muted/60">生成から 14 日間保存されます。予約や並列実行で切り替わった結果もここから戻れます。</span>
+            <span className="ml-2 text-muted/60">予約や並列実行で切り替わった結果もここから表示し直せます。</span>
           </p>
           <ul className="mt-3 divide-y divide-border rounded-lg border border-border bg-surface/40">
             {history.map((h) => {
