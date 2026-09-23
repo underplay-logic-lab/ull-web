@@ -627,6 +627,14 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
 6. **admin**: 「最近の生成物」タブとバケットブラウザ（`src/lib/generatedStorage.ts`、`admin_zip_volume_folder`）を
    R2 の一覧・署名付き URL に向ける。`GpuCostReferenceCard` 同様に Volume 残量表示はモデル分だけになる。
 7. **切替**: 環境変数 `ARTIFACT_STORE=r2|volume` で全ワーカー・全 route を一括切替（ロールバック可能に）。
+8. **DL/UL 体験**（ホスト要望 2026-09-23）: R2 の署名付き URL は Range・並列に対応するので、①完了画面に
+   「URL 一覧をコピー」（自作ダウンローダー・aria2 等にそのまま渡せる）を移行と同時に。②ローンチ後の
+   最初の改善として **ブラウザ内の転送パネル**（File System Access API + Range 並列 fetch + IndexedDB で
+   レジューム、UL は S3 マルチパートの署名付き URL を並列 PUT）。前提として R2 バケットの CORS
+   （GET/PUT、Range、ETag 公開）を設定。Firefox/Safari は通常リンクへフォールバック。
+9. **admin の整理作業は R2 をエクスプローラーにマウントして行う**（rclone + WinFsp、または Mountain Duck）。
+   admin「最近の生成物」タブは一覧と署名付き URL 表示に縮め、ファイル操作 UI は作り込まない。
+   admin が遅い真因は Next → Modal エンドポイント → Volume の経路でコンテナ起動を毎回踏むことで、R2 で経路ごと消える。
 
 規模: 2 が半日〜1 日、3 と 4 が 1〜2 日、5〜7 が半日。順に PR を分ける。
 
