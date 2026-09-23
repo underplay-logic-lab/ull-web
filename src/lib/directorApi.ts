@@ -390,6 +390,9 @@ export type DirectorJobStatus = {
   videoUrl: string | null;
   errorMessage: string | null;
   vramUsedGb: number | null;
+  /** 出力解像度（route が生成時に metadata.out_width/out_height へ記録、2026-09-24〜）。 */
+  outWidth: number | null;
+  outHeight: number | null;
   combinedPrompt: string | null;
   combinedPromptJa: string | null;
   totalDurationS: number | null;
@@ -408,7 +411,12 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || "ジョブ状態の取得に失敗しました。");
 
-  const meta = (data.metadata ?? {}) as { vram_used_gb?: unknown; total_duration_s?: unknown };
+  const meta = (data.metadata ?? {}) as {
+    vram_used_gb?: unknown;
+    total_duration_s?: unknown;
+    out_width?: unknown;
+    out_height?: unknown;
+  };
   const vramUsedGb =
     typeof meta.vram_used_gb === "number" && Number.isFinite(meta.vram_used_gb) ? meta.vram_used_gb : null;
 
@@ -418,6 +426,8 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
     videoUrl: (data.videoUrl as string | null) ?? null,
     errorMessage: (data.errorMessage as string | null) ?? null,
     vramUsedGb,
+    outWidth: typeof meta.out_width === "number" ? meta.out_width : null,
+    outHeight: typeof meta.out_height === "number" ? meta.out_height : null,
     combinedPrompt: (data.combinedPrompt as string | null) ?? null,
     combinedPromptJa: (data.combinedPromptJa as string | null) ?? null,
     totalDurationS: typeof meta.total_duration_s === "number" ? meta.total_duration_s : null,

@@ -29,7 +29,7 @@ import {
 } from "@/lib/directorPrompt";
 import { buildCinematicWorkflow, CINEMATIC_PROMPT_NODE_ID } from "@/lib/cinematicWorkflow";
 import { assertOwnedDirectorLoraVolumePath } from "@/lib/directorLoraUpload.server";
-import { CINEMATIC_MODE_BY_ID } from "@/lib/cinematicPricing";
+import { CINEMATIC_MODE_BY_ID, cinematicMegapixels, cinematicSafeDimensions } from "@/lib/cinematicPricing";
 import { spawnDirectorJob } from "@/lib/modalDirector";
 import {
   CONTENT_POLICY_BLOCK_MESSAGE,
@@ -333,6 +333,16 @@ export async function POST(request: Request) {
     lora_name: loraName || null,
     lora_source: loraIdRaw ? "trained" : loraUploadVolumePathRaw ? "upload" : null,
   };
+  // 出力解像度（2026-09-24、ホスト「生成後の解像度がわからないので記載して」）。
+  // buildCinematicWorkflow と同じ式で先に決め、metadata に残して完了画面が読む。
+  const rawDimsForMeta = readImageDimensions(imageBuffer);
+  const modeForMeta = CINEMATIC_MODE_BY_ID[qualityMode === "quality" ? "vdnQuality" : "vdnFast"];
+  const outDims = cinematicSafeDimensions(
+    rawDimsForMeta?.width || 1,
+    rawDimsForMeta?.height || 1,
+    cinematicMegapixels(modeForMeta),
+  );
+
   const { data: jobRow, error: jobError } = await supabaseAdmin
     .from("generation_jobs")
     .insert({
@@ -343,6 +353,8 @@ export async function POST(request: Request) {
       credits_cost: creditsCost,
       metadata: {
         scene_count: scenes.length,
+        out_width: outDims.width,
+        out_height: outDims.height,
         total_duration_s: breakdown.totalDurationS,
         prompt_mode: isPromptMode,
         advanced_mode: isAdvancedMode,

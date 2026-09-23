@@ -39,7 +39,7 @@ import {
   type DirectorQualityMode,
   type DirectorScene,
 } from "@/lib/directorPricing";
-import { CINEMATIC_MODE_BY_ID } from "@/lib/cinematicPricing";
+import { CINEMATIC_MODE_BY_ID, cinematicMegapixels, cinematicSafeDimensions } from "@/lib/cinematicPricing";
 import {
   pollDirectorJob,
   startDirectorJob,
@@ -282,6 +282,23 @@ export function DirectorStudioTab() {
 
   const [image, setImage] = useState<File | null>(null);
   const imagePreview = useObjectUrl(image);
+  // 参照画像の実寸 → 出力解像度の予告（route と同じ cinematicSafeDimensions）。
+  // File ごとに持ち、現在の image と一致するときだけ使う（effect 内の同期 reset を避ける）。
+  const [measured, setMeasured] = useState<{ file: File; width: number; height: number } | null>(null);
+  const imageDims = image && measured?.file === image ? measured : null;
+  useEffect(() => {
+    if (!image) return;
+    let cancelled = false;
+    createImageBitmap(image)
+      .then((bmp) => {
+        if (!cancelled) setMeasured({ file: image, width: bmp.width, height: bmp.height });
+        bmp.close?.();
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [image]);
   const [scenes, setScenes] = useState<DirectorScene[]>([newScene()]);
 
   // 画質モード（2026-09-14、VDN-H3導入）。fast=8step蒸留・低コスト、
@@ -1005,6 +1022,24 @@ export function DirectorStudioTab() {
       <div className="flex flex-col gap-4">
         <div className="rounded-xl border border-border bg-background p-4">
           <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">画質モード</p>
+          {(() => {
+            const modeInfo = CINEMATIC_MODE_BY_ID[qualityMode === "quality" ? "vdnQuality" : "vdnFast"];
+            const dims = cinematicSafeDimensions(
+              imageDims?.width || 1,
+              imageDims?.height || 1,
+              cinematicMegapixels(modeInfo),
+            );
+            return (
+              <p className="mb-2 text-[11px] text-muted">
+                出力解像度:{" "}
+                <span className="font-mono text-foreground">
+                  {dims.width}×{dims.height}px
+                </span>
+                {imageDims ? "（参照画像の縦横比に合わせて自動決定）" : "（参照画像の縦横比に合わせて変わります）"}
+                ・24fps・さらに高解像度にしたい場合は生成後に「4K 動画超解像」へ
+              </p>
+            );
+          })()}
           <div className="grid grid-cols-2 gap-2">
             {(["fast", "quality"] as const).map((m) => {
               const modeInfo = CINEMATIC_MODE_BY_ID[m === "quality" ? "vdnQuality" : "vdnFast"];
@@ -1279,11 +1314,17 @@ export function DirectorStudioTab() {
               <Sparkles size={14} />
               この動画を 4K 動画超解像へ
             </button>
-            {job.vramUsedGb != null && (
-              <div className="mt-2 flex justify-center">
-                <VramBadge gb={job.vramUsedGb} />
-              </div>
-            )}
+            <div className="mt-2 flex items-center justify-center gap-3 text-[11px] text-muted">
+              {job.outWidth && job.outHeight && (
+                <span>
+                  <span className="font-mono text-foreground">
+                    {job.outWidth}×{job.outHeight}px
+                  </span>
+                  {job.totalDurationS ? ` ・ ${job.totalDurationS}秒` : ""} ・ 24fps
+                </span>
+              )}
+              {job.vramUsedGb != null && <VramBadge gb={job.vramUsedGb} />}
+            </div>
           </div>
         )}
 

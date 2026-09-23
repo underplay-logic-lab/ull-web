@@ -143,6 +143,78 @@ function withDownloadName(url: string, name: string): string {
   }
 }
 
+// --- Before / After 比較（動画版、2026-09-24 ホスト要望） -------------------
+// 画像タブの CompareSlider と同じ見せ方。after（結果）が箱を決め、before
+// （ローカルの入力動画の object URL）を absolute で重ねて左 pos% だけ見せる。
+// 再生は after 側の controls を操作し、before は muted で追従させる
+// （play/pause/seek/rate を転送、timeupdate で 0.15s 以上ずれたら合わせる）。
+function VideoCompare({ before, after }: { before: string; after: string }) {
+  const [pos, setPos] = useState(50);
+  const afterRef = useRef<HTMLVideoElement | null>(null);
+  const beforeRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    const a = afterRef.current;
+    const b = beforeRef.current;
+    if (!a || !b) return;
+    const sync = () => {
+      if (Math.abs(a.currentTime - b.currentTime) > 0.15) b.currentTime = a.currentTime;
+    };
+    const onPlay = () => {
+      sync();
+      void b.play().catch(() => {});
+    };
+    const onPause = () => {
+      b.pause();
+      sync();
+    };
+    const onRate = () => {
+      b.playbackRate = a.playbackRate;
+    };
+    a.addEventListener("play", onPlay);
+    a.addEventListener("pause", onPause);
+    a.addEventListener("seeked", sync);
+    a.addEventListener("timeupdate", sync);
+    a.addEventListener("ratechange", onRate);
+    return () => {
+      a.removeEventListener("play", onPlay);
+      a.removeEventListener("pause", onPause);
+      a.removeEventListener("seeked", sync);
+      a.removeEventListener("timeupdate", sync);
+      a.removeEventListener("ratechange", onRate);
+    };
+  }, [before, after]);
+
+  return (
+    <div className="relative select-none overflow-hidden rounded-xl border border-border bg-background">
+      <video ref={afterRef} src={after} controls playsInline className="block w-full" />
+      <div
+        className="pointer-events-none absolute inset-0 overflow-hidden"
+        style={{ clipPath: `inset(0 ${100 - pos}% 0 0)` }}
+      >
+        <video ref={beforeRef} src={before} muted playsInline className="absolute inset-0 h-full w-full object-cover" />
+      </div>
+      <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">
+        元動画
+      </span>
+      <span className="pointer-events-none absolute right-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">
+        アップスケール後
+      </span>
+      <div className="pointer-events-none absolute inset-y-0 w-0.5 bg-white/80" style={{ left: `${pos}%` }} />
+      {/* controls（下端）と被らないよう、スライダーは上寄りに置く */}
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={pos}
+        onChange={(e) => setPos(Number(e.target.value))}
+        aria-label="比較スライダー"
+        className="absolute inset-x-0 top-8 mx-auto w-[92%] cursor-ew-resize accent-neon-pink"
+      />
+    </div>
+  );
+}
+
 function buildOutFilename() {
   const now = new Date();
   const p = (n: number) => String(n).padStart(2, "0");
@@ -308,6 +380,8 @@ export function UpscaleVideoStudioTab() {
   // （resolveUpscaleVideoUrl、CLAUDE.md §1）。旧方式（Supabase公開URL）の
   // 行はそのまま素通しするので即座に反映される。
   const [playableVideoUrl, setPlayableVideoUrl] = useState<string | null>(null);
+  // 比較用の入力動画（このセッションで投げたジョブだけ。復元ジョブは元動画が無いので単体表示）。
+  const [resultBeforeUrl, setResultBeforeUrl] = useState<string | null>(null);
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
@@ -343,6 +417,7 @@ export function UpscaleVideoStudioTab() {
     setVideo(file);
     setPhase("idle");
     setJob(null);
+    setResultBeforeUrl(null);
 
     const meta = await readVideoMeta(file);
     if (!meta) {
@@ -404,6 +479,7 @@ export function UpscaleVideoStudioTab() {
       setPhase("submitting");
       setErrorMessage(null);
       setJob(null);
+      setResultBeforeUrl(URL.createObjectURL(snapshot.video));
 
       try {
         const res = await startUpscaleVideoJob({
@@ -557,6 +633,7 @@ export function UpscaleVideoStudioTab() {
     if (busy || id === jobId) return;
     setErrorMessage(null);
     setJob(null);
+    setResultBeforeUrl(null);
     setJobId(id);
     setPhase("running"); // ポーリングが 1 回で completed を検知して done に落とす
   };
@@ -815,7 +892,9 @@ export function UpscaleVideoStudioTab() {
 
           {phase === "done" && job?.resultUrl && (
             <div className="flex flex-col gap-3">
-              {playableVideoUrl ? (
+              {playableVideoUrl && resultBeforeUrl ? (
+                <VideoCompare before={resultBeforeUrl} after={playableVideoUrl} />
+              ) : playableVideoUrl ? (
                 <video
                   src={playableVideoUrl}
                   controls
