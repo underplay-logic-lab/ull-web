@@ -727,6 +727,11 @@ Volume `ull-wan-models` は **847GB / 1TB**（LTX の不要モデル削除後、
 
 - **実地確認 (b) 超解像 動画も OK（20:51〜20:54 JST、ジョブ `c71685d5`、SeedVR2 7B シャープ / HD）**: 0.9MB mp4 → R2 →
   Next が R2 の署名付き URL で ffprobe（`meta_source: ffprobe`）→ worker（RTX PRO 6000）が R2 から取得、117.5 秒で完了。
+- **実地確認 (c) Multi-Angle も OK（21:06〜21:09 JST、ジョブ `3aa7549e`、B200、VRAM 56.4GB）**: R2 に着地 → Next が
+  HEAD → 署名付き GET で Buffer 取得 → worker へ → 取得後に R2 の一時ファイル削除まで確認。「Next が R2 から Buffer を
+  取る経路」（Director / 特化 WF も同じヘルパー）はこれで検証済み扱い。残る実地は LoRA データセット 100 枚超のみ。
+  - ホスト「これも PRO 6000 で良さそう」→ **既に 2026-09-17 に実測済みで不採用**（gpu-benchmarks「GPU tier 4種横断実測」:
+    PRO 6000 は 1,294 ms/step で最遅、B200 491 ms/step。1 step あたり原価も PRO 6000 $0.00109 > B200 $0.00085）。B200 のまま。
 - **副産物のバグ修正（2026-09-23 夜）: admin Logs タブの GPU 名が超解像で常に "-"**。SeedVR2 worker が
   `status: completed/failed` の PATCH を先に打ち、その後で metadata（gpu_tier）をマージしていたため、generation_logs
   へコピーする AFTER UPDATE トリガーが走る時点で gpu_tier が無く 'standard' になっていた。`_finish_upscale_job()` で
