@@ -64,6 +64,7 @@ import {
 } from "@/lib/loraPricing";
 import { validateLoraYaml, loraYamlIdentity } from "@/lib/loraYaml";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
+import { requestStudioBatchHandoff } from "@/lib/studioHandoff";
 import { DatasetCurationUI, type CurationPair } from "@/components/studio/DatasetCurationUI";
 import { parseDatasetZip, isZipFile, buildDatasetZip, downloadBlob } from "@/lib/datasetZip";
 import {
@@ -142,6 +143,7 @@ import {
   RepeatWeightPanel,
   SmartCropPanel,
   MIN_SHORT_EDGE_ERROR,
+  MIN_SHORT_EDGE_WARN,
   MAX_TOTAL_BYTES,
   MAX_FILE_BYTES,
   ACTIVE_JOB_STORAGE_KEY,
@@ -4006,11 +4008,22 @@ export function LoraStudioTab({
               {onOpenUpscale && (
                 <button
                   type="button"
-                  onClick={onOpenUpscale}
+                  onClick={() =>
+                    // 該当画像を超解像タブの「まとめて処理」へそのまま入れる（2026-09-24、
+                    // ホスト要望）。タブ切替は Studio.tsx が STUDIO_TAB_EVENT で行う。
+                    requestStudioBatchHandoff(
+                      {
+                        files: tooSmallImages.map((i) => i.file),
+                        source: `LoRA Studio の短辺 ${MIN_SHORT_EDGE_ERROR}px 未満の素材 ${tooSmallImages.length} 枚`,
+                        targetShortEdge: MIN_SHORT_EDGE_WARN,
+                      },
+                      "upscale",
+                    )
+                  }
                   className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-400 transition-colors hover:bg-amber-500/20"
                 >
                   <Wand2 size={11} />
-                  ✨ 超解像で拡大してから入れ直す
+                  ✨ この {tooSmallImages.length} 枚を超解像で拡大する
                 </button>
               )}
               <p className="text-[10px] leading-relaxed text-muted">

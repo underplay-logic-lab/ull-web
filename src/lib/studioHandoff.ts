@@ -54,3 +54,29 @@ export async function studioHandoffToFile(handoff: StudioHandoff): Promise<File>
   const type = blob.type && blob.type !== "application/octet-stream" ? blob.type : fallbackType;
   return new File([blob], handoff.filename, { type });
 }
+
+// --- 手元のファイルをまとめて渡す（2026-09-24、LoRA の「小さすぎる素材を超解像へ」）---
+// File は sessionStorage に置けないが、タブ切替は同じページ内（SPA）なのでモジュール
+// 変数で足りる。リロードを跨ぐ必要は無い（その場合ユーザーは選び直せばよい）。
+export type StudioBatchHandoff = {
+  files: File[];
+  /** 表示用（「LoRA Studio の小さすぎる素材 12 枚を取り込みました」等）。 */
+  source: string;
+  /** 受け取り側が倍率を選ぶための目標短辺（px）。これ以上になる最小の倍率を初期値にする。 */
+  targetShortEdge?: number;
+};
+
+let pendingBatch: StudioBatchHandoff | null = null;
+
+export function requestStudioBatchHandoff(handoff: StudioBatchHandoff, tab: StudioHandoffTab): void {
+  if (typeof window === "undefined") return;
+  pendingBatch = handoff;
+  window.dispatchEvent(new CustomEvent(STUDIO_TAB_EVENT, { detail: { tab } }));
+}
+
+/** まとめ渡しを取り出して消す。無ければ null。 */
+export function takeStudioBatchHandoff(): StudioBatchHandoff | null {
+  const h = pendingBatch;
+  pendingBatch = null;
+  return h;
+}

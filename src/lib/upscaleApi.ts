@@ -145,16 +145,24 @@ export async function startUpscaleBatchJob(params: {
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) throw new Error("ログインが必要です。");
 
-  const storagePaths: string[] = [];
-  for (let i = 0; i < params.images.length; i++) {
-    const norm = await normalizeUpscaleInput(params.images[i]);
-    const normalizedFile = new File([norm.blob], norm.filename, {
-      type: norm.blob.type || params.images[i].type,
-    });
-    const { path } = await uploadStudioAsset(params.userId, normalizedFile);
-    storagePaths.push(path);
-    params.onUploadProgress?.(i + 1, params.images.length);
-  }
+  // 2026-09-24: 1 枚ずつ直列 → 同時 8 本（上限 300 枚化に合わせて）。順序は保つ。
+  const storagePaths: string[] = new Array(params.images.length);
+  let next = 0;
+  let done = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(8, params.images.length) }, async () => {
+      while (next < params.images.length) {
+        const i = next++;
+        const norm = await normalizeUpscaleInput(params.images[i]);
+        const normalizedFile = new File([norm.blob], norm.filename, {
+          type: norm.blob.type || params.images[i].type,
+        });
+        const { path } = await uploadStudioAsset(params.userId, normalizedFile);
+        storagePaths[i] = path;
+        params.onUploadProgress?.(++done, params.images.length);
+      }
+    }),
+  );
 
   const res = await fetch("/api/studio/upscale/batch", {
     method: "POST",
@@ -227,7 +235,31 @@ export async function pollUpscaleJob(jobId: string): Promise<UpscaleJob> {
   if (error?.code === "PGRST116") throw new UpscaleJobNotFoundError();
   if (error) throw new Error(error.message);
   if (!data) throw new UpscaleJobNotFoundError();
+  return rowToUpscaleJob(data);
+}
 
+/**
+ * バッチの全ジョブを 1 回（100 件ごと）のクエリで取る（2026-09-24、上限 300 枚化に合わせて）。
+ * 1 件ずつ pollUpscaleJob を並べると、300 枚で 1 回のポーリングが 300 リクエストになる。
+ * 見つからない id は結果から抜けるだけ（全部消えていれば呼び出し側が NotFound として扱う）。
+ */
+export async function pollUpscaleJobs(jobIds: string[]): Promise<UpscaleJob[]> {
+  const out: UpscaleJob[] = [];
+  for (let i = 0; i < jobIds.length; i += 100) {
+    const { data, error } = await supabase
+      .from("upscale_jobs")
+      .select(UPSCALE_COLS)
+      .in("id", jobIds.slice(i, i + 100))
+      .returns<UpscaleJobRow[]>();
+    if (error) throw new Error(error.message);
+    out.push(...(data ?? []).map(rowToUpscaleJob));
+  }
+  if (jobIds.length > 0 && out.length === 0) throw new UpscaleJobNotFoundError();
+  const order = new Map(jobIds.map((id, i) => [id, i]));
+  return out.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+}
+
+function rowToUpscaleJob(data: UpscaleJobRow): UpscaleJob {
   return {
     id: data.id,
     status: data.status,

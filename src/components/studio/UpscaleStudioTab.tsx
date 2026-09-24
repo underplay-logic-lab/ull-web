@@ -33,6 +33,7 @@ import {
   downloadUpscaleImage,
   fetchUpscaleOriginalDownloadUrl,
   pollUpscaleJob,
+  pollUpscaleJobs,
   resolveUpscaleImageUrl,
   startUpscaleBatchJob,
   startUpscaleJob,
@@ -42,7 +43,7 @@ import {
 } from "@/lib/upscaleApi";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
-import { studioHandoffToFile, takeStudioHandoff } from "@/lib/studioHandoff";
+import { studioHandoffToFile, takeStudioBatchHandoff, takeStudioHandoff } from "@/lib/studioHandoff";
 import {
   loadStudioSession,
   saveStudioSession,
@@ -526,6 +527,33 @@ export function UpscaleStudioTab() {
     });
   }, []);
 
+  // 他タブからの「この画像たちを超解像へ」（LoRA の小さすぎる素材等）: マウント時に 1 回だけ
+  // 取り出して「まとめて処理」に並べ、目標短辺に届く最小の倍率を初期値にする。
+  const [batchNotice, setBatchNotice] = useState<string | null>(null);
+  useEffect(() => {
+    const handoff = takeStudioBatchHandoff();
+    if (!handoff || handoff.files.length === 0) return;
+    // 取り出しは破壊的なので cleanup で打ち消さない（StrictMode の二重実行で 2 回目は
+    // 空振りする。1 回目の反映を捨てると取り込みごと消える）。effect 本体では同期
+    // setState しない（react-hooks/set-state-in-effect）。
+    queueMicrotask(() => {
+      setUiMode("batch");
+      addBatchFiles(handoff.files);
+      setBatchNotice(`${handoff.source}を取り込みました。`);
+    });
+    const target = handoff.targetShortEdge;
+    if (!target) return;
+    Promise.all(handoff.files.map((f) => readImageSize(f))).then((sizes) => {
+      const shorts = sizes.flatMap((d) => (d ? [Math.min(d.width, d.height)] : []));
+      if (shorts.length === 0) return;
+      const need = target / Math.min(...shorts);
+      const pick = UPSCALE_MODES.find((m) => m.mult >= need) ?? UPSCALE_MODES[UPSCALE_MODES.length - 1];
+      setModeId(pick.id);
+    });
+    // マウント時のみ
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const removeBatchItem = useCallback((file: File) => {
     setBatchItems((prev) => prev.filter((it) => it.file !== file));
   }, []);
@@ -655,7 +683,7 @@ export function UpscaleStudioTab() {
     (async () => {
       while (!cancelled) {
         try {
-          const results = await Promise.all(batchJobIds.map((id) => pollUpscaleJob(id)));
+          const results = await pollUpscaleJobs(batchJobIds);
           if (cancelled) return;
           errorStreak = 0;
           setBatchJobs(Object.fromEntries(results.map((j) => [j.id, j])));
@@ -1265,6 +1293,7 @@ export function UpscaleStudioTab() {
               ))}
             </div>
           )}
+          {batchNotice && <p className="-mt-2 text-[11px] text-neon-violet">{batchNotice}</p>}
           {batchError && <p className="-mt-2 text-[11px] text-red-400">{batchError}</p>}
 
           {/* モデル選択 */}

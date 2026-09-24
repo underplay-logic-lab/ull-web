@@ -39,6 +39,33 @@ async function locateStudioUpload(userId: string, storagePath: string): Promise<
   return { store: "modal" };
 }
 
+/**
+ * 先頭 `bytes` バイトだけを Range で取得し、ファイル全体のサイズと一緒に返す
+ * （2026-09-24、超解像バッチの寸法読み取り用。全体を落とすと枚数が増えたときに
+ * route の実行時間とメモリを食う）。Range を無視するストアでも全体が返るだけで
+ * 結果は正しい。
+ */
+export async function readStudioUploadHead(
+  userId: string,
+  storagePath: string,
+  bytes: number,
+): Promise<{ head: Buffer; totalBytes: number | null }> {
+  const located = await locateStudioUpload(userId, storagePath);
+  const url =
+    located.store === "r2"
+      ? await presignR2Get(located.key, { expiresIn: 300 })
+      : signStudioDownloadUrl(userId, storagePath);
+  const res = await fetch(url, { headers: { Range: `bytes=0-${Math.max(1, bytes) - 1}` } });
+  if (!res.ok) {
+    console.error("[studioUploads] head read failed:", located.store, storagePath, res.status);
+    throw new Error("アップロードされたファイルの取得に失敗しました。");
+  }
+  const head = Buffer.from(await res.arrayBuffer());
+  const m = /\/(\d+)\s*$/.exec(res.headers.get("content-range") ?? "");
+  const totalBytes = m ? Number(m[1]) : res.status === 200 ? head.length : null;
+  return { head, totalBytes };
+}
+
 /** storagePath の中身を Buffer として取得する。失敗時は Error を throw する
  * ので、呼び出し側で catch して route ごとの文言・ステータスに変換する。 */
 export async function downloadStudioUpload(userId: string, storagePath: string): Promise<Buffer> {

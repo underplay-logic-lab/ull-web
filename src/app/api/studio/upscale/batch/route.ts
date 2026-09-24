@@ -6,13 +6,16 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { spawnUpscaleBatchJob, type SpawnUpscaleBatchItem } from "@/lib/modalUpscale";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { readImageDimensions } from "@/lib/imageDimensions";
-import { downloadStudioUpload, createStudioUploadSignedUrl } from "@/lib/studioUploads.server";
+import {
+  createStudioUploadSignedUrl,
+  downloadStudioUpload,
+  readStudioUploadHead,
+} from "@/lib/studioUploads.server";
 import {
   DEFAULT_UPSCALE_MODE,
   DEFAULT_UPSCALE_MODEL,
   MAX_INPUT_BYTES_API,
   UPSCALE_BATCH_MAX_ITEMS,
-  UPSCALE_BATCH_MAX_TOTAL_BYTES,
   UPSCALE_MODELS,
   UPSCALE_MODES,
   getUpscaleMode,
@@ -26,7 +29,8 @@ import {
 // 非同期バッチ: N枚まとめて寸法から課金額を出し、合計クレジットを一括で
 // 引き落とし、upscale_jobs をN行 insert して Modal へ1回だけ dispatch（実処理
 // は同じ温まったコンテナ内でN回ループ）。generate/route.ts の複数枚版。
-export const maxDuration = 30;
+// 2026-09-24: 30 → 60。枚数上限を 300 に上げたため（寸法は並列・先頭だけ読むので通常は数秒）。
+export const maxDuration = 60;
 
 const VALID_MODE_IDS: Set<string> = new Set(UPSCALE_MODES.map((m) => m.id));
 const VALID_MODEL_KEYS: Set<string> = new Set(UPSCALE_MODELS.map((m) => m.key));
@@ -96,37 +100,49 @@ export async function POST(request: Request) {
     outHeight: number;
     targetShort: number;
   };
+  // 2026-09-24: 画像を丸ごと 1 枚ずつ順に落とすのをやめ、先頭だけを並列に読む。
+  // 寸法（PNG IHDR / JPEG SOF / WebP VP8*）はほぼ先頭数 KB にある。EXIF の埋め込み
+  // サムネイルで SOF が後ろへずれる JPEG もあるので 256KB 取り、それでも読めなければ
+  // その 1 枚だけ全体を落とす。
+  const HEAD_BYTES = 256 * 1024;
+  const CONCURRENCY = 16;
+  const heads: { dims: ReturnType<typeof readImageDimensions>; totalBytes: number | null }[] =
+    new Array(storagePaths.length);
+  let failure: string | null = null;
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, storagePaths.length) }, async () => {
+      while (failure === null && cursor < storagePaths.length) {
+        const i = cursor++;
+        const storagePath = storagePaths[i];
+        try {
+          const { head, totalBytes } = await readStudioUploadHead(user.id, storagePath, HEAD_BYTES);
+          let dims = readImageDimensions(head);
+          if (!dims && totalBytes !== null && totalBytes > head.length) {
+            dims = readImageDimensions(await downloadStudioUpload(user.id, storagePath));
+          }
+          heads[i] = { dims, totalBytes };
+        } catch (err) {
+          failure = `「${storagePath.split("/").pop()}」: ${(err as Error).message}`;
+        }
+      }
+    }),
+  );
+  if (failure !== null) {
+    return NextResponse.json({ error: failure }, { status: 400 });
+  }
+
   const prepared: PreparedItem[] = [];
-  let totalBytes = 0;
-  for (const storagePath of storagePaths) {
-    let buffer: Buffer;
-    try {
-      buffer = await downloadStudioUpload(user.id, storagePath);
-    } catch (err) {
-      return NextResponse.json(
-        { error: `「${storagePath.split("/").pop()}」: ${(err as Error).message}` },
-        { status: 400 },
-      );
-    }
-    totalBytes += buffer.length;
-    if (buffer.length > MAX_INPUT_BYTES_API) {
+  for (let i = 0; i < storagePaths.length; i++) {
+    const storagePath = storagePaths[i];
+    const { dims, totalBytes } = heads[i];
+    if (totalBytes !== null && totalBytes > MAX_INPUT_BYTES_API) {
       return NextResponse.json(
         { error: `「${storagePath.split("/").pop()}」が大きすぎます。` },
         { status: 400 },
       );
     }
-    if (totalBytes > UPSCALE_BATCH_MAX_TOTAL_BYTES) {
-      return NextResponse.json(
-        {
-          error: `合計サイズが大きすぎます（上限 ${Math.floor(
-            UPSCALE_BATCH_MAX_TOTAL_BYTES / (1024 * 1024),
-          )}MB）。枚数を減らすか、画像を圧縮してお試しください。`,
-        },
-        { status: 400 },
-      );
-    }
     const filename = storagePath.split("/").pop() || storagePath;
-    const dims = readImageDimensions(buffer);
     if (dims && dims.width > 0 && dims.height > 0) {
       const bd = upscaleCostBreakdown({ inW: dims.width, inH: dims.height, modeId, modelKey, knobs });
       prepared.push({
@@ -249,32 +265,38 @@ export async function POST(request: Request) {
   // --- dispatch to Modal（1回でN枚まとめて）----------------------------
   // 各アイテムは Vercel 関数を経由させず、署名付き URL を worker に直接
   // fetch させる（CLAUDE.md §6）。
-  const items: SpawnUpscaleBatchItem[] = [];
-  for (let i = 0; i < prepared.length; i++) {
-    const p = prepared[i];
-    let signedUrl: string;
-    try {
-      signedUrl = await createStudioUploadSignedUrl(user.id, p.storagePath);
-    } catch (err) {
-      await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
-      return NextResponse.json(
-        { error: (err as Error).message, remainingCredits: currentCredits },
-        { status: 500 },
+  // worker は items を先頭から 1 枚ずつ処理し、その都度この URL を fetch する。長い
+  // バッチの後ろの画像が期限切れにならないよう、推定合計秒数 + 1h を有効期限にする
+  // （2026-09-24。旧 1h 固定は 30 枚上限の頃なら足りていた）。署名は並列に作る。
+  const urlTtl = Math.max(60 * 60, Math.ceil(estimatedSeconds) + 60 * 60);
+  let signedUrls: string[];
+  try {
+    signedUrls = [];
+    for (let i = 0; i < prepared.length; i += 16) {
+      const chunk = prepared.slice(i, i + 16);
+      signedUrls.push(
+        ...(await Promise.all(chunk.map((p) => createStudioUploadSignedUrl(user.id, p.storagePath, urlTtl)))),
       );
     }
-    items.push({
-      jobId: jobIds[i],
-      creditsCost: p.creditsCost,
-      image: signedUrl,
-      modelKey,
-      presetId: modeId,
-      params: {
-        target_short: p.targetShort,
-        max_resolution: mode.maxEdge,
-        batch_size: 1,
-      },
-    });
+  } catch (err) {
+    await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+    return NextResponse.json(
+      { error: (err as Error).message, remainingCredits: currentCredits },
+      { status: 500 },
+    );
   }
+  const items: SpawnUpscaleBatchItem[] = prepared.map((p, i) => ({
+    jobId: jobIds[i],
+    creditsCost: p.creditsCost,
+    image: signedUrls[i],
+    modelKey,
+    presetId: modeId,
+    params: {
+      target_short: p.targetShort,
+      max_resolution: mode.maxEdge,
+      batch_size: 1,
+    },
+  }));
 
   try {
     await spawnUpscaleBatchJob({

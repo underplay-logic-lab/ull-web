@@ -50,8 +50,13 @@ export const UPSCALE_MAX_OUTPUT_MP = 75;
 // 数十枚、というふうに入力サイズ・倍率次第で実際に処理できる枚数は変わる。
 // これらは金額を動かす pricing knob ではなく、リクエストボディサイズ等の
 // インフラ都合の安全上限なのでプレーンな定数にしてある。
-export const UPSCALE_BATCH_MAX_ITEMS = 30;
-export const UPSCALE_BATCH_MAX_TOTAL_BYTES = 40 * 1024 * 1024;
+//
+// 2026-09-24: 30 枚 / 合計 40MB は実測の裏付けが無い仮値だった（ホスト指摘「少なくない？」）。
+// 本当の壁は worker の Modal timeout（SEEDVR2_BATCH_TIMEOUT_HARD_CAP_S）で、そこへは
+// knob upscale_batch_max_seconds（推定合計秒数）で効かせる。合計サイズ上限は route が
+// 全画像を丸ごと読んでいた頃の都合なので廃止（寸法は先頭だけ Range で読む）。
+// 枚数は「壊れたクライアントが桁違いの配列を送ってくる」ことへの防波堤だけ残す。
+export const UPSCALE_BATCH_MAX_ITEMS = 300;
 
 /**
  * バッチ全体（N枚）の推定処理秒数。コールドスタート猶予は1回分だけ加える

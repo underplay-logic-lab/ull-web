@@ -366,7 +366,10 @@ UPSCALE_VIDEO_MAX_OUTPUT_MP = _env_int("SEEDVR2_VIDEO_MAX_OUTPUT_MP", 12)
 # より短命なので値のレンジだけ小さくしてある）。
 # ---------------------------------------------------------------------------
 UPSCALE_BATCH_TIMEOUT_MARGIN_S = _env_int("SEEDVR2_BATCH_TIMEOUT_MARGIN_S", 5 * 60)
-UPSCALE_BATCH_TIMEOUT_HARD_CAP_S = _env_int("SEEDVR2_BATCH_TIMEOUT_HARD_CAP_S", 45 * 60)
+# 2026-09-24: 45 分 → 4 時間。45 分は 2026-09-12 のバッチ導入時に実測なしで置いた値
+# （ホスト確認）。枚数上限 30 を撤廃したのに合わせて上げる。原価の歯止めは課金済み
+# クレジット由来の watchdog（max_allowed_time）で、これは最後の保険。
+UPSCALE_BATCH_TIMEOUT_HARD_CAP_S = _env_int("SEEDVR2_BATCH_TIMEOUT_HARD_CAP_S", 4 * 60 * 60)
 UPSCALE_BATCH_TIMEOUT_FALLBACK_S = _env_int("SEEDVR2_BATCH_TIMEOUT_FALLBACK_S", 20 * 60)
 UPSCALE_BATCH_TIMEOUT_BUCKET_S = _env_int("SEEDVR2_BATCH_TIMEOUT_BUCKET_S", 5 * 60)
 

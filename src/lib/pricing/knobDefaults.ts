@@ -769,9 +769,12 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // ので、コールドスタート償却はバッチ全体で1回だけ（upscale_cold_start_grace_s
     // を1回だけ足す）。合計推定秒数がこれを超えるバッチは受け付けない
     // （src/lib/upscaleStudio.ts の upscaleBatchEstimatedSeconds 参照）。
-    // Modal 側の強制 timeout（SEEDVR2_BATCH_TIMEOUT_HARD_CAP_S 既定45分）より
-    // 十分小さく取ってあるので、見積もりがブレても Modal 側の保険が効く。
-    value: 1800,
+    // Modal 側の強制 timeout（SEEDVR2_BATCH_TIMEOUT_HARD_CAP_S）より小さく取って
+    // あるので、見積もりがブレても Modal 側の保険が効く。
+    // 2026-09-24: 1800 → 10800（3h）。旧 1800 / 45 分はどちらも実測の無い仮値で、
+    // 30 枚上限の撤廃に合わせて worker 側を 4h に上げた。原価の歯止めは
+    // 枚数ぶん課金済みのクレジットと worker の watchdog（max_allowed_time）が担う。
+    value: 10800,
     label: "超解像 バッチ：合計処理秒数の上限",
     category: "cost_guard",
     unit: "s",
