@@ -66,7 +66,7 @@ const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 const ERR_MESSAGES = {
   tag: "studio/lora/caption",
-  quota: "AI 解析の無料利用枠を超過しました。少し時間をおいて再試行するか、キャプションは学習側で自動補完されます。",
+  quota: "AI 解析が混み合っています。少し時間をおいて再試行してください（このまま学習すると、キャプションは学習側で自動補完されます）。",
   busy: "AI 解析が一時的に混雑しています。少し待って再試行してください。",
   failed: "画像の自動解析に失敗しました。",
 } as const;

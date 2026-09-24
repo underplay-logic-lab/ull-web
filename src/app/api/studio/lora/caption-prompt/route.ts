@@ -33,7 +33,7 @@ export const maxDuration = 45;
 
 const ERR_MESSAGES = {
   tag: "studio/lora/caption-prompt",
-  quota: "AI プロンプト生成の無料利用枠を超過しました。少し時間をおいて再試行してください。",
+  quota: "AI プロンプト生成が混み合っています。少し時間をおいて再試行してください。",
   busy: "AI が一時的に混雑しています。少し待って再試行してください。",
   failed: "キャプションプロンプトの自動生成に失敗しました。",
 } as const;

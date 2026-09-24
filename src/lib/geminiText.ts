@@ -270,7 +270,7 @@ export function geminiErrorResponse(
     const status = e.kind === "quota" ? 429 : e.kind === "busy" ? 503 : 502;
     const error =
       e.kind === "quota"
-        ? messages?.quota ?? "AI の無料利用枠を超過しました。少し時間をおいて再試行してください。"
+        ? messages?.quota ?? "AI 処理が混み合っています。少し時間をおいて再試行してください。"
         : e.kind === "busy"
           ? messages?.busy ?? "AI サービスが一時的に混雑しています。少し待って再試行してください。"
           : messages?.failed ?? "AI 処理に失敗しました。";

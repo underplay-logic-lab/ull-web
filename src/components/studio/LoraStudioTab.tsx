@@ -752,10 +752,12 @@ export function LoraStudioTab({
       const reusable = entries.filter(
         (e) => !(e.caption ?? "").trim() && Boolean(cache[captionFileKey(e.file)]),
       ).length;
+      // 文言はユーザーにとっての違い（速さ）だけにする。AI の利用枠は運営側の事情で、
+      // ユーザーに見せる話ではない（2026-09-24、ホスト指摘）。
       const startClean = !window.confirm(
         `同じ画像の解析結果が ${reusable} 件、この端末に残っています。再利用しますか？\n\n` +
-          "「OK」= 再利用する（AI解析を使いません・推奨）\n" +
-          "「キャンセル」= 破棄して解析し直す（AI解析の1日の上限を消費します）",
+          "「OK」= 再利用する（すぐに次へ進めます・推奨）\n" +
+          "「キャンセル」= 破棄して解析し直す（数分かかります）",
       );
       if (startClean) {
         useCache = false;
@@ -3858,12 +3860,29 @@ export function LoraStudioTab({
                       className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
                     >
                       <Sparkles size={13} />
-                      解析を開始する（{images.length} 枚）
+                      {/* 解析対象はキャプションの無い画像だけ。前回の結果を再利用した
+                          画像まで「N 枚を解析」と読める表示は誤解を招く（2026-09-24、ホスト指摘）。 */}
+                      {pendingCaptionCount === 0
+                        ? "解析済みの結果で次へ進む"
+                        : pendingCaptionCount < images.length
+                          ? `解析を開始する（未解析の ${pendingCaptionCount} 枚）`
+                          : `解析を開始する（${images.length} 枚）`}
                     </button>
                     <p className="mt-1.5 text-[10px] leading-relaxed text-muted">
                       画像を<strong className="text-foreground">全部入れ終えてから</strong>押してください。
-                      押すと、被写体の特徴を抽出してからキャプションを作ります。
-                      途中で始めると、先に入れたフォルダにしか写っていない被写体の特徴が取れません。
+                      {pendingCaptionCount === 0 ? (
+                        <>
+                          全部の画像に解析結果があるので、
+                          <strong className="text-foreground">解析し直しはしません</strong>
+                          （被写体の特徴がまだ無ければ、その抽出だけ行います）。
+                        </>
+                      ) : (
+                        <>
+                          押すと、被写体の特徴を抽出してからキャプションを作ります
+                          {pendingCaptionCount < images.length && "（解析結果が残っている画像はそのまま使います）"}。
+                          途中で始めると、先に入れたフォルダにしか写っていない被写体の特徴が取れません。
+                        </>
+                      )}
                       <strong className="text-foreground">押したあとに画像を足しても構いません</strong>
                       （追加分だけ解析されます）。
                     </p>

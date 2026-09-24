@@ -33,7 +33,7 @@ const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 const ERR_MESSAGES = {
   tag: "studio/lora/identity-tags",
-  quota: "AI 解析の無料利用枠を超過しました。少し時間をおいて再試行するか、手で入力してください。",
+  quota: "AI 解析が混み合っています。少し時間をおいて再試行するか、手で入力してください。",
   busy: "AI 解析が一時的に混雑しています。少し待って再試行してください。",
   failed: "特徴の抽出に失敗しました。",
 } as const;

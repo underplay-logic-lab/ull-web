@@ -123,7 +123,7 @@ export async function expandDirectorScenes(scenes: DirectorScene[], musicDirecti
       const reason = e.kind === "quota" ? "quota" : e.kind === "busy" ? "busy" : "failed";
       throw new DirectorPromptError(
         reason === "quota"
-          ? "AI の無料利用枠を超過しました。少し時間をおいて再試行してください。"
+          ? "AI 処理が混み合っています。少し時間をおいて再試行してください。"
           : reason === "busy"
             ? "AI サービスが一時的に混雑しています。少し待って再試行してください。"
             : "プロンプトの合成に失敗しました。",
@@ -222,7 +222,7 @@ export async function translateJapanesePromptToEnglish(japanesePrompt: string): 
       const reason = e.kind === "quota" ? "quota" : e.kind === "busy" ? "busy" : "failed";
       throw new DirectorPromptError(
         reason === "quota"
-          ? "AI の無料利用枠を超過しました。少し時間をおいて再試行してください。"
+          ? "AI 処理が混み合っています。少し時間をおいて再試行してください。"
           : reason === "busy"
             ? "AI サービスが一時的に混雑しています。少し待って再試行してください。"
             : "プロンプトの翻訳に失敗しました。",

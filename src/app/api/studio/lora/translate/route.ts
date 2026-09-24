@@ -37,7 +37,7 @@ type CaptionType = "dense" | "tags";
 
 const TRANSLATE_ERR_MESSAGES = {
   tag: "studio/lora/translate",
-  quota: "翻訳の無料利用枠を超過しました。少し時間をおいて再試行してください。",
+  quota: "翻訳が混み合っています。少し時間をおいて再試行してください。",
   busy: "翻訳サービスが一時的に混雑しています。少し待って再試行してください。",
   failed: "翻訳に失敗しました。",
 } as const;
