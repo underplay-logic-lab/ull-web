@@ -2804,6 +2804,11 @@ class SeedVR2Worker:
                     finalize_executor=executor,
                     prefetched=pre,
                 )
+                # 1 枚ごとに ComfyUI の実行キャッシュを明示的に解放する（2026-09-24）。ComfyUI 自身の後片付けは
+                # 処理の間隔が 10 秒以上空いたときしか走らず、連続投入のバッチでは GPU メモリが 1 枚 0.3GB ずつ
+                # 溜まって T4 が窮屈になり、1 枚 3.5 秒の処理が 8 秒になっていた（1 枚ずつの呼び出しは 3.5 秒のまま）。
+                # モデル重みは残す（unload_models=False）。
+                self._comfy_free()
                 fut = r.get("future")
                 if fut is not None:
                     fut.add_done_callback(lambda _f, jid=job_id: _mark_done(jid))
