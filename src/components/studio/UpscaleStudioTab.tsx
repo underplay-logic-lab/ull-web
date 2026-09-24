@@ -44,7 +44,10 @@ import {
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import {
+  deleteLoraReturnEntries,
+  getLoraReturnMap,
   sendLoraReplacements,
+  setLoraReturnEntries,
   studioHandoffToFile,
   takeStudioBatchHandoff,
   takeStudioHandoff,
@@ -539,7 +542,8 @@ export function UpscaleStudioTab() {
   // LoRA Studio から来た画像 → 元画像の id。完了後に差し戻すために使う（File の同一性で引く）。
   const loraReturnRef = useRef<Map<File, string>>(new Map());
   // 送信したジョブ id → LoRA 側の元画像 id（完了後の差し戻しに使う）。
-  const [batchLoraMap, setBatchLoraMap] = useState<Record<string, string>>({});
+  // 実体はページ内の共有ストア（タブを切り替えても残る）。state はその写し。
+  const [batchLoraMap, setBatchLoraMap] = useState<Record<string, string>>(() => getLoraReturnMap());
   useEffect(() => {
     const handoff = takeStudioBatchHandoff();
     if (!handoff || handoff.files.length === 0) return;
@@ -628,7 +632,8 @@ export function UpscaleStudioTab() {
         const loraId = loraReturnRef.current.get(it.file);
         if (loraId && res.jobIds[i]) loraMap[res.jobIds[i]] = loraId;
       });
-      setBatchLoraMap(loraMap);
+      setLoraReturnEntries(loraMap);
+      setBatchLoraMap(getLoraReturnMap());
       setBatchItems([]);
       setBatchJobIds(res.jobIds);
       setBatchPhase("running");
@@ -704,6 +709,15 @@ export function UpscaleStudioTab() {
     () => batchJobIds.filter((id) => batchLoraMap[id] && batchJobs[id]?.status === "completed"),
     [batchJobIds, batchJobs, batchLoraMap],
   );
+  // LoRA から来た分のうち、まだ処理中（失敗は数えない）の枚数。
+  const loraPendingCount = useMemo(
+    () =>
+      batchJobIds.filter((id) => {
+        const st = batchJobs[id]?.status;
+        return batchLoraMap[id] && st !== "completed" && st !== "failed";
+      }).length,
+    [batchJobIds, batchJobs, batchLoraMap],
+  );
   const handleReturnToLora = useCallback(async () => {
     if (loraReturnable.length === 0 || returningToLora) return;
     setReturningToLora(true);
@@ -733,13 +747,8 @@ export function UpscaleStudioTab() {
       if (failed > 0) console.warn(`[UpscaleStudioTab] return to LoRA: ${failed} fetch(es) failed`);
       sendLoraReplacements(ok);
       // 差し戻した分は二度押しで重複しないよう対応表から外す。
-      setBatchLoraMap((prev) => {
-        const next = { ...prev };
-        loraReturnable.forEach((id) => {
-          if (ok.some((r) => r.id === prev[id])) delete next[id];
-        });
-        return next;
-      });
+      deleteLoraReturnEntries(loraReturnable.filter((id) => ok.some((r) => r.id === batchLoraMap[id])));
+      setBatchLoraMap(getLoraReturnMap());
     } finally {
       setReturningToLora(false);
     }
@@ -1535,7 +1544,9 @@ export function UpscaleStudioTab() {
               ) : (
                 <>
                   <Wand2 size={16} />
-                  拡大した {loraReturnable.length} 枚を LoRA Studio に戻して差し替える
+                  {loraPendingCount > 0
+                    ? `完了した ${loraReturnable.length} 枚を先に LoRA Studio で差し替える（残り ${loraPendingCount} 枚は完了後にもう一度）`
+                    : `拡大した ${loraReturnable.length} 枚を LoRA Studio に戻して差し替える`}
                 </>
               )}
             </button>

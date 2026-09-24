@@ -105,3 +105,21 @@ export function sendLoraReplacements(replacements: LoraReplacement[]): void {
   window.dispatchEvent(new CustomEvent(LORA_REPLACE_EVENT, { detail: { replacements } }));
   window.dispatchEvent(new CustomEvent(STUDIO_TAB_EVENT, { detail: { tab: "lora" } }));
 }
+
+// 超解像ジョブ id → LoRA 側の元画像 id（差し戻し用）。超解像タブは切り替えると unmount される
+// ので、component の state に置くと途中で差し戻した瞬間に残りの対応が消える（2026-09-24、
+// ホスト指摘）。ページ内（モジュール変数）で持つ。再読み込みで消えるのは LoRA 側の画像も
+// 消えるので問題ない。
+const loraReturnMap: Record<string, string> = {};
+
+export function getLoraReturnMap(): Record<string, string> {
+  return { ...loraReturnMap };
+}
+
+export function setLoraReturnEntries(entries: Record<string, string>): void {
+  Object.assign(loraReturnMap, entries);
+}
+
+export function deleteLoraReturnEntries(jobIds: string[]): void {
+  jobIds.forEach((id) => delete loraReturnMap[id]);
+}
