@@ -1728,6 +1728,22 @@ rank 32/16・LoCon 既定込み・300step）を `gpu_tier=rtx_pro_6000` で投�
   ホストが次の実案件で確認する。問題があれば `SDXL_GPU_TIER = "l40s"` で従来経路へ戻る（1 行）。
 - v7 条件（3,000step）の見積もり: L40S 61.5 分 → RTX PRO 6000 約 32 分、原価 ¥356 → ¥296。
 
+### 14.29 SDXL を B300 で（2026-09-24、Blackwell image、300step）— **遅いので高速モードにしない**
+
+「標準／高速」選択（`LORA_ARCH_PROFILE[arch].fast`）の候補か確かめるため、§14.28 の RTX PRO 6000 ジョブ
+`e1204316` の payload を `scripts/lora_tier_probe.py` で複製し `gpu_tier=b300` だけ差し替えた（job `f30a99d5`）。
+Blackwell image（torch 2.8 / cu128）は B300（sm_103）でもそのまま動いた（sm_100 カーネルで実行）。
+
+| tier | 時給 | s/it | 300step tqdm | processing→completed | VRAM |
+|---|---|---|---|---|---|
+| RTX PRO 6000 | $3.03 | **0.645**（定常 100→300） | — | 347s | 19.6GB |
+| B300 | $7.10 | **0.75**（283→299 の壁時計差、平均 0.84） | 4:12 | 395s | 21.3GB |
+
+- **B300 の方が 16% 遅く、時給は 2.34 倍**。anima（§14.26）と同じく、軽いモデルでは Blackwell 上位が勝たない。
+  SDXL（VRAM 20GB）は B300 の演算力を使い切れていない。→ SDXL に高速モードは付けない。
+- `modal app logs` は直近数十行しか返さないため、100→300 の区間は取れず終盤 17 step から算出。結論（遅い）は動かない。
+- 3 プリセット（juggernaut / illustrious / WAI）は同じ SDXL 構造で s/it が一致する（§14.23）ので 1 本で代表させた。
+
 ## 15. LoRAデータセットのアップロード速度（2026-09-20）
 
 > **2026-09-23 追記**: 送信先を Modal（米国）から **Cloudflare R2 の署名付き PUT**（1 枚 1 リクエスト・16 並列、
