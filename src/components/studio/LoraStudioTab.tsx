@@ -3909,6 +3909,13 @@ export function LoraStudioTab({
                               source: `LoRA Studio の短辺 ${MIN_SHORT_EDGE_ERROR}px 未満の素材 ${tooSmallImages.length} 枚`,
                               targetShortEdge: MIN_SHORT_EDGE_WARN,
                               loraReturnIds: tooSmallImages.map((i) => i.id),
+                              // 学習素材は細部を作り直さない Real-ESRGAN 系で拡大する（作り直された
+                              // ディテールまで LoRA に焼き込まれるため）。アニメ系プリセットは anime 6B、
+                              // それ以外（実写・汎用・カスタム）は SwinIR-L（T4 実機比較で実写は
+                              // swinir_l > x4plus > anime。JPEG ブロックも除去する、upscaleStudio.ts 参照）。
+                              suggestedModelKey:
+                                selectedPreset?.group === "anime" ? "real_esrgan_anime" : "swinir_l",
+                              hint: "LoRA の素材には、細部を作り直さない軽量モデルがおすすめです（アニメ・イラストは Real-ESRGAN anime 6B、実写は SwinIR-L）。",
                             },
                             "upscale",
                           )

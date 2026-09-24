@@ -69,6 +69,13 @@ export type StudioBatchHandoff = {
    * あるときだけ超解像タブに「LoRA Studio に戻して差し替える」が出る。
    */
   loraReturnIds?: string[];
+  /**
+   * 受け取り側の初期モデル（前回使ったモデルより優先）。LoRA 素材は細部を作り直さない
+   * 軽量モデル（Real-ESRGAN anime / SwinIR-L）が向く（2026-09-24、ホスト指摘「実写に anime が選ばれている」）。
+   */
+  suggestedModelKey?: string;
+  /** 取り込み通知に添える一言。 */
+  hint?: string;
 };
 
 let pendingBatch: StudioBatchHandoff | null = null;

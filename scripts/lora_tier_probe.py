@@ -3,7 +3,11 @@
 既存ジョブの dispatch payload を DB から複製し、gpu_tier だけ差し替えて同じ dispatch エンドポイントへ
 投げる（docs/gpu-benchmarks.md §14.26 の手順）。新しい行の inputs.tier_probe に出典を記録する。
 
-    python scripts/lora_tier_probe.py <source_job_id> <gpu_tier> [--note "..."]
+    python scripts/lora_tier_probe.py <source_job_id> <gpu_tier> [--note "..."] [--captions <json>] [--suffix <name>]
+
+--captions: キャプションだけ差し替えて同条件で焼く（2026-09-24、WD タガー比較用）。
+  scripts/wd_rebuild_captions.py の出力 JSON（items[].new、storage_paths と同じ並び）を渡す。
+--suffix: 出力 LoRA 名の末尾（既定は gpu_tier）。
 
 gpu_tier は Next 側の tier id（b300 / b200 / h200 / h100 / rtx_pro_6000 / a100_80gb / l40s）。
 ⚠️ GPU 課金が発生する。実行前にホストの承認を取ること（CLAUDE.md §1・メモリ gpu-experiment-cost-discipline）。
@@ -45,6 +49,8 @@ def main() -> None:
     ap.add_argument("source_job")
     ap.add_argument("gpu_tier", choices=sorted(TIERS))
     ap.add_argument("--note", default="")
+    ap.add_argument("--captions", default="")
+    ap.add_argument("--suffix", default="")
     a = ap.parse_args()
 
     rows = req(f"{U}/rest/v1/generation_jobs?select=user_id,inputs,workflow_type&id=eq.{a.source_job}")
@@ -57,7 +63,15 @@ def main() -> None:
     url = os.environ["MODAL_SDXL_LORA_TRAIN_URL" if worker == "sdxl" else "MODAL_LORA_TRAIN_URL"]
 
     d["gpu_tier"] = a.gpu_tier
-    d["output_lora_name"] = f"{d.get('output_lora_name', 'probe')}_{a.gpu_tier}"[:120]
+    d["output_lora_name"] = f"{d.get('output_lora_name', 'probe')}_{a.suffix or a.gpu_tier}"[:120]
+    if a.captions:
+        items = json.load(open(a.captions, encoding="utf-8"))["items"]
+        caps = [it["new"] for it in items]
+        if len(caps) != len(d.get("storage_paths") or []):
+            raise SystemExit(f"captions {len(caps)} != storage_paths {len(d.get('storage_paths') or [])}")
+        d["custom_captions"] = caps
+        d["captions"] = caps
+        d["skip_captioning"] = True
     inputs.update(
         dispatch=d,
         output_lora_name=d["output_lora_name"],
@@ -65,6 +79,7 @@ def main() -> None:
             "note": a.note or f"{date.today()} tier probe (no credit debit)",
             "tier": a.gpu_tier,
             "source_job": a.source_job,
+            **({"captions_from": os.path.basename(a.captions)} if a.captions else {}),
         },
     )
     inputs.pop("modal_call_id", None)

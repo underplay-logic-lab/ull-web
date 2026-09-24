@@ -550,13 +550,16 @@ export function UpscaleStudioTab() {
     // 取り出しは破壊的なので cleanup で打ち消さない（StrictMode の二重実行で 2 回目は
     // 空振りする。1 回目の反映を捨てると取り込みごと消える）。effect 本体では同期
     // setState しない（react-hooks/set-state-in-effect）。
+    const suggested = UPSCALE_MODELS.find((m) => m.key === handoff.suggestedModelKey);
     queueMicrotask(() => {
       setUiMode("batch");
       addBatchFiles(handoff.files);
-      setBatchNotice(`${handoff.source}を取り込みました。`);
+      if (suggested) setModelKey(suggested.key);
+      setBatchNotice(`${handoff.source}を取り込みました。${handoff.hint ? ` ${handoff.hint}` : ""}`);
     });
     const target = handoff.targetShortEdge;
-    if (!target) return;
+    // 倍率固定のモデル（Real-ESRGAN 系は ×4 固定）では倍率の選択は効かないので選ばない。
+    if (!target || suggested?.fixedScale) return;
     Promise.all(handoff.files.map((f) => readImageSize(f))).then((sizes) => {
       const shorts = sizes.flatMap((d) => (d ? [Math.min(d.width, d.height)] : []));
       if (shorts.length === 0) return;
