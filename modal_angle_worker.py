@@ -1233,9 +1233,9 @@ def ensure_qwen_edit_cached(repo: str = "", text_encoder_repo: str = "") -> dict
     timeout=2 * 60 * 60,
     scaledown_window=30,
     min_containers=0,
-    # メインメモリを確保しておく（2026-09-24）。未指定だと読み込み中に exit 137（メモリ不足で
-    # 強制終了）が出た。実測の最大 76.4GB（B200・3 構図、読み込み時がピーク）に余裕を足して 96GiB。
-    memory=96 * 1024,
+    # memory= は指定しない（2026-09-24）。実測の最大は 76.4GB（読み込み時）だが、確保すると
+    # その分に $0.008/GiB/h が掛かり 96GiB で GPU 時給の約 +12%。exit 137 は実行中の再デプロイで
+    # 先回り起動したコンテナだけで起きており、通常のジョブでは出ていない（デプロイ規律で対処済み）。
     secrets=[
         modal.Secret.from_name("wan-animate-auth"),
         modal.Secret.from_name("huggingface-secret"),
