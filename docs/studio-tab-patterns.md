@@ -274,6 +274,27 @@ DBの `gpu_warm_status` テーブルは害がないため未削除（`supabase/m
 
 代替として、タブ内ローカルの warm カウントダウン（§7）を使う。
 
+---
+
+## 11. 結果の URL は使い回さない（2026-09-24 導入）
+
+**症状（実際に起きた）**: 超解像のバッチで、プレビューが 1 枚だけ欠け、個別の保存ボタンが全部「無反応」。
+一括 ZIP だけは保存できた。Multi-Angle・動画超解像・Director も同じ作りだった。
+
+**原因**: 生成物は完了直後にいったん Modal Volume に置かれ、その後 CPU の publish 関数が R2 へ上げて
+**Volume 側を消す**（CLAUDE.md §1、`ull_r2.publish_job_dir`）。完了時に解決した URL は Volume（Modal）
+を指しているので、移動後は 404 になる。R2 の署名付き GET も 15 分で切れる。それを state に持って
+使い回すと、保存・表示が失敗する。保存処理が `.catch(() => {})` でエラーを捨てていたため「無反応」に見えた。
+
+**ルール**
+- **保存・他タブへの受け渡し・ZIP は、押した時点で URL を取り直す。** 手本: `downloadUpscaleResult`
+  （`src/lib/upscaleApi.ts`）、`freshAngleImageUrl(s)`（`src/lib/angleApi.ts`）、Director の
+  `freshVideoUrl`（ジョブを読み直す）。
+- **`<img>` / `<video>` には `onError` で取り直しを付ける**（2 回まで、1.5 秒おく）。手本: 超解像の
+  `BatchResultCard` の `reloads`。
+- **URL をキャッシュするなら TTL を署名の有効期限より短く**（Multi-Angle は 10 分）。無期限キャッシュ禁止。
+- **保存の失敗は画面に出す。** `.catch(() => {})` で握りつぶさない。
+
 
 ---
 
