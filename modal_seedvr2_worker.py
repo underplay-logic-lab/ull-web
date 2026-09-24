@@ -229,10 +229,14 @@ def _resolve_video_gpu_tier(preset: str) -> str:
 # T4の方が安く（L4は速度向上が単価上昇に見合わない）、コンテナプール分散に
 # よるコールドスタート増加リスクも避けるため、SeedVR2系（GPU_REQUEST=B300/
 # B200）とは別に全モデルT4で統一する。
+# → 2026-09-24 RTX PRO 6000 へ変更（ホスト判断）。毎回違う画像で測り直すと（同じ画像だと ComfyUI が
+#   結果を使い回して計算を飛ばすので、それ以前の「T4 で 2 秒」等は誤り）、anime 6B・4096x6144 出力で
+#   T4 11.5 秒 / RTX PRO 6000 3.6 秒（3.2 倍）。1 枚の原価は約 1.6 倍（0.2 円 → 0.33 円）だが、
+#   100 枚バッチが約 14 分 → 約 4.5 分になる。待ち時間を優先。docs/gpu-benchmarks.md §18。
 UPSCALE_IMAGE_MODEL_GPU: dict[str, str] = {
-    "real_esrgan_x4plus": _env_str("SEEDVR2_IMAGE_GPU_ESRGAN", "t4"),
-    "real_esrgan_anime": _env_str("SEEDVR2_IMAGE_GPU_ESRGAN", "t4"),
-    "swinir_l": _env_str("SEEDVR2_IMAGE_GPU_SWINIR", "t4"),
+    "real_esrgan_x4plus": _env_str("SEEDVR2_IMAGE_GPU_ESRGAN", "RTX-PRO-6000"),
+    "real_esrgan_anime": _env_str("SEEDVR2_IMAGE_GPU_ESRGAN", "RTX-PRO-6000"),
+    "swinir_l": _env_str("SEEDVR2_IMAGE_GPU_SWINIR", "RTX-PRO-6000"),
 }
 
 
@@ -1886,9 +1890,6 @@ def probe():
     timeout=20 * 60,
     scaledown_window=30,
     min_containers=0,
-    # CPU を 4 コア確保する（2026-09-24）。未指定（Modal 既定の最小限）だと、バッチで保存・先読みの裏スレッドと
-    # ComfyUI の画像読み書き（1,700 万画素の PNG）が CPU を取り合い、T4 で 1 枚 2 秒の処理が 8 秒になっていた。
-    cpu=4.0,
     secrets=[
         modal.Secret.from_name("wan-animate-auth"),
         modal.Secret.from_name("huggingface-secret"),
@@ -2804,10 +2805,9 @@ class SeedVR2Worker:
                     finalize_executor=executor,
                     prefetched=pre,
                 )
-                # 1 枚ごとに ComfyUI の実行キャッシュを明示的に解放する（2026-09-24）。ComfyUI 自身の後片付けは
-                # 処理の間隔が 10 秒以上空いたときしか走らず、連続投入のバッチでは GPU メモリが 1 枚 0.3GB ずつ
-                # 溜まって T4 が窮屈になり、1 枚 3.5 秒の処理が 8 秒になっていた（1 枚ずつの呼び出しは 3.5 秒のまま）。
-                # モデル重みは残す（unload_models=False）。
+                # 1 枚ごとに ComfyUI の実行キャッシュを明示的に解放する（2026-09-24）。連続投入だと ComfyUI 自身の
+                # 後片付けが走らず、GPU メモリが 1 枚 0.3GB ずつ溜まっていた（速度への影響は無かったが、長いバッチで
+                # 小さい GPU を圧迫しないよう残す）。モデル重みは残す（unload_models=False）。
                 self._comfy_free()
                 fut = r.get("future")
                 if fut is not None:
