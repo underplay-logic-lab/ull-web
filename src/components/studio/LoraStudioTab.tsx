@@ -2490,6 +2490,7 @@ export function LoraStudioTab({
         busy: phase !== "form" || submitting,
         baseModelTouched,
         loraNameFilled: Boolean(effectiveLoraName.trim()),
+        tooSmallCount: tooSmallImages.length,
         triggerFilled: Boolean(effectiveTrigger.trim()),
         genderTagMissing: allSubjects.some((x) => !(x.fixedTags ?? "").trim()),
         descriptionMissing: allSubjects.some((x) => !(x.description ?? "").trim()),
@@ -2515,6 +2516,7 @@ export function LoraStudioTab({
       effectiveTrigger,
       allSubjects,
       images.length,
+      tooSmallImages.length,
       analysisStarted,
       needsIdentityConfirm,
       identityExtracting,
@@ -3767,6 +3769,46 @@ export function LoraStudioTab({
                     </p>
                   </div>
                 )}
+                {/* 短辺不足の警告は解析開始ボタンの隣に置く（2026-09-24、ホスト指摘）。
+                    解析前に差し替えるのが一番手戻りが少ないので、開始と同時に光らせる。 */}
+                {tooSmallImages.length > 0 && (
+                  <div className="mt-2 space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                    <p className="text-[11px] leading-relaxed text-amber-400">
+                      <strong>{tooSmallImages.length} 枚</strong> は短辺が {MIN_SHORT_EDGE_ERROR}px
+                       未満です。このまま学習すると、その画像だけ解像度が足りないまま学習され、仕上がりが甘くなります
+                      （引き伸ばしはしません。ぼけた絵を学習するほうが害が大きいため）。
+                    </p>
+                    {onOpenUpscale && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          // 該当画像を超解像タブの「まとめて処理」へそのまま入れる（2026-09-24、
+                          // ホスト要望）。タブ切替は Studio.tsx が STUDIO_TAB_EVENT で行う。
+                          requestStudioBatchHandoff(
+                            {
+                              files: tooSmallImages.map((i) => i.file),
+                              source: `LoRA Studio の短辺 ${MIN_SHORT_EDGE_ERROR}px 未満の素材 ${tooSmallImages.length} 枚`,
+                              targetShortEdge: MIN_SHORT_EDGE_WARN,
+                            },
+                            "upscale",
+                          )
+                        }
+                        className={`inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-400 transition-colors hover:bg-amber-500/20${flowRing("upscaleSmall")}`}
+                      >
+                        <Wand2 size={11} />
+                        ✨ この {tooSmallImages.length} 枚を超解像で拡大する
+                      </button>
+                    )}
+                    <p className="text-[10px] leading-relaxed text-muted">
+                      該当:{" "}
+                      {tooSmallImages
+                        .slice(0, 5)
+                        .map((i) => i.file.name)
+                        .join(", ")}
+                      {tooSmallImages.length > 5 ? " ほか" : ""}
+                    </p>
+                  </div>
+                )}
               </>
             }
           />
@@ -3998,44 +4040,6 @@ export function LoraStudioTab({
             </div>
           )}
 
-          {tooSmallImages.length > 0 && (
-            <div className="space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
-              <p className="text-[11px] leading-relaxed text-amber-400">
-                <strong>{tooSmallImages.length} 枚</strong> は短辺が {MIN_SHORT_EDGE_ERROR}px
-                 未満です。このまま学習すると、その画像だけ解像度が足りないまま学習され、仕上がりが甘くなります
-                （引き伸ばしはしません。ぼけた絵を学習するほうが害が大きいため）。
-              </p>
-              {onOpenUpscale && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    // 該当画像を超解像タブの「まとめて処理」へそのまま入れる（2026-09-24、
-                    // ホスト要望）。タブ切替は Studio.tsx が STUDIO_TAB_EVENT で行う。
-                    requestStudioBatchHandoff(
-                      {
-                        files: tooSmallImages.map((i) => i.file),
-                        source: `LoRA Studio の短辺 ${MIN_SHORT_EDGE_ERROR}px 未満の素材 ${tooSmallImages.length} 枚`,
-                        targetShortEdge: MIN_SHORT_EDGE_WARN,
-                      },
-                      "upscale",
-                    )
-                  }
-                  className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-400 transition-colors hover:bg-amber-500/20"
-                >
-                  <Wand2 size={11} />
-                  ✨ この {tooSmallImages.length} 枚を超解像で拡大する
-                </button>
-              )}
-              <p className="text-[10px] leading-relaxed text-muted">
-                該当:{" "}
-                {tooSmallImages
-                  .slice(0, 5)
-                  .map((i) => i.file.name)
-                  .join(", ")}
-                {tooSmallImages.length > 5 ? " ほか" : ""}
-              </p>
-            </div>
-          )}
 
 
           {/* データセット構成の自動診断（2026-09-21）。キャプションが1枚でも

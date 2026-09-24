@@ -23,6 +23,7 @@ export type LoraFlowTarget =
   | "captionSpec"
   | "dropzone"
   | "startAnalysis"
+  | "upscaleSmall"
   | "diagnostics"
   | "identityConfirm"
   | "recaption"
@@ -57,6 +58,8 @@ export type LoraFlowInput = {
   baseModelTouched: boolean;
   /** LoRA 名が入っているか。 */
   loraNameFilled: boolean;
+  /** 短辺が足りない（超解像へ誘導する）画像の枚数。解析開始と同時に光らせる（2026-09-24）。 */
+  tooSmallCount?: number;
   triggerFilled: boolean;
   /** 被写体のうち、性別/人数タグが未選択のものがあるか。 */
   genderTagMissing: boolean;
@@ -126,6 +129,14 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
   // 「全部入れ終わった」を判定できず、途中で走らせると片方の被写体しか
   // 写っていないサンプルで特徴を確定してしまう（2026-09-22、ホスト指摘）。
   if (!v.analysisStarted) {
+    // 小さすぎる素材があれば、解析前に超解像で差し替える選択肢も同時に光らせる
+    // （2026-09-24、ホスト要望）。解析後に差し替えるとキャプションを作り直すことになる。
+    if ((v.tooSmallCount ?? 0) > 0) {
+      return {
+        targets: ["startAnalysis", "upscaleSmall"],
+        hint: "小さすぎる画像を超解像で拡大して入れ直す / このまま解析を始める — どちらでも進めます",
+      };
+    }
     return {
       targets: ["startAnalysis"],
       hint: "画像を全部入れ終えたら押してください（ここから解析が始まります）",
