@@ -43,7 +43,13 @@ import {
 } from "@/lib/upscaleApi";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
-import { studioHandoffToFile, takeStudioBatchHandoff, takeStudioHandoff } from "@/lib/studioHandoff";
+import {
+  sendLoraReplacements,
+  studioHandoffToFile,
+  takeStudioBatchHandoff,
+  takeStudioHandoff,
+  type LoraReplacement,
+} from "@/lib/studioHandoff";
 import {
   loadStudioSession,
   saveStudioSession,
@@ -530,9 +536,17 @@ export function UpscaleStudioTab() {
   // 他タブからの「この画像たちを超解像へ」（LoRA の小さすぎる素材等）: マウント時に 1 回だけ
   // 取り出して「まとめて処理」に並べ、目標短辺に届く最小の倍率を初期値にする。
   const [batchNotice, setBatchNotice] = useState<string | null>(null);
+  // LoRA Studio から来た画像 → 元画像の id。完了後に差し戻すために使う（File の同一性で引く）。
+  const loraReturnRef = useRef<Map<File, string>>(new Map());
+  // 送信したジョブ id → LoRA 側の元画像 id（完了後の差し戻しに使う）。
+  const [batchLoraMap, setBatchLoraMap] = useState<Record<string, string>>({});
   useEffect(() => {
     const handoff = takeStudioBatchHandoff();
     if (!handoff || handoff.files.length === 0) return;
+    const ids = handoff.loraReturnIds;
+    if (ids && ids.length === handoff.files.length) {
+      handoff.files.forEach((f, i) => loraReturnRef.current.set(f, ids[i]));
+    }
     // 取り出しは破壊的なので cleanup で打ち消さない（StrictMode の二重実行で 2 回目は
     // 空振りする。1 回目の反映を捨てると取り込みごと消える）。effect 本体では同期
     // setState しない（react-hooks/set-state-in-effect）。
@@ -606,6 +620,12 @@ export function UpscaleStudioTab() {
         modeId,
       });
       broadcastCreditsUpdate(user.id, res.remainingCredits);
+      const loraMap: Record<string, string> = {};
+      batchItems.forEach((it, i) => {
+        const loraId = loraReturnRef.current.get(it.file);
+        if (loraId && res.jobIds[i]) loraMap[res.jobIds[i]] = loraId;
+      });
+      setBatchLoraMap(loraMap);
       setBatchItems([]);
       setBatchJobIds(res.jobIds);
       setBatchPhase("running");
@@ -672,6 +692,55 @@ export function UpscaleStudioTab() {
       setDownloadingAll(false);
     }
   }, [batchCompletedResults, downloadingAll]);
+
+  // 完了した分を LoRA Studio へ戻し、元画像と差し替える（2026-09-24、ホスト要望）。
+  // 学習素材なので、元画質（劣化の無い PNG）があればそちらを使う。無ければ配信用の結果。
+  // 対応表はこのページ内だけに持つ（再読み込みすると LoRA 側の画像も消えているので不要）。
+  const [returningToLora, setReturningToLora] = useState(false);
+  const loraReturnable = useMemo(
+    () => batchJobIds.filter((id) => batchLoraMap[id] && batchJobs[id]?.status === "completed"),
+    [batchJobIds, batchJobs, batchLoraMap],
+  );
+  const handleReturnToLora = useCallback(async () => {
+    if (loraReturnable.length === 0 || returningToLora) return;
+    setReturningToLora(true);
+    setBatchError(null);
+    try {
+      const settled = await Promise.allSettled(
+        loraReturnable.map(async (jobId): Promise<LoraReplacement> => {
+          const job = batchJobs[jobId];
+          const url =
+            job.originalAvailable && job.originalFilename
+              ? await fetchUpscaleOriginalDownloadUrl(job.id, job.originalFilename)
+              : await resolveUpscaleImageUrl(job.id, job.resultUrl as string);
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const blob = await res.blob();
+          const type = blob.type && blob.type !== "application/octet-stream" ? blob.type : "image/png";
+          const ext = type.includes("webp") ? "webp" : type.includes("jpeg") ? "jpg" : "png";
+          return { id: batchLoraMap[jobId], file: new File([blob], `upscaled_${jobId.slice(0, 8)}.${ext}`, { type }) };
+        }),
+      );
+      const ok = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+      const failed = settled.length - ok.length;
+      if (ok.length === 0) {
+        setBatchError("拡大した画像を取得できませんでした。時間をおいてもう一度お試しください。");
+        return;
+      }
+      if (failed > 0) console.warn(`[UpscaleStudioTab] return to LoRA: ${failed} fetch(es) failed`);
+      sendLoraReplacements(ok);
+      // 差し戻した分は二度押しで重複しないよう対応表から外す。
+      setBatchLoraMap((prev) => {
+        const next = { ...prev };
+        loraReturnable.forEach((id) => {
+          if (ok.some((r) => r.id === prev[id])) delete next[id];
+        });
+        return next;
+      });
+    } finally {
+      setReturningToLora(false);
+    }
+  }, [loraReturnable, returningToLora, batchJobs, batchLoraMap]);
 
   // タブを閉じても続行 — batchJobIds をローカルに永続化してポーリングで復元。
   useEffect(() => {
@@ -1446,6 +1515,27 @@ export function UpscaleStudioTab() {
               <AlertTriangle size={14} className="mt-0.5 shrink-0" />
               {batchError}
             </p>
+          )}
+
+          {loraReturnable.length > 0 && (
+            <button
+              type="button"
+              onClick={() => void handleReturnToLora()}
+              disabled={returningToLora}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 flow-next"
+            >
+              {returningToLora ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" />
+                  LoRA Studio へ戻しています…
+                </>
+              ) : (
+                <>
+                  <Wand2 size={16} />
+                  拡大した {loraReturnable.length} 枚を LoRA Studio に戻して差し替える
+                </>
+              )}
+            </button>
           )}
 
           {batchCompletedUrls.length > 0 && (

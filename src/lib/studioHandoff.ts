@@ -7,7 +7,7 @@
 // 受け取る側はマウント時に 1 回だけ取り出して消す（再読み込みで二重に
 // 取り込まない）。Studio.tsx が `ull:studio-tab` を拾って goTab する。
 
-export type StudioHandoffTab = "upscale" | "upscale_video";
+export type StudioHandoffTab = "upscale" | "upscale_video" | "lora";
 
 export type StudioHandoff = {
   kind: "image" | "video";
@@ -64,6 +64,11 @@ export type StudioBatchHandoff = {
   source: string;
   /** 受け取り側が倍率を選ぶための目標短辺（px）。これ以上になる最小の倍率を初期値にする。 */
   targetShortEdge?: number;
+  /**
+   * 結果を LoRA Studio へ戻して差し替えるための、元画像の id（files と同じ並び）。
+   * あるときだけ超解像タブに「LoRA Studio に戻して差し替える」が出る。
+   */
+  loraReturnIds?: string[];
 };
 
 let pendingBatch: StudioBatchHandoff | null = null;
@@ -79,4 +84,17 @@ export function takeStudioBatchHandoff(): StudioBatchHandoff | null {
   const h = pendingBatch;
   pendingBatch = null;
   return h;
+}
+
+// --- 超解像の結果を LoRA Studio へ戻して差し替える（2026-09-24、ホスト要望）---
+// LoRA Studio は一度開くと hidden で残る（Studio.tsx）ので、非表示のままでも
+// window のイベントを受け取れる。差し替えを先に投げてからタブを切り替える。
+export const LORA_REPLACE_EVENT = "ull:lora-replace";
+
+export type LoraReplacement = { id: string; file: File };
+
+export function sendLoraReplacements(replacements: LoraReplacement[]): void {
+  if (typeof window === "undefined" || replacements.length === 0) return;
+  window.dispatchEvent(new CustomEvent(LORA_REPLACE_EVENT, { detail: { replacements } }));
+  window.dispatchEvent(new CustomEvent(STUDIO_TAB_EVENT, { detail: { tab: "lora" } }));
 }

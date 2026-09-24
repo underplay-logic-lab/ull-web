@@ -118,26 +118,44 @@ export async function uploadLoraDataset(
   // 並列度を上げすぎると画像を同時に何枚もメモリへ展開することになるので、
   // 4 で止める（1枚 1024x1536 の RGBA ≒ 6MB、4枚で 24MB）。
   const OPTIMIZE_CONCURRENCY = 4;
-  const optimized: File[] = new Array(files.length);
-  let optimizeCursor = 0;
-  let optimizeDone = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(OPTIMIZE_CONCURRENCY, files.length) }, async () => {
-      while (true) {
-        const i = optimizeCursor;
-        optimizeCursor += 1;
-        if (i >= files.length) return;
-        optimized[i] = await toWebp(files[i]);
-        optimizeDone += 1;
-        onOptimize?.(optimizeDone, files.length);
-      }
-    }),
-  );
-  files = optimized;
+  const optimizeAll = async (): Promise<void> => {
+    const optimized: File[] = new Array(files.length);
+    let optimizeCursor = 0;
+    let optimizeDone = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(OPTIMIZE_CONCURRENCY, files.length) }, async () => {
+        while (true) {
+          const i = optimizeCursor;
+          optimizeCursor += 1;
+          if (i >= files.length) return;
+          optimized[i] = await toWebp(files[i]);
+          optimizeDone += 1;
+          onOptimize?.(optimizeDone, files.length);
+        }
+      }),
+    );
+    files = optimized;
+  };
+
+  // 2026-09-24: WebP 変換は「Modal（米国）への送信量が律速」という前提の対策だった。
+  // R2 はエッジ終端でその前提が無く、変換には 259 枚で 1〜2 分かかり、SDXL では
+  // q95 の劣化がそのまま学習素材に残る。よって R2 経路では変換しない（Modal 経路は従来どおり）。
+  // 比較計測用に localStorage `ull_lora_upload_webp=1` で R2 でも変換を強制できる。
+  // 判定は同じ PNG データセットの `[lora-upload]` 行（送信秒）＋変換時間で行う。
+  let forceWebp = false;
+  try {
+    forceWebp = window.localStorage.getItem("ull_lora_upload_webp") === "1";
+  } catch {
+    /* private mode 等 — 既定動作 */
+  }
+  const optimizeStartedAt = Date.now();
+  // R2 のチケットはファイル名ごとに署名するので、変換するならチケットより前に済ませる。
+  if (forceWebp) await optimizeAll();
 
   // "NNNN_<元のファイル名>"。ゼロ埋めの連番でサーバー側のソートが captions
   // 配列の順序と一致する（崩れると別画像のキャプションで学習が回る）。
-  // WebP 変換で名前が変わるので、チケットの取得は変換の後。
+  // WebP 変換で名前が変わる。R2 のチケットはこの名前で署名するので、R2 で変換する
+  // 場合（forceWebp）はチケットより前に変換済み。Modal 経路のチケットは名前に依存しない。
   const filenameFor = (i: number): string => {
     const safe = files[i].name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "image";
     return `${String(i).padStart(4, "0")}_${safe}`;
@@ -156,6 +174,9 @@ export async function uploadLoraDataset(
     ticket.store === "r2" && Array.isArray(ticket.files) && ticket.files.length === files.length
       ? (ticket.files as { filename: string; path: string; url: string }[])
       : null;
+  // Modal 経路（R2 無効時のフォールバック）は従来どおり送信前に WebP 化する。
+  if (!r2Files && !forceWebp) await optimizeAll();
+  const optimizeSec = (Date.now() - optimizeStartedAt) / 1000;
   // R2 は Cloudflare のエッジ終端なので、Modal（米国）への HTTP/2 フロー制御
   // × 日米間 RTT の頭打ち（§15、1 ストリーム 2.2Mbps）が無い。並列度は
   // バッチ経路と同じ 16 から始め、実測で調整する。
@@ -451,7 +472,8 @@ export async function uploadLoraDataset(
   console.info(
     `[lora-upload] ${files.length}枚 / ${(sentBytes / 1048576).toFixed(1)}MB を ` +
       `${elapsedSec.toFixed(1)}秒（実効 ${mbps.toFixed(1)} Mbps・${route}・` +
-      `${requests}リクエスト・1リクエスト平均 ${(requestMs / Math.max(1, requests) / 1000).toFixed(2)}秒）`,
+      `${requests}リクエスト・1リクエスト平均 ${(requestMs / Math.max(1, requests) / 1000).toFixed(2)}秒` +
+      `・WebP ${forceWebp || !r2Files ? `あり（変換+準備 ${optimizeSec.toFixed(1)}秒）` : "なし"}）`,
   );
 
   return { datasetId, paths };

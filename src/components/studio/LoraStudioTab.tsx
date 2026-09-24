@@ -64,7 +64,11 @@ import {
 } from "@/lib/loraPricing";
 import { validateLoraYaml, loraYamlIdentity } from "@/lib/loraYaml";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
-import { requestStudioBatchHandoff } from "@/lib/studioHandoff";
+import {
+  LORA_REPLACE_EVENT,
+  requestStudioBatchHandoff,
+  type LoraReplacement,
+} from "@/lib/studioHandoff";
 import { DatasetCurationUI, type CurationPair } from "@/components/studio/DatasetCurationUI";
 import { parseDatasetZip, isZipFile, buildDatasetZip, downloadBlob } from "@/lib/datasetZip";
 import {
@@ -838,6 +842,43 @@ export function LoraStudioTab({
         return next;
       });
     }
+  }, []);
+
+  // 超解像タブから戻ってきた拡大済み画像で、元の画像を**同じ位置・同じ id のまま**
+  // 置き換える（2026-09-24、ホスト要望）。id を保つので学習回数・選択・キャプションは
+  // そのまま残る（拡大しても写っている内容は同じなので、キャプションは作り直さない）。
+  // 寸法の判定と長辺の縮小は通常の取り込みと同じ prepareDatasetImage を通す。
+  useEffect(() => {
+    const onReplace = (e: Event) => {
+      const replacements = (e as CustomEvent<{ replacements: LoraReplacement[] }>).detail?.replacements ?? [];
+      if (replacements.length === 0) return;
+      void (async () => {
+        const prepared = await Promise.all(
+          replacements.map(async ({ id, file }) => ({ id, p: await prepareDatasetImage(file) })),
+        );
+        const byId = new Map(prepared.map((x) => [x.id, x.p]));
+        const stale: string[] = [];
+        let replaced = 0;
+        const next = imagesRef.current.map((img) => {
+          const p = byId.get(img.id);
+          if (!p) return img;
+          replaced++;
+          stale.push(img.url);
+          return { ...img, file: p.file, url: URL.createObjectURL(p.file), sizeVerdict: p.verdict };
+        });
+        setImages(next);
+        stale.forEach((u) => URL.revokeObjectURL(u));
+        const stillSmall = next.filter((i) => i.sizeVerdict === "tooSmall").length;
+        const missing = replacements.length - replaced;
+        setAddNotice(
+          `超解像で拡大した ${replaced} 枚を元の画像と差し替えました。` +
+            (missing > 0 ? ` ${missing} 枚は元の画像が削除済みだったため差し替えていません。` : "") +
+            (stillSmall > 0 ? ` まだ短辺が足りない画像が ${stillSmall} 枚あります。` : ""),
+        );
+      })();
+    };
+    window.addEventListener(LORA_REPLACE_EVENT, onReplace);
+    return () => window.removeEventListener(LORA_REPLACE_EVENT, onReplace);
   }, []);
 
   const importZip = useCallback(
@@ -3789,6 +3830,7 @@ export function LoraStudioTab({
                               files: tooSmallImages.map((i) => i.file),
                               source: `LoRA Studio の短辺 ${MIN_SHORT_EDGE_ERROR}px 未満の素材 ${tooSmallImages.length} 枚`,
                               targetShortEdge: MIN_SHORT_EDGE_WARN,
+                              loraReturnIds: tooSmallImages.map((i) => i.id),
                             },
                             "upscale",
                           )
