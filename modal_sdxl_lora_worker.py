@@ -1074,7 +1074,7 @@ def _read_lora_dataset_upload(key: str) -> bytes:
         ull_r2 = None
     if ull_r2 is not None and ull_r2.r2_configured():
         try:
-            return ull_r2.get_bytes(f"lora_dataset_uploads/{key}")
+            return ull_r2.get_upload_bytes("lora_dataset_uploads", key)
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"dataset upload not found on Volume or R2: {key} ({exc})") from exc
     raise RuntimeError(f"dataset upload not found on Volume: {key}")

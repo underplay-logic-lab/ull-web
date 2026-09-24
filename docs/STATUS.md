@@ -578,6 +578,13 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 - R2 移行は計画 1〜9 すべて閉じた（8-② の転送パネルだけローンチ後）。
 
 **残り**
+00000. **R2 のキーをユーザー別の配置に変更（2026-09-24、ワーカー 6 本デプロイ済み・Next は push で反映）。** ホスト要望「rclone / Explorer で
+   一番上がユーザーの一覧になっていてほしい」。新: `<email>_<user_id先頭8桁>/<kind>/<job_id>/…`（例 `foo@example.com_726453dc/loras/<job>/…`）。
+   変換は `ull_r2.key_for_rel()` / `r2.server.ts::r2KeyForRel()`（`<kind>/<user_id>/<rest>` の user_id 段を抜いて先頭に root）。
+   読む側はキーを再計算しない: LoRA は `checkpoints[].r2_key`、生成物は `metadata.r2_key_map[<相対パス>]`（無い旧行はパス＝キー）、
+   持ち込み（studio_uploads / lora_dataset_uploads）は新配置 → 旧配置の順に探す。ハンドル名は持たない（メールで十分、2026-09-24 ホスト判断）。
+   **残: ①各タブで「生成 → 表示 → DL」を 1 回ずつ確認（LoRA / 超解像 画像・動画 / Director / Multi-Angle / 持ち込み）
+   ②確認後、旧配置（最上位が `loras/` `lora_dataset_uploads/` `studio_uploads/` `upscale…` `director_results/` `angle…` 等）をホストが削除（v7_wd はローカルへ退避済みの前提）。**
 0000. **Multi-Angle の「余分な GPU コンテナ」調査 — 結論（2026-09-24）**: 普段の運用では発生しない。09-23 21:32 にジョブ実行中に
    再デプロイ（v25）したため、Modal が新バージョンのコンテナを先回り起動していた（v24 がジョブ処理、v25 の 3 台は入力 0）。
    v25 のうち 2 台は読み込み中に exit 137（メモリ不足）。GPU クラスに `memory=` が無いのが気になるので、読み込み完了と

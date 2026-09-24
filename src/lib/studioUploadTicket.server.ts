@@ -1,6 +1,6 @@
 import "server-only";
 import crypto from "crypto";
-import { presignR2Put, r2UploadsEnabled } from "@/lib/r2.server";
+import { presignR2Put, r2KeyForRel, r2UploadsEnabled } from "@/lib/r2.server";
 
 // studioUploads.ts/.server.ts が使う、一時アップロード用チケットの発行ヘルパー。
 //
@@ -30,7 +30,13 @@ function sign(userId: string, filename: string, expiresAt: number): string {
     .digest("hex");
 }
 
-export function studioUploadR2Key(userId: string, filename: string): string {
+/** R2 key of a studio upload — per-user layout `<email>_<id8>/studio_uploads/<file>`
+ * (2026-09-24). `studioUploadLegacyR2Key` is the pre-2026-09-24 key. */
+export async function studioUploadR2Key(userId: string, filename: string): Promise<string> {
+  return r2KeyForRel(`studio_uploads/${userId}/${filename}`, userId);
+}
+
+export function studioUploadLegacyR2Key(userId: string, filename: string): string {
   return `studio_uploads/${userId}/${filename}`;
 }
 
@@ -74,7 +80,7 @@ export async function createStudioUploadTicket(
 
   if (r2UploadsEnabled() && !opts.forceModal) {
     const expiresAt = Math.floor(Date.now() / 1000) + R2_PUT_TTL_SECONDS;
-    const uploadUrl = await presignR2Put(studioUploadR2Key(userId, filename), {
+    const uploadUrl = await presignR2Put(await studioUploadR2Key(userId, filename), {
       expiresIn: R2_PUT_TTL_SECONDS,
     });
     return { store: "r2", method: "PUT", uploadUrl, userId, filename, path, expiresAt };

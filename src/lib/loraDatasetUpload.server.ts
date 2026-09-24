@@ -1,6 +1,6 @@
 import "server-only";
 import crypto from "crypto";
-import { presignR2Put, r2UploadsEnabled } from "@/lib/r2.server";
+import { presignR2Put, r2KeyForRel, r2UploadsEnabled } from "@/lib/r2.server";
 
 // LoRA学習用データセット画像の直アップロード用チケット発行（2026-09-19
 // 導入）。Supabase Storage バケット "lora_datasets" から
@@ -48,8 +48,10 @@ export type LoraDatasetUploadTicket =
       sig: string;
     };
 
-export function loraDatasetUploadR2Key(userId: string, datasetId: string, filename: string): string {
-  return `lora_dataset_uploads/${userId}/${datasetId}/${filename}`;
+// 2026-09-24: ユーザー別の配置 `<email>_<id8>/lora_dataset_uploads/<dataset>/<file>`。
+// worker（ull_r2.get_upload_bytes）は新配置 → 旧配置の順に読む。
+export async function loraDatasetUploadR2Key(userId: string, datasetId: string, filename: string): Promise<string> {
+  return r2KeyForRel(`lora_dataset_uploads/${userId}/${datasetId}/${filename}`, userId);
 }
 
 export async function createLoraDatasetUploadTicket(
@@ -77,7 +79,7 @@ export async function createLoraDatasetUploadTicket(
       filenames.map(async (filename) => ({
         filename,
         path: `${userId}/${datasetId}/${filename}`,
-        url: await presignR2Put(loraDatasetUploadR2Key(userId, datasetId, filename), {
+        url: await presignR2Put(await loraDatasetUploadR2Key(userId, datasetId, filename), {
           expiresIn: R2_PUT_TTL_SECONDS,
         }),
       })),

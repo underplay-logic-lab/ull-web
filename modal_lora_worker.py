@@ -6264,10 +6264,6 @@ def _verify_dataset_upload_token(user_id: str, dataset_id: str, expires: str, si
     return hmac.compare_digest(expected, sig)
 
 
-def _r2_dataset_upload_key(key: str) -> str:
-    """R2 側のキー。Volume の相対パスと同じ `lora_dataset_uploads/<user_id>/
-    <dataset_id>/<filename>`（src/lib/loraDatasetUpload.server.ts と一致）。"""
-    return f"{LORA_DATASET_UPLOADS_SUBDIR}/{key}"
 
 
 def _read_lora_dataset_upload(key: str) -> bytes:
@@ -6289,7 +6285,8 @@ def _read_lora_dataset_upload(key: str) -> bytes:
         ull_r2 = None
     if ull_r2 is not None and ull_r2.r2_configured():
         try:
-            return ull_r2.get_bytes(_r2_dataset_upload_key(key))
+            # 2026-09-24: ユーザー別の配置（<email>_<id8>/lora_dataset_uploads/…）→ 旧配置の順に探す。
+            return ull_r2.get_upload_bytes(LORA_DATASET_UPLOADS_SUBDIR, key)
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"dataset upload not found on Volume or R2: {key} ({exc})") from exc
     raise RuntimeError(f"dataset upload not found on Volume: {key}")
@@ -6315,7 +6312,9 @@ def _delete_lora_dataset_uploads(keys: list) -> int:
             import ull_r2
 
             if ull_r2.r2_configured():
-                removed += ull_r2.delete_keys(_r2_dataset_upload_key(k) for k in clean)
+                removed += ull_r2.delete_keys(
+                    kk for k in clean for kk in ull_r2.upload_keys(LORA_DATASET_UPLOADS_SUBDIR, k)
+                )
         except Exception as exc:  # noqa: BLE001
             print(f"[dataset-upload] R2 delete skipped: {exc}", flush=True)
     return removed

@@ -8,6 +8,7 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 // Cloudflare R2 artifact store — server-side twin of ull_r2.py.
 //
@@ -87,15 +88,42 @@ export function r2Client(): S3Client {
   return cached;
 }
 
-// `<kind>/<user_id>/<job_id>/<file>` — identical to the Volume-relative path
-// so metadata.checkpoints[].path and .r2_key read the same.
-export function r2ArtifactKey(kind: R2ArtifactKind, userId: string, jobId: string, file: string): string {
-  return `${kind}/${userId}/${jobId}/${file}`;
+// Per-user key layout (2026-09-24, ホスト要望): `<email>_<user_id[:8]>/<kind>/…`
+// so the bucket's top level lists users by e-mail in rclone / Explorer. Keep
+// in sync with user_root() / key_for_rel() in ull_r2.py (same sanitising and
+// fallback). Before this the key was the Volume-relative path itself
+// (`<kind>/<user_id>/…`); readers therefore never recompute a key from a path
+// — they use the stamped `r2_key` / `r2_key_map`.
+const userRootCache = new Map<string, string>();
+
+function sanitizeLabel(v: string): string {
+  return v.trim().toLowerCase().replace(/[^a-z0-9._@+-]/g, "_").slice(0, 120);
+}
+
+export async function r2UserRoot(userId: string): Promise<string> {
+  const hit = userRootCache.get(userId);
+  if (hit) return hit;
+  const { data, error } = await supabaseAdmin.from("profiles").select("email").eq("id", userId).maybeSingle();
+  if (error) {
+    console.error("[r2] user root lookup failed:", userId.slice(0, 8), error.message);
+    return `nomail_${userId}`; // not cached: retry next time
+  }
+  const label = sanitizeLabel(typeof data?.email === "string" ? data.email : "");
+  const root = label ? `${label}_${userId.slice(0, 8)}` : `nomail_${userId}`;
+  userRootCache.set(userId, root);
+  return root;
+}
+
+/** Volume-relative `<kind>/<user_id>/<rest>` -> `<root>/<kind>/<rest>`. */
+export async function r2KeyForRel(relPath: string, userId: string): Promise<string> {
+  const parts = relPath.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+  if (parts.length >= 2 && parts[1] === userId) parts.splice(1, 1);
+  return [await r2UserRoot(userId), ...parts].join("/");
 }
 
 // Defensive key check for anything that came out of a DB row: no leading
-// slash, no traversal, printable ASCII only.
-const SAFE_KEY_RE = /^[A-Za-z0-9._-][A-Za-z0-9._\/-]{0,511}$/;
+// slash, no traversal, printable ASCII only (`@` / `+` for the e-mail root).
+const SAFE_KEY_RE = /^[A-Za-z0-9._@+-][A-Za-z0-9._@+\/-]{0,511}$/;
 export function isSafeR2Key(key: unknown): key is string {
   return typeof key === "string" && SAFE_KEY_RE.test(key) && !key.split("/").includes("..");
 }
@@ -166,6 +194,14 @@ export function isPublishedToR2(meta: unknown, relPath: string): boolean {
   return r2Enabled() && isSafeR2Key(relPath) && r2KeysFromMetadata(meta).includes(relPath);
 }
 
+/** The R2 key a published `relPath` was stored under: `metadata.r2_key_map`
+ * (per-user layout, 2026-09-24〜), else the path itself (older rows). */
+function publishedKeyOf(meta: unknown, relPath: string): string {
+  const map = (meta as { r2_key_map?: unknown } | null)?.r2_key_map;
+  const mapped = map && typeof map === "object" ? (map as Record<string, unknown>)[relPath] : undefined;
+  return isSafeR2Key(mapped) ? mapped : relPath;
+}
+
 /** Presigned GET for `relPath` when the row says it lives in R2, else null
  * (caller falls back to the Modal signed link). Never throws. */
 export async function presignPublishedArtifact(
@@ -175,7 +211,7 @@ export async function presignPublishedArtifact(
 ): Promise<string | null> {
   if (!isPublishedToR2(meta, relPath)) return null;
   try {
-    return await presignR2Get(relPath, opts);
+    return await presignR2Get(publishedKeyOf(meta, relPath), opts);
   } catch (err) {
     console.error("[r2] presign failed for", relPath, err);
     return null;

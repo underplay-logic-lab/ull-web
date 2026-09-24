@@ -990,7 +990,7 @@ def publish_director_artifacts_r2(job_id: str) -> dict:
         return {"uploaded": 0, "skipped": "not a volume path"}
     if video_url in set(meta.get("r2_keys") or []):
         return {"uploaded": 0, "skipped": "already published"}
-    stats = ull_r2.publish_volume_files(MODELS_DIR, [video_url])
+    stats = ull_r2.publish_volume_files(MODELS_DIR, [video_url], user_id=str(row.get("user_id") or ""))
     merged = ull_r2.stamp_r2_keys(meta, stats)
     if merged is None:
         return {"uploaded": 0, "failed": len(stats["failed"])}

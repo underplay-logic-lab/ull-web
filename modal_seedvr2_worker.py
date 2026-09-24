@@ -1524,7 +1524,7 @@ def publish_upscale_artifacts_r2(job_id: str) -> dict:
     rel_paths = [p for p in rel_paths if p not in already]
     if not rel_paths:
         return {"uploaded": 0}
-    stats = ull_r2.publish_volume_files(MODELS_DIR, rel_paths)
+    stats = ull_r2.publish_volume_files(MODELS_DIR, rel_paths, user_id=user_id)
     merged = ull_r2.stamp_r2_keys(meta, stats)
     if merged is None:
         return {"uploaded": 0, "failed": len(stats["failed"])}
@@ -1534,7 +1534,7 @@ def publish_upscale_artifacts_r2(job_id: str) -> dict:
         print(f"[r2] vol.commit() skipped: {exc}", flush=True)
     # metadata だけ（status は触らない → generation_logs のトリガーは発火しない）。
     # GPU 側は completed を打ち終わっているので GET→merge→PATCH の競合相手はいない。
-    _merge_upscale_metadata(job_id, {k: merged[k] for k in ("r2_keys", "artifact_store", "r2_publish")})
+    _merge_upscale_metadata(job_id, {k: merged[k] for k in ("r2_keys", "r2_key_map", "artifact_store", "r2_publish")})
     return merged["r2_publish"]
 
 

@@ -9,9 +9,13 @@ Why R2 (2026-09-23, docs/STATUS.md「R2 を成果物ストレージにする」)
   * Egress is free, storage is $0.015/GB-month, and the 14-day retention is a
     bucket lifecycle rule instead of a purge worker.
 
-Key convention: `<kind>/<user_id>/<job_id>/<file>` — the same relative path
-the Volume used (e.g. `loras/<user>/<job>/<name>_final.safetensors`), so a
-`metadata.checkpoints[].path` and its `r2_key` read identically.
+Key convention (2026-09-24): `<user root>/<kind>/<job_id>/<file>`, where the
+user root is `<email>_<user_id[:8]>` (`user_root()`), so the bucket's top
+level lists users by e-mail in rclone / Explorer. `key_for_rel()` maps a
+Volume-relative path `<kind>/<user_id>/<rest>` onto it. Readers never
+recompute keys: LoRA stamps `checkpoints[].r2_key`, generated artifacts stamp
+`metadata.r2_key_map[<rel>] = <key>` (the Next twin is src/lib/r2.server.ts).
+Before 2026-09-24 the key was the Volume-relative path itself.
 
 Credentials come from the Modal secret `r2-artifacts` (R2_ACCOUNT_ID /
 R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET). Setting
@@ -101,6 +105,84 @@ def transfer_config():
         max_concurrency=_CONCURRENCY,
         use_threads=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-user key root (2026-09-24) — keep in sync with r2UserRoot() in
+# src/lib/r2.server.ts (same sanitising, same fallback).
+# ---------------------------------------------------------------------------
+_ROOT_CACHE: dict[str, str] = {}
+
+
+def _sanitize_label(v: str) -> str:
+    import re
+
+    return re.sub(r"[^a-z0-9._@+-]", "_", v.strip().lower())[:120]
+
+
+def user_root(user_id: str) -> str:
+    """`<email>_<user_id[:8]>` from profiles.email (service role, cached per
+    container). No e-mail / lookup failure -> `nomail_<user_id>`."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return "nomail_anon"
+    hit = _ROOT_CACHE.get(uid)
+    if hit:
+        return hit
+    email = ""
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if url and key:
+        try:
+            import json
+            import urllib.parse
+            import urllib.request
+
+            q = urllib.parse.urlencode({"id": f"eq.{uid}", "select": "email"})
+            req = urllib.request.Request(
+                f"{url.rstrip('/')}/rest/v1/profiles?{q}",
+                headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as res:
+                rows = json.loads(res.read().decode("utf-8"))
+            if rows and isinstance(rows[0].get("email"), str):
+                email = rows[0]["email"]
+        except Exception as exc:  # noqa: BLE001 — storage labels must never fail a job
+            print(f"[r2] user_root lookup failed for {uid[:8]}: {exc!r}", flush=True)
+            return f"nomail_{uid}"  # not cached: retry next time
+    label = _sanitize_label(email)
+    root = f"{label}_{uid[:8]}" if label else f"nomail_{uid}"
+    _ROOT_CACHE[uid] = root
+    return root
+
+
+def key_for_rel(rel: str, user_id: str) -> str:
+    """Volume-relative `<kind>/<user_id>/<rest>` -> `<root>/<kind>/<rest>`.
+    Paths without the user segment just get the root prefixed."""
+    parts = [p for p in str(rel).strip().strip("/").split("/") if p]
+    if len(parts) >= 2 and parts[1] == str(user_id):
+        parts.pop(1)
+    return "/".join([user_root(user_id), *parts])
+
+
+def upload_keys(subdir: str, storage_key: str) -> list[str]:
+    """User-supplied input `"<user_id>/<rest>"` under `subdir`
+    (`lora_dataset_uploads` / `studio_uploads`) -> candidate R2 keys, new
+    per-user layout first, then the pre-2026-09-24 `<subdir>/<user_id>/<rest>`."""
+    k = str(storage_key).strip().strip("/")
+    uid = k.split("/", 1)[0]
+    legacy = f"{subdir}/{k}"
+    return [key_for_rel(legacy, uid), legacy]
+
+
+def get_upload_bytes(subdir: str, storage_key: str) -> bytes:
+    last: Exception | None = None
+    for key in upload_keys(subdir, storage_key):
+        try:
+            return get_bytes(key)
+        except Exception as exc:  # noqa: BLE001 — try the next layout
+            last = exc
+    raise RuntimeError(f"not found in R2: {storage_key} ({last!r})")
 
 
 def _content_type(name: str, explicit: str | None = None) -> str:
@@ -229,7 +311,7 @@ def publish_job_meta_from_volume(
     job_dir = pathlib.Path(models_dir) / kind / user_id / job_id
     if not todo and not (job_dir / "LICENSE.txt").is_file():
         return None
-    prefix = f"{kind}/{user_id}/{job_id}"
+    prefix = key_for_rel(f"{kind}/{user_id}/{job_id}", user_id)
     stats = publish_job_dir(job_dir, todo, prefix, log=log)
     if not stats.get("uploaded") and not stats.get("extra_keys"):
         return None
@@ -336,8 +418,9 @@ def publish_job_dir(
 # Multi-Angle / 特化ワークフロー. These rows keep a Volume-relative path in
 # a plain column (`upscale_jobs.result_url`, `generation_jobs.video_url`,
 # `angle_jobs.images[]`) rather than a `checkpoints[]` list, so the publish
-# is keyed by path: the R2 key *is* the relative path, and the row's
-# metadata gets `r2_keys: [<rel_path>, ...]` listing what has been moved.
+# is keyed by path: the row's metadata gets `r2_keys: [<rel_path>, ...]`
+# listing what has been moved and `r2_key_map: {<rel_path>: <R2 key>}`
+# (2026-09-24 per-user layout; rows without the map used key == rel path).
 # The Next.js routes presign a key only when it appears in `r2_keys`, and
 # fall back to the Modal endpoint otherwise (files still on the Volume).
 # ---------------------------------------------------------------------------
@@ -345,13 +428,15 @@ def publish_volume_files(
     models_dir: str | pathlib.Path,
     rel_paths: Iterable[str],
     *,
+    user_id: str,
     remove_local: bool = True,
     log=print,
 ) -> dict:
-    """Upload `<models_dir>/<rel_path>` to key `<rel_path>` for every path.
-    Returns {keys: [uploaded rel paths], failed: [...], skipped: [...],
-    bytes, elapsed_s}. Fail-open per file, never raises."""
-    stats: dict = {"keys": [], "failed": [], "skipped": [], "bytes": 0, "elapsed_s": 0.0}
+    """Upload `<models_dir>/<rel_path>` to `key_for_rel(rel_path, user_id)`
+    for every path. Returns {keys: [uploaded rel paths], key_map: {rel: key},
+    failed: [...], skipped: [...], bytes, elapsed_s}. Fail-open per file,
+    never raises."""
+    stats: dict = {"keys": [], "key_map": {}, "failed": [], "skipped": [], "bytes": 0, "elapsed_s": 0.0}
     paths = [str(p).strip().strip("/") for p in rel_paths if p]
     if not paths:
         return stats
@@ -369,13 +454,15 @@ def publish_volume_files(
             stats["skipped"].append(rel)
             continue
         try:
-            r = put_file(local, rel)
-            remote = head(rel)
+            key = key_for_rel(rel, user_id)
+            r = put_file(local, key)
+            remote = head(key)
             if remote != local.stat().st_size:
                 raise RuntimeError(f"size mismatch after upload: local={local.stat().st_size} remote={remote}")
-            log(f"[r2] put {rel} ({r['size_bytes'] / _MB:.1f} MB, {r['mb_s']} MB/s)", flush=True)
+            log(f"[r2] put {key} ({r['size_bytes'] / _MB:.1f} MB, {r['mb_s']} MB/s)", flush=True)
             stats["bytes"] += r["size_bytes"]
             stats["keys"].append(rel)
+            stats["key_map"][rel] = key
             if remove_local:
                 try:
                     local.unlink()
@@ -402,6 +489,9 @@ def stamp_r2_keys(meta: dict | None, stats: dict) -> dict | None:
         return None
     merged = dict(meta or {})
     merged["r2_keys"] = sorted(set(list(merged.get("r2_keys") or []) + list(stats["keys"])))
+    key_map = dict(merged.get("r2_key_map") or {})
+    key_map.update(stats.get("key_map") or {})
+    merged["r2_key_map"] = key_map
     merged["artifact_store"] = "r2"
     merged["r2_publish"] = {
         "uploaded": len(stats["keys"]),

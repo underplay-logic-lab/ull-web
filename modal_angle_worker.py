@@ -915,7 +915,7 @@ def publish_angle_artifacts_r2(job_id: str) -> dict:
     ]
     if not rel_paths:
         return {"uploaded": 0}
-    stats = ull_r2.publish_volume_files(MODELS_DIR, rel_paths)
+    stats = ull_r2.publish_volume_files(MODELS_DIR, rel_paths, user_id=str(row.get("user_id") or ""))
     merged = ull_r2.stamp_r2_keys(meta, stats)
     if merged is None:
         return {"uploaded": 0, "failed": len(stats["failed"])}

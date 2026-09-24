@@ -84,7 +84,16 @@ async function persistCustomWorkflowResult(args: {
       credits_cost: args.creditsCost,
       video_url: args.resultVolumePath,
       // R2 に置けた行は metadata.r2_keys（admin の一覧が署名付き GET に解決する）。
-      ...(args.resultR2Key ? { metadata: { artifact_store: "r2", r2_keys: [args.resultR2Key] } } : {}),
+      // 2026-09-24: R2 のキーはユーザー別の配置なので相対パス → キーの対応も残す。
+      ...(args.resultR2Key
+        ? {
+            metadata: {
+              artifact_store: "r2",
+              r2_keys: [args.resultVolumePath],
+              r2_key_map: { [args.resultVolumePath]: args.resultR2Key },
+            },
+          }
+        : {}),
     });
     if (jobInsertError) {
       console.error("[studio/custom-workflows/generate] job row insert failed:", jobInsertError.message);

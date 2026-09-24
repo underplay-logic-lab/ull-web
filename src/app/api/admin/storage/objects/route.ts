@@ -61,10 +61,12 @@ export async function GET(request: Request) {
         url: e.isFolder ? null : await presignR2Get(e.path).catch(() => null),
       })),
     );
-    // <kind>/ の直下（prefix が 1 セグメント）のフォルダ名が user_id。
+    // 旧配置（〜2026-09-24）は <kind>/ の直下のフォルダ名が user_id。新配置は最上位が
+    // `<email>_<id8>` でそのまま読めるので、UUID の形のフォルダだけ引く。
     let emailByFolder: Record<string, string | null> = {};
     if (prefix && !prefix.includes("/")) {
-      const ids = entries.filter((e) => e.isFolder).map((e) => e.name);
+      const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const ids = entries.filter((e) => e.isFolder && uuidRe.test(e.name)).map((e) => e.name);
       if (ids.length > 0) {
         const { data } = await supabaseAdmin.from("profiles").select("id, email").in("id", ids);
         emailByFolder = Object.fromEntries((data ?? []).map((r) => [r.id as string, (r.email as string) ?? null]));

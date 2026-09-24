@@ -1,5 +1,5 @@
 import "server-only";
-import { signStudioDownloadUrl, studioUploadR2Key } from "@/lib/studioUploadTicket.server";
+import { signStudioDownloadUrl, studioUploadLegacyR2Key, studioUploadR2Key } from "@/lib/studioUploadTicket.server";
 import { deleteR2Keys, headR2, presignR2Get, r2Configured, uploadStore } from "@/lib/r2.server";
 
 // 一時アップロード（studioUploads.ts の uploadStudioAsset で置かれたもの）を
@@ -29,12 +29,16 @@ type Located = { store: "r2"; key: string } | { store: "modal" };
 async function locateStudioUpload(userId: string, storagePath: string): Promise<Located> {
   assertOwnedPath(userId, storagePath);
   if (!r2Configured()) return { store: "modal" };
-  const key = studioUploadR2Key(userId, storagePath.slice(userId.length + 1));
-  try {
-    const size = await headR2(key);
-    if (size !== null) return { store: "r2", key };
-  } catch (err) {
-    console.error("[studioUploads] R2 head failed, falling back to Modal:", key, err instanceof Error ? err.message : err);
+  const filename = storagePath.slice(userId.length + 1);
+  // ユーザー別の配置（2026-09-24〜）→ 旧配置の順に探す。
+  for (const key of [await studioUploadR2Key(userId, filename), studioUploadLegacyR2Key(userId, filename)]) {
+    try {
+      const size = await headR2(key);
+      if (size !== null) return { store: "r2", key };
+    } catch (err) {
+      console.error("[studioUploads] R2 head failed, falling back to Modal:", key, err instanceof Error ? err.message : err);
+      return { store: "modal" };
+    }
   }
   return { store: "modal" };
 }
@@ -109,7 +113,16 @@ export function deleteStudioUploads(paths: (string | null | undefined)[]): void 
   if (clean.length === 0) return;
 
   if (r2Configured()) {
-    void deleteR2Keys(clean.map((p) => `studio_uploads/${p}`)).catch((err) => {
+    void (async () => {
+      const keys: string[] = [];
+      for (const p of clean) {
+        const slash = p.indexOf("/");
+        if (slash <= 0) continue;
+        const uid = p.slice(0, slash);
+        keys.push(await studioUploadR2Key(uid, p.slice(slash + 1)), `studio_uploads/${p}`);
+      }
+      return deleteR2Keys(keys);
+    })().catch((err) => {
       console.error("[studioUploads] R2 delete failed:", err instanceof Error ? err.message : err);
     });
   }

@@ -331,7 +331,8 @@ def _put_custom_workflow_result_r2(user_id: str, job_id: str, filename: str, dat
         return None
     if not ull_r2.r2_enabled():
         return None
-    key = _custom_workflow_result_rel_path(user_id, job_id, filename)
+    # 2026-09-24: キーはユーザー別の配置（<email>_<id8>/custom_workflow_results/…）。
+    key = ull_r2.key_for_rel(_custom_workflow_result_rel_path(user_id, job_id, filename), user_id)
     try:
         r = ull_r2.put_bytes(data, key)
         print(f"[r2] put {key} ({r['size_bytes'] / 1048576:.1f} MB, {r['mb_s']} MB/s)", flush=True)
@@ -1221,7 +1222,7 @@ class _WanAnimateBase:
         # 無理なら従来どおり Volume。どちらでも result_volume_path は同じ相対パス。
         result_r2_key = _put_custom_workflow_result_r2(user_id, job_id, filename, result_bytes)
         result_volume_path = (
-            result_r2_key
+            _custom_workflow_result_rel_path(user_id, job_id, filename)
             if result_r2_key
             else _save_custom_workflow_result(user_id, job_id, filename, result_bytes)
         )
