@@ -62,6 +62,28 @@ def _authorize(request: fastapi.Request) -> None:
         raise fastapi.HTTPException(status_code=401, detail="Unauthorized")
 
 
+def _refund(user_id: str, credits: int) -> None:
+    """解析が失敗したら引き落とし分を返す（route と同じく profiles.credits を読んで足す）。"""
+    if not user_id or not credits:
+        return
+    import requests
+
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        print(f"[caption] refund skipped (no supabase env) user={user_id[:8]} {credits}C", flush=True)
+        return
+    h = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    try:
+        r = requests.get(f"{url}/rest/v1/profiles", params={"id": f"eq.{user_id}", "select": "credits"}, headers=h, timeout=15)
+        cur = int((r.json() or [{}])[0].get("credits") or 0)
+        requests.patch(f"{url}/rest/v1/profiles", params={"id": f"eq.{user_id}"}, json={"credits": cur + credits},
+                       headers=h, timeout=15).raise_for_status()
+        print(f"[caption] refunded {credits}C to {user_id[:8]}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[caption] refund FAILED user={user_id[:8]} {credits}C: {exc!r}", flush=True)
+
+
 def _gpu_label() -> str:
     try:
         import torch
@@ -80,7 +102,7 @@ def _gpu_label() -> str:
     scaledown_window=2,
     min_containers=0,
     retries=0,
-    secrets=[modal.Secret.from_name("r2-artifacts")],
+    secrets=[modal.Secret.from_name("r2-artifacts"), modal.Secret.from_name("supabase-model-downloads")],
 )
 class CaptionVLM:
     @modal.enter()
@@ -166,6 +188,7 @@ class CaptionVLM:
             state.update({"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:500]})
             jobs[key] = state
             print(f"[caption] {key} FAILED: {exc!r}", flush=True)
+            _refund(str(job.get("user_id") or ""), int(job.get("credits_cost") or 0))
         finally:
             try:
                 ull_r2.delete_keys(keys)  # 縮小画像は解析が済めば要らない
@@ -190,7 +213,8 @@ def caption_dispatch(body: dict, request: fastapi.Request):
         raise fastapi.HTTPException(status_code=400, detail="invalid job")
     jobs[key] = {"status": "queued", "done": 0, "total": len(keys), "raws": [None] * len(keys)}
     call = CaptionVLM().run.spawn({"dict_key": key, "keys": [str(k) for k in keys], "prompt": prompt,
-                                   "max_tokens": body.get("max_tokens")})
+                                   "max_tokens": body.get("max_tokens"), "user_id": body.get("user_id"),
+                                   "credits_cost": body.get("credits_cost")})
     return {"ok": True, "call_id": call.object_id}
 
 

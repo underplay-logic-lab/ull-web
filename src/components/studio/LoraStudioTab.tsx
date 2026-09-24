@@ -88,6 +88,8 @@ import {
   type CaptionMode,
   type ResolvedCaptionMode,
   matchLeadingSubjectTriggers,
+  loraCaptionPrice,
+  LORA_CAPTION_FREE_MAX,
 } from "@/lib/loraCaptionSpec";
 import { analyzeDataset, captionBuckets, DIAGNOSTIC_AXES, suggestRepeats } from "@/lib/datasetDiagnostics";
 import { DatasetDiagnosticsPanel } from "@/components/studio/DatasetDiagnosticsPanel";
@@ -2525,6 +2527,8 @@ export function LoraStudioTab({
     [images, captions, userCaptionIds],
   );
   const pendingCaptionCount = incompleteImages.length;
+  // 「LoRA に最適化したキャプション」の料金（route と同じ式、2026-09-25）。
+  const captionPrice = loraCaptionPrice(pendingCaptionCount, pricingKnobs);
 
   // 抽出が終わったらメタデータの確認へ送る（2026-09-22、ホスト提案）。
   // ここで確定させてからキャプションを作るので、作り直しが起きない。
@@ -3107,6 +3111,8 @@ export function LoraStudioTab({
       return;
     }
     if (!canSubmit) return;
+    // キャプションが揃うまで学習へ進めない（2026-09-25 ホスト判断: キャプション作成は有料・学習側の自動補完に頼らない）。
+    if (pendingCaptionCount > 0 && !autoCap.running) return;
 
     // Let any in-flight AI-vision pass finish so curation / training see the
     // completed captions.
@@ -3790,16 +3796,20 @@ export function LoraStudioTab({
                 「画像を入れて解析させ、ZIP を落としてローカルで焼く」が成立して
                 しまい、学習の対価を取れない。学習開始後（=課金済み）の
                 データセットDLは従来どおり誰でも使える。 */}
-            {isAdmin && images.length > 0 && (
+            {/* 2026-09-25: キャプション作成が有料になったので、キャプションが揃ったら誰でも DL できるようにし、
+                光らせて保存を促す（ホスト判断「100C やったら終わり次第 DL できるように・DL を促す」）。 */}
+            {images.length > 0 && (isAdmin || (analysisStarted && !autoCap.running && pendingCaptionCount === 0)) && (
               <button
                 type="button"
                 onClick={downloadDatasetZipLocal}
                 disabled={busy || datasetZipBusy}
-                title="【admin限定】現在の画像とキャプション(.txt)を1つのZIPにまとめて保存します。"
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-[11px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                title="画像と、作成したキャプション（.txt）を 1 つの ZIP にまとめて保存します。"
+                className={`inline-flex items-center gap-1.5 rounded-lg border border-neon-pink/50 bg-neon-pink/10 px-2.5 py-1 text-[11px] font-semibold text-neon-pink transition-colors hover:bg-neon-pink/20 disabled:cursor-not-allowed disabled:opacity-50${
+                  analysisStarted && pendingCaptionCount === 0 && !autoCap.running ? " flow-next" : ""
+                }`}
               >
                 {datasetZipBusy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
-                📦 データセットDL（admin）
+                📦 キャプション付きデータセットを保存（ZIP）
               </button>
             )}
           </div>
@@ -3887,9 +3897,9 @@ export function LoraStudioTab({
                           画像まで「N 枚を解析」と読める表示は誤解を招く（2026-09-24、ホスト指摘）。 */}
                       {pendingCaptionCount === 0
                         ? "解析済みの結果で次へ進む"
-                        : pendingCaptionCount < images.length
-                          ? `解析を開始する（未解析の ${pendingCaptionCount} 枚）`
-                          : `解析を開始する（${images.length} 枚）`}
+                        : `LoRA に最適化したキャプションを作成（${pendingCaptionCount} 枚・${
+                            captionPrice > 0 ? `${captionPrice}C` : "無料"
+                          }）`}
                     </button>
                     <p className="mt-1.5 text-[10px] leading-relaxed text-muted">
                       画像を<strong className="text-foreground">全部入れ終えてから</strong>押してください。
@@ -3901,8 +3911,12 @@ export function LoraStudioTab({
                         </>
                       ) : (
                         <>
-                          押すと、被写体の特徴を抽出してからキャプションを作ります
-                          {pendingCaptionCount < images.length && "（解析結果が残っている画像はそのまま使います）"}。
+                          押すと、被写体の特徴を抽出してから、LoRA 学習に最適化したキャプションを AI が作ります
+                          （トリガーワードに覚えさせたい特徴は書かず、服装・ポーズ・背景など変わる要素だけを書き分け、
+                          成人向けの内容もぼかさず正確に記述します）。1〜2 分ほどかかります。料金は基本{" "}
+                          {pricingKnobs.lora_caption_base}C＋1 枚 {pricingKnobs.lora_caption_per_image}C
+                          （{LORA_CAPTION_FREE_MAX} 枚以下の作り直しは無料）
+                          {pendingCaptionCount < images.length && "。解析結果が残っている画像はそのまま使います"}。
                           途中で始めると、先に入れたフォルダにしか写っていない被写体の特徴が取れません。
                         </>
                       )}
@@ -5391,6 +5405,7 @@ export function LoraStudioTab({
                 submitting ||
                 Boolean(inFlightJob) ||
                 (Boolean(user) && !insufficientCredits && !canSubmit) ||
+                (Boolean(user) && !autoCap.running && pendingCaptionCount > 0) ||
                 captionGen.state === "generating" ||
                 (Boolean(user) && autoCap.running) ||
                 (Boolean(user) && !insufficientCredits && needsIdentityConfirm)
@@ -5432,6 +5447,11 @@ export function LoraStudioTab({
                 <>
                   <Loader2 size={16} className="animate-spin" />
                   AIキャプションを解析中…（完了までお待ちください）
+                </>
+              ) : pendingCaptionCount > 0 ? (
+                <>
+                  <AlertTriangle size={16} />
+                  {`キャプションが揃うと学習に進めます（未作成 ${pendingCaptionCount} 枚）`}
                 </>
               ) : captionGen.state === "generating" ? (
                 <>

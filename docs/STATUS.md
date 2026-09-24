@@ -588,7 +588,12 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    `ull-caption-jobs`、モデルは Volume から GPU へ直接読み込み）、route `/api/studio/lora/caption-vlm`（start→R2 直 PUT→run→status）、
    クライアント `generateDatasetCaptionsVlm`（`src/lib/loraCaption.ts`、既定。`localStorage ull_lora_caption_backend=gemini` か
    `NEXT_PUBLIC_LORA_CAPTION_BACKEND=gemini` で旧経路へ）。通しテスト 20 枚（冷えた状態）: 依頼→完了 104s / 77s。145 枚の見込み 2〜2.5 分。
-   **残: ホストが画面で実データを通す／料金（knob）を決める／特徴抽出・翻訳など他の Gemini 用途は未移行。**
+   **有料化（2026-09-25 ホスト判断）**: 「LoRA に最適化したキャプションを作成（N 枚・XC）」＝ knob `lora_caption_base` 50C
+   ＋ `lora_caption_per_image` 1C/枚（5 枚以下の作り直しは無料）、run で引き落とし・受け渡し失敗は route、解析失敗は worker が返金。
+   キャプションが揃うまで学習ボタンは押せない。揃ったら学習前のデータセット ZIP を誰でも DL 可（光らせて保存を促す、以前は admin 限定）。
+   **残: ①確認画面で「学習したい特徴」を変えると作り直しが走り、その分も黙って課金される（確認を出すか無料にするか要判断）
+   ②モデル読み込み自体の失敗（@modal.enter）では run が走らず返金されない（画面は 25 分でタイムアウト）
+   ③特徴抽出・翻訳など他の Gemini 用途は未移行 ④JoyCaption は Volume に残置（無料化の候補）。**
    ④ 軽量超解像（Real-ESRGAN / SwinIR）が T4 で 1 枚 9〜10 秒（100 枚 15 分）。ComfyUI の結果確認を 2 秒 → 0.25 秒おきに
    短縮・デプロイ済み。L40S / RTX PRO 6000 との 1 枚あたり原価比較を実施中。
 00000. **R2 のキーをユーザー別の配置に変更（2026-09-24、ワーカー 6 本デプロイ済み・Next は push で反映）。** ホスト要望「rclone / Explorer で

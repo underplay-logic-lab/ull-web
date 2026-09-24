@@ -507,6 +507,7 @@ export async function extractIdentityTags(
 // ---------------------------------------------------------------------------
 type CaptionOpts = NonNullable<Parameters<typeof generateDatasetCaptions>[1]>;
 
+
 export function captionBackend(): "vlm" | "gemini" {
   try {
     const v = typeof window !== "undefined" ? window.localStorage.getItem("ull_lora_caption_backend") : null;

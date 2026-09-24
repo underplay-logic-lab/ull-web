@@ -714,3 +714,13 @@ export function keepTokensForCaption(
   while (i < tokens.length && COUNT_GENDER_TAG_RE.test(tokens[i]?.trim() ?? "")) i++;
   return Math.max(1, i);
 }
+
+/** 「LoRA に最適化したキャプション」の料金（route と画面で同じ式）。5 枚以下は無料（取りこぼしの再解析）。 */
+export const LORA_CAPTION_FREE_MAX = 5;
+export function loraCaptionPrice(
+  count: number,
+  knobs: { lora_caption_base: number; lora_caption_per_image: number },
+): number {
+  if (count <= LORA_CAPTION_FREE_MAX) return 0;
+  return Math.ceil(knobs.lora_caption_base + knobs.lora_caption_per_image * count);
+}

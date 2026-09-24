@@ -27,6 +27,8 @@ export type KnobKey =
   | "director_priority_parallel_surcharge"
   | "director_priority_parallel_rate"
   | "director_qwen_script_credits"
+  | "lora_caption_base"
+  | "lora_caption_per_image"
   | "upscale_per_mp"
   | "upscale_min_credits"
   | "upscale_priority_parallel_surcharge"
@@ -259,6 +261,28 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "feature_credits",
     unit: "C",
     description: "並列実行時に 1 ジョブへ一律で足す固定分（コールドスタート分）。率と合算。",
+    isPublic: true,
+  },
+  lora_caption_base: {
+    // LoRA Studio の「LoRA に最適化したキャプション」（自前 VLM・Qwen3.8-27B・B300、2026-09-25 ホスト判断で有料化）。
+    // 料金 = base + per_image × 枚数。実測（docs/gpu-benchmarks.md §17）: 起動・読み込みで約 1 分、解析は
+    // まとめて処理するので枚数に比例しないが、1 枚あたり約 1〜1.5 秒ずつ伸びる。
+    // 原価目安: B300 約 ¥0.34/秒 × 60s ≈ ¥20 × 3 ÷ 1.66 ≈ 36C → 50C（ホスト判断）。
+    // 5 枚以下の再解析（取りこぼしのやり直し）は route 側で無料。
+    value: 50,
+    label: "LoRA キャプション（1 回の基本料）",
+    category: "feature_credits",
+    unit: "C",
+    description: "LoRA に最適化したキャプション作成の 1 回あたりの基本料（起動・読み込み分）",
+    isPublic: true,
+  },
+  lora_caption_per_image: {
+    // 1 枚あたり約 1.2 秒 ≈ ¥0.4 × 3 ÷ 1.66 ≈ 0.73C → 1C（ホスト判断 2026-09-25）。
+    value: 1,
+    label: "LoRA キャプション（1 枚あたり）",
+    category: "feature_credits",
+    unit: "C/枚",
+    description: "LoRA に最適化したキャプション作成の 1 枚あたりの加算",
     isPublic: true,
   },
   director_qwen_script_credits: {
