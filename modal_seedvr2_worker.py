@@ -1350,6 +1350,33 @@ def _upscale_image_result_rel_path(user_id: str, job_id: str, ext: str) -> str:
 _VOL_COMMIT_LOCK = threading.Lock()
 
 
+def _host_ram_peak_gb():
+    """コンテナのメインメモリ使用量の最大値（GB）。2026-09-24: GPU 関数に memory= を指定しておらず、
+    Multi-Angle で読み込み中に exit 137（メモリ不足で強制終了）が出たため、各ワーカーで実測して
+    確保量を決める。cgroup v2 の memory.peak（子プロセス込み）、無ければ自プロセスの ru_maxrss。"""
+    try:
+        with open("/sys/fs/cgroup/memory.peak") as f:
+            return round(int(f.read().strip()) / 1e9, 1)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import resource
+
+        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6, 1)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _host_ram_report() -> str:
+    cur = None
+    try:
+        with open("/sys/fs/cgroup/memory.current") as f:
+            cur = round(int(f.read().strip()) / 1e9, 1)
+    except Exception:  # noqa: BLE001
+        pass
+    return f"host RAM peak={_host_ram_peak_gb()}GB now={cur}GB"
+
+
 def _save_upscale_image(user_id: str, job_id: str, img_bytes: bytes, ext: str = "png"):
     """完成画像を Volume（upscale_image_results/<user_id>/<job_id>.<ext>）へ
     直接保存する。Supabase Storage を一切経由しない（2026-09-18、CLAUDE.md
@@ -1876,7 +1903,7 @@ class SeedVR2Worker:
         if not _env_str("SEEDVR2_FORCE_SDPA", ""):
             argv.append("--use-sage-attention")
         self._proc = _start_comfy(argv, wait_timeout=300)
-        print(f"[seedvr2] ComfyUI ready (VRAM={_vram_gb()}GB)", flush=True)
+        print(f"[seedvr2] ComfyUI ready (VRAM={_vram_gb()}GB) / {_host_ram_report()}", flush=True)
 
     def _write_input(self, raw: bytes, filename: str, max_edge: int | None = None) -> str:
         """入力を共通正規化レイヤーに通して ComfyUI の input/ へ。
@@ -2420,6 +2447,7 @@ class SeedVR2Worker:
             "preset": preset,
             "stages_ran": r.get("stages_ran", 1),
             "gpu_tier": _gpu_tier_label(),
+            "host_ram_peak_gb": _host_ram_peak_gb(),
         }
         original_data = r.get("original_data")
         if original_data:
@@ -2524,7 +2552,7 @@ class SeedVR2Worker:
         }
         if url:
             _finish_upscale_job(job_id, {"status": "completed", "result_url": url}, meta)
-            print(f"[upscale-video-job] {job_id} completed -> {url}", flush=True)
+            print(f"[upscale-video-job] {job_id} completed -> {url} / {_host_ram_report()}", flush=True)
             _spawn_r2_publish(job_id)
             return {"ok": True, "result_url": url}
 
@@ -2788,7 +2816,7 @@ class SeedVR2Worker:
             _wd_stop.set()
 
         ok_count = sum(1 for r in results if r.get("ok"))
-        print(f"[upscale-batch] {batch_id} done: {ok_count}/{len(items)} ok", flush=True)
+        print(f"[upscale-batch] {batch_id} done: {ok_count}/{len(items)} ok / {_host_ram_report()}", flush=True)
         return {"ok": True, "batch_id": batch_id, "results": results}
 
     @modal.fastapi_endpoint(method="POST")

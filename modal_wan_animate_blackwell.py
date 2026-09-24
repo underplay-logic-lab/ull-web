@@ -46,6 +46,33 @@ import modal
 
 app = modal.App("ull-wan-animate-blackwell")
 
+
+def _host_ram_peak_gb():
+    """コンテナのメインメモリ使用量の最大値（GB）。2026-09-24: GPU 関数に memory= を指定しておらず、
+    Multi-Angle で読み込み中に exit 137（メモリ不足で強制終了）が出たため、各ワーカーで実測して
+    確保量を決める。cgroup v2 の memory.peak（子プロセス込み）、無ければ自プロセスの ru_maxrss。"""
+    try:
+        with open("/sys/fs/cgroup/memory.peak") as f:
+            return round(int(f.read().strip()) / 1e9, 1)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import resource
+
+        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6, 1)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _host_ram_report() -> str:
+    cur = None
+    try:
+        with open("/sys/fs/cgroup/memory.current") as f:
+            cur = round(int(f.read().strip()) / 1e9, 1)
+    except Exception:  # noqa: BLE001
+        pass
+    return f"host RAM peak={_host_ram_peak_gb()}GB now={cur}GB"
+
 COMFY_DIR = "/root/comfy/ComfyUI"
 # The Volume is mounted directly here (see the `volumes={}` kwarg on
 # WanAnimateBlackwell / ModalStorageBlackwell below) rather than at a
@@ -2103,6 +2130,8 @@ class WanAnimateBlackwell:
             }
             if _vram_used_gb is not None:
                 _completed_fields["metadata"]["vram_used_gb"] = _vram_used_gb
+            _completed_fields["metadata"]["host_ram_peak_gb"] = _host_ram_peak_gb()
+            print(f"[director] {job_id} {_host_ram_report()}", flush=True)
             _supabase_patch_job(job_id, _completed_fields)
             if saved_rel_path:
                 _spawn_r2_publish(job_id)

@@ -375,6 +375,33 @@ GPU_REQUEST = os.environ.get("LORA_WORKER_GPU", "").strip() or ["b300", "b200"]
 # で指定するか、ここに書く。⚠️ 単価 knob `lora_credits_per_gpu_second` は B300 時給で
 # 導出しているので、安い tier へ寄せた arch は arch 別の単価が要る（未対応）。
 LORA_ARCH_GPU: dict[str, str] = {}
+
+
+def _host_ram_peak_gb():
+    """コンテナのメインメモリ使用量の最大値（GB）。2026-09-24: GPU 関数に memory= を指定しておらず、
+    Multi-Angle で読み込み中に exit 137（メモリ不足で強制終了）が出たため、各ワーカーで実測して
+    確保量を決める。cgroup v2 の memory.peak（子プロセス込み）、無ければ自プロセスの ru_maxrss。"""
+    try:
+        with open("/sys/fs/cgroup/memory.peak") as f:
+            return round(int(f.read().strip()) / 1e9, 1)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import resource
+
+        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6, 1)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _host_ram_report() -> str:
+    cur = None
+    try:
+        with open("/sys/fs/cgroup/memory.current") as f:
+            cur = round(int(f.read().strip()) / 1e9, 1)
+    except Exception:  # noqa: BLE001
+        pass
+    return f"host RAM peak={_host_ram_peak_gb()}GB now={cur}GB"
 # Next 側 tier id（knob `gpu_usd_per_hour_<tier>` の綴り）→ Modal の GPU 文字列。
 _MODAL_GPU_NAME: dict[str, str] = {
     "b300": "B300",
@@ -4175,7 +4202,7 @@ def train_lora_job(params: dict) -> dict:
             captions = [_sanitize_caption(cap, trigger) for cap in captions]
             for path, cap in zip(image_paths, captions):
                 path.with_suffix(".txt").write_text(cap, encoding="utf-8")
-        print(f"[train] stage 1 done in {time.time() - started:.0f}s")
+        print(f"[train] stage 1 done in {time.time() - started:.0f}s / {_host_ram_report()}", flush=True)
 
         # Bundle the FULL training dataset — every staged image TOGETHER WITH
         # its .txt caption (Qwen-generated or user-supplied) — into dataset.zip
@@ -4455,6 +4482,8 @@ def train_lora_job(params: dict) -> dict:
         except Exception as _mt_exc:  # noqa: BLE001 — telemetry only, never fatal
             print(f"[perf] metrics の記録をスキップ: {_mt_exc!r}", flush=True)
 
+        metadata["host_ram_peak_gb"] = _host_ram_peak_gb()
+        print(f"[train] {_host_ram_report()}", flush=True)
         _patch_job(
             job_id,
             {
