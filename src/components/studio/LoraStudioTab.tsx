@@ -2553,19 +2553,9 @@ export function LoraStudioTab({
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [analysisStarted, needsIdentityConfirm]);
 
-  // 「解析を開始する」を押したら、診断パネルが現れた瞬間にそこへ送る（2026-09-24、
-  // ホスト要望）。パネルは最初のキャプションができるまで存在しないので予約制にする。
-  // 送ったら、終了時の再スクロール（下）は重ねない。
-  // 診断へ送ったか（1 データセットにつき 1 回）。開始時の予約と終了時の両方が使う。
+  // 診断へ送ったか（1 データセットにつき 1 回）。2026-09-25: 開始時に送るのはやめ、
+  // 解析が終わった時だけ送る（下の effect）。
   const scrolledToDiagRef = useRef(false);
-  const pendingDiagScrollRef = useRef(false);
-  const diagnosticsVisible = diagnosticItems.length > 0;
-  useEffect(() => {
-    if (!pendingDiagScrollRef.current || !diagnosticsVisible) return;
-    pendingDiagScrollRef.current = false;
-    scrolledToDiagRef.current = true;
-    document.getElementById(DIAGNOSTICS_PANEL_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [diagnosticsVisible]);
 
   // 解析が終わった瞬間に診断へ送る（2026-09-22、ホスト指摘「取り込み終わった
   // 後に何をすればいいか分からない」）。1データセットにつき1回だけ。
@@ -3886,14 +3876,9 @@ export function LoraStudioTab({
                       type="button"
                       disabled={busy}
                       onClick={() => {
+                        // 押した時点ではその場に留まり、解析が終わってから診断へ送る（2026-09-25、
+                        // ホスト要望「いきなり診断へ飛ぶ」。下の終了時 effect が担う）。
                         setAnalysisStarted(true);
-                        // 押したら診断へ送る（2026-09-24、ホスト要望）。特徴の確認が要る
-                        // SDXL は、抽出後に確認欄へ送る既存の流れに任せる（診断→確認欄の
-                        // 二度跳びを避ける、2026-09-22 の指摘）。終わった時の再スクロールも抑える。
-                        if (needsIdentityConfirm) return;
-                        // 診断パネルはキャプションが 1 枚できた時点で現れるので、ここでは
-                        // 予約だけして、現れた瞬間に送る（下の effect）。
-                        pendingDiagScrollRef.current = true;
                       }}
                       className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
                     >
