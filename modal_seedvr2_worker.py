@@ -1315,6 +1315,14 @@ def _gpu_tier_label() -> str:
     return name
 
 
+def _loadavg() -> float | None:
+    """1 分平均のロード（CPU 取り合いの切り分け用、2026-09-24）。"""
+    try:
+        return round(os.getloadavg()[0], 1)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _get_upscale_job_status(job_id: str):
     """upscale_jobs.status を 1 発 GET。取得不能なら None（判定不能＝続行）。
     Modal のクラッシュ由来リトライを冒頭で弾く idempotency ガード用。"""
@@ -1878,6 +1886,9 @@ def probe():
     timeout=20 * 60,
     scaledown_window=30,
     min_containers=0,
+    # CPU を 4 コア確保する（2026-09-24）。未指定（Modal 既定の最小限）だと、バッチで保存・先読みの裏スレッドと
+    # ComfyUI の画像読み書き（1,700 万画素の PNG）が CPU を取り合い、T4 で 1 枚 2 秒の処理が 8 秒になっていた。
+    cpu=4.0,
     secrets=[
         modal.Secret.from_name("wan-animate-auth"),
         modal.Secret.from_name("huggingface-secret"),
@@ -2099,7 +2110,9 @@ class SeedVR2Worker:
         params = dict(params or {})
 
         raw = _load_input_bytes(image_spec)
+        _t_in = time.time()
         in_name = self._write_input(raw, "in.png")
+        write_input_s = round(time.time() - _t_in, 2)
 
         # カスケード対象は SeedVR2 のみ（ESRGAN/SwinIR は scale_by 固定倍率の
         # CNN で target_short を使わないため対象外）。B300 実測で単発直行より
@@ -2189,6 +2202,7 @@ class SeedVR2Worker:
 
         print(
             f"[seedvr2] {model_key} -> {filename} {out_w}x{out_h} in {elapsed}s "
+            f"(input write {write_input_s}s, load1m={_loadavg()}, cpus={os.cpu_count()}) "
             f"VRAM peak={vram_peak}GB now={_vram_gb()}GB stages={len(stage_targets)}",
             flush=True,
         )
