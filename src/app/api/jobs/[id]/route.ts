@@ -30,7 +30,7 @@ function existingMetaFlag(job: Record<string, unknown>, flag: string): boolean {
 }
 
 // Polled by the frontend (every couple seconds while a job is queued/
-// processing — see CinematicVideoTab.tsx) instead of the old design where
+// processing — see QueueStatusPanel.tsx) instead of the old design where
 // the generate route's own HTTP response blocked until the render
 // finished. Same Authorization-header bearer-token auth as
 // /api/generate/cinematic, since this is called from the same client code

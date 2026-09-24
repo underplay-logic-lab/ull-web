@@ -1,7 +1,18 @@
 "use client";
 
 import { Flame, Hourglass, Loader2, Users } from "lucide-react";
-import type { CinematicQueueInfo } from "@/lib/cinematicApi";
+
+// Live queue telemetry — present only while the job is queued/processing
+// (see GET /api/jobs/[id] → generation_job_queue_stats). Moved here from the
+// removed cinematicApi.ts (2026-09-24).
+export type QueueInfo = {
+  // Jobs ahead of this one (0 = this job is next / already rendering).
+  queuePosition: number;
+  // Mean render time of the last ~10 completed jobs, in seconds.
+  avgExecutionSeconds: number;
+  // queuePosition * avgExecutionSeconds + ~10s for the running job.
+  estimatedWaitSeconds: number;
+};
 
 // Real-time queue monitor shown under the spinner while a generation job is
 // waiting/running. Three tiers, driven by queuePosition:
@@ -14,7 +25,7 @@ export function QueueStatusPanel({
   className = "",
 }: {
   phase: "queued" | "processing" | null;
-  queue: CinematicQueueInfo | null;
+  queue: QueueInfo | null;
   className?: string;
 }) {
   // Before the first poll resolves, fall back to the coarse phase: a

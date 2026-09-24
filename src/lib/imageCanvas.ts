@@ -1,7 +1,7 @@
 "use client";
 
 // Canvas helpers backing the Cinematic Video tab's crop + forced-resize
-// pipeline (see ImageCropper.tsx and CinematicVideoTab.tsx). Browser-only —
+// pipeline (see ImageCropper.tsx). Browser-only —
 // never imported from server code.
 
 export type PixelCrop = { x: number; y: number; width: number; height: number };
