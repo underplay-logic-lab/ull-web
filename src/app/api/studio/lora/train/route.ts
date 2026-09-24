@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { spawnLoraTrainingJob, buildLoraDispatchPayload } from "@/lib/modalLoraTrain";
-import { loraArchGpuTier } from "@/lib/pricing/loraRuntime";
+import { loraArchGpuTier, type LoraSpeed } from "@/lib/pricing/loraRuntime";
 import { DEFAULT_LORA_STEPS, LORA_MAX_STEPS, autoLoraSteps, autoLoraRankAlpha } from "@/lib/loraCredits";
 import { guiLoraPricingConfig, loraPriceBreakdown } from "@/lib/loraPricing";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
@@ -468,6 +468,9 @@ async function handlePost(request: Request): Promise<NextResponse> {
           typeof effectiveTrainingConfig.steps === "number" ? effectiveTrainingConfig.steps : DEFAULT_LORA_STEPS,
       });
   const knobs = await getPricingKnobs();
+  // 実行速度（2026-09-24）。"fast" 以外は全部 standard。fast が無い arch では
+  // loraPriceBreakdown() が standard に正規化するので、ここでは検証しない。
+  const requestedSpeed: LoraSpeed = body.speed === "fast" ? "fast" : "standard";
   const priceBreakdown = pricedConfig
     ? loraPriceBreakdown(pricedConfig, {
         archFallback: pricedArch,
@@ -479,6 +482,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
         // （アップロード済みのファイル数）から渡す — クライアント申告は信用
         // しない（過小申告で安く上げられてしまう）。
         imageCount: storagePaths.length,
+        speed: requestedSpeed,
         knobs,
       })
     : null;
@@ -493,6 +497,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
       effectiveBatch: priceBreakdown.effectiveBatch,
       imageCount: priceBreakdown.imageCount,
       spiOverride: hasOverride ? undefined : pricedPreset?.spiOverride,
+      speed: priceBreakdown.speed,
       knobs,
     });
     if (priceBreakdown.steps > fitSteps) {
@@ -530,6 +535,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
     effectiveBatch: priceBreakdown?.effectiveBatch,
     imageCount: priceBreakdown?.imageCount,
     rank: priceBreakdown?.linearRank || undefined,
+    speed: priceBreakdown?.speed,
     knobs,
   });
 
@@ -577,8 +583,8 @@ async function handlePost(request: Request): Promise<NextResponse> {
     userId: user.id,
     creditsCost: requiredCredits,
     costCapSeconds: costCap.seconds,
-    // 課金に使った arch の GPU tier をそのまま実行 tier にする（SSOT は loraArchGpuTier）。
-    gpuTier: loraArchGpuTier(priceBreakdown ? priceBreakdown.arch : pricedArch),
+    // 課金に使った GPU tier（speed 込み）をそのまま実行 tier にする（SSOT は loraArchGpuTier）。
+    gpuTier: priceBreakdown ? priceBreakdown.gpuTier : loraArchGpuTier(pricedArch),
     storagePaths,
     datasetId,
     captions,

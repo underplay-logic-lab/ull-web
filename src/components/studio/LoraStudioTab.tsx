@@ -58,7 +58,9 @@ import {
   guiLoraPricingConfig,
   loraPriceBreakdown,
   loraPriceMultiplierSummary,
+  loraEstimatedMinutesLabel,
   LORA_CREDIT_WORST_CASE,
+  type LoraSpeed,
 } from "@/lib/loraPricing";
 import { validateLoraYaml, loraYamlIdentity } from "@/lib/loraYaml";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
@@ -1674,6 +1676,8 @@ export function LoraStudioTab({
   const targetModel = isCustom ? "custom" : modelChoice;
   const selectedPreset = isCustom ? undefined : loraPresetById(modelChoice);
   const pricedArch = isCustom ? baseArchitecture : (selectedPreset?.arch ?? "");
+  // 標準/高速の選択。高速が無い arch では無視される（effectiveSpeed 参照）。
+  const [speedChoice, setSpeedChoice] = useState<LoraSpeed>("standard");
   // sd-scriptsワーカー（Illustrious/Juggernaut等）限定のメタデータタグ
   // 埋め込み機能。arch==="sdxl"のジョブだけ対象（route.tsのisSdxlJobと同じ
   // 判定）。生YAMLモードは生YAML自体をsd-scriptsワーカーが受け付けないため
@@ -1744,29 +1748,37 @@ export function LoraStudioTab({
   //    外部一次情報に基づく見直し）。サーバー側(/api/studio/lora/train)も
   //    同じ関数で同じ値を再計算するので見積りと実際の課金・学習パラメータが
   //    食い違わない。
-  const priceBreakdown = useMemo(() => {
-    if (yamlMode) {
-      if (yamlCheck?.ok)
-        return loraPriceBreakdown(yamlCheck.data, {
-          archFallback: pricedArch,
+  //  - 標準/高速（2026-09-24）: 高速 tier がある arch だけ両方を見積もって並べる。
+  //    fast が無い arch では loraPriceBreakdown() が standard に正規化するので、
+  //    priceBySpeed.fast.speed === "fast" が「選択肢がある」の判定になる。
+  const priceBySpeed = useMemo(() => {
+    const price = (speed: LoraSpeed) => {
+      if (yamlMode) {
+        if (yamlCheck?.ok)
+          return loraPriceBreakdown(yamlCheck.data, {
+            archFallback: pricedArch,
+            imageCount: images.length,
+            speed,
+            knobs: pricingKnobs,
+          });
+        return null; // worst-case shown below
+      }
+      return loraPriceBreakdown(
+        guiLoraPricingConfig({
+          arch: pricedArch,
+          resolution,
+          linearRank: effPro.rank,
+          steps: effPro.steps,
+        }),
+        {
+          spiOverride: selectedPreset?.spiOverride,
           imageCount: images.length,
+          speed,
           knobs: pricingKnobs,
-        });
-      return null; // worst-case shown below
-    }
-    return loraPriceBreakdown(
-      guiLoraPricingConfig({
-        arch: pricedArch,
-        resolution,
-        linearRank: effPro.rank,
-        steps: effPro.steps,
-      }),
-      {
-        spiOverride: selectedPreset?.spiOverride,
-        imageCount: images.length,
-        knobs: pricingKnobs,
-      },
-    );
+        },
+      );
+    };
+    return { standard: price("standard"), fast: price("fast") };
   }, [
     yamlMode,
     yamlCheck,
@@ -1778,6 +1790,9 @@ export function LoraStudioTab({
     selectedPreset,
     pricingKnobs,
   ]);
+  const fastAvailable = priceBySpeed.fast?.speed === "fast";
+  const effectiveSpeed: LoraSpeed = fastAvailable ? speedChoice : "standard";
+  const priceBreakdown = priceBySpeed[effectiveSpeed];
   const requiredCredits =
     priceBreakdown && priceBreakdown.credits > 0
       ? Math.min(LORA_CREDIT_WORST_CASE, priceBreakdown.credits)
@@ -2276,6 +2291,7 @@ export function LoraStudioTab({
         // 画像ごとの keep_tokens はキャプションから数える（ユーザー入力ではない）。
         // キャプションの固定ブロック（trigger 群 + 数/性別タグ）の長さと
         // ズレると trigger が本文へ紛れ込むので、値を入力させる設計をやめた。
+        speed: effectiveSpeed,
         keepTokensPerImage:
           !yamlMode && isSdxlJob && allSubjects.length > 0
             ? captionList.map((c) => keepTokensForCaption(c, allSubjects, 4))
@@ -5108,6 +5124,36 @@ export function LoraStudioTab({
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* 標準/高速 — 高速 tier がある arch だけ。型番は出さない（CLAUDE.md §2）。 */}
+          {fastAvailable && !submitting && priceBySpeed.standard && priceBySpeed.fast && (
+            <div className="rounded-lg border border-border bg-background/60 px-3 py-2 text-xs">
+              <p className="mb-1.5 text-[10px] text-muted">学習の速さ</p>
+              <div className="grid grid-cols-2 gap-2">
+                {(["standard", "fast"] as const).map((s) => {
+                  const b = priceBySpeed[s]!;
+                  return (
+                    <button
+                      key={s}
+                      type="button"
+                      aria-pressed={effectiveSpeed === s}
+                      onClick={() => setSpeedChoice(s)}
+                      className={`rounded-lg border px-3 py-1.5 text-left transition-colors ${
+                        effectiveSpeed === s
+                          ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
+                          : "border-border bg-background/60 text-muted hover:border-neon-violet/40"
+                      }`}
+                    >
+                      <span className="block text-xs font-medium">{s === "standard" ? "標準" : "高速"}</span>
+                      <span className="block text-[10px] opacity-80">
+                        {loraEstimatedMinutesLabel(b)} ・ {b.credits} C
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
 

@@ -587,7 +587,11 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 3. **minimax_h3 の s/it 再校正の判断。** knob 1.80（§14.15）に対し実ジョブ `cbeb0865` は 0.31〜0.55。1 点では動かさない。
    次の minimax ジョブでもう 1 点取ってから（`metadata.metrics` に自動で入る）。
 4. **Wan Animate を独立コンテンツとして設計し直す**（価格決定 6。特化 WF タブは admin 限定に格下げ済みなので、旧 `wan-animate-dance` 行は使わない前提）。
-5. **GPU tier の選択制**（安い・遅い／高い・速い。klein / zimage の「B300 で 2 倍速・20% 高」が対象）。UI 2 択＋route の gpuTier 上書き、未着手。
+5. **GPU tier の選択制 — 実装済み・未コミット（2026-09-24）。** LoRA Studio に「標準／高速」の 2 択（高速 tier がある arch だけ表示）。
+   SSOT は `LORA_ARCH_PROFILE[arch].fast = { gpu, spi }`（klein 0.35・zimage 0.32、いずれも B300）で、課金・損切り・
+   12h 判定・dispatch の `gpu_tier` が全部 `speed` を通る。worker は無改修（`gpu_tier=b300` は既定の B300/B200）。
+   目安（50 枚・2,000 step）: zimage 23 分 359C → 12 分 453C、klein 24 分 376C → 14 分 493C（prep も B300 時給になるので +26〜31%）。
+   残: 実機で高速を 1 本流して s/it を確認。anima / SDXL は B300 未実測なので対象外。
 6. **キャプション経路の課題**（2026-09-22 起票の節、未着手）。
 7. ~~SDXL の RTX PRO 6000 品質確認~~ **閉じた（2026-09-24）**: 学習は同じ bf16・同じ sd-scripts で GPU と torch の版が違うだけなので、
    出力差は数値ノイズ程度で品質差は期待されない。ホスト「そんなには変わらないだろ」。異常が見えたときだけ L40S 経路に戻す（1 行）。

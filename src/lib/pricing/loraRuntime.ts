@@ -152,18 +152,42 @@ export type LoraGpuTier = "b300" | "b200" | "h200" | "h100" | "rtx_pro_6000" | "
  * 実測値の出典は docs/gpu-benchmarks.md §14.16〜。
  */
 export const LORA_ARCH_PROFILE: Readonly<
-  Record<string, { prepLoadS?: number; prepPerImageS?: number; gpu?: LoraGpuTier }>
+  Record<
+    string,
+    {
+      prepLoadS?: number;
+      prepPerImageS?: number;
+      gpu?: LoraGpuTier;
+      /**
+       * 「高速」を選んだときの実行 tier とその tier で測った s/it（安全側込み）。
+       * 既定 tier より速いが時給が高い、という選択肢がある arch だけ持つ。
+       */
+      fast?: { gpu: LoraGpuTier; spi: number };
+    }
+  >
 > = {
   // §14.16: prep 778s（JIT 629 + latent 149 = 0.675s/枚）、VRAM 119GB → B300/B200 のまま。
   wan22_14b: { prepLoadS: 650, prepPerImageS: 0.7, gpu: "b300" },
   // §14.26（2026-09-23 tier 確認ラン）: H200 で s/it 0.92（B300 と同じ）、VRAM 86.8GB → H200。1step 原価 −36%。
   ltx2: { prepLoadS: 550, prepPerImageS: 0.5, gpu: "h200" },
   // §14.26: RTX PRO 6000 で s/it 0.555（B300 0.295 の 1.9 倍遅い）、VRAM 38GB。1step 原価 −20%、所要時間は約 2 倍。
-  flux2_klein_4b: { prepLoadS: 100, prepPerImageS: 0.25, gpu: "rtx_pro_6000" },
+  // 高速 = B300（§14.18 実測 0.295 に 20% 上乗せで 0.35）。s/it 約 1/2、1step 原価 +25%。
+  flux2_klein_4b: {
+    prepLoadS: 100,
+    prepPerImageS: 0.25,
+    gpu: "rtx_pro_6000",
+    fast: { gpu: "b300", spi: 0.35 },
+  },
   // §14.26: H200 で s/it 0.742（B300 0.57 の 1.3 倍）、VRAM 70.8GB。1step 原価 −17%。
   krea2: { prepLoadS: 150, prepPerImageS: 0.3, gpu: "h200" },
   // §14.26: RTX PRO 6000 で s/it 0.535（B300 0.266 の 2.0 倍）、VRAM 46.3GB。1step 原価 −15%、所要時間は約 2 倍。
-  zimage: { prepLoadS: 100, prepPerImageS: 0.15, gpu: "rtx_pro_6000" },
+  // 高速 = B300（§14.20 実測 0.27 に 20% 上乗せで 0.32）。s/it 1/2、1step 原価 +17%。
+  zimage: {
+    prepLoadS: 100,
+    prepPerImageS: 0.15,
+    gpu: "rtx_pro_6000",
+    fast: { gpu: "b300", spi: 0.32 },
+  },
   // §14.26: RTX PRO 6000 で s/it 0.477（B300 0.509 より速い）、VRAM 30.3GB。1step 原価 −60%。
   anima: { prepLoadS: 100, prepPerImageS: 0.2, gpu: "rtx_pro_6000" },
 };
@@ -172,11 +196,24 @@ export const LORA_ARCH_PROFILE: Readonly<
 /** SDXL（sd-scripts ワーカー）の実行 tier。l40s に戻すと cu124 の従来関数で回る。 */
 export const SDXL_GPU_TIER: LoraGpuTier = "rtx_pro_6000";
 
-export function loraArchGpuTier(arch: string | null | undefined): LoraGpuTier {
+/**
+ * 実行速度の選択（2026-09-24）。"fast" は LORA_ARCH_PROFILE に `fast` を持つ arch でだけ効き、
+ * それ以外の arch では "standard" と同じ扱いになる（クライアントが何を送っても安全）。
+ */
+export type LoraSpeed = "standard" | "fast";
+
+/** その arch に「高速」の選択肢があればその tier と s/it、無ければ null。 */
+export function loraFastOption(arch: string | null | undefined): { gpu: LoraGpuTier; spi: number } | null {
+  return LORA_ARCH_PROFILE[String(arch ?? "").trim().toLowerCase()]?.fast ?? null;
+}
+
+export function loraArchGpuTier(arch: string | null | undefined, speed?: LoraSpeed): LoraGpuTier {
   const key = String(arch ?? "").trim().toLowerCase();
   // 2026-09-23: SDXL（sd-scripts）も RTX PRO 6000 へ（docs §14.28: L40S 1.21 → 0.645 s/it、1step 原価 −17%）。
   // worker 側は payload の gpu_tier で Blackwell image（torch 2.8/cu128）の関数に振り分ける。
   if (loraWorkerBackend(key) === "sd_scripts") return SDXL_GPU_TIER;
+  const fast = speed === "fast" ? loraFastOption(key) : null;
+  if (fast) return fast.gpu;
   return LORA_ARCH_PROFILE[key]?.gpu ?? "b300";
 }
 
@@ -216,6 +253,7 @@ export function loraWorkerBackend(arch: string | null | undefined): LoraWorkerBa
 export function loraCreditsPerGpuSecond(
   arch: string | null | undefined,
   knobs: PricingKnobs = DEFAULT_KNOBS,
+  speed?: LoraSpeed,
 ): number {
   if (loraWorkerBackend(arch) === "sd_scripts") {
     // sdxl の knob は L40S 時給で導出した単価。tier を変えたら L40S 比で比例させる（markup 据え置き）。
@@ -224,7 +262,7 @@ export function loraCreditsPerGpuSecond(
   }
   // ai-toolkit 側の knob は B300 時給で導出した「B300 の 1 GPU 秒」の単価。arch を安い tier で
   // 回すときは時給比で比例縮小する（markup は据え置き）。B300 なら比 1.0 で従来どおり。
-  const tier = loraArchGpuTier(arch);
+  const tier = loraArchGpuTier(arch, speed);
   const ratio = gpuUsdPerHour(tier, knobs) / gpuUsdPerHour("b300", knobs);
   return knobs.lora_credits_per_gpu_second * (Number.isFinite(ratio) && ratio > 0 ? ratio : 1);
 }
@@ -307,6 +345,8 @@ export type LoraRuntimeEstimate = {
   /** 頭打ちが効いたか（= 本来この設定は完走しない）。 */
   cappedByAbsMax: boolean;
   backend: LoraWorkerBackend;
+  /** この見積もりの前提にした実行 tier（speed 込み）。dispatch の gpu_tier にそのまま使う。 */
+  gpuTier: LoraGpuTier;
 };
 
 export type LoraRuntimeInput = {
@@ -326,6 +366,8 @@ export type LoraRuntimeInput = {
    * を 14B と共有する）。loraModels.ts の LoraPreset.spiOverride から来る。
    */
   spiOverride?: number;
+  /** "fast" で LORA_ARCH_PROFILE[arch].fast の tier / s/it を使う（無い arch では無視）。 */
+  speed?: LoraSpeed;
   knobs?: PricingKnobs;
 };
 
@@ -333,8 +375,11 @@ export function loraEstimatedSeconds(input: LoraRuntimeInput): LoraRuntimeEstima
   const knobs = input.knobs ?? DEFAULT_KNOBS;
   const arch = String(input.arch ?? "").trim().toLowerCase();
 
-  const spiRaw =
-    typeof input.spiOverride === "number" && Number.isFinite(input.spiOverride) && input.spiOverride > 0
+  // 高速の s/it は別 tier で測った値なので、既定 tier 向けの spiOverride より優先する。
+  const fast = input.speed === "fast" ? loraFastOption(arch) : null;
+  const spiRaw = fast
+    ? fast.spi
+    : typeof input.spiOverride === "number" && Number.isFinite(input.spiOverride) && input.spiOverride > 0
       ? input.spiOverride
       : (LORA_SPI_BASELINE[arch] ?? knobs.lora_spi_baseline_default);
   const spi = Math.max(0, finite(spiRaw, knobs.lora_spi_baseline_default));
@@ -389,6 +434,7 @@ export function loraEstimatedSeconds(input: LoraRuntimeInput): LoraRuntimeEstima
     totalSeconds,
     cappedByAbsMax,
     backend: loraWorkerBackend(arch),
+    gpuTier: loraArchGpuTier(arch, input.speed),
   };
 }
 

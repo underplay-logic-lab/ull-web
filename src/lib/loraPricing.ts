@@ -27,14 +27,19 @@ import {
   loraCreditsPerGpuSecond,
   loraCreditWorstCase,
   loraEstimatedSeconds,
+  loraFastOption,
+  type LoraGpuTier,
+  type LoraSpeed,
   type LoraWorkerBackend,
 } from "@/lib/pricing/loraRuntime";
 
 export {
   LORA_SPI_BASELINE,
   loraCreditWorstCase,
+  loraFastOption,
   loraEstimatedSeconds,
   loraWorkerBackend,
+  type LoraSpeed,
 } from "@/lib/pricing/loraRuntime";
 
 // Absolute ceiling — charged server-side when a raw YAML can't be parsed at
@@ -51,6 +56,10 @@ export type LoraPriceBreakdown = {
   imageCount: number;
   arch: string;
   backend: LoraWorkerBackend;
+  /** 実行速度の選択（fast が効かない arch では standard に正規化済み）。 */
+  speed: LoraSpeed;
+  /** 実行 tier。課金の時給と dispatch の gpu_tier はこれで揃える。 */
+  gpuTier: LoraGpuTier;
   /** 採用した arch 別 s/it（基準解像度・バッチ1）。 */
   spi: number;
   /** 実際の1ステップ所要秒（解像度・実効バッチ込み）。 */
@@ -93,6 +102,8 @@ export function loraPriceBreakdown(
      * 生 YAML にはこの情報が無いので、必ず呼び出し側が実データから渡すこと。
      */
     imageCount?: number;
+    /** 実行速度（"fast" は loraFastOption() がある arch でだけ効く）。 */
+    speed?: LoraSpeed;
     /** Live admin-edited knobs; falls back to DEFAULT_KNOBS when omitted. */
     knobs?: PricingKnobs;
   } = {},
@@ -146,6 +157,8 @@ export function loraPriceBreakdown(
 
   const imageCount = Math.max(0, Math.round(opts.imageCount ?? 0));
 
+  const speed: LoraSpeed = opts.speed === "fast" && loraFastOption(arch) ? "fast" : "standard";
+
   const estimate = loraEstimatedSeconds({
     arch,
     steps,
@@ -154,10 +167,11 @@ export function loraPriceBreakdown(
     imageCount,
     rank: linearRank > 0 ? linearRank : undefined,
     spiOverride: opts.spiOverride,
+    speed,
     knobs,
   });
 
-  const creditsPerGpuSecond = loraCreditsPerGpuSecond(arch, knobs);
+  const creditsPerGpuSecond = loraCreditsPerGpuSecond(arch, knobs, speed);
   // Round away IEEE-754 noise before the ceil so a clean 600 doesn't become 601.
   const raw = estimate.totalSeconds * creditsPerGpuSecond;
   const credits = Math.ceil(Math.round(raw * 1e6) / 1e6);
@@ -170,6 +184,8 @@ export function loraPriceBreakdown(
     imageCount,
     arch,
     backend: estimate.backend,
+    speed,
+    gpuTier: estimate.gpuTier,
     spi: estimate.spi,
     secondsPerStep: estimate.secondsPerStep,
     prepSeconds: estimate.prepSeconds,
@@ -184,7 +200,13 @@ export function loraPriceBreakdown(
 // The one number both the UI and the debit use.
 export function calculateLoraCredits(
   yamlObj: unknown,
-  opts?: { archFallback?: string; spiOverride?: number; imageCount?: number; knobs?: PricingKnobs },
+  opts?: {
+    archFallback?: string;
+    spiOverride?: number;
+    imageCount?: number;
+    speed?: LoraSpeed;
+    knobs?: PricingKnobs;
+  },
 ): number {
   return loraPriceBreakdown(yamlObj, opts).credits;
 }
@@ -222,6 +244,11 @@ function formatMinutes(seconds: number): string {
   const m = seconds / 60;
   if (m < 60) return `約${Math.max(1, Math.round(m))}分`;
   return `約${(m / 60).toFixed(1)}時間`;
+}
+
+/** 推定処理時間だけの短い表記（標準/高速の比較ボタン用）。 */
+export function loraEstimatedMinutesLabel(b: LoraPriceBreakdown): string {
+  return formatMinutes(b.totalSeconds);
 }
 
 // Human-readable one-liner for the UI hint. 物理型番・原価は出さない

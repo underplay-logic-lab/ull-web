@@ -6,6 +6,7 @@ import {
   gpuUsdPerHour,
   loraArchGpuTier,
   loraEstimatedSeconds,
+  type LoraSpeed,
 } from "@/lib/pricing/loraRuntime";
 
 // Central computation of the "原価割れ損切り" (cost-guard) seconds handed to the
@@ -36,13 +37,14 @@ function creditCoveredSeconds(
   creditsCost: number,
   knobs: PricingKnobs,
   arch: string,
+  speed?: LoraSpeed,
 ): number {
   const revenueJpy = Math.max(0, creditsCost) * knobs.credit_to_jpy;
   const maxCostJpy = revenueJpy * knobs.lora_margin_target;
   // 2026-09-23: arch 別 GPU tier（LORA_ARCH_PROFILE）を課金側と同じ関数で引く。課金の
   // credits/GPU秒は tier 時給比で縮むので、ここも同じ tier の時給で割らないと許容秒が
   // 過小になる（B300 固定のままだと安い tier ほど二重に厳しくなる）。
-  const usdPerHour = gpuUsdPerHour(loraArchGpuTier(arch), knobs);
+  const usdPerHour = gpuUsdPerHour(loraArchGpuTier(arch, speed), knobs);
   const jpyPerSec = (usdPerHour * knobs.usd_jpy_rate) / 3600;
   const secs = jpyPerSec > 0 ? maxCostJpy / jpyPerSec : 0;
   return Math.floor(Math.max(1800, Math.min(secs, LORA_ABS_MAX_RUN_S)));
@@ -61,6 +63,7 @@ function expectedRunFloorSeconds(
     effectiveBatch?: number;
     imageCount?: number;
     rank?: number;
+    speed?: LoraSpeed;
   },
   knobs: PricingKnobs,
 ): number {
@@ -80,6 +83,8 @@ export function loraCostCapSeconds(args: {
   effectiveBatch?: number;
   imageCount?: number;
   rank?: number;
+  /** 課金と同じ speed（tier の時給と s/it の両方に効く）。 */
+  speed?: LoraSpeed;
   knobs?: PricingKnobs;
 }): LoraCostCap {
   const knobs = args.knobs ?? DEFAULT_KNOBS;
@@ -89,7 +94,7 @@ export function loraCostCapSeconds(args: {
   const multiplier = Math.max(1.0, Math.min(knobs.lora_cost_guard_multiplier, 3.0));
   const base =
     args.creditsCost > 0
-      ? creditCoveredSeconds(args.creditsCost, knobs, arch)
+      ? creditCoveredSeconds(args.creditsCost, knobs, arch, args.speed)
       : knobs.lora_safety_limit_s;
   const withMargin = base * multiplier;
   const archFloor = expectedRunFloorSeconds(
@@ -100,6 +105,7 @@ export function loraCostCapSeconds(args: {
       effectiveBatch: args.effectiveBatch,
       imageCount: args.imageCount,
       rank: args.rank,
+      speed: args.speed,
     },
     knobs,
   );
