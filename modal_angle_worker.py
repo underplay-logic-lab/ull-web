@@ -1233,6 +1233,9 @@ def ensure_qwen_edit_cached(repo: str = "", text_encoder_repo: str = "") -> dict
     timeout=2 * 60 * 60,
     scaledown_window=30,
     min_containers=0,
+    # メインメモリを確保しておく（2026-09-24）。未指定だと読み込み中に exit 137（メモリ不足で
+    # 強制終了）が出た。実測の最大 76.4GB（B200・3 構図、読み込み時がピーク）に余裕を足して 96GiB。
+    memory=96 * 1024,
     secrets=[
         modal.Secret.from_name("wan-animate-auth"),
         modal.Secret.from_name("huggingface-secret"),
