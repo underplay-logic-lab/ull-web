@@ -399,6 +399,19 @@ export function DirectorStudioTab() {
   const [phase, setPhase] = useState<Phase>(resumedJobId ? "running" : "idle");
   const [jobId, setJobId] = useState<string | null>(resumedJobId);
   const [job, setJob] = useState<DirectorJobStatus | null>(null);
+  // 完了後の videoUrl は読んだ時点の署名付き URL で、R2 への移動や期限切れで無効になる
+  // （2026-09-24）。保存・超解像への受け渡し・再生失敗のときはジョブを読み直して取り直す。
+  const freshVideoUrl = useCallback(async (): Promise<string | null> => {
+    if (!job?.jobId) return job?.videoUrl ?? null;
+    try {
+      const next = await pollDirectorJob(job.jobId);
+      if (next.videoUrl) setJob((cur) => (cur && cur.jobId === next.jobId ? { ...cur, videoUrl: next.videoUrl } : cur));
+      return next.videoUrl ?? job.videoUrl;
+    } catch {
+      return job.videoUrl;
+    }
+  }, [job]);
+  const videoReloadsRef = useRef(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   // 「今回の生成」（2026-09-23 ホスト方針）: 順番待ち・並列で続けて出したジョブだけを
   // 並べ、改めて生成するときは確認のうえ空にする。自動 DL は廃止（一覧から戻れる）。
@@ -1285,16 +1298,26 @@ export function DirectorStudioTab() {
 
         {phase === "done" && job?.videoUrl && (
           <div className="rounded-xl border border-border bg-background p-3">
-            <video src={job.videoUrl} controls className="w-full rounded-lg" />
+            <video
+              src={job.videoUrl}
+              controls
+              className="w-full rounded-lg"
+              onError={() => {
+                if (videoReloadsRef.current >= 2) return;
+                videoReloadsRef.current += 1;
+                setTimeout(() => void freshVideoUrl(), 1500);
+              }}
+            />
             <button
               type="button"
-              onClick={() =>
-                job.videoUrl &&
-                downloadDirectorVideo(job.videoUrl, "ull_cinematic_director.mp4").catch((err) => {
+              onClick={async () => {
+                const url = await freshVideoUrl();
+                if (!url) return;
+                downloadDirectorVideo(url, "ull_cinematic_director.mp4").catch((err) => {
                   console.error("[DirectorStudioTab] download failed:", err);
                   setErrorMessage("ダウンロードに失敗しました。");
-                })
-              }
+                });
+              }}
               className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-neon-violet/40"
             >
               <Download size={14} />
@@ -1302,13 +1325,14 @@ export function DirectorStudioTab() {
             </button>
             <button
               type="button"
-              onClick={() =>
-                job.videoUrl &&
+              onClick={async () => {
+                const url = await freshVideoUrl();
+                if (!url) return;
                 requestStudioHandoff(
-                  { kind: "video", url: job.videoUrl, filename: "ull_cinematic_director.mp4", source: "Cinematic Director" },
+                  { kind: "video", url, filename: "ull_cinematic_director.mp4", source: "Cinematic Director" },
                   "upscale_video",
-                )
-              }
+                );
+              }}
               className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-neon-pink/40 bg-neon-pink/10 px-4 py-2.5 text-sm font-medium text-neon-pink transition-colors hover:bg-neon-pink/20"
             >
               <Sparkles size={14} />

@@ -131,7 +131,25 @@ function isAngleImageVolumePath(v: string): boolean {
 // Volume相対パス文字列 -> 署名付きModal URL のキャッシュ。署名は15分間
 // 有効で、Multi-Angleジョブは通常その範囲内に完了するため、同じ画像を
 // ポーリングのたびに毎回再署名しにいくのを避ける（CLAUDE.md §1）。
-const _angleImageUrlCache = new Map<string, string>();
+// 2026-09-24: 無期限キャッシュだと、完了直後の Modal URL が R2 への移動で無効になった後や、
+// R2 の署名 URL（15 分）が切れた後も古い URL を返し続け、表示・保存が黙って失敗した。
+// 10 分で捨てる。保存・超解像への受け渡しは freshAngleImageUrl で毎回取り直す。
+const ANGLE_URL_TTL_MS = 10 * 60 * 1000;
+const _angleImageUrlCache = new Map<string, { url: string; at: number }>();
+const angleCacheGet = (raw: string): string | undefined => {
+  const hit = _angleImageUrlCache.get(raw);
+  if (!hit) return undefined;
+  if (Date.now() - hit.at > ANGLE_URL_TTL_MS) {
+    _angleImageUrlCache.delete(raw);
+    return undefined;
+  }
+  return hit.url;
+};
+
+/** 表示に失敗したときなどに、解決済み URL を全部捨てて次の poll で取り直させる。 */
+export function invalidateAngleImageUrls(): void {
+  _angleImageUrlCache.clear();
+}
 
 /** /api/studio/angle/images でジョブ1件ぶんのimages配列を丸ごと解決する。 */
 async function fetchAngleImageUrls(jobId: string): Promise<string[]> {
@@ -194,20 +212,42 @@ export async function listAngleJobs(): Promise<AngleJobSummary[]> {
 async function resolveAngleImages(jobId: string, rawImages: string[]): Promise<string[]> {
   if (rawImages.length === 0) return rawImages;
   const needsResolve = rawImages.some(
-    (v) => isAngleImageVolumePath(v) && !_angleImageUrlCache.has(v),
+    (v) => isAngleImageVolumePath(v) && !angleCacheGet(v),
   );
   if (needsResolve) {
     try {
       const resolved = await fetchAngleImageUrls(jobId);
       resolved.forEach((url, i) => {
         const raw = rawImages[i];
-        if (raw && isAngleImageVolumePath(raw)) _angleImageUrlCache.set(raw, url);
+        if (raw && isAngleImageVolumePath(raw)) _angleImageUrlCache.set(raw, { url, at: Date.now() });
       });
     } catch (err) {
       console.warn("[angleApi] resolveAngleImages failed:", err);
     }
   }
-  return rawImages.map((v) => (isAngleImageVolumePath(v) ? (_angleImageUrlCache.get(v) ?? v) : v));
+  return rawImages.map((v) => (isAngleImageVolumePath(v) ? (angleCacheGet(v) ?? v) : v));
+}
+
+/**
+ * index 番目の画像の URL をその場で取り直す（保存・超解像への受け渡し用、2026-09-24）。
+ * 取れなければ fallback（表示中の URL）を返す。
+ */
+export async function freshAngleImageUrls(jobId: string, fallback: string[]): Promise<string[]> {
+  try {
+    const urls = await fetchAngleImageUrls(jobId);
+    return fallback.map((f, i) => urls[i] || f);
+  } catch {
+    return fallback;
+  }
+}
+
+export async function freshAngleImageUrl(jobId: string, index: number, fallback: string): Promise<string> {
+  try {
+    const urls = await fetchAngleImageUrls(jobId);
+    return urls[index] || fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function metaNumber(meta: unknown, key: string): number | null {

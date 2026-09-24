@@ -45,6 +45,9 @@ import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import {
   AngleJobNotFoundError,
   downloadAngleImage,
+  freshAngleImageUrl,
+  freshAngleImageUrls,
+  invalidateAngleImageUrls,
   listAngleJobs,
   pollAngleJob,
   startAngleJob,
@@ -392,11 +395,18 @@ function AngleLightbox({
   index,
   onIndexChange,
   onClose,
+  onSave,
+  onUpscale,
+  onImageError,
 }: {
   items: LightItem[];
   index: number;
   onIndexChange: (next: number) => void;
   onClose: () => void;
+  /** 保存・超解像への受け渡しは親が URL を取り直して行う（2026-09-24）。 */
+  onSave: (index: number) => void;
+  onUpscale: (index: number) => void;
+  onImageError: () => void;
 }) {
   const item = items[index];
 
@@ -443,15 +453,7 @@ function AngleLightbox({
             type="button"
             onClick={() => {
               onClose();
-              requestStudioHandoff(
-                {
-                  kind: "image",
-                  url: item.url,
-                  filename: `${String(index + 1).padStart(2, "0")}_angle.png`,
-                  source: "マルチアングル",
-                },
-                "upscale",
-              );
+              onUpscale(index);
             }}
             className="inline-flex items-center gap-1 rounded-md border border-neon-pink/40 bg-neon-pink/10 px-2 py-1 text-[11px] text-neon-pink transition-colors hover:bg-neon-pink/20"
           >
@@ -460,9 +462,7 @@ function AngleLightbox({
           </button>
           <button
             type="button"
-            onClick={() =>
-              downloadAngleImage(item.url, `${String(index + 1).padStart(2, "0")}_angle.png`).catch(() => {})
-            }
+            onClick={() => onSave(index)}
             className="inline-flex items-center gap-1 rounded-md border border-white/20 px-2 py-1 text-[11px] transition-colors hover:bg-white/10"
           >
             <Download size={12} />
@@ -482,7 +482,12 @@ function AngleLightbox({
       <div className="relative flex-1 overflow-hidden" onClick={(e) => e.stopPropagation()}>
         <div className="absolute inset-0 flex items-center justify-center p-4">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={item.url} alt={item.label} className="max-h-full max-w-full select-none object-contain" />
+          <img
+            src={item.url}
+            alt={item.label}
+            className="max-h-full max-w-full select-none object-contain"
+            onError={onImageError}
+          />
         </div>
         {items.length > 1 && (
           <>
@@ -1056,11 +1061,47 @@ export function MultiAngleStudioTab() {
   const labels = job?.labels ?? [];
   const lightItems: LightItem[] = images.map((url, i) => ({ url, label: labels[i] ?? "" }));
 
+  // 保存・超解像への受け渡しは、その場で URL を取り直す（2026-09-24）。完了直後の Modal URL は
+  // R2 への移動で無効になり、R2 の署名 URL も 15 分で切れるため、表示中の URL は使い回さない。
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const saveAngle = async (i: number) => {
+    const filename = `${String(i + 1).padStart(2, "0")}_angle.png`;
+    setSaveError(null);
+    try {
+      const url = job ? await freshAngleImageUrl(job.id, i, images[i]) : images[i];
+      await downloadAngleImage(url, filename);
+    } catch (err) {
+      console.warn("[MultiAngleStudioTab] save failed:", err);
+      setSaveError("保存に失敗しました。時間をおいてもう一度お試しください。");
+    }
+  };
+  const upscaleAngle = async (i: number) => {
+    const url = job ? await freshAngleImageUrl(job.id, i, images[i]) : images[i];
+    requestStudioHandoff(
+      { kind: "image", url, filename: `${String(i + 1).padStart(2, "0")}_angle.png`, source: "マルチアングル" },
+      "upscale",
+    );
+  };
+  // 表示に失敗したら、解決済み URL を捨ててジョブを読み直す（2 回まで）。
+  const imageRefreshCountRef = useRef(0);
+  const refreshImageUrls = () => {
+    if (!job || imageRefreshCountRef.current >= 2) return;
+    imageRefreshCountRef.current += 1;
+    invalidateAngleImageUrls();
+    const id = job.id;
+    setTimeout(() => {
+      pollAngleJob(id)
+        .then((next) => setJob((cur) => (cur && cur.id === id ? next : cur)))
+        .catch((err) => console.warn("[MultiAngleStudioTab] refresh failed:", err));
+    }, 1500);
+  };
+
   const handleZip = async () => {
     if (!images.length || zipping) return;
     setZipping(true);
     try {
-      const blob = await zipAngleImages(images);
+      // 表示中の URL は無効になっていることがあるので、その場で取り直す（2026-09-24）。
+      const blob = await zipAngleImages(job ? await freshAngleImageUrls(job.id, images) : images);
       triggerBlobDownload(blob, buildZipFilename());
     } catch (err) {
       console.error("[MultiAngleStudioTab] zip failed:", err);
@@ -1370,6 +1411,7 @@ export function MultiAngleStudioTab() {
             )}
           </div>
 
+          {saveError && <p className="mb-2 text-[11px] text-red-400">{saveError}</p>}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
             {images.map((url, i) => (
               <div key={i} className="group relative overflow-hidden rounded-lg border border-border bg-background">
@@ -1380,7 +1422,13 @@ export function MultiAngleStudioTab() {
                   aria-label={`${labels[i] ?? "構図"} を拡大`}
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={url} alt={labels[i] ?? "生成画像"} loading="lazy" className="h-full w-full object-contain" />
+                  <img
+                    src={url}
+                    alt={labels[i] ?? "生成画像"}
+                    loading="lazy"
+                    className="h-full w-full object-contain"
+                    onError={refreshImageUrls}
+                  />
                 </button>
 
                 {reroll?.index === i && (
@@ -1413,17 +1461,7 @@ export function MultiAngleStudioTab() {
                     )}
                     <button
                       type="button"
-                      onClick={() =>
-                        requestStudioHandoff(
-                          {
-                            kind: "image",
-                            url,
-                            filename: `${String(i + 1).padStart(2, "0")}_angle.png`,
-                            source: "マルチアングル",
-                          },
-                          "upscale",
-                        )
-                      }
+                      onClick={() => void upscaleAngle(i)}
                       aria-label="超解像へ"
                       title="この構図を 4K/8K 超解像へ"
                       className="rounded-md bg-black/50 p-1 text-neon-pink transition-colors hover:bg-black/80"
@@ -1432,9 +1470,7 @@ export function MultiAngleStudioTab() {
                     </button>
                     <button
                       type="button"
-                      onClick={() =>
-                        downloadAngleImage(url, `${String(i + 1).padStart(2, "0")}_angle.png`).catch(() => {})
-                      }
+                      onClick={() => void saveAngle(i)}
                       aria-label="ダウンロード"
                       className="rounded-md bg-black/50 p-1 text-white transition-colors hover:bg-black/80"
                     >
@@ -1468,6 +1504,9 @@ export function MultiAngleStudioTab() {
           index={lightboxIndex}
           onIndexChange={setLightboxIndex}
           onClose={() => setLightboxIndex(null)}
+          onSave={(i) => void saveAngle(i)}
+          onUpscale={(i) => void upscaleAngle(i)}
+          onImageError={refreshImageUrls}
         />
       )}
 

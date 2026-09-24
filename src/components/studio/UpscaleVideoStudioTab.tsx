@@ -148,7 +148,15 @@ function withDownloadName(url: string, name: string): string {
 // （ローカルの入力動画の object URL）を absolute で重ねて左 pos% だけ見せる。
 // 再生は after 側の controls を操作し、before は muted で追従させる
 // （play/pause/seek/rate を転送、timeupdate で 0.15s 以上ずれたら合わせる）。
-function VideoCompare({ before, after }: { before: string; after: string }) {
+function VideoCompare({
+  before,
+  after,
+  onAfterError,
+}: {
+  before: string;
+  after: string;
+  onAfterError?: () => void;
+}) {
   const [pos, setPos] = useState(50);
   const afterRef = useRef<HTMLVideoElement | null>(null);
   const beforeRef = useRef<HTMLVideoElement | null>(null);
@@ -187,7 +195,7 @@ function VideoCompare({ before, after }: { before: string; after: string }) {
 
   return (
     <div className="relative select-none overflow-hidden rounded-xl border border-border bg-background">
-      <video ref={afterRef} src={after} controls playsInline className="block w-full" />
+      <video ref={afterRef} src={after} controls playsInline className="block w-full" onError={onAfterError} />
       <div
         className="pointer-events-none absolute inset-0 overflow-hidden"
         style={{ clipPath: `inset(0 ${100 - pos}% 0 0)` }}
@@ -585,6 +593,11 @@ export function UpscaleVideoStudioTab() {
     };
   }, [jobId, markGpuWarm, runGenerate, commitSession]);
 
+  // 再生できなかったら URL を取り直す（2 回まで、2026-09-24）。完了直後の Modal URL は
+  // R2 への移動で無効になり、R2 の署名 URL も時間で切れるため。
+  const [resultReloads, setResultReloads] = useState(0);
+  const reloadResultUrl = useCallback(() => setResultReloads((n) => (n < 2 ? n + 1 : n)), []);
+
   // job完了後、resultUrlを実際に再生・ダウンロードできるURLへ解決する
   // （Volume相対パスなら署名付きModal URLを発行、旧方式のURLはそのまま）。
   useEffect(() => {
@@ -594,18 +607,24 @@ export function UpscaleVideoStudioTab() {
     // このeffectが再実行され、非同期コールバック内で正しい値に更新される。
     if (job?.status !== "completed" || !job.resultUrl) return;
     let cancelled = false;
-    resolveUpscaleVideoUrl(job.id, job.resultUrl)
-      .then((url) => {
-        if (!cancelled) setPlayableVideoUrl(url);
-      })
-      .catch((err) => {
-        console.warn("[UpscaleVideoStudioTab] resolveUpscaleVideoUrl failed:", err);
-        if (!cancelled) setPlayableVideoUrl(null);
-      });
+    const resultUrl = job.resultUrl;
+    const t = setTimeout(
+      () =>
+        resolveUpscaleVideoUrl(job.id, resultUrl)
+          .then((url) => {
+            if (!cancelled) setPlayableVideoUrl(url);
+          })
+          .catch((err) => {
+            console.warn("[UpscaleVideoStudioTab] resolveUpscaleVideoUrl failed:", err);
+            if (!cancelled) setPlayableVideoUrl(null);
+          }),
+      resultReloads === 0 ? 0 : 1500,
+    );
     return () => {
       cancelled = true;
+      clearTimeout(t);
     };
-  }, [job?.id, job?.status, job?.resultUrl]);
+  }, [job?.id, job?.status, job?.resultUrl, resultReloads]);
 
   const model = getUpscaleModel(modelKey);
 
@@ -893,12 +912,13 @@ export function UpscaleVideoStudioTab() {
           {phase === "done" && job?.resultUrl && (
             <div className="flex flex-col gap-3">
               {playableVideoUrl && resultBeforeUrl ? (
-                <VideoCompare before={resultBeforeUrl} after={playableVideoUrl} />
+                <VideoCompare before={resultBeforeUrl} after={playableVideoUrl} onAfterError={reloadResultUrl} />
               ) : playableVideoUrl ? (
                 <video
                   src={playableVideoUrl}
                   controls
                   className="w-full rounded-xl border border-border bg-background"
+                  onError={reloadResultUrl}
                 />
               ) : (
                 <div className="flex h-40 w-full items-center justify-center rounded-xl border border-border bg-background text-xs text-muted">
