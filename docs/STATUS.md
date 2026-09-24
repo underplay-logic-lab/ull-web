@@ -642,7 +642,12 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 6. **キャプション経路の課題**（2026-09-22 起票の節、未着手）。
 7. ~~SDXL の RTX PRO 6000 品質確認~~ **閉じた（2026-09-24）**: 学習は同じ bf16・同じ sd-scripts で GPU と torch の版が違うだけなので、
    出力差は数値ノイズ程度で品質差は期待されない。ホスト「そんなには変わらないだろ」。異常が見えたときだけ L40S 経路に戻す（1 行）。
-8. 掃除: Cinematic / Wan Animate 廃止分のデッドコード、巨大 worker ファイルの分割（トークン節約）。
+8. 掃除 — **一部済み（2026-09-24）**: Cinematic Video の残骸（`CinematicVideoTab.tsx`・`cinematicApi.ts`）を削除（`cinematicWorkflow/Pricing.ts` は Director が使うので残す、Wan Animate は復活予定で残す）。
+   `modal_lora_worker.py`（約 8,000 行）を `lora_worker_core`（定数・Volume・Supabase）/ `lora_worker_models`（ベースモデル確認）/
+   `lora_worker_train`（キャプション・config・ai-toolkit 実行）/ `lora_worker_endpoints`（トークン・DL・admin 補助）へ分割し、
+   main には app・image・@app.function だけ残した（3,600 行）。全イメージに `_LORA_WORKER_MODULES` を add_local。CPU probe と
+   デプロイ後のエンドポイント応答で確認済み。**実学習での確認は次の klein 高速 50step で。** ついでに生 YAML モードが
+   2026-09-21 から `dataset_groups` 未定義の NameError で落ちていたバグを修正。残: 超解像・Director ワーカーの分割（必要になったら）。
 9. ローンチ判断まで保留: 料金ページ、8-② ブラウザ内転送パネル（2 の AI クローラー対策もローンチ判断で着手）。
 10. **保留（需要が見えたら）: 外部モデルの URL 取り込み**（2026-09-24 ホスト判断）。Civitai の SDXL 派生などを貼るとサーバーが直接取り込んで
    LoRA のベースに使える案。汎用ダウンローダー化は CORS・中継費・違法中継リスク・無料ツールと同等で不採用。保留理由は
