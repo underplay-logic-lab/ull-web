@@ -583,8 +583,12 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    `runGeminiGenerate` で usageMetadata を `ai_usage_logs`（機能・ユーザー・モデル・トークン・画像枚数）へ記録し、
    Vercel ログにも `[gemini-usage]` 行を出す。**要適用: `supabase/migrations/20260889000000_create_ai_usage_logs.sql`**
    （未適用でも本処理は止まらずログ行だけ出る）。次: 145 枚 1 データセット分の合計トークン × Google 単価で 1 回あたりの
-   原価を出し、LoRA 価格に「1 枚あたりのキャプション原価」knob を足すか判断する。予備モデル（3.5/3.6-flash）への
-   フォールバックは有料枠では単価が上がる点も確認する。
+   原価を出し、LoRA 価格に「1 枚あたりのキャプション原価」knob を足すか判断する。
+   **→ 計測済み（docs/gpu-benchmarks.md §17）**: 145 枚 ≈ ¥38（flash-latest ≒ 3.8 Flash）。モデル比較で 3.8 が最良、固定はせず
+   画像解析は別モデルへ落とさない形にした（`geminiText.ts`）。**次の論点（ホストと相談中）**:
+   ① LoRA の粗利を上げる — 1 ジョブ固定料金（例 +200C）を足す案が有力。金額はホストが決める。
+   ② キャプションを自前モデル 1 本へ — SDXL（タグ）は WD タガー系、DiT（文章）は小型 VLM を、同じ 20 枚
+   （`scripts/caption_model_compare.ts` と同条件）で Gemini 3.8 と比べる。WD タガーは CPU で費用ゼロから。ライセンス確認必須。
 0. **超解像バッチの上限撤廃と LoRA→超解像の受け渡し — 本番反映済み（2026-09-24、`02c2108`・seedvr2 デプロイ・knob 10800 済み）。**
    30 枚 / 40MB / worker 45 分はすべて実測の無い仮値だった（45 分は 2026-09-12 `62fa98e` で Claude が置いた）。
    枚数 300（防波堤のみ）、knob `upscale_batch_max_seconds` 既定 1800→10800、worker `SEEDVR2_BATCH_TIMEOUT_HARD_CAP_S`

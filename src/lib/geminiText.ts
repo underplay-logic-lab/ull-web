@@ -22,24 +22,22 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 // Model notes (2026-09) — verified against this project's key:
 //  - gemini-1.5-flash / 2.0-flash / 2.5-flash / 2.5-flash-lite / 2.5-pro:
 //    all 404 ("no longer available to new users" / retired). Do NOT list them.
-//  - The free-tier daily request quota is PER MODEL
-//    (GenerateRequestsPerDayPerProjectPerModel-FreeTier, ~20/day). So when one
-//    model 429s we fall through to the next — each has its own bucket, which
-//    multiplies the daily budget until the project gets a billed tier.
-//  - gemini-flash-lite-latest: fastest (~3s/batch), own bucket → default head.
-//  - gemini-3.5-flash / flash-latest / 3.6-flash: fallbacks, each own bucket.
-// GEMINI_MODEL overrides the head of the list (pin one; .env.local does).
+//
+// 2026-09-24 改訂: **有料枠で動いている**（ホスト確認、累計 約¥1,000）。「無料枠はモデル別
+// なので 429 で次のモデルへ」という旧設計の前提は消えた。有料枠では:
+//  - gemini-3.5-flash は Flash 系で最も高い（$1.50 / $9.00 per 1M、3.8 Flash の約 2 倍）→ 候補から外す。
+//  - 3.6 / 3.7 / 3.8 Flash は同単価（$0.75 / $3.75、2027-01-01 から 2 倍）。flash-latest は現状 3.8。
+//  - 画像解析（キャプション・特徴抽出）は**別モデルへ落とさない**（runGeminiVision の sameModelOnly）。
+//    同じデータセットの途中から Lite で書かれると、画像ごとにトリガーへ焼き込まれる要素が
+//    ばらつく。混雑は同じモデルで再試行し、駄目なら失敗として返す（UI に再解析ボタンがある）。
+//  - 実測比較（20 枚、docs/gpu-benchmarks.md §17）: 3.8 Flash が表情・視線・solo を最も正確に拾う。
+//    3.5 Flash-Lite は原価 1/2 だが取り違えがある。3.1 Flash-Lite は思考トークンが止まらない。
+// GEMINI_MODEL overrides the head of the list.
 export function geminiModelCandidates(): string[] {
   const configured = process.env.GEMINI_MODEL?.trim();
   return [
     ...new Set(
-      [
-        configured,
-        "gemini-flash-lite-latest",
-        "gemini-3.5-flash",
-        "gemini-flash-latest",
-        "gemini-3.6-flash",
-      ].filter(Boolean),
+      [configured, "gemini-flash-latest", "gemini-3.8-flash", "gemini-flash-lite-latest"].filter(Boolean),
     ),
   ] as string[];
 }
@@ -213,6 +211,8 @@ async function runGeminiGenerate(
   jsonArray: JsonMode,
   label = "Gemini",
   usage?: GeminiUsageTag,
+  /** true: 混雑・429・空応答でも別モデルへ落とさない（モデルが廃止された 404 のときだけ次へ）。 */
+  sameModelOnly = false,
 ): Promise<string> {
   let lastErr = "";
   let sawBusy = false;
@@ -248,6 +248,8 @@ async function runGeminiGenerate(
         if (out.trim()) return out;
         lastErr = `empty response (${resp.promptFeedback?.blockReason ?? cand?.finishReason ?? "empty"})`;
         if (attempt === 0 && cand?.finishReason === "MAX_TOKENS") continue;
+        // 安全ブロック等の空応答を別モデルで取り直すと、同じデータセット内でモデルが混ざる。
+        if (sameModelOnly) throw { kind: "failed", message: lastErr } satisfies GemErr;
         break; // -> next candidate
       } catch (err) {
         lastErr = err instanceof Error ? err.message : String(err);
@@ -257,15 +259,20 @@ async function runGeminiGenerate(
         // backs off on the retryAfterMs we pass through.
         if (QUOTA_RE.test(lastErr)) {
           sawQuota = true;
+          if (sameModelOnly) {
+            // 呼び出し側（ブラウザ）が retryAfter で待って再試行する。別モデルへは落とさない。
+            throw { kind: "quota", message: lastErr } satisfies GemErr;
+          }
           console.warn(`[geminiText] ${modelId} rate-limited (429), trying next model`);
           break;
         }
         if (BUSY_RE.test(lastErr)) {
           sawBusy = true;
-          if (attempt === 0) {
-            await sleep(1500);
+          if (attempt < (sameModelOnly ? 2 : 1)) {
+            await sleep(attempt === 0 ? 1500 : 4000);
             continue;
           }
+          if (sameModelOnly) throw { kind: "busy", message: lastErr } satisfies GemErr;
           console.warn(`[geminiText] ${modelId} overloaded, trying next`);
           break;
         }
@@ -317,11 +324,18 @@ export async function runGeminiVision(
     prompt,
     ...images.map((im) => ({ inlineData: { mimeType: im.mimeType, data: im.data } })),
   ];
-  return runGeminiGenerate(genAI, parts, jsonArray, "Gemini Vision", {
-    feature: usage?.feature ?? "vision",
-    userId: usage?.userId,
-    images: usage?.images ?? images.length,
-  });
+  return runGeminiGenerate(
+    genAI,
+    parts,
+    jsonArray,
+    "Gemini Vision",
+    {
+      feature: usage?.feature ?? "vision",
+      userId: usage?.userId,
+      images: usage?.images ?? images.length,
+    },
+    true, // 画像解析はデータセット内でモデルを混ぜない
+  );
 }
 
 // Maps a thrown GemErr (or any error) to a JSON NextResponse. `messages`
