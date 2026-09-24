@@ -1759,6 +1759,9 @@ Blackwell image（torch 2.8 / cu128）は B300（sm_103）でもそのまま動�
   → 対策（同日デプロイ）: ステージングを 16 並行コピー、dataset.zip と永続化を学習中の裏スレッドへ（完了時に join）、
   zip の画像は無圧縮格納。SDXL ワーカーもステージング並行化と無圧縮格納（zip は `_group_by_repeats` の前に要るので同期のまま）。
   ログ `[train] staging copy Xs` / `wrote … (background)` で次回確認。
+- **並行化後の確認（klein 高速・同じ 220 枚・50step、job `c86ea691`、分割後の worker）**: ステージング **58s → 0.2s**、
+  stage 1 **59s → 3s**、dataset.zip **18s → 0.8s（裏スレッド・無圧縮格納）**。klein の s/it **0.282**（knob 高速 spi 0.35 の内側）、
+  prep 125.5s（load 33.2 + JIT 44.7 + latent 47.6）、VRAM 38.2GB、全体 178s・105C。R2 は新配置 `<email>_<id8>/loras/…` に publish。
 - Director は生成後の Volume 書き込みが 10MB で数秒・生成 4〜7 分に対し 1〜2% なので並行化しない（R2 アップロードは既に CPU 側）。
 
 ## 15. LoRAデータセットのアップロード速度（2026-09-20）

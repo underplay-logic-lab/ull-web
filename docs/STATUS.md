@@ -600,7 +600,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    `modal_seedvr2_worker.py` のバッチで保存・完了処理を ThreadPoolExecutor(2) へ逃がした（`_finalize_upscale_item`、
    `_VOL_COMMIT_LOCK`、ログ `[upscale-batch] … compute loop Xs, total Ys` と `finalize Xs`）＋次の画像の先読み（状態 GET と
    入力取得）。**実測（anime 6B・10 枚・T4）: 直列 約 104 秒 → 保存並行 70 秒 → ＋先読み 44 秒（1 枚 10.5 → 4.4 秒、2.4 倍速）**。
-   残りは 1 枚 1 秒弱で、ほぼ GPU の計算だけ。**次: 同じ形を Multi-Angle・Director・LoRA へ展開する**（どれも「生成 → 保存 → 完了」が直列）。 → **LoRA: 実測で準備段階に約 78s の GPU 待ち（ステージング 58s・zip 18s）→ 並行化してデプロイ済み（2026-09-24、docs §14.30）。次の学習で `staging copy` の秒数を確認。Director: 効果 1〜2% で見送り。Multi-Angle: 1 割未満で見送り。**
+   残りは 1 枚 1 秒弱で、ほぼ GPU の計算だけ。**次: 同じ形を Multi-Angle・Director・LoRA へ展開する**（どれも「生成 → 保存 → 完了」が直列）。 → **LoRA: 実測で準備段階に約 78s の GPU 待ち（ステージング 58s・zip 18s）→ 並行化してデプロイ済み（2026-09-24、docs §14.30）。klein で確認済み: ステージング 58s→0.2s・stage 1 59s→3s・zip 18s→0.8s。Director: 効果 1〜2% で見送り。Multi-Angle: 1 割未満で見送り。**
    併せて案 B（数 MB の結果は Volume を通さず GPU から R2 へ直接）も検討。
 **AI（Gemini）原価の計測 — 実装済み・マイグレーション未適用（2026-09-24）。** Gemini は無料枠ではなく**有料枠**で動いている
    （ホストが請求画面で確認、累計 約¥1,000。コード中の「無料枠」コメントは古い）。全呼び出しが通る `geminiText.ts` の
@@ -638,7 +638,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    12h 判定・dispatch の `gpu_tier` が全部 `speed` を通る。worker は無改修（`gpu_tier=b300` は既定の B300/B200）。
    目安（50 枚・2,000 step）: zimage 23 分 359C → 12 分 453C、klein 24 分 376C → 14 分 493C（prep も B300 時給になるので +26〜31%）。
    **コミット・push 済み（`6d062ce`）。** anima（§14.26: B300 0.509 > RTX PRO 0.477）と SDXL（§14.29: B300 0.75 > RTX PRO 0.645）は
-   B300 の方が遅いので高速モードは付けない（確定 2026-09-24）。高速 zimage の実機確認済み（2026-09-24、s/it 0.304 ＜ knob 0.32、§14.30）。残: klein の高速。
+   B300 の方が遅いので高速モードは付けない（確定 2026-09-24）。高速 zimage の実機確認済み（2026-09-24、s/it 0.304 ＜ knob 0.32、§14.30）。klein の高速も実機確認済み（s/it 0.282 ＜ knob 0.35、§14.30）。
 6. **キャプション経路の課題**（2026-09-22 起票の節、未着手）。
 7. ~~SDXL の RTX PRO 6000 品質確認~~ **閉じた（2026-09-24）**: 学習は同じ bf16・同じ sd-scripts で GPU と torch の版が違うだけなので、
    出力差は数値ノイズ程度で品質差は期待されない。ホスト「そんなには変わらないだろ」。異常が見えたときだけ L40S 経路に戻す（1 行）。
@@ -646,7 +646,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    `modal_lora_worker.py`（約 8,000 行）を `lora_worker_core`（定数・Volume・Supabase）/ `lora_worker_models`（ベースモデル確認）/
    `lora_worker_train`（キャプション・config・ai-toolkit 実行）/ `lora_worker_endpoints`（トークン・DL・admin 補助）へ分割し、
    main には app・image・@app.function だけ残した（3,600 行）。全イメージに `_LORA_WORKER_MODULES` を add_local。CPU probe と
-   デプロイ後のエンドポイント応答で確認済み。**実学習での確認は次の klein 高速 50step で。** ついでに生 YAML モードが
+   デプロイ後のエンドポイント応答で確認済み。**klein 高速 50step（`c86ea691`）で実学習も完走を確認。** ついでに生 YAML モードが
    2026-09-21 から `dataset_groups` 未定義の NameError で落ちていたバグを修正。残: 超解像・Director ワーカーの分割（必要になったら）。
 9. ローンチ判断まで保留: 料金ページ、8-② ブラウザ内転送パネル（2 の AI クローラー対策もローンチ判断で着手）。
 10. **保留（需要が見えたら）: 外部モデルの URL 取り込み**（2026-09-24 ホスト判断）。Civitai の SDXL 派生などを貼るとサーバーが直接取り込んで
