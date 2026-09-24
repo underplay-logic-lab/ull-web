@@ -377,6 +377,33 @@ export function LoraStudioTab({
   const [curationEnabled, setCurationEnabled] = useState(true);
   const [curationPairs, setCurationPairs] = useState<CurationPair[]>([]);
   const [zipBusy, setZipBusy] = useState(false);
+  // 取り込み時の寸法検査・縮小（prepareDatasetImage）の進み具合。4K の PNG を 100 枚超
+  // 入れると数十秒かかり、その間なにも出ていなかった（2026-09-24、ホスト指摘）。
+  const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
+  // 同時に 4 枚ずつ処理し、1 枚終わるごとに進捗を出す（全部同時だと 4K を何十枚も
+  // 一度にデコードしてメモリを食い、進みも見えない）。
+  const prepareWithProgress = useCallback(async (files: File[]) => {
+    const out: Awaited<ReturnType<typeof prepareDatasetImage>>[] = new Array(files.length);
+    let next = 0;
+    let done = 0;
+    setImportProgress({ done: 0, total: files.length });
+    try {
+      await Promise.all(
+        Array.from({ length: Math.min(4, files.length) }, async () => {
+          while (next < files.length) {
+            const i = next++;
+            out[i] = await prepareDatasetImage(files[i]);
+            done++;
+            setImportProgress({ done, total: files.length });
+          }
+        }),
+      );
+    } finally {
+      setImportProgress(null);
+    }
+    return out;
+  }, []);
+
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [job, setJob] = useState<LoraJobStatus | null>(null);
   // Human label of the model `job` is training — captured at dispatch time so
@@ -867,9 +894,8 @@ export function LoraStudioTab({
       const replacements = (e as CustomEvent<{ replacements: LoraReplacement[] }>).detail?.replacements ?? [];
       if (replacements.length === 0) return;
       void (async () => {
-        const prepared = await Promise.all(
-          replacements.map(async ({ id, file }) => ({ id, p: await prepareDatasetImage(file) })),
-        );
+        const results = await prepareWithProgress(replacements.map((x) => x.file));
+        const prepared = replacements.map(({ id }, i) => ({ id, p: results[i] }));
         const byId = new Map(prepared.map((x) => [x.id, x.p]));
         const stale: string[] = [];
         let replaced = 0;
@@ -893,7 +919,7 @@ export function LoraStudioTab({
     };
     window.addEventListener(LORA_REPLACE_EVENT, onReplace);
     return () => window.removeEventListener(LORA_REPLACE_EVENT, onReplace);
-  }, []);
+  },[prepareWithProgress]);
 
   const importZip = useCallback(
     async (zip: File) => {
@@ -926,12 +952,11 @@ export function LoraStudioTab({
   // 劣化になるので、ここで計測して下の警告パネルへ回す。
   const addDatasetFilesChecked = useCallback(
     async (entries: { file: File; caption?: string }[]) => {
-      const prepared = await Promise.all(
-        entries.map(async (e) => {
-          const p = await prepareDatasetImage(e.file);
-          return { ...e, file: p.file, sizeVerdict: p.verdict, shrunkFrom: p.shrunkFrom };
-        }),
-      );
+      const results = await prepareWithProgress(entries.map((e) => e.file));
+      const prepared = entries.map((e, i) => {
+        const p = results[i];
+        return { ...e, file: p.file, sizeVerdict: p.verdict, shrunkFrom: p.shrunkFrom };
+      });
       const shrunk = prepared.filter((p) => p.shrunkFrom).length;
       addDatasetFiles(prepared);
       if (shrunk > 0) {
@@ -940,7 +965,7 @@ export function LoraStudioTab({
         );
       }
     },
-    [addDatasetFiles],
+    [addDatasetFiles, prepareWithProgress],
   );
 
   const addImages = useCallback(
@@ -4260,6 +4285,13 @@ export function LoraStudioTab({
             <p className="flex items-center gap-1.5 text-[11px] text-neon-violet">
               <Loader2 size={12} className="animate-spin" />
               ZIP を展開しています…
+            </p>
+          )}
+          {importProgress && (
+            <p className="flex items-center gap-1.5 text-[11px] text-neon-violet">
+              <Loader2 size={12} className="animate-spin" />
+              画像を取り込んでいます… {importProgress.done} / {importProgress.total} 枚
+              （サイズを確認し、大きい画像は縮小しています。大きな画像が多いと少し時間がかかります）
             </p>
           )}
           {totalBytes > MAX_TOTAL_BYTES && (
