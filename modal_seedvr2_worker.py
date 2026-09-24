@@ -111,6 +111,7 @@ import os
 import pathlib
 import re
 import subprocess
+import threading
 import time
 import uuid
 from urllib.parse import urlparse
@@ -1345,6 +1346,10 @@ def _upscale_image_result_rel_path(user_id: str, job_id: str, ext: str) -> str:
     return f"{_UPSCALE_IMAGE_RESULTS_SUBDIR}/{user_id or 'anon'}/{job_id}.{ext}"
 
 
+# 2026-09-24: バッチでは保存を裏スレッド（2 本）で並行させるので、Volume の commit を直列化する。
+_VOL_COMMIT_LOCK = threading.Lock()
+
+
 def _save_upscale_image(user_id: str, job_id: str, img_bytes: bytes, ext: str = "png"):
     """完成画像を Volume（upscale_image_results/<user_id>/<job_id>.<ext>）へ
     直接保存する。Supabase Storage を一切経由しない（2026-09-18、CLAUDE.md
@@ -1357,7 +1362,8 @@ def _save_upscale_image(user_id: str, job_id: str, img_bytes: bytes, ext: str = 
         full_path = pathlib.Path(MODELS_DIR) / rel_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_bytes(img_bytes)
-        vol.commit()
+        with _VOL_COMMIT_LOCK:
+            vol.commit()
         return rel_path
     except Exception as exc:  # noqa: BLE001
         print(f"[upscale-job] image save to volume failed ({rel_path}): {exc}", flush=True)
@@ -1384,7 +1390,8 @@ def _persist_upscale_original(user_id: str, job_id: str, filename: str, data: by
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / filename
         out_path.write_bytes(data)
-        vol.commit()
+        with _VOL_COMMIT_LOCK:
+            vol.commit()
         return filename
     except Exception as exc:  # noqa: BLE001
         print(f"[upscale-job] original PNG persist failed ({job_id}): {exc}", flush=True)
@@ -2318,8 +2325,14 @@ class SeedVR2Worker:
         preset: str,
         params: dict,
         image_spec: str,
+        finalize_executor=None,
     ) -> dict:
         """1件分の実処理: _do_upscale → upload → upscale_jobs PATCH。
+
+        finalize_executor（ThreadPoolExecutor）を渡すと、計算が終わった時点で保存・完了処理を
+        そちらへ投げて {"future": Future} を返す（2026-09-24、バッチ用）。計算 1〜3 秒に対して
+        保存（Volume 書き込み + commit）と完了 PATCH で 5〜6 秒かかり、GPU が 7 割待っていた。
+        GPU は次の画像の計算へ進み、保存は裏で並行する。
 
         例外は failed + 返金にして return するだけで再送出しない — バッチの
         ループ（run_upscale_batch_job）を1件の失敗で止めないため。
@@ -2368,6 +2381,25 @@ class SeedVR2Worker:
         _vram_stop.set()
         _vram_thread.join(timeout=3)
 
+        def _finalize() -> dict:
+            t0 = time.time()
+            try:
+                out = self._finalize_upscale_item(job_id, user_id, credits_cost, preset, r)
+            except Exception as exc:  # noqa: BLE001 — 保存側の想定外エラーも failed + 返金で閉じる
+                msg = f"{type(exc).__name__}: {exc}"[:500]
+                print(f"[upscale-job] {job_id} finalize FAILED: {msg}", flush=True)
+                _finish_upscale_job(job_id, {"status": "failed", "error_message": "結果画像の保存に失敗しました。"}, {"gpu_tier": _gpu_tier_label()})
+                _refund_upscale_credits(user_id, credits_cost)
+                out = {"ok": False, "error": msg}
+            print(f"[upscale-job] {job_id} finalize {time.time() - t0:.1f}s", flush=True)
+            return out
+
+        if finalize_executor is not None:
+            return {"future": finalize_executor.submit(_finalize)}
+        return _finalize()
+
+    def _finalize_upscale_item(self, job_id: str, user_id: str, credits_cost: int, preset: str, r: dict) -> dict:
+        """計算結果 r を保存し、upscale_jobs を完了（または失敗）にする。GPU を使わない。"""
         _ext = (r.get("filename") or "out.png").rsplit(".", 1)[-1].lower()
         url = _save_upscale_image(user_id, job_id, r["data"], _ext)
         meta = {
@@ -2669,7 +2701,19 @@ class SeedVR2Worker:
 
             threading.Thread(target=_watchdog, daemon=True).start()
 
+        # 計算は 1 枚ずつ順番（GPU は 1 つ）、保存・完了処理は裏のスレッドで並行（2026-09-24）。
+        # 最後に全部の保存を待ってから返す。watchdog の「未処理」は保存が済むまで残す。
+        from concurrent.futures import ThreadPoolExecutor
+
         results = []
+        started: list[tuple[str, object]] = []
+        executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="upscale-finalize")
+
+        def _mark_done(jid: str):
+            with _pending_lock:
+                _pending_ids.discard(jid)
+
+        t_batch = time.time()
         try:
             for it in items:
                 job_id = str(it.get("job_id") or "")
@@ -2681,11 +2725,32 @@ class SeedVR2Worker:
                     it.get("preset") or "",
                     it.get("params") or {},
                     it.get("image") or it.get("image_b64") or "",
+                    finalize_executor=executor,
                 )
-                with _pending_lock:
-                    _pending_ids.discard(job_id)
-                results.append({"job_id": job_id, **r})
+                fut = r.get("future")
+                if fut is not None:
+                    fut.add_done_callback(lambda _f, jid=job_id: _mark_done(jid))
+                    started.append((job_id, fut))
+                else:
+                    _mark_done(job_id)
+                    started.append((job_id, r))
+            t_gpu = time.time() - t_batch
+            for job_id, x in started:
+                if hasattr(x, "result"):
+                    try:
+                        res = x.result()
+                    except Exception as exc:  # noqa: BLE001 — _finalize 内で握っているので通常来ない
+                        res = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:500]}
+                else:
+                    res = x
+                results.append({"job_id": job_id, **res})
+            print(
+                f"[upscale-batch] {batch_id} compute loop {t_gpu:.1f}s, total {time.time() - t_batch:.1f}s "
+                f"({len(items)} items)",
+                flush=True,
+            )
         finally:
+            executor.shutdown(wait=True)
             _wd_stop.set()
 
         ok_count = sum(1 for r in results if r.get("ok"))
