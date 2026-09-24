@@ -518,7 +518,7 @@ export function captionBackend(): "vlm" | "gemini" {
 }
 
 const VLM_POLL_MS = 2_000;
-const VLM_MAX_MS = 25 * 60_000; // 初回（コンパイルのやり直し）約 5 分＋大きいデータセット分の余裕
+const VLM_MAX_MS = 25 * 60_000; // 冷えた起動＋読み込み約 1 分・500 枚で数分。CLAUDE.md §0 のとおり多めに取る
 const VLM_PUT_CONCURRENCY = 8;
 
 function b64ToBlob(b64: string, mimeType: string): Blob {
@@ -613,7 +613,7 @@ async function generateDatasetCaptionsVlm(files: File[], opts: CaptionOpts): Pro
       }),
     );
     await captionVlmPost(token, { action: "run", jobId, mimes, ...spec }, opts.signal);
-    note("AI を起動しています（初回は 1〜2 分、久しぶりの時は最大 5 分ほどかかります）…");
+    note("AI を起動しています（解析が終わるまで 1〜2 分ほどかかります）…");
 
     const seen = new Set<number>();
     const t0 = Date.now();
