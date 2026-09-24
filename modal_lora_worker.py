@@ -3699,10 +3699,16 @@ AITK_LATENT_CACHE_DIR = f"{DATASET_DIR}/_latent_cache"
 # job copies it verbatim (zero Supabase re-download, zero GPU-side resize).
 # ---------------------------------------------------------------------------
 INGEST_VERSION = 1            # bump -> every dataset re-ingests (the key changes)
-INGEST_FMT = "WEBP"
-INGEST_EXT = ".webp"
-INGEST_QUALITY = 95
-INGEST_WEBP_METHOD = 6
+# 2026-09-24: WEBP q95 -> PNG (lossless). Lossy WebP always subsamples chroma
+# 4:2:0, which softens the colour of line-art edges and is baked into every
+# epoch. The downscale is kept: ai-toolkit only does a single Pillow BICUBIC
+# resize (antialiased), so 4K -> 1.5x -> bucket costs ~nothing in quality
+# while the GPU side decodes far fewer pixels on the first run.
+INGEST_FMT = "PNG"
+INGEST_EXT = ".png"
+INGEST_QUALITY = 95            # WEBP / JPEG only
+INGEST_WEBP_METHOD = 6         # WEBP only
+INGEST_PNG_COMPRESS = 1        # fast; size barely matters inside the Volume
 # resolution (512/768/1024) -> the training res * 1.5, rounded to a multiple
 # of 8, as the target LONG edge. The 1.5x headroom covers ai-toolkit's
 # aspect-ratio bucketing / crop without paying to VAE-encode pixels we'd
@@ -3716,6 +3722,8 @@ def _ingest_cache_key(long_edge: int) -> str:
     """The <key> in PERSIST_ROOT/<dataset_id>/_ingest/<key>/. Encodes every
     ingest parameter so a change to any of them yields a different directory
     (== a fresh re-ingest, the old one aged out by the 14d TTL)."""
+    if INGEST_FMT == "PNG":
+        return f"e{long_edge}_png_v{INGEST_VERSION}"
     return (
         f"e{long_edge}_{INGEST_FMT.lower()}q{INGEST_QUALITY}"
         f"m{INGEST_WEBP_METHOD}_v{INGEST_VERSION}"
@@ -5672,7 +5680,7 @@ def ingest_and_optimize_dataset_cpu(
     Per image: download from Supabase Storage -> bake EXIF orientation ->
     LANCZOS downscale (never upscale) so the long edge == the training-derived
     target -> normalise mode, strip metadata -> re-encode WEBP q95. Output:
-    PERSIST_ROOT/<dataset_id>/_ingest/<ingest_key>/NNNN.webp (index-keyed).
+    PERSIST_ROOT/<dataset_id>/_ingest/<ingest_key>/NNNN<INGEST_EXT> (index-keyed).
 
     Idempotent: a complete output dir short-circuits to a cache hit. Never
     raises — returns {"ok": False, "error": ...} so the dispatcher decides the
@@ -5770,7 +5778,11 @@ def ingest_and_optimize_dataset_cpu(
         # Format unification: every image (resized or not) is re-encoded to the
         # one compact format so the GPU DataLoader's decode path is uniform.
         dst = out_dir / f"{idx:04d}{INGEST_EXT}"
-        save_kw = {"format": INGEST_FMT, "quality": INGEST_QUALITY}
+        save_kw = {"format": INGEST_FMT}
+        if INGEST_FMT == "PNG":
+            save_kw["compress_level"] = INGEST_PNG_COMPRESS
+        else:
+            save_kw["quality"] = INGEST_QUALITY
         if INGEST_FMT == "WEBP":
             save_kw["method"] = INGEST_WEBP_METHOD
         elif INGEST_FMT == "JPEG":
