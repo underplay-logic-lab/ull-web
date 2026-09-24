@@ -89,7 +89,6 @@ import {
   type ResolvedCaptionMode,
   matchLeadingSubjectTriggers,
   loraCaptionPrice,
-  LORA_CAPTION_FREE_MAX,
 } from "@/lib/loraCaptionSpec";
 import { analyzeDataset, captionBuckets, DIAGNOSTIC_AXES, suggestRepeats } from "@/lib/datasetDiagnostics";
 import { DatasetDiagnosticsPanel } from "@/components/studio/DatasetDiagnosticsPanel";
@@ -3913,9 +3912,9 @@ export function LoraStudioTab({
                         <>
                           押すと、被写体の特徴を抽出してから、LoRA 学習に最適化したキャプションを AI が作ります
                           （トリガーワードに覚えさせたい特徴は書かず、服装・ポーズ・背景など変わる要素だけを書き分け、
-                          成人向けの内容もぼかさず正確に記述します）。1〜2 分ほどかかります。料金は基本{" "}
+                          ぼかさず正確に記述します）。起動に 1〜2 分、1 枚あたり約 2 秒かかります。料金は基本{" "}
                           {pricingKnobs.lora_caption_base}C＋1 枚 {pricingKnobs.lora_caption_per_image}C
-                          （{LORA_CAPTION_FREE_MAX} 枚以下の作り直しは無料）
+                          （取りこぼしのやり直しは無料）
                           {pendingCaptionCount < images.length && "。解析結果が残っている画像はそのまま使います"}。
                           途中で始めると、先に入れたフォルダにしか写っていない被写体の特徴が取れません。
                         </>
@@ -4637,7 +4636,9 @@ export function LoraStudioTab({
                   <strong>キャプションを作り直します。</strong>
                   いまのキャプションは「作成時」の内容で作られていて、「現在」と食い違っています。
                   「学習したい特徴」はキャプションに書いてはいけない言葉のリストとして使われるため、
-                  ずれたままにはできません。次へ進むと {aiCaptionedCount} 枚ぶんを作り直します（数分）。
+                  ずれたままにはできません。次へ進むと {aiCaptionedCount} 枚ぶんを作り直します（数分・
+                  {loraCaptionPrice(aiCaptionedCount, pricingKnobs)}C）。作り直したくない場合は、
+                  特徴を「作成時」に戻してから、キャプションを自分で直してください。
                 </p>
                 {/* 何が変わったのかを出す（2026-09-22、ホスト指摘「特に何もして
                     いないのに出る」）。自分で変えていなくても、特徴の自動抽出が

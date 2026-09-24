@@ -59,6 +59,17 @@ const DISPATCH_URL =
   process.env.MODAL_CAPTION_DISPATCH_URL || "https://axelbh5--ull-caption-worker-caption-dispatch.modal.run";
 const STATUS_URL =
   process.env.MODAL_CAPTION_STATUS_URL || "https://axelbh5--ull-caption-worker-caption-status.modal.run";
+const ABORT_URL =
+  process.env.MODAL_CAPTION_ABORT_URL || "https://axelbh5--ull-caption-worker-caption-abort.modal.run";
+
+async function modalStatus(dictKey: string, authToken: string): Promise<Record<string, unknown> | null> {
+  const res = await fetch(`${STATUS_URL}?dict_key=${encodeURIComponent(dictKey)}`, {
+    headers: { "x-modal-secret": authToken },
+    cache: "no-store",
+  }).catch(() => null);
+  if (!res?.ok) return null;
+  return (await res.json()) as Record<string, unknown>;
+}
 
 function inputKeyRel(userId: string, jobId: string, i: number, mime: string): string {
   return `lora_caption_inputs/${userId}/${jobId}/${String(i).padStart(4, "0")}.${EXT_BY_MIME[mime] ?? "jpg"}`;
@@ -135,7 +146,16 @@ export async function POST(request: Request): Promise<NextResponse> {
     }
     const keys = await Promise.all(mimes.map((mime, i) => r2KeyForRel(inputKeyRel(userId, jobId, i, mime), userId)));
     const prompt = buildVisionPrompt(1, spec.subjects, spec.captionPrompt, spec.captionMode);
-    const price = await captionPrice(count);
+    let price = await captionPrice(count);
+    // 直前の有料の解析で取りこぼした画像のやり直しは無料（2026-09-25 ホスト判断）。サーバー側で、前回のジョブが
+    // このユーザーのもので、読めなかった枚数以下であることを確かめる。
+    const retryOf = typeof body?.retry_of === "string" && JOB_ID_RE.test(body.retry_of) ? body.retry_of : "";
+    if (price > 0 && retryOf) {
+      const prev = await modalStatus(`${userId}:${retryOf}`, authToken);
+      const raws = Array.isArray(prev?.raws) ? (prev.raws as (string | null)[]) : [];
+      const missed = finalizeRawSingles(raws, spec).captions.filter((c) => !c.trim()).length;
+      if (prev?.status === "completed" && count <= missed) price = 0;
+    }
     if (price > 0 && !(await adjustCredits(userId, -price))) {
       return NextResponse.json(
         { error: `クレジットが不足しています（キャプション作成は ${price}C）。チャージしてから再度お試しください。` },
@@ -166,13 +186,21 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: true, charged: price });
   }
 
-  if (action === "status") {
-    const res = await fetch(`${STATUS_URL}?dict_key=${encodeURIComponent(dictKey)}`, {
-      headers: { "x-modal-secret": authToken },
-      cache: "no-store",
+  if (action === "abort") {
+    // 解析が始まらないまま 3 分（GPU の起動・読み込みの失敗）→ 取り消して返金（worker 側で queued のときだけ）。
+    const res = await fetch(ABORT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-modal-secret": authToken },
+      body: JSON.stringify({ dict_key: dictKey }),
     }).catch(() => null);
-    if (!res?.ok) return NextResponse.json({ error: "解析の状態を取得できませんでした。" }, { status: 502 });
-    const st = (await res.json()) as {
+    const data = res?.ok ? ((await res.json()) as { aborted?: boolean; status?: string }) : null;
+    return NextResponse.json({ aborted: Boolean(data?.aborted), status: data?.status ?? null });
+  }
+
+  if (action === "status") {
+    const raw = await modalStatus(dictKey, authToken);
+    if (!raw) return NextResponse.json({ error: "解析の状態を取得できませんでした。" }, { status: 502 });
+    const st = raw as {
       status?: string;
       done?: number;
       total?: number;

@@ -84,6 +84,26 @@ def _refund(user_id: str, credits: int) -> None:
         print(f"[caption] refund FAILED user={user_id[:8]} {credits}C: {exc!r}", flush=True)
 
 
+def _readable(raw: str | None) -> bool:
+    """出力から英語キャプションが読み取れるか（画面側の parseEnJaArray とほぼ同じ判定）。"""
+    import json
+
+    if not raw:
+        return False
+    for a, b in (("[", "]"), ("{", "}")):
+        i, j = raw.find(a), raw.rfind(b)
+        if i < 0 or j <= i:
+            continue
+        try:
+            v = json.loads(raw[i:j + 1])
+        except Exception:  # noqa: BLE001
+            continue
+        v = v[0] if isinstance(v, list) and v else v
+        if isinstance(v, dict) and str(v.get("en") or "").strip():
+            return True
+    return False
+
+
 def _gpu_label() -> str:
     try:
         import torch
@@ -165,8 +185,9 @@ class CaptionVLM:
                         state["raws"][i] = o
                 state["done"] = min(total, s + BATCH)
                 jobs[key] = state
-            # 読み取れない出力（"en" を含まない・途中で切れた等）はその画像だけもう 1 回（2026-09-25）。
-            retry = [i for i in range(total) if images[i] is not None and '"en"' not in (state["raws"][i] or "")]
+            # 読み取れない出力（英語キャプションが取れない・途中で切れた等）は、GPU が温かいうちに
+            # その画像だけもう 1 回（2026-09-25 ホスト指摘「取りこぼしの再解析は温かいうちに」）。
+            retry = [i for i in range(total) if images[i] is not None and not _readable(state["raws"][i])]
             if retry:
                 print(f"[caption] {key} retrying {len(retry)} unreadable output(s)", flush=True)
                 inp = self.proc(text=[text] * len(retry), images=[images[i] for i in retry],
@@ -175,7 +196,7 @@ class CaptionVLM:
                     ids = self.model.generate(**inp, max_new_tokens=max_new + 300, do_sample=False)
                 outs = self.proc.batch_decode(ids[:, inp["input_ids"].shape[1]:], skip_special_tokens=True)
                 for i, o in zip(retry, outs):
-                    if '"en"' in o:
+                    if _readable(o):
                         state["raws"][i] = o
                 state["retried"] = len(retry)
             gen_s = round(time.time() - t1, 1)
@@ -211,11 +232,39 @@ def caption_dispatch(body: dict, request: fastapi.Request):
     prompt = str(body.get("prompt") or "")
     if not key or not isinstance(keys, list) or not keys or len(keys) > MAX_IMAGES or not prompt:
         raise fastapi.HTTPException(status_code=400, detail="invalid job")
-    jobs[key] = {"status": "queued", "done": 0, "total": len(keys), "raws": [None] * len(keys)}
     call = CaptionVLM().run.spawn({"dict_key": key, "keys": [str(k) for k in keys], "prompt": prompt,
                                    "max_tokens": body.get("max_tokens"), "user_id": body.get("user_id"),
                                    "credits_cost": body.get("credits_cost")})
+    # 打ち切り（caption_abort）で取り消し・返金できるよう、呼び出しと料金を残す。
+    jobs[key] = {"status": "queued", "done": 0, "total": len(keys), "raws": [None] * len(keys),
+                 "call_id": call.object_id, "user_id": body.get("user_id"),
+                 "credits_cost": int(body.get("credits_cost") or 0), "queued_at": time.time()}
     return {"ok": True, "call_id": call.object_id}
+
+
+@app.function(
+    image=endpoint_image,
+    secrets=[modal.Secret.from_name("wan-animate-auth"), modal.Secret.from_name("supabase-model-downloads")],
+    timeout=60,
+    scaledown_window=60,
+)
+@modal.fastapi_endpoint(method="POST")
+def caption_abort(body: dict, request: fastapi.Request):
+    """解析が始まらないまま時間が経った（GPU の起動・読み込みの失敗）ときの打ち切り（2026-09-25）。
+    まだ queued のときだけ、呼び出しを取り消して failed にし、引き落とし分を返す。走り出していたら何もしない。"""
+    _authorize(request)
+    key = str(body.get("dict_key") or "")
+    st = jobs.get(key) if key else None
+    if not st or st.get("status") != "queued":
+        return {"ok": True, "aborted": False, "status": (st or {}).get("status", "unknown")}
+    try:
+        modal.FunctionCall.from_id(str(st.get("call_id"))).cancel()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[caption] cancel failed {key}: {exc!r}", flush=True)
+    st.update({"status": "failed", "error": "起動がタイムアウトしました"})
+    jobs[key] = st
+    _refund(str(st.get("user_id") or ""), int(st.get("credits_cost") or 0))
+    return {"ok": True, "aborted": True}
 
 
 @app.function(

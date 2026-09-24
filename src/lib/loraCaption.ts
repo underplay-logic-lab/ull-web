@@ -519,6 +519,11 @@ export function captionBackend(): "vlm" | "gemini" {
 }
 
 const VLM_POLL_MS = 2_000;
+// 解析が始まらない（GPU の起動・読み込みの失敗）まま 3 分経ったら打ち切って返金（2026-09-25 ホスト判断）。
+// 読み込みは普段 10〜30 秒。駄目なら早く終わらせて、もう一度押してもらう方が良い。
+const VLM_START_TIMEOUT_MS = 3 * 60_000;
+// 直前の有料の解析で取りこぼした枚数。やり直しはこれ以下なら無料（route が前回ジョブで確かめる）。
+let lastVlmJob: { jobId: string; missed: number } | null = null;
 const VLM_MAX_MS = 25 * 60_000; // 冷えた起動＋読み込み約 1 分・500 枚で数分。CLAUDE.md §0 のとおり多めに取る
 const VLM_PUT_CONCURRENCY = 8;
 
@@ -613,7 +618,8 @@ async function generateDatasetCaptionsVlm(files: File[], opts: CaptionOpts): Pro
         }
       }),
     );
-    await captionVlmPost(token, { action: "run", jobId, mimes, ...spec }, opts.signal);
+    const retryOf = lastVlmJob && ok.length <= lastVlmJob.missed ? lastVlmJob.jobId : undefined;
+    await captionVlmPost(token, { action: "run", jobId, mimes, retry_of: retryOf, ...spec }, opts.signal);
     note("AI を起動しています（1〜2 分ほどかかります）…");
 
     const seen = new Set<number>();
@@ -641,12 +647,19 @@ async function generateDatasetCaptionsVlm(files: File[], opts: CaptionOpts): Pro
       }
       if (fresh.length) opts.onBatch?.(fresh);
       const done = Number(st.done ?? 0);
+      if ((st.status === "queued" || st.status === "unknown") && Date.now() - t0 > VLM_START_TIMEOUT_MS) {
+        const ab = await captionVlmPost(token, { action: "abort", jobId, ...spec }, opts.signal).catch(() => null);
+        if (ab?.aborted) {
+          return fail("AI の起動に時間がかかりすぎたため中止しました（料金は返金済み）。もう一度お試しください。");
+        }
+      }
       if (st.status === "running" || st.status === "completed") {
         opts.onProgress?.(Math.min(done, ok.length), ok.length);
         if (st.status === "running") note(done > 0 ? null : "AI が解析しています…");
       }
       if (st.status === "completed") {
         const missed = ok.filter((x) => !captions[x.i].trim()).map((x) => x.i);
+        lastVlmJob = missed.length ? { jobId, missed: missed.length } : null;
         if (missed.length) {
           missed.forEach((i) => errored.add(i));
           opts.onError?.(missed);
