@@ -186,7 +186,7 @@ export async function POST(request: Request) {
 
     let raw: string;
     try {
-      raw = await runGeminiVision(genAI, buildPrompt(trigger, hintJa, fixedTags), images, "enja");
+      raw = await runGeminiVision(genAI, buildPrompt(trigger, hintJa, fixedTags), images, "enja", { feature: "lora_identity", userId: userData.user.id });
     } catch (e) {
       return geminiErrorResponse(e, ERR_MESSAGES);
     }

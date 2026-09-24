@@ -147,7 +147,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
       let raw: string;
       try {
-        raw = await runGeminiText(genAI, buildBatchPrompt(action, items, captionType), true);
+        raw = await runGeminiText(genAI, buildBatchPrompt(action, items, captionType), true, { feature: "lora_translate", userId: userData.user.id });
       } catch (e) {
         return geminiErrorResponse(e, TRANSLATE_ERR_MESSAGES);
       }
@@ -182,7 +182,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     }
     let raw: string;
     try {
-      raw = await runGeminiText(genAI, buildSinglePrompt(action, text, captionType), false);
+      raw = await runGeminiText(genAI, buildSinglePrompt(action, text, captionType), false, { feature: "lora_translate", userId: userData.user.id });
     } catch (e) {
       return geminiErrorResponse(e, TRANSLATE_ERR_MESSAGES);
     }

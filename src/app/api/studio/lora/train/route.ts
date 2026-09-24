@@ -341,7 +341,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
       try {
         const genAI = new GoogleGenerativeAI(key);
         const raw = await Promise.race([
-          runGeminiText(genAI, buildCaptionMetaPrompt(captionSpec, triggerWord), false),
+          runGeminiText(genAI, buildCaptionMetaPrompt(captionSpec, triggerWord), false, { feature: "lora_caption_prompt", userId: user.id }),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error("caption-prompt synth timeout")), CAPTION_SYNTH_TIMEOUT_MS),
           ),

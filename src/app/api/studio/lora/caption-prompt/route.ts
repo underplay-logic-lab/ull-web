@@ -85,7 +85,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     const genAI = new GoogleGenerativeAI(apiKey);
     let raw: string;
     try {
-      raw = await runGeminiText(genAI, buildCaptionMetaPrompt(spec, triggerWord), false);
+      raw = await runGeminiText(genAI, buildCaptionMetaPrompt(spec, triggerWord), false, { feature: "lora_caption_prompt", userId: userData.user.id });
     } catch (e) {
       return geminiErrorResponse(e, ERR_MESSAGES);
     }

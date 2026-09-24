@@ -105,7 +105,7 @@ export async function expandDirectorScenes(scenes: DirectorScene[], musicDirecti
   }
   const genAI = new GoogleGenerativeAI(apiKey);
   try {
-    const raw = await runGeminiText(genAI, buildSceneDirectorPrompt(scenes, musicDirection), false);
+    const raw = await runGeminiText(genAI, buildSceneDirectorPrompt(scenes, musicDirection), false, { feature: "director_prompt" });
     const cleaned = raw.trim().replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
     if (!cleaned) {
       throw new DirectorPromptError("プロンプトの合成に失敗しました（空の応答）。", "failed");
@@ -152,6 +152,7 @@ export async function translateDirectorPromptToJapanese(englishPrompt: string): 
         englishPrompt,
       ].join("\n"),
       false,
+      { feature: "director_prompt" },
     );
     const cleaned = raw.trim().replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
     return cleaned || null;
@@ -203,6 +204,7 @@ export async function translateJapanesePromptToEnglish(japanesePrompt: string): 
         japanesePrompt,
       ].join("\n"),
       false,
+      { feature: "director_prompt" },
     );
     const cleaned = raw.trim().replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
     if (!cleaned) {

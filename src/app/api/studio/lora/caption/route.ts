@@ -428,6 +428,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         buildVisionPrompt(images.length, subjects, captionPrompt, captionMode),
         images,
         "enja",
+        { feature: "lora_caption", userId: userData.user.id },
       );
     } catch (e) {
       // Safety-filter refusal → 200 with empty captions + safety:true so the

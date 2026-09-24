@@ -8,6 +8,7 @@ import {
   type Part,
   type SafetySetting,
 } from "@google/generative-ai";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 // Shared Google AI Studio (Gemini) text runner. The free tier needs no card
 // / billing ($0) — this is the ONLY LLM client in the project (the Modal-side
@@ -147,6 +148,61 @@ export function geminiNotConfiguredResponse(): NextResponse {
   );
 }
 
+// --- 利用トークンの記録（2026-09-24）-----------------------------------------
+// Gemini は有料枠で動いている（ホストが請求画面で確認、累計 約¥1,000）。1 データセット
+// あたりの AI 原価を出して LoRA の価格に入れるかを判断するため、応答の usageMetadata を
+// 機能・ユーザー・モデル別に ai_usage_logs へ残す。円換算はしない（単価はモデルと時期で
+// 変わるので、集計時に Google の料金表を当てる）。記録の失敗で本処理は止めない。
+export type GeminiUsageTag = {
+  /** 例: lora_caption / lora_identity / lora_caption_prompt / lora_translate / director_prompt */
+  feature: string;
+  userId?: string | null;
+  /** 1 回の呼び出しに含めた画像枚数（画像入力のとき）。 */
+  images?: number;
+};
+
+let usageInsertWarned = false;
+
+async function recordGeminiUsage(
+  modelId: string,
+  meta: unknown,
+  tag: GeminiUsageTag | undefined,
+  label: string,
+): Promise<void> {
+  const m = (meta ?? {}) as {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    thoughtsTokenCount?: number;
+    totalTokenCount?: number;
+  };
+  const row = {
+    user_id: tag?.userId ?? null,
+    feature: tag?.feature ?? label,
+    model: modelId,
+    prompt_tokens: m.promptTokenCount ?? null,
+    output_tokens: m.candidatesTokenCount ?? null,
+    thought_tokens: m.thoughtsTokenCount ?? null,
+    total_tokens: m.totalTokenCount ?? null,
+    images: tag?.images ?? null,
+  };
+  console.log(
+    `[gemini-usage] feature=${row.feature} model=${modelId} in=${row.prompt_tokens} ` +
+      `out=${row.output_tokens} think=${row.thought_tokens} total=${row.total_tokens} images=${row.images}`,
+  );
+  try {
+    const { error } = await supabaseAdmin.from("ai_usage_logs").insert(row);
+    if (error && !usageInsertWarned) {
+      usageInsertWarned = true;
+      console.warn("[gemini-usage] insert failed (migration 未適用?):", error.message);
+    }
+  } catch (err) {
+    if (!usageInsertWarned) {
+      usageInsertWarned = true;
+      console.warn("[gemini-usage] insert threw:", err instanceof Error ? err.message : err);
+    }
+  }
+}
+
 // Runs `contents` (a plain prompt string, or an array of text + inlineData
 // image parts for a multimodal call) against the model-candidate list with a
 // 503 retry. Returns the raw response text; throws a GemErr on quota /
@@ -156,6 +212,7 @@ async function runGeminiGenerate(
   contents: string | Array<string | Part>,
   jsonArray: JsonMode,
   label = "Gemini",
+  usage?: GeminiUsageTag,
 ): Promise<string> {
   let lastErr = "";
   let sawBusy = false;
@@ -176,6 +233,8 @@ async function runGeminiGenerate(
         });
         const result = await model.generateContent(contents);
         const resp = result.response;
+        // 空応答（安全ブロック等）でも入力トークンは課金されるので、成否に関わらず記録する。
+        await recordGeminiUsage(modelId, resp.usageMetadata, usage, label);
         const cand = resp.candidates?.[0];
         let out = "";
         try {
@@ -240,8 +299,9 @@ export async function runGeminiText(
   genAI: GoogleGenerativeAI,
   prompt: string,
   jsonArray = false,
+  usage?: GeminiUsageTag,
 ): Promise<string> {
-  return runGeminiGenerate(genAI, prompt, jsonArray);
+  return runGeminiGenerate(genAI, prompt, jsonArray, "Gemini", usage);
 }
 
 // Multimodal call: a prompt plus up to ~15 inline images (base64, no data:
@@ -251,12 +311,17 @@ export async function runGeminiVision(
   prompt: string,
   images: { mimeType: string; data: string }[],
   jsonArray: JsonMode = false,
+  usage?: GeminiUsageTag,
 ): Promise<string> {
   const parts: Array<string | Part> = [
     prompt,
     ...images.map((im) => ({ inlineData: { mimeType: im.mimeType, data: im.data } })),
   ];
-  return runGeminiGenerate(genAI, parts, jsonArray, "Gemini Vision");
+  return runGeminiGenerate(genAI, parts, jsonArray, "Gemini Vision", {
+    feature: usage?.feature ?? "vision",
+    userId: usage?.userId,
+    images: usage?.images ?? images.length,
+  });
 }
 
 // Maps a thrown GemErr (or any error) to a JSON NextResponse. `messages`
