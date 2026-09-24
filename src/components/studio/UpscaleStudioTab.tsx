@@ -709,7 +709,7 @@ export function UpscaleStudioTab() {
     () => batchJobIds.filter((id) => batchLoraMap[id] && batchJobs[id]?.status === "completed"),
     [batchJobIds, batchJobs, batchLoraMap],
   );
-  // LoRA から来た分のうち、まだ処理中（失敗は数えない）の枚数。
+  // LoRA から来た分のうち、まだ処理中（失敗は数えない）の枚数。0 になるまで差し戻しボタンを出さない。
   const loraPendingCount = useMemo(
     () =>
       batchJobIds.filter((id) => {
@@ -1529,7 +1529,9 @@ export function UpscaleStudioTab() {
             </p>
           )}
 
-          {loraReturnable.length > 0 && (
+          {/* LoRA から来た分が全部終わってから 1 回だけ出す（2026-09-24、ホスト指摘）。
+              選んで送る機能は無いので、全部送って不要なものは LoRA Studio 側で消せばよい。 */}
+          {loraReturnable.length > 0 && loraPendingCount === 0 && (
             <button
               type="button"
               onClick={() => void handleReturnToLora()}
@@ -1544,9 +1546,7 @@ export function UpscaleStudioTab() {
               ) : (
                 <>
                   <Wand2 size={16} />
-                  {loraPendingCount > 0
-                    ? `完了した ${loraReturnable.length} 枚を先に LoRA Studio で差し替える（残り ${loraPendingCount} 枚は完了後にもう一度）`
-                    : `拡大した ${loraReturnable.length} 枚を LoRA Studio に戻して差し替える`}
+                  拡大した {loraReturnable.length} 枚を LoRA Studio に戻して差し替える
                 </>
               )}
             </button>
