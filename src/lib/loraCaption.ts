@@ -613,7 +613,7 @@ async function generateDatasetCaptionsVlm(files: File[], opts: CaptionOpts): Pro
       }),
     );
     await captionVlmPost(token, { action: "run", jobId, mimes, ...spec }, opts.signal);
-    note("AI を起動しています（解析が終わるまで 1〜2 分ほどかかります）…");
+    note("AI を起動しています（1〜2 分ほどかかります）…");
 
     const seen = new Set<number>();
     const t0 = Date.now();

@@ -29,7 +29,9 @@ app = modal.App("ull-caption-worker")
 
 MODELS_DIR = "/models"
 MODEL_PATH = f"{MODELS_DIR}/LLM/Qwen3.8-27B-abliterated"
-BATCH = 64  # まとめて生成する枚数（＝途中結果を書く単位）。B300 で VRAM 約 90GB
+# まとめて生成する枚数（＝途中結果を書く単位）。時間は枚数ではなく「一番長い出力」で決まるので、
+# たいていのデータセットが 1 回で済むよう大きく取る（2026-09-25: 64 → 160。100 枚まとめで VRAM 108GB、B300 は 288GB）。
+BATCH = 160
 MAX_IMAGES = 500
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
