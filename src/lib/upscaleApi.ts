@@ -363,6 +363,16 @@ export async function resolveUpscaleImageUrl(jobId: string, resultUrl: string): 
   return fetchUpscaleImageResultUrl(jobId);
 }
 
+/**
+ * 結果を保存する。**押した時点で URL を取り直す**（2026-09-24）。完了直後は Volume（Modal）
+ * の URL が返り、その後 CPU の publish が R2 へ移して Volume 側を消すので、完了時に解決した
+ * URL を使い回すと 404 になる（R2 の署名 URL も 15 分で切れる）。ZIP 一括保存と同じ作り。
+ */
+export async function downloadUpscaleResult(jobId: string, resultUrl: string, filename: string): Promise<void> {
+  const url = await resolveUpscaleImageUrl(jobId, resultUrl);
+  await downloadUpscaleImage(url, filename);
+}
+
 /** 公開 URL を実ファイルとして保存させる（cross-origin download 対策）。 */
 export async function downloadUpscaleImage(url: string, filename: string): Promise<void> {
   const res = await fetch(url);

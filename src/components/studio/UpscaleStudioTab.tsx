@@ -31,6 +31,7 @@ import {
 } from "@/lib/upscaleStudio";
 import {
   downloadUpscaleImage,
+  downloadUpscaleResult,
   fetchUpscaleOriginalDownloadUrl,
   pollUpscaleJob,
   pollUpscaleJobs,
@@ -240,13 +241,21 @@ function InsufficientCreditsModal({
 }
 
 // --- Before / After 比較スライダー ------------------------------------
-function CompareSlider({ before, after }: { before: string; after: string }) {
+function CompareSlider({
+  before,
+  after,
+  onAfterError,
+}: {
+  before: string;
+  after: string;
+  onAfterError?: () => void;
+}) {
   const [pos, setPos] = useState(50);
   return (
     <div className="relative select-none overflow-hidden rounded-xl border border-border bg-background">
       {/* after が箱のサイズを決める */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={after} alt="アップスケール後" className="block w-full" draggable={false} />
+      <img src={after} alt="アップスケール後" className="block w-full" draggable={false} onError={onAfterError} />
       {/* before を箱いっぱいに絶対配置し、左から pos% だけ見せる（同一アスペクト比） */}
       <div
         className="absolute inset-0 overflow-hidden"
@@ -309,18 +318,29 @@ function BatchResultCard({ job }: { job: UpscaleJob | undefined }) {
   // 相対パスなので、<img src>・ダウンロードで使える実URLへ都度解決する
   // （resolveUpscaleImageUrl、CLAUDE.md §1）。旧方式の行はそのまま素通し。
   const [displayUrl, setDisplayUrl] = useState<string | null>(null);
+  // 完了直後の URL は Volume（Modal）で、R2 への移動で無効になることがある。読めなかったら
+  // 取り直す（2 回まで）。reloads を依存に入れて effect を再実行する。
+  const [reloads, setReloads] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(false);
   useEffect(() => {
     if (job?.status !== "completed" || !job.resultUrl) return;
     let cancelled = false;
-    resolveUpscaleImageUrl(job.id, job.resultUrl)
-      .then((url) => {
-        if (!cancelled) setDisplayUrl(url);
-      })
-      .catch((err) => console.warn("[BatchResultCard] resolveUpscaleImageUrl failed:", err));
+    const resultUrl = job.resultUrl;
+    const t = setTimeout(
+      () =>
+        resolveUpscaleImageUrl(job.id, resultUrl)
+          .then((url) => {
+            if (!cancelled) setDisplayUrl(url);
+          })
+          .catch((err) => console.warn("[BatchResultCard] resolveUpscaleImageUrl failed:", err)),
+      reloads === 0 ? 0 : 1500,
+    );
     return () => {
       cancelled = true;
+      clearTimeout(t);
     };
-  }, [job?.id, job?.status, job?.resultUrl]);
+  }, [job?.id, job?.status, job?.resultUrl, reloads]);
 
   if (job?.status === "completed" && job.resultUrl) {
     const rawUrl = job.resultUrl;
@@ -334,14 +354,47 @@ function BatchResultCard({ job }: { job: UpscaleJob | undefined }) {
     return (
       <button
         type="button"
-        onClick={() => downloadUpscaleImage(displayUrl, buildOutFilename(rawUrl))}
+        disabled={saving}
+        onClick={async () => {
+          setSaving(true);
+          setSaveError(false);
+          try {
+            await downloadUpscaleResult(job.id, rawUrl, buildOutFilename(rawUrl));
+          } catch (err) {
+            console.warn("[BatchResultCard] download failed:", err);
+            setSaveError(true);
+          } finally {
+            setSaving(false);
+          }
+        }}
         className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-background"
         title="ダウンロード"
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={displayUrl} alt="結果" className="h-full w-full object-cover" />
-        <span className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-black/60 py-1 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
-          <Download size={11} /> 保存
+        <img
+          src={displayUrl}
+          alt="結果"
+          className="h-full w-full object-cover"
+          onError={() => {
+            if (reloads < 2) setReloads((n) => n + 1);
+          }}
+        />
+        <span
+          className={`absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 py-1 text-[10px] text-white transition-opacity ${
+            saving || saveError ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+          } ${saveError ? "bg-red-600/80" : "bg-black/60"}`}
+        >
+          {saving ? (
+            <>
+              <Loader2 size={11} className="animate-spin" /> 保存中…
+            </>
+          ) : saveError ? (
+            "保存に失敗しました"
+          ) : (
+            <>
+              <Download size={11} /> 保存
+            </>
+          )}
         </span>
       </button>
     );
@@ -929,20 +982,32 @@ export function UpscaleStudioTab() {
 
   // job完了後、resultUrlを実際に表示・ダウンロードできるURLへ解決する
   // （Volume相対パスなら署名付きModal URLを発行、旧方式のURLはそのまま）。
+  // 読めなかったら取り直す（2 回まで）。完了直後の Volume URL が R2 移動で無効になるため。
+  const [resultReloads, setResultReloads] = useState(0);
+  const [resultDownloadError, setResultDownloadError] = useState<string | null>(null);
+  const reloadResultUrl = useCallback(() => {
+    setResultReloads((n) => (n < 2 ? n + 1 : n));
+  }, []);
   useEffect(() => {
     if (job?.status !== "completed" || !job.resultUrl) return;
     let cancelled = false;
-    resolveUpscaleImageUrl(job.id, job.resultUrl)
-      .then((url) => {
-        if (!cancelled) setPlayableImageUrl(url);
-      })
-      .catch((err) => {
-        console.warn("[UpscaleStudioTab] resolveUpscaleImageUrl failed:", err);
-      });
+    const resultUrl = job.resultUrl;
+    const t = setTimeout(
+      () =>
+        resolveUpscaleImageUrl(job.id, resultUrl)
+          .then((url) => {
+            if (!cancelled) setPlayableImageUrl(url);
+          })
+          .catch((err) => {
+            console.warn("[UpscaleStudioTab] resolveUpscaleImageUrl failed:", err);
+          }),
+      resultReloads === 0 ? 0 : 1500,
+    );
     return () => {
       cancelled = true;
+      clearTimeout(t);
     };
-  }, [job?.id, job?.status, job?.resultUrl]);
+  }, [job?.id, job?.status, job?.resultUrl, resultReloads]);
 
   const model = getUpscaleModel(modelKey);
   const mode = effectiveUpscaleMode(getUpscaleMode(modeId), model);
@@ -1281,13 +1346,14 @@ export function UpscaleStudioTab() {
                 読み込み中…
               </div>
             ) : resultBeforeUrl ? (
-              <CompareSlider before={resultBeforeUrl} after={playableImageUrl} />
+              <CompareSlider before={resultBeforeUrl} after={playableImageUrl} onAfterError={reloadResultUrl} />
             ) : (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={playableImageUrl}
                 alt="アップスケール結果"
                 className="w-full rounded-xl border border-border bg-background"
+                onError={reloadResultUrl}
               />
             )}
             <div className="flex items-center justify-between text-[11px] text-muted">
@@ -1302,14 +1368,22 @@ export function UpscaleStudioTab() {
             <button
               type="button"
               disabled={!playableImageUrl}
-              onClick={() =>
-                playableImageUrl && downloadUpscaleImage(playableImageUrl, buildOutFilename(job.resultUrl as string))
-              }
+              onClick={async () => {
+                if (!job.resultUrl) return;
+                setResultDownloadError(null);
+                try {
+                  await downloadUpscaleResult(job.id, job.resultUrl, buildOutFilename(job.resultUrl));
+                } catch (err) {
+                  console.warn("[UpscaleStudioTab] download failed:", err);
+                  setResultDownloadError("保存に失敗しました。時間をおいてもう一度お試しください。");
+                }
+              }}
               className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-background px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:border-neon-violet/40 disabled:opacity-50"
             >
               <Download size={16} />
               ダウンロード
             </button>
+            {resultDownloadError && <p className="text-[11px] text-red-400">{resultDownloadError}</p>}
             {job.originalAvailable && job.originalFilename && (
               <button
                 type="button"
