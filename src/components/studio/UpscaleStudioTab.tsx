@@ -711,6 +711,12 @@ export function UpscaleStudioTab() {
         .map((j) => ({ id: j.id, resultUrl: j.resultUrl as string })),
     [batchJobIds, batchJobs],
   );
+  const batchAllDone = useMemo(
+    () =>
+      batchJobIds.length > 0 &&
+      batchJobIds.every((id) => batchJobs[id]?.status === "completed" || batchJobs[id]?.status === "failed"),
+    [batchJobIds, batchJobs],
+  );
   const batchCompletedUrls = useMemo(
     () => batchCompletedResults.map((r) => r.resultUrl),
     [batchCompletedResults],
@@ -1626,7 +1632,8 @@ export function UpscaleStudioTab() {
             </button>
           )}
 
-          {batchCompletedUrls.length > 0 && (
+          {/* 全部終わってから 1 回だけ出す（2026-09-24、ホスト指摘「1 枚ごとにカウントアップ」）。 */}
+          {batchCompletedUrls.length > 0 && batchAllDone && (
             <button
               type="button"
               onClick={handleDownloadAll}

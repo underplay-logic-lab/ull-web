@@ -832,6 +832,7 @@ export function ImageDropzone({
               return (
                 <div
                   key={img.id}
+                  data-image-id={img.id}
                   onClick={canSelect ? (e) => toggleSelect(img.id, e.shiftKey) : undefined}
                   className={`group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border bg-neutral-900 ${
                     warnIds?.has(img.id) ? "border-amber-500/70 ring-1 ring-amber-500/40" : ""

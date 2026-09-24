@@ -1007,6 +1007,17 @@ export function LoraStudioTab({
   // サムネイルの選択状態（学習回数の一括設定・クロップ対象の指定に使う）。
   // 診断パネルから「この被写体の元画像だけ選ぶ」ためにタブ側で持つ。
   const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set());
+  // 選択するだけだと一覧が画面外で「押しても何も起きない」に見える（2026-09-24、ホスト指摘）。
+  // 選んだ最初の画像までスクロールする。
+  const selectAndReveal = useCallback((ids: string[]) => {
+    setSelectedImageIds(new Set(ids));
+    if (ids.length === 0) return;
+    requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-image-id="${CSS.escape(ids[0])}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, []);
 
   const runSmartCropForDataset = useCallback(async (ids?: string[], kinds?: SmartCropKind[]) => {
     // 対象を絞れる（2026-09-21）。165枚×3種を一括で切り出すと上限500枚を
@@ -3944,7 +3955,9 @@ export function LoraStudioTab({
                       見る」が見えていないと、何をすればいいか分からない。 */}
                   {/* Resume: re-analyze every image that has no caption yet (never
                       started, timed out, or errored). Always visible while any remain. */}
-                  {!autoCap.running && images.length > 0 && pendingCaptionCount > 0 && (
+                  {/* 解析を始める前は出さない（2026-09-24、ホスト指摘）。未解析があるのは当然で、
+                      「解析を開始する（未解析の N 枚）」と役割が重なって紛らわしい。 */}
+                  {analysisStarted && !autoCap.running && images.length > 0 && pendingCaptionCount > 0 && (
                     <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-300">
                       <span className="flex items-center gap-1.5">
                         <AlertTriangle size={13} className="shrink-0" />
@@ -3973,7 +3986,7 @@ export function LoraStudioTab({
                         <button
                           type="button"
                           disabled={busy}
-                          onClick={() => setSelectedImageIds(new Set(uncaptionedImages.map((i) => i.id)))}
+                          onClick={() => selectAndReveal(uncaptionedImages.map((i) => i.id))}
                           className="rounded-md border border-amber-400/50 bg-amber-400/10 px-2 py-1 text-[10px] text-amber-200 transition-colors hover:bg-amber-400/20 disabled:opacity-50"
                         >
                           未解析の {pendingCaptionCount} 枚を選択して確認
@@ -4148,7 +4161,7 @@ export function LoraStudioTab({
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setSelectedImageIds(new Set(croppedImages.map((i) => i.id)))}
+                  onClick={() => selectAndReveal(croppedImages.map((i) => i.id))}
                   className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20"
                 >
                   <Scissors size={11} />
