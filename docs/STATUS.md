@@ -583,8 +583,12 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    ページ送り・期間/機能/ユーザーでの絞り込み・バッチ（まとめて処理）を 1 行に畳む表示が要る。
    ② admin「最近の生成物」に**超解像（バッチ）の中止**が無い（LoRA だけ）。途中で止めると残りが pending のまま・
    クレジットも引き落とし済みのまま残る（2026-09-24 に 64 件・1,216C を手で閉じて返金）。LoRA と同じ「強制終了＝全額返金」を足す。
-   ③ キャプション解析を自前 VLM（Qwen3.8-27B・vLLM・B300）へ置き換え中（docs/gpu-benchmarks.md §17）。
-   サーバー側の共通化（`src/lib/loraCaptionRequest.server.ts`）まで済。料金は knob で後から決める。
+   ③ **キャプション解析を自前 VLM（Qwen3.8-27B・vLLM・B300）へ切り替え済み（2026-09-24）**（docs/gpu-benchmarks.md §17）。
+   `modal_caption_worker.py`（app `ull-caption-worker`、dispatch/status エンドポイント＋ GPU クラス、途中結果は modal.Dict
+   `ull-caption-jobs`、コンパイルキャッシュは Volume `/_vllm_cache`）、route `/api/studio/lora/caption-vlm`（start→R2 直 PUT→run→status）、
+   クライアント `generateDatasetCaptionsVlm`（`src/lib/loraCaption.ts`、既定。`localStorage ull_lora_caption_backend=gemini` か
+   `NEXT_PUBLIC_LORA_CAPTION_BACKEND=gemini` で旧経路へ）。通しテスト 20 枚: 解析 3.6s・取得 6.5s・エンジン初回 465s（次回から約 1 分の見込み）。
+   **残: ホストが画面で実データを通す／料金（knob）を決める／特徴抽出・翻訳など他の Gemini 用途は未移行。**
    ④ 軽量超解像（Real-ESRGAN / SwinIR）が T4 で 1 枚 9〜10 秒（100 枚 15 分）。ComfyUI の結果確認を 2 秒 → 0.25 秒おきに
    短縮・デプロイ済み。L40S / RTX PRO 6000 との 1 枚あたり原価比較を実施中。
 00000. **R2 のキーをユーザー別の配置に変更（2026-09-24、ワーカー 6 本デプロイ済み・Next は push で反映）。** ホスト要望「rclone / Explorer で

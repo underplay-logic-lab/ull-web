@@ -10,6 +10,10 @@ CLAUDE.md §5（商用利用・SaaS再頒布・地域制限の3点を満たす�
 **可（確認済み・商用OK）**
 - **Qwen-Image / Qwen-Image-Edit-2511**: Apache-2.0。現行の画像編集・リスタイルの基盤。
 - **Microsoft TRELLIS / TRELLIS.2（`microsoft/TRELLIS.2-4B`）**: MIT。image→3D の第一候補（非商用レンダラ依存は上記のとおり回避）。
+- **Qwen3.8-27B-abliterated（`hotdogs/Qwen3.8-27B-abliterated`、base `Qwen/Qwen3.8-27B`）**: Apache-2.0（モデルカードの
+  メタデータで 2026-09-24 確認）。LoRA の学習前キャプション・Director Advanced の台本・キャプション解析（`modal_caption_worker.py`）で使用。
+- **vLLM 0.30.0**: Apache-2.0。推論エンジン（`modal_caption_worker.py`）。
+- **Qwen2.5-VL-7B-Instruct（abliterated 版を含む）**: Apache-2.0。※ Qwen2.5-VL の **3B は研究用ライセンス（商用不可）**、72B は Qwen ライセンス。
 - **Wan2.2-S2V-14B**: Apache-2.0・地域制限なし。ただし**速度・品質とも本番採用の水準に届かず不採用**（`docs/gpu-benchmarks.md` §10）。
 
 **要注意（copyleft・表示義務あり・採用可だが実務対応が必要）**

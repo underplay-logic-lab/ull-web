@@ -2778,6 +2778,8 @@ export function LoraStudioTab({
             captionMode: resolvedCaptionModeRef.current,
             signal: ac.signal,
             onProgress: (done, total) => setAutoCap((s) => ({ ...s, done, total, note: null })),
+            // 自前 VLM 経路の「GPU 起動待ち」等（数字が動かない間に止まって見えないように）。
+            onNote: (note) => setAutoCap((s) => ({ ...s, note })),
             onBatch: (entries) => {
               const m = mergeLive(entries);
               Object.assign(merged.cap, m.cap);

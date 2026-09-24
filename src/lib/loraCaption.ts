@@ -192,8 +192,11 @@ export async function generateDatasetCaptions(
     // removed mid-pass) — it's dropped from its task, not sent.
     isStale?: (index: number) => boolean;
     signal?: AbortSignal;
+    // 自前 VLM 経路の状況表示（GPU の起動待ち等、進捗の数字が動かない間の一言）。null で消す。
+    onNote?: (note: string | null) => void;
   } = {},
 ): Promise<DatasetCaptionResult> {
+  if (captionBackend() === "vlm") return generateDatasetCaptionsVlm(files, opts);
   const total = files.length;
   const captions = new Array<string>(total).fill("");
   const captionsJa = new Array<string>(total).fill("");
@@ -494,3 +497,167 @@ export async function extractIdentityTags(
   if (!res.ok) throw new Error(data?.error || "特徴の抽出に失敗しました。");
   return Array.isArray(data?.tags) ? (data.tags as IdentityTag[]) : [];
 }
+
+// ---------------------------------------------------------------------------
+// 自前 VLM 経路（2026-09-24、docs/gpu-benchmarks.md §17）: Qwen3.8-27B を vLLM でまとめて回す。
+// Gemini は素材の一部を安全フィルタで拒否し（設定では外せない）、有料枠の原価もかかる。
+// 縮小画像（makeThumbnail と同じ 640px）をブラウザから R2 へ直接 PUT し、GPU が全枚数を一括で解析する。
+// 既定はこちら。localStorage `ull_lora_caption_backend=gemini` か
+// NEXT_PUBLIC_LORA_CAPTION_BACKEND=gemini で旧経路に戻せる。
+// ---------------------------------------------------------------------------
+type CaptionOpts = NonNullable<Parameters<typeof generateDatasetCaptions>[1]>;
+
+export function captionBackend(): "vlm" | "gemini" {
+  try {
+    const v = typeof window !== "undefined" ? window.localStorage.getItem("ull_lora_caption_backend") : null;
+    if (v === "gemini" || v === "vlm") return v;
+  } catch {
+    /* private mode 等 — 既定値 */
+  }
+  return process.env.NEXT_PUBLIC_LORA_CAPTION_BACKEND === "gemini" ? "gemini" : "vlm";
+}
+
+const VLM_POLL_MS = 2_000;
+const VLM_MAX_MS = 25 * 60_000; // 初回（コンパイルのやり直し）約 5 分＋大きいデータセット分の余裕
+const VLM_PUT_CONCURRENCY = 8;
+
+function b64ToBlob(b64: string, mimeType: string): Blob {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mimeType });
+}
+
+async function captionVlmPost(token: string, body: Record<string, unknown>, signal?: AbortSignal) {
+  const res = await fetch("/api/studio/lora/caption-vlm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+    signal,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((data as { error?: string })?.error || "画像の自動解析に失敗しました。");
+  return data as Record<string, unknown>;
+}
+
+async function generateDatasetCaptionsVlm(files: File[], opts: CaptionOpts): Promise<DatasetCaptionResult> {
+  const total = files.length;
+  const captions = new Array<string>(total).fill("");
+  const captionsJa = new Array<string>(total).fill("");
+  if (!opts.forceOverwrite && opts.preCaptioned) {
+    for (let i = 0; i < total; i++) {
+      const en = opts.preCaptioned[i];
+      if (typeof en === "string" && en.trim()) captions[i] = en.trim();
+      const ja = opts.preCaptionedJa?.[i];
+      if (typeof ja === "string" && ja.trim()) captionsJa[i] = ja.trim();
+    }
+  }
+  const errored = new Set<number>();
+  const stale = (i: number) => opts.isStale?.(i) ?? false;
+  const result = (): DatasetCaptionResult => {
+    const complete = captions.every((c, i) => stale(i) || c.trim().length > 0);
+    return {
+      captions,
+      captionsJa,
+      captionedCount: captions.filter((c) => c.trim()).length,
+      safetyRejected: [],
+      errored: [...errored],
+      complete,
+    };
+  };
+
+  const targets: number[] = [];
+  for (let i = 0; i < total; i++) if (!stale(i) && !captions[i].trim()) targets.push(i);
+  if (targets.length === 0) return result();
+  const note = (t: string | null) => opts.onNote?.(t);
+  const fail = (msg: string) => {
+    targets.forEach((i) => errored.add(i));
+    opts.onError?.(targets);
+    note(msg);
+    return result();
+  };
+
+  const token = await accessToken();
+  if (!token) return fail("ログインが必要です。");
+  note("解析用に画像を準備しています…");
+  const thumbs = await Promise.all(targets.map((i) => makeThumbnail(files[i])));
+  const ok = targets.map((i, k) => ({ i, t: thumbs[k] })).filter((x): x is { i: number; t: Thumb } => x.t !== null);
+  if (ok.length === 0) return fail("画像を読み込めませんでした。");
+  const mimes = ok.map((x) => x.t.mimeType);
+  const spec = {
+    trigger_word: opts.triggerWord || undefined,
+    subjects: opts.subjects && opts.subjects.length >= 1 ? opts.subjects : undefined,
+    caption_prompt: opts.captionPrompt || undefined,
+    caption_mode: opts.captionMode || undefined,
+    category: opts.category || undefined,
+  };
+
+  try {
+    const start = await captionVlmPost(token, { action: "start", count: ok.length, mimes }, opts.signal);
+    const jobId = String(start.jobId ?? "");
+    const uploads = (start.uploads as string[]) ?? [];
+    note(`解析用に画像を送っています（${ok.length} 枚）…`);
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(VLM_PUT_CONCURRENCY, ok.length) }, async () => {
+        while (next < ok.length) {
+          const k = next++;
+          const res = await fetch(uploads[k], {
+            method: "PUT",
+            headers: { "Content-Type": mimes[k] },
+            body: b64ToBlob(ok[k].t.data, mimes[k]),
+            signal: opts.signal,
+          });
+          if (!res.ok) throw new Error(`upload ${res.status}`);
+        }
+      }),
+    );
+    await captionVlmPost(token, { action: "run", jobId, mimes, ...spec }, opts.signal);
+    note("AI を起動しています（初回は 1〜2 分、久しぶりの時は最大 5 分ほどかかります）…");
+
+    const seen = new Set<number>();
+    const t0 = Date.now();
+    for (;;) {
+      if (opts.signal?.aborted) return result();
+      if (Date.now() - t0 > VLM_MAX_MS) return fail("解析が時間内に終わりませんでした。再試行してください。");
+      await sleep(VLM_POLL_MS);
+      let st: Record<string, unknown>;
+      try {
+        st = await captionVlmPost(token, { action: "status", jobId, ...spec }, opts.signal);
+      } catch {
+        continue; // 一時的な失敗は次の周回で取り直す
+      }
+      const entries = (st.entries as { index: number; en: string; ja: string }[]) ?? [];
+      const fresh: { index: number; en: string; ja: string }[] = [];
+      for (const e of entries) {
+        const i = ok[e.index]?.i;
+        if (i === undefined || seen.has(e.index)) continue;
+        seen.add(e.index);
+        if (stale(i)) continue;
+        captions[i] = e.en;
+        captionsJa[i] = e.ja;
+        fresh.push({ index: i, en: e.en, ja: e.ja });
+      }
+      if (fresh.length) opts.onBatch?.(fresh);
+      const done = Number(st.done ?? 0);
+      if (st.status === "running" || st.status === "completed") {
+        opts.onProgress?.(Math.min(done, ok.length), ok.length);
+        if (st.status === "running") note(done > 0 ? null : "AI が解析しています…");
+      }
+      if (st.status === "completed") {
+        const missed = ok.filter((x) => !captions[x.i].trim()).map((x) => x.i);
+        if (missed.length) {
+          missed.forEach((i) => errored.add(i));
+          opts.onError?.(missed);
+        }
+        note(null);
+        return result();
+      }
+      if (st.status === "failed") return fail(String(st.error ?? "解析に失敗しました。"));
+    }
+  } catch (err) {
+    if (opts.signal?.aborted) return result();
+    return fail(err instanceof Error ? err.message : "画像の自動解析に失敗しました。");
+  }
+}
+
