@@ -8,19 +8,9 @@ import {
   isGemErr,
   runGeminiVision,
 } from "@/lib/geminiText";
-import {
-  applySubjectFixedTags,
-  buildCategoryDefaultInstruction,
-  coerceLoraCaptionCategory,
-  type LoraSubject,
-  type ResolvedCaptionMode,
-} from "@/lib/loraCaptionSpec";
-import { buildVisionPrompt, parseEnJaArray, tidyCaption } from "@/lib/loraCaptionVision";
-import {
-  CONTENT_POLICY_BLOCK_MESSAGE,
-  evaluateContentPolicyMany,
-  logContentPolicyBlock,
-} from "@/lib/contentPolicy";
+import { buildVisionPrompt, parseEnJaArray } from "@/lib/loraCaptionVision";
+import { CONTENT_POLICY_BLOCK_MESSAGE } from "@/lib/contentPolicy";
+import { finalizeCaptions, parseCaptionRequest } from "@/lib/loraCaptionRequest.server";
 
 // Fast AI-vision auto-captioning for the LoRA Studio dataset.
 //
@@ -116,56 +106,11 @@ export async function POST(request: Request): Promise<NextResponse> {
       return NextResponse.json({ error: "画像の合計サイズが大きすぎます。枚数を減らしてください。" }, { status: 400 });
     }
 
-    const triggerWord =
-      typeof body?.trigger_word === "string" ? body.trigger_word.trim().slice(0, 60) : "";
-    // Multiple distinct subjects (2026-09-15) — each with its own trigger word
-    // and a short description used to tell them apart in the vision prompt.
-    // Falls back to the single legacy `trigger_word` when absent/too short, so
-    // every existing caller (and the single-subject case, the overwhelming
-    // majority) is completely unaffected.
-    const rawSubjects = Array.isArray(body?.subjects) ? body.subjects : [];
-    const parsedSubjects: LoraSubject[] = rawSubjects
-      .map((s: unknown) => {
-        const o = s && typeof s === "object" ? (s as Record<string, unknown>) : {};
-        return {
-          trigger: typeof o.trigger === "string" ? o.trigger.trim().slice(0, 60) : "",
-          description: typeof o.description === "string" ? o.description.trim().slice(0, 300) : "",
-          fixedTags: typeof o.fixedTags === "string" ? o.fixedTags.trim().slice(0, 200) : "",
-        };
-      })
-      .filter((s: LoraSubject) => s.trigger.length > 0)
-      .slice(0, 8);
-    // A single entry (not just 2+) is still meaningful — it may carry
-    // fixedTags for the one default subject — so it's never discarded here.
-    // subjectClassificationLines()/tidyCaption() key the actual
-    // "multi-subject classification" behaviour off subjects.length >= 2, not
-    // off whether this array happened to come from the client at all.
-    const subjects: LoraSubject[] =
-      parsedSubjects.length >= 1 ? parsedSubjects : [{ trigger: triggerWord, description: "", fixedTags: "" }];
-    // Explicit instruction wins (manual override or the client's synthesised
-    // category+spec prompt). If none was sent but a training CATEGORY was,
-    // fall back to that category's built-in blacklist/whitelist policy — never
-    // to "describe the whole image", which would hollow out the trigger word.
-    const category = coerceLoraCaptionCategory(body?.category ?? body?.learning_type);
-    let captionPrompt =
-      typeof body?.caption_prompt === "string" ? body.caption_prompt.slice(0, 4000) : "";
-    if (!captionPrompt.trim() && category) {
-      captionPrompt = buildCategoryDefaultInstruction(category, triggerWord);
-    }
-
-    const policyResult = evaluateContentPolicyMany([
-      triggerWord,
-      captionPrompt,
-      ...subjects.flatMap((s) => [s.trigger, s.description, s.fixedTags ?? ""]),
-    ]);
-    if (policyResult.blocked) {
-      logContentPolicyBlock("lora/caption", policyResult, userData.user.id);
+    const req = parseCaptionRequest(body, userData.user.id, "lora/caption");
+    if (req.blocked) {
       return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
     }
-    // Caption FORMAT. The client resolves this from the selected base model
-    // (resolveCaptionMode); default 'tags' preserves the legacy behaviour for
-    // any caller that doesn't send it.
-    const captionMode: ResolvedCaptionMode = body?.caption_mode === "dense" ? "dense" : "tags";
+    const { subjects, captionPrompt, captionMode } = req.spec;
 
     const apiKey = geminiApiKey();
     if (!apiKey) return geminiNotConfiguredResponse();
@@ -208,12 +153,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         { status: 502 },
       );
     }
-    const captions = parsed.map((p) => applySubjectFixedTags(tidyCaption(p.en, subjects, captionMode), subjects));
-    const captionsJa = parsed.map((p, i) =>
-      captions[i].trim()
-        ? (p.ja ?? "").trim().replace(/\s*\n+\s*/g, captionMode === "dense" ? " " : "、")
-        : "",
-    );
+    const { captions, captionsJa } = finalizeCaptions(parsed, { subjects, captionMode });
 
     return NextResponse.json({ captions, captionsJa, safety: false });
   } catch (err) {

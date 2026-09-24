@@ -2068,7 +2068,9 @@ class SeedVR2Worker:
                     with open(new[-1], "rb") as f:
                         return f.read(), os.path.basename(new[-1])
                 raise RuntimeError(f"workflow finished but produced no output: {json.dumps(outputs)[:2000]}")
-            time.sleep(2)
+            # 2026-09-24: 2 秒おきだと 1 枚ごとに平均 1 秒（最大 2 秒）の待ちが乗っていた（所要時間が 8.02s・10.03s と
+            # 2 秒刻みになっていた）。localhost への GET なので 0.25 秒おきで十分軽い。
+            time.sleep(0.25)
         raise TimeoutError("timed out waiting for ComfyUI")
 
     def _comfy_free(self, unload_models: bool = False) -> None:

@@ -578,6 +578,15 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 - R2 移行は計画 1〜9 すべて閉じた（8-② の転送パネルだけローンチ後）。
 
 **残り**
+000000. **ローンチ前にやる運用まわり（2026-09-24 ホスト指摘）**:
+   ① admin の実稼動ログが直近 50 件固定（`src/app/api/admin/logs/route.ts` の `RECENT_LIMIT`）で、超解像 100 枚で埋まる。
+   ページ送り・期間/機能/ユーザーでの絞り込み・バッチ（まとめて処理）を 1 行に畳む表示が要る。
+   ② admin「最近の生成物」に**超解像（バッチ）の中止**が無い（LoRA だけ）。途中で止めると残りが pending のまま・
+   クレジットも引き落とし済みのまま残る（2026-09-24 に 64 件・1,216C を手で閉じて返金）。LoRA と同じ「強制終了＝全額返金」を足す。
+   ③ キャプション解析を自前 VLM（Qwen3.8-27B・vLLM・B300）へ置き換え中（docs/gpu-benchmarks.md §17）。
+   サーバー側の共通化（`src/lib/loraCaptionRequest.server.ts`）まで済。料金は knob で後から決める。
+   ④ 軽量超解像（Real-ESRGAN / SwinIR）が T4 で 1 枚 9〜10 秒（100 枚 15 分）。ComfyUI の結果確認を 2 秒 → 0.25 秒おきに
+   短縮・デプロイ済み。L40S / RTX PRO 6000 との 1 枚あたり原価比較を実施中。
 00000. **R2 のキーをユーザー別の配置に変更（2026-09-24、ワーカー 6 本デプロイ済み・Next は push で反映）。** ホスト要望「rclone / Explorer で
    一番上がユーザーの一覧になっていてほしい」。新: `<email>_<user_id先頭8桁>/<kind>/<job_id>/…`（例 `foo@example.com_726453dc/loras/<job>/…`）。
    変換は `ull_r2.key_for_rel()` / `r2.server.ts::r2KeyForRel()`（`<kind>/<user_id>/<rest>` の user_id 段を抜いて先頭に root）。
