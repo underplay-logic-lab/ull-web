@@ -2060,7 +2060,19 @@ v7 の中間チェックポイント 13 本（475MB × 13 = 6.2GB）を Modal �
   また `max_num_seqs=256` にしたら起動が 9 分超（検証していない値を本番に出した失敗）。
   → **transformers（B300・64 枚まとめ・`device_map="cuda"`）に切り替え**: 依頼→完了（20 枚・冷えた状態）**104s / 77s**
   （読み込み 30s / 13s、生成 54s / 48s ＝コンテナ最初の 1 回の準備込み）。145 枚の見込み 2〜2.5 分。
-  `modal_caption_worker.py`、イメージは CUDA 13.0 devel + torch 2.14.0+cu130 + transformers 5.5.3。ホストは別モデル（「Qwen3.8 Flash Next」）への変更も検討中。
+  `modal_caption_worker.py`、イメージは CUDA 13.0 devel + torch 2.14.0+cu130 + transformers 5.5.3。
+- **露骨な内容の書き方（2026-09-25、56 枚・2 人の絡みが多い実データ）**: abliterated でも「拒否はしないが婉曲」だった
+  （指示文に性的内容の扱いが無かった）。指示文に「ぼかさず標準の露骨な Danbooru タグ／直接的な語で書く」を足すと、
+  56 枚の出現回数 nude 8→40・nipple 0→27・penis 0→21・sex 0→19。56 枚中 1 枚が `[ ]` 無しの `{en,ja}` を返して
+  空扱いになった → 単体オブジェクトも受けるよう `parseEnJaArray` を修正＋worker で読めない出力だけ再生成。
+  56 枚（文章形式・日本語込みで 1 枚約 1,000 文字）: 解析 80〜122s（時間は一番長い出力で決まる）。
+- **JoyCaption Beta One（`fancyfeast/llama-joycaption-beta-one-hf-llava`、Llama 3.1 Community License、8B）との比較**:
+  RTX PRO 6000・16 枚まとめで 56 枚が読み込み 8s・文章 15s・タグ 31s（Qwen の数分の 1 の時間と原価）。露骨さも十分
+  （penis 37・sex 60）。ただし本来の指示文では ①トリガーを男性にも付ける（"two hitozuma"）②髪色・肌・胸の大きさ等の
+  固定特徴を書く ③タグ形式に hentai / explicit content / erotic 等の雑多な語 ④日本語が出ない。
+  → **本番は Qwen（指示文修正済み）のまま**（直接的・トリガー／除外ルールを守る・日本語同時）。JoyCaption は Volume
+  `/models/LLM/llama-joycaption-beta-one` に残し、無料化や待ち時間短縮が要るときに追加指示を詰めて再挑戦（ホスト判断 2026-09-25）。
+  1 トリガーで 2 人の絡みが多いデータは、どのモデルでも主役の判断が難しい（複数被写体の登録で安定する）。ホストは別モデル（「Qwen3.8 Flash Next」）への変更も検討中。
 
 ## 18. 軽量超解像（Real-ESRGAN / SwinIR）の GPU を T4 → RTX PRO 6000 へ（2026-09-24）
 

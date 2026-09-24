@@ -76,7 +76,8 @@ def _gpu_label() -> str:
     gpu=["B300", "B200"],
     volumes={MODELS_DIR: vol},
     timeout=30 * 60,
-    scaledown_window=30,
+    # 終わったら 2 秒で止める（2026-09-25 ホスト判断「連続でやることはない」）。B300 の待機課金を残さない。
+    scaledown_window=2,
     min_containers=0,
     retries=0,
     secrets=[modal.Secret.from_name("r2-artifacts")],
