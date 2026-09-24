@@ -57,7 +57,7 @@ import {
 } from "@/lib/angleApi";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { VramBadge } from "@/components/studio/VramBadge";
-import { requestStudioHandoff } from "@/lib/studioHandoff";
+import { requestStudioBatchHandoff, requestStudioHandoff } from "@/lib/studioHandoff";
 import {
   QueueChoiceModal,
   QueuedNextBanner,
@@ -1082,6 +1082,31 @@ export function MultiAngleStudioTab() {
       "upscale",
     );
   };
+  // 全構図をまとめて超解像へ（2026-09-24、ホスト「超解像への誘導が分かりにくい」）。
+  // URL はその場で取り直し、ファイルにしてからまとめ渡しで超解像タブへ送る。
+  const [upscaleAllBusy, setUpscaleAllBusy] = useState(false);
+  const upscaleAll = async () => {
+    if (!job || images.length === 0) return;
+    setUpscaleAllBusy(true);
+    setSaveError(null);
+    try {
+      const urls = await freshAngleImageUrls(job.id, images);
+      const files = await Promise.all(
+        urls.map(async (url, i) => {
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const blob = await res.blob();
+          return new File([blob], `${String(i + 1).padStart(2, "0")}_angle.png`, { type: blob.type || "image/png" });
+        }),
+      );
+      requestStudioBatchHandoff({ files, source: "マルチアングル", hint: "全構図をまとめて拡大できます。" }, "upscale");
+    } catch (err) {
+      console.warn("[MultiAngleStudioTab] upscale-all failed:", err);
+      setSaveError("超解像への受け渡しに失敗しました。時間をおいてもう一度お試しください。");
+    } finally {
+      setUpscaleAllBusy(false);
+    }
+  };
   // 表示に失敗したら、解決済み URL を捨ててジョブを読み直す（2 回まで）。
   const imageRefreshCountRef = useRef(0);
   const refreshImageUrls = () => {
@@ -1399,6 +1424,18 @@ export function MultiAngleStudioTab() {
               )}
             </div>
             {images.length > 0 && (
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+              {phase === "done" && (
+                <button
+                  type="button"
+                  onClick={() => void upscaleAll()}
+                  disabled={upscaleAllBusy}
+                  className="flow-next inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-bold text-white shadow-lg transition-opacity hover:opacity-90 disabled:opacity-50"
+                >
+                  {upscaleAllBusy ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                  {images.length} 枚をまとめて 4K / 8K に超解像
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleZip}
@@ -1408,6 +1445,7 @@ export function MultiAngleStudioTab() {
                 {zipping ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
                 一括ZIPダウンロード
               </button>
+              </div>
             )}
           </div>
 
@@ -1437,8 +1475,7 @@ export function MultiAngleStudioTab() {
                   </div>
                 )}
 
-                <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-1 bg-gradient-to-t from-black/80 to-transparent p-1.5 opacity-0 transition-opacity group-hover:opacity-100">
-                  <span className="truncate text-[10px] font-medium text-white">{labels[i] ?? ""}</span>
+                <div className="absolute right-0 top-0 p-1.5 opacity-0 transition-opacity group-hover:opacity-100">
                   <div className="flex shrink-0 items-center gap-0.5">
                     <button
                       type="button"
@@ -1461,15 +1498,6 @@ export function MultiAngleStudioTab() {
                     )}
                     <button
                       type="button"
-                      onClick={() => void upscaleAngle(i)}
-                      aria-label="超解像へ"
-                      title="この構図を 4K/8K 超解像へ"
-                      className="rounded-md bg-black/50 p-1 text-neon-pink transition-colors hover:bg-black/80"
-                    >
-                      <Sparkles size={13} />
-                    </button>
-                    <button
-                      type="button"
                       onClick={() => void saveAngle(i)}
                       aria-label="ダウンロード"
                       className="rounded-md bg-black/50 p-1 text-white transition-colors hover:bg-black/80"
@@ -1477,6 +1505,19 @@ export function MultiAngleStudioTab() {
                       <Download size={13} />
                     </button>
                   </div>
+                </div>
+                {/* 構図名は省略せず全文を出し、超解像ボタンは常に見せる（2026-09-24、ホスト指摘）。 */}
+                <div className="flex items-start justify-between gap-1.5 border-t border-border bg-surface/60 px-2 py-1.5">
+                  <span className="min-w-0 break-words text-[10px] leading-snug text-foreground/90">{labels[i] ?? ""}</span>
+                  <button
+                    type="button"
+                    onClick={() => void upscaleAngle(i)}
+                    title="この構図を 4K/8K 超解像へ"
+                    className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-neon-pink/50 bg-neon-pink/10 px-1.5 py-0.5 text-[10px] font-bold text-neon-pink transition-colors hover:bg-neon-pink/20"
+                  >
+                    <Sparkles size={11} />
+                    超解像
+                  </button>
                 </div>
               </div>
             ))}

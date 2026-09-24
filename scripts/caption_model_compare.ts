@@ -14,13 +14,11 @@ import { runGeminiVision } from "@/lib/geminiText";
 import { buildVisionPrompt, parseEnJaArray, tidyCaption } from "@/lib/loraCaptionVision";
 import { buildCategoryDefaultInstruction, type LoraSubject } from "@/lib/loraCaptionSpec";
 
-const MODELS = [
-  "gemini-3.8-flash",
-  "gemini-3.5-flash-lite",
-  "gemini-2.5-flash",
-  "gemini-3.1-flash-lite",
-  "gemini-2.5-flash-lite",
-];
+// CMP_MODELS=a,b で絞れる。CMP_MODE=dense で文章形式（DiT 用）を比べる（2026-09-24）。
+const MODELS = process.env.CMP_MODELS
+  ? process.env.CMP_MODELS.split(",")
+  : ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"];
+const MODE: "tags" | "dense" = process.env.CMP_MODE === "dense" ? "dense" : "tags";
 const BATCH = 4; // 本番の CAPTION_BATCH_SIZE と同じ
 
 async function main() {
@@ -41,7 +39,7 @@ async function main() {
     const rows: { name: string; en: string; ja: string }[] = [];
     for (let s = 0; s < images.length; s += BATCH) {
       const batch = images.slice(s, s + BATCH);
-      const prompt = buildVisionPrompt(batch.length, subjects, captionPrompt, "tags");
+      const prompt = buildVisionPrompt(batch.length, subjects, captionPrompt, MODE);
       let parsed: { en: string; ja: string }[] | null = null;
       try {
         const raw = await runGeminiVision(genAI, prompt, batch, "enja", {
@@ -56,7 +54,7 @@ async function main() {
         const p = parsed?.[k];
         rows.push({
           name: manifest[s + k].name,
-          en: p?.en ? tidyCaption(p.en, subjects, "tags") : "",
+          en: p?.en ? tidyCaption(p.en, subjects, MODE) : "",
           ja: p?.ja ?? "",
         });
       });
