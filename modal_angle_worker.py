@@ -221,6 +221,30 @@ ANGLE_LORA_TRIGGER = os.environ.get("ANGLE_LORA_TRIGGER", "<sks>").strip()
 _DEFAULT_GPU = ["b200", "b300"]
 
 
+def _host_ram_report() -> str:
+    """コンテナのメインメモリ使用量（最大・現在、GB）。2026-09-24: GPU クラスに memory= を
+    指定しておらず、読み込み中に exit 137（メモリ不足で強制終了）が出た。確保量を実測で決めるため
+    ログに出す。cgroup v2 の memory.peak があればそれ（子プロセス込み）、無ければ自プロセスの ru_maxrss。"""
+    def _read_gb(path: str):
+        try:
+            with open(path) as f:
+                return int(f.read().strip()) / 1e9
+        except Exception:  # noqa: BLE001
+            return None
+
+    peak = _read_gb("/sys/fs/cgroup/memory.peak")
+    cur = _read_gb("/sys/fs/cgroup/memory.current")
+    if peak is None:
+        try:
+            import resource
+
+            peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6  # KB -> GB
+        except Exception:  # noqa: BLE001
+            peak = None
+    fmt = lambda v: "?" if v is None else f"{v:.1f}"  # noqa: E731
+    return f"host RAM peak={fmt(peak)}GB now={fmt(cur)}GB"
+
+
 def _resolve_angle_worker_gpu():
     """ANGLE_WORKER_GPU の明示があればそれ、なければ Blackwell 固定。"""
     forced = os.environ.get("ANGLE_WORKER_GPU", "").strip()
@@ -1572,6 +1596,11 @@ class QwenImageEditWorker:
             f"text_encoder={self._text_encoder_repo or 'bundled'})",
             flush=True,
         )
+        try:
+            _gpu_name = torch.cuda.get_device_name(0)
+        except Exception:  # noqa: BLE001
+            _gpu_name = "?"
+        print(f"[angle] container GPU: {_gpu_name} / {_host_ram_report()}", flush=True)
 
     def _load_pipeline(self, dtype, token):
         """repo の model_index.json からパイプラインクラスを自動解決する。
@@ -2091,7 +2120,10 @@ class QwenImageEditWorker:
             _refund_remaining("db-write-failed")
         if done > 0:
             _spawn_r2_publish(job_id)
-        print(f"[angle-job] {job_id} completed {done}/{n_total} angle(s) in {elapsed}s", flush=True)
+        print(
+            f"[angle-job] {job_id} completed {done}/{n_total} angle(s) in {elapsed}s / {_host_ram_report()}",
+            flush=True,
+        )
         return {"ok": True, "completed": done, "total": n_total, "elapsed_time": elapsed}
 
     @modal.fastapi_endpoint(method="POST")
