@@ -1,43 +1,47 @@
-"""LoRA Studio のキャプション解析（自前 VLM）— Qwen3.8-27B-abliterated を vLLM で一括推論する。
+"""LoRA Studio のキャプション解析（自前 VLM）— Qwen3.8-27B-abliterated を transformers でまとめて推論する。
 
 2026-09-24 導入（docs/gpu-benchmarks.md §17）。Gemini はデータセットの一部を安全フィルタで拒否し
 （設定では外せない）、有料枠の原価もかかる。同じ 20 枚・本番と同じ指示文で比べて、27B は表情・手・視線を
-Gemini 3.8 並みに拾い、拒否もしない。vLLM（B300）は 1 枚 0.07〜0.11 秒で、コンパイル結果を Volume に
-残すと起動 50〜85 秒（初回・版の入れ替え直後だけ約 5 分）。
+Gemini 3.8 並みに拾い、拒否もしない。
 
-構成（CLAUDE.md §1 の例外: ComfyUI を使わない推論専用なので、vLLM 0.30.0 の推奨構成をそのまま使う。
-torch 2.13.0+cu130 で結果的に CUDA 13 標準にも合っている。flashinfer 等が起動時に JIT で nvcc を呼ぶので
-CUDA devel イメージが要る）:
+vLLM も試したが不採用: 生成は 1 枚 0.07〜0.11 秒と速いが、冷えた状態からのエンジン起動が毎回 3〜4 分
+（重み 36s＋メモリ計測・CUDA graph 事前記録 105s 等。コンパイルキャッシュを Volume に残しても縮まない）。
+LoRA の素材は数百枚どまりなので、起動 14〜33 秒・1 枚 0.5〜0.8 秒（B300・64 枚まとめ）の transformers の方が
+依頼から完了までが短い。
+
+構成:
   - caption_dispatch（CPU・軽量）: Next.js から受けて CaptionVLM.run を spawn する。
   - caption_status（CPU・軽量）: 進み具合と途中結果を modal.Dict から返す。
-  - CaptionVLM（GPU B300/B200）: R2 の縮小画像を読み、1 枚 1 会話で一括生成し、64 枚ごとに途中結果を書く。
+  - CaptionVLM（GPU B300/B200）: R2 の縮小画像を読み、64 枚ずつまとめて生成し、そのたびに途中結果を書く。
 
-モデル / 依存:
-  - huihui-ai 系 Qwen3.8-27B-abliterated（Volume /models/LLM、Qwen3.5 系アーキテクチャ・bf16）。
-    ライセンスは元の Qwen に準拠（docs/model-licenses.md）。量子化なし。
-  - vLLM 0.30.0（Apache-2.0）、確認 2026-09-24。
+モデル / 依存（docs/model-licenses.md）:
+  - hotdogs/Qwen3.8-27B-abliterated（Apache-2.0、Volume /models/LLM、bf16・量子化なし）。確認 2026-09-24。
+  - transformers 5.5.3 / torch（cu130）。CLAUDE.md §1 の標準（Python 3.13・CUDA 13）どおり。
 """
 
 import os
 import time
 
-import fastapi  # vLLM の依存に含まれ、エンドポイント用イメージにも入れてある
+import fastapi  # どちらのイメージにも入れてある
 import modal
 
 app = modal.App("ull-caption-worker")
 
 MODELS_DIR = "/models"
 MODEL_PATH = f"{MODELS_DIR}/LLM/Qwen3.8-27B-abliterated"
-VLLM_CACHE_ROOT = f"{MODELS_DIR}/_vllm_cache"
-CHUNK = 64  # 途中結果を書く単位。vLLM はこの中で全部を同時に回す
+BATCH = 64  # まとめて生成する枚数（＝途中結果を書く単位）。B300 で VRAM 約 90GB
 MAX_IMAGES = 500
 
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
 jobs = modal.Dict.from_name("ull-caption-jobs", create_if_missing=True)
 
-vllm_image = (
+gpu_image = (
     modal.Image.from_registry("nvidia/cuda:13.0.0-devel-ubuntu24.04", add_python="3.13")
-    .pip_install("vllm==0.30.0", "pillow", "boto3>=1.35", "requests")
+    .pip_install(
+        "torch", "torchvision",
+        index_url="https://download.pytorch.org/whl/cu130",
+    )
+    .pip_install("transformers==5.5.3", "accelerate", "pillow", "boto3>=1.35", "requests", "fastapi[standard]")
     .add_local_python_source("ull_r2")
 )
 endpoint_image = modal.Image.debian_slim(python_version="3.13").pip_install("fastapi[standard]")
@@ -66,7 +70,7 @@ def _gpu_label() -> str:
 
 
 @app.cls(
-    image=vllm_image,
+    image=gpu_image,
     gpu=["B300", "B200"],
     volumes={MODELS_DIR: vol},
     timeout=30 * 60,
@@ -78,35 +82,27 @@ def _gpu_label() -> str:
 class CaptionVLM:
     @modal.enter()
     def load(self):
-        # コンパイル結果を Volume に残し、次のコールドスタートで使い回す（起動 342s → 50〜85s）。
-        os.environ["VLLM_CACHE_ROOT"] = VLLM_CACHE_ROOT
-        from vllm import LLM
+        import torch
+        from transformers import AutoModelForImageTextToText, AutoProcessor
 
         t0 = time.time()
-        self.llm = LLM(
-            model=MODEL_PATH,
-            dtype="bfloat16",
-            max_model_len=8192,
-            gpu_memory_utilization=0.90,
-            limit_mm_per_prompt={"image": 1},
-            max_num_seqs=256,
-            # Volume（ネットワーク越し）から 1 ファイルずつ読むと 25 秒/ファイルかかった。並行で読む。
-            model_loader_extra_config={"enable_multithread_load": True, "num_threads": 16},
-        )
+        self.proc = AutoProcessor.from_pretrained(MODEL_PATH, local_files_only=True)
+        self.proc.tokenizer.padding_side = "left"
+        # GPU へ直接読む。CPU RAM 経由（.to("cuda")）だと 27B で 20 分超かかった（2026-09-24）。
+        self.model = AutoModelForImageTextToText.from_pretrained(
+            MODEL_PATH, local_files_only=True, torch_dtype=torch.bfloat16, device_map="cuda", attn_implementation="sdpa"
+        ).eval()
         self.load_s = round(time.time() - t0, 1)
-        print(f"[caption] engine ready in {self.load_s}s on {_gpu_label()}", flush=True)
-        try:
-            vol.commit()  # 新しいコンパイル結果を残す
-        except Exception as exc:  # noqa: BLE001
-            print(f"[caption] vol.commit skipped: {exc}", flush=True)
+        print(f"[caption] model ready in {self.load_s}s on {_gpu_label()}", flush=True)
 
     @modal.method()
     def run(self, job: dict) -> dict:
-        import base64
+        import io
         from concurrent.futures import ThreadPoolExecutor
 
+        import torch
         import ull_r2
-        from vllm import SamplingParams
+        from PIL import Image
 
         key = job["dict_key"]
         keys: list[str] = job["keys"]
@@ -118,40 +114,38 @@ class CaptionVLM:
         try:
             def _fetch(k: str):
                 try:
-                    return ull_r2.get_bytes(k)
+                    return Image.open(io.BytesIO(ull_r2.get_bytes(k))).convert("RGB")
                 except Exception as exc:  # noqa: BLE001 — その 1 枚だけ空で返す
                     print(f"[caption] fetch failed {k}: {exc!r}", flush=True)
                     return None
 
             with ThreadPoolExecutor(max_workers=16) as ex:
-                blobs = list(ex.map(_fetch, keys))
+                images = list(ex.map(_fetch, keys))
             fetch_s = round(time.time() - t0, 1)
 
-            sp = SamplingParams(temperature=0.0, max_tokens=int(job.get("max_tokens") or 600))
-            prompt = job["prompt"]
+            msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": job["prompt"]}]}]
+            text = self.proc.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False,
+                                                 enable_thinking=False)
+            max_new = int(job.get("max_tokens") or 600)
             t1 = time.time()
-            for s in range(0, total, CHUNK):
-                idx = [i for i in range(s, min(total, s + CHUNK)) if blobs[i]]
-                convs = []
-                for i in idx:
-                    mime = "image/webp" if keys[i].endswith(".webp") else "image/jpeg"
-                    url = f"data:{mime};base64," + base64.b64encode(blobs[i]).decode("ascii")
-                    convs.append([{"role": "user", "content": [
-                        {"type": "image_url", "image_url": {"url": url}},
-                        {"type": "text", "text": prompt},
-                    ]}])
-                if convs:
-                    outs = self.llm.chat(convs, sp, chat_template_kwargs={"enable_thinking": False}, use_tqdm=False)
+            for s in range(0, total, BATCH):
+                idx = [i for i in range(s, min(total, s + BATCH)) if images[i] is not None]
+                if idx:
+                    inp = self.proc(text=[text] * len(idx), images=[images[i] for i in idx],
+                                    return_tensors="pt", padding=True).to("cuda")
+                    with torch.inference_mode():
+                        ids = self.model.generate(**inp, max_new_tokens=max_new, do_sample=False)
+                    outs = self.proc.batch_decode(ids[:, inp["input_ids"].shape[1]:], skip_special_tokens=True)
                     for i, o in zip(idx, outs):
-                        state["raws"][i] = o.outputs[0].text
-                state["done"] = min(total, s + CHUNK)
+                        state["raws"][i] = o
+                state["done"] = min(total, s + BATCH)
                 jobs[key] = state
             gen_s = round(time.time() - t1, 1)
             state.update({"status": "completed", "done": total, "fetch_s": fetch_s, "gen_s": gen_s,
                           "gpu": _gpu_label()})
             jobs[key] = state
             print(f"[caption] {key} {total} imgs: fetch {fetch_s}s, generate {gen_s}s "
-                  f"({gen_s / max(1, total):.2f}s/img), engine {self.load_s}s", flush=True)
+                  f"({gen_s / max(1, total):.2f}s/img), model load {self.load_s}s", flush=True)
         except Exception as exc:  # noqa: BLE001
             state.update({"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:500]})
             jobs[key] = state
