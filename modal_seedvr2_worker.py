@@ -2326,6 +2326,7 @@ class SeedVR2Worker:
         params: dict,
         image_spec: str,
         finalize_executor=None,
+        prefetched: dict | None = None,
     ) -> dict:
         """1件分の実処理: _do_upscale → upload → upscale_jobs PATCH。
 
@@ -2340,7 +2341,13 @@ class SeedVR2Worker:
         """
         # idempotency ガード: Modal のクラッシュ由来リトライで二重課金 / 二重生成
         # しないよう、既に終端状態なら即 no-op。
-        existing = _get_upscale_job_status(job_id)
+        # prefetched（バッチの先読み、2026-09-24）があれば状態確認と入力取得は済んでいる。
+        if prefetched is not None:
+            existing = prefetched.get("status")
+            if prefetched.get("raw"):
+                image_spec = base64.b64encode(prefetched["raw"]).decode("ascii")
+        else:
+            existing = _get_upscale_job_status(job_id)
         if existing and existing.get("status") in ("completed", "failed"):
             print(f"[upscale-job] {job_id} already {existing['status']} — no-op", flush=True)
             return {"ok": True, "skipped": True}
@@ -2713,10 +2720,35 @@ class SeedVR2Worker:
             with _pending_lock:
                 _pending_ids.discard(jid)
 
+        # 次の画像の状態確認と入力取得を、今の画像の計算中に済ませておく（2026-09-24）。
+        # 実測で 1 枚ごとに 2 秒前後、詰まると 14 秒の空白があった。取得に失敗したら
+        # raw=None で返し、本処理が従来どおり URL から取り直す（エラーもそこで扱う）。
+        prefetcher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="upscale-prefetch")
+
+        def _prefetch(item: dict) -> dict:
+            jid = str(item.get("job_id") or "")
+            spec = str(item.get("image") or item.get("image_b64") or "")
+            status = _get_upscale_job_status(jid)
+            raw = None
+            if spec.startswith(("http://", "https://")):
+                try:
+                    raw = _load_input_bytes(spec)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[upscale-batch] prefetch {jid} failed, will retry inline: {exc}", flush=True)
+            return {"status": status, "raw": raw}
+
+        next_pre = prefetcher.submit(_prefetch, items[0]) if items else None
+
         t_batch = time.time()
         try:
-            for it in items:
+            for idx, it in enumerate(items):
                 job_id = str(it.get("job_id") or "")
+                try:
+                    pre = next_pre.result() if next_pre is not None else None
+                except Exception as exc:  # noqa: BLE001 — 先読み自体の想定外エラーは本処理に任せる
+                    print(f"[upscale-batch] prefetch {job_id} error: {exc}", flush=True)
+                    pre = None
+                next_pre = prefetcher.submit(_prefetch, items[idx + 1]) if idx + 1 < len(items) else None
                 r = self._process_one_upscale_item(
                     job_id,
                     user_id,
@@ -2726,6 +2758,7 @@ class SeedVR2Worker:
                     it.get("params") or {},
                     it.get("image") or it.get("image_b64") or "",
                     finalize_executor=executor,
+                    prefetched=pre,
                 )
                 fut = r.get("future")
                 if fut is not None:
@@ -2750,6 +2783,7 @@ class SeedVR2Worker:
                 flush=True,
             )
         finally:
+            prefetcher.shutdown(wait=True)
             executor.shutdown(wait=True)
             _wd_stop.set()
 
