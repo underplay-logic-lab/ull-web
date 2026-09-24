@@ -242,6 +242,9 @@ export function LoraStudioTab({
   // blank one of these is intentional, so the worker must not VLM-fill it.
   // State (not a ref) because the routing badge derives from it in render.
   const [userCaptionIds, setUserCaptionIds] = useState<Set<string>>(() => new Set());
+  // この端末のキャッシュから前回の解析結果を復元した画像（2026-09-24）。同じ画像を入れ直すと
+  // 解析せずにキャプションが入るので、「自動解析しました」と出すと事実と違う（ホスト指摘）。
+  const [restoredCaptionIds, setRestoredCaptionIds] = useState<Set<string>>(() => new Set());
   const autoCaptionAbortRef = useRef<AbortController | null>(null);
   // Live set of image ids — read by the async caption pass (which captured a
   // now-stale `targets` list) to drop results for images removed mid-pass.
@@ -725,6 +728,7 @@ export function LoraStudioTab({
     const newCaps: Record<string, string> = {};
     const newCapsJa: Record<string, string> = {};
     const newUserCaptionIds: string[] = [];
+    const newRestoredIds: string[] = [];
     // Resume support: captions earned before a crash / reload are cached by
     // file identity — rehydrate any that match the files being (re-)added.
     const cache = loadCaptionCache();
@@ -815,6 +819,7 @@ export function LoraStudioTab({
           if (cached.ja?.trim()) newCapsJa[id] = cached.ja.trim();
           // Cached => already analyzed; the auto-kick effect skips it.
           captionAttemptedRef.current.add(id);
+          newRestoredIds.push(id);
         }
       }
     }
@@ -835,6 +840,13 @@ export function LoraStudioTab({
     if (newImgs.length) setImages((prev) => [...prev, ...newImgs]);
     if (Object.keys(newCaps).length) setCaptions((prev) => ({ ...prev, ...newCaps }));
     if (Object.keys(newCapsJa).length) setCaptionsJa((prev) => ({ ...prev, ...newCapsJa }));
+    if (newRestoredIds.length) {
+      setRestoredCaptionIds((prev) => {
+        const next = new Set(prev);
+        newRestoredIds.forEach((id) => next.add(id));
+        return next;
+      });
+    }
     if (newUserCaptionIds.length) {
       setUserCaptionIds((prev) => {
         const next = new Set(prev);
@@ -2400,6 +2412,15 @@ export function LoraStudioTab({
     [images, captions, userCaptionIds],
   );
   const hasUserCaptions = userCaptionCount > 0;
+  // うち前回の解析結果を復元しただけの枚数（今回 AI は動いていない）。
+  const restoredCaptionCount = useMemo(
+    () =>
+      images.filter(
+        (img) =>
+          restoredCaptionIds.has(img.id) && !userCaptionIds.has(img.id) && (captions[img.id] ?? "").trim().length > 0,
+      ).length,
+    [images, captions, userCaptionIds, restoredCaptionIds],
+  );
   useEffect(() => {
     hasUserCaptionsRef.current = hasUserCaptions;
   }, [hasUserCaptions]);
@@ -2610,6 +2631,17 @@ export function LoraStudioTab({
   // logic (also reused by DatasetCurationUI.tsx's own recaption path).
   // Reads/writes via a functional setCaptions updater so it always sees the
   // freshest map regardless of this callback's own (stable) closure.
+  // AI が実際に解析し直した画像は「前回の結果を再利用」から外す。
+  const dropRestored = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    setRestoredCaptionIds((prev) => {
+      if (!ids.some((id) => prev.has(id))) return prev;
+      const next = new Set(prev);
+      ids.forEach((id) => next.delete(id));
+      return next;
+    });
+  }, []);
+
   const applyGenderTagConsistency = useCallback(() => {
     const subjects = subjectsRef.current.length ? subjectsRef.current : [{ trigger: triggerWord.trim(), description: "" }];
     if (!subjects[0]?.trigger) return;
@@ -2712,6 +2744,7 @@ export function LoraStudioTab({
               const m = mergeLive(entries);
               Object.assign(merged.cap, m.cap);
               Object.assign(merged.ja, m.ja);
+              dropRestored(Object.keys(m.cap));
             },
             onRetry: () =>
               setAutoCap((s) => ({
@@ -2787,7 +2820,7 @@ export function LoraStudioTab({
       // they are (no forced scroll; the completion badge is inline).
       return { cap: merged.cap, ja: merged.ja };
     },
-    [markCaptionsReflect, applyGenderTagConsistency],
+    [markCaptionsReflect, applyGenderTagConsistency, dropRestored],
   );
 
   // Kick the vision pass for images that have no caption yet and haven't been
@@ -2894,7 +2927,10 @@ export function LoraStudioTab({
             const e = entries[0];
             if (!e) return;
             if (!imageIdsRef.current.has(id)) return;
-            if (e.en.trim()) setCaptions((prev) => ({ ...prev, [id]: e.en.trim() }));
+            if (e.en.trim()) {
+              setCaptions((prev) => ({ ...prev, [id]: e.en.trim() }));
+              dropRestored([id]);
+            }
             if (e.ja.trim()) setCaptionsJa((prev) => ({ ...prev, [id]: e.ja.trim() }));
             persistCaptionCache([{ key: captionFileKey(img.file), en: e.en.trim(), ja: e.ja.trim() }]);
           },
@@ -2917,7 +2953,7 @@ export function LoraStudioTab({
         });
       }
     },
-    [recaptioningIds, curationTrigger, currentCaptionPrompt, applyGenderTagConsistency],
+    [recaptioningIds, curationTrigger, currentCaptionPrompt, applyGenderTagConsistency, dropRestored],
   );
 
   // Re-analyze handler for the curation screen: runs the vision pass over the
@@ -3342,6 +3378,7 @@ export function LoraStudioTab({
     lastCaptionSpecKeyRef.current = "";
     setReflectedSpecKey("");
     setUserCaptionIds(new Set());
+    setRestoredCaptionIds(new Set());
     setCaptionErrorIds(new Set());
     setRecaptioningIds(new Set());
     setAutoCap({ running: false, done: 0, total: 0, error: null, note: null, everRan: false });
@@ -3971,7 +4008,11 @@ export function LoraStudioTab({
                           <span className="shrink-0">✨</span>
                           <span>
                             <span className="font-medium">
-                              高速AIビジョンが全画像を自動解析しました（最適タグを即時付与）
+                              {restoredCaptionCount >= aiCaptionedCount
+                                ? `この端末に残っていた前回の解析結果（${restoredCaptionCount} 枚）を再利用しました（AI 解析は使っていません）`
+                                : restoredCaptionCount > 0
+                                  ? `高速AIビジョンが自動解析しました（うち ${restoredCaptionCount} 枚は前回の解析結果を再利用）`
+                                  : "高速AIビジョンが全画像を自動解析しました（最適タグを即時付与）"}
                             </span>
 
                   {pendingCaptionCount > 0 &&
