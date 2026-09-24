@@ -192,6 +192,8 @@ Supabase のマイグレーションファイル（`supabase/migrations/*.sql`�
 
 理由: チャットのコードブロックをコピペする過程で文字列が欠落する事故が発生したため（`create or replace function public.touch_angle_jobs_updated_at()` が `create or replace funcs_updated_at()` に壊れ構文エラー `42601`）。ホストは別の適用手順を確立済みのため、チャット表示は不要かつ事故の原因になるだけ。
 
+**`public` にテーブルを新設するマイグレーションには、同じファイルに明示 `GRANT` を必ず書く**（2026-10-30 から Supabase が新規テーブルへの Data API 権限を自動付与しなくなる。書き忘れると permission denied で API から見えない）。`service_role` には常に `select, insert, update, delete`、クライアント（supabase-js）から触るなら `authenticated` にも、未ログインで読むなら `anon` に `select`。付与は最小限にし、行単位の制御は従来どおり RLS で行う。既存テーブル（`20260858` まで）は影響なし。
+
 ---
 
 ## 5. モデル ＆ OSS ライセンス方針（商用リリース前提・必須）
