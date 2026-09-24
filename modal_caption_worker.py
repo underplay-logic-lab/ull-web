@@ -142,6 +142,19 @@ class CaptionVLM:
                         state["raws"][i] = o
                 state["done"] = min(total, s + BATCH)
                 jobs[key] = state
+            # 読み取れない出力（"en" を含まない・途中で切れた等）はその画像だけもう 1 回（2026-09-25）。
+            retry = [i for i in range(total) if images[i] is not None and '"en"' not in (state["raws"][i] or "")]
+            if retry:
+                print(f"[caption] {key} retrying {len(retry)} unreadable output(s)", flush=True)
+                inp = self.proc(text=[text] * len(retry), images=[images[i] for i in retry],
+                                return_tensors="pt", padding=True).to("cuda")
+                with torch.inference_mode():
+                    ids = self.model.generate(**inp, max_new_tokens=max_new + 300, do_sample=False)
+                outs = self.proc.batch_decode(ids[:, inp["input_ids"].shape[1]:], skip_special_tokens=True)
+                for i, o in zip(retry, outs):
+                    if '"en"' in o:
+                        state["raws"][i] = o
+                state["retried"] = len(retry)
             gen_s = round(time.time() - t1, 1)
             state.update({"status": "completed", "done": total, "fetch_s": fetch_s, "gen_s": gen_s,
                           "gpu": _gpu_label()})

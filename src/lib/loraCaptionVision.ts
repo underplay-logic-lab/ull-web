@@ -250,6 +250,20 @@ export function parseEnJaArray(raw: string, count: number): { en: string; ja: st
       arr = null;
     }
   }
+  // 1 枚分の依頼に、配列の [ ] を付けず { "en", "ja" } だけ返すことがある（2026-09-25、自前 VLM で 56 枚中 1 枚）。
+  // 読めるのに空扱いになるとキャプションが抜けるので、単体のオブジェクトも 1 要素の配列として受ける。
+  if (!Array.isArray(arr) && count === 1) {
+    let obj: unknown = arr;
+    if (!obj || typeof obj !== "object") {
+      const m = raw.match(/\{[\s\S]*\}/);
+      try {
+        obj = m ? JSON.parse(m[0]) : null;
+      } catch {
+        obj = null;
+      }
+    }
+    if (obj && typeof obj === "object") arr = [obj];
+  }
   if (!Array.isArray(arr)) return null;
   return Array.from({ length: count }, (_, i) => {
     const it = arr[i];
