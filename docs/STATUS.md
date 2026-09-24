@@ -581,8 +581,9 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 000. **GPU は生成に集中させ、保存・転送は裏で並行する（2026-09-24 ホスト方針、全ワーカーへ展開予定）。**
    超解像バッチで実測: 1 枚 約 10 秒のうち計算 1〜3 秒、保存（Volume 書き込み + commit）と完了 PATCH で 5〜6 秒、GPU が 7 割待ち。
    `modal_seedvr2_worker.py` のバッチで保存・完了処理を ThreadPoolExecutor(2) へ逃がした（`_finalize_upscale_item`、
-   `_VOL_COMMIT_LOCK`、ログ `[upscale-batch] … compute loop Xs, total Ys` と `finalize Xs`）。デプロイ済み・**効果未計測**。
-   効果が出たら Multi-Angle・Director・LoRA などへ同じ形で展開する（どれも「生成 → 保存 → 完了」が直列）。
+   `_VOL_COMMIT_LOCK`、ログ `[upscale-batch] … compute loop Xs, total Ys` と `finalize Xs`）＋次の画像の先読み（状態 GET と
+   入力取得）。**実測（anime 6B・10 枚・T4）: 直列 約 104 秒 → 保存並行 70 秒 → ＋先読み 44 秒（1 枚 10.5 → 4.4 秒、2.4 倍速）**。
+   残りは 1 枚 1 秒弱で、ほぼ GPU の計算だけ。**次: 同じ形を Multi-Angle・Director・LoRA へ展開する**（どれも「生成 → 保存 → 完了」が直列）。
    併せて案 B（数 MB の結果は Volume を通さず GPU から R2 へ直接）も検討。
 **AI（Gemini）原価の計測 — 実装済み・マイグレーション未適用（2026-09-24）。** Gemini は無料枠ではなく**有料枠**で動いている
    （ホストが請求画面で確認、累計 約¥1,000。コード中の「無料枠」コメントは古い）。全呼び出しが通る `geminiText.ts` の
