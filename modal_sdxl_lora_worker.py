@@ -1422,10 +1422,15 @@ def _stage_dataset(
                 if p.is_file() and p.stat().st_size > 0 and p.suffix.lower() in IMAGE_EXTS
             )
             if found and (not storage_paths or len(found) == len(storage_paths)):
-                for i, src in enumerate(found):
-                    dest = dataset_dir / f"{i:04d}{src.suffix.lower()}"
-                    shutil.copy2(src, dest)
-                    image_paths.append(dest)
+                # 16 本並行でコピーする（2026-09-24、ai-toolkit 側で 220 枚 58 秒の GPU 待ちを実測）。
+                from concurrent.futures import ThreadPoolExecutor as _StageTPE
+
+                dests = [dataset_dir / f"{i:04d}{src.suffix.lower()}" for i, src in enumerate(found)]
+                _t_stage = time.time()
+                with _StageTPE(max_workers=16) as _ex:
+                    list(_ex.map(lambda sd: shutil.copy2(sd[0], sd[1]), zip(found, dests)))
+                image_paths.extend(dests)
+                print(f"[sdxl] staging copy {time.time() - _t_stage:.1f}s ({len(dests)} files, 16 parallel)", flush=True)
                 staged_from_ingest = True
                 print(
                     f"[sdxl] staged {len(image_paths)} pre-optimized images from {ingest_src} "
@@ -1696,9 +1701,11 @@ def train_sdxl_lora_job(params: dict) -> dict:
                 if p.is_file() and p.suffix.lower() in (".txt", ".png", ".jpg", ".jpeg", ".webp")
             )
             n_txt = sum(1 for p in members if p.suffix.lower() == ".txt")
+            # 画像は無圧縮で格納（PNG/WebP は圧縮済みで、DEFLATE は CPU を食うだけ。2026-09-24）。
             with zipfile.ZipFile(dataset_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 for m in members:
-                    zf.write(m, arcname=m.name)
+                    ct = zipfile.ZIP_DEFLATED if m.suffix.lower() == ".txt" else zipfile.ZIP_STORED
+                    zf.write(m, arcname=m.name, compress_type=ct)
             log(f"dataset.zip 作成: 画像 {len(members) - n_txt} 枚 + キャプション {n_txt} 件")
         except Exception as exc:  # noqa: BLE001 — 無くても学習は成立する
             print(f"[sdxl] dataset.zip build skipped: {exc!r}", flush=True)

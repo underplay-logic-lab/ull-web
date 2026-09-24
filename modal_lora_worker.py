@@ -65,6 +65,10 @@ DATASET_DIR = "/root/dataset"
 OUTPUT_DIR = "/root/ai-toolkit/output"
 # Per-job ai-toolkit output, on the Volume: PERSIST_OUTPUT_ROOT/<run_key>/.
 PERSIST_OUTPUT_ROOT = f"{MODELS_DIR}/outputs"
+
+# 2026-09-24: train_lora_job commits from a background thread (dataset persist)
+# while the main thread may commit too; serialise them.
+_VOL_COMMIT_LOCK = threading.Lock()
 # Captioned datasets are persisted here on the Volume, keyed by dataset_id,
 # so a re-run of the same set skips the VLM pass entirely (0s).
 PERSIST_ROOT = f"{MODELS_DIR}/datasets"
@@ -4015,10 +4019,16 @@ def train_lora_job(params: dict) -> dict:
                     and p.suffix.lower() in IMAGE_EXTS
                 )
                 if found and (not storage_paths or len(found) == len(storage_paths)):
-                    for i, src in enumerate(found):
-                        dest = dataset / f"{i:04d}{src.suffix.lower()}"
-                        shutil.copy2(src, dest)
-                        image_paths.append(dest)
+                    # 16 本並行でコピーする（2026-09-24）。Volume はファイル単位の往復が重く、
+                    # 220 枚を 1 枚ずつコピーすると 58 秒 GPU が待っていた。
+                    from concurrent.futures import ThreadPoolExecutor as _StageTPE
+
+                    dests = [dataset / f"{i:04d}{src.suffix.lower()}" for i, src in enumerate(found)]
+                    _t_stage = time.time()
+                    with _StageTPE(max_workers=16) as _ex:
+                        list(_ex.map(lambda sd: shutil.copy2(sd[0], sd[1]), zip(found, dests)))
+                    image_paths.extend(dests)
+                    print(f"[train] staging copy {time.time() - _t_stage:.1f}s ({len(dests)} files, 16 parallel)", flush=True)
                     staged_from_ingest = True
                     print(
                         f"[train] staged {len(image_paths)} pre-optimized images "
@@ -4219,35 +4229,64 @@ def train_lora_job(params: dict) -> dict:
         # the publish step below and registered in metadata.checkpoints as
         # is_caption_archive. Images + captions sit side by side once unzipped
         # (0000.png / 0000.txt), so the set is directly re-trainable.
+        #
+        # 2026-09-24: the ZIP and the Volume persist below ran on the GPU's
+        # critical path (18s + 2s on 220 images, B300 idle). They only have to
+        # be done by the completion step, so they now run on a background
+        # thread while ai-toolkit loads and trains; `_dataset_bg.join()` right
+        # before dataset.zip is registered. Images are STORED (PNG/WebP are
+        # already compressed — DEFLATE only burned CPU).
         dataset_zip_path = pathlib.Path("/root/dataset.zip")
-        try:
-            members = sorted(
-                p
-                for p in dataset.iterdir()
-                if p.is_file() and (p.suffix.lower() == ".txt" or p.suffix.lower() in IMAGE_EXTS)
-            )
-            n_txt = sum(1 for p in members if p.suffix.lower() == ".txt")
-            n_img = len(members) - n_txt
-            with zipfile.ZipFile(dataset_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for m in members:
-                    zf.write(m, arcname=m.name)
-            print(f"[train] wrote {dataset_zip_path} ({n_img} image(s) + {n_txt} caption file(s))")
-        except Exception as exc:  # noqa: BLE001 — the archive is a nice-to-have
-            print(f"[train] dataset.zip build skipped: {exc}")
-            dataset_zip_path = None
+        _zip_members = sorted(
+            p
+            for p in dataset.iterdir()
+            if p.is_file() and (p.suffix.lower() == ".txt" or p.suffix.lower() in IMAGE_EXTS)
+        )
+        _persist_pairs = (
+            [(p, p.with_suffix(".txt")) for p in image_paths]
+            if persist_dir and not reused_from_volume
+            else []
+        )
+        _dataset_bg_result: dict = {"zip_ok": False}
 
-        # Persist images + captions to the Volume so the next run of this
-        # dataset_id skips Stage 1 entirely.
-        if persist_dir and not reused_from_volume:
+        def _dataset_bg_work() -> None:
+            t0 = time.time()
             try:
-                persist_dir.mkdir(parents=True, exist_ok=True)
-                for i, p in enumerate(image_paths):
-                    shutil.copy2(p, persist_dir / f"{i:04d}{p.suffix or '.png'}")
-                    shutil.copy2(p.with_suffix(".txt"), persist_dir / f"{i:04d}.txt")
-                vol.commit()
-                print(f"[train] persisted {len(image_paths)} image+caption pairs to {persist_dir}")
-            except Exception as exc:  # noqa: BLE001 — caching is best-effort
-                print(f"[train] caption persist skipped: {exc}")
+                n_txt = sum(1 for p in _zip_members if p.suffix.lower() == ".txt")
+                n_img = len(_zip_members) - n_txt
+                with zipfile.ZipFile(dataset_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for m in _zip_members:
+                        ct = zipfile.ZIP_DEFLATED if m.suffix.lower() == ".txt" else zipfile.ZIP_STORED
+                        zf.write(m, arcname=m.name, compress_type=ct)
+                _dataset_bg_result["zip_ok"] = True
+                print(
+                    f"[train] wrote {dataset_zip_path} ({n_img} image(s) + {n_txt} caption file(s)) "
+                    f"in {time.time() - t0:.1f}s (background)",
+                    flush=True,
+                )
+            except Exception as exc:  # noqa: BLE001 — the archive is a nice-to-have
+                print(f"[train] dataset.zip build skipped: {exc}", flush=True)
+            # Persist images + captions to the Volume so the next run of this
+            # dataset_id skips Stage 1 entirely.
+            if _persist_pairs:
+                t1 = time.time()
+                try:
+                    persist_dir.mkdir(parents=True, exist_ok=True)
+                    for i, (img, txt) in enumerate(_persist_pairs):
+                        shutil.copy2(img, persist_dir / f"{i:04d}{img.suffix or '.png'}")
+                        shutil.copy2(txt, persist_dir / f"{i:04d}.txt")
+                    with _VOL_COMMIT_LOCK:
+                        vol.commit()
+                    print(
+                        f"[train] persisted {len(_persist_pairs)} image+caption pairs to {persist_dir} "
+                        f"in {time.time() - t1:.1f}s (background)",
+                        flush=True,
+                    )
+                except Exception as exc:  # noqa: BLE001 — caching is best-effort
+                    print(f"[train] caption persist skipped: {exc}", flush=True)
+
+        _dataset_bg = threading.Thread(target=_dataset_bg_work, name="dataset-zip-persist", daemon=True)
+        _dataset_bg.start()
 
         # Stage 1's Qwen VLM (~52GB) already does `del model` +
         # empty_cache() inside _caption_missing(), but that alone doesn't
@@ -4269,7 +4308,8 @@ def train_lora_job(params: dict) -> dict:
 
         # --- Stage 2: ai-toolkit -----------------------------------------
         pathlib.Path(job_output_dir).mkdir(parents=True, exist_ok=True)
-        vol.commit()  # make the per-job output dir visible on the Volume
+        with _VOL_COMMIT_LOCK:
+            vol.commit()  # make the per-job output dir visible on the Volume
         print(f"[stage2] ai-toolkit output -> {job_output_dir} (on Volume)", flush=True)
         # 画像ごとの学習回数。persist（キャプションキャッシュ）と dataset.zip は
         # フラットな image_paths を前提にしているので、**それらが済んでから**
@@ -4412,6 +4452,12 @@ def train_lora_job(params: dict) -> dict:
         #    dataset.zip, registered alongside the weights so the completed
         #    screen's "キャプション付きデータセットDL (ZIP)" button can pull it
         #    through the same signed-URL path.
+        _t_join = time.time()
+        _dataset_bg.join(timeout=600)
+        if time.time() - _t_join > 1:
+            print(f"[train] waited {time.time() - _t_join:.1f}s for the background dataset.zip", flush=True)
+        if not _dataset_bg_result["zip_ok"] or _dataset_bg.is_alive():
+            dataset_zip_path = None
         if dataset_zip_path and dataset_zip_path.is_file() and job_ckpt_dir is not None:
             shutil.copy2(dataset_zip_path, job_ckpt_dir / "dataset.zip")
             checkpoints.append(
