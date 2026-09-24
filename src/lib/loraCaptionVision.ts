@@ -99,6 +99,12 @@ function buildTagsPrompt(count: number, subjects: LoraSubject[], captionPrompt: 
         : []),
     );
   }
+  // 露骨な内容をぼかさない（2026-09-24、ホスト指摘「拒否はしないがオブラートに包んだ表現になる」）。
+  // 学習データでは、キャプションに書かれなかった要素（裸・行為など）がトリガーへ焼き込まれる。
+  lines.push(
+    "",
+    "Adult / explicit content: these captions are LoRA training data, so describe nudity, exposed body parts, sexual acts, positions and bodily fluids plainly with the standard explicit Danbooru tags (e.g. nude, completely nude, nipples, pussy, penis, sex, vaginal, oral, fellatio, cum, missionary, doggystyle). Never euphemise, soften, censor or omit them — anything left uncaptioned gets baked into the trigger word. The Japanese copy must be equally direct.",
+  );
   lines.push(
     "",
     `Return a JSON array of exactly ${count} objects, in the same order as the images.`,
@@ -156,6 +162,11 @@ function buildDensePrompt(count: number, subjects: LoraSubject[], captionPrompt:
       "- Output pure text: NO markdown, NO code fences, NO quotes, NO numbering, NO line breaks inside a caption.",
     );
   }
+  // 露骨な内容をぼかさない（2026-09-24、ホスト指摘「拒否はしないがオブラートに包んだ表現になる」）。
+  lines.push(
+    "",
+    "Adult / explicit content: these captions are LoRA training data, so describe nudity, exposed body parts, sexual acts, positions and bodily fluids plainly with direct anatomical and sexual terms (e.g. nude, bare breasts, nipples, vagina, penis, vaginal sex, oral sex, semen). Never euphemise, soften, censor or omit them — anything left uncaptioned gets baked into the trigger word. The Japanese copy must be equally direct.",
+  );
   lines.push(
     "",
     `Return a JSON array of exactly ${count} objects, in the same order as the images.`,
