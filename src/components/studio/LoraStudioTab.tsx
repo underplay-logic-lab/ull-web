@@ -3223,6 +3223,19 @@ export function LoraStudioTab({
     window.setTimeout(scrollToNextFlow, 250);
   };
 
+  // キャプションが出来上がったら学習回数へ送る（2026-09-25、ホスト指摘「学習回数がキャプションの後にあるので
+  // 忘れる」）。被写体ごとの比率はキャプションで決まるので、作り直したときも均し直す（済みの印を戻す）。
+  const prevCaptionRunningRef = useRef(false);
+  useEffect(() => {
+    const was = prevCaptionRunningRef.current;
+    prevCaptionRunningRef.current = autoCap.running;
+    if (!was || autoCap.running || phase !== "form" || captionSource !== "ai") return;
+    setRepeatsApplied(false);
+    setSettingsVisited(false);
+    const t = window.setTimeout(scrollToNextFlow, 300);
+    return () => window.clearTimeout(t);
+  }, [autoCap.running, phase, captionSource, scrollToNextFlow]);
+
   // 減らす段階（減らすボタン・削除ボタンが光っている間）が終わったら、次の場所へ送る（2026-09-25、ホスト要望）。
   const inTrimPhase = flow.targets.includes("trimPrepare") || flow.targets.includes("deleteSelected");
   const prevTrimPhaseRef = useRef(false);

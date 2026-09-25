@@ -604,6 +604,34 @@ export function DatasetCurationUI({
         </div>
       </div>
 
+      {/* 実行ボタンは上に置く（2026-09-25、ホスト要望「スクロールしなくても押せるように」）。 */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/40 px-3 py-2.5">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={disabled || Boolean(bulk)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-xs text-muted transition-colors hover:text-foreground disabled:opacity-50"
+        >
+          <ArrowLeft size={13} />
+          戻る
+        </button>
+        {blankCount > 0 && (
+          <p className="text-[11px] text-amber-400">
+            キャプションが空の画像が {blankCount} 枚あります。全部に入れると学習を開始できます
+            （日本語だけ書いた場合は「🇬🇧 日本語を英語へ一括反映」を押してください）。
+          </p>
+        )}
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={!canConfirm}
+          className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Flame size={15} />
+          {`🔥 このデータセットで学習を開始 (${requiredCredits} C)`}
+        </button>
+      </div>
+
       {(overCount || overBytes) && (
         <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-400">
           {overCount && `画像は最大 ${maxImages} 枚までです（あと ${kept.length - maxImages} 枚除外してください）。`}
@@ -952,33 +980,6 @@ export function DatasetCurationUI({
             </div>
           );
         })}
-      </div>
-
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/50 pt-3">
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={disabled || Boolean(bulk)}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-xs text-muted transition-colors hover:text-foreground disabled:opacity-50"
-        >
-          <ArrowLeft size={13} />
-          戻る
-        </button>
-        {blankCount > 0 && (
-          <p className="text-[11px] text-amber-400">
-            キャプションが空の画像が {blankCount} 枚あります。全部に入れると学習を開始できます
-            （日本語だけ書いた場合は「🇬🇧 日本語を英語へ一括反映」を押してください）。
-          </p>
-        )}
-        <button
-          type="button"
-          onClick={onConfirm}
-          disabled={!canConfirm}
-          className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <Flame size={15} />
-          {`🔥 このデータセットで学習を開始 (${requiredCredits} C)`}
-        </button>
       </div>
 
       {lightboxIndex != null && lightboxItems[lightboxIndex] && (
