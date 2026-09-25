@@ -1306,12 +1306,29 @@ def publish_lora_artifacts_r2(job_id: str) -> dict:
     merged = ull_r2.publish_job_meta_from_volume(MODELS_DIR, "loras", user_id, job_id, meta)
     if merged is None:
         return {"uploaded": 0}
+    # metadata だけの PATCH（status は触らない → generation_logs のトリガーは発火しない）。r2_key を書いてから
+    # Volume 側を消す（2026-09-26、順番が逆だと転送中に「checkpoint not found」になった）。
+    _patch_job(job_id, {"metadata": merged})
+    # 書けたか読み直して確かめてから消す（_patch_job は失敗を返さない。書けていないのに消すと R2 にしか無いのに
+    # 行から辿れなくなる）。確かめられなければ Volume 側は残す（14 日パージで消える）。
+    chk = _supabase_request(
+        "GET", "/rest/v1/generation_jobs", params={"id": f"eq.{job_id}", "select": "metadata->checkpoints"}
+    )
+    try:
+        saved = (chk.json() or [{}])[0].get("checkpoints") or [] if chk is not None and chk.ok else []
+    except Exception:  # noqa: BLE001
+        saved = []
+    want = {c.get("filename") for c in merged.get("checkpoints") or [] if c.get("r2_key")}
+    have = {c.get("filename") for c in saved if c.get("r2_key")}
+    if not want or not want <= have:
+        print(f"[r2] metadata PATCH not confirmed ({len(have)}/{len(want)}) — keeping Volume copies", flush=True)
+        return merged.get("r2_publish", {})
+    removed = ull_r2.remove_published_local(MODELS_DIR, "loras", user_id, job_id, merged)
     try:
         vol.commit()  # persist the unlinks
     except Exception as exc:  # noqa: BLE001
         print(f"[r2] vol.commit() skipped: {exc}", flush=True)
-    # metadata だけの PATCH（status は触らない → generation_logs のトリガーは発火しない）
-    _patch_job(job_id, {"metadata": merged})
+    print(f"[r2] removed {removed} Volume copies after metadata PATCH", flush=True)
     return merged.get("r2_publish", {})
 
 

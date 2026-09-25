@@ -323,7 +323,10 @@ def publish_job_meta_from_volume(
     if not todo and not (job_dir / "LICENSE.txt").is_file():
         return None
     prefix = key_for_rel(f"{kind}/{user_id}/{job_id}", user_id)
-    stats = publish_job_dir(job_dir, todo, prefix, log=log)
+    # Volume 側はここでは消さない（2026-09-26）。以前は 1 本上げるたびに消していたが、r2_key を行へ書くのは呼び出し側の
+    # 最後の PATCH なので、その間（12 本で約 2 分）は Volume にも R2 にも辿れず「checkpoint not found」になった。
+    # 呼び出し側が PATCH した後に remove_published_local() で消す。
+    stats = publish_job_dir(job_dir, todo, prefix, remove_local=False, log=log)
     if not stats.get("uploaded") and not stats.get("extra_keys"):
         return None
     merged = dict(meta)
@@ -339,6 +342,26 @@ def publish_job_meta_from_volume(
         "elapsed_s": stats["elapsed_s"],
     }
     return merged
+
+
+def remove_published_local(
+    models_dir: str | pathlib.Path, kind: str, user_id: str, job_id: str, meta: dict, *, log=print
+) -> int:
+    """publish_job_meta_from_volume の結果を行へ書いた**後**に、R2 へ上がったファイルの Volume 側を消す（2026-09-26）。
+    消した数を返す。呼び出し側は vol.commit() で確定させる。"""
+    job_dir = pathlib.Path(models_dir) / kind / user_id / job_id
+    names = [c.get("filename") for c in (meta.get("checkpoints") or []) if c.get("r2_key") and c.get("filename")]
+    names += [k.rsplit("/", 1)[-1] for k in (meta.get("r2_extra_keys") or [])]
+    n = 0
+    for name in names:
+        local = job_dir / name
+        try:
+            if local.is_file():
+                local.unlink()
+                n += 1
+        except Exception as exc:  # noqa: BLE001
+            log(f"[r2] local unlink skipped ({name}): {exc}", flush=True)
+    return n
 
 
 def publish_job_dir(
