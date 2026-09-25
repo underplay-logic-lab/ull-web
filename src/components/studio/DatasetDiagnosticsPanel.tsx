@@ -231,6 +231,30 @@ export function DatasetDiagnosticsPanel({
             <p className="text-[10px] text-muted">構成の偏りは見つかりませんでした。</p>
           )}
 
+          {/* 多すぎる構図を減らす（任意）。切り出しより先に置く（2026-09-25、ホスト指摘「削除を先にやった方が効率的」）。
+              先に減らせば、必要な切り出しの枚数も減る。候補は 1 人で写っている画像だけ（2 人の画像は貴重なので残す）。 */}
+          {trimPlan.size > 0 && onPrepareTrim && (
+            <div className="space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2 py-1.5">
+              <p className="text-[10px] leading-relaxed text-muted">
+                <strong className="text-foreground">まず、多すぎる構図を減らすことを検討してください（任意）。</strong>
+                先に減らすと、このあと必要な切り出しの枚数も減ります。押すと、減らす候補（その人が 1 人で写っている画像）を
+                一覧で選択した状態にします。見比べて、残したいものは選択を外してから「選択した N 枚を削除」を押してください。
+                似た構図・同じ服装の画像から削るのがおすすめです。
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {[...trimPlan.entries()].map(([subj, t]) => (
+                  <button
+                    key={subj}
+                    type="button"
+                    onClick={() => onPrepareTrim(subj, t.bucket, t.count)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-300 transition-colors hover:bg-amber-500/20"
+                  >
+                    <span className="font-mono">{subj}</span> の{bucketLabel(t.bucket)}から減らす候補（約 {t.count}枚）を選ぶ
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {/* クロップの導線は「素材を足すしかない」ブロックの外に出す
               （2026-09-22、ホスト指摘）。「全身に偏っている」は学習回数でも
               調整できる warn なのであちらの中に入らないが、薄いほうの構図を
@@ -271,28 +295,6 @@ export function DatasetDiagnosticsPanel({
                   下のクロップ欄で「切り出す」→ 戻ってもう片方を押す → もう一度「切り出す」、の順です。
                   切り出しが終わると選択は自動で解除されるので、2回目はそのまま押せます。
                 </p>
-              )}
-              {/* 切り出しても比率が届かないとき（全身が大半など）の、もう一つの出口（2026-09-25、ホスト指摘）。 */}
-              {trimPlan.size > 0 && onPrepareTrim && (
-                <div className="space-y-1 border-t border-neon-violet/30 pt-1.5">
-                  <p className="text-[10px] leading-relaxed text-muted">
-                    <strong className="text-foreground">多すぎる構図を減らす方法もあります（任意）。</strong>
-                    押すと、減らす候補を一覧で選択した状態にします。見比べて、残したいものは選択を外してから削除してください。
-                    似た構図・同じ服装の画像から削るのがおすすめです。
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {[...trimPlan.entries()].map(([subj, t]) => (
-                      <button
-                        key={subj}
-                        type="button"
-                        onClick={() => onPrepareTrim(subj, t.bucket, t.count)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-300 transition-colors hover:bg-amber-500/20"
-                      >
-                        <span className="font-mono">{subj}</span> の{bucketLabel(t.bucket)}から減らす候補（約 {t.count}枚）を選ぶ
-                      </button>
-                    ))}
-                  </div>
-                </div>
               )}
             </div>
           )}

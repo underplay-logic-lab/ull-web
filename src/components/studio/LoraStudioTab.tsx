@@ -1429,16 +1429,25 @@ export function LoraStudioTab({
         if (!comp) return false;
         const dist = captionBuckets(comp, "distance");
         if (dist.length !== 1 || dist[0] !== bucket) return false;
+        // 2 人以上写っている画像は候補にしない（2026-09-25、ホスト報告「候補が全部 duo 画像」）。2 人の画像は
+        // 両方の被写体に数えられるので、消すともう一方も減る。同じ絵に 2 人いる構図自体も貴重。
+        if (tags && peopleCountFromTags(tags) >= 2) return false;
         if (allSubjects.length <= 1) return true;
-        return imageSubjects(cap, tags, allSubjects).some((x) => x.trigger === subject);
+        const present = imageSubjects(cap, tags, allSubjects);
+        return present.length === 1 && present[0].trigger === subject;
       });
       const n = Math.min(count, pool.length);
-      if (n <= 0) return;
+      if (n <= 0) {
+        setAddNotice(`${subject} が 1 人で写っている画像の中に、減らす候補がありませんでした。切り出しで足す方法を使ってください。`);
+        return;
+      }
       const step = pool.length / n;
       const ids = Array.from({ length: n }, (_, k) => pool[Math.floor(k * step)].id);
       selectAndReveal(ids);
       setAddNotice(
-        `減らす候補を ${ids.length} 枚選びました（候補 ${pool.length} 枚から等間隔）。残したいものは選択を外してから「選択した画像を削除」を押してください。`,
+        n < count
+          ? `減らす候補を ${n} 枚選びました。${subject} が 1 人で写っている画像は ${pool.length} 枚しかなく、目安（約 ${count} 枚）には届きません。残りは切り出しで足してください。残したいものは選択を外してから「選択した画像を削除」を押してください。`
+          : `減らす候補を ${n} 枚選びました（${subject} が 1 人で写っている ${pool.length} 枚から等間隔）。残したいものは選択を外してから「選択した画像を削除」を押してください。`,
       );
     },
     [images, captions, compositionTags, allSubjects, selectAndReveal],
