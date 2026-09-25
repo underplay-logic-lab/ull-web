@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Calculator, Check, Loader2, Save } from "lucide-react";
 import type { PricingKnobRow, StudioPricing } from "./types";
+import { LoraCalibrationCard } from "./LoraCalibrationCard";
 
 type EditableRow = {
   label: string;
@@ -283,6 +284,8 @@ export function PricingTab() {
               </section>
             );
           })}
+
+          <LoraCalibrationCard />
 
           <section className="mb-8">
             <h3 className="mb-1 text-sm font-semibold text-foreground">Wan Animate（旧 studio_pricing）</h3>
