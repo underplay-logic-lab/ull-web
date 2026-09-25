@@ -1178,7 +1178,7 @@ export function SmartCropPanel({
   // 切り出しは「引き画を寄せる」ことしかできない。キャプションから分かって
   // いる元画像の距離より**寄り側**の構図だけを候補にする。距離が分からない
   // 画像は判断できないので通す。
-  const DIST_ORDER: Record<string, number> = { closeup: 0, bust: 1, upper: 2, full: 3 };
+  const DIST_ORDER: Record<string, number> = { closeup: 0, upper: 1, full: 2 };
   const KIND_DIST: Record<SmartCropKind, number> = { face: 0, upper: 2, full: 3 };
   const canProduce = (imgId: string, kind: SmartCropKind) => {
     const src = distanceById?.[imgId];
@@ -1296,7 +1296,7 @@ export function SmartCropPanel({
           選んだ構図を作れる元画像がありません。切り出しは
           <strong className="text-foreground">引いた画を寄せることしかできない</strong>
           ので、たとえば「全身」は元画像より引いた画が無いと作れません。
-          「上半身」なら全身の画像から、「顔」なら全身・上半身・バストの画像から作れます。
+          「上半身」なら全身の画像から、「顔」なら全身・上半身の画像から作れます。
         </>
       ) : (
         <>

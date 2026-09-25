@@ -31,11 +31,16 @@ export const DIAGNOSTIC_AXES: Record<DiagnosticAxis, AxisDef> = {
   distance: {
     label: "距離",
     buckets: [
-      // ⚠️ `portrait` は Danbooru では「頭と肩」＝バストアップ（2026-09-25 修正）。顔アップ側に入れていたため、
-      // WD タガー（語彙に bust / bust shot / chest up が無く、バストに当たるタグは portrait だけ）で構図を
-      // 判定するようになってからバストが構造的に 0 枚になり、「バストが 0 枚」の誤った指摘が出ていた。
-      { id: "closeup", label: "顔アップ", keywords: ["close-up", "closeup", "face shot", "head shot"] },
-      { id: "bust", label: "バスト", keywords: ["bust shot", "bust", "chest up", "portrait"] },
+      // 顔アップとバストは 1 つにまとめた（2026-09-25）。WD タガーの語彙には bust / chest up が無く、
+      // 「肩が少し入った顔アップ」も「胸から上」もどちらも portrait（Danbooru の定義で頭と肩）になるので
+      // 区別できない。close-up は画面が顔で埋まるほど寄った画像にしか付かない。portrait をバスト扱いにしたら
+      // 普通の顔アップ（切り出しの「顔」も首元まで）が全部バストへ移り、顔アップが 0 枚になった（ホスト報告）。
+      // 切り出しの種類（顔 / 上半身）とも揃う。
+      {
+        id: "closeup",
+        label: "顔アップ",
+        keywords: ["close-up", "closeup", "face shot", "head shot", "portrait", "bust shot", "bust", "chest up"],
+      },
       // ⚠️ `cowboy shot`（腿の途中から上）と `knee up`（膝から上）は **全身では
       // ない**（2026-09-22 修正）。どちらも足が写らないので Danbooru でも
       // full body とは別タグ。全身側へ入れていたため「全身」が実態より多く、
@@ -97,7 +102,7 @@ export const DIAGNOSTIC_TARGETS = {
   /** 1被写体あたりのユニーク枚数の下限。これを割ると何をしても厳しい。 */
   minUniquePerSubject: 15,
   /** 距離バケットごとの目安枚数。 */
-  distance: { closeup: 3, bust: 4, upper: 4, full: 5 } as Record<string, number>,
+  distance: { closeup: 5, upper: 4, full: 5 } as Record<string, number>,
   /** 露出比がこの倍率以上離れたら偏りとみなす。 */
   exposureImbalanceRatio: 2.5,
   /**
@@ -453,16 +458,15 @@ const MULTI_ANGLE_AXES: DiagnosticAxis[] = ["distance", "view", "elevation"];
 
 /**
  * スマートクロップが実際に作れる距離バケットだけを smart_crop 扱いにする
- * （2026-09-22）。クロッパーの出力は 顔 / 上半身 / 全身 の3種で、
- * **「バスト」に対応する出力は無い**。また「全身」は元画像より引いた画が
- * 必要なので作れない。よって埋められるのは closeup と upper だけ。
+ * （2026-09-22）。クロッパーの出力は 顔 / 上半身 / 全身 の3種（距離の区分も 2026-09-25 から同じ 3 段）。
+ * 「全身」は元画像より引いた画が必要なので作れない。よって埋められるのは closeup と upper だけ。
  * さらに、その被写体に**より引いた画の在庫**が無ければ切り出しようがない。
  */
 const CROPPABLE_DISTANCE: Record<string, "face" | "upper"> = {
   closeup: "face",
   upper: "upper",
 };
-const DISTANCE_ORDER = ["closeup", "bust", "upper", "full"];
+const DISTANCE_ORDER = ["closeup", "upper", "full"];
 
 function canCrop(bucketId: string, axes: Record<string, number>): "face" | "upper" | null {
   const kind = CROPPABLE_DISTANCE[bucketId];
