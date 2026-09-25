@@ -104,6 +104,50 @@ def _readable(raw: str | None) -> bool:
     return False
 
 
+def _parse_obj(raw: str | None) -> dict | None:
+    """出力から {en, ja} を取り出す（_readable と同じ読み方）。"""
+    import json
+
+    if not raw:
+        return None
+    for a, b in (("[", "]"), ("{", "}")):
+        i, j = raw.find(a), raw.rfind(b)
+        if i < 0 or j <= i:
+            continue
+        try:
+            v = json.loads(raw[i:j + 1])
+        except Exception:  # noqa: BLE001
+            continue
+        v = v[0] if isinstance(v, list) and v else v
+        if isinstance(v, dict) and str(v.get("en") or "").strip():
+            return {"en": str(v.get("en") or ""), "ja": str(v.get("ja") or "")}
+    return None
+
+
+def _term_patterns(terms: list[str]):
+    import re
+
+    return [(t, re.compile(r"\b" + re.escape(t) + r"\b", re.I)) for t in terms if t.strip()]
+
+
+def _strip_segments(text: str, pats) -> str:
+    """直しきれなかったときの最後の手段: 語を含むカンマ区切りの部分ごと落とす。"""
+    segs = [seg for seg in text.split(",") if not any(p.search(seg) for _, p in pats)]
+    return ", ".join(x.strip() for x in segs if x.strip())
+
+
+SELFCHECK_PROMPT = (
+    "Here is one LoRA training caption as JSON, with an English caption (en) and its Japanese translation (ja):\n"
+    "{obj}\n\n"
+    "These features are baked into the trigger word and must NOT be mentioned anywhere: {terms}.\n"
+    "Rewrite BOTH en and ja so that every mention of those features is removed, including descriptive wording around "
+    "them (for example 'metal-framed glasses', 'wearing glasses', 'with a beard') and the Japanese equivalents. "
+    "Change nothing else: keep every other detail, the word order, the trigger words at the very start, and the "
+    "format (a tag list stays a tag list, prose stays prose; only fix grammar that the removal breaks).\n"
+    'Output ONLY the JSON object {{"en": "...", "ja": "..."}} and nothing else.'
+)
+
+
 def _gpu_label() -> str:
     try:
         import torch
@@ -139,6 +183,55 @@ class CaptionVLM:
         ).eval()
         self.load_s = round(time.time() - t0, 1)
         print(f"[caption] model ready in {self.load_s}s on {_gpu_label()}", flush=True)
+
+    def _selfcheck(self, state: dict, forbid: list[str], max_new: int) -> None:
+        import json
+
+        import torch
+
+        pats = _term_patterns(forbid)
+        flagged = []
+        for i, raw in enumerate(state["raws"]):
+            obj = _parse_obj(raw)
+            if not obj:
+                continue
+            hits = [t for t, p in pats if p.search(obj["en"])]
+            if hits:
+                flagged.append((i, obj, hits))
+        state["selfcheck"] = {"flagged": len(flagged), "fixed": 0, "fallback": 0}
+        if not flagged:
+            return
+        t0 = time.time()
+        texts = []
+        for _, obj, hits in flagged:
+            msg = SELFCHECK_PROMPT.format(obj=json.dumps(obj, ensure_ascii=False), terms=", ".join(hits))
+            texts.append(self.proc.apply_chat_template(
+                [{"role": "user", "content": [{"type": "text", "text": msg}]}],
+                add_generation_prompt=True, tokenize=False, enable_thinking=False))
+        outs: list[str] = []
+        try:
+            inp = self.proc(text=texts, return_tensors="pt", padding=True).to("cuda")
+            with torch.inference_mode():
+                ids = self.model.generate(**inp, max_new_tokens=max_new + 200, do_sample=False)
+            outs = self.proc.batch_decode(ids[:, inp["input_ids"].shape[1]:], skip_special_tokens=True)
+        except Exception as exc:  # noqa: BLE001 — 書き直せなくても下の最後の手段で落とす
+            print(f"[caption] selfcheck generate failed: {exc!r}", flush=True)
+        fixed = fallback = 0
+        for k, (i, obj, hits) in enumerate(flagged):
+            new = _parse_obj(outs[k]) if k < len(outs) else None
+            if new and not any(p.search(new["en"]) for _, p in pats):
+                state["raws"][i] = json.dumps(new, ensure_ascii=False)
+                fixed += 1
+                continue
+            # 書き直しても残った・読めなかった: 英語はカンマ区切りの部分ごと落とす（日本語はそのまま）。
+            en = _strip_segments(obj["en"], pats)
+            if en and en != obj["en"]:
+                state["raws"][i] = json.dumps({"en": en, "ja": obj["ja"]}, ensure_ascii=False)
+                fixed += 1
+                fallback += 1
+        state["selfcheck"] = {"flagged": len(flagged), "fixed": fixed, "fallback": fallback}
+        print(f"[caption] selfcheck: {len(flagged)} flagged, {fixed} fixed ({fallback} by segment strip) "
+              f"in {time.time() - t0:.1f}s, terms={forbid[:10]}", flush=True)
 
     @modal.method()
     def run(self, job: dict) -> dict:
@@ -199,6 +292,13 @@ class CaptionVLM:
                     if _readable(o):
                         state["raws"][i] = o
                 state["retried"] = len(retry)
+            # 自己チェック（2026-09-25、ホスト指摘「学習したい特徴が混ざる。金を取って AI で最適と言えない」）:
+            # 書かせない特徴（forbid_terms）が混ざったキャプションだけ、同じモデルに文字だけで書き直させる。
+            # GPU が温かいうちに引っかかった分だけ回すので数秒〜十数秒。直らなければカンマ区切りの部分ごと落とす。
+            forbid = [str(t).strip().lower() for t in (job.get("forbid_terms") or []) if str(t).strip()]
+            if forbid:
+                self._selfcheck(state, forbid, max_new)
+                jobs[key] = state
             gen_s = round(time.time() - t1, 1)
             state.update({"status": "completed", "done": total, "fetch_s": fetch_s, "gen_s": gen_s,
                           "gpu": _gpu_label()})
@@ -232,9 +332,10 @@ def caption_dispatch(body: dict, request: fastapi.Request):
     prompt = str(body.get("prompt") or "")
     if not key or not isinstance(keys, list) or not keys or len(keys) > MAX_IMAGES or not prompt:
         raise fastapi.HTTPException(status_code=400, detail="invalid job")
+    forbid = [str(t)[:80] for t in (body.get("forbid_terms") or [])][:40]
     call = CaptionVLM().run.spawn({"dict_key": key, "keys": [str(k) for k in keys], "prompt": prompt,
                                    "max_tokens": body.get("max_tokens"), "user_id": body.get("user_id"),
-                                   "credits_cost": body.get("credits_cost")})
+                                   "credits_cost": body.get("credits_cost"), "forbid_terms": forbid})
     # 打ち切り（caption_abort）で取り消し・返金できるよう、呼び出しと料金を残す。
     jobs[key] = {"status": "queued", "done": 0, "total": len(keys), "raws": [None] * len(keys),
                  "call_id": call.object_id, "user_id": body.get("user_id"),

@@ -3320,6 +3320,12 @@ export function LoraStudioTab({
             onProgress: (done, total) => setAutoCap((s) => ({ ...s, done, total, note: null })),
             // 自前 VLM 経路の「GPU 起動待ち」等（数字が動かない間に止まって見えないように）。
             onNote: (note) => setAutoCap((s) => ({ ...s, note })),
+            // 自己チェックの結果（2026-09-25）。学習したい特徴がキャプションに混ざっていたら AI が書き直している。
+            onSelfCheck: (fixed, flagged) =>
+              setAddNotice(
+                `AI が書いたキャプションを見直し、学習したい特徴が混ざっていた ${flagged} 枚のうち ${fixed} 枚から、その記述を取り除きました。` +
+                  (fixed < flagged ? `残り ${flagged - fixed} 枚は確認画面の検索で確認してください。` : ""),
+              ),
             onBatch: (entries) => {
               const m = mergeLive(entries);
               Object.assign(merged.cap, m.cap);

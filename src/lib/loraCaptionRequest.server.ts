@@ -39,6 +39,8 @@ export function parseCaptionRequest(
         trigger: typeof o.trigger === "string" ? o.trigger.trim().slice(0, 60) : "",
         description: typeof o.description === "string" ? o.description.trim().slice(0, 300) : "",
         fixedTags: typeof o.fixedTags === "string" ? o.fixedTags.trim().slice(0, 200) : "",
+        // キャプションの自己チェック用（2026-09-25）。書かせない特徴が混ざっていないかを worker が確かめる。
+        identityTags: typeof o.identityTags === "string" ? o.identityTags.trim().slice(0, 600) : "",
       };
     })
     .filter((s: LoraSubject) => s.trigger.length > 0)

@@ -740,3 +740,22 @@ export function loraCaptionPrice(
   if (count <= 0) return 0;
   return Math.ceil(knobs.lora_caption_base + knobs.lora_caption_per_image * count);
 }
+
+/**
+ * キャプションに書かれていないか確かめる「学習したい特徴」の語（2026-09-25、キャプションの自己チェック）。
+ * 特徴の最後の語が特徴的（glasses / beard / mole 等）ならその語で見る（"metal frame glasses" は "round glasses"
+ * では当たらないため）。髪・目など汎用の語で終わるもの（black hair 等）は句のまま。確認画面のチップと同じ考え方。
+ */
+export function forbiddenCaptionTerms(subjects: LoraSubject[]): string[] {
+  const GENERIC = new Set(["hair", "eyes", "skin", "body", "breasts", "ears", "tail", "lips", "eyebrows"]);
+  const out = new Set<string>();
+  for (const s of subjects) {
+    for (const raw of (s.identityTags ?? "").split(/\s*[,、]\s*/)) {
+      const phrase = raw.trim().toLowerCase();
+      if (!phrase) continue;
+      const last = phrase.split(/\s+/).pop() ?? phrase;
+      out.add(GENERIC.has(last) ? phrase : last);
+    }
+  }
+  return [...out].slice(0, 40);
+}

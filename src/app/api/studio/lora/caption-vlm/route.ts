@@ -5,7 +5,7 @@ import { CONTENT_POLICY_BLOCK_MESSAGE } from "@/lib/contentPolicy";
 import { finalizeRawSingles, parseCaptionRequest } from "@/lib/loraCaptionRequest.server";
 import { presignR2Put, r2KeyForRel, r2UploadsEnabled } from "@/lib/r2.server";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
-import { loraCaptionPrice } from "@/lib/loraCaptionSpec";
+import { forbiddenCaptionTerms, loraCaptionPrice } from "@/lib/loraCaptionSpec";
 import { getOrCreateProfile } from "@/lib/profile";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
@@ -169,6 +169,8 @@ export async function POST(request: Request): Promise<NextResponse> {
         keys,
         prompt,
         max_tokens: spec.captionMode === "dense" ? 700 : 400,
+        // 書き終えたあと、学習したい特徴が混ざっていないか worker が確かめて直す（2026-09-25、自己チェック）。
+        forbid_terms: forbiddenCaptionTerms(spec.subjects),
         // 解析が失敗したときに worker が返すための情報。
         user_id: userId,
         credits_cost: price,
@@ -205,6 +207,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       total?: number;
       raws?: (string | null)[];
       error?: string;
+      selfcheck?: { flagged?: number; fixed?: number };
     };
     const raws = Array.isArray(st.raws) ? st.raws : [];
     const { captions, captionsJa } = finalizeRawSingles(raws, spec);
@@ -217,6 +220,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       done: st.done ?? 0,
       total: st.total ?? 0,
       entries,
+      selfcheck: st.selfcheck,
       error: st.status === "failed" ? "解析に失敗しました。時間をおいて再試行してください。" : undefined,
     });
   }

@@ -194,6 +194,8 @@ export async function generateDatasetCaptions(
     signal?: AbortSignal;
     // 自前 VLM 経路の状況表示（GPU の起動待ち等、進捗の数字が動かない間の一言）。null で消す。
     onNote?: (note: string | null) => void;
+    /** 自己チェックで学習したい特徴の記述を直した枚数（自前 VLM 経路、2026-09-25）。 */
+    onSelfCheck?: (fixed: number, flagged: number) => void;
   } = {},
 ): Promise<DatasetCaptionResult> {
   if (captionBackend() === "vlm") return generateDatasetCaptionsVlm(files, opts);
@@ -677,6 +679,8 @@ async function generateDatasetCaptionsVlm(files: File[], opts: CaptionOpts): Pro
         if (st.status === "running") note(done > 0 ? null : "AI が解析しています…");
       }
       if (st.status === "completed") {
+        const sc = st.selfcheck as { flagged?: number; fixed?: number } | undefined;
+        if (sc && (sc.flagged ?? 0) > 0) opts.onSelfCheck?.(sc.fixed ?? 0, sc.flagged ?? 0);
         const missed = ok.filter((x) => !captions[x.i].trim()).map((x) => x.i);
         writeLastVlmJob(missed.length ? { jobId, missed: missed.length } : null);
         if (missed.length) {
