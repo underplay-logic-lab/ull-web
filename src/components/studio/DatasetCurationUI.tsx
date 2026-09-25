@@ -57,19 +57,23 @@ export function DatasetCurationUI({
   onRecaption,
   resolvedCaptionMode = "tags",
   canDownloadDataset = false,
+  featureTerms = [],
 }: {
   pairs: CurationPair[];
   // A setState updater — every mutation is applied against the freshest state
   // so an exclude toggle can never clobber (or be clobbered by) an in-flight
   // translation landing on a different card.
   /**
-   * 学習前のデータセットDLを出してよいか（admin 限定、2026-09-21）。
-   * 自動キャプションは Gemini の無料枠で動くので、ここを誰にでも開けておくと
-   * 「画像を入れて解析させ、ZIP を落としてローカルで焼く」が成立してしまい、
-   * 学習の対価を取れない（ホスト方針「生成ボタンを押す前に成果物の提供が
-   * 出来ないように」）。学習開始後のDLは課金済みなので従来どおり。
+   * 学習前のデータセットDLを出してよいか。2026-09-21 は admin 限定（キャプションが無料だったため）。
+   * 2026-09-25 からキャプション作成が有料になったので、AI キャプションを作った後、またはキャプションを
+   * 自分で用意した場合は誰でも DL できる（判定は呼び出し側 LoraStudioTab）。
    */
   canDownloadDataset?: boolean;
+  /**
+   * 「学習したい特徴」（キャプションに書かせない言葉、英タグ）。キャプションに混ざっていないかを数えて出し、
+   * 押すとその語で検索する（2026-09-25、ホスト報告「metal frame glasses が何枚か混ざっている」）。
+   */
+  featureTerms?: string[];
   onChange: Dispatch<SetStateAction<CurationPair[]>>;
   onConfirm: () => void;
   onCancel: () => void;
@@ -237,6 +241,70 @@ export function DatasetCurationUI({
   };
 
   const kept = useMemo(() => pairs.filter((p) => !p.excluded), [pairs]);
+
+  // --- 検索・置換（2026-09-25）---
+  const [search, setSearch] = useState("");
+  const [replaceWith, setReplaceWith] = useState("");
+  const [onlyMatches, setOnlyMatches] = useState(false);
+  const needle = search.trim().toLowerCase();
+  const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const matchIds = useMemo(
+    () =>
+      new Set(
+        needle
+          ? pairs
+              .filter((p) => p.caption.toLowerCase().includes(needle) || p.captionJa.toLowerCase().includes(needle))
+              .map((p) => p.id)
+          : [],
+      ),
+    [pairs, needle],
+  );
+  const enMatchCount = useMemo(
+    () => (needle ? pairs.filter((p) => !p.excluded && p.caption.toLowerCase().includes(needle)).length : 0),
+    [pairs, needle],
+  );
+  // 置換は学習に使う英語側だけ。変えたカードの日本語は消す（残すと「英語に反映」で元に戻ってしまう）。
+  const applyReplace = () => {
+    if (!needle) return;
+    const to = replaceWith.trim();
+    onChange((prev) =>
+      prev.map((p) => {
+        const re = new RegExp(escapeRe(search.trim()), "gi");
+        if (p.excluded || !re.test(p.caption)) return p;
+        // 消したあとに残る「, ,」や二重の空白・文頭文末の区切りを整える。
+        const next = p.caption
+          .replace(new RegExp(escapeRe(search.trim()), "gi"), to)
+          .replace(/\s+([,.])/g, "$1")
+          .replace(/,\s*,/g, ",")
+          .replace(/\s{2,}/g, " ")
+          .replace(/^[,\s]+|[,\s]+$/g, "")
+          .trim();
+        return { ...p, caption: next, captionJa: "" };
+      }),
+    );
+    setReplaceWith("");
+  };
+  // 学習したい特徴がキャプションに何枚混ざっているか。句で数え、最後の語が特徴的（glasses / beard 等）なら
+  // その語で数える（"metal frame glasses" は "round glasses" では当たらないため）。
+  const featureChips = useMemo(() => {
+    const GENERIC = new Set(["hair", "eyes", "skin", "body", "breasts", "ears", "tail", "lips", "eyebrows"]);
+    const seen = new Set<string>();
+    const terms: string[] = [];
+    for (const t of featureTerms) {
+      const phrase = t.trim().toLowerCase();
+      if (!phrase) continue;
+      const last = phrase.split(/\s+/).pop() ?? phrase;
+      const term = GENERIC.has(last) ? phrase : last;
+      if (!seen.has(term)) {
+        seen.add(term);
+        terms.push(term);
+      }
+    }
+    return terms.map((term) => {
+      const re = new RegExp(`\\b${escapeRe(term)}\\b`, "i");
+      return { term, count: kept.filter((p) => re.test(p.caption)).length };
+    });
+  }, [featureTerms, kept]);
   const keptBytes = useMemo(() => kept.reduce((s, p) => s + p.file.size, 0), [kept]);
   const overCount = kept.length > maxImages;
   const overBytes = keptBytes > maxTotalBytes;
@@ -483,8 +551,78 @@ export function DatasetCurationUI({
         <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-400">{error}</p>
       )}
 
-      <div className="grid max-h-[32rem] gap-2 overflow-y-auto pr-1">
+      {/* キャプションの検索・置換（2026-09-25、ホスト指摘「特徴が混ざったキャプションを直すのに検索が要る」）。 */}
+      <div className="space-y-2 rounded-lg border border-border bg-background/40 px-3 py-2">
+        {featureChips.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+            <span className="text-muted">学習したい特徴がキャプションに混ざっていないか:</span>
+            {featureChips.map(({ term, count }) => (
+              <button
+                key={term}
+                type="button"
+                onClick={() => {
+                  setSearch(term);
+                  setOnlyMatches(true);
+                }}
+                className={`rounded-md border px-2 py-0.5 transition-colors ${
+                  count > 0
+                    ? "border-amber-500/50 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
+                    : "border-border text-muted"
+                }`}
+              >
+                {term}（{count}枚）
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="キャプションを検索（英語・日本語）"
+            className={`${inputCls} w-56`}
+          />
+          {needle && (
+            <>
+              <span className="text-muted">{matchIds.size} 枚が一致</span>
+              <label className="flex items-center gap-1 text-muted">
+                <input
+                  type="checkbox"
+                  checked={onlyMatches}
+                  onChange={(e) => setOnlyMatches(e.target.checked)}
+                  className="accent-neon-violet"
+                />
+                一致したものだけ表示
+              </label>
+            </>
+          )}
+        </div>
+        {needle && enMatchCount > 0 && (
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            <input
+              value={replaceWith}
+              onChange={(e) => setReplaceWith(e.target.value)}
+              placeholder="置き換える語（空なら削除）"
+              className={`${inputCls} w-56`}
+            />
+            <button
+              type="button"
+              disabled={disabled || Boolean(bulk)}
+              onClick={applyReplace}
+              className="rounded-md border border-neon-violet/50 bg-neon-violet/10 px-2.5 py-1 font-medium text-neon-violet hover:bg-neon-violet/20 disabled:opacity-50"
+            >
+              英語の {enMatchCount} 枚を{replaceWith.trim() ? "置換" : "から削除"}
+            </button>
+            <span className="text-[10px] text-muted">
+              学習に使う英語側だけ変えます。変えたカードの日本語は消えるので、あとで「全カードを日本語に」で作り直してください。
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div className="grid max-h-[48rem] gap-2 overflow-y-auto pr-1">
         {pairs.map((p, idx) => {
+          if (onlyMatches && needle && !matchIds.has(p.id)) return null;
           const b = busyId[p.id];
           return (
             <div
@@ -614,7 +752,7 @@ export function DatasetCurationUI({
                     value={p.caption}
                     onChange={(e) => patch(p.id, { caption: e.target.value })}
                     placeholder="(空欄 = 自動タグ付け)"
-                    rows={2}
+                    rows={4}
                     disabled={disabled || p.excluded || Boolean(bulk)}
                     className={`${inputCls} resize-none font-mono`}
                   />
@@ -636,7 +774,7 @@ export function DatasetCurationUI({
                     value={p.captionJa}
                     onChange={(e) => patch(p.id, { captionJa: e.target.value })}
                     placeholder="「日本語に翻訳」で自動入力、または直接入力"
-                    rows={2}
+                    rows={4}
                     disabled={disabled || p.excluded || Boolean(bulk)}
                     className={`${inputCls} resize-none`}
                   />

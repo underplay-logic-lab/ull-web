@@ -4082,7 +4082,10 @@ export function LoraStudioTab({
           subjects={allSubjects.length >= 1 ? allSubjects : undefined}
           maxImages={MAX_IMAGES}
           maxTotalBytes={MAX_TOTAL_BYTES}
-          canDownloadDataset={isAdmin}
+          // 学習前のデータセット DL（2026-09-25）: AI キャプション（有料）を作った後、またはキャプションを自分で
+          // 用意した場合は誰でも。以前は admin 限定（キャプションが無料だった頃の名残）。
+          canDownloadDataset={isAdmin || captionStarted || captionSource === "manual"}
+          featureTerms={allSubjects.flatMap((x) => (x.identityTags ?? "").split(",")).filter((t) => t.trim())}
           onRecaption={captionSource === "ai" ? recaptionForCuration : undefined}
           resolvedCaptionMode={resolvedCaptionMode}
         />
@@ -4290,7 +4293,15 @@ export function LoraStudioTab({
               <p className="text-[11px] font-medium text-foreground">キャプションの作り方</p>
               {(
                 [
-                  ["ai", "AI に作らせる（有料）", "LoRA 学習に最適化したキャプションを AI が作ります。構図の診断と切り出しが済んでから 1 回だけ作ります。"],
+                  [
+                    "ai",
+                    "AI に作らせる（有料）",
+                    // 料金の目安を選ぶ時点で出す（2026-09-25、ホスト指摘「作業を進めてから料金が分かって離脱するのは
+                    // もったいない」）。式は作成ボタン・route と同じ loraCaptionPrice。
+                    `LoRA 学習に最適化したキャプションを AI が作ります。構図の診断と切り出しが済んでから 1 回だけ作ります。料金の目安: 50 枚 ${loraCaptionPrice(50, pricingKnobs)}C・100 枚 ${loraCaptionPrice(100, pricingKnobs)}C・200 枚 ${loraCaptionPrice(200, pricingKnobs)}C（基本 ${pricingKnobs.lora_caption_base}C ＋ 1 枚 ${pricingKnobs.lora_caption_per_image}C${
+                      images.length > 0 ? `。今の ${images.length} 枚なら ${loraCaptionPrice(images.length, pricingKnobs)}C` : ""
+                    }）。学習の料金とは別です。`,
+                  ],
                   [
                     "manual",
                     "自分で用意する（無料）",
