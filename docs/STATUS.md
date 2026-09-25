@@ -583,6 +583,17 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 - R2 移行は計画 1〜9 すべて閉じた（8-② の転送パネルだけローンチ後）。
 
 **残り**
+000000000. **LoRA 既定値の検証（2026-09-26 起票・最優先）。** GUI 既定（prodigy・1 step 1 枚・枚数から自動の step）で焼いた
+   minimax_h3 の人物 LoRA（`3e8c7fc1` hitozuma_kocho_minimax_v1・1906 step）が、ホストの ComfyUI で**トリガーを入れても強度 3 でも
+   別人**。同じワークフローで旧 yukipas（生 YAML・adamw 1.5e-4・rank64・batch2×GA2・2000 step）は出る。ai-toolkit 系で GUI 既定の
+   LoRA が「生成で似る」と確かめた例はゼロ（速度・原価の 50 step 計測だけ）。公開 MiniMax H3 LoRA（fal / Cseti / akatz）は全部
+   AdamW 系・lr 5e-5〜1e-4・batch 1、prodigy は無し。**実験 v3**: v1 から最適化手法だけ adamw 1e-4 に（batch1・rank32・3000 step・
+   250 ごと保存、YAML はホストの Downloads `hitozuma_kocho_minimax_v3_adamw.yaml`）。1750/2000 を v1 と比べて最適化手法の差を切り分け。
+   方針（ホスト判断）: 「何を学習させるか」は 5 つ残し、どのモードにも「最適値は用途・素材・枚数で変わる。既定値は出発点」の注意書き
+   （済み）。人物の既定値を各モデルで「トリガーで呼び出せる」まで確かめたら、注意書きにその旨を足す。名前（LoRA Studio / LoRA Lab）
+   は既定値が固まってから。関連して今夜直した不具合: 生 YAML 切替で先頭の名前が消える（`7343ba6`）、生 YAML で extraTriggers を
+   送らない（`11df5f6`）、生 YAML の複数人物で trigger 補完（`7dc577e`）。minimax は batch を上げると 1 枚あたりが約 3 倍遅い
+   （batch4 で 3.9 s/step、見積もり 1.6）→ 生 YAML の batch>1 が損切りに掛かる（v2 が 51 step で停止）。課金の batch 係数は要修正。
 00000000. **LoRA データセットの「おまかせで整える」ボタン（2026-09-25 ホスト案 → 同日実装、実機未確認）。**
    診断欄の一番上（`DatasetDiagnosticsPanel`）。流れは `LoraStudioTab.tsx` の `runAutoTidy` → 効果 B → 効果 C:
    A. 同じ構図の重複を 2 枚残して除外候補に（2 人写りは 2 人とも多すぎるときだけ）＋足りない顔アップ・上半身を
