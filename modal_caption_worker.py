@@ -62,26 +62,64 @@ def _authorize(request: fastapi.Request) -> None:
         raise fastapi.HTTPException(status_code=401, detail="Unauthorized")
 
 
-def _refund(user_id: str, credits: int) -> None:
-    """解析が失敗したら引き落とし分を返す（route と同じく profiles.credits を読んで足す）。"""
-    if not user_id or not credits:
-        return
-    import requests
+def _sb(method: str, path: str, params: dict | None = None, body=None, prefer: str = "") -> object:
+    """Supabase REST を標準ライブラリだけで叩く（2026-09-26）。以前は requests を使っていたが、取り消し＋返金を行う
+    caption_abort の image（endpoint_image）には requests が無く、返金が import で落ちていた。"""
+    import json
+    import urllib.parse
+    import urllib.request
 
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not url or not key:
-        print(f"[caption] refund skipped (no supabase env) user={user_id[:8]} {credits}C", flush=True)
-        return
+        raise RuntimeError("no supabase env")
+    q = ("?" + urllib.parse.urlencode(params)) if params else ""
     h = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    if prefer:
+        h["Prefer"] = prefer
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(f"{url}{path}{q}", data=data, headers=h, method=method)
+    with urllib.request.urlopen(req, timeout=15) as r:
+        raw = r.read()
+    return json.loads(raw) if raw else None
+
+
+def _refund(user_id: str, credits: int) -> None:
+    """解析が失敗したら引き落とし分を返す（route と同じく profiles.credits を読んで足す）。"""
+    if not user_id or not credits:
+        return
     try:
-        r = requests.get(f"{url}/rest/v1/profiles", params={"id": f"eq.{user_id}", "select": "credits"}, headers=h, timeout=15)
-        cur = int((r.json() or [{}])[0].get("credits") or 0)
-        requests.patch(f"{url}/rest/v1/profiles", params={"id": f"eq.{user_id}"}, json={"credits": cur + credits},
-                       headers=h, timeout=15).raise_for_status()
+        rows = _sb("GET", "/rest/v1/profiles", {"id": f"eq.{user_id}", "select": "credits"}) or [{}]
+        cur = int(rows[0].get("credits") or 0)
+        _sb("PATCH", "/rest/v1/profiles", {"id": f"eq.{user_id}"}, {"credits": cur + credits}, "return=minimal")
         print(f"[caption] refunded {credits}C to {user_id[:8]}", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[caption] refund FAILED user={user_id[:8]} {credits}C: {exc!r}", flush=True)
+
+
+def _log_generation(dict_key: str, status: str, exec_s: float, credits: int, gpu: str, error: str = "") -> None:
+    """実行ログ（generation_logs）へ 1 行（2026-09-26、ホスト要望「キャプションも原価の点検に出したい」）。
+    job_type は lora_caption。原価は gpu_tier × 実行時間で admin 側が計算する。失敗は返金済みなので credits 0。
+    記録の失敗で本処理は止めない。"""
+    user_id, _, job_id = dict_key.partition(":")
+    if not user_id:
+        return
+    row = {
+        "user_id": user_id,
+        "job_type": "lora_caption",
+        "execution_time_ms": int(max(0.0, exec_s) * 1000),
+        "credits_consumed": int(credits) if status == "success" else 0,
+        "status": status,
+        "gpu_tier": gpu or "none",
+        "error_message": error[:500] or None,
+        "output_file_name": "",
+    }
+    if len(job_id) == 36:
+        row["job_id"] = job_id
+    try:
+        _sb("POST", "/rest/v1/generation_logs", body=row, prefer="return=minimal")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[caption] generation_logs insert skipped: {exc!r}", flush=True)
 
 
 def _readable(raw: str | None) -> bool:
@@ -305,11 +343,16 @@ class CaptionVLM:
             jobs[key] = state
             print(f"[caption] {key} {total} imgs: fetch {fetch_s}s, generate {gen_s}s "
                   f"({gen_s / max(1, total):.2f}s/img), model load {self.load_s}s", flush=True)
+            # GPU を使った時間 ≒ モデル読み込み（毎回冷えた起動）＋取得＋生成。コンテナの起動そのものは含まない。
+            _log_generation(key, "success", float(self.load_s or 0) + fetch_s + gen_s,
+                            int(job.get("credits_cost") or 0), _gpu_label())
         except Exception as exc:  # noqa: BLE001
             state.update({"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:500]})
             jobs[key] = state
             print(f"[caption] {key} FAILED: {exc!r}", flush=True)
             _refund(str(job.get("user_id") or ""), int(job.get("credits_cost") or 0))
+            _log_generation(key, "failed", float(self.load_s or 0) + (time.time() - t0), 0, _gpu_label(),
+                            str(state.get("error") or ""))
         finally:
             try:
                 ull_r2.delete_keys(keys)  # 縮小画像は解析が済めば要らない
@@ -365,6 +408,7 @@ def caption_abort(body: dict, request: fastapi.Request):
     st.update({"status": "failed", "error": "起動がタイムアウトしました"})
     jobs[key] = st
     _refund(str(st.get("user_id") or ""), int(st.get("credits_cost") or 0))
+    _log_generation(key, "failed", 0.0, 0, "none", "起動がタイムアウトしました（取り消し・返金）")
     return {"ok": True, "aborted": True}
 
 

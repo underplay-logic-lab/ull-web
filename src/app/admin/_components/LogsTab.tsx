@@ -121,7 +121,7 @@ function rangeOf(preset: RangePreset, customFrom: string, customTo: string): { f
   }
 }
 
-const JOB_TYPES = ["lora_training", "upscale_image", "upscale_video", "multi_angle", "director", "custom_workflow"];
+const JOB_TYPES = ["lora_training", "lora_caption", "lora_wd_tags", "upscale_image", "upscale_video", "multi_angle", "director", "custom_workflow"];
 
 type LogsResponse = {
   page: number;

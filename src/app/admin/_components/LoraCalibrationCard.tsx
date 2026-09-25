@@ -69,6 +69,8 @@ const JOB_LABEL: Record<string, string> = {
   upscale_video: "超解像（動画）",
   multi_angle: "Multi-Angle",
   director: "Director",
+  lora_caption: "LoRA キャプション作成",
+  lora_wd_tags: "構図判定（無料）",
 };
 const F_STATUS: Record<Feature["status"], { label: string; cls: string }> = {
   negative: { label: "赤字あり", cls: "border-red-500/50 bg-red-500/10 text-red-300" },
@@ -136,7 +138,7 @@ export function LoraCalibrationCard() {
           <p className="mb-2 text-xs leading-relaxed text-muted">
             実行ログから、機能 × GPU ごとに「売上 ÷ 原価」（倍率）を出します。原価は実稼働ログと同じ計算（GPU 時給 × 実行時間）。
             1 件でも赤字（倍率 1 未満）があれば「赤字あり」、粗利 {data.lowMarginPercent}% 未満があれば「低粗利あり」。失敗の原価は返金で売上 0 なので別の列。
-            キャプション作成・構図判定は実行ログに載っていないので、ここには出ません。
+            構図判定は無料なので売上は無く、原価だけが出ます（2026-09-26 以降の分）。
           </p>
           <div className="mb-5 overflow-x-auto rounded-2xl border border-border">
             <table className="w-full min-w-[760px] text-left text-xs">

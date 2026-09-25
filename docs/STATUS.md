@@ -597,7 +597,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    既存行も補正（中止した超解像 64 件・GPU 前に失敗した LoRA・返金済み LoRA・9/22〜23 の SDXL を L40S に）。日次サマリーに
    「うち失敗分の原価」を追加。LoRA worker が GPU で落ちたとき（container_death 等）の gpu_tier も `loraJobHealth.ts` が dispatch の tier で埋める（2026-09-25 済み）。
 000000. **ローンチ前にやる運用まわり（2026-09-24 ホスト指摘）**:
-   ① **→ 作り直し（2026-09-25、push 済み）**: 期間（今日/昨日/7日/30日/日付指定）・機能・状態・ユーザーで絞り込み、範囲の集計（うち失敗分・粗利率・機能別）、50 件ずつのページ送り、まとめて処理を 1 行に畳む（job_id→upscale_jobs.batch_id）、CSV 書き出し（BOM 付き）。原価計算は日次サマリーと共通（`makeRowCostJpy`）。**ホストの画面確認待ち。** 以下は元の記述:
+   ① **→ 作り直し（2026-09-25、push 済み）・ホスト画面確認 OK（2026-09-26）**: 期間（今日/昨日/7日/30日/日付指定）・機能・状態・ユーザーで絞り込み、範囲の集計（うち失敗分・粗利率・機能別）、50 件ずつのページ送り、まとめて処理を 1 行に畳む（job_id→upscale_jobs.batch_id）、CSV 書き出し（BOM 付き）。原価計算は日次サマリーと共通（`makeRowCostJpy`）。**ホストの画面確認待ち。** 以下は元の記述:
    ① admin の実稼動ログが直近 50 件固定（`src/app/api/admin/logs/route.ts` の `RECENT_LIMIT`）で、超解像 100 枚で埋まる。
    ページ送り・期間/機能/ユーザーでの絞り込み・バッチ（まとめて処理）を 1 行に畳む表示が要る。
    ② **→ 実装・デプロイ済み（2026-09-25）**: 「最近の生成物」の超解像行に「バッチを中止（返金）／中止（返金）」。`/api/admin/upscale/abort` が pending と 15 分以上止まった processing を failed＋`metadata.refunded` で閉じて返金、処理中の 1 枚は完走。worker は処理開始を条件付き PATCH（`_claim_upscale_job`）にし、時間切れ監視も閉じ済みの行は返金しない。**実機での中止は未確認。** 以下は元の記述:
@@ -640,7 +640,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    変換は `ull_r2.key_for_rel()` / `r2.server.ts::r2KeyForRel()`（`<kind>/<user_id>/<rest>` の user_id 段を抜いて先頭に root）。
    読む側はキーを再計算しない: LoRA は `checkpoints[].r2_key`、生成物は `metadata.r2_key_map[<相対パス>]`（無い旧行はパス＝キー）、
    持ち込み（studio_uploads / lora_dataset_uploads）は新配置 → 旧配置の順に探す。ハンドル名は持たない（メールで十分、2026-09-24 ホスト判断）。
-   **残: ①各タブで「生成 → 表示 → DL」を 1 回ずつ確認（LoRA / 超解像 画像・動画 / Director / Multi-Angle / 持ち込み）
+   **→ 閉じた（2026-09-26、ホスト申告: 旧配置のファイルは削除済み）。** 以下は元の記述: 残: ①各タブで「生成 → 表示 → DL」を 1 回ずつ確認（LoRA / 超解像 画像・動画 / Director / Multi-Angle / 持ち込み）
    ②確認後、旧配置（最上位が `loras/` `lora_dataset_uploads/` `studio_uploads/` `upscale…` `director_results/` `angle…` 等）をホストが削除（v7_wd はローカルへ退避済みの前提）。**
 0000. **Multi-Angle の「余分な GPU コンテナ」調査 — 結論（2026-09-24）**: 普段の運用では発生しない。09-23 21:32 にジョブ実行中に
    再デプロイ（v25）したため、Modal が新バージョンのコンテナを先回り起動していた（v24 がジョブ処理、v25 の 3 台は入力 0）。
@@ -686,7 +686,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    `FAQPage` の JSON-LD・LP の FAQ / 比較セクション。**LoRA「結果がいまいちな時」ヒント（根拠付き 5 項目、下の節）はこの FAQ の
    一部**として書き、完了画面には 3 行＋FAQ リンク。Gemini 文案の 3 つの地雷（Wan 2.2 S2V を看板にしない・モデル名を出さない・
    GPU 型番を出さない）を必ず避ける。基礎（robots / sitemap / Organization JSON-LD）は済み。
-3. ~~minimax_h3 の s/it 再校正~~ **済み（2026-09-26）: 1.80 → 0.40**（実ジョブ `cbeb0865` 0.31・`3e8c7fc1` 0.33 に 20% 上乗せ）。1.80 のままだと原価の約 8 倍を請求していた（`3e8c7fc1`: 2,816C ≒ ¥4,675 に対し B300 約 1,720 秒 ≒ ¥577）→ 同条件で約 1,200C。worker の同名テーブルも全 arch を TS と揃えてデプロイ済み。1.80 との 5 倍差の原因は未特定。 再発防止に admin「Pricing」へ「LoRA の見積もりと実績」表を追加（`/api/admin/lora-calibration`・`LoraCalibrationCard`、arch×速度ごとに前提 s/it と実測中央値、前提÷実測が 1.5 超で「取りすぎ」・1.0 未満で「見積もり不足」）。前提の更新は自動にしない（ホスト判断）。 2026-09-26 追記: Pricing タブの一番上へ移動し、LoRA 以外も含む「機能ごとの売上と GPU 原価」（generation_logs・直近 30 日・機能×GPU、赤字／低粗利の件数）を同じカードに追加。SDXL worker も `metadata.metrics`（s_per_it・s_per_it_wall・prep_s 等）を記録するようにしてデプロイ済み（次の SDXL ジョブから表に出る）。キャプション作成（Qwen）・構図判定（WD）は generation_logs に載らないので未対応。以下は元の記述:
+3. ~~minimax_h3 の s/it 再校正~~ **済み（2026-09-26）: 1.80 → 0.40**（実ジョブ `cbeb0865` 0.31・`3e8c7fc1` 0.33 に 20% 上乗せ）。1.80 のままだと原価の約 8 倍を請求していた（`3e8c7fc1`: 2,816C ≒ ¥4,675 に対し B300 約 1,720 秒 ≒ ¥577）→ 同条件で約 1,200C。worker の同名テーブルも全 arch を TS と揃えてデプロイ済み。1.80 との 5 倍差の原因は未特定。 再発防止に admin「Pricing」へ「LoRA の見積もりと実績」表を追加（`/api/admin/lora-calibration`・`LoraCalibrationCard`、arch×速度ごとに前提 s/it と実測中央値、前提÷実測が 1.5 超で「取りすぎ」・1.0 未満で「見積もり不足」）。前提の更新は自動にしない（ホスト判断）。 2026-09-26 追記: Pricing タブの一番上へ移動し、LoRA 以外も含む「機能ごとの売上と GPU 原価」（generation_logs・直近 30 日・機能×GPU、赤字／低粗利の件数）を同じカードに追加。SDXL worker も `metadata.metrics`（s_per_it・s_per_it_wall・prep_s 等）を記録するようにしてデプロイ済み（次の SDXL ジョブから表に出る）。キャプション作成（`lora_caption`・GPU）と構図判定（`lora_wd_tags`・`cpu8`、原価は knob `cpu_usd_per_core_hour` 0.0473）も worker が generation_logs へ記録するようにした（2026-09-26 デプロイ済み）。ついでに caption_abort の返金が endpoint image に requests が無くて落ちていたのを標準ライブラリに直した。以下は元の記述:
    minimax_h3 の s/it 再校正の判断。knob 1.80（§14.15）に対し実ジョブ `cbeb0865` は 0.31〜0.55。1 点では動かさない。
    次の minimax ジョブでもう 1 点取ってから（`metadata.metrics` に自動で入る）。
 4. **Wan Animate を独立コンテンツとして設計し直す**（価格決定 6。特化 WF タブは admin 限定に格下げ済みなので、旧 `wan-animate-dance` 行は使わない前提）。

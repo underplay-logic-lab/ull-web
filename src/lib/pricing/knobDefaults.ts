@@ -85,6 +85,7 @@ export type KnobKey =
   | "gpu_usd_per_hour_a10"
   | "gpu_usd_per_hour_l4"
   | "gpu_usd_per_hour_t4"
+  | "cpu_usd_per_core_hour"
   | "usd_jpy_rate";
 
 export type PricingKnobs = Record<KnobKey, number>;
@@ -989,6 +990,16 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "rates",
     unit: "$/h",
     description: "実稼働ログの原価計算用",
+    isPublic: false,
+  },
+  cpu_usd_per_core_hour: {
+    // 2026-09-26: CPU だけの処理（構図判定 WD タガー等）を実行ログの原価に載せるため。Modal の CPU 単価
+    // （modal billing rates、docs/gpu-benchmarks.md の CPU の並列起動の節）。メモリ料金は含まない（小さい）。
+    value: 0.0473,
+    label: "CPU 1 コア時給（USD）",
+    category: "rates",
+    unit: "$/core-h",
+    description: "実稼働ログの原価計算用（gpu_tier が cpu<コア数> の行）",
     isPublic: false,
   },
   usd_jpy_rate: {

@@ -34,6 +34,7 @@ THRESHOLD = 0.35
 # 台数を絞って 1 台あたりを増やし、終わったら 2 秒で止める。145 枚で 5 台・1 分弱の見込み。
 CHUNK = 32
 MAX_CONTAINERS = 6
+WD_CPU_CORES = 8  # WdTagger の cpu=（実行ログの原価計算にも使う）
 MAX_IMAGES = 500
 KAOMOJI = {"0_0", "(o)_(o)", "+_+", "+_-", "._.", "<o>_<o>", "<|>_<|>", "=_=", ">_<", "3_3", "6_9", ">_o",
            "@_@", "^_^", "o_o", "u_u", "x_x", "|_|", "||_||"}
@@ -72,7 +73,7 @@ def _authorize(request: fastapi.Request) -> None:
 
 @app.cls(
     image=cpu_image,
-    cpu=8.0,
+    cpu=float(WD_CPU_CORES),
     memory=6144,
     timeout=10 * 60,
     # 終わったら 2 秒で止める（上のコメント参照。8 コア × 台数分の待機課金を残さない）。
@@ -169,12 +170,50 @@ class WdTagger:
         return out
 
 
+def _log_generation(dict_key: str, status: str, core_seconds: float, cores: int, error: str = "") -> None:
+    """実行ログ（generation_logs）へ 1 行（2026-09-26、ホスト要望「構図判定も原価の点検に出したい」）。
+    無料なので credits 0。gpu_tier は "cpu<コア数>"、execution_time_ms は台数 × 経過時間（1 台あたりに直した秒）。
+    原価は admin 側（gpuRates.ts）が コア数 × CPU 単価 × 時間で出す。記録の失敗で本処理は止めない。"""
+    import json
+    import os
+    import urllib.request
+
+    user_id, _, job_id = dict_key.partition(":")
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not user_id or not url or not key:
+        return
+    row = {
+        "user_id": user_id,
+        "job_type": "lora_wd_tags",
+        "execution_time_ms": int(max(0.0, core_seconds) * 1000),
+        "credits_consumed": 0,
+        "status": status,
+        "gpu_tier": f"cpu{cores}",
+        "error_message": error[:500] or None,
+        "output_file_name": "",
+    }
+    if len(job_id) == 36:
+        row["job_id"] = job_id
+    try:
+        req = urllib.request.Request(
+            f"{url}/rest/v1/generation_logs",
+            data=json.dumps(row).encode(),
+            headers={"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                     "Prefer": "return=minimal"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=15).read()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[wd] generation_logs insert skipped: {exc!r}", flush=True)
+
+
 @app.function(
     image=cpu_image,
     timeout=15 * 60,
     scaledown_window=2,
     retries=0,
-    secrets=[modal.Secret.from_name("r2-artifacts")],
+    secrets=[modal.Secret.from_name("r2-artifacts"), modal.Secret.from_name("supabase-model-downloads")],
 )
 def tag_run(job: dict) -> dict:
     import ull_r2
@@ -204,6 +243,10 @@ def tag_run(job: dict) -> dict:
             ull_r2.delete_keys(keys)  # 縮小画像はタグ付けが済めば要らない
         except Exception as exc:  # noqa: BLE001
             print(f"[wd] input cleanup skipped: {exc!r}", flush=True)
+    # 課金される CPU 時間の近似: 起動した台数（チャンク数と上限の小さいほう）× 経過時間（台ごとの起動・待機込みの上限寄り）。
+    n_containers = max(1, min(MAX_CONTAINERS, -(-total // CHUNK)))
+    _log_generation(key, "success" if state["status"] == "completed" else "failed",
+                    n_containers * (time.time() - t0), WD_CPU_CORES, str(state.get("error") or ""))
     return {"status": state["status"], "total": total}
 
 
