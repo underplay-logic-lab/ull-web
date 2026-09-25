@@ -259,6 +259,17 @@ export function DatasetCurationUI({
       ),
     [pairs, needle],
   );
+  // 表示の絞り込みは「この検索で一度でも一致したカード」で行う（2026-09-25、ホスト報告「glasses の g を消した
+  // 瞬間にカードが消える」）。手で直している途中に一致しなくなっても、一覧から消さない。検索語が変わったら作り直す。
+  const [stickyMatch, setStickyMatch] = useState<{ needle: string; ids: Set<string> }>({ needle: "", ids: new Set() });
+  let shownMatchIds = stickyMatch.ids;
+  if (stickyMatch.needle !== needle) {
+    shownMatchIds = new Set(matchIds);
+    setStickyMatch({ needle, ids: shownMatchIds });
+  } else if ([...matchIds].some((id) => !stickyMatch.ids.has(id))) {
+    shownMatchIds = new Set([...stickyMatch.ids, ...matchIds]);
+    setStickyMatch({ needle, ids: shownMatchIds });
+  }
   const enMatchCount = useMemo(
     () => (needle ? pairs.filter((p) => !p.excluded && p.caption.toLowerCase().includes(needle)).length : 0),
     [pairs, needle],
@@ -749,7 +760,7 @@ export function DatasetCurationUI({
           // 置換した直後は、変えたカードだけを表示する（検索に一致しなくなって消えたように見えないように）。
           if (lastReplace) {
             if (!lastReplace.ids.has(p.id)) return null;
-          } else if (onlyMatches && needle && !matchIds.has(p.id)) return null;
+          } else if (onlyMatches && needle && !shownMatchIds.has(p.id)) return null;
           const b = busyId[p.id];
           return (
             <div
@@ -879,7 +890,7 @@ export function DatasetCurationUI({
                     value={p.caption}
                     onChange={(e) => patch(p.id, { caption: e.target.value })}
                     placeholder="(空欄 = 自動タグ付け)"
-                    rows={6}
+                    rows={7}
                     disabled={disabled || p.excluded || Boolean(bulk)}
                     className={`${inputCls} resize-none font-mono`}
                   />
@@ -901,7 +912,7 @@ export function DatasetCurationUI({
                     value={p.captionJa}
                     onChange={(e) => patch(p.id, { captionJa: e.target.value })}
                     placeholder="「日本語に翻訳」で自動入力、または直接入力"
-                    rows={6}
+                    rows={5}
                     disabled={disabled || p.excluded || Boolean(bulk)}
                     className={`${inputCls} resize-none`}
                   />
