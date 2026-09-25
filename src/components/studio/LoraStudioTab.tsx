@@ -1075,6 +1075,12 @@ export function LoraStudioTab({
   // サムネイルの選択状態（学習回数の一括設定・クロップ対象の指定に使う）。
   // 診断パネルから「この被写体の元画像だけ選ぶ」ためにタブ側で持つ。
   const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set());
+  // いまの選択が何のためか（2026-09-25）。導線で「切り出す」と「選択した画像を削除」のどちらを光らせるかに使う。
+  // 以前は選択があれば一律に切り出しを光らせており、減らす候補を選んだ直後にも切り出しが光っていた（ホスト報告）。
+  const [selectionPurpose, setSelectionPurpose] = useState<"crop" | "trim" | null>(null);
+  // 「減らす」を検討し終えた被写体（候補を選んだ）。"*" は全員分を飛ばして切り出しへ進んだ印。減らすは被写体ごとに
+  // 1 人ずつ光らせ、全員分が済んだら切り出しへ進む（2026-09-25、ホスト質問「2 人とも対象ならどう光る？」）。
+  const [trimVisited, setTrimVisited] = useState<Set<string>>(new Set());
   // 選択するだけだと一覧が画面外で「押しても何も起きない」に見える（2026-09-24、ホスト指摘）。
   // 選んだ最初の画像までスクロールする。
   const selectAndReveal = useCallback((ids: string[]) => {
@@ -1274,6 +1280,14 @@ export function LoraStudioTab({
   }, []);
 
   const removeImage = useCallback((id: string) => {
+    // 選択からも外す（2026-09-25）。サムネイルの × で消しても選択に残り、「選択中だけ（N）」の数や
+    // 「選択した N 枚を削除」の光りが古いままになっていた。
+    setSelectedImageIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
     setImages((prev) => {
       const target = prev.find((i) => i.id === id);
       if (target) URL.revokeObjectURL(target.url);
@@ -1410,6 +1424,8 @@ export function LoraStudioTab({
         })
         .map((img) => img.id);
       setSelectedImageIds(new Set(ids));
+      setSelectionPurpose("crop");
+      setTrimVisited(new Set(["*"]));
       // 診断が「この構図が足りない」と言っている以上、切り出す構図もそこへ
       // 合わせる（余計な構図まで作らせない）。
       if (kinds.length) setCropKindSelection(new Set<SmartCropKind>(kinds));
@@ -1464,6 +1480,8 @@ export function LoraStudioTab({
       }
       const ids = [...picked];
       selectAndReveal(ids);
+      setSelectionPurpose("trim");
+      setTrimVisited((prev) => new Set([...prev, subject]));
       setAddNotice(
         n < count
           ? `減らす候補を ${n} 枚選びました。${subject} が 1 人で写っている画像は ${pool.length} 枚しかなく、目安（約 ${count} 枚）には届きません。残りは切り出しで足してください。残したいものは選択を外してから「選択した画像を削除」を押してください。`
@@ -1489,6 +1507,8 @@ export function LoraStudioTab({
       const keep = new Set([group[0].id, group[Math.floor(group.length / 2)].id]);
       const ids = group.filter((i) => !keep.has(i.id)).map((i) => i.id);
       selectAndReveal(ids);
+      setSelectionPurpose("trim");
+      setTrimVisited((prev) => new Set([...prev, subject]));
       setAddNotice(
         `同じ構図（${compositionSignatureLabel(signature)}）の ${group.length} 枚のうち、2 枚を残して ${ids.length} 枚を減らす候補に選びました。服装の違いを残したいものは選択を外してから「選択した画像を削除」を押してください。`,
       );
@@ -2796,6 +2816,17 @@ export function LoraStudioTab({
 
   // 「次にやること」を光らせる（2026-09-22、ホスト提案）。状態は持たず、
   // 画面の状態から毎回導出する。判定は src/lib/loraFlowStep.ts。
+  // まだ「減らす」を検討していない被写体（減らす案がある人だけ）。
+  const trimPendingSubjects = useMemo(() => {
+    const out = new Set<string>();
+    if (trimVisited.has("*")) return out;
+    for (const x of flowDiag.issues) {
+      if (!x.subject || trimVisited.has(x.subject)) continue;
+      if (x.balance?.trimBucket || x.sameComposition) out.add(x.subject);
+    }
+    return out;
+  }, [flowDiag, trimVisited]);
+
   const flow = useMemo(
     () =>
       loraFlowStep({
@@ -2821,7 +2852,10 @@ export function LoraStudioTab({
         captionRunning: autoCap.running,
         pendingCaptionCount,
         diagnosticErrors: flowDiag.issues.filter((x) => x.level === "error").length,
-        cropPrepared: selectedImageIds.size > 0,
+        cropPrepared: selectionPurpose === "crop" && selectedImageIds.size > 0,
+        trimAvailable: trimPendingSubjects.size > 0,
+        trimVisited: false,
+        trimSelected: selectionPurpose === "trim" && selectedImageIds.size > 0,
         cropAvailable: flowDiag.issues.some(
           (x) => x.fixableWith === "smart_crop" && (x.cropKinds?.length ?? 0) > 0,
         ),
@@ -2849,6 +2883,8 @@ export function LoraStudioTab({
       pendingCaptionCount,
       flowDiag,
       selectedImageIds,
+      selectionPurpose,
+      trimPendingSubjects,
     ],
   );
   const flowRing = (t: LoraFlowTarget) => (flow.targets.includes(t) ? " flow-next" : "");
@@ -3667,6 +3703,8 @@ export function LoraStudioTab({
     // 「完全リセットするとチェックが外れている」状態になっていた。
     setAnalysisStarted(false);
     setCaptionStarted(false);
+    setSelectionPurpose(null);
+    setTrimVisited(new Set());
     setCompositionTags({});
     setComposition({ running: false, done: 0, total: 0, error: null });
     compositionAttemptedRef.current = new Set();
@@ -4135,6 +4173,19 @@ export function LoraStudioTab({
             }
             selectedIds={selectedImageIds}
             onSelectedChange={setSelectedImageIds}
+            highlightDelete={flow.targets.includes("deleteSelected")}
+            // 削除したら診断が更新されるので、その結果へ送る（2026-09-25、ホスト指摘「削除した後の再診断が無い」）。
+            onDeletedSelected={(n) => {
+              setSelectionPurpose(null);
+              setAddNotice(`${n} 枚を削除しました。診断を更新したので、下の診断で結果を確認してください。`);
+              window.setTimeout(
+                () =>
+                  document
+                    .getElementById(DIAGNOSTICS_PANEL_ID)
+                    ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+                150,
+              );
+            }}
             belowDropArea={
               <>
                 {/* 解析の開始はユーザーが決める（2026-09-22、ホスト判断）。タイマーで
@@ -4217,7 +4268,8 @@ export function LoraStudioTab({
                 {analysisStarted && composition.running && (
                   <p className="mt-2 flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] text-neon-violet">
                     <Loader2 size={13} className="shrink-0 animate-spin" />
-                    構図を判定しています…（{composition.done}/{composition.total}）
+                    {/* 32 枚ずつ並列に処理して、まとまって終わるので数字はしばらく動かない（2026-09-25、ホスト指摘）。 */}
+                    構図を判定しています…（{composition.done}/{composition.total}）— 1 分ほどかかります。数字はまとめて進みます。
                   </p>
                 )}
                 {analysisStarted && !composition.running && composition.error && (
@@ -4240,6 +4292,7 @@ export function LoraStudioTab({
           />
           </div>
           {flowHint("dropzone")}
+          {flowHint("deleteSelected")}
 
 
           {/* Live confirmation that the trigger word + fixed/varying spec are
@@ -4371,8 +4424,10 @@ export function LoraStudioTab({
               onPrepareCrop={prepareCropForSubject}
               onPrepareTrim={prepareTrimForSubject}
               onPrepareSameComposition={prepareSameCompositionForSubject}
+              highlightTrimSubjects={flow.targets.includes("trimPrepare") ? trimPendingSubjects : undefined}
               highlightPrepare={flow.targets.includes("cropPrepare")}
             />
+            {flowHint("trimPrepare")}
             </div>
           )}
 

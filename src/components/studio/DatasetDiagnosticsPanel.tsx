@@ -25,6 +25,7 @@ export function DatasetDiagnosticsPanel({
   onRetryStalled,
   onPrepareTrim,
   onPrepareSameComposition,
+  highlightTrimSubjects,
   highlightPrepare = false,
 }: {
   items: DiagnosticInput[];
@@ -54,6 +55,8 @@ export function DatasetDiagnosticsPanel({
   onPrepareTrim?: (subject: string, bucket: string, count: number) => void;
   /** 同じ構図の画像から、少しだけ残して他を減らす候補として選ぶ（2026-09-25）。 */
   onPrepareSameComposition?: (subject: string, signature: string) => void;
+  /** 「減らす候補を選ぶ」を次にやることとして光らせる被写体（まだ検討していない人だけ）。 */
+  highlightTrimSubjects?: Set<string>;
   /** 導線として「切り出す準備をする」を光らせるか（loraFlowStep が決める）。 */
   highlightPrepare?: boolean;
 }) {
@@ -254,7 +257,9 @@ export function DatasetDiagnosticsPanel({
                     key={`${i.subject}:${i.sameComposition.signature}`}
                     type="button"
                     onClick={() => onPrepareSameComposition(i.subject, i.sameComposition.signature)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-300 transition-colors hover:bg-amber-500/20"
+                    className={`inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-300 transition-colors hover:bg-amber-500/20${
+                      highlightTrimSubjects?.has(i.subject) ? " flow-next" : ""
+                    }`}
                   >
                     <span className="font-mono">{i.subject}</span> の同じ構図 {i.sameComposition.count}枚から減らす候補を選ぶ
                   </button>
@@ -276,7 +281,9 @@ export function DatasetDiagnosticsPanel({
                     key={subj}
                     type="button"
                     onClick={() => onPrepareTrim(subj, t.bucket, t.count)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-300 transition-colors hover:bg-amber-500/20"
+                    className={`inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-300 transition-colors hover:bg-amber-500/20${
+                      highlightTrimSubjects?.has(subj) ? " flow-next" : ""
+                    }`}
                   >
                     <span className="font-mono">{subj}</span> の{bucketLabel(t.bucket)}から減らす候補（約 {t.count}枚）を選ぶ
                   </button>

@@ -666,6 +666,8 @@ export function ImageDropzone({
   notice,
   onDismissNotice,
   selectable,
+  highlightDelete,
+  onDeletedSelected,
 }: {
   images: DatasetImage[];
   onAdd: (files: FileList | File[]) => void;
@@ -695,9 +697,22 @@ export function ImageDropzone({
   /** 取り込み結果の通知（追加枚数・除外理由など）。 */
   notice?: string | null;
   onDismissNotice?: () => void;
+  /** 「選択した N 枚を削除」を次にやることとして光らせる（減らす候補を選んだ直後、2026-09-25）。 */
+  highlightDelete?: boolean;
+  /** 「選択した N 枚を削除」で消したあと（再診断の結果へ送るため）。 */
+  onDeletedSelected?: (count: number) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
+  // 一覧の表示の絞り込み（2026-09-25、ホスト指摘「枠が付いたものだけ並ぶと見比べやすい」）。
+  const [viewFilter, setViewFilter] = useState<"all" | "selected" | "warn">("all");
+  // 選択が空になった・枠付きが無くなったら全件表示に戻す（空の一覧を見せない）。
+  const shownFilter =
+    viewFilter === "selected" && selectedIds.size === 0
+      ? "all"
+      : viewFilter === "warn" && (warnIds?.size ?? 0) === 0
+        ? "all"
+        : viewFilter;
   const totalBytes = images.reduce((s, i) => s + i.file.size, 0);
   // 学習回数の一括設定用の選択状態。1枚ずつ触るには枚数が多すぎるので、
   // 「選んでまとめて設定」を基本操作にする（shift+クリックで範囲選択）。
@@ -839,10 +854,27 @@ export function ImageDropzone({
                       const ids = [...selected];
                       ids.forEach((id) => onRemove(id));
                       setSelected(new Set());
+                      setViewFilter("all");
+                      onDeletedSelected?.(ids.length);
                     }}
-                    className="rounded-md border border-red-500/50 bg-red-500/10 px-2 py-0.5 font-medium text-red-300 transition-colors hover:bg-red-500/20"
+                    className={`rounded-md border border-red-500/50 bg-red-500/10 px-2 py-0.5 font-medium text-red-300 transition-colors hover:bg-red-500/20${
+                      highlightDelete ? " flow-next" : ""
+                    }`}
                   >
                     選択した {selected.size} 枚を削除
+                  </button>
+                )}
+                {/* × で 1 枚ずつ消したあと、残りを残して次へ進むため（2026-09-25）。 */}
+                {selected.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelected(new Set());
+                      setViewFilter("all");
+                    }}
+                    className="rounded-md border border-border px-2 py-0.5 text-muted transition-colors hover:text-foreground"
+                  >
+                    選択を解除
                   </button>
                 )}
                 <button
@@ -855,8 +887,41 @@ export function ImageDropzone({
               </span>
             )}
           </div>
+          {(selected.size > 0 || (warnIds?.size ?? 0) > 0) && (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px]">
+              <span className="text-muted">表示:</span>
+              {(
+                [
+                  ["all", `すべて（${images.length}）`],
+                  ...(selected.size > 0 ? ([["selected", `選択中だけ（${selected.size}）`]] as const) : []),
+                  ...((warnIds?.size ?? 0) > 0 ? ([["warn", `2人以上だけ（${warnIds?.size}）`]] as const) : []),
+                ] as const
+              ).map(([v, label]) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setViewFilter(v)}
+                  className={`rounded-md border px-2 py-0.5 transition-colors ${
+                    shownFilter === v
+                      ? "border-neon-violet/60 bg-neon-violet/15 text-neon-violet"
+                      : "border-border text-muted hover:border-neon-violet/40"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-5">
-            {images.map((img) => {
+            {images
+              .filter((img) =>
+                shownFilter === "selected"
+                  ? selected.has(img.id)
+                  : shownFilter === "warn"
+                    ? (warnIds?.has(img.id) ?? false)
+                    : true,
+              )
+              .map((img) => {
               const st = captionState?.(img.id) ?? "ok";
               const recapping = recaptioningIds?.has(img.id) ?? false;
               const reps = img.repeats ?? 1;
