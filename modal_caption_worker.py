@@ -222,7 +222,7 @@ class CaptionVLM:
     image=endpoint_image,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
     timeout=60,
-    scaledown_window=60,
+    scaledown_window=2,
 )
 @modal.fastapi_endpoint(method="POST")
 def caption_dispatch(body: dict, request: fastapi.Request):
@@ -246,7 +246,7 @@ def caption_dispatch(body: dict, request: fastapi.Request):
     image=endpoint_image,
     secrets=[modal.Secret.from_name("wan-animate-auth"), modal.Secret.from_name("supabase-model-downloads")],
     timeout=60,
-    scaledown_window=60,
+    scaledown_window=2,
 )
 @modal.fastapi_endpoint(method="POST")
 def caption_abort(body: dict, request: fastapi.Request):
@@ -271,7 +271,7 @@ def caption_abort(body: dict, request: fastapi.Request):
     image=endpoint_image,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
     timeout=30,
-    scaledown_window=60,
+    scaledown_window=2,
 )
 @modal.fastapi_endpoint(method="GET")
 def caption_status(dict_key: str, request: fastapi.Request):

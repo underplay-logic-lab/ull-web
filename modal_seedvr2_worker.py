@@ -2869,7 +2869,7 @@ class SeedVR2Worker:
 @app.function(
     image=dispatch_image,
     timeout=300,
-    scaledown_window=30,
+    scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="POST")
@@ -2904,7 +2904,7 @@ def upscale_generate_dispatch(item: dict, request: fastapi.Request):
 @app.function(
     image=dispatch_image,
     timeout=300,
-    scaledown_window=30,
+    scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="POST")
@@ -2951,7 +2951,7 @@ def upscale_batch_generate_dispatch(item: dict, request: fastapi.Request):
 @app.function(
     image=dispatch_image,
     timeout=300,
-    scaledown_window=30,
+    scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="POST")
@@ -3602,7 +3602,7 @@ def _ffprobe_url(url: str, timeout_s: int = 40) -> dict:
 @app.function(
     image=probe_image,
     timeout=60,
-    scaledown_window=30,
+    scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="POST")

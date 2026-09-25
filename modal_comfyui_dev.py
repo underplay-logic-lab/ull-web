@@ -326,7 +326,7 @@ def comfyui_server():
 # request up from control_dict within STOP_POLL_INTERVAL_SECONDS. The
 # "状態確認" status check POSTs {"action": "status"} to read the same
 # container's heartbeat back out.
-@app.function(image=image, timeout=30, secrets=[modal.Secret.from_name("wan-animate-auth")])
+@app.function(scaledown_window=2, image=image, timeout=30, secrets=[modal.Secret.from_name("wan-animate-auth")])
 @modal.fastapi_endpoint(method="POST")
 def control(item: dict, request: fastapi.Request):
     _authorize(request)

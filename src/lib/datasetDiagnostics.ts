@@ -101,8 +101,14 @@ export const DIAGNOSTIC_AXES: Record<DiagnosticAxis, AxisDef> = {
 export const DIAGNOSTIC_TARGETS = {
   /** 1被写体あたりのユニーク枚数の下限。これを割ると何をしても厳しい。 */
   minUniquePerSubject: 15,
-  /** 距離バケットごとの目安枚数。 */
-  distance: { closeup: 5, upper: 4, full: 5 } as Record<string, number>,
+  /**
+   * 距離バケットごとの目安（2026-09-25 に割合へ変更、ホスト指摘「顔アップ 5 枚・上半身 6 枚で上半身不足しか
+   * 出ないのはおかしい。顔アップのほうが必要では」）。以前は被写体の枚数に関係なく固定枚数（顔アップ 5 枚等）で、
+   * 全身が大半を占める被写体の顔不足を見逃していた。人物 LoRA は顔が似ることが本題なので顔アップを厚めにする。
+   * 目安 = max(下限枚数, ceil(その被写体の枚数 × 割合))。どちらも未校正の出発点（上の ⚠️ 参照）。
+   */
+  distanceShare: { closeup: 0.3, upper: 0.3, full: 0.15 } as Record<string, number>,
+  distanceMin: { closeup: 5, upper: 4, full: 4 } as Record<string, number>,
   /** 露出比がこの倍率以上離れたら偏りとみなす。 */
   exposureImbalanceRatio: 2.5,
   /**
@@ -495,6 +501,9 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
   if (subjects.length === 0) return issues;
 
   for (const s of subjects) {
+    // 被写体を判定できなかった画像の寄せ集めは、ほかに被写体の枠があるときは「その人の構図」ではないので
+    // 距離・枚数の指摘を出さない（2026-09-25）。全画像がここに入る（推定の手がかりが無い）ときは出す。
+    const pseudo = s.trigger === WHOLE_DATASET_SUBJECT && subjects.length > 1;
     // --- 構造的な欠落（仮値に依存しないので断定できる）---
     for (const axis of ["view", "elevation", "pose", "background"] as DiagnosticAxis[]) {
       const buckets = DIAGNOSTIC_AXES[axis].buckets;
@@ -528,9 +537,10 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
     // distance.buckets は寄り → 引き の順に並んでいる。切り出しは「引き画を
     // 寄せる」ことしかできないので、自分より後ろ（広い）バケットに在庫が
     // あるときだけ smart_crop を出口にする。
-    for (const b of DIAGNOSTIC_AXES.distance.buckets) {
+    for (const b of pseudo ? [] : DIAGNOSTIC_AXES.distance.buckets) {
       const got = s.axes.distance[b.id] ?? 0;
-      const want = DIAGNOSTIC_TARGETS.distance[b.id] ?? 0;
+      const share = DIAGNOSTIC_TARGETS.distanceShare[b.id] ?? 0;
+      const want = Math.max(DIAGNOSTIC_TARGETS.distanceMin[b.id] ?? 0, Math.ceil(s.unique * share));
       if (want <= 0 || got >= want) continue;
       const fix = distanceFix(b.id, s.axes.distance);
       issues.push({
@@ -539,7 +549,7 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
         // 黄色で流されるより確実に手を打ってもらうほうがよい。
         level: got === 0 || fix.fixableWith === "smart_crop" ? "error" : "warn",
         subject: s.trigger,
-        message: `「${b.label}」が ${got}枚です（目安 ${want}枚）。${
+        message: `「${b.label}」が ${got}枚です（目安 ${want}枚＝この被写体の ${Math.round(share * 100)}%）。${
           got === 0 ? "この距離では生成できません。" : ""
         }${fix.fixableWith === "smart_crop" ? "より引いた画から、スマートクロップで作れます。" : ""}`,
         notFixableByRepeats: true,
@@ -547,7 +557,7 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
       });
     }
 
-    if (s.unique < DIAGNOSTIC_TARGETS.minUniquePerSubject) {
+    if (!pseudo && s.unique < DIAGNOSTIC_TARGETS.minUniquePerSubject) {
       issues.push({
         level: "warn",
         subject: s.trigger,

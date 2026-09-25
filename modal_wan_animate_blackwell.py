@@ -647,7 +647,7 @@ def _sanitize_relative_dir(raw: str) -> str | None:
     return os.path.relpath(full, base).replace(os.sep, "/")
 
 
-@app.function(image=image, volumes={MODELS_DIR: vol}, timeout=1800)
+@app.function(scaledown_window=2, image=image, volumes={MODELS_DIR: vol}, timeout=1800)
 def ensure_models():
     """Download any missing Wan model weights into the persistent volume."""
     import requests
@@ -680,7 +680,7 @@ def ensure_models():
 # CLAUDE.md §1「CPU で import と資産準備がグリーン → はじめて GPU 実行」。
 #   PYTHONIOENCODING=utf-8 PYTHONUTF8=1 modal run modal_wan_animate_blackwell.py::probe_image_prep
 # ---------------------------------------------------------------------------
-@app.function(image=image, cpu=2, memory=4096, timeout=300)
+@app.function(scaledown_window=2, image=image, cpu=2, memory=4096, timeout=300)
 def probe_image_prep() -> dict:
     import io as _io
 
@@ -743,7 +743,7 @@ def probe_image_prep() -> dict:
 OUTPUTS_ALL_RETENTION_DAYS = 7
 
 
-@app.function(image=image, volumes={MODELS_DIR: vol}, schedule=modal.Period(days=1), timeout=300)
+@app.function(scaledown_window=2, image=image, volumes={MODELS_DIR: vol}, schedule=modal.Period(days=1), timeout=300)
 def cleanup_old_outputs():
     """
     Deletes outputs/all/* older than OUTPUTS_ALL_RETENTION_DAYS. Shares the
@@ -1206,6 +1206,7 @@ def _extend_gpu_warm(user_id: str) -> None:
 
 
 @app.function(
+    scaledown_window=2,
     image=image,
     volumes={MODELS_DIR: vol},
     timeout=3600,
@@ -1255,6 +1256,7 @@ def download_model_async(download_id: str, url: str, subfolder: str, filename: s
 
 
 @app.function(
+    scaledown_window=2,
     image=image,
     volumes={MODELS_DIR: vol},
     timeout=7200,
@@ -2168,7 +2170,7 @@ class WanAnimateBlackwell:
 # function has no such requirement; .spawn() schedules the real work and
 # returns a call handle without the caller (or Modal) needing to wait for
 # a container at all.
-@app.function(image=image, secrets=[modal.Secret.from_name("wan-animate-auth")])
+@app.function(scaledown_window=2, image=image, secrets=[modal.Secret.from_name("wan-animate-auth")])
 @modal.fastapi_endpoint(method="POST")
 def custom_workflow_async(item: dict, request: fastapi.Request):
     _authorize(request)
@@ -2819,7 +2821,7 @@ def probe_vdn_h3():
         print(result.get("stderr") or result.get("traceback") or result.get("error"))
 
 
-@app.function(image=image, volumes={MODELS_DIR: vol}, timeout=120)
+@app.function(scaledown_window=2, image=image, volumes={MODELS_DIR: vol}, timeout=120)
 def install_vdn_h3_node() -> dict:
     """VDN-H3ノードを(ephemeralな使い捨てクローンではなく) Volume 側の
     custom_nodes/ へ永続インストールする（2026-09-13）。ModalStorageBlackwell.
@@ -2842,7 +2844,7 @@ def install_vdn_h3_node() -> dict:
     return {"ok": True, "already_installed": False}
 
 
-@app.function(image=image, volumes={MODELS_DIR: vol}, timeout=1200)
+@app.function(scaledown_window=2, image=image, volumes={MODELS_DIR: vol}, timeout=1200)
 def download_vdn_checkpoint(stage: str = "stage-b-step-2000") -> dict:
     """OpenVDN/vdn-minimax-h3からVDNブランチの重みだけを狙ってダウンロードする
     （2026-09-13）。Modal Volumeが既に~939GB/1TBに迫っているため（[[modal-volume-
@@ -2866,7 +2868,7 @@ def download_vdn_checkpoint(stage: str = "stage-b-step-2000") -> dict:
     return {"ok": True, "stage_dir": stage_dir, "files": files}
 
 
-@app.function(image=image, volumes={MODELS_DIR: vol}, timeout=2400)
+@app.function(scaledown_window=2, image=image, volumes={MODELS_DIR: vol}, timeout=2400)
 def download_trellis2_weights() -> dict:
     """ComfyUI Native TRELLIS.2（comfy_extras/nodes_trellis2.py、v0.35.1で
     存在確認済み — nvdiffrast/nvdiffrec不使用でCLAUDE.md §5準拠）の重みを
@@ -2909,7 +2911,7 @@ def download_trellis2_weights() -> dict:
     return {"ok": all(v for v in staged.values()), "staged": staged}
 
 
-@app.function(image=image, volumes={MODELS_DIR: vol}, timeout=2400)
+@app.function(scaledown_window=2, image=image, volumes={MODELS_DIR: vol}, timeout=2400)
 def download_pixal3d_weights() -> dict:
     """Pixal3D（社内品質確認限定 — ライセンス未確定・TencentARC/Pixal3D
     Issue #33 未回答、CLAUDE.md §5により本番採用は保留）の重みをCPU専用で

@@ -2170,7 +2170,7 @@ class QwenImageEditWorker:
     image=dispatch_image,
     # ACK は sub-second（.spawn() して即返す）。外部上限 5 分で十分。
     timeout=300,
-    scaledown_window=30,
+    scaledown_window=2,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )
 @modal.fastapi_endpoint(method="POST")

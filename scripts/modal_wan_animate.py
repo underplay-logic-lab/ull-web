@@ -578,7 +578,7 @@ def _sanitize_relative_dir(raw: str) -> str | None:
     return os.path.relpath(full, base).replace(os.sep, "/")
 
 
-@app.function(image=image, volumes={MODELS_DIR: vol}, timeout=1800)
+@app.function(scaledown_window=2, image=image, volumes={MODELS_DIR: vol}, timeout=1800)
 def ensure_models():
     """Download any missing Wan model weights into the persistent volume."""
     import requests
@@ -609,7 +609,7 @@ def ensure_models():
 OUTPUTS_ALL_RETENTION_DAYS = 7
 
 
-@app.function(image=image, volumes={MODELS_DIR: vol}, schedule=modal.Period(days=1), timeout=300)
+@app.function(scaledown_window=2, image=image, volumes={MODELS_DIR: vol}, schedule=modal.Period(days=1), timeout=300)
 def cleanup_old_outputs():
     """
     Deletes outputs/all/* older than OUTPUTS_ALL_RETENTION_DAYS — the
@@ -668,6 +668,7 @@ def _supabase_patch_download(download_id: str, fields: dict) -> None:
 
 
 @app.function(
+    scaledown_window=2,
     image=image,
     volumes={MODELS_DIR: vol},
     timeout=3600,
@@ -727,6 +728,7 @@ def download_model_async(download_id: str, url: str, subfolder: str, filename: s
 
 
 @app.function(
+    scaledown_window=2,
     image=image,
     volumes={MODELS_DIR: vol},
     timeout=7200,
@@ -1311,16 +1313,10 @@ admin_storage_image = modal.Image.debian_slim(python_version="3.13").apt_install
 @app.cls(
     image=admin_storage_image,
     timeout=300,
-    # CLAUDE.md §1の「動画生成系GPUワーカー=30秒」「LoRA worker=2秒」の
-    # どちらの規格もgpu=持ちクラス限定（前者）/ modal_lora_worker.py限定
-    # （後者）で、このクラスはどちらにも該当しない——CPU専用・admin一人だけ
-    # が使う対話的ブラウジング用途。軽量image化後もコールドスタートは
-    # 7秒程度かかる実測があり、2秒即切りだと「次に何を開くか考えている」
-    # 普通の操作間隔でも毎回引いてしまう。CPU課金は$0.0473/コア時間と
-    # GPUの1/100以下（2026-09-19実測: このクラスへのテスト一式でも合計
-    # 約$0.002）なので、60秒（クリック間の通常の間隔をカバーしつつ
-    # アイドル課金は最小限）に設定する。
-    scaledown_window=60,
+    # CPU専用・admin一人だけが使う対話的ブラウジング用途。以前はコールドスタート（約7秒）を
+    # クリックのたびに引かないよう60秒にしていたが、2026-09-25 のホスト判断で CPU のみの関数は
+    # 一律2秒即切りに揃えた（CLAUDE.md §1。ModalStorageBlackwell も同じ）。
+    scaledown_window=2,
     volumes={MODELS_DIR: vol},
     secrets=[modal.Secret.from_name("wan-animate-auth")],
 )

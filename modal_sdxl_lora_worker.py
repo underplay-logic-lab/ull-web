@@ -229,7 +229,7 @@ image = (
 vol = modal.Volume.from_name("ull-wan-models", create_if_missing=True)
 
 
-@app.function(image=image, timeout=300)
+@app.function(scaledown_window=2, image=image, timeout=300)
 def probe_imports() -> dict:
     """CPU-only — verifies sd-scripts' SDXL LoRA training entrypoint and its
     full dependency chain import cleanly, before any GPU container is ever
