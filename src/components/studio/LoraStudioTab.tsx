@@ -99,12 +99,15 @@ import {
   compositionText,
   DIAGNOSTIC_AXES,
   imageSubjects,
+  identityTagsFromWd,
   peopleCountFromTags,
+  soloGenderFromTags,
+  subjectGender,
   suggestRepeats,
   WHOLE_DATASET_SUBJECT,
 } from "@/lib/datasetDiagnostics";
 import { DatasetDiagnosticsPanel } from "@/components/studio/DatasetDiagnosticsPanel";
-import { translateCaption } from "@/lib/loraTranslate";
+import { translateCaption, translateCaptionsBatch } from "@/lib/loraTranslate";
 import { extractIdentityTags } from "@/lib/loraCaption";
 import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
 import { generateDatasetCaptions, captionFileKey, tagDatasetComposition } from "@/lib/loraCaption";
@@ -158,6 +161,8 @@ import {
   METADATA_PANEL_ID,
   SUBJECTS_PANEL_ID,
   LORA_SETTINGS_ANCHOR_ID,
+  LORA_SUBMIT_ID,
+  IDENTITY_CONFIRM_ID,
   SUBJECT_HINT_SEEN_KEY,
   RepeatWeightPanel,
   SmartCropPanel,
@@ -1083,6 +1088,9 @@ export function LoraStudioTab({
   // 「減らす」を検討し終えた被写体（候補を選んだ）。"*" は全員分を飛ばして切り出しへ進んだ印。減らすは被写体ごとに
   // 1 人ずつ光らせ、全員分が済んだら切り出しへ進む（2026-09-25、ホスト質問「2 人とも対象ならどう光る？」）。
   const [trimVisited, setTrimVisited] = useState<Set<string>>(new Set());
+  // 最後の段階の導線用（2026-09-25）: 「構図の偏りを均す」を押したか・「学習設定へ進む」を押したか。
+  const [repeatsApplied, setRepeatsApplied] = useState(false);
+  const [settingsVisited, setSettingsVisited] = useState(false);
   // 選択するだけだと一覧が画面外で「押しても何も起きない」に見える（2026-09-24、ホスト指摘）。
   // 選んだ最初の画像までスクロールする。
   // 減らす候補を選んだとき（2026-09-25、ホスト指摘）: 一覧を「選択中だけ」にして、一覧の上の行へスクロールする。
@@ -1282,6 +1290,30 @@ export function LoraStudioTab({
     },
     [images, captions],
   );
+
+  // WD のタグから作った特徴を入れる（2026-09-25）。日本語の表示は文字だけの翻訳で付ける（拒否されない）。
+  // 翻訳に失敗しても英語のまま入れる。
+  const applyIdentityTags = useCallback(async (index: number, tags: string[]) => {
+    const en = tags.join(", ");
+    const set = (env: string, ja: string) => {
+      if (index < 0) {
+        setPrimaryIdentityTags(env);
+        setPrimaryIdentityTagsJa(ja);
+      } else {
+        setExtraSubjects((prev) =>
+          prev.map((p, k) => (k === index ? { ...p, identityTags: env, identityTagsJa: ja } : p)),
+        );
+      }
+    };
+    setIdentityExtracting(index);
+    try {
+      const ja = await translateCaptionsBatch(tags, "to_ja", "tags").catch(() => [] as string[]);
+      set(en, ja.length === tags.length && ja.every((x) => x.trim()) ? ja.join(", ") : "");
+      setIdentityConfirmed(false);
+    } finally {
+      setIdentityExtracting(null);
+    }
+  }, []);
 
   const setImageRepeats = useCallback((ids: string[], repeats: number) => {
     const target = new Set(ids);
@@ -1634,6 +1666,7 @@ export function LoraStudioTab({
       byRepeat.set(n, list);
     });
     for (const [n, ids] of byRepeat) setImageRepeats(ids, n);
+    setRepeatsApplied(true);
     setRepeatsNotice(
       "構図の偏りを均す学習回数を入れました: " +
         [...byRepeat.entries()]
@@ -1722,6 +1755,9 @@ export function LoraStudioTab({
             };
       if (!sub.trigger) return;
       autoExtractedRef.current.delete(identityKeyFor(index, sub.trigger, sub.fixedTags));
+      // WD から作った分も作り直せるように（2026-09-25）。
+      autoExtractedRef.current.delete(`wd:${identityKeyFor(index, sub.trigger, sub.fixedTags)}`);
+      autoExtractedRef.current.delete(`wd:${identityKeyFor(index, sub.trigger, sub.fixedTags)}:none`);
       if (index < 0) {
         setPrimaryIdentityTags("");
         setPrimaryIdentityTagsJa("");
@@ -1747,6 +1783,8 @@ export function LoraStudioTab({
     if (!analysisStarted) return;
     // 特徴（人物の見た目）の抽出は人物 LoRA だけ（2026-09-25）。
     if (!characterLora) return;
+    // 自分でキャプションを用意する場合は特徴を使わない（Gemini の呼び出しも節約）。
+    if (captionSource === "manual") return;
     {
     const jobs = [
       {
@@ -1764,8 +1802,40 @@ export function LoraStudioTab({
         has: !!(sub.identityTags ?? "").trim(),
       })),
     ];
+    // WD のタグから作れる被写体は、構図の判定が終わってから WD で作る（2026-09-25、ホスト判断）。作れるのは、
+    // 被写体が 1 人のときと、性別で 1 人写りの画像を分けられるとき。同性の 2 人は誰の画像か分からないので Gemini。
+    const named = jobs.filter((j) => j.trigger);
+    const genderOf = (j: (typeof jobs)[number]) =>
+      subjectGender({ trigger: j.trigger, description: j.hint, fixedTags: j.fixedTags });
+    const compositionReady =
+      !composition.running &&
+      images.length > 0 &&
+      images.every((i) => compositionTags[i.id] || compositionAttemptedRef.current.has(i.id));
+    const wdPool = (j: (typeof jobs)[number]): string[] | null => {
+      if (named.length <= 1) {
+        return images
+          .map((i) => compositionTags[i.id] ?? "")
+          .filter((t) => t && peopleCountFromTags(t) <= 1);
+      }
+      const g = genderOf(j);
+      if (!g || named.some((o) => o !== j && genderOf(o) !== (g === "f" ? "m" : "f"))) return null;
+      return images.map((i) => compositionTags[i.id] ?? "").filter((t) => t && soloGenderFromTags(t) === g);
+    };
     for (const j of jobs) {
       if (!j.trigger || j.has) continue;
+      const wdKey = `wd:${identityKeyFor(j.index, j.trigger, j.fixedTags)}`;
+      if (wdPool(j) !== null && !autoExtractedRef.current.has(`${wdKey}:none`)) {
+        if (!compositionReady) continue; // 構図の判定が終わるまで待つ
+        if (autoExtractedRef.current.has(wdKey)) continue;
+        const tags = identityTagsFromWd(wdPool(j) ?? []);
+        if (tags.length > 0) {
+          autoExtractedRef.current.add(wdKey);
+          void applyIdentityTags(j.index, tags);
+          continue;
+        }
+        // WD で 1 つも拾えなかった（画像が少ない等）ときは Gemini に回す。
+        autoExtractedRef.current.add(`${wdKey}:none`);
+      }
       // 「誰を見るか」の手がかりが埋まるまで待つ。SDXL は性別タグ、それ以外は「どんな人物か」の説明
       // （2026-09-25、SDXL 以外は性別タグ欄を使わず説明に性別を書いてもらう）。
       if (!identityCueFor(j.fixedTags, j.hint)) continue;
@@ -1778,7 +1848,7 @@ export function LoraStudioTab({
     // extractIdentityFor は毎レンダー作り直されるので依存から外す（キーで
     // 二重実行を防いでいる）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analysisStarted, characterLora, images.length, triggerWord, primaryIdentityTags, primaryFixedTags, primaryDescription, extraSubjects]);
+  }, [analysisStarted, characterLora, captionSource, images, triggerWord, primaryIdentityTags, primaryFixedTags, primaryDescription, extraSubjects, composition.running, compositionTags]);
 
   // 被写体の「特徴」欄の説明を読んだか（初回だけ出す）。初期値を lazy に
   // 読むので effect で setState する必要がない。SSR では false のまま。
@@ -2039,9 +2109,20 @@ export function LoraStudioTab({
 
   // metadata に何か埋め込む LoRA では、内容を目視確認するまで学習させない。
   // 納品物に焼かれてユーザーの手元へ渡るものなので、黙って確定させない。
+  // 特徴の確認は「AI にキャプションを作らせる人物 LoRA」だけ（2026-09-25）。特徴はキャプションに書かせない言葉の
+  // リストなので、キャプションの前に確定させる。SDXL は metadata への書き込みも兼ねる（従来どおり）。SDXL 以外にも
+  // 広げた（以前は SDXL だけで、SDXL 以外は特徴を確かめないままキャプション作成が光っていた、ホスト指摘）。
+  // 自分で用意する場合は特徴を使わないので確認しない。
   const needsIdentityConfirm = useMemo(
-    () => !yamlMode && isSdxlJob && autoEmbedTags.trim().length > 0 && !identityConfirmed,
-    [yamlMode, isSdxlJob, autoEmbedTags, identityConfirmed],
+    () =>
+      !yamlMode &&
+      characterLora &&
+      captionSource === "ai" &&
+      (isSdxlJob
+        ? autoEmbedTags.trim().length > 0
+        : allSubjects.some((x) => (x.identityTags ?? "").trim().length > 0)) &&
+      !identityConfirmed,
+    [yamlMode, characterLora, captionSource, isSdxlJob, autoEmbedTags, allSubjects, identityConfirmed],
   );
 
   // Caption FORMAT resolved for the model in the dropdown right now. The key
@@ -2800,9 +2881,10 @@ export function LoraStudioTab({
     if (!finished || scrolledToMetaRef.current || !needsIdentityConfirm) return;
     scrolledToMetaRef.current = true;
     setEmbedTagsOpen(true);
+    // SDXL は metadata の書き込み欄、それ以外は人物欄の下の確認へ（2026-09-25）。
     document
-      .getElementById(METADATA_PANEL_ID)
-      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      .getElementById(isSdxlJobRef.current ? METADATA_PANEL_ID : IDENTITY_CONFIRM_ID)
+      ?.scrollIntoView({ behavior: "smooth", block: isSdxlJobRef.current ? "start" : "center" });
   }, [identityExtracting, needsIdentityConfirm]);
 
   // 診断へ送る（1 データセットにつき 1 回）。2026-09-25 に 1 本へまとめた: 以前は「構図の判定が終わった瞬間」
@@ -2945,6 +3027,8 @@ export function LoraStudioTab({
         trimAvailable: trimPendingSubjects.size > 0,
         trimVisited: false,
         trimSelected: selectionPurpose === "trim" && selectedImageIds.size > 0,
+        repeatsApplied,
+        settingsVisited,
         cropAvailable: flowDiag.issues.some(
           (x) => x.fixableWith === "smart_crop" && (x.cropKinds?.length ?? 0) > 0,
         ),
@@ -2974,6 +3058,8 @@ export function LoraStudioTab({
       selectedImageIds,
       selectionPurpose,
       trimPendingSubjects,
+      repeatsApplied,
+      settingsVisited,
     ],
   );
   const flowRing = (t: LoraFlowTarget) => (flow.targets.includes(t) ? " flow-next" : "");
@@ -3811,6 +3897,8 @@ export function LoraStudioTab({
     setCaptionStarted(false);
     setSelectionPurpose(null);
     setTrimVisited(new Set());
+    setRepeatsApplied(false);
+    setSettingsVisited(false);
     setCompositionTags({});
     setComposition({ running: false, done: 0, total: 0, error: null });
     compositionAttemptedRef.current = new Set();
@@ -4796,11 +4884,13 @@ export function LoraStudioTab({
               selectedIds={selectedImageIds}
               onSelectedChange={setSelectedImageIds}
               onSuggestRepeats={diagnosticItems.length > 0 ? applySuggestedRepeats : undefined}
-              onGoToSettings={() =>
-                document
-                  .getElementById(LORA_SETTINGS_ANCHOR_ID)
-                  ?.scrollIntoView({ behavior: "smooth", block: "start" })
-              }
+              // 実行ボタンへ送る（2026-09-25、ホスト指摘「学習設定の途中の中途半端な位置に止まる」）。設定は自動で
+              // 決まっているので、見るべきは実行ボタンとその上の料金。
+              onGoToSettings={() => {
+                setSettingsVisited(true);
+                document.getElementById(LORA_SUBMIT_ID)?.scrollIntoView({ behavior: "smooth", block: "center" });
+              }}
+              highlightGoToSettings={flow.targets.includes("goToSettings")}
               highlightSuggest={flow.targets.includes("suggestRepeats")}
               suggestNotice={repeatsNotice}
             />
@@ -5016,14 +5106,16 @@ export function LoraStudioTab({
                           onTranslateTag={translateIdentityTag}
                           onRedo={() => redoIdentityExtract(-1)}
                           blockedReason={
-                            (isSdxlJob ? primaryFixedTags : primaryDescription).trim()
+                      captionSource === "manual"
+                        ? "キャプションを自分で用意するときは使いません（AI にキャプションを作らせるときに、書かせない特徴として使います）。"
+                        :                             (isSdxlJob ? primaryFixedTags : primaryDescription).trim()
                               ? null
                               : isSdxlJob
                         ? "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
                         : "上の「どんな人物か」を書くと、画像から自動で抽出します（性別も書くと、別の人物との取り違えが減ります）。"
                           }
-                          disabled={busy}
-                        />
+                          disabled={busy || captionSource === "manual"}
+                    />
                         )}
                       </>
                     )}
@@ -5060,14 +5152,16 @@ export function LoraStudioTab({
                     onTranslateTag={translateIdentityTag}
                     onRedo={() => redoIdentityExtract(-1)}
                     blockedReason={
-                      (isSdxlJob ? primaryFixedTags : primaryDescription).trim()
+                      captionSource === "manual"
+                        ? "キャプションを自分で用意するときは使いません（AI にキャプションを作らせるときに、書かせない特徴として使います）。"
+                        :                       (isSdxlJob ? primaryFixedTags : primaryDescription).trim()
                         ? null
                         : isSdxlJob
                         ? "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
                         : "上の「どんな人物か」を書くと、画像から自動で抽出します（性別も書くと、別の人物との取り違えが減ります）。"
                     }
-                    disabled={busy}
-                  />
+                    disabled={busy || captionSource === "manual"}
+                    />
                   )}
                 </div>
               );
@@ -5156,14 +5250,16 @@ export function LoraStudioTab({
                     onTranslateTag={translateIdentityTag}
                     onRedo={() => redoIdentityExtract(i)}
                     blockedReason={
-                      (isSdxlJob ? (s.fixedTags ?? "") : (s.description ?? "")).trim()
+                      captionSource === "manual"
+                        ? "キャプションを自分で用意するときは使いません（AI にキャプションを作らせるときに、書かせない特徴として使います）。"
+                        :                       (isSdxlJob ? (s.fixedTags ?? "") : (s.description ?? "")).trim()
                         ? null
                         : isSdxlJob
                         ? "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
                         : "上の「どんな人物か」を書くと、画像から自動で抽出します（性別も書くと、別の人物との取り違えが減ります）。"
                     }
-                    disabled={busy}
-                  />
+                    disabled={busy || captionSource === "manual"}
+                    />
                   )}
                 </div>
               ))}
@@ -5193,6 +5289,31 @@ export function LoraStudioTab({
                 別の人物を追加（複数人物・被写体を1つのLoRAで区別したい場合）
               </button>
             )}
+            {/* SDXL 以外の特徴の確認（2026-09-25）。SDXL は metadata の書き込み欄に同じ確認がある。特徴はキャプションに
+                書かせない言葉のリストなので、キャプションを作る前に確定させる。 */}
+            {!yamlMode && !isSdxlJob && characterLora && captionSource === "ai" && images.length > 0 &&
+              allSubjects.some((x) => (x.identityTags ?? "").trim()) && (
+                <label
+                  id={IDENTITY_CONFIRM_ID}
+                  className={`mt-2 flex scroll-mt-24 cursor-pointer items-start gap-1.5 rounded-lg p-1 text-[10px] leading-relaxed text-foreground${flowRing("identityConfirm")}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={identityConfirmed}
+                    onChange={(e) => setIdentityConfirmed(e.target.checked)}
+                    disabled={busy || identityExtracting !== null}
+                    className="mt-0.5 accent-neon-violet"
+                  />
+                  <span>
+                    {identityExtracting !== null
+                      ? "特徴を抽出しています… 終わるまでお待ちください"
+                      : "この「学習したい特徴」で確定する（キャプションにはこれらを書かず、トリガーワードに覚えさせます）"}
+                    {!identityConfirmed && identityExtracting === null && (
+                      <span className="ml-1 text-amber-400">（確定するまでキャプションを作れません）</span>
+                    )}
+                  </span>
+                </label>
+              )}
             {/* キャプションが古くなった警告は、変えた場所の近くに出す
                 （2026-09-22、ホスト指摘）。以前はキャプション欄にあり、
                 設定を変えた本人が気付けなかった。 */}
@@ -5351,7 +5472,18 @@ export function LoraStudioTab({
           </div>
 
           {/* LoRA-type-aware auto-caption spec — category + JP fixed/varying */}
-          <div className={`rounded-xl border border-neon-violet/30 bg-neon-violet/5${flowRing("captionSpec")}`}>
+          {/* キャプションを自分で用意する場合は使わないのでグレーアウト（2026-09-25、ホスト指摘「紛らわしい」）。 */}
+          {captionSource === "manual" && (
+            <p className="text-[10px] text-muted">
+              キャプションを自分で用意するので、下の「キャプション自動最適化」は使いません。
+            </p>
+          )}
+          <div
+            aria-disabled={captionSource === "manual"}
+            className={`rounded-xl border border-neon-violet/30 bg-neon-violet/5${flowRing("captionSpec")}${
+              captionSource === "manual" ? " pointer-events-none opacity-40" : ""
+            }`}
+          >
             <button
               type="button"
               onClick={() => setCaptionPromptOpen((v) => !v)}
@@ -5948,6 +6080,7 @@ export function LoraStudioTab({
               </p>
             )}
             <button
+              id={LORA_SUBMIT_ID}
               type="button"
               onClick={handleStart}
               disabled={

@@ -101,6 +101,10 @@ export type LoraFlowInput = {
   trimVisited: boolean;
   /** 減らす候補を選んだ状態で、まだ削除していないか。 */
   trimSelected: boolean;
+  /** 「構図の偏りを均す回数を自動で入れる」を押したか（2026-09-25）。 */
+  repeatsApplied: boolean;
+  /** 「学習設定へ進む」を押したか。 */
+  settingsVisited: boolean;
 };
 
 /**
@@ -141,8 +145,15 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
   }
   if (v.imageCount === 0) {
     return {
-      targets: v.characterLora ? ["addSubject", "dropzone", "captionSpec"] : ["dropzone", "captionSpec"],
-      hint: v.characterLora
+      // キャプションを自分で用意するなら、キャプションの方針（captionSpec）は使わないので光らせない。
+      targets: (v.characterLora ? ["addSubject", "dropzone", "captionSpec"] : ["dropzone", "captionSpec"]).filter(
+        (t) => v.captionSource === "ai" || t !== "captionSpec",
+      ) as LoraFlowTarget[],
+      hint: v.captionSource === "manual"
+        ? v.characterLora
+          ? "もう1人登録する / 画像を取り込む — どちらでも進めます"
+          : "学習させたい画像を取り込みます"
+        : v.characterLora
         ? "もう1人登録する / 画像を取り込む / キャプションの方針を変える — どれでも進めます"
         : "画像を取り込む / キャプションの方針を変える — どちらでも進めます",
     };
@@ -231,13 +242,19 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
         : "切り出しまで済んだら、LoRA に最適化したキャプションを作ります（有料）",
     };
   }
-  // 「構図の偏りを均す回数を自動で入れる」を名指しで光らせる。パネル全体だと
-  // この操作を見逃す（2026-09-22、ホスト指摘）。飛び先は実行ボタン。
+  // 最後は「均す → 学習設定へ進む → 実行」の順（2026-09-25、ホスト指摘「均すを押しても光りっぱなしで、学習設定へ
+  // 進むが光らない」）。均すは任意なので、最初は「学習設定へ進む」も並べて光らせる。
+  if (v.settingsVisited) {
+    return { targets: ["submit"], hint: "学習設定を確認して、次へ進みます" };
+  }
+  if (v.repeatsApplied) {
+    return { targets: ["goToSettings"], hint: "学習設定へ進みます" };
+  }
   return {
-    targets: ["suggestRepeats", "submit"],
+    targets: ["suggestRepeats", "goToSettings"],
     hint:
       (v.diagnosticErrors > 0
         ? "診断の指摘は切り出しでは埋まりません。構図の偏りを学習回数で均す"
-        : "構図の偏りを学習回数で均す") + " ／ 次へ進む",
+        : "構図の偏りを学習回数で均す") + " ／ 学習設定へ進む",
   };
 }

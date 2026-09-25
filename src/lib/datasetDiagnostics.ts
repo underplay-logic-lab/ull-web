@@ -274,6 +274,44 @@ function peopleOf(set: Set<string>): { f: number; m: number } {
   return { f: count("girl"), m: count("boy") };
 }
 
+/** 1 人だけ写っている画像なら、その性別（1girl → "f" / 1boy → "m"）。それ以外は null。 */
+export function soloGenderFromTags(tags: string): "f" | "m" | null {
+  const { f, m } = peopleOf(tagSet(tags));
+  if (f === 1 && m === 0) return "f";
+  if (m === 1 && f === 0) return "m";
+  return null;
+}
+
+// 「学習したい特徴」になり得る見た目のタグ（2026-09-25）。髪・目・肌・体型・ひげ・眼鏡・ほくろ・獣耳など、
+// 画像が変わっても変わらないもの。服装・ポーズ・表情・髪飾り（服装と同じく付け外しできる）は含めない。
+// 語尾で判定するもの（black hair / blue eyes 等）と、途中にあっても特徴になるもの（mole under eye / scar on face 等）。
+const IDENTITY_TAG_RE =
+  /(hair|bangs|ponytail|twintails|braid|hair bun|ahoge|sidelocks|bald|eyes|heterochromia|skin|glasses|ears|tail|horns|wings|halo|fang|breasts|muscular|fat|plump|chubby|old man|old woman|tan|eyebrows|lips)$|(^|\s)(mole|scar|freckles|beard|mustache|stubble|facial hair)(\s|$)/;
+const IDENTITY_EXCLUDE_RE =
+  /(ornament|band|ribbon|bow|clip|pin|flower|tie|scrunchie|hat|looking|closed eyes|eyes closed|half-closed|wide-eyed|holding|over one eye|covering|grab|wet|messy|floating|blowing|tucking)/;
+
+/**
+ * WD タガーのタグから「学習したい特徴」を作る（2026-09-25、ホスト判断。Gemini は NSFW で拒否され得るうえ、
+ * 実際に拾うのは髪・目・眼鏡のようなタグで表せる特徴なので、手元の WD のタグで足りる）。
+ * その被写体の画像の share 以上に出る見た目のタグを、多い順に最大 max 個。画像が少なすぎれば []。
+ */
+export function identityTagsFromWd(tagsList: string[], share = 0.6, max = 12): string[] {
+  const n = tagsList.length;
+  if (n < 3) return [];
+  const count = new Map<string, number>();
+  for (const tags of tagsList) {
+    for (const t of new Set(splitTags(tags))) {
+      if (!IDENTITY_TAG_RE.test(t) || IDENTITY_EXCLUDE_RE.test(t)) continue;
+      count.set(t, (count.get(t) ?? 0) + 1);
+    }
+  }
+  return [...count.entries()]
+    .filter(([, c]) => c / n >= share)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, max)
+    .map(([t]) => t);
+}
+
 /**
  * キャプション前（WD タガーのタグだけ）の画像に、登録したどの被写体が写っているかを推定する（2026-09-25、
  * ホスト指摘「同性でも見分ける手がかりを入れていれば分かるのでは」）。

@@ -98,6 +98,10 @@ export const SMART_CROP_PANEL_ID = "lora-smart-crop-panel";
 
 /** 学習設定（モード選択とエキスパート欄）へスクロールで飛ぶための DOM id。 */
 export const LORA_SETTINGS_ANCHOR_ID = "lora-settings-anchor";
+// 学習開始（次へ）ボタン。「学習設定へ進む」はここへ送る（2026-09-25）。
+export const LORA_SUBMIT_ID = "lora-submit";
+// 特徴の確認（SDXL 以外。SDXL は metadata の欄）。
+export const IDENTITY_CONFIRM_ID = "lora-identity-confirm";
 
 /** 切り出し結果の点検パネルの DOM id（クロップ実行後にここへ戻す）。 */
 export const CROP_REVIEW_PANEL_ID = "lora-crop-review-panel";
