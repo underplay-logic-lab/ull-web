@@ -612,7 +612,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    2 人目以降）の SDXL 限定を撤去。ai-toolkit は trigger_word を設定すると含まないキャプションへ足すため
    （`inject_trigger_into_prompt`）、`extra_triggers` があるジョブでは設定しない（`modal_lora_worker.py`、**デプロイ済み**）。
    文章形式は文中でトリガーを名指しさせ、判定も文中から拾う（`matchLeadingSubjectTriggers` のフォールバック）。性別タグの
-   差し込み・並べ替えはタグ形式だけ。embed tags・keep_tokens は SDXL 限定のまま。push 済み。**未検証: 2 人データセットでの DiT 実学習（要承認）。**
+   差し込み・並べ替えはタグ形式だけ。embed tags・keep_tokens は SDXL 限定のまま。push 済み。続けて（2026-09-25）: 「何を学習させるか」をトリガーの上へ出し、人物欄は人物 LoRA だけに。SDXL 以外は性別タグ欄をグレーアウトし性別は「どんな人物か」に書く（特徴抽出は説明で開始）。SDXL に「性別なし・不詳（solo）」を追加。**未検証: 2 人データセットでの DiT 実学習（要承認）。**
    ④ 軽量超解像（Real-ESRGAN / SwinIR）が T4 で 1 枚 9〜10 秒（100 枚 15 分）。ComfyUI の結果確認を 2 秒 → 0.25 秒おきに
    短縮・デプロイ済み。L40S / RTX PRO 6000 との 1 枚あたり原価比較を実施中。
 00000. **R2 のキーをユーザー別の配置に変更（2026-09-24、ワーカー 6 本デプロイ済み・Next は push で反映）。** ホスト要望「rclone / Explorer で

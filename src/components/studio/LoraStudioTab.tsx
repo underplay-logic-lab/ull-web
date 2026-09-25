@@ -300,9 +300,16 @@ export function LoraStudioTab({
   // 上の英タグと同じ並びの日本語表示（表示専用。英側が正）。
   const [primaryIdentityTagsJa, setPrimaryIdentityTagsJa] = useState("");
   const [extraSubjects, setExtraSubjects] = useState<LoraSubject[]>([]);
+  // LoRA-type-aware auto-caption spec: the training TYPE + the user's JP notes
+  // on which features to lock into the trigger (blacklisted from captions) vs.
+  // let vary (described). Gemini turns this into the English Qwen instruction.
+  const [captionCategory, setCaptionCategory] = useState<LoraCaptionCategory>("character");
+  // 人物の欄（性別・どんな人物か・特徴・2 人目以降）は「人物・キャラクター」の LoRA だけ（2026-09-25、ホスト指摘
+  // 「背景 LoRA で『どんな人物か』と出るのはおかしい」）。それ以外はトリガーワードだけの従来の単独経路。
+  const characterLora = captionCategory === "character";
   const allSubjects = useMemo<LoraSubject[]>(
     () =>
-      extraSubjects.length > 0 || primaryFixedTags.trim() || primaryIdentityTags.trim()
+      characterLora && (extraSubjects.length > 0 || primaryFixedTags.trim() || primaryIdentityTags.trim())
         ? [
             {
               trigger: triggerWord.trim(),
@@ -315,6 +322,7 @@ export function LoraStudioTab({
           ]
         : [],
     [
+      characterLora,
       triggerWord,
       primaryDescription,
       primaryFixedTags,
@@ -332,10 +340,6 @@ export function LoraStudioTab({
   // 固定ブロック長から keepTokensForCaption() が画像ごとに算出する。
   const [embedTagsOpen, setEmbedTagsOpen] = useState(false);
   const [pro, setPro] = useState<ProConfig>(DEFAULT_PRO);
-  // LoRA-type-aware auto-caption spec: the training TYPE + the user's JP notes
-  // on which features to lock into the trigger (blacklisted from captions) vs.
-  // let vary (described). Gemini turns this into the English Qwen instruction.
-  const [captionCategory, setCaptionCategory] = useState<LoraCaptionCategory>("character");
   const [captionFixed, setCaptionFixed] = useState("");
   const [captionVarying, setCaptionVarying] = useState("");
   // User-edited final English instruction — empty = use whatever Gemini builds
@@ -1247,7 +1251,7 @@ export function LoraStudioTab({
       } catch (err) {
         console.warn("[lora] identity extraction failed:", err);
         // 失敗したら「実行済み」の印を消して、次の変化でやり直せるようにする。
-        autoExtractedRef.current.delete(`${index}:${t}:${fixedTags}`);
+        autoExtractedRef.current.delete(identityKeyFor(index, t, fixedTags));
         setErrorMessage(
           err instanceof Error ? err.message : "特徴の抽出に失敗しました。手で入力してください。",
         );
@@ -1522,6 +1526,14 @@ export function LoraStudioTab({
   // 「別の人物を追加」の直後にフォーカスを当てる被写体の index。
   const focusSubjectRef = useRef<number | null>(null);
   const autoExtractedRef = useRef<Set<string>>(new Set());
+  // 抽出に進めるだけの「誰を見るか」の手がかりがあるか。SDXL は性別タグ、それ以外は「どんな人物か」の説明
+  // （2026-09-25。SDXL 以外は性別タグ欄をグレーアウトし、性別は説明に書いてもらう）。
+  const identityCueFor = (fixedTags: string, hint: string) =>
+    isSdxlJobRef.current ? fixedTags.trim() !== "" : hint.trim() !== "";
+  // 自動抽出は被写体ごとに 1 回きり。SDXL は性別タグを変えたらやり直す。それ以外は説明を打つたびに
+  // 走らないよう、キーに説明を含めない（やり直しは「抽出し直す」から）。
+  const identityKeyFor = (index: number, trigger: string, fixedTags: string) =>
+    `${index}:${trigger}:${isSdxlJobRef.current ? fixedTags : "desc"}`;
   // 抽出をやり直す（結果がおかしかったとき用）。自動実行は1回きりなので、
   // これが無いと直す手段が手入力しか無くなる（2026-09-22）。
   const redoIdentityExtract = useCallback(
@@ -1535,7 +1547,7 @@ export function LoraStudioTab({
               fixedTags: extraSubjects[index]?.fixedTags ?? "",
             };
       if (!sub.trigger) return;
-      autoExtractedRef.current.delete(`${index}:${sub.trigger}:${sub.fixedTags}`);
+      autoExtractedRef.current.delete(identityKeyFor(index, sub.trigger, sub.fixedTags));
       if (index < 0) {
         setPrimaryIdentityTags("");
         setPrimaryIdentityTagsJa("");
@@ -1559,6 +1571,8 @@ export function LoraStudioTab({
     // 秒数をいくら伸ばしても解決しない。**ユーザーが明示的に開始を押すまで
     // 走らせない。**
     if (!analysisStarted) return;
+    // 特徴（人物の見た目）の抽出は人物 LoRA だけ（2026-09-25）。
+    if (!characterLora) return;
     {
     const jobs = [
       {
@@ -1578,9 +1592,10 @@ export function LoraStudioTab({
     ];
     for (const j of jobs) {
       if (!j.trigger || j.has) continue;
-      // 性別タグは「誰を見るか」の決定打なので、埋まるまで待つ。
-      if (!j.fixedTags.trim()) continue;
-      const key = `${j.index}:${j.trigger}:${j.fixedTags}`;
+      // 「誰を見るか」の手がかりが埋まるまで待つ。SDXL は性別タグ、それ以外は「どんな人物か」の説明
+      // （2026-09-25、SDXL 以外は性別タグ欄を使わず説明に性別を書いてもらう）。
+      if (!identityCueFor(j.fixedTags, j.hint)) continue;
+      const key = identityKeyFor(j.index, j.trigger, j.fixedTags);
       if (autoExtractedRef.current.has(key)) continue;
       autoExtractedRef.current.add(key);
       void extractIdentityFor(j.index, j.trigger, j.hint, j.fixedTags);
@@ -1589,7 +1604,7 @@ export function LoraStudioTab({
     // extractIdentityFor は毎レンダー作り直されるので依存から外す（キーで
     // 二重実行を防いでいる）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analysisStarted, images.length, triggerWord, primaryIdentityTags, primaryFixedTags, extraSubjects]);
+  }, [analysisStarted, characterLora, images.length, triggerWord, primaryIdentityTags, primaryFixedTags, primaryDescription, extraSubjects]);
 
   // 被写体の「特徴」欄の説明を読んだか（初回だけ出す）。初期値を lazy に
   // 読むので effect で setState する必要がない。SSR では false のまま。
@@ -1962,6 +1977,16 @@ export function LoraStudioTab({
   // が決まった直後の useEffect が recommendedResolution() から自動で同期する
   // （下記参照）。Rank / Steps / LR / optimizer は引き続きユーザーの調整を
   // そのまま残す。
+  // SDXL 以外は性別/人数タグを使わない（2026-09-25、欄はグレーアウト）。下書きや切り替え前の値が残っていると、
+  // タグ形式を手で選んだときに差し込まれてしまうので消しておく。
+  useEffect(() => {
+    if (isSdxlJob || yamlMode) return;
+    if (primaryFixedTags) setPrimaryFixedTags("");
+    if (extraSubjects.some((x) => x.fixedTags)) {
+      setExtraSubjects((prev) => prev.map((x) => (x.fixedTags ? { ...x, fixedTags: "" } : x)));
+    }
+  }, [isSdxlJob, yamlMode, primaryFixedTags, extraSubjects]);
+
   const handleModelChange = (value: string) => {
     setModelChoice(value);
     // 以前は SDXL 以外へ切り替えた瞬間に性別/人数タグ・人物の説明・2人目以降を消していた（欄が SDXL 限定
@@ -2706,8 +2731,10 @@ export function LoraStudioTab({
         loraNameFilled: Boolean(effectiveLoraName.trim()),
         tooSmallCount: tooSmallImages.length,
         triggerFilled: Boolean(effectiveTrigger.trim()),
-        genderTagMissing: allSubjects.some((x) => !(x.fixedTags ?? "").trim()),
-        descriptionMissing: allSubjects.some((x) => !(x.description ?? "").trim()),
+        // 性別/人数タグは SDXL の人物 LoRA だけ、人物の説明は人物 LoRA だけ（2026-09-25）。
+        characterLora,
+        genderTagMissing: isSdxlJob && characterLora && allSubjects.some((x) => !(x.fixedTags ?? "").trim()),
+        descriptionMissing: characterLora && allSubjects.some((x) => !(x.description ?? "").trim()),
         imageCount: images.length,
         analysisStarted,
         compositionRunning: composition.running,
@@ -2725,6 +2752,7 @@ export function LoraStudioTab({
         ),
       }),
     [
+      characterLora,
       isSdxlJob,
       yamlMode,
       phase,
@@ -2999,10 +3027,10 @@ export function LoraStudioTab({
       identityExtracting !== null ||
       allSubjects.some((sub) => {
         const trigger = (sub.trigger ?? "").trim();
-        if (!trigger || !(sub.fixedTags ?? "").trim()) return false;
+        if (!trigger || !identityCueFor(sub.fixedTags ?? "", sub.description ?? "")) return false;
         if ((sub.identityTags ?? "").trim()) return false;
         const idx = allSubjects.indexOf(sub) - 1; // 0番=1人目は index -1 で登録
-        return !autoExtractedRef.current.has(`${idx}:${trigger}:${sub.fixedTags ?? ""}`);
+        return !autoExtractedRef.current.has(identityKeyFor(idx, trigger, sub.fixedTags ?? ""));
       });
     if (identityPending) return;
     const pending = images.filter(
@@ -3883,7 +3911,10 @@ export function LoraStudioTab({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="flex items-center gap-1.5 text-[11px] text-muted">
           <Check size={12} className="text-green-400" />
-          入力内容は自動保存されます（リロードしても復元）
+          {/* 画像は保存していない（2026-09-25、ホスト指摘「語弊がある」）。キャプションは端末に残るので、同じ画像を
+              入れ直せば再利用される（captionFileKey のキャッシュ）。 */}
+          設定と入力欄は自動保存されます（リロードしても復元）。取り込んだ画像はリロードで消えます
+          （同じ画像を入れ直すと、作成済みのキャプションはそのまま使えます）
         </p>
         <button
           type="button"
@@ -4581,6 +4612,36 @@ export function LoraStudioTab({
             )}
           </div>
 
+          {/* 何を学習させるか（2026-09-25）。人物の欄を出すかどうかがこれで決まるので、トリガーワードより上に置く。
+              以前は奥の「キャプション自動最適化」の中にしか無かった（そちらも同じ値を操作する）。 */}
+          {!yamlMode && (
+            <div>
+              <label className="mb-1 block text-[11px] font-medium text-muted">何を学習させるか</label>
+              <div className="flex flex-wrap gap-1.5">
+                {LORA_CAPTION_CATEGORIES.map((c) => {
+                  const m = LORA_CAPTION_CATEGORY_META[c];
+                  const active = captionCategory === c;
+                  return (
+                    <button
+                      key={c}
+                      type="button"
+                      disabled={busy}
+                      onClick={() => setCaptionCategory(c)}
+                      title={m.hint}
+                      className={`rounded-lg border px-2.5 py-1 text-[10px] font-medium transition-colors disabled:opacity-50 ${
+                        active
+                          ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
+                          : "border-border bg-background/60 text-muted hover:border-neon-violet/40"
+                      }`}
+                    >
+                      {m.icon} {m.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div>
             {/* 2026-09-21: 複数人物モードの見分けがつかない問題を直した
                 （ホスト指摘「一人目と二人目の境が無く、よく考えたらわかるん
@@ -4597,7 +4658,7 @@ export function LoraStudioTab({
             </label>
             {(() => {
               // 複数人物・性別/人数・特徴の欄は全モデル共通（2026-09-25、ホスト判断。以前は SDXL 限定だった）。
-              const multiSubject = !yamlMode && extraSubjects.length > 0;
+              const multiSubject = !yamlMode && characterLora && extraSubjects.length > 0;
               const triggerInput = (
                 <input
                   value={yamlMode ? (yamlIdentity?.triggerWord ?? "") : triggerWord}
@@ -4625,10 +4686,12 @@ export function LoraStudioTab({
                 return (
                   <>
                     {triggerInput}
-                    {!yamlMode && (
+                    {/* 人物以外（衣装・物体・背景・画風）はトリガーワードだけ（2026-09-25）。 */}
+                    {!yamlMode && !characterLora && <>{triggerHint}</>}
+                    {!yamlMode && characterLora && (
                       <>
                         <div className={`rounded-xl${flowRingAt("genderTag", 0)}`}>
-                          <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
+                          <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy || !isSdxlJob} plain={!isSdxlJob} />
                         </div>
                         {triggerHint}
                         <input
@@ -4656,9 +4719,11 @@ export function LoraStudioTab({
                           onTranslateTag={translateIdentityTag}
                           onRedo={() => redoIdentityExtract(-1)}
                           blockedReason={
-                            primaryFixedTags.trim()
+                            (isSdxlJob ? primaryFixedTags : primaryDescription).trim()
                               ? null
-                              : "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
+                              : isSdxlJob
+                        ? "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
+                        : "上の「どんな人物か」を書くと、画像から自動で抽出します（性別も書くと、別の人物との取り違えが減ります）。"
                           }
                           disabled={busy}
                         />
@@ -4673,7 +4738,7 @@ export function LoraStudioTab({
                   <div className="mb-1 text-[10px] font-semibold text-neon-violet">1人目</div>
                   {triggerInput}
                   <div className={`rounded-xl${flowRingAt("genderTag", 0)}`}>
-                          <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
+                          <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy || !isSdxlJob} plain={!isSdxlJob} />
                         </div>
                   {triggerHint}
                   <input
@@ -4698,9 +4763,11 @@ export function LoraStudioTab({
                     onTranslateTag={translateIdentityTag}
                     onRedo={() => redoIdentityExtract(-1)}
                     blockedReason={
-                      primaryFixedTags.trim()
+                      (isSdxlJob ? primaryFixedTags : primaryDescription).trim()
                         ? null
-                        : "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
+                        : isSdxlJob
+                        ? "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
+                        : "上の「どんな人物か」を書くと、画像から自動で抽出します（性別も書くと、別の人物との取り違えが減ります）。"
                     }
                     disabled={busy}
                   />
@@ -4717,6 +4784,7 @@ export function LoraStudioTab({
             {/* 2026-09-15 に SDXL 限定にしたが、2026-09-25 に全モデル共通へ戻した（ホスト判断「分ける必要は無い」）。
                 ai-toolkit 側は複数人物のジョブで trigger_word を設定しない（modal_lora_worker.py）。 */}
             {!yamlMode &&
+              characterLora &&
               extraSubjects.map((s, i) => (
                 <div
                   key={i}
@@ -4758,7 +4826,8 @@ export function LoraStudioTab({
                     onChange={(next) =>
                       setExtraSubjects((prev) => prev.map((p, k) => (k === i ? { ...p, fixedTags: next } : p)))
                     }
-                    disabled={busy}
+                    disabled={busy || !isSdxlJob}
+                    plain={!isSdxlJob}
                   />
                   </div>
                   <input
@@ -4790,9 +4859,11 @@ export function LoraStudioTab({
                     onTranslateTag={translateIdentityTag}
                     onRedo={() => redoIdentityExtract(i)}
                     blockedReason={
-                      (s.fixedTags ?? "").trim()
+                      (isSdxlJob ? (s.fixedTags ?? "") : (s.description ?? "")).trim()
                         ? null
-                        : "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
+                        : isSdxlJob
+                        ? "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
+                        : "上の「どんな人物か」を書くと、画像から自動で抽出します（性別も書くと、別の人物との取り違えが減ります）。"
                     }
                     disabled={busy}
                   />
@@ -4801,7 +4872,7 @@ export function LoraStudioTab({
               ))}
             {/* 初回だけ出す（2026-09-22、ホスト指摘）。一度読めば済む説明で、
                 毎回出ると画面の密度を上げるだけ。localStorage に既読を持つ。 */}
-            {!yamlMode && extraSubjects.length > 0 && !subjectHintSeen && (
+            {!yamlMode && characterLora && extraSubjects.length > 0 && !subjectHintSeen && (
               <p className="mt-1.5 rounded-lg border border-border/60 bg-background/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted">
                 「特徴」は、自動キャプションのAIが画像ごとに
                 <strong className="text-foreground">どちらが写っているかを判定するための手がかり</strong>
@@ -4809,7 +4880,7 @@ export function LoraStudioTab({
                 <strong className="text-foreground">空のままだとAIが2人を見分けられず、トリガーワードが取り違えられます。</strong>
               </p>
             )}
-            {!yamlMode && (
+            {!yamlMode && characterLora && (
               <button
                 type="button"
                 onClick={() =>

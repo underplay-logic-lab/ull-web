@@ -44,6 +44,8 @@ export type LoraFlowState = {
 export type LoraFlowInput = {
   /** SDXL 系のジョブか（2026-09-25 から導線の分岐には使っていない。人物の欄は全モデル共通）。 */
   isSdxlJob: boolean;
+  /** 人物・キャラクターの LoRA か（人物の欄はこの時だけ出る、2026-09-25）。 */
+  characterLora: boolean;
   /** 生 YAML モード（導線を出さない）。 */
   yamlMode: boolean;
   /** 送信中・学習中など、操作を受け付けない状態。 */
@@ -116,7 +118,7 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
   if (!v.triggerFilled) {
     return { targets: ["trigger"], hint: "呼び出すためのトリガーワードを決めます" };
   }
-  // 性別/人数・人物の説明は全モデル共通（2026-09-25。以前は SDXL だけだった）。
+  // 性別/人数タグは SDXL の人物 LoRA、人物の説明は人物 LoRA のときだけ呼び出し側が true にする（2026-09-25）。
   if (v.genderTagMissing) {
     return {
       targets: ["genderTag"],
@@ -131,8 +133,10 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
   }
   if (v.imageCount === 0) {
     return {
-      targets: ["addSubject", "dropzone", "captionSpec"],
-      hint: "もう1人登録する / 画像を取り込む / キャプションの方針を変える — どれでも進めます",
+      targets: v.characterLora ? ["addSubject", "dropzone", "captionSpec"] : ["dropzone", "captionSpec"],
+      hint: v.characterLora
+        ? "もう1人登録する / 画像を取り込む / キャプションの方針を変える — どれでも進めます"
+        : "画像を取り込む / キャプションの方針を変える — どちらでも進めます",
     };
   }
   // 取り込みが終わったら、ユーザー自身に開始を押してもらう。タイマーでは

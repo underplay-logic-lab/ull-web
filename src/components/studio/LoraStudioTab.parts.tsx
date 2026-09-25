@@ -1332,21 +1332,37 @@ const GENDER_TAG_SEX_WORD: Record<(typeof GENDER_TAG_PRESETS)[number], "female" 
   "1man": "male",
 };
 
-function presetKeyFromFixedTags(v: string): (typeof GENDER_TAG_PRESETS)[number] | "custom" | "" {
+// 性別を決めない（性別不詳・人ではないキャラ等、2026-09-25 ホスト指摘）。人数の solo だけ固定する。
+const GENDER_NONE = "solo";
+
+function presetKeyFromFixedTags(v: string): (typeof GENDER_TAG_PRESETS)[number] | typeof GENDER_NONE | "custom" | "" {
   const t = v.trim();
   if (!t) return "";
+  if (t.toLowerCase() === GENDER_NONE) return GENDER_NONE;
   const hit = GENDER_TAG_PRESETS.find((p) => t.toLowerCase() === `${p}, solo, ${GENDER_TAG_SEX_WORD[p]}`);
   return hit ?? "custom";
 }
+
+// タグ表記を出さない場合の見出し（SDXL 以外、2026-09-25 ホスト指摘「SDXL 以外でタグを入力するのは違和感」）。
+// 文章形式のキャプションには差し込まれず、特徴を抽出するときに「誰を見るか」を伝えるためだけに使う。
+const GENDER_PLAIN_LABEL: Record<(typeof GENDER_TAG_PRESETS)[number], string> = {
+  "1girl": "女の子・若い女性",
+  "1woman": "大人の女性",
+  "1boy": "男の子・若い男性",
+  "1man": "大人の男性",
+};
 
 export function GenderTagPicker({
   value,
   onChange,
   disabled,
+  plain = false,
 }: {
   value: string;
   onChange: (next: string) => void;
   disabled?: boolean;
+  /** タグ表記（1girl 等）を出さず、日本語の選択肢だけにする（SDXL 以外）。値はタグのまま持つ。 */
+  plain?: boolean;
 }) {
   const derived = presetKeyFromFixedTags(value);
   // 「カスタム入力」は state で覚える（2026-09-22、ホスト指摘）。
@@ -1359,9 +1375,13 @@ export function GenderTagPicker({
     <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
       <span
         className="shrink-0 text-[10px] text-muted"
-        title="全キャプションの先頭に固定で入るタグです。指定しないとAIが画像ごとに判定するため、1girl と 1woman が混ざったり solo が抜けたりして、トリガーワードとの対応が崩れます。"
+        title={
+          plain
+            ? "画像から特徴を抽出するとき、どの人物を見るかの手がかりにします（キャプションには書き込みません）。"
+            : "全キャプションの先頭に固定で入るタグです。指定しないとAIが画像ごとに判定するため、1girl と 1woman が混ざったり solo が抜けたりして、トリガーワードとの対応が崩れます。"
+        }
       >
-        性別/人数タグ:
+        {plain ? "性別:" : "性別/人数タグ:"}
       </span>
       <select
         value={preset}
@@ -1373,6 +1393,10 @@ export function GenderTagPicker({
             return;
           }
           setCustomMode(false);
+          if (v === GENDER_NONE) {
+            onChange(GENDER_NONE);
+            return;
+          }
           onChange(`${v}, solo, ${GENDER_TAG_SEX_WORD[v as (typeof GENDER_TAG_PRESETS)[number]]}`);
         }}
         disabled={disabled}
@@ -1386,12 +1410,19 @@ export function GenderTagPicker({
         </option>
         {GENDER_TAG_PRESETS.map((p) => (
           <option key={p} value={p}>
-            {p} (+solo, {GENDER_TAG_SEX_WORD[p]})
+            {plain ? GENDER_PLAIN_LABEL[p] : `${p} (+solo, ${GENDER_TAG_SEX_WORD[p]})`}
           </option>
         ))}
-        <option value="custom">カスタム入力</option>
+        <option value={GENDER_NONE}>{plain ? "性別なし・不詳" : "性別なし・不詳 (solo のみ)"}</option>
+        {!plain && <option value="custom">カスタム入力</option>}
       </select>
-      {preset === "custom" && (
+      {plain && (
+        // SDXL 以外は使わない（2026-09-25、ホスト判断）。欄は残してグレーアウトし、性別は説明に書いてもらう。
+        <span className="basis-full text-[10px] text-muted">
+          SDXL 系のモデルだけで使います。性別は下の「どんな人物か」に書いてください（例: 銀髪の女性）。
+        </span>
+      )}
+      {preset === "custom" && !plain && (
         <input
           value={value}
           onChange={(e) => onChange(e.target.value)}
