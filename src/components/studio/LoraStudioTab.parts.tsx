@@ -850,16 +850,25 @@ export function ImageDropzone({
                   key={img.id}
                   data-image-id={img.id}
                   onClick={canSelect ? (e) => toggleSelect(img.id, e.shiftKey) : undefined}
+                  // 枠の色は 1 つだけ付ける（2026-09-25、ホスト報告「切り出しても琥珀色の枠が出ない」）。以前は
+                  // 琥珀色と通常色（border-border）を同時に付けており、通常色が勝って細い ring しか残らなかった。
                   className={`group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border bg-neutral-900 ${
-                    warnIds?.has(img.id) ? "border-amber-500/70 ring-1 ring-amber-500/40" : ""
-                  } ${canSelect ? "cursor-pointer" : ""} ${
+                    canSelect ? "cursor-pointer" : ""
+                  } ${
                     isSelected
                       ? "border-neon-violet ring-2 ring-neon-violet/60"
-                      : st === "error"
-                        ? "border-red-500/60"
-                        : "border-border"
+                      : warnIds?.has(img.id)
+                        ? "border-amber-400 ring-2 ring-amber-400/70"
+                        : st === "error"
+                          ? "border-red-500/60"
+                          : "border-border"
                   }`}
                 >
+                  {warnIds?.has(img.id) && (
+                    <span className="absolute left-1/2 top-1 z-10 -translate-x-1/2 whitespace-nowrap rounded bg-amber-500/90 px-1 py-0.5 text-[8px] font-semibold text-white">
+                      2人以上
+                    </span>
+                  )}
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={img.url}
