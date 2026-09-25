@@ -649,6 +649,9 @@ export function IdentityTagsField({
 
 // ---------------------------------------------------------------------------
 
+/** サムネイル一覧の上の行（表示の切り替え・診断に戻る）。候補を選んだらここへスクロールする。 */
+export const DATASET_GRID_BAR_ID = "lora-dataset-grid-bar";
+
 export function ImageDropzone({
   images,
   onAdd,
@@ -668,6 +671,9 @@ export function ImageDropzone({
   selectable,
   highlightDelete,
   onDeletedSelected,
+  selectionNote,
+  showSelectedNonce,
+  onBackToDiagnostics,
 }: {
   images: DatasetImage[];
   onAdd: (files: FileList | File[]) => void;
@@ -701,11 +707,23 @@ export function ImageDropzone({
   highlightDelete?: boolean;
   /** 「選択した N 枚を削除」で消したあと（再診断の結果へ送るため）。 */
   onDeletedSelected?: (count: number) => void;
+  /** いまの選択が何なのかの説明（減らす候補など）。一覧の上に出す（2026-09-25）。 */
+  selectionNote?: string | null;
+  /** 変わるたびに表示を「選択中だけ」に切り替える（減らす候補を選んだ直後、2026-09-25）。 */
+  showSelectedNonce?: number;
+  /** 一覧の上の「診断に戻る」。 */
+  onBackToDiagnostics?: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   // 一覧の表示の絞り込み（2026-09-25、ホスト指摘「枠が付いたものだけ並ぶと見比べやすい」）。
   const [viewFilter, setViewFilter] = useState<"all" | "selected" | "warn">("all");
+  // 候補を選んだ直後は「選択中だけ」で見せる（2026-09-25、ホスト要望）。値が変わったときだけ切り替える。
+  const [lastNonce, setLastNonce] = useState(showSelectedNonce);
+  if (showSelectedNonce !== lastNonce) {
+    setLastNonce(showSelectedNonce);
+    if (showSelectedNonce) setViewFilter("selected");
+  }
   // 選択が空になった・枠付きが無くなったら全件表示に戻す（空の一覧を見せない）。
   const shownFilter =
     viewFilter === "selected" && selectedIds.size === 0
@@ -861,7 +879,7 @@ export function ImageDropzone({
                       highlightDelete ? " flow-next" : ""
                     }`}
                   >
-                    選択した {selected.size} 枚を削除
+                    {selectionNote ? `選択中の候補 ${selected.size} 枚を削除` : `選択した ${selected.size} 枚を削除`}
                   </button>
                 )}
                 {/* × で 1 枚ずつ消したあと、残りを残して次へ進むため（2026-09-25）。 */}
@@ -887,8 +905,13 @@ export function ImageDropzone({
               </span>
             )}
           </div>
-          {(selected.size > 0 || (warnIds?.size ?? 0) > 0) && (
-            <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px]">
+          {selectionNote && selected.size > 0 && (
+            <p className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-200">
+              {selectionNote}
+            </p>
+          )}
+          {(selected.size > 0 || (warnIds?.size ?? 0) > 0 || onBackToDiagnostics) && (
+            <div id={DATASET_GRID_BAR_ID} className="mt-2 flex scroll-mt-24 flex-wrap items-center gap-1.5 text-[10px]">
               <span className="text-muted">表示:</span>
               {(
                 [
@@ -910,6 +933,15 @@ export function ImageDropzone({
                   {label}
                 </button>
               ))}
+              {onBackToDiagnostics && (
+                <button
+                  type="button"
+                  onClick={onBackToDiagnostics}
+                  className="ml-auto rounded-md border border-neon-violet/40 bg-neon-violet/10 px-2 py-0.5 font-medium text-neon-violet transition-colors hover:bg-neon-violet/20"
+                >
+                  ↓ 診断に戻る
+                </button>
+              )}
             </div>
           )}
           <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-5">

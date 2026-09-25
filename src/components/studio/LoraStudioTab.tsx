@@ -137,6 +137,7 @@ const SMART_CROP_REDUNDANT_COVERAGE = 0.85;
 import { warmSmartCropModels } from "@/lib/smartCropDetect";
 import {
   ImageDropzone,
+  DATASET_GRID_BAR_ID,
   GenderTagPicker,
   YamlVipLockCard,
   ProgressPanel,
@@ -1083,6 +1084,19 @@ export function LoraStudioTab({
   const [trimVisited, setTrimVisited] = useState<Set<string>>(new Set());
   // 選択するだけだと一覧が画面外で「押しても何も起きない」に見える（2026-09-24、ホスト指摘）。
   // 選んだ最初の画像までスクロールする。
+  // 減らす候補を選んだとき（2026-09-25、ホスト指摘）: 一覧を「選択中だけ」にして、一覧の上の行へスクロールする。
+  // 以前は 1 枚目の候補の位置へスクロールしていたので、候補の位置次第で一覧の途中に飛んでいた。
+  const [showSelectedNonce, setShowSelectedNonce] = useState(0);
+  const [selectionNote, setSelectionNote] = useState<string | null>(null);
+  const revealTrimSelection = useCallback((ids: string[], note: string) => {
+    setSelectedImageIds(new Set(ids));
+    setSelectionNote(note);
+    setShowSelectedNonce((n) => n + 1);
+    requestAnimationFrame(() => {
+      document.getElementById(DATASET_GRID_BAR_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, []);
+
   const selectAndReveal = useCallback((ids: string[]) => {
     setSelectedImageIds(new Set(ids));
     if (ids.length === 0) return;
@@ -1424,6 +1438,7 @@ export function LoraStudioTab({
         })
         .map((img) => img.id);
       setSelectedImageIds(new Set(ids));
+      setSelectionNote(null);
       setSelectionPurpose("crop");
       setTrimVisited(new Set(["*"]));
       // 診断が「この構図が足りない」と言っている以上、切り出す構図もそこへ
@@ -1479,7 +1494,10 @@ export function LoraStudioTab({
         for (let k = 0; k < need; k++) picked.add(rest[Math.floor(k * step)].id);
       }
       const ids = [...picked];
-      selectAndReveal(ids);
+      revealTrimSelection(
+        ids,
+        `選択中の ${ids.length} 枚は、${subject} の${DIAGNOSTIC_AXES.distance.buckets.find((b) => b.id === bucket)?.label ?? ""}を減らす候補です（同じ構図の 3 枚目以降から優先して選んでいます）。消すのはこの選択中の画像だけです。残したいものはクリックで選択を外してから削除してください。`,
+      );
       setSelectionPurpose("trim");
       setTrimVisited((prev) => new Set([...prev, subject]));
       setAddNotice(
@@ -1488,7 +1506,7 @@ export function LoraStudioTab({
           : `減らす候補を ${n} 枚選びました（${subject} が 1 人で写っている ${pool.length} 枚から等間隔）。残したいものは選択を外してから「選択した画像を削除」を押してください。`,
       );
     },
-    [images, captions, compositionTags, allSubjects, selectAndReveal],
+    [images, captions, compositionTags, allSubjects, revealTrimSelection],
   );
 
   // 同じ構図の画像から、2 枚だけ残して他を減らす候補として選ぶ（2026-09-25、ホスト提案「同じ構図で服装だけ違う
@@ -1506,14 +1524,17 @@ export function LoraStudioTab({
       if (group.length <= 2) return;
       const keep = new Set([group[0].id, group[Math.floor(group.length / 2)].id]);
       const ids = group.filter((i) => !keep.has(i.id)).map((i) => i.id);
-      selectAndReveal(ids);
+      revealTrimSelection(
+        ids,
+        `選択中の ${ids.length} 枚は、${subject} の同じ構図（${compositionSignatureLabel(signature)}）のうち 2 枚を残した残りです。服装だけが違う重複なので、消しても学習への影響は小さめです。残したいものはクリックで選択を外してから削除してください。`,
+      );
       setSelectionPurpose("trim");
       setTrimVisited((prev) => new Set([...prev, subject]));
       setAddNotice(
         `同じ構図（${compositionSignatureLabel(signature)}）の ${group.length} 枚のうち、2 枚を残して ${ids.length} 枚を減らす候補に選びました。服装の違いを残したいものは選択を外してから「選択した画像を削除」を押してください。`,
       );
     },
-    [images, captions, compositionTags, allSubjects, selectAndReveal],
+    [images, captions, compositionTags, allSubjects, revealTrimSelection],
   );
 
   // キャプションに実際に入っている被写体の内訳（2026-09-21、ホスト指摘）。
@@ -4175,8 +4196,19 @@ export function LoraStudioTab({
             onSelectedChange={setSelectedImageIds}
             highlightDelete={flow.targets.includes("deleteSelected")}
             // 削除したら診断が更新されるので、その結果へ送る（2026-09-25、ホスト指摘「削除した後の再診断が無い」）。
+            selectionNote={selectionPurpose === "trim" ? selectionNote : null}
+            showSelectedNonce={showSelectedNonce}
+            onBackToDiagnostics={
+              analysisStarted
+                ? () =>
+                    document
+                      .getElementById(DIAGNOSTICS_PANEL_ID)
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                : undefined
+            }
             onDeletedSelected={(n) => {
               setSelectionPurpose(null);
+              setSelectionNote(null);
               setAddNotice(`${n} 枚を削除しました。診断を更新したので、下の診断で結果を確認してください。`);
               window.setTimeout(
                 () =>
