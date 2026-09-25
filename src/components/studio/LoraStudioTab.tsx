@@ -3202,6 +3202,15 @@ export function LoraStudioTab({
     const want = t === "genderTag" ? genderMissingIdx : descMissingIdx;
     return want === idx ? " flow-next" : "";
   };
+  // 確定にチェックしたときの「解析中」の表示（2026-09-25、ホスト要望）。構図の判定が終わるまで画面が動かず、
+  // 止まっているように見えた。終われば診断結果へ自動で送る（scrolledToDiagRef の effect）。
+  const analysisWaitNote =
+    analysisStarted && identityConfirmed && identityExtracting === null && composition.running ? (
+      <p className="mt-1 flex items-center gap-1.5 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-2 py-1.5 text-[10px] text-neon-violet">
+        <Loader2 size={12} className="shrink-0 animate-spin" />
+        解析中です。しばらくお待ちください（構図の判定 {composition.done}/{composition.total}）。終わったら診断結果へ移動します。
+      </p>
+    ) : null;
   // ヒント文は「光る場所が1つ」のときだけ出す（2026-09-22、ホスト指摘）。
   // 2つ光っている場面はボタンのラベル自体が選択肢になっているので、それを
   // 並べ直した文は冗長なだけ。
@@ -5420,6 +5429,7 @@ export function LoraStudioTab({
                   </span>
                 </label>
               )}
+            {!isSdxlJob && analysisWaitNote}
             {/* キャプションが古くなった警告は、変えた場所の近くに出す
                 （2026-09-22、ホスト指摘）。以前はキャプション欄にあり、
                 設定を変えた本人が気付けなかった。 */}
@@ -5525,6 +5535,7 @@ export function LoraStudioTab({
                         </span>
                       </label>
                     )}
+                    {analysisWaitNote}
                     {flowHint("identityConfirm")}
                     {/* 確認して直す場所は上の「学習したい特徴」（2026-09-22、
                         ホスト指摘）。ここからジャンプできるようにする。 */}
