@@ -1964,18 +1964,9 @@ export function LoraStudioTab({
   // そのまま残す。
   const handleModelChange = (value: string) => {
     setModelChoice(value);
-    // 性別/人数タグ・複数人物UIはSDXL限定表示（下記JSX）。表示が消えても
-    // stateが残っていると、SDXLで設定→非SDXLへ切り替え後もキャプション
-    // 生成に古い固定タグが黙って効き続けてしまうため、SDXL以外へ切り替えた
-    // 瞬間にクリアする（同じ理由でembed_tags側は非SDXLでは送信自体を
-    // isSdxlJobでガードしているが、こちらは送信有無ではなくキャプション
-    // 生成ロジック自体が参照するのでstateごと消す必要がある）。
-    const nextArch = value === "__custom__" ? baseArchitecture : (loraPresetById(value)?.arch ?? "");
-    if (nextArch !== "sdxl") {
-      setPrimaryFixedTags("");
-      setPrimaryDescription("");
-      setExtraSubjects([]);
-    }
+    // 以前は SDXL 以外へ切り替えた瞬間に性別/人数タグ・人物の説明・2人目以降を消していた（欄が SDXL 限定
+    // だったため）。2026-09-25 に欄を全モデル共通にしたので消さない。文章形式への差し込みは
+    // finalizeCaptions 側でタグ形式に限っている。
   };
 
   const canSubmit =
@@ -2451,6 +2442,11 @@ export function LoraStudioTab({
         // キャプションの固定ブロック（trigger 群 + 数/性別タグ）の長さと
         // ズレると trigger が本文へ紛れ込むので、値を入力させる設計をやめた。
         speed: effectiveSpeed,
+        // 複数人物のジョブは ai-toolkit に trigger_word を注入させない（2026-09-25、modal_lora_worker.py 参照）。
+        extraTriggers:
+          !yamlMode && allSubjects.length > 1
+            ? allSubjects.slice(1).map((x) => x.trigger.trim()).filter(Boolean)
+            : undefined,
         keepTokensPerImage:
           !yamlMode && isSdxlJob && allSubjects.length > 0
             ? captionList.map((c) => keepTokensForCaption(c, allSubjects, 4))
@@ -2794,6 +2790,8 @@ export function LoraStudioTab({
   }, []);
 
   const applyGenderTagConsistency = useCallback(() => {
+    // タグ列の整形（トリガーの並べ替え・性別タグの統一）なので、文章形式のキャプションには掛けない（2026-09-25）。
+    if (resolvedCaptionModeRef.current === "dense") return;
     const subjects = subjectsRef.current.length ? subjectsRef.current : [{ trigger: triggerWord.trim(), description: "" }];
     if (!subjects[0]?.trigger) return;
     setCaptions((prev) => {
@@ -4598,7 +4596,8 @@ export function LoraStudioTab({
               トリガーワード（任意）
             </label>
             {(() => {
-              const multiSubject = !yamlMode && isSdxlJob && extraSubjects.length > 0;
+              // 複数人物・性別/人数・特徴の欄は全モデル共通（2026-09-25、ホスト判断。以前は SDXL 限定だった）。
+              const multiSubject = !yamlMode && extraSubjects.length > 0;
               const triggerInput = (
                 <input
                   value={yamlMode ? (yamlIdentity?.triggerWord ?? "") : triggerWord}
@@ -4626,7 +4625,7 @@ export function LoraStudioTab({
                 return (
                   <>
                     {triggerInput}
-                    {!yamlMode && isSdxlJob && (
+                    {!yamlMode && (
                       <>
                         <div className={`rounded-xl${flowRingAt("genderTag", 0)}`}>
                           <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy} />
@@ -4715,11 +4714,9 @@ export function LoraStudioTab({
                 <code className="text-neon-violet">process[0].trigger_word</code> が使われます。
               </p>
             )}
-            {/* 性別/人数タグ・複数人物UIはSDXL（Danbooruタグ形式のkeep_tokens
-                運用）限定。それ以外のモデルはトリガーワード入力のみにする
-                （2026-09-15 ホスト指示）。 */}
+            {/* 2026-09-15 に SDXL 限定にしたが、2026-09-25 に全モデル共通へ戻した（ホスト判断「分ける必要は無い」）。
+                ai-toolkit 側は複数人物のジョブで trigger_word を設定しない（modal_lora_worker.py）。 */}
             {!yamlMode &&
-              isSdxlJob &&
               extraSubjects.map((s, i) => (
                 <div
                   key={i}
@@ -4804,7 +4801,7 @@ export function LoraStudioTab({
               ))}
             {/* 初回だけ出す（2026-09-22、ホスト指摘）。一度読めば済む説明で、
                 毎回出ると画面の密度を上げるだけ。localStorage に既読を持つ。 */}
-            {!yamlMode && isSdxlJob && extraSubjects.length > 0 && !subjectHintSeen && (
+            {!yamlMode && extraSubjects.length > 0 && !subjectHintSeen && (
               <p className="mt-1.5 rounded-lg border border-border/60 bg-background/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted">
                 「特徴」は、自動キャプションのAIが画像ごとに
                 <strong className="text-foreground">どちらが写っているかを判定するための手がかり</strong>
@@ -4812,7 +4809,7 @@ export function LoraStudioTab({
                 <strong className="text-foreground">空のままだとAIが2人を見分けられず、トリガーワードが取り違えられます。</strong>
               </p>
             )}
-            {!yamlMode && isSdxlJob && (
+            {!yamlMode && (
               <button
                 type="button"
                 onClick={() =>

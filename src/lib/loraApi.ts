@@ -491,6 +491,8 @@ export type StartLoraTrainingParams = {
   repeats?: number[];
   /** 画像ごとの keep_tokens（SDXL のみ）。キャプションから自動算出した値。 */
   keepTokensPerImage?: number[];
+  /** 2 人目以降のトリガー（複数人物のジョブだけ）。 */
+  extraTriggers?: string[];
   targetModel: LoraTargetModel;
   // Universal loader — required when targetModel === "custom".
   customModelId?: string;
@@ -548,6 +550,7 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
       resolution: params.resolution,
       output_lora_name: params.outputLoraName,
       trigger_word: params.triggerWord,
+      ...(params.extraTriggers?.length ? { extra_triggers: params.extraTriggers } : {}),
       custom_captions: params.customCaptions,
       skip_captioning: params.skipCaptioning,
       caption_mode: params.captionMode,

@@ -615,6 +615,7 @@ def _build_config(
     resolution: int = 768,
     output_dir: str = OUTPUT_DIR,
     dataset_groups: "list | None" = None,
+    inject_trigger: bool = True,
 ) -> pathlib.Path:
     """Manual override (raw YAML string or a dict) wins outright; otherwise
     a standard job YAML is assembled from `tc` + either the preset registry
@@ -762,7 +763,11 @@ def _build_config(
                     "type": "sd_trainer",
                     "training_folder": output_dir,
                     "device": "cuda:0",
-                    "trigger_word": trigger,
+                    # ai-toolkit は trigger_word を設定すると、それを含まないキャプションの先頭へ足す
+                    # （toolkit/prompt_utils.py inject_trigger_into_prompt の add_if_not_present）。
+                    # 複数人物のジョブでは 2 人目だけの画像にも 1 人目のトリガーが付いて混ざるので、
+                    # 設定しない（キャプション側に各人物のトリガーが入っている。2026-09-25）。
+                    **({"trigger_word": trigger} if inject_trigger else {}),
                     "network": {"type": "lora", "linear": rank, "linear_alpha": alpha},
                     "save": {
                         "dtype": "bf16",

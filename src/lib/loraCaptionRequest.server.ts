@@ -70,9 +70,11 @@ export function finalizeCaptions(
   parsed: { en?: string; ja?: string }[],
   spec: Pick<CaptionRequestSpec, "subjects" | "captionMode">,
 ): { captions: string[]; captionsJa: string[] } {
-  const captions = parsed.map((p) =>
-    applySubjectFixedTags(tidyCaption(p.en ?? "", spec.subjects, spec.captionMode), spec.subjects),
-  );
+  // 性別/人数タグの差し込みはタグ形式だけ（文章に差し込むと文が壊れる。2026-09-25）。
+  const captions = parsed.map((p) => {
+    const tidy = tidyCaption(p.en ?? "", spec.subjects, spec.captionMode);
+    return spec.captionMode === "tags" ? applySubjectFixedTags(tidy, spec.subjects) : tidy;
+  });
   const captionsJa = parsed.map((p, i) =>
     captions[i].trim()
       ? (p.ja ?? "").trim().replace(/\s*\n+\s*/g, spec.captionMode === "dense" ? " " : "、")

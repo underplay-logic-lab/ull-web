@@ -88,6 +88,11 @@ export type SpawnLoraTrainingParams = {
   // loraCaptionSpec.ts の keepTokensForCaption が実キャプションから数えた値を
   // 渡す（ユーザーには入力させない）。
   keepTokensPerImage?: number[];
+  /**
+   * 2 人目以降のトリガー（複数人物のジョブだけ、2026-09-25）。ai-toolkit ワーカーはこれがあると
+   * trigger_word を設定しない（設定すると、それを含まないキャプションへ 1 人目のトリガーを足すため）。
+   */
+  extraTriggers?: string[];
 };
 
 // The exact Modal payload — stored on the job so a pending-timeout retry can
@@ -114,6 +119,7 @@ export type LoraDispatchPayload = {
   keep_tokens?: number;
   repeats?: number[];
   keep_tokens_per_image?: number[];
+  extra_triggers?: string[];
 };
 
 export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraDispatchPayload {
@@ -156,6 +162,7 @@ export function buildLoraDispatchPayload(params: SpawnLoraTrainingParams): LoraD
     params.keepTokensPerImage.some((n) => n !== params.keepTokensPerImage?.[0])
       ? { keep_tokens_per_image: params.keepTokensPerImage }
       : {}),
+    ...(params.extraTriggers && params.extraTriggers.length ? { extra_triggers: params.extraTriggers } : {}),
   };
 }
 

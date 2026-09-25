@@ -452,6 +452,17 @@ export function matchLeadingSubjectTriggers(caption: string, subjects: LoraSubje
     if (!hit) break;
     present.add(hit.trigger);
   }
+  // 文章形式のキャプション（DiT 系、2026-09-25 に複数人物を全モデルへ広げた）は先頭がタグではなく文なので、
+  // 「hitozuma and kocho sit …」のように文中でトリガーを名指しする。先頭のタグ列で 1 人も取れず、
+  // 最初の区切りまでが 3 語以上（＝文）のときは、本文中にトリガーが単語として現れるかで判定する。
+  if (present.size === 0 && (tokens[0] ?? "").trim().split(/\s+/).length >= 3) {
+    return subjects.filter((s) => {
+      const t = s.trigger.trim();
+      if (!t) return false;
+      const esc = t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`(?:^|[^\\p{L}\\p{N}_])${esc}(?=$|[^\\p{L}\\p{N}_])`, "iu").test(caption);
+    });
+  }
   return subjects.filter((s) => present.has(s.trigger));
 }
 

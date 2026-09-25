@@ -431,6 +431,16 @@ async function handlePost(request: Request): Promise<NextResponse> {
         })
       : undefined;
 
+  // 2 人目以降のトリガー（複数人物のジョブ、2026-09-25）。ai-toolkit ワーカーはこれがあると trigger_word を
+  // 設定しない（modal_lora_worker.py 参照）。SDXL（sd-scripts）は trigger_word を注入しないので送らない。
+  const extraTriggers =
+    !isSdxlJob && Array.isArray(body.extra_triggers)
+      ? (body.extra_triggers as unknown[])
+          .filter((t): t is string => typeof t === "string" && t.trim().length > 0)
+          .map((t) => t.trim().slice(0, 60))
+          .slice(0, 8)
+      : undefined;
+
   // 2026-09-14: 学習解像度はもうクライアントが選ぶものではない
   // （LoraStudioTab.tsx参照）。body.resolutionは信用せず、モデルの
   // アーキテクチャから常にrecommendedResolution()で権威的に決める
@@ -604,6 +614,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
     keepTokens,
     repeats,
     keepTokensPerImage,
+    extraTriggers: extraTriggers?.length ? extraTriggers : undefined,
   };
   // The full Modal payload is stashed on the job so a pending-timeout retry
   // can re-dispatch it verbatim (no re-debit).

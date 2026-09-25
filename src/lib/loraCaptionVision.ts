@@ -15,12 +15,16 @@ const NOISE_RE =
 // one dataset — e.g. two characters trained together. Only kicks in when the
 // caller actually registered 2+ subjects; a single subject renders no block
 // and every caller keeps the original single-trigger wording exactly.
-function subjectClassificationLines(subjects: LoraSubject[]): string[] {
+function subjectClassificationLines(subjects: LoraSubject[], mode: ResolvedCaptionMode = "tags"): string[] {
   if (subjects.length < 2) return [];
+  const dense = mode === "dense";
   return [
     "This dataset has MULTIPLE distinct subjects, each with its own trigger word. For each image, first decide which of the following it depicts — usually just one, but if TWO (or more) of these registered subjects appear TOGETHER in the same image (e.g. a couple/group shot), name ALL of them, not just one:",
     ...subjects.map((s) => `  - "${s.trigger}": ${s.description || "(no description given)"}`),
-    "Start the caption with every matching subject's own trigger word — spelled exactly as above, one per subject actually present, each its own comma-separated tag, before anything else. Never substitute one subject's trigger for another, even if two sound similar. If genuinely unclear which subject it is, pick the closest match rather than omitting a trigger; never omit a trigger for a subject that IS visibly present just because two subjects are in frame.",
+    // 文章形式（DiT 系）はタグ列ではなく文中で名指しさせる（2026-09-25、複数人物を全モデルへ広げた）。
+    dense
+      ? "Refer to every matching subject by their own trigger word — spelled exactly as above — as the grammatical subject of the prose (e.g. \"A stands ...\", \"A and B sit ...\"), and use the trigger word again whenever you say what that particular subject is doing or wearing. Never substitute one subject's trigger for another, even if two sound similar. If genuinely unclear which subject it is, pick the closest match rather than omitting a trigger; never omit a trigger for a subject that IS visibly present just because two subjects are in frame."
+      : "Start the caption with every matching subject's own trigger word — spelled exactly as above, one per subject actually present, each its own comma-separated tag, before anything else. Never substitute one subject's trigger for another, even if two sound similar. If genuinely unclear which subject it is, pick the closest match rather than omitting a trigger; never omit a trigger for a subject that IS visibly present just because two subjects are in frame.",
     // 腕や袖だけの写り込みで trigger が付く事故（2026-09-22、ホスト報告）。
     // クロップは duo 画像から片方を切り出すため、隣の人物の端が残りやすい。
     // 顔が見えない人物を数えると、その被写体は「首から下だけ」を学習し、
@@ -32,7 +36,11 @@ function subjectClassificationLines(subjects: LoraSubject[]): string[] {
     // 書き直す。顔の向きや見やすさは条件にしない。
     "IMPORTANT — a person counts as a subject when a meaningful part of their body is in frame: head plus torso, or a clearly recognisable figure. Name them even if they face away from the camera, are seen in profile, are partly overlapped by the other person, or their face is small or shadowed.",
     "Only IGNORE a person when they are a mere fragment at the edge of the frame — a hand, a forearm, a shoulder, or a strip of clothing or hair with no head and no torso. For such a fragment, do not output their trigger word, do not count them in the gender/count tag, and do not describe what they are wearing: it is background, not a subject.",
-    "Every subject's own gender/age is FIXED — it never changes between images of the same subject. Once you judge a subject's Danbooru-style count/gender tag (e.g. 1girl vs 1woman, 1boy vs 1man) from their description, use that SAME tag every time that subject appears, even if a particular photo makes them look a little older or younger.",
+    ...(dense
+      ? []
+      : [
+          "Every subject's own gender/age is FIXED — it never changes between images of the same subject. Once you judge a subject's Danbooru-style count/gender tag (e.g. 1girl vs 1woman, 1boy vs 1man) from their description, use that SAME tag every time that subject appears, even if a particular photo makes them look a little older or younger.",
+        ]),
   ];
 }
 
@@ -120,12 +128,12 @@ function buildDensePrompt(count: number, subjects: LoraSubject[], captionPrompt:
   const instr = captionPrompt.trim();
   const trigger = primaryTrigger(subjects);
   const multi = subjects.length >= 2;
-  const triggerPlaceholder = multi ? "<the matching subject's trigger word>" : trigger;
+  const triggerPlaceholder = multi ? "<the matching subject's trigger word(s)>" : trigger;
   const lines = [
     "You are an expert captioning engine that prepares training data for LoRA fine-tuning of modern diffusion transformers with LLM/VLM text encoders.",
     `You are given ${count} image(s). Produce ONE caption per image.`,
     "",
-    ...subjectClassificationLines(subjects),
+    ...subjectClassificationLines(subjects, "dense"),
     ...(multi ? [""] : []),
   ];
   if (instr) {
@@ -218,6 +226,11 @@ export function tidyCaption(raw: string, subjects: LoraSubject[], mode: Resolved
       .trim();
   }
   const primary = subjects[0]?.trigger.trim() ?? "";
+  if (subjects.length >= 2 && dense) {
+    // 文章形式は文中でトリガーを名指しさせる（subjectClassificationLines）。並べ替えると文が壊れるので、
+    // 1 人も名指ししていないときだけ先頭に 1 人目を足す（2026-09-25）。
+    return matchLeadingSubjectTriggers(out, subjects).length ? out : out ? `${primary}, ${out}` : primary;
+  }
   if (subjects.length >= 2) {
     // Multi-subject: keep every trigger the model actually named at the front
     // (a group/couple shot can legitimately name 2+), re-serialised in the

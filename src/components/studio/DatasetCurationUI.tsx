@@ -151,7 +151,8 @@ export function DatasetCurationUI({
       // 対して適用する。functional updater で読むので、直前のonChangeが
       // まだ反映されていない古いclosureのpairsを見てしまう心配がない。
       const subjectList = subjects && subjects.length >= 1 ? subjects : [{ trigger: triggerWord.trim(), description: "" }];
-      if (subjectList[0]?.trigger) {
+      // タグ列の整形なので文章形式には掛けない（2026-09-25）。
+      if (subjectList[0]?.trigger && resolvedCaptionMode !== "dense") {
         onChange((prev) => {
           const fixes = normalizeSubjectTags(
             prev.map((p) => ({ id: p.id, caption: p.caption })),

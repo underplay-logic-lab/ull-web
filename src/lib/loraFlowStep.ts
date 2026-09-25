@@ -42,7 +42,7 @@ export type LoraFlowState = {
 };
 
 export type LoraFlowInput = {
-  /** SDXL 系のジョブか（複数被写体・特徴の欄はこの時だけ出る）。 */
+  /** SDXL 系のジョブか（2026-09-25 から導線の分岐には使っていない。人物の欄は全モデル共通）。 */
   isSdxlJob: boolean;
   /** 生 YAML モード（導線を出さない）。 */
   yamlMode: boolean;
@@ -116,13 +116,14 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
   if (!v.triggerFilled) {
     return { targets: ["trigger"], hint: "呼び出すためのトリガーワードを決めます" };
   }
-  if (v.isSdxlJob && v.genderTagMissing) {
+  // 性別/人数・人物の説明は全モデル共通（2026-09-25。以前は SDXL だけだった）。
+  if (v.genderTagMissing) {
     return {
       targets: ["genderTag"],
       hint: "性別/人数タグを選びます（誰を学習するかの判定に使います）",
     };
   }
-  if (v.isSdxlJob && v.descriptionMissing) {
+  if (v.descriptionMissing) {
     return {
       targets: ["description"],
       hint: "どんな人物かを書きます（画像から特徴を抽出するときの手がかりになります）",
@@ -130,12 +131,8 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
   }
   if (v.imageCount === 0) {
     return {
-      targets: v.isSdxlJob ? ["addSubject", "dropzone", "captionSpec"] : ["dropzone"],
-      // 複数人物の登録は SDXL 系だけ（2026-09-15 ホスト指示）。それ以外で「もう1人登録する」と出すと
-      // 存在しないボタンを探させることになる（2026-09-25、ホスト指摘）。
-      hint: v.isSdxlJob
-        ? "もう1人登録する / 画像を取り込む / キャプションの方針を変える — どれでも進めます"
-        : "学習させたい画像を取り込みます",
+      targets: ["addSubject", "dropzone", "captionSpec"],
+      hint: "もう1人登録する / 画像を取り込む / キャプションの方針を変える — どれでも進めます",
     };
   }
   // 取り込みが終わったら、ユーザー自身に開始を押してもらう。タイマーでは

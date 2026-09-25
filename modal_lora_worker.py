@@ -896,9 +896,14 @@ def train_lora_job(params: dict) -> dict:
                 + "(" + " / ".join(f"x{n}" for n, _ in dataset_groups) + ")",
                 flush=True,
             )
+        # 複数人物（2 人目以降のトリガーがある）ジョブは trigger_word を設定しない（_build_config 参照）。
+        _extra_triggers = [str(t).strip() for t in (params.get("extra_triggers") or []) if str(t).strip()]
+        if _extra_triggers:
+            print(f"[train] 複数人物: trigger_word を設定しない（{trigger} + {', '.join(_extra_triggers)}）", flush=True)
         config_path = _build_config(
             lora_name, trigger, target_model, tc, override, custom_model_id,
             base_architecture, resolution, job_output_dir, dataset_groups,
+            inject_trigger=not _extra_triggers,
         )
         if override:
             # A raw-YAML job — pull the real step count out of the YAML text so
