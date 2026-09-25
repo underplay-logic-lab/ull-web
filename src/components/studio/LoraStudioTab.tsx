@@ -2951,22 +2951,25 @@ export function LoraStudioTab({
   // 「LoRA に最適化したキャプション」の料金（route と同じ式、2026-09-25）。
   const captionPrice = loraCaptionPrice(pendingCaptionCount, pricingKnobs);
 
-  // 抽出が終わったらメタデータの確認へ送る（2026-09-22、ホスト提案）。
+  // 確定が必要になったらメタデータの確認へ送る（2026-09-22、ホスト提案）。
   // ここで確定させてからキャプションを作るので、作り直しが起きない。
+  // 2026-09-25 に「抽出が終わった瞬間」から「診断を始めていて、抽出中でなく、確定待ち」に変えた。特徴が既に
+  // 入っている（再読み込み・キャプション付き取り込みから AI に切り替え等）と抽出が走らず、一度も送られなかった
+  // （ホスト報告「診断するを押しても、その場に留まり次がわからない」）。
   const scrolledToMetaRef = useRef(false);
-  const prevIdentityRunningRef = useRef(false);
   useEffect(() => {
-    const running = identityExtracting !== null;
-    const finished = prevIdentityRunningRef.current && !running;
-    prevIdentityRunningRef.current = running;
-    if (!finished || scrolledToMetaRef.current || !needsIdentityConfirm) return;
+    if (!analysisStarted || identityExtracting !== null || !needsIdentityConfirm) return;
+    if (scrolledToMetaRef.current) return;
     scrolledToMetaRef.current = true;
     setEmbedTagsOpen(true);
     // SDXL は metadata の書き込み欄、それ以外は人物欄の下の確認へ（2026-09-25）。
-    document
-      .getElementById(isSdxlJobRef.current ? METADATA_PANEL_ID : IDENTITY_CONFIRM_ID)
-      ?.scrollIntoView({ behavior: "smooth", block: isSdxlJobRef.current ? "start" : "center" });
-  }, [identityExtracting, needsIdentityConfirm]);
+    const t = window.setTimeout(() => {
+      document
+        .getElementById(isSdxlJobRef.current ? METADATA_PANEL_ID : IDENTITY_CONFIRM_ID)
+        ?.scrollIntoView({ behavior: "smooth", block: isSdxlJobRef.current ? "start" : "center" });
+    }, 150);
+    return () => window.clearTimeout(t);
+  }, [analysisStarted, identityExtracting, needsIdentityConfirm]);
 
   // 診断へ送る（1 データセットにつき 1 回）。2026-09-25 に 1 本へまとめた: 以前は「構図の判定が終わった瞬間」
   // 「特徴の確認が済んだ瞬間」を別々に見ていて、確認が先に済むと診断欄がまだ無く空振りし、判定が終わった
@@ -3173,7 +3176,11 @@ export function LoraStudioTab({
   // 作り方を途中で「AI に作らせる」に変えて確定が必要になったときは、そちらが既に済んでいて動かなかった。
   const onIdentityConfirmChange = (checked: boolean) => {
     setIdentityConfirmed(checked);
-    if (checked) window.setTimeout(scrollToNextFlow, 250);
+    if (!checked) return;
+    // 診断欄へまだ送っていなければ、診断が出そろった時点で下の effect が診断結果へ送る（構図の判定中でも
+    // 確定だけ先に済ませられるので、ここで送ると空振りする）。送り済みなら次に光っている場所へ。
+    if (!scrolledToDiagRef.current) return;
+    window.setTimeout(scrollToNextFlow, 250);
   };
 
   // 減らす段階（減らすボタン・削除ボタンが光っている間）が終わったら、次の場所へ送る（2026-09-25、ホスト要望）。
