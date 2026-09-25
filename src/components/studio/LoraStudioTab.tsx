@@ -2998,6 +2998,46 @@ export function LoraStudioTab({
   }, [analysisStarted, diagReady]);
 
 
+  // キャプションの作り方の切り替え（2026-09-25、ホスト報告「AI に作らせるにしたのに自前キャプションを検知と出て
+  // 何も動かない」）。取り込んだキャプション（.txt）は AI の対象から外れるので、AI に切り替えたら一旦よけて全部の
+  // 画像を AI に作らせる。作る前に「自分で用意する」へ戻したら、よけたキャプションを元に戻す。
+  const stashedUserCaptionsRef = useRef<{ en: Record<string, string>; ja: Record<string, string> } | null>(null);
+  const onCaptionSourceChange = (v: "ai" | "manual") => {
+    setCaptionSource(v);
+    if (captionStarted) return;
+    if (v === "ai" && userCaptionIds.size > 0) {
+      const ids = [...userCaptionIds];
+      const en: Record<string, string> = {};
+      const ja: Record<string, string> = {};
+      ids.forEach((id) => {
+        en[id] = captions[id] ?? "";
+        ja[id] = captionsJa[id] ?? "";
+      });
+      stashedUserCaptionsRef.current = { en, ja };
+      const drop = (m: Record<string, string>) =>
+        Object.fromEntries(Object.entries(m).filter(([id]) => !userCaptionIds.has(id)));
+      setCaptions(drop);
+      setCaptionsJa(drop);
+      ids.forEach((id) => captionAttemptedRef.current.delete(id));
+      setUserCaptionIds(new Set());
+      setAddNotice(
+        `取り込んだキャプション ${ids.length} 件は使わず、AI が全部の画像のキャプションを作ります（作る前に「自分で用意する」へ戻せば元に戻ります）。`,
+      );
+      return;
+    }
+    const stash = stashedUserCaptionsRef.current;
+    if (v === "manual" && stash) {
+      stashedUserCaptionsRef.current = null;
+      const alive = new Set(images.map((i) => i.id));
+      const ids = Object.keys(stash.en).filter((id) => alive.has(id) && stash.en[id].trim());
+      if (ids.length === 0) return;
+      setCaptions((m) => ({ ...m, ...Object.fromEntries(ids.map((id) => [id, stash.en[id]])) }));
+      setCaptionsJa((m) => ({ ...m, ...Object.fromEntries(ids.map((id) => [id, stash.ja[id]])) }));
+      setUserCaptionIds((prev) => new Set([...prev, ...ids]));
+      setAddNotice(`取り込んだキャプション ${ids.length} 件を元に戻しました。`);
+    }
+  };
+
   // 全部の画像にキャプション（同名 .txt / ZIP）が付いた状態で取り込んだら、「自分で用意する」に切り替える
   // （2026-09-25、ホスト質問「キャプションごと取り込んだら自分で用意するに自動でなる？」）。1 データセットにつき 1 回。
   const autoManualRef = useRef(false);
@@ -4442,7 +4482,7 @@ export function LoraStudioTab({
                     type="radio"
                     name="lora-caption-source"
                     checked={captionSource === v}
-                    onChange={() => setCaptionSource(v)}
+                    onChange={() => onCaptionSourceChange(v)}
                     disabled={busy || autoCap.running}
                     className="mt-0.5 accent-neon-pink"
                   />
@@ -4965,10 +5005,11 @@ export function LoraStudioTab({
                   <p className="flex items-start gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-[11px] leading-relaxed text-green-400">
                     <span className="shrink-0">📄</span>
                     <span>
-                      自前キャプション（{userCaptionCount} 件）を検知：
-                      <span className="font-medium">AI解析をスキップして高速学習</span>します
+                      取り込んだキャプション（{userCaptionCount} 件）を<span className="font-medium">そのまま使います</span>
                       {userCaptionCount < images.length &&
-                        `（キャプション無し ${images.length - userCaptionCount} 枚はトリガーワードのみ）`}
+                        (captionSource === "ai"
+                          ? `。残りの ${images.length - userCaptionCount} 枚は AI が作ります`
+                          : `。残りの ${images.length - userCaptionCount} 枚は確認画面で書いてください`)}
                       。
                     </span>
                   </p>
