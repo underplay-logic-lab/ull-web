@@ -48,6 +48,7 @@ import {
   type CaptionMode,
 } from "@/lib/loraCaptionSpec";
 import { SMART_CROP_KIND_LABEL, type SmartCropKind } from "@/lib/smartCrop";
+import { DIAGNOSTIC_TARGETS } from "@/lib/datasetDiagnostics";
 
 export const JOB_POLL_INTERVAL_MS = 3000;
 // Consecutive transient poll failures (5xx / network) tolerated before the
@@ -654,6 +655,7 @@ export function ImageDropzone({
   onRemove,
   disabled,
   captionState,
+  describe,
   recaptioningIds,
   onRecaption,
   selectedIds,
@@ -671,6 +673,8 @@ export function ImageDropzone({
   disabled: boolean;
   // "ok" (captioned) | "error" (retries exhausted) | "pending" (not yet done).
   captionState?: (id: string) => "ok" | "error" | "pending";
+  /** マウスを乗せたときの説明（構図タグ・推定した被写体など、2026-09-25）。 */
+  describe?: (id: string) => string;
   recaptioningIds?: Set<string>;
   onRecaption?: (id: string) => void;
   /** 画像をクリックで選択できるようにするか（学習回数パネルと連動）。 */
@@ -759,8 +763,21 @@ export function ImageDropzone({
         <p className="text-[11px] text-muted">
           {/* 「推奨 15〜40 枚」は根拠の無い値で、上限側は実案件（113〜165 枚で良好）とも診断の目安とも合わなかった
               （2026-09-25 見直し）。下限は診断の minUniquePerSubject（1 被写体 15 枚）に揃える。 */}
-          PNG・JPG・WEBP、複数可。目安は 1 人あたり 15 枚以上で、全身・上半身・顔のアップや向きがばらけているほど良く、
-          多い分には問題ありません。画像＋同名 .txt（ZIP でも、まとめて選択・D&D でも可）を入れると、その .txt をキャプションとして使います。
+          PNG・JPG・WEBP、複数可。目安は 1 人あたり 15 枚以上で、多い分には問題ありません。画像＋同名 .txt（ZIP でも、
+          まとめて選択・D&D でも可）を入れると、その .txt をキャプションとして使います。
+        </p>
+        {/* 入れる前に比率を意識してもらう（2026-09-25、ホスト指摘）。全身ばかり入れると、あとで削る・切り出すことになり、
+            切り出しても比率が届かないことがある。数字は診断の目安（DIAGNOSTIC_TARGETS.distanceShare）と同じ。 */}
+        <p className="max-w-md rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-2.5 py-1.5 text-[11px] leading-relaxed text-muted">
+          <strong className="text-foreground">入れる前に構図の比率を意識してください：</strong>1 人あたり
+          <strong className="text-foreground">
+            {" "}
+            顔アップ（肩まで）{Math.round(DIAGNOSTIC_TARGETS.distanceShare.closeup * 100)}%・上半身
+            {Math.round(DIAGNOSTIC_TARGETS.distanceShare.upper * 100)}%・全身{" "}
+            {Math.round(DIAGNOSTIC_TARGETS.distanceShare.full * 100)}% 以上
+          </strong>
+          が目安です（向きもばらけているほど良い）。全身ばかりだと、あとで削るか切り出すことになります。
+          意図して偏らせる場合（全身だけのポーズ集など）はこの限りではありません。
         </p>
         <input
           ref={inputRef}
@@ -873,6 +890,7 @@ export function ImageDropzone({
                   <img
                     src={img.url}
                     alt={img.file.name}
+                    title={describe?.(img.id) || img.file.name}
                     className="h-full w-full object-contain"
                   />
                   {recapping && (

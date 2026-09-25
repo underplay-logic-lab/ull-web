@@ -111,6 +111,9 @@ export const DIAGNOSTIC_TARGETS = {
   distanceMin: { closeup: 5, upper: 4, full: 4 } as Record<string, number>,
   /** 1 枚の画像の学習回数の目安の上限。これを超えると同じ絵の焼き込みを警告する（2026-09-25）。 */
   maxRepeats: 3,
+  /** 同じ構図の画像がこの枚数以上、かつ被写体の枚数のこの割合以上なら指摘する（未校正の出発点）。 */
+  sameCompositionMin: 4,
+  sameCompositionShare: 0.25,
   /** 露出比がこの倍率以上離れたら偏りとみなす。 */
   exposureImbalanceRatio: 2.5,
   /**
@@ -150,6 +153,8 @@ export type SubjectDiagnostic = {
   axesExposure: Record<DiagnosticAxis, Record<string, number>>;
   /** その被写体の画像の学習回数の最大値。 */
   maxRepeats: number;
+  /** 構図（compositionSignature）ごとの枚数。服装違いの同じ構図を見つけるのに使う。 */
+  signatures: Record<string, number>;
   /** どの軸のバケットにも当たらなかった枚数（軸ごと）。 */
   unclassified: Record<DiagnosticAxis, number>;
 };
@@ -188,6 +193,8 @@ export type DiagnosticIssue = {
    *   repeat : 足りない構図の画像の学習回数を何倍にすれば届くか（上限を超えるなら null）
    */
   balance?: { bucket: string; add: number; trimBucket: string; trim: number; repeat: number | null };
+  /** 同じ構図の画像がまとまってあるとき（compositionSignature と枚数）。 */
+  sameComposition?: { signature: string; count: number };
 };
 
 export type DatasetDiagnostic = {
@@ -282,8 +289,19 @@ export function estimateSubjectsFromTags(tags: string, subjects: LoraSubject[]):
   if (list.length < 2 || !tags.trim()) return [];
   const set = tagSet(tags);
   const { f, m } = peopleOf(set);
-  const score = (s: LoraSubject) =>
-    splitTags(s.identityTags ?? "").filter((t) => set.has(t)).length;
+  // 特徴タグは完全一致だけでなく、単語が重なれば一致とみなす（2026-09-25）。抽出した特徴は Gemini が書くので
+  // "bald head" / "overweight man" のように WD の "bald" / "fat" と表記がずれることがある。1 語同士・2 語以上の
+  // 語の包含で見る（"long hair" と "hair" のような汎用語だけの一致は拾わないよう、3 文字以下と hair 等は除く）。
+  // 完全一致 1 点、特徴的な語（bald / glasses 等）が重なれば 0.5 点。"long" / "head" / "round" のような修飾語や
+  // hair / eyes のような汎用語だけの重なりは数えない。
+  const GENERIC = new Set([
+    "hair", "eyes", "skin", "body", "male", "female", "woman", "girl", "boys", "girls",
+    "long", "short", "head", "round", "small", "large", "very", "light", "dark", "medium",
+  ]);
+  const words = (t: string) => t.split(/[\s_-]+/).filter((w) => w.length > 3 && !GENERIC.has(w));
+  const wdWords = new Set([...set].flatMap(words));
+  const hit = (t: string) => (set.has(t) ? 1 : words(t).some((w) => wdWords.has(w)) ? 0.5 : 0);
+  const score = (s: LoraSubject) => splitTags(s.identityTags ?? "").reduce((n, t) => n + hit(t), 0);
   const pick = (cands: LoraSubject[], n: number): LoraSubject[] => {
     if (n <= 0 || cands.length === 0) return [];
     if (cands.length <= n) return cands;
@@ -353,6 +371,48 @@ export function captionBuckets(caption: string, axis: DiagnosticAxis): string[] 
   return DIAGNOSTIC_AXES[axis].buckets
     .filter((b) => tags.some((t) => b.keywords.some((k) => t.includes(k))))
     .map((b) => b.id);
+}
+
+// 構図の細部（ポーズ・手の位置・脚）。服装・髪・表情は含めない（2026-09-25）。
+const POSE_DETAIL_TAGS = [
+  "arms at sides", "hand on hip", "hands on hips", "arms crossed", "crossed arms", "arms behind back",
+  "arms behind head", "hands in pockets", "hand in pocket", "contrapposto", "arm up", "arms up", "hand up",
+  "v", "peace sign", "waving", "salute", "crossed legs", "legs apart", "spread legs", "knees together",
+  "own hands together", "hands together", "hand on own chest", "hand on own face", "hand to own mouth",
+  "leaning forward", "leaning back", "head tilt", "hand on own hip", "outstretched arm", "outstretched arms",
+];
+
+/**
+ * 画像の「構図」を 1 本の文字列にする（服装違いの同じ構図を見つけるため、2026-09-25、ホスト提案「初心者は同じ
+ * 構図で服装だけ違う素材を作りがち」）。距離・向き・仰角・姿勢・背景のバケットと、ポーズの細部のタグ。
+ * 距離が判定できない画像は ""（比較しない）。
+ */
+export function compositionSignature(text: string): string {
+  const axes = Object.keys(DIAGNOSTIC_AXES) as DiagnosticAxis[];
+  const parts = axes.map((axis) => captionBuckets(text, axis).sort().join("+") || "-");
+  if (parts[0] === "-") return "";
+  const tags = new Set(splitTags(text));
+  const detail = POSE_DETAIL_TAGS.filter((t) => tags.has(t)).sort().join("+");
+  return `${parts.join("|")}|${detail}`;
+}
+
+/** compositionSignature を人が読める形に（例: 全身・正面・立ち・無地）。 */
+export function compositionSignatureLabel(sig: string): string {
+  const [dist, view, elev, pose, bg, detail] = sig.split("|");
+  const axes: [DiagnosticAxis, string][] = [
+    ["distance", dist],
+    ["view", view],
+    ["elevation", elev],
+    ["pose", pose],
+    ["background", bg],
+  ];
+  const labels = axes.flatMap(([axis, ids]) =>
+    (ids ?? "-") === "-"
+      ? []
+      : ids.split("+").map((id) => DIAGNOSTIC_AXES[axis].buckets.find((b) => b.id === id)?.label ?? id),
+  );
+  if (detail) labels.push(...detail.split("+"));
+  return labels.join("・");
 }
 
 /**
@@ -433,6 +493,7 @@ export function analyzeDataset(
         axes: emptyAxes(),
         axesExposure: emptyAxes(),
         maxRepeats: 1,
+        signatures: {},
         unclassified: { distance: 0, view: 0, elevation: 0, pose: 0, background: 0 },
       };
       bySubject.set(trigger, d);
@@ -453,11 +514,14 @@ export function analyzeDataset(
     if (unknown) uncaptioned += 1;
 
     const tags = splitTags(comp);
+    const sig = compositionSignature(comp);
     for (const trigger of targets) {
       const d = ensure(trigger);
       d.unique += 1;
       d.exposure += repeats;
       d.maxRepeats = Math.max(d.maxRepeats, repeats);
+      // 同じ構図は 1 人で写っている画像だけで数える（2 人の画像は構図が同じでも相手が違えば別物）。
+      if (sig && targets.length === 1) d.signatures[sig] = (d.signatures[sig] ?? 0) + 1;
       for (const axis of Object.keys(DIAGNOSTIC_AXES) as DiagnosticAxis[]) {
         let hit = false;
         for (const bucket of DIAGNOSTIC_AXES[axis].buckets) {
@@ -606,6 +670,22 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
         ...fix,
         balance: { bucket: b.id, add, trimBucket: trimOk ? trimBucket : "", trim: trimOk ? trim : 0, repeat },
       });
+    }
+
+    // 同じ構図で服装だけ違う画像が多い（2026-09-25、ホスト提案）。構図が同じなら、学習には似た情報が重なる。
+    // 減らしても影響が小さいので、比率を整えるときは優先的にここから減らしてもらう（意図的な場合を除く）。
+    if (!pseudo) {
+      const top = Object.entries(s.signatures).sort((a, b) => b[1] - a[1])[0];
+      if (top && top[1] >= Math.max(DIAGNOSTIC_TARGETS.sameCompositionMin, Math.ceil(s.unique * DIAGNOSTIC_TARGETS.sameCompositionShare))) {
+        issues.push({
+          level: "warn",
+          subject: s.trigger,
+          message: `同じ構図（${compositionSignatureLabel(top[0])}）の画像が ${top[1]}枚あります。服装が違っても構図が同じなら、学習には似た情報が重なります。意図して服装の違いを覚えさせたいのでなければ、比率を整えるときは優先的にここから減らしてください（減らしても影響は小さめです）。`,
+          notFixableByRepeats: false,
+          fixableWith: null,
+          sameComposition: { signature: top[0], count: top[1] },
+        });
+      }
     }
 
     // 同じ画像を何度も見せると、その画像の表情・背景・ポーズまで焼き込まれる（2026-09-25、ホスト判断）。

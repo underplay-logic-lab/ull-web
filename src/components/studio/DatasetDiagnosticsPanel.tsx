@@ -24,6 +24,7 @@ export function DatasetDiagnosticsPanel({
   stalledCount = 0,
   onRetryStalled,
   onPrepareTrim,
+  onPrepareSameComposition,
   highlightPrepare = false,
 }: {
   items: DiagnosticInput[];
@@ -51,6 +52,8 @@ export function DatasetDiagnosticsPanel({
   onRetryStalled?: () => void;
   /** 多すぎる構図（bucket）から count 枚を削除候補として選ぶ（2026-09-25。削除はユーザーが一覧で行う）。 */
   onPrepareTrim?: (subject: string, bucket: string, count: number) => void;
+  /** 同じ構図の画像から、少しだけ残して他を減らす候補として選ぶ（2026-09-25）。 */
+  onPrepareSameComposition?: (subject: string, signature: string) => void;
   /** 導線として「切り出す準備をする」を光らせるか（loraFlowStep が決める）。 */
   highlightPrepare?: boolean;
 }) {
@@ -83,6 +86,10 @@ export function DatasetDiagnosticsPanel({
     if (!cur || b.trim > cur.count) trimPlan.set(i.subject, { bucket: b.trimBucket, count: b.trim });
   }
   const bucketLabel = (id: string) => DIAGNOSTIC_AXES.distance.buckets.find((x) => x.id === id)?.label ?? id;
+  const samePlan = diag.issues.filter(
+    (i): i is typeof i & { subject: string; sameComposition: { signature: string; count: number } } =>
+      Boolean(i.subject && i.sameComposition),
+  );
 
   return (
     <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5">
@@ -233,6 +240,28 @@ export function DatasetDiagnosticsPanel({
 
           {/* 多すぎる構図を減らす（任意）。切り出しより先に置く（2026-09-25、ホスト指摘「削除を先にやった方が効率的」）。
               先に減らせば、必要な切り出しの枚数も減る。候補は 1 人で写っている画像だけ（2 人の画像は貴重なので残す）。 */}
+          {/* 同じ構図で服装だけ違う画像（2026-09-25、ホスト提案）。減らしても影響が小さいので、減らすならまずここから。 */}
+          {samePlan.length > 0 && onPrepareSameComposition && (
+            <div className="space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2 py-1.5">
+              <p className="text-[10px] leading-relaxed text-muted">
+                <strong className="text-foreground">同じ構図で服装だけ違う画像は、減らしても影響が小さめです。</strong>
+                服装を変えても構図が同じなら、学習には似た情報が重なります。意図して服装の違いを覚えさせたいのでなければ、
+                各構図 2 枚ずつ残して他を減らす候補を選べます（選んだあと一覧で見比べて、残したいものは選択を外してください）。
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {samePlan.map((i) => (
+                  <button
+                    key={`${i.subject}:${i.sameComposition.signature}`}
+                    type="button"
+                    onClick={() => onPrepareSameComposition(i.subject, i.sameComposition.signature)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-300 transition-colors hover:bg-amber-500/20"
+                  >
+                    <span className="font-mono">{i.subject}</span> の同じ構図 {i.sameComposition.count}枚から減らす候補を選ぶ
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {trimPlan.size > 0 && onPrepareTrim && (
             <div className="space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2 py-1.5">
               <p className="text-[10px] leading-relaxed text-muted">

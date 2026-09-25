@@ -94,6 +94,8 @@ import {
 import {
   analyzeDataset,
   captionBuckets,
+  compositionSignature,
+  compositionSignatureLabel,
   compositionText,
   DIAGNOSTIC_AXES,
   imageSubjects,
@@ -1441,13 +1443,54 @@ export function LoraStudioTab({
         setAddNotice(`${subject} が 1 人で写っている画像の中に、減らす候補がありませんでした。切り出しで足す方法を使ってください。`);
         return;
       }
-      const step = pool.length / n;
-      const ids = Array.from({ length: n }, (_, k) => pool[Math.floor(k * step)].id);
+      // 同じ構図が多いものから減らす（服装違いの同じ構図は減らしても影響が小さい、2026-09-25）。
+      // 各構図の 2 枚目以降を、構図の枚数が多い順に並べ、足りなければ残りから等間隔で足す。
+      const sigOf = (img: DatasetImage) =>
+        compositionSignature(compositionText({ caption: captions[img.id], tags: compositionTags[img.id] }));
+      const bySig = new Map<string, DatasetImage[]>();
+      for (const img of pool) {
+        const k = sigOf(img);
+        bySig.set(k, [...(bySig.get(k) ?? []), img]);
+      }
+      const dupFirst = [...bySig.values()]
+        .sort((x, y) => y.length - x.length)
+        .flatMap((g) => g.slice(2));
+      const picked = new Set(dupFirst.slice(0, n).map((i) => i.id));
+      const rest = pool.filter((i) => !picked.has(i.id));
+      const need = n - picked.size;
+      if (need > 0) {
+        const step = rest.length / need;
+        for (let k = 0; k < need; k++) picked.add(rest[Math.floor(k * step)].id);
+      }
+      const ids = [...picked];
       selectAndReveal(ids);
       setAddNotice(
         n < count
           ? `減らす候補を ${n} 枚選びました。${subject} が 1 人で写っている画像は ${pool.length} 枚しかなく、目安（約 ${count} 枚）には届きません。残りは切り出しで足してください。残したいものは選択を外してから「選択した画像を削除」を押してください。`
           : `減らす候補を ${n} 枚選びました（${subject} が 1 人で写っている ${pool.length} 枚から等間隔）。残したいものは選択を外してから「選択した画像を削除」を押してください。`,
+      );
+    },
+    [images, captions, compositionTags, allSubjects, selectAndReveal],
+  );
+
+  // 同じ構図の画像から、2 枚だけ残して他を減らす候補として選ぶ（2026-09-25、ホスト提案「同じ構図で服装だけ違う
+  // 素材は減らしても影響が小さい」）。残す 2 枚は等間隔で選ぶ。削除はユーザーが一覧で見比べてから行う。
+  const prepareSameCompositionForSubject = useCallback(
+    (subject: string, signature: string) => {
+      const group = images.filter((img) => {
+        const cap = (captions[img.id] ?? "").trim();
+        const tags = compositionTags[img.id] ?? "";
+        if (compositionSignature(compositionText({ caption: cap, tags })) !== signature) return false;
+        if (allSubjects.length <= 1) return true;
+        const present = imageSubjects(cap, tags, allSubjects);
+        return present.length === 1 && present[0].trigger === subject;
+      });
+      if (group.length <= 2) return;
+      const keep = new Set([group[0].id, group[Math.floor(group.length / 2)].id]);
+      const ids = group.filter((i) => !keep.has(i.id)).map((i) => i.id);
+      selectAndReveal(ids);
+      setAddNotice(
+        `同じ構図（${compositionSignatureLabel(signature)}）の ${group.length} 枚のうち、2 枚を残して ${ids.length} 枚を減らす候補に選びました。服装の違いを残したいものは選択を外してから「選択した画像を削除」を押してください。`,
       );
     },
     [images, captions, compositionTags, allSubjects, selectAndReveal],
@@ -4057,6 +4100,29 @@ export function LoraStudioTab({
               )
             }
             recaptioningIds={recaptioningIds}
+            // マウスを乗せると構図タグと推定した被写体を出す（2026-09-25、診断・減らす候補の判定を確かめるため）。
+            describe={(id) => {
+              const img = images.find((x) => x.id === id);
+              const tags = compositionTags[id] ?? "";
+              const cap = (captions[id] ?? "").trim();
+              const who =
+                allSubjects.length > 1
+                  ? imageSubjects(cap, tags, allSubjects)
+                      .map((x) => x.trigger)
+                      .join(" + ") || "判定できず"
+                  : "";
+              const dist = captionBuckets(compositionText({ caption: cap, tags }), "distance")
+                .map((b) => DIAGNOSTIC_AXES.distance.buckets.find((x) => x.id === b)?.label ?? b)
+                .join("・");
+              return [
+                img?.file.name ?? "",
+                who && `被写体${cap ? "" : "（推定）"}: ${who}`,
+                `距離: ${dist || "判定できず"}`,
+                tags && `構図タグ: ${tags}`,
+              ]
+                .filter(Boolean)
+                .join("\n");
+            }}
             onRecaption={captionSource === "ai" && captionStarted ? (id) => void recaptionOne(id) : undefined}
             // キャプションは構図の診断・クロップの後で作るので、作成を押す前は全画像が未作成で当たり前。
             // その間は印を出さない（2026-09-25、ホスト指摘「構図を解析しても未解析マークが残る」）。
@@ -4304,6 +4370,7 @@ export function LoraStudioTab({
               onOpenMultiAngle={onOpenMultiAngle}
               onPrepareCrop={prepareCropForSubject}
               onPrepareTrim={prepareTrimForSubject}
+              onPrepareSameComposition={prepareSameCompositionForSubject}
               highlightPrepare={flow.targets.includes("cropPrepare")}
             />
             </div>
