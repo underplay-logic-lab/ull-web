@@ -3002,6 +3002,11 @@ export function LoraStudioTab({
       prevTriggerRef.current = curationTrigger;
       return;
     }
+    // 生 YAML の間は差し替えない・空へは差し替えない（2026-09-26）。生 YAML ではトリガーを YAML の trigger_word から
+    // 読むので、切り替えた直後（YAML が空）や、複数人物で trigger_word を書かない YAML では「hitozuma → 空」になり、
+    // AI キャプション先頭の名前が消えていた（hitozuma_kocho_minimax_v2 で 36 枚、学習前に中止）。前の値は残しておき、
+    // 通常の画面に戻ったときに本当に変わっていれば差し替える。
+    if (yamlMode || !curationTrigger.trim()) return;
     const from = prevTriggerRef.current;
     const to = curationTrigger;
     if (from === to) return;
@@ -3040,7 +3045,7 @@ export function LoraStudioTab({
     }, 200);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [curationTrigger]);
+  }, [curationTrigger, yamlMode]);
 
   // Images that are the AI pass's responsibility (everything the user didn't
   // caption themselves) — the live denominator for the progress badge.
