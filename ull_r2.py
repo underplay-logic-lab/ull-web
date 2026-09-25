@@ -34,6 +34,7 @@ from __future__ import annotations
 import mimetypes
 import os
 import pathlib
+import threading
 import time
 from typing import Iterable
 
@@ -44,6 +45,7 @@ _PART_SIZE = 64 * _MB
 _CONCURRENCY = 16
 
 _client = None
+_CLIENT_LOCK = threading.Lock()
 
 
 def artifact_store() -> str:
@@ -73,9 +75,18 @@ def endpoint_url() -> str:
 
 def client():
     """Cached boto3 S3 client pointed at R2. Import is lazy so modules that
-    only *might* use R2 (dispatch images without boto3) still import."""
+    only *might* use R2 (dispatch images without boto3) still import.
+
+    Guarded by a lock (2026-09-25): boto3 client creation is not thread-safe, and
+    workers call get_bytes() from a thread pool on a cold container — 8 threads
+    building the client at once left one fetch hung until the 600s timeout
+    (modal_wd_tagger.py)."""
     global _client
-    if _client is None:
+    if _client is not None:
+        return _client
+    with _CLIENT_LOCK:
+        if _client is not None:
+            return _client
         import boto3
         from botocore.config import Config
 

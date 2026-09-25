@@ -23,6 +23,7 @@ export type LoraFlowTarget =
   | "captionSpec"
   | "dropzone"
   | "startAnalysis"
+  | "startCaption"
   | "upscaleSmall"
   | "diagnostics"
   | "identityConfirm"
@@ -66,8 +67,16 @@ export type LoraFlowInput = {
   /** 被写体のうち、「どんな人物か」が未記入のものがあるか。 */
   descriptionMissing: boolean;
   imageCount: number;
-  /** 「解析を開始」が押されたか。押すまで抽出も解析も走らない。 */
+  /** 「取り込み完了」が押されたか。押すまで特徴の抽出も構図の判定も走らない。 */
   analysisStarted: boolean;
+  /** 構図の判定（WD タガー・無料）が走っている最中（2026-09-25）。 */
+  compositionRunning: boolean;
+  /** 構図がまだ判定できていない枚数（判定が止まっているときだけ意味がある）。 */
+  untaggedCount: number;
+  /** キャプションを AI に作らせるか、自分で書くか（2026-09-25）。 */
+  captionSource: "ai" | "manual";
+  /** 「LoRA に最適化したキャプションを作成」が押されたか。 */
+  captionStarted: boolean;
   /** metadata の目視確認が必要なのに未確認。 */
   needsIdentityConfirm: boolean;
   /** 特徴の抽出が走っている最中。 */
@@ -122,7 +131,11 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
   if (v.imageCount === 0) {
     return {
       targets: v.isSdxlJob ? ["addSubject", "dropzone", "captionSpec"] : ["dropzone"],
-      hint: "もう1人登録する / 画像を取り込む / キャプションの方針を変える — どれでも進めます",
+      // 複数人物の登録は SDXL 系だけ（2026-09-15 ホスト指示）。それ以外で「もう1人登録する」と出すと
+      // 存在しないボタンを探させることになる（2026-09-25、ホスト指摘）。
+      hint: v.isSdxlJob
+        ? "もう1人登録する / 画像を取り込む / キャプションの方針を変える — どれでも進めます"
+        : "学習させたい画像を取り込みます",
     };
   }
   // 取り込みが終わったら、ユーザー自身に開始を押してもらう。タイマーでは
@@ -130,57 +143,54 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
   // 写っていないサンプルで特徴を確定してしまう（2026-09-22、ホスト指摘）。
   if (!v.analysisStarted) {
     // 小さすぎる素材があれば、解析前に超解像で差し替える選択肢も同時に光らせる
-    // （2026-09-24、ホスト要望）。解析後に差し替えるとキャプションを作り直すことになる。
+    // （2026-09-24、ホスト要望）。後から差し替えると診断・キャプションをやり直すことになる。
     if ((v.tooSmallCount ?? 0) > 0) {
       return {
         targets: ["startAnalysis", "upscaleSmall"],
-        hint: "小さすぎる画像を超解像で拡大して入れ直す / このまま解析を始める — どちらでも進めます",
+        hint: "小さすぎる画像を超解像で拡大して入れ直す / このまま診断へ進む — どちらでも進めます",
       };
     }
     return {
       targets: ["startAnalysis"],
-      hint: "画像を全部入れ終えたら押してください（ここから解析が始まります）",
+      hint: "画像を全部入れ終えたら押してください（特徴の抽出と構図の診断が始まります・無料）",
     };
   }
   // 抽出中は待つだけ。何も光らせない。
   if (v.identityRunning) return { targets: [], hint: "" };
-  // ⚠️ メタデータの確認は**キャプション解析より前**（2026-09-22、ホスト提案）。
-  // 特徴は「キャプションに書いてはいけない言葉」のリストなので、確認時に直すと
-  // 解析済みのキャプションは全部作り直しになる。解析前に確定させれば、その
-  // 作り直しが構造的に起きない。キャプション解析側もこの確認を待つ。
+  // 特徴の確認はキャプションより前（2026-09-22、ホスト提案）。特徴は「キャプションに書いてはいけない言葉」の
+  // リストなので、キャプション後に直すと全部作り直しになる。
   if (v.needsIdentityConfirm) {
     return {
       targets: ["identityConfirm"],
-      hint: "抽出した特徴を確認してください。ここを確定させてからキャプションを作ります",
+      hint: "抽出した特徴を確認してください。ここを確定させてから構図の診断へ進みます",
     };
   }
-  // 解析中は「終わったら診断を見る」とだけ伝える。ボタンは光らせない
-  // （待つしかない場面で押せるものを点滅させると急かすだけ）。
-  if (v.captionRunning) {
+  // 構図の判定中は待つだけ（数十秒）。ボタンは光らせない。
+  if (v.compositionRunning) {
     return {
       targets: ["diagnostics"],
-      hint: "画像を解析しています。終わると、この下の診断に何が足りないかが出ます",
+      hint: "構図を判定しています。終わると、この下の診断に何が足りないかが出ます",
     };
   }
-  if (v.pendingCaptionCount > 0) {
-    return { targets: ["recaption"], hint: "解析できなかった画像を解析し直します" };
+  if (v.untaggedCount > 0) {
+    return { targets: ["diagnostics"], hint: "構図を判定できなかった画像を判定し直します（無料）" };
   }
-  // --- ここから先は画面の並び順に沿って進める ---
-  //   クロップ → 学習回数 → （設定欄）メタデータの確認 → 実行
-  //
-  // ⚠️ メタデータの確認を「未解析の再解析」の直後に置いていたため、診断に赤が
-  // あってもクロップが光らなかった（2026-09-22、ホスト報告）。確認欄は設定側に
-  // あり、流れとしては学習回数より後。常に2箇所までに抑えるため「いまやる場所」
-  // と「飛ばして次へ行く場所」の2つを出す。
-  //
-  // 赤があってもクロップで埋まらない軸（向き・姿勢・背景）はここへ落ちるので、
-  // なぜクロップが光らないのかを文言で補う。
-  // ここへ来る時点で確認は済んでいる（上で返しているため）。
-  // 飛び先は実行ボタン。メタデータの確認を解析前へ移したので、設定欄に用が
-  // ある人だけが「学習設定へ進む」を使えばよく、導線としては実行へ送る
-  // （2026-09-22、ホスト指摘）。
-  const next: LoraFlowTarget = "submit";
-  const nextLabel = "次へ進む";
+  // --- ここから先は画面の並び順に沿って進める（2026-09-25 の順番の改修）---
+  //   診断 → クロップ → キャプション（有料・AI のときだけ）→ 学習回数 → 実行（キュレーション）
+  // キャプションは切り出した画像も含めて 1 回で作るので、クロップより後。学習回数は被写体ごとの比率を
+  // キャプションで決めるので、キャプションより後。
+  const captionPending = v.captionSource === "ai" && (!v.captionStarted || v.pendingCaptionCount > 0);
+  if (v.captionRunning) return { targets: [], hint: "" };
+  const afterCrop: LoraFlowTarget = captionPending
+    ? v.captionStarted
+      ? "recaption"
+      : "startCaption"
+    : "suggestRepeats";
+  const afterCropLabel = captionPending
+    ? v.captionStarted
+      ? "作れなかったキャプションを作り直す"
+      : "キャプションを作る"
+    : "学習回数へ進む";
 
   if (v.diagnosticErrors > 0 && v.cropAvailable) {
     // 切り出しは「準備をする → 切り出す」の2手（2026-09-22、ホスト指摘）。
@@ -189,17 +199,25 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
     return v.cropPrepared
       ? { targets: ["crop"], hint: `切り出しを実行する（対象と構図はセット済み）` }
       : {
-          targets: ["cropPrepare", next],
-          hint: `足りない構図を切り出す準備をする ／ ${nextLabel}`,
+          targets: ["cropPrepare", afterCrop],
+          hint: `足りない構図を切り出す準備をする ／ ${afterCropLabel}`,
         };
   }
+  if (captionPending) {
+    return {
+      targets: [afterCrop],
+      hint: v.captionStarted
+        ? "作れなかった画像のキャプションを作り直します"
+        : "切り出しまで済んだら、LoRA に最適化したキャプションを作ります（有料）",
+    };
+  }
   // 「構図の偏りを均す回数を自動で入れる」を名指しで光らせる。パネル全体だと
-  // この操作を見逃す（2026-09-22、ホスト指摘）。
+  // この操作を見逃す（2026-09-22、ホスト指摘）。飛び先は実行ボタン。
   return {
-    targets: ["suggestRepeats", next],
+    targets: ["suggestRepeats", "submit"],
     hint:
       (v.diagnosticErrors > 0
         ? "診断の指摘は切り出しでは埋まりません。構図の偏りを学習回数で均す"
-        : "構図の偏りを学習回数で均す") + ` ／ ${nextLabel}`,
+        : "構図の偏りを学習回数で均す") + " ／ 次へ進む",
   };
 }

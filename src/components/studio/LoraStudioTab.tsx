@@ -16,6 +16,7 @@ import {
   Cpu,
   Download,
   ImagePlus,
+  Languages,
   Loader2,
   LogIn,
   Plus,
@@ -89,13 +90,21 @@ import {
   type ResolvedCaptionMode,
   matchLeadingSubjectTriggers,
   loraCaptionPrice,
+  LORA_CAPTION_FREE_MAX,
 } from "@/lib/loraCaptionSpec";
-import { analyzeDataset, captionBuckets, DIAGNOSTIC_AXES, suggestRepeats } from "@/lib/datasetDiagnostics";
+import {
+  analyzeDataset,
+  captionBuckets,
+  compositionText,
+  DIAGNOSTIC_AXES,
+  suggestRepeats,
+  WHOLE_DATASET_SUBJECT,
+} from "@/lib/datasetDiagnostics";
 import { DatasetDiagnosticsPanel } from "@/components/studio/DatasetDiagnosticsPanel";
 import { translateCaption } from "@/lib/loraTranslate";
 import { extractIdentityTags } from "@/lib/loraCaption";
 import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
-import { generateDatasetCaptions, captionFileKey } from "@/lib/loraCaption";
+import { generateDatasetCaptions, captionFileKey, tagDatasetComposition } from "@/lib/loraCaption";
 import { runSmartCrop, type SmartCropKind } from "@/lib/smartCrop";
 import { loraFlowStep, type LoraFlowTarget } from "@/lib/loraFlowStep";
 import { prepareDatasetImage, type ImageSizeVerdict } from "@/lib/datasetImagePrep";
@@ -371,11 +380,9 @@ export function LoraStudioTab({
   // "クレジット不足" card back onto the screen.
   const [submitting, setSubmitting] = useState(false);
   const [datasetZipBusy, setDatasetZipBusy] = useState(false);
-  // Opt-in visual dataset curation: after upload, review/cull images and
-  // review/edit captions (with JP round-trip translation) before training.
-  // 既定 ON（2026-09-22、ホスト判断）。キャプションは学習結果を決める要素で、
-  // 一度も見ずに焼くほうが例外であるべき。下書きがあればそちらが優先される。
-  const [curationEnabled, setCurationEnabled] = useState(true);
+  // 学習前のキュレーション（画像の取捨・キャプションの確認と編集）は常に通す（2026-09-25、ホスト判断で
+  // チェックボックスを廃止。2026-09-22 から既定 ON だった）。キャプションは学習結果を決める要素で、
+  // 一度も見ずに焼く経路を残す理由が無い。
   const [curationPairs, setCurationPairs] = useState<CurationPair[]>([]);
   const [zipBusy, setZipBusy] = useState(false);
   // 取り込み時の寸法検査・縮小（prepareDatasetImage）の進み具合。4K の PNG を 100 枚超
@@ -620,7 +627,6 @@ export function LoraStudioTab({
         if (typeof d.captionVarying === "string") setCaptionVarying(d.captionVarying);
         if (typeof d.captionPromptOverride === "string") setCaptionPromptOverride(d.captionPromptOverride);
         if (isCaptionMode(d.captionMode)) setCaptionMode(d.captionMode);
-        if (typeof d.curationEnabled === "boolean") setCurationEnabled(d.curationEnabled);
         // キャッシュから戻すキャプションが反映している指示（2026-09-22）。
         // 保存していなかったため、リロード後は常に「指示が変わった」と判定され、
         // 取り込み直すたびに全画像のキャプションが作り直されていた。
@@ -703,7 +709,6 @@ export function LoraStudioTab({
       captionVarying,
       captionPromptOverride,
       captionMode,
-      curationEnabled,
       reflectedSpecKey,
       mode: "pro" as const,
       modelChoice,
@@ -738,7 +743,6 @@ export function LoraStudioTab({
     captionVarying,
     captionPromptOverride,
     captionMode,
-    curationEnabled,
     modelChoice,
     customModelId,
     baseArchitecture,
@@ -997,6 +1001,37 @@ export function LoraStudioTab({
         } else {
           void addDatasetFilesChecked(imgs.map((file) => ({ file })));
         }
+      } else if (txts.length) {
+        // .txt だけを後から入れた場合は、取り込み済みの同名画像のキャプションにする（2026-09-25）。
+        // 以前は画像と同時に入れた .txt しか対応付けず、後から入れた .txt は黙って捨てていた。
+        void (async () => {
+          const byStem = new Map<string, string>();
+          await Promise.all(
+            txts.map(async (t) => {
+              const text = await t.text().catch(() => "");
+              if (text.trim()) byStem.set(stem(t.name), text.trim());
+            }),
+          );
+          const hits: Record<string, string> = {};
+          for (const img of imagesRef.current) {
+            const text = byStem.get(stem(img.file.name));
+            if (text) hits[img.id] = text;
+          }
+          const ids = Object.keys(hits);
+          if (ids.length === 0) {
+            setErrorMessage(
+              `.txt ${txts.length} 件に、ファイル名が一致する画像がありませんでした（例: photo01.png には photo01.txt）。`,
+            );
+            return;
+          }
+          setCaptions((prev) => ({ ...prev, ...hits }));
+          setUserCaptionIds((prev) => new Set([...prev, ...ids]));
+          ids.forEach((id) => captionAttemptedRef.current.add(id));
+          setAddNotice(
+            `.txt ${txts.length} 件のうち ${ids.length} 件を、同名の画像のキャプションとして読み込みました。` +
+              (ids.length < txts.length ? `（${txts.length - ids.length} 件は同名の画像がありません）` : ""),
+          );
+        })();
       }
       zips.forEach((z) => void importZip(z));
 
@@ -1153,6 +1188,17 @@ export function LoraStudioTab({
   // キャプション解析が走らないようにするための、ユーザーからの明示的な合図。
   // タイマーでは「取り込みが終わった」を判定できないため。
   const [analysisStarted, setAnalysisStarted] = useState(false);
+  // 順番の改修（2026-09-25、ホスト方針）: 取り込み → 特徴確定 → 構図診断（無料）→ クロップ →
+  // キャプション（有料・1 回）→ 学習回数 → キュレーション → 学習。analysisStarted は「取り込み完了」の合図で、
+  // 特徴の抽出と構図の判定だけを始める。キャプションは captionStarted（ユーザーが押す）で始まる。
+  const [captionSource, setCaptionSource] = useState<"ai" | "manual">("ai");
+  const [captionStarted, setCaptionStarted] = useState(false);
+  // 構図の判定結果（WD タガーのタグ列、画像 id → タグ）。キャプションとは別に持つ。無料なので保存はしない。
+  const [compositionTags, setCompositionTags] = useState<Record<string, string>>({});
+  const [composition, setComposition] = useState<{ running: boolean; done: number; total: number; error: string | null }>(
+    { running: false, done: 0, total: 0, error: null },
+  );
+  const compositionAttemptedRef = useRef<Set<string>>(new Set());
 
   // 画像から identity タグを抽出する（ホスト方針「画像解析結果から抽出される
   // が、最終的には不要なら削除・不足なら追加」）。返るのは候補で、確定は
@@ -1254,20 +1300,27 @@ export function LoraStudioTab({
   // metadata へ埋め込むタグ。被写体レジストリから自動生成し、手入力欄は
   // 「追加分」として後ろに連結する（2026-09-21 — 以前は全部手入力だった）。
   const autoEmbedTags = useMemo(() => buildEmbedTagsFromSubjects(allSubjects), [allSubjects]);
-  // 診断の入力。キャプション済みの画像だけを渡す（未解析は数えても意味が無い）。
+  // 診断の入力。構図は WD タガーのタグ、被写体はキャプションで判定する（2026-09-25）。
+  // どちらも無い画像は数えても意味が無いので渡さない。
   const diagnosticItems = useMemo(
     () =>
       images
-        .map((img) => ({ caption: (captions[img.id] ?? "").trim(), repeats: img.repeats ?? 1 }))
-        .filter((x) => x.caption.length > 0),
-    [images, captions],
+        .map((img) => ({
+          caption: (captions[img.id] ?? "").trim(),
+          tags: compositionTags[img.id] ?? "",
+          repeats: img.repeats ?? 1,
+        }))
+        .filter((x) => compositionText(x).length > 0),
+    [images, captions, compositionTags],
   );
   // 学習回数の一括選択チップ（2026-09-21、ホスト指摘）。165枚を1枚ずつ
   // shift+クリックするのは非現実的なので、キャプションから「被写体」と
   // 「構図（距離）」の2軸を作る。判定は診断と同じ関数を通すので、
   // 「診断が全身が多いと言う」→「全身チップで選べる」が必ず一致する。
   const selectionGroups = useMemo(() => {
-    const captioned = images.filter((img) => (captions[img.id] ?? "").trim());
+    const captioned = images.filter((img) =>
+      compositionText({ caption: captions[img.id], tags: compositionTags[img.id] }),
+    );
     if (captioned.length === 0) return [];
 
     const subjMap = new Map<string, { label: string; ids: string[] }>();
@@ -1280,8 +1333,11 @@ export function LoraStudioTab({
 
     for (const img of captioned) {
       const cap = (captions[img.id] ?? "").trim();
-      const hits = matchLeadingSubjectTriggers(cap, allSubjects);
-      if (hits.length === 0) push(subjMap, "__none__", "未分類", img.id);
+      const hits = cap ? matchLeadingSubjectTriggers(cap, allSubjects) : [];
+      // キャプション前は誰が写っているか分からないので、被写体の軸には入れない（2026-09-25）。
+      if (!cap) {
+        /* 被写体未判定 */
+      } else if (hits.length === 0) push(subjMap, "__none__", "未分類", img.id);
       else if (hits.length === 1) push(subjMap, hits[0].trigger, hits[0].trigger, img.id);
       else {
         // 2人以上が同時に写っている画像（duo）。片方だけの画像と分けて
@@ -1289,7 +1345,10 @@ export function LoraStudioTab({
         const key = hits.map((h) => h.trigger).join("+");
         push(subjMap, key, `${hits.map((h) => h.trigger).join(" + ")}（同時）`, img.id);
       }
-      const buckets = captionBuckets(cap, "distance");
+      const buckets = captionBuckets(
+        compositionText({ caption: cap, tags: compositionTags[img.id] }),
+        "distance",
+      );
       if (buckets.length === 0) push(distMap, "__none__", "未分類", img.id);
       for (const b of buckets) {
         const def = DIAGNOSTIC_AXES.distance.buckets.find((x) => x.id === b);
@@ -1315,7 +1374,7 @@ export function LoraStudioTab({
     if (distMap.size > 1) groups.push({ key: "distance", title: "構図", options: toOptions(distMap) });
     if (kindMap.size > 1) groups.push({ key: "origin", title: "種別", options: toOptions(kindMap) });
     return groups;
-  }, [images, captions, allSubjects]);
+  }, [images, captions, compositionTags, allSubjects]);
 
   // 診断の「◯◯ の元画像を選んでクロップ欄へ」。実際の切り出しは実行しない
   // （実行ボタンが2つあると対象が分からなくなる。2026-09-21 ホスト指摘）。
@@ -1336,6 +1395,10 @@ export function LoraStudioTab({
         .filter((img) => {
           if (img.cropKind) return false;
           const cap = (captions[img.id] ?? "").trim();
+          // キャプション前（構図タグだけ）の診断は被写体を分けずに出すので、全画像が対象（2026-09-25）。
+          if (subject === WHOLE_DATASET_SUBJECT || allSubjects.length <= 1) {
+            return Boolean(cap || compositionTags[img.id]);
+          }
           if (!cap) return false;
           return matchLeadingSubjectTriggers(cap, allSubjects).some((x) => x.trigger === subject);
         })
@@ -1346,7 +1409,7 @@ export function LoraStudioTab({
       if (kinds.length) setCropKindSelection(new Set<SmartCropKind>(kinds));
       document.getElementById(SMART_CROP_PANEL_ID)?.scrollIntoView({ behavior: "smooth", block: "center" });
     },
-    [images, captions, allSubjects],
+    [images, captions, compositionTags, allSubjects],
   );
 
   // キャプションに実際に入っている被写体の内訳（2026-09-21、ホスト指摘）。
@@ -1380,10 +1443,12 @@ export function LoraStudioTab({
   // 「どれだけ増やせば良いのかがわかりにくい」）。キャプションが付いている
   // 画像だけが対象で、被写体ごとに一番多い距離バケットへ揃える（上限×4）。
   const applySuggestedRepeats = useCallback(() => {
-    const captioned = images.filter((img) => (captions[img.id] ?? "").trim());
+    const captioned = images.filter((img) =>
+      compositionText({ caption: captions[img.id], tags: compositionTags[img.id] }),
+    );
     if (captioned.length === 0) return;
     const sug = suggestRepeats(
-      captioned.map((img) => ({ caption: (captions[img.id] ?? "").trim() })),
+      captioned.map((img) => ({ caption: (captions[img.id] ?? "").trim(), tags: compositionTags[img.id] })),
       allSubjects,
     );
     const byRepeat = new Map<number, string[]>();
@@ -1402,17 +1467,17 @@ export function LoraStudioTab({
           .join(" / ") +
         "。多い構図を下げることはできないので、少ない構図を上げる形になります。個別に直せます。",
     );
-  }, [images, captions, allSubjects, setImageRepeats]);
+  }, [images, captions, compositionTags, allSubjects, setImageRepeats]);
 
   // 画像id -> 距離バケット（クロップ候補の絞り込みに使う）。判定は診断と同じ。
   const distanceById = useMemo(() => {
     const out: Record<string, string[]> = {};
     for (const img of images) {
-      const cap = (captions[img.id] ?? "").trim();
-      if (cap) out[img.id] = captionBuckets(cap, "distance");
+      const comp = compositionText({ caption: captions[img.id], tags: compositionTags[img.id] });
+      if (comp) out[img.id] = captionBuckets(comp, "distance");
     }
     return out;
-  }, [images, captions]);
+  }, [images, captions, compositionTags]);
 
   const croppedImages = useMemo(() => images.filter((i) => i.cropKind), [images]);
   // キャプションが付いていない画像（＝解析が拒否された／届かなかったもの）。
@@ -2560,17 +2625,15 @@ export function LoraStudioTab({
   // 解析が終わった時だけ送る（下の effect）。
   const scrolledToDiagRef = useRef(false);
 
-  // 解析が終わった瞬間に診断へ送る（2026-09-22、ホスト指摘「取り込み終わった
-  // 後に何をすればいいか分からない」）。1データセットにつき1回だけ。
-  const prevCapRunningRef = useRef(false);
+  // 構図の判定が終わった瞬間に診断へ送る（2026-09-22、ホスト指摘「取り込み終わった
+  // 後に何をすればいいか分からない」。2026-09-25 からキャプションではなく構図の判定で見る）。
+  // 1データセットにつき1回だけ。
+  const prevCompRunningRef = useRef(false);
   useEffect(() => {
-    // 走っていた解析が止まった、または（キャッシュで解析が要らず）開始直後から
-    // 未解析ゼロ、のどちらでも送る。後者はホスト報告「すぐ終わってもスクロール
-    // しない」への対応。
     const finished =
-      (prevCapRunningRef.current && !autoCap.running) ||
-      (analysisStarted && !autoCap.running && pendingCaptionCount === 0);
-    prevCapRunningRef.current = autoCap.running;
+      (prevCompRunningRef.current && !composition.running) ||
+      (analysisStarted && !composition.running && images.length > 0 && images.every((i) => compositionTags[i.id]));
+    prevCompRunningRef.current = composition.running;
     // 確認待ちの間は診断へ送らない（2026-09-22、ホスト報告「開始直後に診断へ
     // 飛んでから確認欄へ飛ぶ」）。確認後の遷移は scrolledAfterConfirmRef が担う。
     if (needsIdentityConfirm || scrolledToMetaRef.current) return;
@@ -2579,8 +2642,57 @@ export function LoraStudioTab({
     document
       .getElementById(DIAGNOSTICS_PANEL_ID)
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [autoCap.running, images.length, analysisStarted, pendingCaptionCount, needsIdentityConfirm]);
+  }, [composition.running, images, compositionTags, analysisStarted, needsIdentityConfirm]);
 
+
+  // 構図の判定（WD タガー・無料・CPU、2026-09-25）。「取り込み完了」後に、まだタグの無い画像をまとめて判定する。
+  // 後から足した画像・切り出した画像も同じ effect が拾う。キャプションとは独立（特徴の確定も待たない）。
+  const runCompositionTagging = useCallback(async (targets: DatasetImage[]) => {
+    if (targets.length === 0) return;
+    targets.forEach((img) => compositionAttemptedRef.current.add(img.id));
+    setComposition({ running: true, done: 0, total: targets.length, error: null });
+    try {
+      await tagDatasetComposition(
+        targets.map((i) => i.file),
+        {
+          onBatch: (entries) =>
+            setCompositionTags((prev) => {
+              const next = { ...prev };
+              for (const e of entries) {
+                const id = targets[e.index]?.id;
+                if (id && e.tags) next[id] = e.tags;
+              }
+              return next;
+            }),
+          onProgress: (done, total) => setComposition((c) => ({ ...c, done, total })),
+        },
+      );
+      setComposition((c) => ({ ...c, running: false }));
+    } catch (err) {
+      setComposition((c) => ({
+        ...c,
+        running: false,
+        error: err instanceof Error ? err.message : "構図の診断に失敗しました。",
+      }));
+    }
+  }, []);
+  useEffect(() => {
+    if (!user || phase !== "form" || yamlMode || !analysisStarted || composition.running) return;
+    const pending = images.filter(
+      (img) => !compositionTags[img.id] && !compositionAttemptedRef.current.has(img.id),
+    );
+    if (pending.length === 0) return;
+    // 連続で足された画像を 1 回にまとめる。
+    const t = setTimeout(() => void runCompositionTagging(pending), 600);
+    return () => clearTimeout(t);
+  }, [user, phase, yamlMode, analysisStarted, composition.running, images, compositionTags, runCompositionTagging]);
+  // 判定が終わったのにタグが付かなかった画像（読めなかった・通信が落ちた）。
+  const untaggedImages = useMemo(
+    () => images.filter((img) => !compositionTags[img.id] && compositionAttemptedRef.current.has(img.id)),
+    // compositionAttemptedRef は composition の更新と同時に変わる
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [images, compositionTags, composition.running],
+  );
 
   // 診断は DatasetDiagnosticsPanel も内部で同じ計算をするが、導線の判定にも
   // 要る。純関数なので二重に走っても実害は無い（数百件で数ms）。
@@ -2602,6 +2714,10 @@ export function LoraStudioTab({
         descriptionMissing: allSubjects.some((x) => !(x.description ?? "").trim()),
         imageCount: images.length,
         analysisStarted,
+        compositionRunning: composition.running,
+        untaggedCount: composition.running ? 0 : untaggedImages.length,
+        captionSource,
+        captionStarted,
         needsIdentityConfirm,
         identityRunning: identityExtracting !== null,
         captionRunning: autoCap.running,
@@ -2624,6 +2740,10 @@ export function LoraStudioTab({
       images.length,
       tooSmallImages.length,
       analysisStarted,
+      composition.running,
+      untaggedImages.length,
+      captionSource,
+      captionStarted,
       needsIdentityConfirm,
       identityExtracting,
       autoCap.running,
@@ -2861,8 +2981,9 @@ export function LoraStudioTab({
   // a running pass) so a second drop mid-run doesn't abort the first.
   useEffect(() => {
     if (!user || phase !== "form" || autoCap.running) return;
-    // 取り込みの途中で走らせない（上の抽出と同じ理由）。
-    if (!analysisStarted) return;
+    // キャプションはユーザーが「作成」を押してから（2026-09-25 の順番の改修。有料なので勝手に始めない）。
+    // 押したあとに足した画像（切り出し等）は追加分だけ作る。自分で書く場合は走らせない。
+    if (!captionStarted || captionSource !== "ai") return;
     // ⚠️ メタデータの確認が済むまで待つ（2026-09-22、ホスト提案）。特徴は
     // 「キャプションに書いてはいけない言葉」のリストなので、確認時に直されると
     // 解析済みのキャプションが全部作り直しになる。確定してから作れば起きない。
@@ -2906,7 +3027,8 @@ export function LoraStudioTab({
     // curationTrigger / currentCaptionPrompt / runVisionCaptions は毎レンダー
     // 作り直されるので依存に入れない（入れると取り込みのたびに解析が再起動する）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analysisStarted, needsIdentityConfirm, images, captions, userCaptionIds, user, phase, autoCap.running, identityExtracting, allSubjects]);
+  }, [captionStarted, captionSource, needsIdentityConfirm, images, captions, userCaptionIds, user, phase, autoCap.running, identityExtracting, allSubjects]);
+
 
   // Re-run the vision pass over every AI-captioned image with the current
   // trigger word + synthesised instruction (the "🔄 AI再解析" button, and
@@ -3111,7 +3233,7 @@ export function LoraStudioTab({
     }
     if (!canSubmit) return;
     // キャプションが揃うまで学習へ進めない（2026-09-25 ホスト判断: キャプション作成は有料・学習側の自動補完に頼らない）。
-    if (pendingCaptionCount > 0 && !autoCap.running) return;
+    if (captionSource === "ai" && pendingCaptionCount > 0 && !autoCap.running) return;
 
     // Let any in-flight AI-vision pass finish so curation / training see the
     // completed captions.
@@ -3148,6 +3270,8 @@ export function LoraStudioTab({
 
     let cap: Record<string, string> = captions;
     let capJa: Record<string, string> = captionsJa;
+    // 自分で書く（2026-09-25）: AI には一切作らせず、確認画面で書いてもらう。
+    const manual = captionSource === "manual";
 
     // (1) Images that never went through the vision pass — e.g. the user
     //     clicked before the on-drop debounce fired. Caption them now.
@@ -3157,7 +3281,7 @@ export function LoraStudioTab({
         !(cap[img.id] ?? "").trim() &&
         !captionAttemptedRef.current.has(img.id),
     );
-    if (neverTried.length > 0) {
+    if (!manual && neverTried.length > 0) {
       neverTried.forEach((img) => captionAttemptedRef.current.add(img.id));
       const d = await runVisionCaptions(neverTried, curationTrigger, currentCaptionPrompt());
       if (d) {
@@ -3183,7 +3307,7 @@ export function LoraStudioTab({
     const aiCount = images.filter(
       (img) => !userCaptionIds.has(img.id) && (cap[img.id] ?? "").trim(),
     ).length;
-    if (!hasUserCaptions && aiCount > 0 && specChanged) {
+    if (!manual && !hasUserCaptions && aiCount > 0 && specChanged) {
       const delta = await recaptionAll();
       if (delta) {
         cap = { ...cap, ...delta.cap };
@@ -3191,26 +3315,20 @@ export function LoraStudioTab({
       }
     }
 
-    if (curationEnabled) {
-      setCurationPairs(
-        images.map((img) => ({
-          id: img.id,
-          file: img.file,
-          url: img.url,
-          name: img.file.name,
-          caption: cap[img.id] ?? "",
-          captionJa: capJa[img.id] ?? "",
-          excluded: false,
-        })),
-      );
-      setPhase("curation");
-      scrollStudioIntoView();
-      return;
-    }
-
-    const list = images.map((img) => (cap[img.id] ?? "").trim());
-    const ownCaptions = list.some((c) => c.length > 0) ? list : null;
-    await runTraining(images, ownCaptions, hasUserCaptions);
+    // 学習はキュレーション画面の「学習を開始」からだけ始まる（2026-09-25、確認を必須にした）。
+    setCurationPairs(
+      images.map((img) => ({
+        id: img.id,
+        file: img.file,
+        url: img.url,
+        name: img.file.name,
+        caption: cap[img.id] ?? "",
+        captionJa: capJa[img.id] ?? "",
+        excluded: false,
+      })),
+    );
+    setPhase("curation");
+    scrollStudioIntoView();
   };
 
   // Push the curation screen's working copy (`curationPairs`) back into the
@@ -3446,8 +3564,11 @@ export function LoraStudioTab({
     setCaptionGen({ state: "idle", prompt: "", fromGemini: false, error: null });
     // 既定は ON（2026-09-22、ホスト判断）。リセットで false に戻していたため
     // 「完全リセットするとチェックが外れている」状態になっていた。
-    setCurationEnabled(true);
     setAnalysisStarted(false);
+    setCaptionStarted(false);
+    setCompositionTags({});
+    setComposition({ running: false, done: 0, total: 0, error: null });
+    compositionAttemptedRef.current = new Set();
     setCurationPairs([]);
     setErrorMessage(null);
     uploadedDatasetRef.current = null;
@@ -3629,7 +3750,7 @@ export function LoraStudioTab({
           maxImages={MAX_IMAGES}
           maxTotalBytes={MAX_TOTAL_BYTES}
           canDownloadDataset={isAdmin}
-          onRecaption={recaptionForCuration}
+          onRecaption={captionSource === "ai" ? recaptionForCuration : undefined}
           resolvedCaptionMode={resolvedCaptionMode}
         />
         <LoginModal
@@ -3797,14 +3918,14 @@ export function LoraStudioTab({
                 データセットDLは従来どおり誰でも使える。 */}
             {/* 2026-09-25: キャプション作成が有料になったので、キャプションが揃ったら誰でも DL できるようにし、
                 光らせて保存を促す（ホスト判断「100C やったら終わり次第 DL できるように・DL を促す」）。 */}
-            {images.length > 0 && (isAdmin || (analysisStarted && !autoCap.running && pendingCaptionCount === 0)) && (
+            {images.length > 0 && (isAdmin || (captionStarted && !autoCap.running && pendingCaptionCount === 0)) && (
               <button
                 type="button"
                 onClick={downloadDatasetZipLocal}
                 disabled={busy || datasetZipBusy}
                 title="画像と、作成したキャプション（.txt）を 1 つの ZIP にまとめて保存します。"
                 className={`inline-flex items-center gap-1.5 rounded-lg border border-neon-pink/50 bg-neon-pink/10 px-2.5 py-1 text-[11px] font-semibold text-neon-pink transition-colors hover:bg-neon-pink/20 disabled:cursor-not-allowed disabled:opacity-50${
-                  analysisStarted && pendingCaptionCount === 0 && !autoCap.running ? " flow-next" : ""
+                  captionStarted && pendingCaptionCount === 0 && !autoCap.running ? " flow-next" : ""
                 }`}
               >
                 {datasetZipBusy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
@@ -3827,23 +3948,36 @@ export function LoraStudioTab({
               あると、取り込みに集中している間は視界に入らず、押し忘れたまま
               学習が始まる。文言も実態に合わせた——「アップロード後」ではなく
               実際には開始ボタンを押した直後に確認画面へ移動する。 */}
-          <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-background/40 px-3 py-2">
-            <input
-              type="checkbox"
-              checked={curationEnabled}
-              onChange={(e) => setCurationEnabled(e.target.checked)}
-              disabled={busy}
-              className="mt-0.5 accent-neon-pink"
-            />
-            <span className="text-[11px] leading-relaxed text-muted">
-              <span className="font-medium text-foreground">
-                学習を始める前に、キャプションを1枚ずつ確認・編集する
-              </span>
-              <br />
-              開始ボタンを押すと学習には進まず、確認画面へ移動します。そこで自動生成された
-              キャプションを日本語で見ながら直し、そのうえで学習を開始します。
-            </span>
-          </label>
+          {/* キャプションの作り方は最初に選ぶ（2026-09-25、ホスト方針）。支払いはキャプションと学習で別々。 */}
+          {!yamlMode && (
+            <div className="space-y-1 rounded-lg border border-border bg-background/40 px-3 py-2">
+              <p className="text-[11px] font-medium text-foreground">キャプションの作り方</p>
+              {(
+                [
+                  ["ai", "AI に作らせる（有料）", "LoRA 学習に最適化したキャプションを AI が作ります。構図の診断と切り出しが済んでから 1 回だけ作ります。"],
+                  [
+                    "manual",
+                    "自分で用意する（無料）",
+                    "画像と同名の .txt を一緒に入れるか、確認画面で 1 枚ずつ書きます（両方を組み合わせても構いません）。全部の画像に入るまで学習は始められません。",
+                  ],
+                ] as const
+              ).map(([v, label, desc]) => (
+                <label key={v} className="flex cursor-pointer items-start gap-2">
+                  <input
+                    type="radio"
+                    name="lora-caption-source"
+                    checked={captionSource === v}
+                    onChange={() => setCaptionSource(v)}
+                    disabled={busy || autoCap.running}
+                    className="mt-0.5 accent-neon-pink"
+                  />
+                  <span className="text-[11px] leading-relaxed text-muted">
+                    <span className="font-medium text-foreground">{label}</span> — {desc}
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
 
           <div className={`rounded-xl${flowRing("dropzone")}`}>
           <ImageDropzone
@@ -3862,7 +3996,7 @@ export function LoraStudioTab({
               )
             }
             recaptioningIds={recaptioningIds}
-            onRecaption={(id) => void recaptionOne(id)}
+            onRecaption={captionSource === "ai" && captionStarted ? (id) => void recaptionOne(id) : undefined}
             captionState={(id) =>
               (captions[id] ?? "").trim() || userCaptionIds.has(id)
                 ? "ok"
@@ -3885,42 +4019,20 @@ export function LoraStudioTab({
                       type="button"
                       disabled={busy}
                       onClick={() => {
-                        // 押した時点ではその場に留まり、解析が終わってから診断へ送る（2026-09-25、
-                        // ホスト要望「いきなり診断へ飛ぶ」。下の終了時 effect が担う）。
+                        // 押した時点ではその場に留まり、構図の判定が終わってから診断へ送る（下の終了時 effect）。
                         setAnalysisStarted(true);
                       }}
                       className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
                     >
                       <Sparkles size={13} />
-                      {/* 解析対象はキャプションの無い画像だけ。前回の結果を再利用した
-                          画像まで「N 枚を解析」と読める表示は誤解を招く（2026-09-24、ホスト指摘）。 */}
-                      {pendingCaptionCount === 0
-                        ? "解析済みの結果で次へ進む"
-                        : `LoRA に最適化したキャプションを作成（${pendingCaptionCount} 枚・${
-                            captionPrice > 0 ? `${captionPrice}C` : "無料"
-                          }）`}
+                      取り込み完了 — 特徴と構図を診断する（無料）
                     </button>
                     <p className="mt-1.5 text-[10px] leading-relaxed text-muted">
                       画像を<strong className="text-foreground">全部入れ終えてから</strong>押してください。
-                      {pendingCaptionCount === 0 ? (
-                        <>
-                          全部の画像に解析結果があるので、
-                          <strong className="text-foreground">解析し直しはしません</strong>
-                          （被写体の特徴がまだ無ければ、その抽出だけ行います）。
-                        </>
-                      ) : (
-                        <>
-                          押すと、被写体の特徴を抽出してから、LoRA 学習に最適化したキャプションを AI が作ります
-                          （トリガーワードに覚えさせたい特徴は書かず、服装・ポーズ・背景など変わる要素だけを書き分け、
-                          ぼかさず正確に記述します）。起動に 1〜2 分、1 枚あたり約 2 秒かかります。料金は基本{" "}
-                          {pricingKnobs.lora_caption_base}C＋1 枚 {pricingKnobs.lora_caption_per_image}C
-                          （取りこぼしのやり直しは無料）
-                          {pendingCaptionCount < images.length && "。解析結果が残っている画像はそのまま使います"}。
-                          途中で始めると、先に入れたフォルダにしか写っていない被写体の特徴が取れません。
-                        </>
-                      )}
+                      被写体の特徴を抽出し、画像ごとの構図（全身・上半身・向き・姿勢・背景）を判定して、
+                      足りない構図を診断します。途中で押すと、先に入れたフォルダにしか写っていない被写体の特徴が取れません。
                       <strong className="text-foreground">押したあとに画像を足しても構いません</strong>
-                      （追加分だけ解析されます）。
+                      （追加分だけ判定されます）。キャプションはこのあと、切り出しまで済んでから作ります。
                     </p>
                   </div>
                 )}
@@ -3972,132 +4084,28 @@ export function LoraStudioTab({
                     </p>
                   </div>
                 )}
-                {/* 解析の状態もサムネイル一覧より上に出す（2026-09-24、ホスト指摘「画像の下に出ている」）。
-                    ImageDropzone は一覧まで含むので、外に置くと一覧の下になる。 */}
-                <div className="mt-2 space-y-2 empty:hidden">
-                  {/* キャプションの状態は取り込み欄の真下に出す（2026-09-22、ホスト
-                      指摘）。取り込んだ直後に「いま解析している」「終わったら診断を
-                      見る」が見えていないと、何をすればいいか分からない。 */}
-                  {/* Resume: re-analyze every image that has no caption yet (never
-                      started, timed out, or errored). Always visible while any remain. */}
-                  {/* 解析を始める前は出さない（2026-09-24、ホスト指摘）。未解析があるのは当然で、
-                      「解析を開始する（未解析の N 枚）」と役割が重なって紛らわしい。 */}
-                  {analysisStarted && !autoCap.running && images.length > 0 && pendingCaptionCount > 0 && (
-                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-300">
-                      <span className="flex items-center gap-1.5">
-                        <AlertTriangle size={13} className="shrink-0" />
-                        {captionErrorCount > 0
-                          ? `${pendingCaptionCount} 枚が未解析です（うち ${captionErrorCount} 枚はエラー / タイムアウト）。`
-                          : `${pendingCaptionCount} 枚がまだ解析されていません。`}
-                      </span>
+                {/* 構図の判定（無料）の状態。キャプションの状態はクロップ欄の下へ移した（2026-09-25 の順番の改修）。 */}
+                {analysisStarted && composition.running && (
+                  <p className="mt-2 flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] text-neon-violet">
+                    <Loader2 size={13} className="shrink-0 animate-spin" />
+                    構図を判定しています…（{composition.done}/{composition.total}）
+                  </p>
+                )}
+                {analysisStarted && !composition.running && composition.error && (
+                  <p className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-400">
+                    ⚠️ {composition.error}
+                    {untaggedImages.length > 0 && (
                       <button
                         type="button"
                         disabled={busy}
-                        onClick={() => void recaptionIncomplete()}
-                        className={`inline-flex items-center gap-1.5 rounded-md border border-amber-400/60 bg-amber-400/10 px-3 py-1.5 font-semibold text-amber-200 transition-colors hover:bg-amber-400/20 disabled:opacity-50${flowRing("recaption")}`}
+                        onClick={() => void runCompositionTagging(untaggedImages)}
+                        className="rounded-md border border-amber-400/60 bg-amber-400/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200 hover:bg-amber-400/20 disabled:opacity-50"
                       >
-                        <RotateCcw size={12} />
-                        🔄 未完了の画像（{pendingCaptionCount}枚）を再解析
+                        🔄 判定し直す（無料）
                       </button>
-                      {/* どれが未解析なのかを特定する手段が無かった（2026-09-22、
-                          ホスト指摘）。選んで目で見る／まとめて捨てる、の2つを置く。
-                          未解析のまま学習すると、その画像はトリガーワードだけで
-                          学習され、写っている服装・背景がキャラへ焼き込まれる。 */}
-                      <div className="flex w-full flex-wrap items-center gap-2 border-t border-amber-500/30 pt-2">
-                        <span className="text-[10px] text-amber-200/80">
-                          未解析のまま学習すると、その画像はトリガーワードだけで学習されます
-                          （写っている服装・背景がキャラに焼き込まれます）。
-                        </span>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => selectAndReveal(uncaptionedImages.map((i) => i.id))}
-                          className="rounded-md border border-amber-400/50 bg-amber-400/10 px-2 py-1 text-[10px] text-amber-200 transition-colors hover:bg-amber-400/20 disabled:opacity-50"
-                        >
-                          未解析の {pendingCaptionCount} 枚を選択して確認
-                        </button>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => {
-                            if (
-                              !window.confirm(
-                                `未解析の ${pendingCaptionCount} 枚をデータセットから削除します。よろしいですか？`,
-                              )
-                            )
-                              return;
-                            const ids = uncaptionedImages.map((i) => i.id);
-                            ids.forEach((id) => removeImage(id));
-                            setSelectedImageIds(new Set());
-                            setAddNotice(`未解析だった ${ids.length} 枚を削除しました。`);
-                          }}
-                          className="rounded-md border border-red-500/50 bg-red-500/10 px-2 py-1 text-[10px] text-red-300 transition-colors hover:bg-red-500/20 disabled:opacity-50"
-                        >
-                          未解析の {pendingCaptionCount} 枚を削除
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-
-                  {/* Auto-routing badge: reflects the customCaptions / skipCaptioning
-                      the payload will carry, decided by what was dropped in + the AI
-                      vision pass result. No vendor names (CLAUDE.md §2). */}
-                  {images.length > 0 &&
-                    (autoCap.running && pendingCaptionCount > 0 ? (
-                      <p className="flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
-                        <Loader2 size={13} className="shrink-0 animate-spin" />
-                        <span>
-                          <span className="font-medium">高速AIビジョンが全画像を自動解析中…</span>（
-                          {Math.min(aiCaptionedCount, aiTargetCount)}/{aiTargetCount}）
-                          {autoCap.note && (
-                            <span className="ml-1 text-neon-violet/70">— {autoCap.note}</span>
-                          )}
-                        </span>
-                      </p>
-                    ) : hasUserCaptions ? (
-                      <p className="flex items-start gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-[11px] leading-relaxed text-green-400">
-                        <span className="shrink-0">📄</span>
-                        <span>
-                          自前キャプション（{userCaptionCount} 件）を検知：
-                          <span className="font-medium">AI解析をスキップして高速学習</span>します
-                          {userCaptionCount < images.length &&
-                            `（キャプション無し ${images.length - userCaptionCount} 枚はトリガーワードのみ）`}
-                          。
-                        </span>
-                      </p>
-                    ) : aiCaptionedCount > 0 ? (
-                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-[11px] leading-relaxed text-green-400">
-                        <span className="flex items-start gap-2">
-                          <span className="shrink-0">✨</span>
-                          <span>
-                            <span className="font-medium">
-                              {restoredCaptionCount >= aiCaptionedCount
-                                ? `この端末に残っていた前回の解析結果（${restoredCaptionCount} 枚）を再利用しました（AI 解析は使っていません）`
-                                : restoredCaptionCount > 0
-                                  ? `高速AIビジョンが自動解析しました（うち ${restoredCaptionCount} 枚は前回の解析結果を再利用）`
-                                  : "高速AIビジョンが全画像を自動解析しました（最適タグを即時付与）"}
-                            </span>
-
-                  {pendingCaptionCount > 0 &&
-                              `。${pendingCaptionCount} 枚は解析できず、学習時に自動補完されます`}
-                            。
-                          </span>
-                        </span>
-                      </div>
-                    ) : (
-                      <p className="flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
-                        <span className="shrink-0">✨</span>
-                        <span>
-                          <span className="font-medium">高速AIビジョンが全画像を自動解析</span>
-                          し、最適なタグを即時付与します（画像＋同名 .txt の ZIP を入れると自前キャプション扱い）。
-                        </span>
-                      </p>
-                    ))}
-                  {autoCap.error && !autoCap.running && (
-                    <p className="text-[10px] text-amber-400">⚠️ {autoCap.error}</p>
-                  )}
-                </div>
+                    )}
+                  </p>
+                )}
               </>
             }
           />
@@ -4223,11 +4231,11 @@ export function LoraStudioTab({
             <DatasetDiagnosticsPanel
               // 未解析が残っていないなら「解析中」と出す意味が無い（旗が
               // 立ちっぱなしでも診断が固まらないようにする二重の保険）。
-              provisional={autoCap.running && pendingCaptionCount > 0}
-              // 解析が止まっているのに「解析中」と出し続けない（2026-09-22、
-              // ホスト報告）。空の結果が返った画像は「試行済み」扱いになり
-              // 自動では再試行されないので、件数と再解析の導線を出す。
-              stalledCount={!autoCap.running ? pendingCaptionCount : 0}
+              provisional={composition.running}
+              // 判定が止まっているのに「判定中」と出し続けない（2026-09-22、ホスト報告）。
+              // 読めなかった画像は自動では再試行しないので、件数とやり直しの導線を出す。
+              stalledCount={!composition.running ? untaggedImages.length : 0}
+              onRetryStalled={() => void runCompositionTagging(untaggedImages)}
               items={diagnosticItems}
               subjects={allSubjects}
               onOpenMultiAngle={onOpenMultiAngle}
@@ -4256,6 +4264,199 @@ export function LoraStudioTab({
           </div>
           {flowHint("crop")}
 
+          {/* キャプション（2026-09-25 の順番の改修）。構図の診断とクロップが済んでから 1 回だけ作る（有料）。
+              切り出した画像も含めて作れるので、クロップより後に置く。学習回数は被写体ごとの比率を
+              キャプションで決めるので、この下。 */}
+          {analysisStarted && !yamlMode && images.length > 0 && (
+            <div className="space-y-2 rounded-xl border border-border bg-background/40 px-3 py-2.5">
+              <h4 className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
+                <Languages size={13} className="text-neon-violet" />
+                キャプション
+              </h4>
+              {captionSource === "manual" ? (
+                // 足りている間は 1 行の確認だけにする（2026-09-25、ホスト指摘「.txt で揃っているなら説明は要らない」）。
+                pendingCaptionCount === 0 ? (
+                  <p className="flex items-center gap-1.5 text-[11px] text-green-400">
+                    <Check size={12} />
+                    全 {images.length} 枚にキャプションがあります（次の確認画面で見直せます）。
+                  </p>
+                ) : (
+                  <p className="text-[11px] leading-relaxed text-muted">
+                    <strong className="text-amber-400">{pendingCaptionCount} 枚</strong>
+                    にキャプションがありません。同名の .txt を上の取り込み欄に入れるか（.txt だけでも可）、「次へ」で移る確認画面で書いてください
+                    （日本語で書いて英語に反映もできます）。
+                    <strong className="text-foreground">全部の画像に入るまで学習は始められません。</strong>
+                  </p>
+                )
+              ) : !captionStarted ? (
+                <div className={`rounded-xl border border-neon-pink/40 bg-neon-pink/5 px-3 py-2.5${flowRing("startCaption")}`}>
+                  <button
+                    type="button"
+                    disabled={busy || composition.running || needsIdentityConfirm || identityExtracting !== null}
+                    onClick={() => setCaptionStarted(true)}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                  >
+                    <Sparkles size={13} />
+                    {/* 解析対象はキャプションの無い画像だけ。前回の結果を再利用した画像まで「N 枚」と読める
+                        表示は誤解を招く（2026-09-24、ホスト指摘）。 */}
+                    {pendingCaptionCount === 0
+                      ? "作成済みのキャプションで次へ進む"
+                      : `LoRA に最適化したキャプションを作成（${pendingCaptionCount} 枚・${
+                          captionPrice > 0 ? `${captionPrice}C` : "無料"
+                        }）`}
+                  </button>
+                  <p className="mt-1.5 text-[10px] leading-relaxed text-muted">
+                    {pendingCaptionCount === 0 ? (
+                      <>全部の画像にキャプションがあるので、作り直しはしません。</>
+                    ) : (
+                      <>
+                        <strong className="text-foreground">切り出しまで済ませてから</strong>押してください（切り出した画像も含めて 1 回で作ります）。
+                        トリガーワードに覚えさせたい特徴は書かず、服装・ポーズ・背景など変わる要素だけを書き分け、
+                        ぼかさず正確に記述します。起動に 1〜2 分、1 枚あたり約 2 秒かかります。料金は基本{" "}
+                        {pricingKnobs.lora_caption_base}C＋1 枚 {pricingKnobs.lora_caption_per_image}C
+                        （取りこぼしのやり直しは無料）
+                        {pendingCaptionCount < images.length && "。作成済みの画像はそのまま使います"}。
+                        押したあとに画像を足すと、追加分だけ作ります（{LORA_CAPTION_FREE_MAX} 枚以下は無料）。
+                      </>
+                    )}
+                  </p>
+                  {flowHint("startCaption")}
+                </div>
+              ) : null}
+              {captionSource === "ai" && captionStarted && (
+                <>
+            {/* 解析の状態もサムネイル一覧より上に出す（2026-09-24、ホスト指摘「画像の下に出ている」）。
+                ImageDropzone は一覧まで含むので、外に置くと一覧の下になる。 */}
+            <div className="mt-2 space-y-2 empty:hidden">
+              {/* キャプションの状態は取り込み欄の真下に出す（2026-09-22、ホスト
+                  指摘）。取り込んだ直後に「いま解析している」「終わったら診断を
+                  見る」が見えていないと、何をすればいいか分からない。 */}
+              {/* Resume: re-analyze every image that has no caption yet (never
+                  started, timed out, or errored). Always visible while any remain. */}
+              {/* 解析を始める前は出さない（2026-09-24、ホスト指摘）。未解析があるのは当然で、
+                  「解析を開始する（未解析の N 枚）」と役割が重なって紛らわしい。 */}
+              {!autoCap.running && images.length > 0 && pendingCaptionCount > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-300">
+                  <span className="flex items-center gap-1.5">
+                    <AlertTriangle size={13} className="shrink-0" />
+                    {captionErrorCount > 0
+                      ? `${pendingCaptionCount} 枚が未解析です（うち ${captionErrorCount} 枚はエラー / タイムアウト）。`
+                      : `${pendingCaptionCount} 枚がまだ解析されていません。`}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void recaptionIncomplete()}
+                    className={`inline-flex items-center gap-1.5 rounded-md border border-amber-400/60 bg-amber-400/10 px-3 py-1.5 font-semibold text-amber-200 transition-colors hover:bg-amber-400/20 disabled:opacity-50${flowRing("recaption")}`}
+                  >
+                    <RotateCcw size={12} />
+                    🔄 未完了の画像（{pendingCaptionCount}枚）を再解析
+                  </button>
+                  {/* どれが未解析なのかを特定する手段が無かった（2026-09-22、
+                      ホスト指摘）。選んで目で見る／まとめて捨てる、の2つを置く。
+                      未解析のまま学習すると、その画像はトリガーワードだけで
+                      学習され、写っている服装・背景がキャラへ焼き込まれる。 */}
+                  <div className="flex w-full flex-wrap items-center gap-2 border-t border-amber-500/30 pt-2">
+                    <span className="text-[10px] text-amber-200/80">
+                      未解析のまま学習すると、その画像はトリガーワードだけで学習されます
+                      （写っている服装・背景がキャラに焼き込まれます）。
+                    </span>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => selectAndReveal(uncaptionedImages.map((i) => i.id))}
+                      className="rounded-md border border-amber-400/50 bg-amber-400/10 px-2 py-1 text-[10px] text-amber-200 transition-colors hover:bg-amber-400/20 disabled:opacity-50"
+                    >
+                      未解析の {pendingCaptionCount} 枚を選択して確認
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        if (
+                          !window.confirm(
+                            `未解析の ${pendingCaptionCount} 枚をデータセットから削除します。よろしいですか？`,
+                          )
+                        )
+                          return;
+                        const ids = uncaptionedImages.map((i) => i.id);
+                        ids.forEach((id) => removeImage(id));
+                        setSelectedImageIds(new Set());
+                        setAddNotice(`未解析だった ${ids.length} 枚を削除しました。`);
+                      }}
+                      className="rounded-md border border-red-500/50 bg-red-500/10 px-2 py-1 text-[10px] text-red-300 transition-colors hover:bg-red-500/20 disabled:opacity-50"
+                    >
+                      未解析の {pendingCaptionCount} 枚を削除
+                    </button>
+                  </div>
+                </div>
+              )}
+
+
+              {/* Auto-routing badge: reflects the customCaptions / skipCaptioning
+                  the payload will carry, decided by what was dropped in + the AI
+                  vision pass result. No vendor names (CLAUDE.md §2). */}
+              {images.length > 0 &&
+                (autoCap.running && pendingCaptionCount > 0 ? (
+                  <p className="flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
+                    <Loader2 size={13} className="shrink-0 animate-spin" />
+                    <span>
+                      <span className="font-medium">高速AIビジョンが全画像を自動解析中…</span>（
+                      {Math.min(aiCaptionedCount, aiTargetCount)}/{aiTargetCount}）
+                      {autoCap.note && (
+                        <span className="ml-1 text-neon-violet/70">— {autoCap.note}</span>
+                      )}
+                    </span>
+                  </p>
+                ) : hasUserCaptions ? (
+                  <p className="flex items-start gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-[11px] leading-relaxed text-green-400">
+                    <span className="shrink-0">📄</span>
+                    <span>
+                      自前キャプション（{userCaptionCount} 件）を検知：
+                      <span className="font-medium">AI解析をスキップして高速学習</span>します
+                      {userCaptionCount < images.length &&
+                        `（キャプション無し ${images.length - userCaptionCount} 枚はトリガーワードのみ）`}
+                      。
+                    </span>
+                  </p>
+                ) : aiCaptionedCount > 0 ? (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-[11px] leading-relaxed text-green-400">
+                    <span className="flex items-start gap-2">
+                      <span className="shrink-0">✨</span>
+                      <span>
+                        <span className="font-medium">
+                          {restoredCaptionCount >= aiCaptionedCount
+                            ? `この端末に残っていた前回の解析結果（${restoredCaptionCount} 枚）を再利用しました（AI 解析は使っていません）`
+                            : restoredCaptionCount > 0
+                              ? `高速AIビジョンが自動解析しました（うち ${restoredCaptionCount} 枚は前回の解析結果を再利用）`
+                              : "高速AIビジョンが全画像を自動解析しました（最適タグを即時付与）"}
+                        </span>
+
+              {pendingCaptionCount > 0 &&
+                          `。${pendingCaptionCount} 枚は解析できず、学習時に自動補完されます`}
+                        。
+                      </span>
+                    </span>
+                  </div>
+                ) : (
+                  <p className="flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
+                    <span className="shrink-0">✨</span>
+                    <span>
+                      <span className="font-medium">高速AIビジョンが全画像を自動解析</span>
+                      し、最適なタグを即時付与します（画像＋同名 .txt の ZIP を入れると自前キャプション扱い）。
+                    </span>
+                  </p>
+                ))}
+              {autoCap.error && !autoCap.running && (
+                <p className="text-[10px] text-amber-400">⚠️ {autoCap.error}</p>
+              )}
+            </div>
+                </>
+              )}
+            </div>
+          )}
+
+
           {/* データセットを触る工程の最後（2026-09-22、ホスト指摘）。
               取り込み → クロップ → 診断 を見てから比率を決める操作なので、
               順番として最後でないと「これで終わりなのか」が分からなくなる。 */}
@@ -4268,7 +4469,7 @@ export function LoraStudioTab({
               selectionGroups={selectionGroups}
               selectedIds={selectedImageIds}
               onSelectedChange={setSelectedImageIds}
-              onSuggestRepeats={captionSubjectCounts.total > 0 ? applySuggestedRepeats : undefined}
+              onSuggestRepeats={diagnosticItems.length > 0 ? applySuggestedRepeats : undefined}
               onGoToSettings={() =>
                 document
                   .getElementById(LORA_SETTINGS_ANCHOR_ID)
@@ -5406,7 +5607,7 @@ export function LoraStudioTab({
                 submitting ||
                 Boolean(inFlightJob) ||
                 (Boolean(user) && !insufficientCredits && !canSubmit) ||
-                (Boolean(user) && !autoCap.running && pendingCaptionCount > 0) ||
+                (Boolean(user) && captionSource === "ai" && !autoCap.running && pendingCaptionCount > 0) ||
                 captionGen.state === "generating" ||
                 (Boolean(user) && autoCap.running) ||
                 (Boolean(user) && !insufficientCredits && needsIdentityConfirm)
@@ -5423,11 +5624,9 @@ export function LoraStudioTab({
                   {/* 何をしているのか、なぜ待たされるのかを書く（2026-09-22、
                       ホスト指摘）。ここで作り直しが走るのは「学習したい特徴」
                       など、キャプションの作り方が変わったときだけ。 */}
-                  {curationEnabled
-                    ? autoCap.running
-                      ? `学習したい特徴が変わったので、キャプションを作り直しています… ${autoCap.done}/${autoCap.total}`
-                      : "データセットを準備しています…（学習はまだ始まりません）"
-                    : "🚀 学習ジョブを起動中…"}
+                  {autoCap.running
+                    ? `学習したい特徴が変わったので、キャプションを作り直しています… ${autoCap.done}/${autoCap.total}`
+                    : "データセットを準備しています…（学習はまだ始まりません）"}
                 </>
               ) : inFlightJob ? (
                 <>
@@ -5449,7 +5648,7 @@ export function LoraStudioTab({
                   <Loader2 size={16} className="animate-spin" />
                   AIキャプションを解析中…（完了までお待ちください）
                 </>
-              ) : pendingCaptionCount > 0 ? (
+              ) : captionSource === "ai" && pendingCaptionCount > 0 ? (
                 <>
                   <AlertTriangle size={16} />
                   {`キャプションが揃うと学習に進めます（未作成 ${pendingCaptionCount} 枚）`}
@@ -5464,15 +5663,10 @@ export function LoraStudioTab({
                   <AlertTriangle size={16} />
                   埋め込むタグを確認してください
                 </>
-              ) : curationEnabled ? (
-                <>
-                  <Wand2 size={16} />
-                  次へ：データセットを確認・編集する
-                </>
               ) : (
                 <>
                   <Wand2 size={16} />
-                  {`🔥 高速 LoRA 学習を開始する (${requiredCredits} C)`}
+                  次へ：データセットを確認・編集する
                 </>
               )}
             </button>

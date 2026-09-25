@@ -22,6 +22,7 @@ export function DatasetDiagnosticsPanel({
   onPrepareCrop,
   provisional = false,
   stalledCount = 0,
+  onRetryStalled,
   highlightPrepare = false,
 }: {
   items: DiagnosticInput[];
@@ -43,8 +44,10 @@ export function DatasetDiagnosticsPanel({
    * 数字が動くのは当然だが、黙っていると不信の元になるので明示する。
    */
   provisional?: boolean;
-  /** 解析が走っていないのに未解析のまま残っている枚数（0なら正常）。 */
+  /** 判定が走っていないのに構図が未判定のまま残っている枚数（0なら正常）。 */
   stalledCount?: number;
+  /** 未判定の画像だけ構図の判定をやり直す（無料）。 */
+  onRetryStalled?: () => void;
   /** 導線として「切り出す準備をする」を光らせるか（loraFlowStep が決める）。 */
   highlightPrepare?: boolean;
 }) {
@@ -96,12 +99,12 @@ export function DatasetDiagnosticsPanel({
           {provisional && (
             <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
               <Loader2 size={9} className="animate-spin" />
-              解析中・暫定
+              判定中・暫定
             </span>
           )}
           {!provisional && stalledCount > 0 && (
             <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] font-semibold text-red-400">
-              未解析 {stalledCount} 枚
+              未判定 {stalledCount} 枚
             </span>
           )}
           {errors.length === 0 && warns.length === 0 && (
@@ -151,7 +154,7 @@ export function DatasetDiagnosticsPanel({
                         <div key={axis} className="flex flex-wrap items-baseline gap-x-2 text-[10px] opacity-50">
                           <span className="w-8 shrink-0 text-muted">{def.label}</span>
                           <span className="text-muted">
-                            判定できません（キャプションに該当タグがほぼ無い / {s.unclassified[axis]}/{s.unique} 枚）
+                            判定できません（該当するタグがほぼ無い / {s.unclassified[axis]}/{s.unique} 枚）
                           </span>
                         </div>
                       );
@@ -176,7 +179,7 @@ export function DatasetDiagnosticsPanel({
                         {s.unclassified[axis] > 0 && (
                           <span
                             className="text-muted opacity-60"
-                            title="キャプションにこの軸のタグが無く、分類できなかった枚数です。数字が大きいときはこの軸の判定を鵜呑みにしないでください。"
+                            title="この軸のタグが無く、分類できなかった枚数です。数字が大きいときはこの軸の判定を鵜呑みにしないでください。"
                           >
                             未分類{s.unclassified[axis]}
                           </span>
@@ -248,7 +251,7 @@ export function DatasetDiagnosticsPanel({
               </div>
               <p className="text-[10px] leading-relaxed text-muted opacity-80">
                 ※ 2人写っている画像からは<strong className="text-foreground">両方</strong>を切り出します。
-                どちらがどの被写体かはキャプションが判定するので、狙っていない側の分も無駄になりません。
+                どちらがどの被写体かは後で作るキャプションが判定するので、狙っていない側の分も無駄になりません。
               </p>
               {cropPlan.size > 1 && (
                 <p className="text-[10px] leading-relaxed text-amber-400">
@@ -291,26 +294,32 @@ export function DatasetDiagnosticsPanel({
 
           {diag.uncaptioned > 0 && (
             <p className="text-[10px] text-amber-400">
-              {diag.uncaptioned} 枚はキャプションが空か、どの被写体か判定できませんでした。診断はその分だけ不正確です。
+              {diag.uncaptioned} 枚は構図を判定できなかったか、どの被写体か判定できませんでした。診断はその分だけ不正確です。
             </p>
           )}
 
           {provisional && (
             <p className="text-[10px] leading-relaxed text-amber-400">
-              キャプション解析が終わっていないため、この数字はまだ動きます。全部終わってから判断してください。
+              構図の判定が終わっていないため、この数字はまだ動きます。全部終わってから判断してください。
             </p>
           )}
           {!provisional && stalledCount > 0 && (
             <p className="text-[10px] leading-relaxed text-red-400">
-              {stalledCount} 枚が未解析のまま残っています（解析は止まっています）。
-              解析結果が空で返った画像は自動では再試行されないので、キャプション欄の
-              <strong>「🔄 未完了の画像を再解析」</strong>
-              を押してください。この {stalledCount} 枚は上の集計に入っていません。
+              {stalledCount} 枚は構図を判定できませんでした。この {stalledCount} 枚は上の集計に入っていません。
+              {onRetryStalled && (
+                <button
+                  type="button"
+                  onClick={onRetryStalled}
+                  className="ml-1 inline-flex items-center gap-1 rounded-md border border-red-400/50 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium text-red-300 transition-colors hover:bg-red-500/20"
+                >
+                  🔄 判定し直す（無料）
+                </button>
+              )}
             </p>
           )}
           <p className="text-[10px] leading-relaxed text-muted opacity-70">
-            ※ この集計はキャプションのタグを数えたものです。キャプションは AI が毎回書き起こすため、
-            同じ画像でも解析し直すとタグが少し変わり、指摘の件数も前後します。枚数そのものは事実ですが、「目安◯枚」はまだ実測で校正されていない出発点の値です。
+            ※ 構図は画像ごとに付けたタグ（全身・上半身・後ろ姿・座り など）を数えたものです。被写体ごとの内訳は、
+            キャプションを作ると分かるようになります。枚数そのものは事実ですが、「目安◯枚」はまだ実測で校正されていない出発点の値です。
           </p>
         </div>
       )}

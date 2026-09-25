@@ -228,7 +228,6 @@ export type LoraFormDraft = {
   // Caption FORMAT preference: 'auto' lets the base model decide (dense prose
   // vs. comma tags), 'dense' / 'tags' pin it. See resolveCaptionMode().
   captionMode: CaptionMode;
-  curationEnabled: boolean;
   /** キャプションが反映している captionSpecKey（空なら不明）。 */
   reflectedSpecKey: string;
   // Expert / model settings — persisted so a reload, a component re-mount, or
@@ -258,7 +257,6 @@ export function buildFormDraft(v: {
   captionVarying: string;
   captionPromptOverride: string;
   captionMode: CaptionMode;
-  curationEnabled: boolean;
   reflectedSpecKey: string;
   mode: Mode;
   modelChoice: string;
@@ -280,7 +278,6 @@ export function buildFormDraft(v: {
     captionVarying: v.captionVarying,
     captionPromptOverride: v.captionPromptOverride,
     captionMode: v.captionMode,
-    curationEnabled: v.curationEnabled,
     // キャッシュから戻したキャプションが「どの指示で作られたか」（2026-09-22）。
     // これを保存していなかったため、リロード後は常に未反映とみなされ、
     // 取り込み直すたびに全画像のキャプションが作り直されていた。
@@ -442,7 +439,6 @@ export const DEFAULT_FORM_DRAFT: LoraFormDraft = buildFormDraft({
   captionVarying: "",
   captionPromptOverride: "",
   captionMode: "auto",
-  curationEnabled: false,
   reflectedSpecKey: "",
   mode: "auto",
   modelChoice: "minimax_h3",
@@ -761,7 +757,10 @@ export function ImageDropzone({
         <ImagePlus size={26} className="text-neon-violet" />
         <p className="text-sm font-medium text-foreground">画像 / ZIP をドラッグ＆ドロップ / クリックで選択</p>
         <p className="text-[11px] text-muted">
-          PNG・JPG・WEBP、複数可（推奨 15〜40 枚）。画像＋同名 .txt（ZIP でも、まとめて選択・D&D でも可）を入れると自前キャプション扱いになります。
+          {/* 「推奨 15〜40 枚」は根拠の無い値で、上限側は実案件（113〜165 枚で良好）とも診断の目安とも合わなかった
+              （2026-09-25 見直し）。下限は診断の minUniquePerSubject（1 被写体 15 枚）に揃える。 */}
+          PNG・JPG・WEBP、複数可。目安は 1 人あたり 15 枚以上で、全身・上半身・顔のアップや向きがばらけているほど良く、
+          多い分には問題ありません。画像＋同名 .txt（ZIP でも、まとめて選択・D&D でも可）を入れると、その .txt をキャプションとして使います。
         </p>
         <input
           ref={inputRef}

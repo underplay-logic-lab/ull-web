@@ -239,7 +239,10 @@ export function DatasetCurationUI({
   const keptBytes = useMemo(() => kept.reduce((s, p) => s + p.file.size, 0), [kept]);
   const overCount = kept.length > maxImages;
   const overBytes = keptBytes > maxTotalBytes;
-  const canConfirm = !disabled && kept.length >= 1 && !overCount && !overBytes && !bulk;
+  // キャプションが空の画像が残っている間は学習へ進めない（2026-09-25 ホスト判断。学習側の自動補完に頼らない。
+  // 「自分で書く」を選んだ場合はここが書く場所）。学習に送るのは英語側なので、英語が空なら未記入扱い。
+  const blankCount = kept.filter((p) => !p.caption.trim()).length;
+  const canConfirm = !disabled && kept.length >= 1 && !overCount && !overBytes && !bulk && blankCount === 0;
 
   const patch = (id: string, next: Partial<CurationPair>) =>
     onChange((prev) => prev.map((p) => (p.id === id ? { ...p, ...next } : p)));
@@ -653,6 +656,12 @@ export function DatasetCurationUI({
           <ArrowLeft size={13} />
           戻る
         </button>
+        {blankCount > 0 && (
+          <p className="text-[11px] text-amber-400">
+            キャプションが空の画像が {blankCount} 枚あります。全部に入れると学習を開始できます
+            （日本語だけ書いた場合は「🇬🇧 日本語を英語へ一括反映」を押してください）。
+          </p>
+        )}
         <button
           type="button"
           onClick={onConfirm}

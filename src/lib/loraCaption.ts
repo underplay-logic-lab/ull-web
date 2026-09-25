@@ -675,3 +675,87 @@ async function generateDatasetCaptionsVlm(files: File[], opts: CaptionOpts): Pro
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// 構図診断用のタグ付け（2026-09-25、modal_wd_tagger.py・無料・CPU）。キャプション（有料）より前に
+// 距離・向き・仰角・姿勢・背景を判定するための材料。画像はキャプションと同じ縮小版を R2 へ直接 PUT する。
+// ---------------------------------------------------------------------------
+const WD_POLL_MS = 1_500;
+const WD_MAX_MS = 10 * 60_000; // 500 枚でも 1〜2 分の見込み。CLAUDE.md §0 のとおり多めに取る
+
+async function wdTagPost(token: string, body: Record<string, unknown>, signal?: AbortSignal) {
+  const res = await fetch("/api/studio/lora/wd-tags", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+    signal,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((data as { error?: string })?.error || "構図の診断に失敗しました。");
+  return data as Record<string, unknown>;
+}
+
+/** files の順にタグ文字列を返す（読めなかった画像は ""）。onBatch で届いた分から順に渡す。 */
+export async function tagDatasetComposition(
+  files: File[],
+  opts: {
+    onBatch?: (entries: { index: number; tags: string }[]) => void;
+    onProgress?: (done: number, total: number) => void;
+    signal?: AbortSignal;
+  } = {},
+): Promise<string[]> {
+  const out = new Array<string>(files.length).fill("");
+  if (files.length === 0) return out;
+  const token = await accessToken();
+  if (!token) throw new Error("ログインが必要です。");
+  const thumbs = await Promise.all(files.map((f) => makeThumbnail(f)));
+  const ok = thumbs.map((t, i) => ({ i, t })).filter((x): x is { i: number; t: Thumb } => x.t !== null);
+  if (ok.length === 0) throw new Error("画像を読み込めませんでした。");
+  const mimes = ok.map((x) => x.t.mimeType);
+
+  const start = await wdTagPost(token, { action: "start", mimes }, opts.signal);
+  const jobId = String(start.jobId ?? "");
+  const uploads = (start.uploads as string[]) ?? [];
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(VLM_PUT_CONCURRENCY, ok.length) }, async () => {
+      while (next < ok.length) {
+        const k = next++;
+        const res = await fetch(uploads[k], {
+          method: "PUT",
+          headers: { "Content-Type": mimes[k] },
+          body: b64ToBlob(ok[k].t.data, mimes[k]),
+          signal: opts.signal,
+        });
+        if (!res.ok) throw new Error(`upload ${res.status}`);
+      }
+    }),
+  );
+  await wdTagPost(token, { action: "run", jobId, mimes }, opts.signal);
+
+  const seen = new Set<number>();
+  const t0 = Date.now();
+  for (;;) {
+    if (opts.signal?.aborted) return out;
+    if (Date.now() - t0 > WD_MAX_MS) throw new Error("構図の診断が時間内に終わりませんでした。再試行してください。");
+    await sleep(WD_POLL_MS);
+    let st: Record<string, unknown>;
+    try {
+      st = await wdTagPost(token, { action: "status", jobId }, opts.signal);
+    } catch {
+      continue; // 一時的な失敗は次の周回で取り直す
+    }
+    const fresh: { index: number; tags: string }[] = [];
+    for (const e of (st.entries as { index: number; tags: string }[]) ?? []) {
+      const i = ok[e.index]?.i;
+      if (i === undefined || seen.has(e.index)) continue;
+      seen.add(e.index);
+      out[i] = e.tags;
+      fresh.push({ index: i, tags: e.tags });
+    }
+    if (fresh.length) opts.onBatch?.(fresh);
+    opts.onProgress?.(Math.min(Number(st.done ?? 0), ok.length), ok.length);
+    if (st.status === "completed") return out;
+    if (st.status === "failed") throw new Error(String(st.error ?? "構図の診断に失敗しました。"));
+  }
+}

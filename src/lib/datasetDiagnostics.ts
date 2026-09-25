@@ -173,6 +173,12 @@ export type DatasetDiagnostic = {
 
 export type DiagnosticInput = {
   caption: string;
+  /**
+   * 構図判定用のタグ（WD タガー、2026-09-25）。あれば構図（距離・向き・仰角・姿勢・背景）はこちらで判定し、
+   * キャプションは被写体の振り分けにだけ使う。キャプション（有料）より前に診断を出すための材料で、
+   * 語彙も Danbooru の定番タグそのものなので VLM の言い回しに左右されない。
+   */
+  tags?: string;
   /** 学習回数（既定1）。 */
   repeats?: number;
 };
@@ -183,6 +189,26 @@ function splitTags(caption: string): string[] {
     .split(/[,、\n]/)
     .map((t) => t.trim())
     .filter(Boolean);
+}
+
+/**
+ * キャプションがまだ無い（構図タグだけの）画像の集計先（2026-09-25）。被写体が複数いると誰が写っているか
+ * 分からないので、データセット全体を 1 つの塊として数える。被写体が 1 人ならその被写体に数える。
+ */
+export const WHOLE_DATASET_SUBJECT = "（データセット全体）";
+
+/** 構図の判定に使う文字列（タグ優先）。 */
+export function compositionText(item: { caption?: string; tags?: string }): string {
+  return (item.tags ?? "").trim() || (item.caption ?? "").trim();
+}
+
+/** 画像がどの被写体の枠で数えられるか。present は先頭トリガーで特定できた被写体。 */
+function subjectTargets(caption: string, subjects: LoraSubject[]): { targets: string[]; unknown: boolean } {
+  const present = caption ? matchLeadingSubjectTriggers(caption, subjects) : [];
+  if (present.length > 0) return { targets: present.map((s) => s.trigger.trim()), unknown: false };
+  if (!caption && subjects.length > 1) return { targets: [WHOLE_DATASET_SUBJECT], unknown: false };
+  // 被写体が登録されていない（単独 LoRA）場合は1つの塊として扱う。
+  return { targets: [subjects[0]?.trigger.trim() || "（この LoRA）"], unknown: !!caption && subjects.length > 1 };
 }
 
 function emptyAxes(): Record<DiagnosticAxis, Record<string, number>> {
@@ -238,13 +264,10 @@ export function suggestRepeats(
   const counts = new Map<string, Map<string, number>>();
   const perItem = items.map((item) => {
     const caption = (item.caption ?? "").trim();
-    if (!caption) return null;
-    const present = matchLeadingSubjectTriggers(caption, subjects);
-    const targets =
-      present.length > 0
-        ? present.map((x) => x.trigger.trim())
-        : [subjects[0]?.trigger.trim() || "（この LoRA）"];
-    const buckets = captionBuckets(caption, "distance");
+    const comp = compositionText(item);
+    if (!comp) return null;
+    const { targets } = subjectTargets(caption, subjects);
+    const buckets = captionBuckets(comp, "distance");
     for (const t of targets) {
       let m = counts.get(t);
       if (!m) counts.set(t, (m = new Map()));
@@ -296,21 +319,17 @@ export function analyzeDataset(
 
   for (const item of items) {
     const caption = (item.caption ?? "").trim();
+    const comp = compositionText(item);
     const repeats = Math.max(1, Math.round(item.repeats ?? 1));
     totalExposure += repeats;
-    if (!caption) {
+    if (!comp) {
       uncaptioned += 1;
       continue;
     }
-    const present = matchLeadingSubjectTriggers(caption, subjects);
-    // 被写体が登録されていない（単独 LoRA）場合は1つの塊として扱う。
-    const targets =
-      present.length > 0
-        ? present.map((s) => s.trigger.trim())
-        : [subjects[0]?.trigger.trim() || "（この LoRA）"];
-    if (present.length === 0 && subjects.length > 1) uncaptioned += 1;
+    const { targets, unknown } = subjectTargets(caption, subjects);
+    if (unknown) uncaptioned += 1;
 
-    const tags = splitTags(caption);
+    const tags = splitTags(comp);
     for (const trigger of targets) {
       const d = ensure(trigger);
       d.unique += 1;
