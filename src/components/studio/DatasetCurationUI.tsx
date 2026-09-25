@@ -264,25 +264,70 @@ export function DatasetCurationUI({
     [pairs, needle],
   );
   // 置換は学習に使う英語側だけ。変えたカードの日本語は消す（残すと「英語に反映」で元に戻ってしまう）。
+  // 2026-09-25（ホスト指摘「押すと一瞬で消えて、消えたのか・どこまで消えたのか分からない」）:
+  //   - 消す範囲を選べる: 語句だけ ／ その語を含むカンマ区切りの部分ごと（"metal frame glasses" を丸ごと等）
+  //   - 結果を要約と変更前後の例で出し、変えたカードを表示したままにする（検索に一致しなくなって消えていた）
+  //   - 元に戻せる
+  const [replaceScope, setReplaceScope] = useState<"phrase" | "segment">("phrase");
+  const [lastReplace, setLastReplace] = useState<{
+    ids: Set<string>;
+    before: Record<string, { caption: string; captionJa: string }>;
+    summary: string;
+    examples: { before: string; after: string }[];
+  } | null>(null);
+  const tidy = (t: string) =>
+    t
+      .replace(/\s+([,.])/g, "$1")
+      .replace(/,\s*,/g, ",")
+      .replace(/\.\s*\./g, ".")
+      .replace(/\s{2,}/g, " ")
+      .replace(/^[,\s]+|[,\s]+$/g, "")
+      .trim();
+  const replaceIn = (caption: string): string => {
+    const re = new RegExp(escapeRe(search.trim()), "gi");
+    const to = replaceWith.trim();
+    if (replaceScope === "segment") {
+      // カンマ区切りの部分（タグ 1 つ・文の一節）ごと。置き換える語があればその部分をまるごと置き換える。
+      const parts = caption.split(/,/);
+      const out = parts
+        .map((seg) => (new RegExp(escapeRe(search.trim()), "i").test(seg) ? (to ? ` ${to}` : null) : seg))
+        .filter((x): x is string => x !== null);
+      return tidy(out.join(","));
+    }
+    return tidy(caption.replace(re, to));
+  };
   const applyReplace = () => {
     if (!needle) return;
-    const to = replaceWith.trim();
+    const before: Record<string, { caption: string; captionJa: string }> = {};
+    const examples: { before: string; after: string }[] = [];
+    for (const p of pairs) {
+      if (p.excluded || !p.caption.toLowerCase().includes(needle)) continue;
+      const after = replaceIn(p.caption);
+      if (after === p.caption) continue;
+      before[p.id] = { caption: p.caption, captionJa: p.captionJa };
+      if (examples.length < 3) examples.push({ before: p.caption, after });
+    }
+    const ids = new Set(Object.keys(before));
+    if (ids.size === 0) return;
     onChange((prev) =>
-      prev.map((p) => {
-        const re = new RegExp(escapeRe(search.trim()), "gi");
-        if (p.excluded || !re.test(p.caption)) return p;
-        // 消したあとに残る「, ,」や二重の空白・文頭文末の区切りを整える。
-        const next = p.caption
-          .replace(new RegExp(escapeRe(search.trim()), "gi"), to)
-          .replace(/\s+([,.])/g, "$1")
-          .replace(/,\s*,/g, ",")
-          .replace(/\s{2,}/g, " ")
-          .replace(/^[,\s]+|[,\s]+$/g, "")
-          .trim();
-        return { ...p, caption: next, captionJa: "" };
-      }),
+      prev.map((p) => (ids.has(p.id) ? { ...p, caption: replaceIn(p.caption), captionJa: "" } : p)),
     );
+    const what = replaceScope === "segment" ? `「${search.trim()}」を含む部分` : `「${search.trim()}」`;
+    setLastReplace({
+      ids,
+      before,
+      summary: `${ids.size} 枚の英語キャプションで、${what}を${
+        replaceWith.trim() ? `「${replaceWith.trim()}」に置き換えました` : "削除しました"
+      }。`,
+      examples,
+    });
     setReplaceWith("");
+  };
+  const undoReplace = () => {
+    if (!lastReplace) return;
+    const { before } = lastReplace;
+    onChange((prev) => prev.map((p) => (before[p.id] ? { ...p, ...before[p.id] } : p)));
+    setLastReplace(null);
   };
   // 学習したい特徴がキャプションに何枚混ざっているか。句で数え、最後の語が特徴的（glasses / beard 等）なら
   // その語で数える（"metal frame glasses" は "round glasses" では当たらないため）。
@@ -379,6 +424,8 @@ export function DatasetCurationUI({
     if (!targets.length) return;
     setError(null);
     setBulk({ done: 0, total: targets.length });
+    let failed = 0;
+    let lastErr = "";
     try {
       const CHUNK = 12;
       for (let i = 0; i < targets.length; i += CHUNK) {
@@ -390,14 +437,29 @@ export function DatasetCurationUI({
 
         const outs = new Array<string>(chunk.length).fill("");
         if (sendIdx.length) {
-          const res = await translateCaptionsBatch(
-            sendIdx.map((k) => bodies[k]),
-            dir === "ja" ? "to_ja" : "to_en",
-            resolvedCaptionMode,
-          );
-          sendIdx.forEach((k, j) => {
-            outs[k] = res[j] ?? "";
-          });
+          const action = dir === "ja" ? "to_ja" : "to_en";
+          try {
+            const res = await translateCaptionsBatch(
+              sendIdx.map((k) => bodies[k]),
+              action,
+              resolvedCaptionMode,
+            );
+            sendIdx.forEach((k, j) => {
+              outs[k] = res[j] ?? "";
+            });
+          } catch (err) {
+            // まとめて失敗したら 1 枚ずつやり直す（2026-09-25、ホスト報告「全カードを日本語にで翻訳に失敗」）。
+            // 以前は 12 枚のうち 1 枚が断られる（露骨な内容等）・返事が崩れるだけで、残り全部が止まっていた。
+            lastErr = err instanceof Error ? err.message : "翻訳に失敗しました";
+            for (const k of sendIdx) {
+              try {
+                outs[k] = await translateCaption(bodies[k], action, resolvedCaptionMode);
+              } catch (e) {
+                lastErr = e instanceof Error ? e.message : lastErr;
+              }
+            }
+          }
+          failed += sendIdx.filter((k) => !outs[k]).length;
         }
 
         const updates: Record<string, Partial<CurationPair>> = {};
@@ -415,6 +477,13 @@ export function DatasetCurationUI({
 
         setBulk({ done: Math.min(i + CHUNK, targets.length), total: targets.length });
         if (i + CHUNK < targets.length) await new Promise((r) => setTimeout(r, 900));
+      }
+      if (failed > 0) {
+        setError(
+          `${failed} 枚は翻訳できませんでした${lastErr ? `（${lastErr}）` : ""}。そのカードだけ「${
+            dir === "ja" ? "日本語に翻訳" : "英語に反映"
+          }」で個別にやり直せます。`,
+        );
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "一括翻訳に失敗しました。");
@@ -598,31 +667,89 @@ export function DatasetCurationUI({
           )}
         </div>
         {needle && enMatchCount > 0 && (
-          <div className="flex flex-wrap items-center gap-2 text-[11px]">
-            <input
-              value={replaceWith}
-              onChange={(e) => setReplaceWith(e.target.value)}
-              placeholder="置き換える語（空なら削除）"
-              className={`${inputCls} w-56`}
-            />
-            <button
-              type="button"
-              disabled={disabled || Boolean(bulk)}
-              onClick={applyReplace}
-              className="rounded-md border border-neon-violet/50 bg-neon-violet/10 px-2.5 py-1 font-medium text-neon-violet hover:bg-neon-violet/20 disabled:opacity-50"
-            >
-              英語の {enMatchCount} 枚を{replaceWith.trim() ? "置換" : "から削除"}
-            </button>
-            <span className="text-[10px] text-muted">
-              学習に使う英語側だけ変えます。変えたカードの日本語は消えるので、あとで「全カードを日本語に」で作り直してください。
-            </span>
+          <div className="space-y-1.5 text-[11px]">
+            <div className="flex flex-wrap items-center gap-3 text-muted">
+              <span>消す範囲:</span>
+              {(
+                [
+                  ["phrase", "語句だけ"],
+                  ["segment", "その語を含むカンマ区切りの部分ごと（例: metal frame glasses をまるごと）"],
+                ] as const
+              ).map(([v, label]) => (
+                <label key={v} className="flex items-center gap-1">
+                  <input
+                    type="radio"
+                    name="caption-replace-scope"
+                    checked={replaceScope === v}
+                    onChange={() => setReplaceScope(v)}
+                    className="accent-neon-violet"
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                value={replaceWith}
+                onChange={(e) => setReplaceWith(e.target.value)}
+                placeholder="置き換える語（空なら削除）"
+                className={`${inputCls} w-56`}
+              />
+              <button
+                type="button"
+                disabled={disabled || Boolean(bulk)}
+                onClick={applyReplace}
+                className="rounded-md border border-neon-violet/50 bg-neon-violet/10 px-2.5 py-1 font-medium text-neon-violet hover:bg-neon-violet/20 disabled:opacity-50"
+              >
+                英語キャプション {enMatchCount} 枚{replaceWith.trim() ? "で置換" : "から削除"}
+              </button>
+              <span className="text-[10px] text-muted">
+                学習に使う英語側だけ変えます。変えたカードの日本語は消えるので、あとで「全カードを日本語に」で作り直してください。
+              </span>
+            </div>
+          </div>
+        )}
+        {lastReplace && (
+          <div className="space-y-1 rounded-md border border-green-500/40 bg-green-500/10 px-2.5 py-1.5 text-[11px] text-green-300">
+            <div className="flex flex-wrap items-center gap-2">
+              <span>✓ {lastReplace.summary}</span>
+              <button
+                type="button"
+                onClick={undoReplace}
+                disabled={disabled || Boolean(bulk)}
+                className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted hover:text-foreground disabled:opacity-50"
+              >
+                元に戻す
+              </button>
+              <button
+                type="button"
+                onClick={() => setLastReplace(null)}
+                className="text-[10px] text-muted underline hover:text-foreground"
+              >
+                閉じる（全カードの表示に戻る）
+              </button>
+            </div>
+            {lastReplace.examples.map((ex, k) => (
+              <div key={k} className="text-[10px] leading-relaxed text-muted">
+                <div>
+                  <span className="text-red-300">前:</span> {ex.before}
+                </div>
+                <div>
+                  <span className="text-green-300">後:</span> {ex.after}
+                </div>
+              </div>
+            ))}
+            <p className="text-[10px] text-muted">下には変えた {lastReplace.ids.size} 枚だけを表示しています。</p>
           </div>
         )}
       </div>
 
       <div className="grid max-h-[48rem] gap-2 overflow-y-auto pr-1">
         {pairs.map((p, idx) => {
-          if (onlyMatches && needle && !matchIds.has(p.id)) return null;
+          // 置換した直後は、変えたカードだけを表示する（検索に一致しなくなって消えたように見えないように）。
+          if (lastReplace) {
+            if (!lastReplace.ids.has(p.id)) return null;
+          } else if (onlyMatches && needle && !matchIds.has(p.id)) return null;
           const b = busyId[p.id];
           return (
             <div
@@ -752,7 +879,7 @@ export function DatasetCurationUI({
                     value={p.caption}
                     onChange={(e) => patch(p.id, { caption: e.target.value })}
                     placeholder="(空欄 = 自動タグ付け)"
-                    rows={4}
+                    rows={6}
                     disabled={disabled || p.excluded || Boolean(bulk)}
                     className={`${inputCls} resize-none font-mono`}
                   />
@@ -774,7 +901,7 @@ export function DatasetCurationUI({
                     value={p.captionJa}
                     onChange={(e) => patch(p.id, { captionJa: e.target.value })}
                     placeholder="「日本語に翻訳」で自動入力、または直接入力"
-                    rows={4}
+                    rows={6}
                     disabled={disabled || p.excluded || Boolean(bulk)}
                     className={`${inputCls} resize-none`}
                   />
