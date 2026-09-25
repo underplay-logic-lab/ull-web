@@ -631,8 +631,11 @@ def _build_config(
         # that actually exist inside this container.
         # dataset_groups は 2026-09-21 の学習回数実装で本文だけ参照して引数に無く、
         # 生 YAML のジョブが NameError で落ちていた（2026-09-24 発見）。
+        # 複数人物（inject_trigger=False）のときは、YAML が trigger_word を書いていなくても画面のトリガーを補わない
+        # （2026-09-26。補うと ai-toolkit の add_if_not_present が、もう一人だけのキャプションにも主トリガーを足す）。
         sanitized = _sanitize_override_yaml(
-            override, lora_name, target_model, custom_model_id, base_architecture, output_dir, trigger,
+            override, lora_name, target_model, custom_model_id, base_architecture, output_dir,
+            trigger if inject_trigger else "",
             dataset_groups=dataset_groups,
         )
         config_path.write_text(sanitized, encoding="utf-8")
