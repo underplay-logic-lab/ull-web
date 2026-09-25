@@ -37,6 +37,7 @@ export type PricingKnobRow = {
 export type GenerationLog = {
   id: string;
   user_id: string;
+  job_id: string | null;
   user_email: string | null;
   job_type: string;
   prompt_input: string | null;
@@ -52,12 +53,40 @@ export type GenerationLog = {
   created_at: string;
 };
 
+/** 超解像の「まとめて処理」を 1 行に束ねたもの（/api/admin/logs、2026-09-25）。 */
+export type GenerationLogBatch = {
+  batch_id: string;
+  job_type: string;
+  user_email: string | null;
+  user_id: string;
+  created_at: string;
+  count: number;
+  success: number;
+  failed: number;
+  execution_time_ms: number;
+  credits_consumed: number;
+  cost_jpy: number;
+  margin_percent: number | null;
+  gpu_tier_label: string | null;
+  items: GenerationLog[];
+};
+
+export type GenerationLogEntry =
+  | { kind: "row"; key: string; log: GenerationLog }
+  | { kind: "batch"; key: string; batch: GenerationLogBatch };
+
 export type LogsSummary = {
   totalCount: number;
-  successRate: number;
+  successCount: number;
+  failedCount: number;
   totalCreditsConsumed: number;
-  totalModalCostJpy: number;
-  scanLimited: boolean;
+  totalCostJpy: number;
+  failedCostJpy: number;
+  totalRevenueJpy: number;
+  marginPercent: number | null;
+  lowMarginCount: number;
+  negativeMarginCount: number;
+  byJobType: { jobType: string; count: number; credits: number; cost: number }[];
 };
 
 export type LogsAlert = {

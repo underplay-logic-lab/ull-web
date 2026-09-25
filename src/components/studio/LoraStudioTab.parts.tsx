@@ -812,13 +812,30 @@ export function ImageDropzone({
               ・ 合計 {(totalBytes / 1024 / 1024).toFixed(1)} MB
             </span>
             {!disabled && (
-              <button
-                type="button"
-                onClick={() => images.forEach((i) => onRemove(i.id))}
-                className="text-muted transition-colors hover:text-red-400"
-              >
-                すべて削除
-              </button>
+              <span className="flex items-center gap-3">
+                {/* 診断の「減らす候補を選ぶ」や、手で選んだ画像をまとめて消す（2026-09-25）。 */}
+                {selected.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!window.confirm(`選択中の ${selected.size} 枚をデータセットから削除します。よろしいですか？`)) return;
+                      const ids = [...selected];
+                      ids.forEach((id) => onRemove(id));
+                      setSelected(new Set());
+                    }}
+                    className="rounded-md border border-red-500/50 bg-red-500/10 px-2 py-0.5 font-medium text-red-300 transition-colors hover:bg-red-500/20"
+                  >
+                    選択した {selected.size} 枚を削除
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => images.forEach((i) => onRemove(i.id))}
+                  className="text-muted transition-colors hover:text-red-400"
+                >
+                  すべて削除
+                </button>
+              </span>
             )}
           </div>
           <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-5">
@@ -1090,7 +1107,7 @@ export function RepeatWeightPanel({
         こと。全身ばかりで顔アップが少ないなら、顔アップ側を上げます。
         多い側を下げることはできない（最小が ×1）ので、常に少ない側を上げる方向で調整します。
         <strong className="text-foreground">情報が増えるわけではない</strong>ので、
-        ×4 を超える重み付けは素材不足の先送りにしかなりません。
+        ×3 を超える重み付けは素材不足の先送りにしかなりません（その画像の表情・背景まで焼き込まれます）。
       </p>
       {onSuggestRepeats && (
         <div className="flex flex-wrap items-center gap-2 pt-0.5">
@@ -1102,7 +1119,7 @@ export function RepeatWeightPanel({
             📐 構図の偏りを均す回数を自動で入れる
           </button>
           <span className="opacity-70">
-            被写体ごとに、一番多い構図の枚数へ揃うよう回数を割り当てます（上限 ×4）。
+            被写体ごとに、一番多い構図の枚数へ揃うよう回数を割り当てます（上限 ×3）。
             入れたあと個別に直せます。
           </span>
           {suggestNotice && (

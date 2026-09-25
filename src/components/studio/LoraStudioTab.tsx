@@ -1416,6 +1416,34 @@ export function LoraStudioTab({
     [images, captions, compositionTags, allSubjects],
   );
 
+  // 多すぎる構図から減らす候補を選ぶ（2026-09-25、ホスト指摘「全身が多すぎて切り出しても赤が消えない」）。
+  // その被写体の、その構図だけに当たる取り込み画像（切り出しは除く）から等間隔に count 枚。削除はユーザーが
+  // 一覧で見比べてから「選択した N 枚を削除」で行う（勝手には消さない）。
+  const prepareTrimForSubject = useCallback(
+    (subject: string, bucket: string, count: number) => {
+      const pool = images.filter((img) => {
+        if (img.cropKind) return false;
+        const cap = (captions[img.id] ?? "").trim();
+        const tags = compositionTags[img.id] ?? "";
+        const comp = compositionText({ caption: cap, tags });
+        if (!comp) return false;
+        const dist = captionBuckets(comp, "distance");
+        if (dist.length !== 1 || dist[0] !== bucket) return false;
+        if (allSubjects.length <= 1) return true;
+        return imageSubjects(cap, tags, allSubjects).some((x) => x.trigger === subject);
+      });
+      const n = Math.min(count, pool.length);
+      if (n <= 0) return;
+      const step = pool.length / n;
+      const ids = Array.from({ length: n }, (_, k) => pool[Math.floor(k * step)].id);
+      selectAndReveal(ids);
+      setAddNotice(
+        `減らす候補を ${ids.length} 枚選びました（候補 ${pool.length} 枚から等間隔）。残したいものは選択を外してから「選択した画像を削除」を押してください。`,
+      );
+    },
+    [images, captions, compositionTags, allSubjects, selectAndReveal],
+  );
+
   // キャプションに実際に入っている被写体の内訳（2026-09-21、ホスト指摘）。
   // 以前は主トリガーだけを見て「全キャプションの先頭に hitozuma を反映済み」
   // と出しており、kocho 単独の画像がある構成では単純に嘘だった。
@@ -1445,7 +1473,7 @@ export function LoraStudioTab({
 
   // 構図の偏りを均す学習回数を一括適用する（2026-09-21、ホスト指摘
   // 「どれだけ増やせば良いのかがわかりにくい」）。キャプションが付いている
-  // 画像だけが対象で、被写体ごとに一番多い距離バケットへ揃える（上限×4）。
+  // 画像だけが対象で、被写体ごとに一番多い距離バケットへ揃える（上限×3）。
   const applySuggestedRepeats = useCallback(() => {
     const captioned = images.filter((img) =>
       compositionText({ caption: captions[img.id], tags: compositionTags[img.id] }),
@@ -4266,6 +4294,7 @@ export function LoraStudioTab({
               subjects={allSubjects}
               onOpenMultiAngle={onOpenMultiAngle}
               onPrepareCrop={prepareCropForSubject}
+              onPrepareTrim={prepareTrimForSubject}
               highlightPrepare={flow.targets.includes("cropPrepare")}
             />
             </div>

@@ -23,6 +23,7 @@ export function DatasetDiagnosticsPanel({
   provisional = false,
   stalledCount = 0,
   onRetryStalled,
+  onPrepareTrim,
   highlightPrepare = false,
 }: {
   items: DiagnosticInput[];
@@ -48,6 +49,8 @@ export function DatasetDiagnosticsPanel({
   stalledCount?: number;
   /** 未判定の画像だけ構図の判定をやり直す（無料）。 */
   onRetryStalled?: () => void;
+  /** 多すぎる構図（bucket）から count 枚を削除候補として選ぶ（2026-09-25。削除はユーザーが一覧で行う）。 */
+  onPrepareTrim?: (subject: string, bucket: string, count: number) => void;
   /** 導線として「切り出す準備をする」を光らせるか（loraFlowStep が決める）。 */
   highlightPrepare?: boolean;
 }) {
@@ -71,6 +74,15 @@ export function DatasetDiagnosticsPanel({
     cropPlan.set(i.subject, set);
   }
   const KIND_LABEL: Record<"face" | "upper", string> = { face: "顔アップ", upper: "上半身" };
+  // 多すぎる構図を減らす案（被写体ごとに、必要な枚数の多いほう）。
+  const trimPlan = new Map<string, { bucket: string; count: number }>();
+  for (const i of diag.issues) {
+    const b = i.balance;
+    if (!i.subject || !b?.trimBucket || b.trim <= 0) continue;
+    const cur = trimPlan.get(i.subject);
+    if (!cur || b.trim > cur.count) trimPlan.set(i.subject, { bucket: b.trimBucket, count: b.trim });
+  }
+  const bucketLabel = (id: string) => DIAGNOSTIC_AXES.distance.buckets.find((x) => x.id === id)?.label ?? id;
 
   return (
     <div className="rounded-xl border border-neon-violet/30 bg-neon-violet/5">
@@ -259,6 +271,28 @@ export function DatasetDiagnosticsPanel({
                   下のクロップ欄で「切り出す」→ 戻ってもう片方を押す → もう一度「切り出す」、の順です。
                   切り出しが終わると選択は自動で解除されるので、2回目はそのまま押せます。
                 </p>
+              )}
+              {/* 切り出しても比率が届かないとき（全身が大半など）の、もう一つの出口（2026-09-25、ホスト指摘）。 */}
+              {trimPlan.size > 0 && onPrepareTrim && (
+                <div className="space-y-1 border-t border-neon-violet/30 pt-1.5">
+                  <p className="text-[10px] leading-relaxed text-muted">
+                    <strong className="text-foreground">多すぎる構図を減らす方法もあります（任意）。</strong>
+                    押すと、減らす候補を一覧で選択した状態にします。見比べて、残したいものは選択を外してから削除してください。
+                    似た構図・同じ服装の画像から削るのがおすすめです。
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[...trimPlan.entries()].map(([subj, t]) => (
+                      <button
+                        key={subj}
+                        type="button"
+                        onClick={() => onPrepareTrim(subj, t.bucket, t.count)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-300 transition-colors hover:bg-amber-500/20"
+                      >
+                        <span className="font-mono">{subj}</span> の{bucketLabel(t.bucket)}から減らす候補（約 {t.count}枚）を選ぶ
+                      </button>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           )}

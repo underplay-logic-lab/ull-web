@@ -26,6 +26,31 @@ export type GenerationLogsPeriodSummary = {
   byJobType: { jobType: string; count: number; creditsConsumed: number; costJpy: number }[];
 };
 
+export type LogCostRow = { job_type: string; execution_time_ms: number | null; gpu_tier: string | null };
+
+/**
+ * 1 行ぶんの推定原価（円）を出す関数を作る。日次サマリーと admin の実稼働ログ（/api/admin/logs）で
+ * 同じ計算を通す（数字が食い違わないように、2026-09-25）。gpu_tier が分かれば GPU 単価 × 実行時間、
+ * 分からなければ job_type 別の予備単価（studio_pricing）。
+ */
+export async function makeRowCostJpy(): Promise<{
+  rowCostJpy: (row: LogCostRow) => number;
+  knobs: Awaited<ReturnType<typeof getPricingKnobs>>;
+}> {
+  const knobs = await getPricingKnobs();
+  const { data: pricingRows } = await supabaseAdmin.from("studio_pricing").select("key, unit_cost_usd");
+  const unitCostByFeature = new Map(
+    (pricingRows ?? []).map((row) => [row.key as string, row.unit_cost_usd as number]),
+  );
+  const rowCostJpy = (row: LogCostRow): number => {
+    const tierCost = estimateJobCostJpy(row.execution_time_ms, row.gpu_tier, knobs);
+    if (tierCost != null) return tierCost;
+    const unitCostUsd = unitCostByFeature.get(row.job_type) ?? 0;
+    return ((row.execution_time_ms ?? 0) / 1000) * unitCostUsd * knobs.usd_jpy_rate;
+  };
+  return { rowCostJpy, knobs };
+}
+
 export async function summarizeGenerationLogs(fromIso: string, toIso: string): Promise<GenerationLogsPeriodSummary> {
   const knobs = await getPricingKnobs();
 

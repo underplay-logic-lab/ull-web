@@ -109,6 +109,8 @@ export const DIAGNOSTIC_TARGETS = {
    */
   distanceShare: { closeup: 0.3, upper: 0.3, full: 0.15 } as Record<string, number>,
   distanceMin: { closeup: 5, upper: 4, full: 4 } as Record<string, number>,
+  /** 1 枚の画像の学習回数の目安の上限。これを超えると同じ絵の焼き込みを警告する（2026-09-25）。 */
+  maxRepeats: 3,
   /** 露出比がこの倍率以上離れたら偏りとみなす。 */
   exposureImbalanceRatio: 2.5,
   /**
@@ -144,6 +146,10 @@ export type SubjectDiagnostic = {
   exposure: number;
   /** 軸 -> バケットid -> 枚数 */
   axes: Record<DiagnosticAxis, Record<string, number>>;
+  /** 軸 -> バケットid -> 枚数 × 学習回数（学習で実際に見せる回数、2026-09-25）。 */
+  axesExposure: Record<DiagnosticAxis, Record<string, number>>;
+  /** その被写体の画像の学習回数の最大値。 */
+  maxRepeats: number;
   /** どの軸のバケットにも当たらなかった枚数（軸ごと）。 */
   unclassified: Record<DiagnosticAxis, number>;
 };
@@ -174,6 +180,14 @@ export type DiagnosticIssue = {
   fixableWith: "multi_angle" | "smart_crop" | null;
   /** smart_crop のとき、どの構図で切り出せば埋まるか（UI の初期選択に使う）。 */
   cropKinds?: ("face" | "upper")[];
+  /**
+   * 距離の比率が足りないときの 3 つの直し方（2026-09-25、ホスト指摘「全身が多すぎて、切り出しても赤が消えない。
+   * 削除させる選択肢も要る」）。どれか 1 つで目安に届く量。
+   *   add    : 足りない構図の画像を足す枚数（切り出し等）
+   *   trim   : 多すぎる構図（trimBucket）から減らす枚数（任意の削除）
+   *   repeat : 足りない構図の画像の学習回数を何倍にすれば届くか（上限を超えるなら null）
+   */
+  balance?: { bucket: string; add: number; trimBucket: string; trim: number; repeat: number | null };
 };
 
 export type DatasetDiagnostic = {
@@ -351,7 +365,7 @@ export function captionBuckets(caption: string, axis: DiagnosticAxis): string[] 
  *
  * ただし上限を設ける。4枚を25枚に合わせようとすると ×6 になるが、同じ4枚を
  * 6回見せても情報は増えず、その4枚の背景・ポーズまで焼き込む方向にしか
- * 働かない。`cap` はそのための足枷で、既定 4 は「×4 を超える重み付けは
+ * 働かない。`cap` はそのための足枷で、既定 3（2026-09-25 に 4 から、DIAGNOSTIC_TARGETS.maxRepeats）は「×3 を超える重み付けは
  * 素材不足の先送りでしかない」という判断からの出発点（未校正）。
  *
  * 1枚が複数のバケット／被写体に該当することがある（duo の全身など）。
@@ -365,7 +379,7 @@ export function captionBuckets(caption: string, axis: DiagnosticAxis): string[] 
 export function suggestRepeats(
   items: DiagnosticInput[],
   subjects: LoraSubject[],
-  cap = 4,
+  cap = DIAGNOSTIC_TARGETS.maxRepeats,
 ): number[] {
   // 1パス目: 被写体ごと・バケットごとの枚数を数える。
   const counts = new Map<string, Map<string, number>>();
@@ -417,6 +431,8 @@ export function analyzeDataset(
         unique: 0,
         exposure: 0,
         axes: emptyAxes(),
+        axesExposure: emptyAxes(),
+        maxRepeats: 1,
         unclassified: { distance: 0, view: 0, elevation: 0, pose: 0, background: 0 },
       };
       bySubject.set(trigger, d);
@@ -441,11 +457,13 @@ export function analyzeDataset(
       const d = ensure(trigger);
       d.unique += 1;
       d.exposure += repeats;
+      d.maxRepeats = Math.max(d.maxRepeats, repeats);
       for (const axis of Object.keys(DIAGNOSTIC_AXES) as DiagnosticAxis[]) {
         let hit = false;
         for (const bucket of DIAGNOSTIC_AXES[axis].buckets) {
           if (tags.some((t) => bucket.keywords.some((k) => t.includes(k)))) {
             d.axes[axis][bucket.id] = (d.axes[axis][bucket.id] ?? 0) + 1;
+            d.axesExposure[axis][bucket.id] = (d.axesExposure[axis][bucket.id] ?? 0) + repeats;
             hit = true;
           }
         }
@@ -533,27 +551,71 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
       }
     }
 
-    // --- 距離の穴（目安に依存する warn）---
-    // distance.buckets は寄り → 引き の順に並んでいる。切り出しは「引き画を
-    // 寄せる」ことしかできないので、自分より後ろ（広い）バケットに在庫が
-    // あるときだけ smart_crop を出口にする。
-    for (const b of pseudo ? [] : DIAGNOSTIC_AXES.distance.buckets) {
+    // --- 距離（2026-09-25 に 2 段へ分けた）---
+    // ① 実際の枚数の下限（distanceMin）。学習回数では増えない情報量の話なので赤・回数では直らない。
+    // ② 比率（distanceShare）。学習で見せる回数（枚数 × 学習回数）で見るので、「足す / 多い構図を減らす /
+    //    学習回数を上げる」のどれでも届く。以前は枚数だけで見ていて、全身が大半の被写体は切り出しても分母が
+    //    増えるだけで赤が消えなかった（ホスト報告）。
+    // distance.buckets は寄り → 引き の順。切り出しは「引き画を寄せる」ことしかできないので、自分より後ろ
+    // （広い）バケットに在庫があるときだけ smart_crop を出口にする。
+    const distBuckets = pseudo ? [] : DIAGNOSTIC_AXES.distance.buckets;
+    const expTotal = distBuckets.reduce((t, b) => t + (s.axesExposure.distance[b.id] ?? 0), 0);
+    const expTop = distBuckets.reduce<{ id: string; n: number } | null>((a, b) => {
+      const n = s.axes.distance[b.id] ?? 0;
+      return !a || n > a.n ? { id: b.id, n } : a;
+    }, null);
+    for (const b of distBuckets) {
       const got = s.axes.distance[b.id] ?? 0;
-      const share = DIAGNOSTIC_TARGETS.distanceShare[b.id] ?? 0;
-      const want = Math.max(DIAGNOSTIC_TARGETS.distanceMin[b.id] ?? 0, Math.ceil(s.unique * share));
-      if (want <= 0 || got >= want) continue;
+      const min = DIAGNOSTIC_TARGETS.distanceMin[b.id] ?? 0;
       const fix = distanceFix(b.id, s.axes.distance);
+      if (got < min) {
+        issues.push({
+          level: "error",
+          subject: s.trigger,
+          message: `「${b.label}」が ${got}枚です（最低 ${min}枚）。${got === 0 ? "この距離では生成できません。" : ""}学習回数では情報が増えないので、画像を足してください。${
+            fix.fixableWith === "smart_crop" ? "より引いた画から、スマートクロップで作れます。" : ""
+          }`,
+          notFixableByRepeats: true,
+          ...fix,
+        });
+        continue;
+      }
+      const share = DIAGNOSTIC_TARGETS.distanceShare[b.id] ?? 0;
+      const exp = s.axesExposure.distance[b.id] ?? 0;
+      if (share <= 0 || expTotal <= 0 || exp >= share * expTotal) continue;
+      const add = Math.ceil((share * expTotal - exp) / (1 - share));
+      // 多すぎる構図（一番多いもの）から減らす場合。1 枚 = 学習回数 1 回として近似する。
+      const trimBucket = expTop && expTop.id !== b.id ? expTop.id : "";
+      const trim = trimBucket ? Math.max(0, Math.ceil(expTotal - exp / share)) : 0;
+      const trimOk = trimBucket !== "" && trim < (s.axes.distance[trimBucket] ?? 0);
+      const k = exp > 0 ? (share * (expTotal - exp)) / ((1 - share) * exp) : Infinity;
+      const repeat = k <= DIAGNOSTIC_TARGETS.maxRepeats ? Math.max(2, Math.ceil(k)) : null;
+      const trimLabel = DIAGNOSTIC_AXES.distance.buckets.find((x) => x.id === trimBucket)?.label ?? "";
+      const ways = [
+        `${b.label}を約 ${add}枚足す${fix.fixableWith === "smart_crop" ? "（スマートクロップで作れます）" : ""}`,
+        trimOk ? `${trimLabel}を約 ${trim}枚減らす（任意。似た構図から削るのがおすすめ）` : "",
+        repeat ? `${b.label}の画像の学習回数を ×${repeat} にする` : "",
+      ].filter(Boolean);
       issues.push({
-        // 構図の不足は赤（2026-09-22、ホスト判断「cropしてもらわないと
-        // 良い状態にならないわけだし」）。切り出せば無料で埋まるので、
-        // 黄色で流されるより確実に手を打ってもらうほうがよい。
-        level: got === 0 || fix.fixableWith === "smart_crop" ? "error" : "warn",
+        level: "error",
         subject: s.trigger,
-        message: `「${b.label}」が ${got}枚です（目安 ${want}枚＝この被写体の ${Math.round(share * 100)}%）。${
-          got === 0 ? "この距離では生成できません。" : ""
-        }${fix.fixableWith === "smart_crop" ? "より引いた画から、スマートクロップで作れます。" : ""}`,
-        notFixableByRepeats: true,
+        message: `「${b.label}」の比率が ${Math.round((exp / expTotal) * 100)}% です（目安 ${Math.round(share * 100)}%）。${
+          b.label
+        }での再現性が落ちます。次のどれかで届きます: ${ways.join(" ／ ")}。`,
+        notFixableByRepeats: false,
         ...fix,
+        balance: { bucket: b.id, add, trimBucket: trimOk ? trimBucket : "", trim: trimOk ? trim : 0, repeat },
+      });
+    }
+
+    // 同じ画像を何度も見せると、その画像の表情・背景・ポーズまで焼き込まれる（2026-09-25、ホスト判断）。
+    if (!pseudo && s.maxRepeats > DIAGNOSTIC_TARGETS.maxRepeats) {
+      issues.push({
+        level: "warn",
+        subject: s.trigger,
+        message: `学習回数が ×${s.maxRepeats} の画像があります。同じ画像を ×${DIAGNOSTIC_TARGETS.maxRepeats} を超えて繰り返すと、その画像の表情・背景・ポーズまで焼き込まれやすくなります。比率は、足りない構図の画像を足すか、多い構図を減らして整えるのがおすすめです。`,
+        notFixableByRepeats: false,
+        fixableWith: null,
       });
     }
 
@@ -570,6 +632,8 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
     // --- 1つの構図に偏りすぎ（不足ではなく「多すぎ」側）-----------------
     // 不足しか言わないと「全身ばかり80枚」のような構成を素通りさせてしまう。
     for (const axis of Object.keys(DIAGNOSTIC_AXES) as DiagnosticAxis[]) {
+      // 距離は上の「比率」の指摘（直し方 3 つ付き）が同じことを言うので出さない（2026-09-25）。
+      if (axis === "distance") continue;
       const counts = DIAGNOSTIC_AXES[axis].buckets.map((b) => ({ b, n: s.axes[axis][b.id] ?? 0 }));
       const classified = counts.reduce((t, c) => t + c.n, 0);
       if (classified < DIAGNOSTIC_TARGETS.bucketDominanceMinClassified) continue;
@@ -578,30 +642,14 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
       if (share < DIAGNOSTIC_TARGETS.bucketDominanceRatio) continue;
       // 他のバケットが全部0なら「1つだけ」の指摘と重複するので出さない。
       if (counts.filter((c) => c.n > 0).length <= 1) continue;
-      // 距離軸なら、薄いほうの構図を**引き画から切り出して実際に増やせる**
-      // （2026-09-22、ホスト指摘「全身に偏っているという指摘だけ出て、
-      // crop ボタンが出てこない」）。学習回数での調整もできるが、実物が
-      // 増えるほうが常に上位なので両方を案内する。
-      const thin =
-        axis === "distance"
-          ? (Object.keys(CROPPABLE_DISTANCE) as string[])
-              .filter((b) => (s.axes.distance[b] ?? 0) < top.n / 2)
-              .map((b) => canCrop(b, s.axes.distance))
-              .filter((k): k is "face" | "upper" => Boolean(k))
-          : [];
-      const uniqThin = [...new Set(thin)];
       issues.push({
-        // 距離の偏りは、薄い側を切り出して実際に均せる＝手を打つべき指摘。
-        level: uniqThin.length ? "error" : "warn",
+        level: "warn",
         subject: s.trigger,
         message:
           `${DIAGNOSTIC_AXES[axis].label}が「${top.b.label}」に偏っています（${top.n}枚 / 分類できた ${classified}枚 の ${Math.round(share * 100)}%）。この構図以外での再現性が落ちます。` +
-          (uniqThin.length
-            ? "薄いほうの構図は、引いた画からスマートクロップで増やせます。学習回数での調整も併用できます。"
-            : "多い側の学習回数を上げない、または少ない側を上げて比率を整えてください。"),
+          "多い側の学習回数を上げない、または少ない側を上げて比率を整えてください。",
         notFixableByRepeats: false,
-        fixableWith: uniqThin.length ? "smart_crop" : null,
-        ...(uniqThin.length ? { cropKinds: uniqThin } : {}),
+        fixableWith: null,
       });
     }
   }

@@ -113,6 +113,26 @@ async function refundCredits(userId: string, amount: number): Promise<void> {
   await supabaseAdmin.from("profiles").update({ credits: current + amount }).eq("id", userId);
 }
 
+// 依頼時に指定した GPU tier（inputs.dispatch.gpu_tier、例 "rtx_pro_6000"）を、worker の _gpu_tier_label()
+// と同じ表記（"RTX-PRO-6000"）にする。指定が無い旧ジョブは undefined（ログ側は予備単価のまま）。
+const GPU_TIER_LABEL: Record<string, string> = {
+  b300: "B300",
+  b200: "B200",
+  h200: "H200",
+  h100: "H100",
+  rtx_pro_6000: "RTX-PRO-6000",
+  a100_80gb: "A100-80GB",
+  a100_40gb: "A100-40GB",
+  l40s: "L40S",
+};
+function requestedGpuTierLabel(job: JobRow): string | undefined {
+  const inputs = job.inputs && typeof job.inputs === "object" ? (job.inputs as Record<string, unknown>) : {};
+  const dispatch =
+    inputs.dispatch && typeof inputs.dispatch === "object" ? (inputs.dispatch as Record<string, unknown>) : {};
+  const tier = typeof dispatch.gpu_tier === "string" ? dispatch.gpu_tier.trim().toLowerCase() : "";
+  return GPU_TIER_LABEL[tier];
+}
+
 // Closes a job whose Modal container is confirmed dead (SIGKILL / OOM /
 // eviction — train_lora_job's own except-block never ran). Marks it
 // 'failed', records the reason, and 100%-refunds the cost once — unless it's
@@ -156,6 +176,9 @@ export async function markLoraJobContainerDead(
       refunded: !customYaml && (refunded > 0 || alreadyRefunded),
       custom_yaml: customYaml,
       container_death: true,
+      // コンテナごと落ちると worker が gpu_tier を書けない。実稼働ログ（generation_logs.gpu_tier）が
+      // 'standard'（予備単価）にならないよう、依頼時に指定した tier で埋める（2026-09-25）。
+      gpu_tier: existingMeta.gpu_tier ?? requestedGpuTierLabel(job),
     },
   });
   return { refunded, customYaml };
