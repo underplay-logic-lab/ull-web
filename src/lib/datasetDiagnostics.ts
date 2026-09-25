@@ -59,7 +59,8 @@ export const DIAGNOSTIC_AXES: Record<DiagnosticAxis, AxisDef> = {
     label: "向き",
     buckets: [
       { id: "front", label: "正面", keywords: ["front view", "facing viewer", "looking at viewer", "from front"] },
-      { id: "side", label: "斜め・横", keywords: ["three quarter", "3/4", "from the side", "side view", "profile"] },
+      // WD タガーは "from side"（Danbooru のタグ名）。"from the side" だけだと WD の横向きを数えられなかった（2026-09-25）。
+      { id: "side", label: "斜め・横", keywords: ["three quarter", "3/4", "from side", "from the side", "side view", "profile"] },
       { id: "back", label: "後ろ", keywords: ["from behind", "back view", "rear view", "from back"] },
     ],
   },
@@ -69,7 +70,7 @@ export const DIAGNOSTIC_AXES: Record<DiagnosticAxis, AxisDef> = {
     label: "仰角",
     buckets: [
       { id: "low", label: "アオリ", keywords: ["low angle", "from below", "worms eye", "worm's eye"] },
-      { id: "eye", label: "水平", keywords: ["eye level", "eye-level", "straight on"] },
+      { id: "eye", label: "水平", keywords: ["eye level", "eye-level", "straight on", "straight-on"] },
       { id: "high", label: "俯瞰", keywords: ["high angle", "from above", "overhead", "birds eye", "bird's eye", "top-down"] },
     ],
   },
@@ -628,6 +629,21 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
       const n = s.axes.distance[b.id] ?? 0;
       return !a || n > a.n ? { id: b.id, n } : a;
     }, null);
+    // 学習回数で届くかは、足りない構図を全部同時に ×3 にしたときで見る（1 つずつ見ると、他も上げたぶん分母が
+    // 増えて届かないのに「届く」と出る、2026-09-25）。
+    const expOf = (id: string) => s.axesExposure.distance[id] ?? 0;
+    const deficit = new Set(
+      distBuckets
+        .filter((b) => expTotal > 0 && expOf(b.id) < (DIAGNOSTIC_TARGETS.distanceShare[b.id] ?? 0) * expTotal)
+        .map((b) => b.id),
+    );
+    const bestTotal = distBuckets.reduce(
+      (t, b) => t + expOf(b.id) * (deficit.has(b.id) ? DIAGNOSTIC_TARGETS.maxRepeats : 1),
+      0,
+    );
+    const reachableByRepeats = (id: string) =>
+      bestTotal > 0 &&
+      (expOf(id) * DIAGNOSTIC_TARGETS.maxRepeats) / bestTotal >= (DIAGNOSTIC_TARGETS.distanceShare[id] ?? 0);
     for (const b of distBuckets) {
       const got = s.axes.distance[b.id] ?? 0;
       const min = DIAGNOSTIC_TARGETS.distanceMin[b.id] ?? 0;
@@ -660,13 +676,23 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
         trimOk ? `${trimLabel}を約 ${trim}枚減らす（任意。似た構図から削るのがおすすめ）` : "",
         repeat ? `${b.label}の画像の学習回数を ×${repeat} にする` : "",
       ].filter(Boolean);
+      // 赤は「学習回数では直らないもの」だけ（2026-09-25、ホスト判断）。×3 以内の学習回数で目安に届くなら、
+      // キャプションの後の「学習回数」の段階（構図の偏りを均す）で直せるので黄色にする。届かないなら素材を
+      // 足す・減らすしかないので赤。この段階の赤を全部消せばキャプションへ進んでよい、という基準にする。
+      const laterOk = repeat !== null && reachableByRepeats(b.id);
       issues.push({
-        level: "error",
+        level: laterOk ? "warn" : "error",
         subject: s.trigger,
         message: `「${b.label}」の比率が ${Math.round((exp / expTotal) * 100)}% です（目安 ${Math.round(share * 100)}%）。${
           b.label
-        }での再現性が落ちます。次のどれかで届きます: ${ways.join(" ／ ")}。`,
-        notFixableByRepeats: false,
+        }での再現性が落ちます。${
+          laterOk
+            ? `キャプションの後、学習回数の段階で均せます（${b.label}の画像を ×${repeat}）。今のうちに直すなら: ${ways
+                .filter((w) => !w.includes("学習回数"))
+                .join(" ／ ")}。`
+            : `学習回数（×${DIAGNOSTIC_TARGETS.maxRepeats} まで）では届かないので、素材を直してください: ${ways.join(" ／ ")}。`
+        }`,
+        notFixableByRepeats: !laterOk,
         ...fix,
         balance: { bucket: b.id, add, trimBucket: trimOk ? trimBucket : "", trim: trimOk ? trim : 0, repeat },
       });
@@ -738,29 +764,50 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
   // 絶対値の目安を満たしていても、相手より極端に少ないバケットは実務で効く
   // （DIAGNOSTIC_TARGETS.bucketImbalanceRatio のコメント参照）。
   if (subjects.length >= 2) {
+    // 2026-09-25 見直し（ホスト指摘「kocho の斜め・横 5 枚 vs hitozuma 20 枚で赤。マルチアングル必須の導線になって
+    // いて厳しすぎる」）:
+    //   - 枚数ではなく「その被写体の中での割合」で比べる。枚数だと、画像の多い被写体と比べられた側が常に不利。
+    //   - 向き・仰角・姿勢・背景は黄色の注意にする。学習回数でも比率は近づけられ、マルチアングルは任意の手段。
+    //     距離だけは切り出しで無料・即時に埋まるので赤のまま。
+    // 「被写体を判定できなかった画像」の寄せ集めは比較に入れない。
+    const real = subjects.filter((s) => s.trigger !== WHOLE_DATASET_SUBJECT && s.unique > 0);
     for (const axis of Object.keys(DIAGNOSTIC_AXES) as DiagnosticAxis[]) {
       for (const bucket of DIAGNOSTIC_AXES[axis].buckets) {
-        const counts = subjects.map((s) => ({ s, n: s.axes[axis][bucket.id] ?? 0 }));
-        const peak = Math.max(...counts.map((c) => c.n));
-        if (peak < DIAGNOSTIC_TARGETS.bucketImbalanceMinPeer) continue;
-        for (const { s, n } of counts) {
-          if (n === 0) continue; // 0枚は上の構造的欠落側で拾う
-          if (peak / n < DIAGNOSTIC_TARGETS.bucketImbalanceRatio) continue;
-          const richer = counts.find((c) => c.n === peak)!.s.trigger;
-          // 距離軸の不足は、より引いた画が在庫にあればクロップで埋まる
-          // （2026-09-22）。以前は一律でマルチアングルへ誘導しており、
-          // 無料・即時で作れるものにクレジットを使わせる案内になっていた。
-          const fix: { fixableWith: DiagnosticIssue["fixableWith"]; cropKinds?: ("face" | "upper")[] } =
-            axis === "distance"
-              ? distanceFix(bucket.id, s.axes.distance)
-              : { fixableWith: MULTI_ANGLE_AXES.includes(axis) ? "multi_angle" : null };
+        const rows = real.map((s) => {
+          const n = s.axes[axis][bucket.id] ?? 0;
+          return { s, n, share: n / s.unique };
+        });
+        const top = rows.reduce<(typeof rows)[number] | null>((a, r) => (!a || r.share > a.share ? r : a), null);
+        if (!top || top.n < DIAGNOSTIC_TARGETS.bucketImbalanceMinPeer) continue;
+        for (const { s, n, share } of rows) {
+          if (n === 0 || s === top.s) continue; // 0枚は上の構造的欠落側で拾う
+          if (top.share / share < DIAGNOSTIC_TARGETS.bucketImbalanceRatio) continue;
+          const richer = top.s.trigger;
+          const pct = (v: number) => `${Math.round(v * 100)}%`;
+          const isDistance = axis === "distance";
+          const fix: { fixableWith: DiagnosticIssue["fixableWith"]; cropKinds?: ("face" | "upper")[] } = isDistance
+            ? distanceFix(bucket.id, s.axes.distance)
+            : { fixableWith: MULTI_ANGLE_AXES.includes(axis) ? "multi_angle" : null };
+          // 学習回数（×3 まで）で割合の差が埋まるなら黄色（後の「学習回数」の段階で均せる）。埋まらないのは
+          // 距離だけ赤（切り出しで無料・即時に足せる）。向き等は埋まらなくても黄色（作る手段が任意のマルチアングル）。
+          const need = top.share / share;
+          const laterOk = need <= DIAGNOSTIC_TARGETS.maxRepeats;
           issues.push({
-            level: MULTI_ANGLE_AXES.includes(axis) ? "error" : "warn",
+            level: isDistance && !laterOk ? "error" : "warn",
             subject: s.trigger,
             message:
-              `${DIAGNOSTIC_AXES[axis].label}の「${bucket.label}」が ${n}枚しかありません（${richer} は ${peak}枚）。この構図では ${richer} に比べて明らかに弱くなります。` +
-              (fix.fixableWith === "smart_crop" ? "より引いた画から、スマートクロップで作れます。" : ""),
-            notFixableByRepeats: true,
+              `${DIAGNOSTIC_AXES[axis].label}の「${bucket.label}」が ${n}枚（${pct(share)}）で、${richer} の ${pct(top.share)} より明らかに少なめです。この構図では ${richer} より弱くなりやすいです。` +
+              (laterOk
+                ? `キャプションの後、学習回数の段階で均せます（×${Math.ceil(need)}）。`
+                : `学習回数（×${DIAGNOSTIC_TARGETS.maxRepeats} まで）では埋まりません。`) +
+              (isDistance
+                ? fix.fixableWith === "smart_crop"
+                  ? "より引いた画から、スマートクロップで作れます。"
+                  : ""
+                : fix.fixableWith === "multi_angle"
+                  ? "マルチアングルで足す方法もあります（任意）。"
+                  : ""),
+            notFixableByRepeats: !laterOk,
             ...fix,
           });
         }

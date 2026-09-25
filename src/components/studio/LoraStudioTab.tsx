@@ -153,6 +153,7 @@ import {
   MAX_LONG_EDGE,
   SMART_CROP_PANEL_ID,
   CROP_REVIEW_PANEL_ID,
+  COMPOSITION_STATUS_ID,
   DIAGNOSTICS_PANEL_ID,
   METADATA_PANEL_ID,
   SUBJECTS_PANEL_ID,
@@ -1168,15 +1169,10 @@ export function LoraStudioTab({
     // 診断から飛んできた選択がそのまま残っていると、次の工程（学習回数）で
     // 「なぜこれだけ選ばれているのか」が分からなくなる。
     setSelectedImageIds(new Set());
-    // 上のサムネイル一覧が数十行ぶん伸びるので、放っておくとクロップ欄が
-    // 画面外へ押し出される。切り出し結果の一覧まで戻す。
-    requestAnimationFrame(() =>
-      document
-        .getElementById(CROP_REVIEW_PANEL_ID)
-        // block:"end" で画面の下側に出す。上に切り出した画像が見えた状態で
-        // 「確認してください」が読める（2026-09-22、ホスト指摘）。
-        ?.scrollIntoView({ behavior: "smooth", block: "end" }),
-    );
+    // 切り出した画像はすぐ構図の判定にかかり、しばらく待つことになる。その間は判定中の表示へ送る
+    // （2026-09-25、ホスト指摘）。判定が始まった瞬間に下の effect がスクロールする。以前は切り出し結果の
+    // 確認欄へ送っていたが、判定が終わるまで「2 人以上」の枠も診断も確定しない。
+    scrollToCompositionRef.current = true;
     setAddNotice(
       `元画像 ${candidates.length} 枚から ${kept} 枚を切り出してデータセットに追加しました。` +
         ` 内訳: 生成 ${kept + rejected.upscaled + rejected.redundant + rejected.tooSmall} 枚` +
@@ -2877,6 +2873,23 @@ export function LoraStudioTab({
     const t = setTimeout(() => void runCompositionTagging(pending), 600);
     return () => clearTimeout(t);
   }, [user, phase, yamlMode, analysisStarted, composition.running, images, compositionTags, runCompositionTagging]);
+  // 切り出しの直後だけ、構図の判定が始まったら判定中の表示へスクロールする。
+  // 判定が終わったら、切り出した画像の確認欄へ戻す（「2 人以上」の枠はそこで確定する）。
+  const scrollToCompositionRef = useRef(false);
+  const backToCropReviewRef = useRef(false);
+  useEffect(() => {
+    if (composition.running && scrollToCompositionRef.current) {
+      scrollToCompositionRef.current = false;
+      backToCropReviewRef.current = true;
+      document.getElementById(COMPOSITION_STATUS_ID)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    } else if (!composition.running && backToCropReviewRef.current) {
+      backToCropReviewRef.current = false;
+      requestAnimationFrame(() =>
+        document.getElementById(CROP_REVIEW_PANEL_ID)?.scrollIntoView({ behavior: "smooth", block: "end" }),
+      );
+    }
+  }, [composition.running]);
+
   // 判定が終わったのにタグが付かなかった画像（読めなかった・通信が落ちた）。
   const untaggedImages = useMemo(
     () => images.filter((img) => !compositionTags[img.id] && compositionAttemptedRef.current.has(img.id)),
@@ -4372,7 +4385,7 @@ export function LoraStudioTab({
                 )}
                 {/* 構図の判定（無料）の状態。キャプションの状態はクロップ欄の下へ移した（2026-09-25 の順番の改修）。 */}
                 {analysisStarted && composition.running && (
-                  <p className="mt-2 flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] text-neon-violet">
+                  <p id={COMPOSITION_STATUS_ID} className="mt-2 flex scroll-mt-24 items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] text-neon-violet">
                     <Loader2 size={13} className="shrink-0 animate-spin" />
                     {/* 32 枚ずつ並列に処理して、まとまって終わるので数字はしばらく動かない（2026-09-25、ホスト指摘）。 */}
                     構図を判定しています…（{composition.done}/{composition.total}）— 1 分ほどかかります。数字はまとめて進みます。

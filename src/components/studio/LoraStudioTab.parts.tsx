@@ -101,6 +101,8 @@ export const LORA_SETTINGS_ANCHOR_ID = "lora-settings-anchor";
 
 /** 切り出し結果の点検パネルの DOM id（クロップ実行後にここへ戻す）。 */
 export const CROP_REVIEW_PANEL_ID = "lora-crop-review-panel";
+// 構図の判定中の表示（切り出しの直後にここへ送る、2026-09-25）。
+export const COMPOSITION_STATUS_ID = "lora-composition-status";
 
 /** データセット構成の診断パネル。解析が終わったらここへ送る。 */
 export const DIAGNOSTICS_PANEL_ID = "lora-diagnostics-panel";
