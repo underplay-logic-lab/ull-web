@@ -643,7 +643,10 @@ async function generateDatasetCaptionsVlm(files: File[], opts: CaptionOpts): Pro
     await captionVlmPost(token, { action: "run", jobId, mimes, retry_of: retryOf, ...spec }, opts.signal);
     note("AI を起動しています（1〜2 分ほどかかります）…");
 
-    const seen = new Set<number>();
+    // 受け取った英語キャプション（index → 本文）。完了時の自己チェックが、既に受け取った画像のキャプションを
+    // 書き直すので、本文が変わっていたら受け取り直す（2026-09-25、ホスト報告「自己チェックで直ったはずの特徴が
+    // 25 枚残っている」: 一度受け取った画像を二度と見ておらず、直した版が画面に届いていなかった）。
+    const seen = new Map<number, string>();
     const t0 = Date.now();
     for (;;) {
       if (opts.signal?.aborted) return result();
@@ -659,8 +662,8 @@ async function generateDatasetCaptionsVlm(files: File[], opts: CaptionOpts): Pro
       const fresh: { index: number; en: string; ja: string }[] = [];
       for (const e of entries) {
         const i = ok[e.index]?.i;
-        if (i === undefined || seen.has(e.index)) continue;
-        seen.add(e.index);
+        if (i === undefined || seen.get(e.index) === e.en) continue;
+        seen.set(e.index, e.en);
         if (stale(i)) continue;
         captions[i] = e.en;
         captionsJa[i] = e.ja;

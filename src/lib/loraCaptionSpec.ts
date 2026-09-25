@@ -746,8 +746,14 @@ export function loraCaptionPrice(
  * 特徴の最後の語が特徴的（glasses / beard / mole 等）ならその語で見る（"metal frame glasses" は "round glasses"
  * では当たらないため）。髪・目など汎用の語で終わるもの（black hair 等）は句のまま。確認画面のチップと同じ考え方。
  */
+/** 特徴の最後の語がこれなら語ではなく句のまま見る（確認画面のチップと共通）。"cut" は "bob cut" の最後の語を
+ *  単独で見ると "cut-out" 等の服の記述まで引っかかるため（2026-09-25、自己チェックの terms に "cut" が出た）。 */
+export const FEATURE_GENERIC_TAIL = new Set([
+  "hair", "eyes", "skin", "body", "breasts", "ears", "tail", "lips", "eyebrows", "cut", "style",
+]);
+
 export function forbiddenCaptionTerms(subjects: LoraSubject[]): string[] {
-  const GENERIC = new Set(["hair", "eyes", "skin", "body", "breasts", "ears", "tail", "lips", "eyebrows"]);
+  const GENERIC = FEATURE_GENERIC_TAIL;
   const out = new Set<string>();
   for (const s of subjects) {
     for (const raw of (s.identityTags ?? "").split(/\s*[,、]\s*/)) {

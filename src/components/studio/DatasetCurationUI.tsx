@@ -21,6 +21,7 @@ import {
   stripLeadingSubjectTriggers,
   type LoraSubject,
   type ResolvedCaptionMode,
+  FEATURE_GENERIC_TAIL,
 } from "@/lib/loraCaptionSpec";
 
 export type CurationPair = {
@@ -343,7 +344,7 @@ export function DatasetCurationUI({
   // 学習したい特徴がキャプションに何枚混ざっているか。句で数え、最後の語が特徴的（glasses / beard 等）なら
   // その語で数える（"metal frame glasses" は "round glasses" では当たらないため）。
   const featureChips = useMemo(() => {
-    const GENERIC = new Set(["hair", "eyes", "skin", "body", "breasts", "ears", "tail", "lips", "eyebrows"]);
+    const GENERIC = FEATURE_GENERIC_TAIL;
     const seen = new Set<string>();
     const terms: string[] = [];
     for (const t of featureTerms) {
