@@ -574,7 +574,7 @@ export function IdentityTagsField({
         {extracting && (
           <span className="inline-flex items-center gap-1 text-[10px] text-neon-violet">
             <Loader2 size={10} className="animate-spin" />
-            画像から抽出中…
+            画像から抽出中…（1 分ほど）
           </span>
         )}
       </div>

@@ -627,6 +627,9 @@ export function LoraStudioTab({
                 trigger: typeof o.trigger === "string" ? o.trigger : "",
                 description: typeof o.description === "string" ? o.description : "",
                 fixedTags: typeof o.fixedTags === "string" ? o.fixedTags : "",
+                // 2 人目以降の「学習したい特徴」も戻す（2026-09-25、ホスト報告「再読み込みで 2 人目の特徴だけ消えた」）。
+                identityTags: typeof o.identityTags === "string" ? o.identityTags : "",
+                identityTagsJa: typeof o.identityTagsJa === "string" ? o.identityTagsJa : "",
               };
             })
             .filter((s) => s.trigger.length > 0);
@@ -1239,6 +1242,9 @@ export function LoraStudioTab({
   // 先頭6枚——サムネイルはキャプションと同じキャッシュを使うので追加の
   // デコードは発生しない。
   const [identityExtracting, setIdentityExtracting] = useState<number | null>(null);
+  // 被写体ごとの抽出の失敗理由（2026-09-25）。以前は画面下のエラー欄にしか出ず、特徴の欄では何も起きていない
+  // ように見えた（ホスト報告「抽出が反応していない」）。
+  const [identityErrors, setIdentityErrors] = useState<Record<number, string>>({});
   const extractIdentityFor = useCallback(
     async (index: number, trigger: string, hintJa: string, fixedTags = "") => {
       const t = trigger.trim();
@@ -1277,8 +1283,17 @@ export function LoraStudioTab({
           );
         }
         setIdentityConfirmed(false);
+        setIdentityErrors((prev) => {
+          const next = { ...prev };
+          delete next[index];
+          return next;
+        });
       } catch (err) {
         console.warn("[lora] identity extraction failed:", err);
+        setIdentityErrors((prev) => ({
+          ...prev,
+          [index]: err instanceof Error ? err.message : "特徴の抽出に失敗しました",
+        }));
         // 失敗したら「実行済み」の印を消して、次の変化でやり直せるようにする。
         autoExtractedRef.current.delete(identityKeyFor(index, t, fixedTags));
         setErrorMessage(
@@ -1743,6 +1758,62 @@ export function LoraStudioTab({
     `${index}:${trigger}:${isSdxlJobRef.current ? fixedTags : "desc"}`;
   // 抽出をやり直す（結果がおかしかったとき用）。自動実行は1回きりなので、
   // これが無いと直す手段が手入力しか無くなる（2026-09-22）。
+  // WD のタグから「学習したい特徴」を作れるか（2026-09-25）。作れるのは、被写体が 1 人のときと、性別で 1 人写りの
+  // 画像を分けられるとき。同性の 2 人は誰の画像か分からないので Gemini。自動抽出と「抽出する」で同じ判定を通す。
+  const wdIdentityFor = (index: number): { applicable: boolean; ready: boolean; tags: string[] } => {
+    const jobs = [
+      { index: -1, trigger: triggerWord.trim(), hint: primaryDescription, fixedTags: primaryFixedTags },
+      ...extraSubjects.map((sub, i) => ({
+        index: i,
+        trigger: (sub.trigger ?? "").trim(),
+        hint: sub.description ?? "",
+        fixedTags: sub.fixedTags ?? "",
+      })),
+    ];
+    const named = jobs.filter((j) => j.trigger);
+    const j = jobs.find((x) => x.index === index);
+    if (!j) return { applicable: false, ready: false, tags: [] };
+    const genderOf = (x: (typeof jobs)[number]) =>
+      subjectGender({ trigger: x.trigger, description: x.hint, fixedTags: x.fixedTags });
+    let pool: string[] | null;
+    if (named.length <= 1) {
+      pool = images.map((i) => compositionTags[i.id] ?? "").filter((t) => t && peopleCountFromTags(t) <= 1);
+    } else {
+      const g = genderOf(j);
+      pool =
+        !g || named.some((o) => o !== j && genderOf(o) !== (g === "f" ? "m" : "f"))
+          ? null
+          : images.map((i) => compositionTags[i.id] ?? "").filter((t) => t && soloGenderFromTags(t) === g);
+    }
+    if (pool === null) return { applicable: false, ready: false, tags: [] };
+    const ready =
+      !composition.running &&
+      images.length > 0 &&
+      images.every((i) => compositionTags[i.id] || compositionAttemptedRef.current.has(i.id));
+    return { applicable: true, ready, tags: ready ? identityTagsFromWd(pool) : [] };
+  };
+
+  // 特徴の欄に出す「いま抽出していない理由・何待ちか」（2026-09-25、ホスト報告「抽出が反応しているのか分からない」）。
+  // 条件が揃わないと黙って待つ作りだったので、欄に必ず理由を出す。null なら既定の案内。
+  const identityStatusFor = (index: number, fixedTags: string, description: string): string | null => {
+    if (captionSource === "manual") {
+      return "キャプションを自分で用意するときは使いません（AI にキャプションを作らせるときに、書かせない特徴として使います）。";
+    }
+    if (images.length === 0) return "画像を取り込むと抽出します（再読み込みすると画像は消えます）。";
+    if (!analysisStarted) return "「取り込み完了 — 特徴と構図を診断する」を押すと抽出します。";
+    const err = identityErrors[index];
+    if (err) return `抽出に失敗しました（${err}）。「抽出する」でやり直すか、下の欄に手で入力してください。`;
+    const wd = wdIdentityFor(index);
+    if (wd.applicable && !wd.ready) return "構図の判定が終わると、自動で抽出します（1 分ほど）。";
+    if (wd.applicable && wd.tags.length > 0) return null;
+    if (!(isSdxlJob ? fixedTags : description).trim()) {
+      return isSdxlJob
+        ? "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
+        : "上の「どんな人物か」を書くと、画像から自動で抽出します（性別も書くと、別の人物との取り違えが減ります）。";
+    }
+    return null;
+  };
+
   const redoIdentityExtract = useCallback(
     (index: number) => {
       const sub =
@@ -1754,6 +1825,17 @@ export function LoraStudioTab({
               fixedTags: extraSubjects[index]?.fixedTags ?? "",
             };
       if (!sub.trigger) return;
+      // 再読み込みすると画像は消える（保存していない）。画像が無いと抽出できないので、黙って何もしないのではなく
+      // 案内する（2026-09-25、ホスト報告「押しても動いているのか分からない」）。
+      if (images.length === 0) {
+        setErrorMessage("特徴は画像から抽出します。画像を取り込んでから「抽出する」を押してください（再読み込みすると画像は消えます）。");
+        return;
+      }
+      setIdentityErrors((prev) => {
+        const next = { ...prev };
+        delete next[index];
+        return next;
+      });
       autoExtractedRef.current.delete(identityKeyFor(index, sub.trigger, sub.fixedTags));
       // WD から作った分も作り直せるように（2026-09-25）。
       autoExtractedRef.current.delete(`wd:${identityKeyFor(index, sub.trigger, sub.fixedTags)}`);
@@ -1766,11 +1848,28 @@ export function LoraStudioTab({
           prev.map((p, k) => (k === index ? { ...p, identityTags: "", identityTagsJa: "" } : p)),
         );
       }
+      // 自動抽出と同じく、WD で作れるならその場で WD から作る。構図の判定がまだなら、判定のあと自動で作られる。
+      const wd = wdIdentityFor(index);
+      if (wd.applicable) {
+        if (!wd.ready) {
+          setAddNotice(
+            analysisStarted
+              ? "構図の判定が終わったら、自動で特徴を抽出します。"
+              : "「取り込み完了 — 特徴と構図を診断する」を押すと、特徴を抽出します。",
+          );
+          return;
+        }
+        if (wd.tags.length > 0) {
+          autoExtractedRef.current.add(`wd:${identityKeyFor(index, sub.trigger, sub.fixedTags)}`);
+          void applyIdentityTags(index, wd.tags);
+          return;
+        }
+      }
       void extractIdentityFor(index, sub.trigger, sub.hint, sub.fixedTags);
     },
-    // extractIdentityFor は毎レンダー作り直されるので依存から外す。
+    // extractIdentityFor / wdIdentityFor は毎レンダー作り直されるので依存から外す。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [triggerWord, primaryDescription, primaryFixedTags, extraSubjects],
+    [triggerWord, primaryDescription, primaryFixedTags, extraSubjects, images, analysisStarted, applyIdentityTags],
   );
   useEffect(() => {
     if (images.length === 0) return;
@@ -1802,32 +1901,14 @@ export function LoraStudioTab({
         has: !!(sub.identityTags ?? "").trim(),
       })),
     ];
-    // WD のタグから作れる被写体は、構図の判定が終わってから WD で作る（2026-09-25、ホスト判断）。作れるのは、
-    // 被写体が 1 人のときと、性別で 1 人写りの画像を分けられるとき。同性の 2 人は誰の画像か分からないので Gemini。
-    const named = jobs.filter((j) => j.trigger);
-    const genderOf = (j: (typeof jobs)[number]) =>
-      subjectGender({ trigger: j.trigger, description: j.hint, fixedTags: j.fixedTags });
-    const compositionReady =
-      !composition.running &&
-      images.length > 0 &&
-      images.every((i) => compositionTags[i.id] || compositionAttemptedRef.current.has(i.id));
-    const wdPool = (j: (typeof jobs)[number]): string[] | null => {
-      if (named.length <= 1) {
-        return images
-          .map((i) => compositionTags[i.id] ?? "")
-          .filter((t) => t && peopleCountFromTags(t) <= 1);
-      }
-      const g = genderOf(j);
-      if (!g || named.some((o) => o !== j && genderOf(o) !== (g === "f" ? "m" : "f"))) return null;
-      return images.map((i) => compositionTags[i.id] ?? "").filter((t) => t && soloGenderFromTags(t) === g);
-    };
     for (const j of jobs) {
       if (!j.trigger || j.has) continue;
       const wdKey = `wd:${identityKeyFor(j.index, j.trigger, j.fixedTags)}`;
-      if (wdPool(j) !== null && !autoExtractedRef.current.has(`${wdKey}:none`)) {
-        if (!compositionReady) continue; // 構図の判定が終わるまで待つ
+      const wd = wdIdentityFor(j.index);
+      if (wd.applicable && !autoExtractedRef.current.has(`${wdKey}:none`)) {
+        if (!wd.ready) continue; // 構図の判定が終わるまで待つ
         if (autoExtractedRef.current.has(wdKey)) continue;
-        const tags = identityTagsFromWd(wdPool(j) ?? []);
+        const tags = wd.tags;
         if (tags.length > 0) {
           autoExtractedRef.current.add(wdKey);
           void applyIdentityTags(j.index, tags);
@@ -2913,6 +2994,23 @@ export function LoraStudioTab({
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [analysisStarted, diagReady]);
 
+
+  // 全部の画像にキャプション（同名 .txt / ZIP）が付いた状態で取り込んだら、「自分で用意する」に切り替える
+  // （2026-09-25、ホスト質問「キャプションごと取り込んだら自分で用意するに自動でなる？」）。1 データセットにつき 1 回。
+  const autoManualRef = useRef(false);
+  useEffect(() => {
+    if (images.length === 0) {
+      autoManualRef.current = false;
+      return;
+    }
+    if (autoManualRef.current || captionSource !== "ai" || captionStarted) return;
+    if (!images.every((i) => userCaptionIds.has(i.id))) return;
+    autoManualRef.current = true;
+    setCaptionSource("manual");
+    setAddNotice(
+      "全部の画像にキャプション（.txt）が付いていたので、キャプションの作り方を「自分で用意する」にしました。取り込んだキャプションはそのまま使います（AI に作らせたい場合は切り替えてください）。",
+    );
+  }, [images, userCaptionIds, captionSource, captionStarted]);
 
   // 構図の判定（WD タガー・無料・CPU、2026-09-25）。「取り込み完了」後に、まだタグの無い画像をまとめて判定する。
   // 後から足した画像・切り出した画像も同じ effect が拾う。キャプションとは独立（特徴の確定も待たない）。
@@ -5116,15 +5214,7 @@ export function LoraStudioTab({
                           extracting={identityExtracting === -1}
                           onTranslateTag={translateIdentityTag}
                           onRedo={() => redoIdentityExtract(-1)}
-                          blockedReason={
-                      captionSource === "manual"
-                        ? "キャプションを自分で用意するときは使いません（AI にキャプションを作らせるときに、書かせない特徴として使います）。"
-                        :                             (isSdxlJob ? primaryFixedTags : primaryDescription).trim()
-                              ? null
-                              : isSdxlJob
-                        ? "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
-                        : "上の「どんな人物か」を書くと、画像から自動で抽出します（性別も書くと、別の人物との取り違えが減ります）。"
-                          }
+                          blockedReason={identityStatusFor(-1, primaryFixedTags, primaryDescription)}
                           disabled={busy || captionSource === "manual"}
                     />
                         )}
@@ -5162,15 +5252,7 @@ export function LoraStudioTab({
                     extracting={identityExtracting === -1}
                     onTranslateTag={translateIdentityTag}
                     onRedo={() => redoIdentityExtract(-1)}
-                    blockedReason={
-                      captionSource === "manual"
-                        ? "キャプションを自分で用意するときは使いません（AI にキャプションを作らせるときに、書かせない特徴として使います）。"
-                        :                       (isSdxlJob ? primaryFixedTags : primaryDescription).trim()
-                        ? null
-                        : isSdxlJob
-                        ? "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
-                        : "上の「どんな人物か」を書くと、画像から自動で抽出します（性別も書くと、別の人物との取り違えが減ります）。"
-                    }
+                    blockedReason={identityStatusFor(-1, primaryFixedTags, primaryDescription)}
                     disabled={busy || captionSource === "manual"}
                     />
                   )}
@@ -5260,15 +5342,7 @@ export function LoraStudioTab({
                     extracting={identityExtracting === i}
                     onTranslateTag={translateIdentityTag}
                     onRedo={() => redoIdentityExtract(i)}
-                    blockedReason={
-                      captionSource === "manual"
-                        ? "キャプションを自分で用意するときは使いません（AI にキャプションを作らせるときに、書かせない特徴として使います）。"
-                        :                       (isSdxlJob ? (s.fixedTags ?? "") : (s.description ?? "")).trim()
-                        ? null
-                        : isSdxlJob
-                        ? "上の「性別/人数タグ」を選ぶと、画像から自動で抽出します（誰を見るかの判定に必要です）。"
-                        : "上の「どんな人物か」を書くと、画像から自動で抽出します（性別も書くと、別の人物との取り違えが減ります）。"
-                    }
+                    blockedReason={identityStatusFor(i, s.fixedTags ?? "", s.description ?? "")}
                     disabled={busy || captionSource === "manual"}
                     />
                   )}
