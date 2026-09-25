@@ -4990,12 +4990,22 @@ export function LoraStudioTab({
                   the payload will carry, decided by what was dropped in + the AI
                   vision pass result. No vendor names (CLAUDE.md §2). */}
               {images.length > 0 &&
-                (autoCap.running && pendingCaptionCount > 0 ? (
+                // 全部届いても、完了までは作成中のまま（2026-09-25、ホスト指摘「見直しの前に作りましたと出る」）。
+                // 最後に学習したい特徴が混ざっていないかの見直し（自己チェック）が走り、書き直した分が後から届く。
+                (autoCap.running ? (
                   <p className="flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
                     <Loader2 size={13} className="shrink-0 animate-spin" />
                     <span>
-                      <span className="font-medium">AI がキャプションを作っています…</span>（
-                      {Math.min(aiCaptionedCount, aiTargetCount)}/{aiTargetCount}）
+                      {autoCap.total > 0 && autoCap.done >= autoCap.total ? (
+                        <span className="font-medium">
+                          学習したい特徴が混ざっていないか見直しています…（もう少しで終わります）
+                        </span>
+                      ) : (
+                        <>
+                          <span className="font-medium">AI がキャプションを作っています…</span>（
+                          {Math.min(aiCaptionedCount, aiTargetCount)}/{aiTargetCount}）
+                        </>
+                      )}
                       {autoCap.note && (
                         <span className="ml-1 text-neon-violet/70">— {autoCap.note}</span>
                       )}
