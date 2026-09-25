@@ -17,6 +17,8 @@ export type GenerationLogsPeriodSummary = {
   failedCount: number;
   totalCreditsConsumed: number;
   totalCostJpy: number;
+  /** うち失敗したジョブの原価（2026-09-25。合計に埋もれて原因が読めなかったので分けて出す）。 */
+  failedCostJpy: number;
   totalRevenueJpy: number;
   marginPercent: number | null;
   lowMarginCount: number;
@@ -54,6 +56,7 @@ export async function summarizeGenerationLogs(fromIso: string, toIso: string): P
   let failedCount = 0;
   let totalCreditsConsumed = 0;
   let totalCostJpy = 0;
+  let failedCostJpy = 0;
   let lowMarginCount = 0;
   let negativeMarginCount = 0;
   const byJobTypeMap = new Map<string, { count: number; creditsConsumed: number; costJpy: number }>();
@@ -64,6 +67,7 @@ export async function summarizeGenerationLogs(fromIso: string, toIso: string): P
     totalCreditsConsumed += row.credits_consumed ?? 0;
     const costJpy = rowCostJpy(row);
     totalCostJpy += costJpy;
+    if (row.status !== "success") failedCostJpy += costJpy;
 
     const entry = byJobTypeMap.get(row.job_type) ?? { count: 0, creditsConsumed: 0, costJpy: 0 };
     entry.count += 1;
@@ -93,6 +97,7 @@ export async function summarizeGenerationLogs(fromIso: string, toIso: string): P
     failedCount,
     totalCreditsConsumed,
     totalCostJpy,
+    failedCostJpy,
     totalRevenueJpy,
     marginPercent,
     lowMarginCount,

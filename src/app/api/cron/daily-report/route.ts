@@ -28,10 +28,17 @@ function summaryFields(s: GenerationLogsPeriodSummary) {
   return [
     { name: "総生成数", value: `${s.totalCount}件（成功${s.successCount} / 失敗${s.failedCount}）`, inline: true },
     { name: "消費クレジット", value: `${s.totalCreditsConsumed.toLocaleString()}C`, inline: true },
-    { name: "推定原価", value: formatJpy(s.totalCostJpy), inline: true },
+    {
+      name: "推定原価",
+      value:
+        formatJpy(s.totalCostJpy) + (s.failedCostJpy >= 1 ? `
+（うち失敗分 ${formatJpy(s.failedCostJpy)}）` : ""),
+      inline: true,
+    },
     { name: "推定売上", value: formatJpy(s.totalRevenueJpy), inline: true },
     { name: "粗利率", value: formatMargin(s.marginPercent), inline: true },
-    { name: "低粗利 / 原価割れ", value: `${s.lowMarginCount}件 / ${s.negativeMarginCount}件`, inline: true },
+    // 件数は成功したジョブ 1 件ずつの判定（失敗分の原価は上の「うち失敗分」に出る）。
+    { name: "低粗利 / 原価割れ（成功分）", value: `${s.lowMarginCount}件 / ${s.negativeMarginCount}件`, inline: true },
     { name: "機能別内訳（原価順）", value: topTypes },
   ];
 }

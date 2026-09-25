@@ -46,6 +46,8 @@ export function gpuHourlyRateJpy(tier: string | null | undefined, knobs: Pricing
 /** 実行時間(ms)とGPU tierから実原価（円）を算出する。tierが不明な場合は
  * null（呼び出し側でjob_type別のフラット単価にフォールバックすること）。 */
 export function estimateJobCostJpy(executionTimeMs: number | null | undefined, tier: string | null | undefined, knobs: PricingKnobs): number | null {
+  // 'none' = GPU を起動する前に終わったジョブ（2026-09-25、migration 20260890000000）。原価 0。
+  if ((tier ?? "").trim().toLowerCase() === "none") return 0;
   const rate = gpuHourlyRateJpy(tier, knobs);
   if (rate == null) return null;
   const ms = typeof executionTimeMs === "number" && Number.isFinite(executionTimeMs) ? executionTimeMs : 0;
