@@ -672,6 +672,7 @@ export function ImageDropzone({
   highlightDelete,
   onDeletedSelected,
   selectionNote,
+  selectionAction,
   showSelectedNonce,
   onBackToDiagnostics,
 }: {
@@ -709,6 +710,8 @@ export function ImageDropzone({
   onDeletedSelected?: (count: number) => void;
   /** いまの選択が何なのかの説明（減らす候補など）。一覧の上に出す（2026-09-25）。 */
   selectionNote?: string | null;
+  /** 選択の説明の横に出す操作（例: 消す前に切り出す）。 */
+  selectionAction?: { label: string; onClick: () => void; busy?: boolean } | null;
   /** 変わるたびに表示を「選択中だけ」に切り替える（減らす候補を選んだ直後、2026-09-25）。 */
   showSelectedNonce?: number;
   /** 一覧の上の「診断に戻る」。 */
@@ -906,9 +909,20 @@ export function ImageDropzone({
             )}
           </div>
           {selectionNote && selected.size > 0 && (
-            <p className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-200">
-              {selectionNote}
-            </p>
+            <div className="mt-2 space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-200">
+              <p>{selectionNote}</p>
+              {selectionAction && (
+                <button
+                  type="button"
+                  disabled={disabled || selectionAction.busy}
+                  onClick={selectionAction.onClick}
+                  className="inline-flex items-center gap-1 rounded-md border border-neon-violet/50 bg-neon-violet/15 px-2 py-0.5 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/25 disabled:opacity-50"
+                >
+                  {selectionAction.busy && <Loader2 size={10} className="animate-spin" />}
+                  {selectionAction.label}
+                </button>
+              )}
+            </div>
           )}
           {(selected.size > 0 || (warnIds?.size ?? 0) > 0 || onBackToDiagnostics) && (
             <div id={DATASET_GRID_BAR_ID} className="mt-2 flex scroll-mt-24 flex-wrap items-center gap-1.5 text-[10px]">

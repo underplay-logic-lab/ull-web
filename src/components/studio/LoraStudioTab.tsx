@@ -1088,6 +1088,8 @@ export function LoraStudioTab({
   // 以前は 1 枚目の候補の位置へスクロールしていたので、候補の位置次第で一覧の途中に飛んでいた。
   const [showSelectedNonce, setShowSelectedNonce] = useState(0);
   const [selectionNote, setSelectionNote] = useState<string | null>(null);
+  // 2 人写りの減らす候補を選んだときだけ「消す前に切り出す」を出す。
+  const [duoTrimIds, setDuoTrimIds] = useState<string[] | null>(null);
   const revealTrimSelection = useCallback((ids: string[], note: string) => {
     setSelectedImageIds(new Set(ids));
     setSelectionNote(note);
@@ -1439,6 +1441,7 @@ export function LoraStudioTab({
         .map((img) => img.id);
       setSelectedImageIds(new Set(ids));
       setSelectionNote(null);
+      setDuoTrimIds(null);
       setSelectionPurpose("crop");
       setTrimVisited(new Set(["*"]));
       // 診断が「この構図が足りない」と言っている以上、切り出す構図もそこへ
@@ -1500,11 +1503,61 @@ export function LoraStudioTab({
       );
       setSelectionPurpose("trim");
       setTrimVisited((prev) => new Set([...prev, subject]));
+      setDuoTrimIds(null);
       setAddNotice(
         n < count
           ? `減らす候補を ${n} 枚選びました。${subject} が 1 人で写っている画像は ${pool.length} 枚しかなく、目安（約 ${count} 枚）には届きません。残りは切り出しで足してください。残したいものは選択を外してから「選択した画像を削除」を押してください。`
           : `減らす候補を ${n} 枚選びました（${subject} が 1 人で写っている ${pool.length} 枚から等間隔）。残したいものは選択を外してから「選択した画像を削除」を押してください。`,
       );
+    },
+    [images, captions, compositionTags, allSubjects, revealTrimSelection],
+  );
+
+  // 2 人写りの画像から減らす候補を選ぶ（2026-09-25、ホスト指摘「duo 画像の比率が高い素材はここを減らさないと
+  // どうにもならない」）。2 人とも同じ構図が多すぎるときだけ出す（DatasetDiagnosticsPanel の duoPlan）。
+  // 同じ構図の 3 枚目以降から優先。2 人写りは切り出し元でもあるので、消す前に切り出す操作を一緒に出す。
+  const prepareDuoTrim = useCallback(
+    (bucket: string, count: number, subjects: string[]) => {
+      const pool = images.filter((img) => {
+        if (img.cropKind) return false;
+        const cap = (captions[img.id] ?? "").trim();
+        const tags = compositionTags[img.id] ?? "";
+        const dist = captionBuckets(compositionText({ caption: cap, tags }), "distance");
+        if (dist.length !== 1 || dist[0] !== bucket) return false;
+        const present = imageSubjects(cap, tags, allSubjects).map((x) => x.trigger);
+        return present.length >= 2 && subjects.every((x) => present.includes(x));
+      });
+      const n = Math.min(count, pool.length);
+      if (n <= 0) {
+        setAddNotice("2 人写りの画像の中に、減らす候補がありませんでした。");
+        return;
+      }
+      const bySig = new Map<string, DatasetImage[]>();
+      for (const img of pool) {
+        const k = compositionSignature(compositionText({ caption: captions[img.id], tags: compositionTags[img.id] }));
+        bySig.set(k, [...(bySig.get(k) ?? []), img]);
+      }
+      const picked = new Set(
+        [...bySig.values()]
+          .sort((x, y) => y.length - x.length)
+          .flatMap((g) => g.slice(2))
+          .slice(0, n)
+          .map((i) => i.id),
+      );
+      const rest = pool.filter((i) => !picked.has(i.id));
+      const need = n - picked.size;
+      for (let k = 0; k < need; k++) picked.add(rest[Math.floor((k * rest.length) / need)].id);
+      const ids = [...picked];
+      setDuoTrimIds(ids);
+      revealTrimSelection(
+        ids,
+        `選択中の ${ids.length} 枚は、2 人写り（${subjects.join(" + ")}）の${
+          DIAGNOSTIC_AXES.distance.buckets.find((b) => b.id === bucket)?.label ?? ""
+        }を減らす候補です（同じ構図の 3 枚目以降から優先）。消すと 2 人とも 1 枚ずつ減ります。` +
+          `消す前に、この画像から顔・上半身を切り出しておくと素材を無駄にしません。残したいものはクリックで選択を外してください。`,
+      );
+      setSelectionPurpose("trim");
+      setTrimVisited((prev) => new Set([...prev, ...subjects]));
     },
     [images, captions, compositionTags, allSubjects, revealTrimSelection],
   );
@@ -1530,6 +1583,7 @@ export function LoraStudioTab({
       );
       setSelectionPurpose("trim");
       setTrimVisited((prev) => new Set([...prev, subject]));
+      setDuoTrimIds(null);
       setAddNotice(
         `同じ構図（${compositionSignatureLabel(signature)}）の ${group.length} 枚のうち、2 枚を残して ${ids.length} 枚を減らす候補に選びました。服装の違いを残したいものは選択を外してから「選択した画像を削除」を押してください。`,
       );
@@ -4197,6 +4251,25 @@ export function LoraStudioTab({
             highlightDelete={flow.targets.includes("deleteSelected")}
             // 削除したら診断が更新されるので、その結果へ送る（2026-09-25、ホスト指摘「削除した後の再診断が無い」）。
             selectionNote={selectionPurpose === "trim" ? selectionNote : null}
+            selectionAction={
+              selectionPurpose === "trim" && duoTrimIds && duoTrimIds.length > 0
+                ? {
+                    label: `先にこの ${selectedImageIds.size} 枚から顔・上半身を切り出す（候補は選んだまま残します）`,
+                    busy: smartCropBusy,
+                    onClick: () => {
+                      const ids = [...selectedImageIds];
+                      const note = selectionNote ?? "";
+                      void runSmartCropForDataset(ids, ["face", "upper"]).then(() => {
+                        // 切り出しが終わると選択が外れるので、同じ候補を選び直して削除へ進めるようにする。
+                        const alive = ids.filter((id) => imagesRef.current.some((i) => i.id === id));
+                        setDuoTrimIds(null);
+                        revealTrimSelection(alive, `切り出しが終わりました。${note}`);
+                        setSelectionPurpose("trim");
+                      });
+                    },
+                  }
+                : null
+            }
             showSelectedNonce={showSelectedNonce}
             onBackToDiagnostics={
               analysisStarted
@@ -4209,6 +4282,7 @@ export function LoraStudioTab({
             onDeletedSelected={(n) => {
               setSelectionPurpose(null);
               setSelectionNote(null);
+              setDuoTrimIds(null);
               setAddNotice(`${n} 枚を削除しました。診断を更新したので、下の診断で結果を確認してください。`);
               window.setTimeout(
                 () =>
@@ -4456,6 +4530,7 @@ export function LoraStudioTab({
               onPrepareCrop={prepareCropForSubject}
               onPrepareTrim={prepareTrimForSubject}
               onPrepareSameComposition={prepareSameCompositionForSubject}
+              onPrepareDuoTrim={prepareDuoTrim}
               highlightTrimSubjects={flow.targets.includes("trimPrepare") ? trimPendingSubjects : undefined}
               highlightPrepare={flow.targets.includes("cropPrepare")}
             />

@@ -26,6 +26,7 @@ export function DatasetDiagnosticsPanel({
   onPrepareTrim,
   onPrepareSameComposition,
   highlightTrimSubjects,
+  onPrepareDuoTrim,
   highlightPrepare = false,
 }: {
   items: DiagnosticInput[];
@@ -57,6 +58,8 @@ export function DatasetDiagnosticsPanel({
   onPrepareSameComposition?: (subject: string, signature: string) => void;
   /** 「減らす候補を選ぶ」を次にやることとして光らせる被写体（まだ検討していない人だけ）。 */
   highlightTrimSubjects?: Set<string>;
+  /** 2 人写りの画像から減らす候補を選ぶ（2 人とも同じ構図が多すぎるとき、2026-09-25）。 */
+  onPrepareDuoTrim?: (bucket: string, count: number, subjects: string[]) => void;
   /** 導線として「切り出す準備をする」を光らせるか（loraFlowStep が決める）。 */
   highlightPrepare?: boolean;
 }) {
@@ -89,6 +92,19 @@ export function DatasetDiagnosticsPanel({
     if (!cur || b.trim > cur.count) trimPlan.set(i.subject, { bucket: b.trimBucket, count: b.trim });
   }
   const bucketLabel = (id: string) => DIAGNOSTIC_AXES.distance.buckets.find((x) => x.id === id)?.label ?? id;
+  // 2 人とも同じ構図が多すぎるなら、2 人写りの画像を減らすと両方の比率が一度に良くなる（2026-09-25、ホスト指摘
+  // 「duo 画像の比率が高い素材は、ここを減らさないとどうにもならない」）。枚数は必要の少ないほうに合わせる
+  // （それ以上消すと、もう一方の構図まで減らしすぎる）。
+  const duoPlan = (() => {
+    const byBucket = new Map<string, { subjects: string[]; count: number }>();
+    for (const [subj, t] of trimPlan) {
+      const cur = byBucket.get(t.bucket) ?? { subjects: [], count: Infinity };
+      cur.subjects.push(subj);
+      cur.count = Math.min(cur.count, t.count);
+      byBucket.set(t.bucket, cur);
+    }
+    return [...byBucket.entries()].filter(([, v]) => v.subjects.length >= 2 && v.count > 0);
+  })();
   const samePlan = diag.issues.filter(
     (i): i is typeof i & { subject: string; sameComposition: { signature: string; count: number } } =>
       Boolean(i.subject && i.sameComposition),
@@ -262,6 +278,30 @@ export function DatasetDiagnosticsPanel({
                     }`}
                   >
                     <span className="font-mono">{i.subject}</span> の同じ構図 {i.sameComposition.count}枚から減らす候補を選ぶ
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {duoPlan.length > 0 && onPrepareDuoTrim && (
+            <div className="space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2 py-1.5">
+              <p className="text-[10px] leading-relaxed text-muted">
+                <strong className="text-foreground">2 人写りの画像も減らす候補にできます。</strong>
+                2 人とも同じ構図が多すぎるので、2 人写りを減らすと両方の比率が一度に良くなります。
+                2 人写りは顔・上半身の切り出し元でもあるので、消す前に切り出しておくと素材を無駄にしません
+                （候補を選んだあと、一覧の上のボタンから切り出せます）。
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {duoPlan.map(([bucket, v]) => (
+                  <button
+                    key={bucket}
+                    type="button"
+                    onClick={() => onPrepareDuoTrim(bucket, v.count, v.subjects)}
+                    className={`inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-300 transition-colors hover:bg-amber-500/20${
+                      v.subjects.some((x) => highlightTrimSubjects?.has(x)) ? " flow-next" : ""
+                    }`}
+                  >
+                    2 人写りの{bucketLabel(bucket)}から減らす候補（約 {v.count}枚）を選ぶ
                   </button>
                 ))}
               </div>
