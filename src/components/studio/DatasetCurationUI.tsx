@@ -921,7 +921,7 @@ export function DatasetCurationUI({
                     value={p.caption}
                     onChange={(e) => patch(p.id, { caption: e.target.value })}
                     placeholder="(空欄 = 自動タグ付け)"
-                    rows={7}
+                    rows={8}
                     disabled={disabled || p.excluded || Boolean(bulk)}
                     className={`${inputCls} resize-none font-mono`}
                   />
