@@ -2343,6 +2343,8 @@ export function LoraStudioTab({
   // user explicitly starts a new run. Like `inFlightJob`, it survives a soft
   // "フォームに戻る" — only resetForm() / a fresh dispatch drops it.
   const completedJob = job && job.status === "completed" ? job : null;
+  // 完了画面のヒントに出すトリガーワード（フォームの被写体。再読み込み後も下書きから戻る）。
+  const completedTriggers = allSubjects.map((x) => (x.trigger ?? "").trim()).filter(Boolean);
 
   // 推定GPU秒ベースの動的価格、live (src/lib/loraPricing.ts):
   //   ceil( (prep(枚数) + steps × s/it(arch, 解像度, バッチ)) × クレジット単価 )
@@ -4524,6 +4526,33 @@ export function LoraStudioTab({
               queuedElapsedSec={queuedElapsedSec}
               onUseLora={DIRECTOR_LORA_ENABLED ? onUseLora : undefined}
             />
+
+            {/* 「うまく出ないときは」（2026-09-26、STATUS の残課題「結果がいまいちな時」ヒント）。書くのは実案件・実測で
+                確かめたことと、仕組み上そうなること（特徴はトリガーワードに覚えさせている）だけ。一般論は書かない。
+                1 番はホストが実際に踏んだ（プロンプトの自動書き直しで名前が消え、強度 3 でも別人が出た）。 */}
+            {job?.status === "completed" && (
+              <details className="rounded-xl border border-border bg-background/40 px-4 py-3 text-[12px] text-muted">
+                <summary className="cursor-pointer font-medium text-foreground">
+                  うまく出ないときは（まず確認してほしいこと）
+                </summary>
+                <ol className="mt-2 list-decimal space-y-1.5 pl-5 leading-relaxed">
+                  <li>
+                    <span className="font-medium text-foreground">
+                      プロンプトにトリガーワードを必ず入れてください
+                      {completedTriggers.length > 0 && `（${completedTriggers.join("、")}）`}。
+                    </span>
+                    顔・髪型・眼鏡などの特徴はトリガーワードに覚えさせているので、名前が無いと LoRA の強さを上げても別人が出ます。
+                    複数人の LoRA は全員の名前を入れます。プロンプトを自動で書き直すツールを通す場合は、書き直した後の文に名前が残っているか確かめてください。
+                  </li>
+                  <li>
+                    顔が弱いときは、最終版より途中の保存（チェックポイント）を見比べてください。実案件では 3,000 step 中 1,750 step が最良でした。
+                  </li>
+                  <li>男性が女性っぽくなるときは、ネガティブプロンプトの「ugly」「醜い」を外してください。被写体の特徴まで打ち消します。</li>
+                  <li>男女ペアで男性だけ似ないときは、男性の画像の学習回数を上げて学習し直してください（実案件で ×5）。</li>
+                  <li>rank を上げても似方は変わりませんでした（32 と 64 で差なし）。上げるより、学習回数と画像の構図を見直すほうが効きます。</li>
+                </ol>
+              </details>
+            )}
 
             {/* Transient poll failure — still retrying with backoff. A light,
                 non-alarming hint; the progress bar above keeps its last value. */}
