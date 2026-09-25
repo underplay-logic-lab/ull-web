@@ -726,12 +726,17 @@ export function keepTokensForCaption(
   return Math.max(1, i);
 }
 
-/** 「LoRA に最適化したキャプション」の料金（route と画面で同じ式）。5 枚以下は無料（取りこぼしの再解析）。 */
-export const LORA_CAPTION_FREE_MAX = 5;
+/**
+ * 「LoRA に最適化したキャプション」の料金（route と画面で同じ式）。
+ *
+ * 無料にするのは**こちらの取りこぼし**（AI がキャプションを書けなかった画像のやり直し）だけで、route が
+ * 前回のジョブ（retry_of）で確かめる。以前あった「5 枚以下は無料」は廃止（2026-09-25、ホスト判断: 診断を見ずに
+ * 後から足した画像の分は自己責任。不可抗力の取りこぼしだけこちらで負担する）。
+ */
 export function loraCaptionPrice(
   count: number,
   knobs: { lora_caption_base: number; lora_caption_per_image: number },
 ): number {
-  if (count <= LORA_CAPTION_FREE_MAX) return 0;
+  if (count <= 0) return 0;
   return Math.ceil(knobs.lora_caption_base + knobs.lora_caption_per_image * count);
 }

@@ -589,7 +589,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    クライアント `generateDatasetCaptionsVlm`（`src/lib/loraCaption.ts`、既定。`localStorage ull_lora_caption_backend=gemini` か
    `NEXT_PUBLIC_LORA_CAPTION_BACKEND=gemini` で旧経路へ）。通しテスト 20 枚（冷えた状態）: 依頼→完了 104s / 77s。145 枚の見込み 2〜2.5 分。
    **有料化（2026-09-25 ホスト判断）**: 「LoRA に最適化したキャプションを作成（N 枚・XC）」＝ knob `lora_caption_base` 50C
-   ＋ `lora_caption_per_image` 1C/枚（5 枚以下の作り直しは無料）、run で引き落とし・受け渡し失敗は route、解析失敗は worker が返金。
+   ＋ `lora_caption_per_image` 1C/枚（無料は取りこぼしのやり直しだけ。「5 枚以下は無料」は 2026-09-25 ホスト判断で廃止＝後から足した分は自己責任）、run で引き落とし・受け渡し失敗は route、解析失敗は worker が返金。
    キャプションが揃うまで学習ボタンは押せない。揃ったら学習前のデータセット ZIP を誰でも DL 可（光らせて保存を促す、以前は admin 限定）。
    取りこぼしは GPU が温かいうちに同じジョブ内で再生成。それでも残った分のやり直しは `retry_of`（前回ジョブで読めなかった
    枚数以下）なら無料。解析が始まらないまま 3 分で打ち切り（`caption_abort`: queued のときだけ取り消し＋返金）。

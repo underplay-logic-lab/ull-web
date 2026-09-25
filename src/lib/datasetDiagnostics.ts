@@ -31,8 +31,11 @@ export const DIAGNOSTIC_AXES: Record<DiagnosticAxis, AxisDef> = {
   distance: {
     label: "距離",
     buckets: [
-      { id: "closeup", label: "顔アップ", keywords: ["close-up", "closeup", "face shot", "portrait", "head shot"] },
-      { id: "bust", label: "バスト", keywords: ["bust shot", "bust", "chest up"] },
+      // ⚠️ `portrait` は Danbooru では「頭と肩」＝バストアップ（2026-09-25 修正）。顔アップ側に入れていたため、
+      // WD タガー（語彙に bust / bust shot / chest up が無く、バストに当たるタグは portrait だけ）で構図を
+      // 判定するようになってからバストが構造的に 0 枚になり、「バストが 0 枚」の誤った指摘が出ていた。
+      { id: "closeup", label: "顔アップ", keywords: ["close-up", "closeup", "face shot", "head shot"] },
+      { id: "bust", label: "バスト", keywords: ["bust shot", "bust", "chest up", "portrait"] },
       // ⚠️ `cowboy shot`（腿の途中から上）と `knee up`（膝から上）は **全身では
       // ない**（2026-09-22 修正）。どちらも足が写らないので Danbooru でも
       // full body とは別タグ。全身側へ入れていたため「全身」が実態より多く、
@@ -192,19 +195,106 @@ function splitTags(caption: string): string[] {
 }
 
 /**
- * キャプションがまだ無い（構図タグだけの）画像の集計先（2026-09-25）。被写体が複数いると誰が写っているか
- * 分からないので、データセット全体を 1 つの塊として数える。被写体が 1 人ならその被写体に数える。
+ * キャプションがまだ無く、被写体も推定できなかった画像の集計先（2026-09-25）。被写体が 1 人なら使わない
+ * （その被写体に数える）。推定は estimateSubjectsFromTags。
  */
-export const WHOLE_DATASET_SUBJECT = "（データセット全体）";
+export const WHOLE_DATASET_SUBJECT = "（被写体を判定できなかった画像）";
+
+type Gender = "f" | "m" | null;
+
+/**
+ * 登録した被写体の性別。SDXL は性別/人数タグ、それ以外は「どんな人物か」の文章から読む（2026-09-25）。
+ * 両方に当たる・どちらにも当たらない場合は null（性別では絞らない）。
+ */
+export function subjectGender(s: LoraSubject): Gender {
+  const fixed = (s.fixedTags ?? "").toLowerCase();
+  if (/\b(1girl|1woman|female)\b/.test(fixed)) return "f";
+  if (/\b(1boy|1man|male)\b/.test(fixed)) return "m";
+  const d = s.description ?? "";
+  // "woman" / "female" の中の "man" / "male" に当たらないよう、英語は単語境界で見る。
+  const f = /女|娘|ガール|レディ/.test(d) || /\b(woman|women|girl|girls|female|lady)\b/i.test(d);
+  const m = /男|少年|ボーイ|おじ|おっさん|爺/.test(d) || /\b(man|men|boy|boys|male|guy)\b/i.test(d);
+  return f === m ? null : f ? "f" : "m";
+}
+
+function tagSet(tags: string): Set<string> {
+  return new Set(splitTags(tags));
+}
+
+function peopleOf(set: Set<string>): { f: number; m: number } {
+  const count = (kind: "girl" | "boy") => {
+    let n = 0;
+    for (const t of set) {
+      const mm = t.match(kind === "girl" ? /^(\d)\+?girls?$/ : /^(\d)\+?boys?$/);
+      if (mm) n = Math.max(n, Number(mm[1]));
+      if (t === `multiple ${kind}s`) n = Math.max(n, 2);
+    }
+    if (kind === "boy" && n === 0 && set.has("male focus")) n = 1;
+    return n;
+  };
+  return { f: count("girl"), m: count("boy") };
+}
+
+/**
+ * キャプション前（WD タガーのタグだけ）の画像に、登録したどの被写体が写っているかを推定する（2026-09-25、
+ * ホスト指摘「同性でも見分ける手がかりを入れていれば分かるのでは」）。
+ *
+ *   1. 画像の性別/人数タグ（1girl / 1boy / 2girls / multiple boys …）と被写体の性別で候補を絞る。
+ *   2. 被写体の特徴タグ（画像から抽出した identityTags。WD と同じ Danbooru 語彙）が画像のタグに
+ *      いくつ含まれるかで決める。
+ *   3. 決めきれない（同点・手がかりが無い）画像は [] を返す（呼び出し側で「判定できなかった画像」へ）。
+ *
+ * キャプションができれば先頭トリガーで確定するので、これは診断・切り出しの目安に使うだけ。
+ */
+export function estimateSubjectsFromTags(tags: string, subjects: LoraSubject[]): LoraSubject[] {
+  const list = subjects.filter((s) => s.trigger.trim());
+  if (list.length < 2 || !tags.trim()) return [];
+  const set = tagSet(tags);
+  const { f, m } = peopleOf(set);
+  const score = (s: LoraSubject) =>
+    splitTags(s.identityTags ?? "").filter((t) => set.has(t)).length;
+  const pick = (cands: LoraSubject[], n: number): LoraSubject[] => {
+    if (n <= 0 || cands.length === 0) return [];
+    if (cands.length <= n) return cands;
+    const ranked = [...cands].sort((a, b) => score(b) - score(a));
+    // n 番目と n+1 番目が同点なら決めきれない。
+    if (score(ranked[n - 1]) === score(ranked[n])) return [];
+    return ranked.slice(0, n);
+  };
+  const byGender = (g: "f" | "m") => list.filter((s) => subjectGender(s) === g);
+  const unknownGender = list.filter((s) => subjectGender(s) === null);
+  // 性別の人数タグが無い（人物が写っていない・タグが出ない）画像は、特徴だけで 1 人選ぶ。
+  if (f === 0 && m === 0) return pick(list, 1);
+  const out = [
+    ...pick([...byGender("f"), ...(m === 0 ? unknownGender : [])], f),
+    ...pick([...byGender("m"), ...(f === 0 ? unknownGender : [])], m),
+  ];
+  const seen = new Set<string>();
+  return list.filter((s) => out.includes(s) && !seen.has(s.trigger) && seen.add(s.trigger));
+}
 
 /** 構図の判定に使う文字列（タグ優先）。 */
 export function compositionText(item: { caption?: string; tags?: string }): string {
   return (item.tags ?? "").trim() || (item.caption ?? "").trim();
 }
 
-/** 画像がどの被写体の枠で数えられるか。present は先頭トリガーで特定できた被写体。 */
-function subjectTargets(caption: string, subjects: LoraSubject[]): { targets: string[]; unknown: boolean } {
-  const present = caption ? matchLeadingSubjectTriggers(caption, subjects) : [];
+/**
+ * 画像に写っている被写体。キャプションがあれば先頭トリガーで確定し、無ければ構図タグから推定する
+ * （estimateSubjectsFromTags）。UI の一括選択・切り出しの準備も同じ関数を通す（診断と食い違わないように）。
+ */
+export function imageSubjects(caption: string, tags: string, subjects: LoraSubject[]): LoraSubject[] {
+  const cap = caption.trim();
+  if (cap) return matchLeadingSubjectTriggers(cap, subjects);
+  return estimateSubjectsFromTags(tags, subjects);
+}
+
+/** 画像がどの被写体の枠で数えられるか。 */
+function subjectTargets(
+  caption: string,
+  subjects: LoraSubject[],
+  tags = "",
+): { targets: string[]; unknown: boolean } {
+  const present = imageSubjects(caption, tags, subjects);
   if (present.length > 0) return { targets: present.map((s) => s.trigger.trim()), unknown: false };
   if (!caption && subjects.length > 1) return { targets: [WHOLE_DATASET_SUBJECT], unknown: false };
   // 被写体が登録されていない（単独 LoRA）場合は1つの塊として扱う。
@@ -266,7 +356,7 @@ export function suggestRepeats(
     const caption = (item.caption ?? "").trim();
     const comp = compositionText(item);
     if (!comp) return null;
-    const { targets } = subjectTargets(caption, subjects);
+    const { targets } = subjectTargets(caption, subjects, item.tags ?? "");
     const buckets = captionBuckets(comp, "distance");
     for (const t of targets) {
       let m = counts.get(t);
@@ -326,7 +416,7 @@ export function analyzeDataset(
       uncaptioned += 1;
       continue;
     }
-    const { targets, unknown } = subjectTargets(caption, subjects);
+    const { targets, unknown } = subjectTargets(caption, subjects, item.tags ?? "");
     if (unknown) uncaptioned += 1;
 
     const tags = splitTags(comp);

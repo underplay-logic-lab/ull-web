@@ -268,7 +268,7 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     // 料金 = base + per_image × 枚数。実測（docs/gpu-benchmarks.md §17）: 起動・読み込みで約 1 分、解析は
     // まとめて処理するので枚数に比例しないが、1 枚あたり約 1〜1.5 秒ずつ伸びる。
     // 原価目安: B300 約 ¥0.34/秒 × 60s ≈ ¥20 × 3 ÷ 1.66 ≈ 36C → 50C（ホスト判断）。
-    // 5 枚以下の再解析（取りこぼしのやり直し）は route 側で無料。
+    // 無料は取りこぼし（前回の有料ジョブで読めなかった画像）のやり直しだけ（route が retry_of で確認）。
     value: 50,
     label: "LoRA キャプション（1 回の基本料）",
     category: "feature_credits",

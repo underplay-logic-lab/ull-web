@@ -523,7 +523,25 @@ const VLM_POLL_MS = 2_000;
 // 読み込みは普段 10〜30 秒。駄目なら早く終わらせて、もう一度押してもらう方が良い。
 const VLM_START_TIMEOUT_MS = 3 * 60_000;
 // 直前の有料の解析で取りこぼした枚数。やり直しはこれ以下なら無料（route が前回ジョブで確かめる）。
-let lastVlmJob: { jobId: string; missed: number } | null = null;
+// 再読み込みしても無料のやり直しが効くよう、端末に残す（2026-09-25。無料はこちらの取りこぼしだけなので、
+// その権利を再読み込みで失わせない）。route が前回ジョブの結果で確かめるので、書き換えられても害は無い。
+const LAST_VLM_JOB_KEY = "ull_lora_caption_last_job";
+function readLastVlmJob(): { jobId: string; missed: number } | null {
+  try {
+    const v = JSON.parse(window.localStorage.getItem(LAST_VLM_JOB_KEY) ?? "null");
+    return v && typeof v.jobId === "string" && typeof v.missed === "number" ? v : null;
+  } catch {
+    return null;
+  }
+}
+function writeLastVlmJob(v: { jobId: string; missed: number } | null): void {
+  try {
+    if (v) window.localStorage.setItem(LAST_VLM_JOB_KEY, JSON.stringify(v));
+    else window.localStorage.removeItem(LAST_VLM_JOB_KEY);
+  } catch {
+    /* private mode 等 — 無料のやり直しが効かないだけ */
+  }
+}
 const VLM_MAX_MS = 25 * 60_000; // 冷えた起動＋読み込み約 1 分・500 枚で数分。CLAUDE.md §0 のとおり多めに取る
 const VLM_PUT_CONCURRENCY = 8;
 
@@ -618,6 +636,7 @@ async function generateDatasetCaptionsVlm(files: File[], opts: CaptionOpts): Pro
         }
       }),
     );
+    const lastVlmJob = readLastVlmJob();
     const retryOf = lastVlmJob && ok.length <= lastVlmJob.missed ? lastVlmJob.jobId : undefined;
     await captionVlmPost(token, { action: "run", jobId, mimes, retry_of: retryOf, ...spec }, opts.signal);
     note("AI を起動しています（1〜2 分ほどかかります）…");
@@ -659,7 +678,7 @@ async function generateDatasetCaptionsVlm(files: File[], opts: CaptionOpts): Pro
       }
       if (st.status === "completed") {
         const missed = ok.filter((x) => !captions[x.i].trim()).map((x) => x.i);
-        lastVlmJob = missed.length ? { jobId, missed: missed.length } : null;
+        writeLastVlmJob(missed.length ? { jobId, missed: missed.length } : null);
         if (missed.length) {
           missed.forEach((i) => errored.add(i));
           opts.onError?.(missed);

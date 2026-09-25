@@ -5,7 +5,7 @@ import { CONTENT_POLICY_BLOCK_MESSAGE } from "@/lib/contentPolicy";
 import { finalizeRawSingles, parseCaptionRequest } from "@/lib/loraCaptionRequest.server";
 import { presignR2Put, r2KeyForRel, r2UploadsEnabled } from "@/lib/r2.server";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
-import { LORA_CAPTION_FREE_MAX, loraCaptionPrice } from "@/lib/loraCaptionSpec";
+import { loraCaptionPrice } from "@/lib/loraCaptionSpec";
 import { getOrCreateProfile } from "@/lib/profile";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
@@ -21,7 +21,8 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 // 検証・指示文・整形は loraCaptionRequest.server.ts を共有する。
 //
 // 料金（2026-09-25 ホスト判断）: knob `lora_caption_base` + `lora_caption_per_image` × 枚数（既定 50C + 1C/枚）を run で
-// 引き落とす。FREE_RETRY_MAX 枚以下（取りこぼしの再解析）は無料。Modal への受け渡しに失敗したらここで返し、
+// 引き落とす。無料は取りこぼし（前回の有料ジョブで読めなかった画像）のやり直しだけ（retry_of で確かめる。
+// 「5 枚以下は無料」は 2026-09-25 に廃止）。Modal への受け渡しに失敗したらここで返し、
 // 解析が失敗したら worker（modal_caption_worker.py）が返す。
 export const maxDuration = 60;
 
@@ -29,11 +30,8 @@ const MAX_IMAGES = 500;
 const JOB_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EXT_BY_MIME: Record<string, string> = { "image/webp": "webp", "image/jpeg": "jpg" };
 const PUT_TTL_S = 15 * 60;
-const FREE_RETRY_MAX = LORA_CAPTION_FREE_MAX;
-
-/** 料金（クライアントの表示は loraCaptionPrice と同じ式）。5 枚以下の再解析は無料。 */
+/** 料金（クライアントの表示は loraCaptionPrice と同じ式）。 */
 async function captionPrice(count: number): Promise<number> {
-  if (count <= FREE_RETRY_MAX) return 0;
   const k = await getPricingKnobs();
   return loraCaptionPrice(count, k);
 }
@@ -108,7 +106,8 @@ export async function POST(request: Request): Promise<NextResponse> {
     const mimes = parseMimes(body?.mimes, count);
     if (!mimes) return NextResponse.json({ error: "画像の形式が不正です。" }, { status: 400 });
     // 送る前に残高を見ておく（アップロードしてから足りないと言われないように）。引き落としは run で行う。
-    if (count > FREE_RETRY_MAX) {
+    // 取りこぼしのやり直し（retry_of）は run で無料と判定するので、ここでは止めない。
+    if (!(typeof body?.retry_of === "string" && JOB_ID_RE.test(body.retry_of))) {
       const price = await captionPrice(count);
       const cur = await currentCredits(userId);
       if (cur !== null && cur < price) {

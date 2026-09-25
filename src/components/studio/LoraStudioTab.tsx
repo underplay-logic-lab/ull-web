@@ -90,13 +90,13 @@ import {
   type ResolvedCaptionMode,
   matchLeadingSubjectTriggers,
   loraCaptionPrice,
-  LORA_CAPTION_FREE_MAX,
 } from "@/lib/loraCaptionSpec";
 import {
   analyzeDataset,
   captionBuckets,
   compositionText,
   DIAGNOSTIC_AXES,
+  imageSubjects,
   suggestRepeats,
   WHOLE_DATASET_SUBJECT,
 } from "@/lib/datasetDiagnostics";
@@ -1337,11 +1337,9 @@ export function LoraStudioTab({
 
     for (const img of captioned) {
       const cap = (captions[img.id] ?? "").trim();
-      const hits = cap ? matchLeadingSubjectTriggers(cap, allSubjects) : [];
-      // キャプション前は誰が写っているか分からないので、被写体の軸には入れない（2026-09-25）。
-      if (!cap) {
-        /* 被写体未判定 */
-      } else if (hits.length === 0) push(subjMap, "__none__", "未分類", img.id);
+      // キャプション前は構図タグから推定する（診断と同じ関数、2026-09-25）。
+      const hits = imageSubjects(cap, compositionTags[img.id] ?? "", allSubjects);
+      if (hits.length === 0) push(subjMap, "__none__", "未分類", img.id);
       else if (hits.length === 1) push(subjMap, hits[0].trigger, hits[0].trigger, img.id);
       else {
         // 2人以上が同時に写っている画像（duo）。片方だけの画像と分けて
@@ -1399,12 +1397,13 @@ export function LoraStudioTab({
         .filter((img) => {
           if (img.cropKind) return false;
           const cap = (captions[img.id] ?? "").trim();
-          // キャプション前（構図タグだけ）の診断は被写体を分けずに出すので、全画像が対象（2026-09-25）。
-          if (subject === WHOLE_DATASET_SUBJECT || allSubjects.length <= 1) {
-            return Boolean(cap || compositionTags[img.id]);
-          }
-          if (!cap) return false;
-          return matchLeadingSubjectTriggers(cap, allSubjects).some((x) => x.trigger === subject);
+          const tags = compositionTags[img.id] ?? "";
+          if (!cap && !tags) return false;
+          if (allSubjects.length <= 1) return true;
+          // 被写体はキャプションがあれば先頭トリガー、無ければ構図タグから推定する（診断と同じ関数、2026-09-25）。
+          const present = imageSubjects(cap, tags, allSubjects);
+          if (subject === WHOLE_DATASET_SUBJECT) return present.length === 0;
+          return present.some((x) => x.trigger === subject);
         })
         .map((img) => img.id);
       setSelectedImageIds(new Set(ids));
@@ -2631,39 +2630,31 @@ export function LoraStudioTab({
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [identityExtracting, needsIdentityConfirm]);
 
-  // 確認が済んだら診断へ送る（キャプション解析はここから始まる）。
-  const scrolledAfterConfirmRef = useRef(false);
-  useEffect(() => {
-    if (!analysisStarted || needsIdentityConfirm || scrolledAfterConfirmRef.current) return;
-    if (!scrolledToMetaRef.current) return; // 確認欄を経由していないなら送らない
-    scrolledAfterConfirmRef.current = true;
-    document
-      .getElementById(DIAGNOSTICS_PANEL_ID)
-      ?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [analysisStarted, needsIdentityConfirm]);
-
-  // 診断へ送ったか（1 データセットにつき 1 回）。2026-09-25: 開始時に送るのはやめ、
-  // 解析が終わった時だけ送る（下の effect）。
+  // 診断へ送る（1 データセットにつき 1 回）。2026-09-25 に 1 本へまとめた: 以前は「構図の判定が終わった瞬間」
+  // 「特徴の確認が済んだ瞬間」を別々に見ていて、確認が先に済むと診断欄がまだ無く空振りし、判定が終わった
+  // 時点では「確認欄を経由した」印で止められていた。さらに送ったかの印をリセットで戻しておらず、同じ画面で
+  // 2 回目以降のデータセットでは一度も送られなかった（ホスト報告「解析が終わっても診断に飛ばない」）。
+  // 今は「構図の判定・特徴の抽出・確認がすべて済み、診断欄がある」状態になった時に 1 回だけ送る。
   const scrolledToDiagRef = useRef(false);
-
-  // 構図の判定が終わった瞬間に診断へ送る（2026-09-22、ホスト指摘「取り込み終わった
-  // 後に何をすればいいか分からない」。2026-09-25 からキャプションではなく構図の判定で見る）。
-  // 1データセットにつき1回だけ。
-  const prevCompRunningRef = useRef(false);
+  const diagReady =
+    analysisStarted &&
+    !composition.running &&
+    identityExtracting === null &&
+    !needsIdentityConfirm &&
+    diagnosticItems.length > 0;
   useEffect(() => {
-    const finished =
-      (prevCompRunningRef.current && !composition.running) ||
-      (analysisStarted && !composition.running && images.length > 0 && images.every((i) => compositionTags[i.id]));
-    prevCompRunningRef.current = composition.running;
-    // 確認待ちの間は診断へ送らない（2026-09-22、ホスト報告「開始直後に診断へ
-    // 飛んでから確認欄へ飛ぶ」）。確認後の遷移は scrolledAfterConfirmRef が担う。
-    if (needsIdentityConfirm || scrolledToMetaRef.current) return;
-    if (!finished || scrolledToDiagRef.current || images.length === 0 || !analysisStarted) return;
+    if (!analysisStarted) {
+      // 取り込みからやり直した（リセット・全画像削除）ら、次のデータセットでまた送る。
+      scrolledToDiagRef.current = false;
+      scrolledToMetaRef.current = false;
+      return;
+    }
+    if (!diagReady || scrolledToDiagRef.current) return;
     scrolledToDiagRef.current = true;
     document
       .getElementById(DIAGNOSTICS_PANEL_ID)
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [composition.running, images, compositionTags, analysisStarted, needsIdentityConfirm]);
+  }, [analysisStarted, diagReady]);
 
 
   // 構図の判定（WD タガー・無料・CPU、2026-09-25）。「取り込み完了」後に、まだタグの無い画像をまとめて判定する。
@@ -4026,8 +4017,10 @@ export function LoraStudioTab({
             }
             recaptioningIds={recaptioningIds}
             onRecaption={captionSource === "ai" && captionStarted ? (id) => void recaptionOne(id) : undefined}
+            // キャプションは構図の診断・クロップの後で作るので、作成を押す前は全画像が未作成で当たり前。
+            // その間は印を出さない（2026-09-25、ホスト指摘「構図を解析しても未解析マークが残る」）。
             captionState={(id) =>
-              (captions[id] ?? "").trim() || userCaptionIds.has(id)
+              captionSource === "manual" || !captionStarted || (captions[id] ?? "").trim() || userCaptionIds.has(id)
                 ? "ok"
                 : captionErrorIds.has(id)
                   ? "error"
@@ -4334,6 +4327,13 @@ export function LoraStudioTab({
                           captionPrice > 0 ? `${captionPrice}C` : "無料"
                         }）`}
                   </button>
+                  {/* 作成後に素材を足すと追加料金がかかる（2026-09-25、ホスト提案）。診断で足りない構図は先に埋めてもらう。 */}
+                  {pendingCaptionCount > 0 && (
+                    <p className="mt-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] leading-relaxed text-amber-300">
+                      ⚠️ 作成の前に、上の診断で足りないと出ている構図を切り出しで足しておいてください。作成後に画像を足すと、
+                      その分のキャプションを追加で作ることになり、料金もかかります。
+                    </p>
+                  )}
                   <p className="mt-1.5 text-[10px] leading-relaxed text-muted">
                     {pendingCaptionCount === 0 ? (
                       <>全部の画像にキャプションがあるので、作り直しはしません。</>
@@ -4345,7 +4345,7 @@ export function LoraStudioTab({
                         {pricingKnobs.lora_caption_base}C＋1 枚 {pricingKnobs.lora_caption_per_image}C
                         （取りこぼしのやり直しは無料）
                         {pendingCaptionCount < images.length && "。作成済みの画像はそのまま使います"}。
-                        押したあとに画像を足すと、追加分だけ作ります（{LORA_CAPTION_FREE_MAX} 枚以下は無料）。
+                        押したあとに画像を足すと、追加分だけ別料金で作ります。
                       </>
                     )}
                   </p>
@@ -5076,7 +5076,7 @@ export function LoraStudioTab({
             {captionPromptOpen && (
               <div className="space-y-3 px-3 pb-3">
                 <p className="text-[10px] leading-relaxed text-muted">
-                  学習タイプを選ぶと、その種類に合ったキャプションの方針が自動で適用されます。
+                  上で選んだ学習タイプに合ったキャプションの方針が自動で適用されます。
                   「次へ」を押すと、画像解析エンジン向けの英語キャプション指示をAIが組み立てて反映します。
                 </p>
                 {/* 2026-09-21: 「入力しないと何も効かない」と誤解されていた
@@ -5183,29 +5183,11 @@ export function LoraStudioTab({
                   </p>
                 </div>
 
-                <div className="flex flex-wrap gap-1.5">
-                  {LORA_CAPTION_CATEGORIES.map((c) => {
-                    const m = LORA_CAPTION_CATEGORY_META[c];
-                    const active = captionCategory === c;
-                    return (
-                      <button
-                        key={c}
-                        type="button"
-                        disabled={busy}
-                        onClick={() => setCaptionCategory(c)}
-                        title={m.hint}
-                        className={`rounded-lg border px-2.5 py-1 text-[10px] font-medium transition-colors disabled:opacity-50 ${
-                          active
-                            ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
-                            : "border-border bg-background/60 text-muted hover:border-neon-violet/40"
-                        }`}
-                      >
-                        {m.icon} {m.label}
-                      </button>
-                    );
-                  })}
-                </div>
-                <p className="text-[10px] text-muted">{captionCategoryMeta.hint}</p>
+                {/* 学習タイプの選択はトリガーワードの上へ移した（2026-09-25、ホスト指摘「先に選んでいるので
+                    ここで変える必要は無く紛らわしい」）。ここでは選んだタイプを表示するだけ。 */}
+                <p className="text-[10px] text-muted">
+                  学習タイプ: {captionCategoryMeta.icon} {captionCategoryMeta.label}（上の「何を学習させるか」で変更）— {captionCategoryMeta.hint}
+                </p>
 
                 <div>
                   <label className="mb-1 block text-[10px] font-medium text-foreground">

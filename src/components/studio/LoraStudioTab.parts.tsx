@@ -869,7 +869,7 @@ export function ImageDropzone({
                   )}
                   {!disabled && !recapping && st === "pending" && (
                     <span className="absolute left-1 top-1 rounded bg-amber-500/80 px-1 py-0.5 text-[8px] font-medium text-white">
-                      未解析
+                      未キャプション
                     </span>
                   )}
                   {reps !== 1 && (
