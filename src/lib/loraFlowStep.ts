@@ -105,6 +105,8 @@ export type LoraFlowInput = {
   repeatsApplied: boolean;
   /** 「学習設定へ進む」を押したか。 */
   settingsVisited: boolean;
+  /** 「おまかせで整える」で減らす・切り出しを済ませたか（その 2 段階の導線を飛ばす、2026-09-25）。 */
+  autoTidied?: boolean;
 };
 
 /**
@@ -214,16 +216,16 @@ export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
 
   // 減らす → 削除 → 切り出す の順（2026-09-25、ホスト指摘「切り出す準備が光らずいきなり crop が光る。その前に
   // 削除が光るとよい」）。先に減らせば切り出しの枚数も減る。減らすは任意なので、切り出しの準備も並べて光らせる。
-  if (v.trimSelected) {
+  if (!v.autoTidied && v.trimSelected) {
     return { targets: ["deleteSelected"], hint: "選んだ候補を見比べて、残したいものは選択を外してからまとめて削除します（× で 1 枚ずつ消した場合は、最後に「選択を解除」）" };
   }
-  if (v.trimAvailable && !v.trimVisited) {
+  if (!v.autoTidied && v.trimAvailable && !v.trimVisited) {
     return {
       targets: v.cropAvailable ? ["trimPrepare", "cropPrepare"] : ["trimPrepare", afterCrop],
       hint: `まず多すぎる構図・同じ構図の画像を減らすか検討します（任意） ／ ${v.cropAvailable ? "切り出しへ進む" : afterCropLabel}`,
     };
   }
-  if (v.diagnosticErrors > 0 && v.cropAvailable) {
+  if (!v.autoTidied && v.diagnosticErrors > 0 && v.cropAvailable) {
     // 切り出しは「準備をする → 切り出す」の2手（2026-09-22、ホスト指摘）。
     // いきなりクロップ欄を光らせると、対象も構図も選ばれていない状態で
     // 押させることになる。まず診断側の準備ボタンへ送る。

@@ -198,6 +198,41 @@ export type DiagnosticIssue = {
   sameComposition?: { signature: string; count: number };
 };
 
+/**
+ * 多すぎる構図を減らす案（被写体ごとに、必要な枚数の多いほう）。減らすのは赤（学習回数では届かない）の比率不足
+ * だけ（2026-09-25、ホスト報告「減らしたら比率が変わってまた別の減らすボタンが出る」）。黄は後の学習回数で均せる。
+ * 診断パネルの「減らす候補を選ぶ」と「おまかせで整える」が同じ案を使う。
+ */
+export function buildTrimPlan(issues: DiagnosticIssue[]): Map<string, { bucket: string; count: number }> {
+  const plan = new Map<string, { bucket: string; count: number }>();
+  for (const i of issues) {
+    const b = i.balance;
+    if (i.level !== "error") continue;
+    if (!i.subject || !b?.trimBucket || b.trim <= 0) continue;
+    const cur = plan.get(i.subject);
+    if (!cur || b.trim > cur.count) plan.set(i.subject, { bucket: b.trimBucket, count: b.trim });
+  }
+  return plan;
+}
+
+/**
+ * 2 人とも同じ構図が多すぎるなら、2 人写りの画像を減らすと両方の比率が一度に良くなる（2026-09-25、ホスト指摘
+ * 「duo 画像の比率が高い素材は、ここを減らさないとどうにもならない」）。枚数は必要の少ないほうに合わせる
+ * （それ以上消すと、もう一方の構図まで減らしすぎる）。
+ */
+export function buildDuoPlan(
+  trimPlan: Map<string, { bucket: string; count: number }>,
+): [string, { subjects: string[]; count: number }][] {
+  const byBucket = new Map<string, { subjects: string[]; count: number }>();
+  for (const [subj, t] of trimPlan) {
+    const cur = byBucket.get(t.bucket) ?? { subjects: [], count: Infinity };
+    cur.subjects.push(subj);
+    cur.count = Math.min(cur.count, t.count);
+    byBucket.set(t.bucket, cur);
+  }
+  return [...byBucket.entries()].filter(([, v]) => v.subjects.length >= 2 && v.count > 0);
+}
+
 export type DatasetDiagnostic = {
   totalImages: number;
   totalExposure: number;

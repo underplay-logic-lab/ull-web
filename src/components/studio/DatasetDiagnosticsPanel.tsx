@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 import { AlertTriangle, ChevronDown, Loader2, Scissors, Stethoscope, Wand2 } from "lucide-react";
 import {
   analyzeDataset,
+  buildDuoPlan,
+  buildTrimPlan,
   DIAGNOSTIC_AXES,
   type DiagnosticAxis,
   type DiagnosticInput,
@@ -28,6 +30,9 @@ export function DatasetDiagnosticsPanel({
   highlightTrimSubjects,
   onPrepareDuoTrim,
   highlightPrepare = false,
+  onAutoTidy,
+  autoTidyBusy = false,
+  highlightAutoTidy = false,
 }: {
   items: DiagnosticInput[];
   subjects: LoraSubject[];
@@ -62,6 +67,10 @@ export function DatasetDiagnosticsPanel({
   onPrepareDuoTrim?: (bucket: string, count: number, subjects: string[]) => void;
   /** 導線として「切り出す準備をする」を光らせるか（loraFlowStep が決める）。 */
   highlightPrepare?: boolean;
+  /** 「おまかせで整える」（2026-09-25、ホスト案）。減らす・切り出す・除外を 1 回で通す。 */
+  onAutoTidy?: () => void;
+  autoTidyBusy?: boolean;
+  highlightAutoTidy?: boolean;
 }) {
   const [open, setOpen] = useState(true);
   const diag = useMemo(() => analyzeDataset(items, subjects), [items, subjects]);
@@ -84,30 +93,10 @@ export function DatasetDiagnosticsPanel({
   }
   const KIND_LABEL: Record<"face" | "upper", string> = { face: "顔アップ", upper: "上半身" };
   // 多すぎる構図を減らす案（被写体ごとに、必要な枚数の多いほう）。
-  const trimPlan = new Map<string, { bucket: string; count: number }>();
-  for (const i of diag.issues) {
-    const b = i.balance;
-    // 減らすボタンは赤（学習回数では届かない）の比率不足だけ（2026-09-25、ホスト報告「減らしたら比率が変わって
-    // また別の減らすボタンが出る」）。黄は後の学習回数で均せるので、文章で案内するだけにする。
-    if (i.level !== "error") continue;
-    if (!i.subject || !b?.trimBucket || b.trim <= 0) continue;
-    const cur = trimPlan.get(i.subject);
-    if (!cur || b.trim > cur.count) trimPlan.set(i.subject, { bucket: b.trimBucket, count: b.trim });
-  }
+  // 減らす案は datasetDiagnostics の buildTrimPlan / buildDuoPlan（「おまかせで整える」と同じ案を使う）。
+  const trimPlan = buildTrimPlan(diag.issues);
   const bucketLabel = (id: string) => DIAGNOSTIC_AXES.distance.buckets.find((x) => x.id === id)?.label ?? id;
-  // 2 人とも同じ構図が多すぎるなら、2 人写りの画像を減らすと両方の比率が一度に良くなる（2026-09-25、ホスト指摘
-  // 「duo 画像の比率が高い素材は、ここを減らさないとどうにもならない」）。枚数は必要の少ないほうに合わせる
-  // （それ以上消すと、もう一方の構図まで減らしすぎる）。
-  const duoPlan = (() => {
-    const byBucket = new Map<string, { subjects: string[]; count: number }>();
-    for (const [subj, t] of trimPlan) {
-      const cur = byBucket.get(t.bucket) ?? { subjects: [], count: Infinity };
-      cur.subjects.push(subj);
-      cur.count = Math.min(cur.count, t.count);
-      byBucket.set(t.bucket, cur);
-    }
-    return [...byBucket.entries()].filter(([, v]) => v.subjects.length >= 2 && v.count > 0);
-  })();
+  const duoPlan = buildDuoPlan(trimPlan);
   const samePlan = diag.issues.filter(
     (i): i is typeof i & { subject: string; sameComposition: { signature: string; count: number } } =>
       Boolean(i.subject && i.sameComposition),
@@ -162,6 +151,30 @@ export function DatasetDiagnosticsPanel({
 
       {open && (
         <div className="space-y-3 px-3 pb-3">
+          {/* おまかせで整える（2026-09-25、ホスト案）。減らす・切り出す・除外を 1 回で通す。個別の操作は下に残す。
+              やることが 1 つも無いときは出さない。 */}
+          {onAutoTidy && (samePlan.length > 0 || cropPlan.size > 0 || trimPlan.size > 0) && (
+            <div
+              className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border border-neon-pink/40 bg-neon-pink/5 px-3 py-2${
+                highlightAutoTidy ? " flow-next" : ""
+              }`}
+            >
+              <p className="min-w-0 flex-1 text-[10px] leading-relaxed text-muted">
+                <span className="font-medium text-foreground">おまかせで整える（無料）</span> —
+                同じ構図の重複を 2 枚残して除外し、足りない顔アップ・上半身を手持ちの画像から切り出し、多すぎる構図を減らします。
+                除外した画像は消さずに脇へ置くので、あとから 1 枚ずつでも全部でも戻せます。下の個別の操作で手作業で進めることもできます。
+              </p>
+              <button
+                type="button"
+                disabled={autoTidyBusy || provisional || stalledCount > 0}
+                onClick={onAutoTidy}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                {autoTidyBusy ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
+                {autoTidyBusy ? "整えています…" : "おまかせで整える"}
+              </button>
+            </div>
+          )}
           {/* --- 被写体ごとの構成表 --- */}
           <div className="space-y-2">
             {diag.subjects.map((s) => (

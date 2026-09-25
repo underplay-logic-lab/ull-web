@@ -94,10 +94,13 @@ import {
 import {
   analyzeDataset,
   captionBuckets,
+  buildDuoPlan,
+  buildTrimPlan,
   compositionSignature,
   compositionSignatureLabel,
   compositionText,
   DIAGNOSTIC_AXES,
+  DIAGNOSTIC_TARGETS,
   imageSubjects,
   identityTagsFromWd,
   peopleCountFromTags,
@@ -111,7 +114,7 @@ import { translateCaption, translateCaptionsBatch } from "@/lib/loraTranslate";
 import { extractIdentityTags } from "@/lib/loraCaption";
 import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
 import { generateDatasetCaptions, captionFileKey, tagDatasetComposition } from "@/lib/loraCaption";
-import { runSmartCrop, type SmartCropKind } from "@/lib/smartCrop";
+import { runSmartCrop, type SmartCropKind, type SmartCropOutput } from "@/lib/smartCrop";
 import { loraFlowStep, type LoraFlowTarget } from "@/lib/loraFlowStep";
 import { prepareDatasetImage, type ImageSizeVerdict } from "@/lib/datasetImagePrep";
 
@@ -138,6 +141,7 @@ const SMART_CROP_MIN_SHORT_EDGE = 384;
 // 増えないので捨てる（全身写真から全身を切り出すケース）。
 const SMART_CROP_REDUNDANT_COVERAGE = 0.85;
 import { warmSmartCropModels } from "@/lib/smartCropDetect";
+import { AutoTidyPanel, type AutoTidyState, type ExcludedImage } from "@/components/studio/AutoTidyPanel";
 import {
   ImageDropzone,
   DATASET_GRID_BAR_ID,
@@ -228,6 +232,10 @@ export function LoraStudioTab({
   // 終わっているのかどうか分からない」）。取り込み通知は画面のはるか上なので
   // 気付けなかった。
   const [repeatsNotice, setRepeatsNotice] = useState<string | null>(null);
+  // おまかせで整える（2026-09-25、ホスト案。docs/STATUS.md 00000000）。除外した画像は消さずに脇へ置き、元に戻せる。
+  const [excludedImages, setExcludedImages] = useState<ExcludedImage[]>([]);
+  const [autoTidy, setAutoTidy] = useState<AutoTidyState | null>(null);
+  const autoTidyRef = useRef<AutoTidyState | null>(null);
   const smartCropWarmedRef = useRef(false);
   // English caption per image id. Filled by the AI-vision auto-caption pass on
   // drop, or straight from a .txt / ZIP the user brought.
@@ -1235,6 +1243,17 @@ export function LoraStudioTab({
     { running: false, done: 0, total: 0, error: null },
   );
   const compositionAttemptedRef = useRef<Set<string>>(new Set());
+  // 除外（脇へ置く）のときに、その時点のキャプション・構図タグをまとめて退避するための鏡（2026-09-25）。
+  const captionsRef = useRef<Record<string, string>>({});
+  const captionsJaRef = useRef<Record<string, string>>({});
+  const compositionTagsRef = useRef<Record<string, string>>({});
+  const userCaptionIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    captionsRef.current = captions;
+    captionsJaRef.current = captionsJa;
+    compositionTagsRef.current = compositionTags;
+    userCaptionIdsRef.current = userCaptionIds;
+  }, [captions, captionsJa, compositionTags, userCaptionIds]);
 
   // 画像から identity タグを抽出する（ホスト方針「画像解析結果から抽出される
   // が、最終的には不要なら削除・不足なら追加」）。返るのは候補で、確定は
@@ -1377,6 +1396,71 @@ export function LoraStudioTab({
     });
   }, []);
 
+  // 画像を消さずに脇へ置く（除外）／戻す（2026-09-25、おまかせで整える用）。キャプション・構図タグ・学習回数も
+  // 一緒に退避するので、戻せば判定のやり直しは要らない。
+  const excludeImages = useCallback((entries: { id: string; reason: string }[], run: number) => {
+    const reason = new Map(entries.map((e) => [e.id, e.reason]));
+    const imgs = imagesRef.current.filter((i) => reason.has(i.id));
+    if (imgs.length === 0) return;
+    const set = new Set(imgs.map((i) => i.id));
+    const stash: ExcludedImage[] = imgs.map((img) => ({
+      img,
+      caption: captionsRef.current[img.id] ?? "",
+      captionJa: captionsJaRef.current[img.id] ?? "",
+      tags: compositionTagsRef.current[img.id] ?? "",
+      userCaption: userCaptionIdsRef.current.has(img.id),
+      reason: reason.get(img.id) ?? "",
+      run,
+    }));
+    imagesRef.current = imagesRef.current.filter((i) => !set.has(i.id));
+    setExcludedImages((prev) => [...prev.filter((e) => !set.has(e.img.id)), ...stash]);
+    setImages((prev) => prev.filter((i) => !set.has(i.id)));
+    const drop = (m: Record<string, string>) => {
+      if (![...set].some((id) => id in m)) return m;
+      const next = { ...m };
+      set.forEach((id) => delete next[id]);
+      return next;
+    };
+    setCaptions(drop);
+    setCaptionsJa(drop);
+    setCompositionTags(drop);
+    setSelectedImageIds((prev) => {
+      if (![...prev].some((id) => set.has(id))) return prev;
+      return new Set([...prev].filter((id) => !set.has(id)));
+    });
+  }, []);
+  const restoreExcluded = useCallback(
+    (ids: string[]) => {
+      const want = new Set(ids);
+      const back = excludedImages.filter((e) => want.has(e.img.id));
+      if (back.length === 0) return;
+      const room = Math.max(0, MAX_IMAGES - imagesRef.current.length);
+      const take = back.slice(0, room);
+      if (take.length < back.length) {
+        setErrorMessage(`1データセットの上限 ${MAX_IMAGES} 枚に達しているため、${back.length - take.length} 枚を戻せませんでした。`);
+      }
+      if (take.length === 0) return;
+      const taken = new Set(take.map((e) => e.img.id));
+      imagesRef.current = [...imagesRef.current, ...take.map((e) => e.img)];
+      setImages((imgs) => [...imgs, ...take.map((e) => e.img)]);
+      const put = (m: Record<string, string>, key: "caption" | "captionJa" | "tags") => {
+        const add = take.filter((e) => e[key]);
+        return add.length ? { ...m, ...Object.fromEntries(add.map((e) => [e.img.id, e[key]])) } : m;
+      };
+      setCaptions((m) => put(m, "caption"));
+      setCaptionsJa((m) => put(m, "captionJa"));
+      setCompositionTags((m) => put(m, "tags"));
+      take.forEach((e) => {
+        if (e.tags) compositionAttemptedRef.current.add(e.img.id);
+        if (e.caption) captionAttemptedRef.current.add(e.img.id);
+      });
+      const users = take.filter((e) => e.userCaption).map((e) => e.img.id);
+      if (users.length) setUserCaptionIds((u) => new Set([...u, ...users]));
+      setExcludedImages((prev) => prev.filter((e) => !taken.has(e.img.id)));
+    },
+    [excludedImages],
+  );
+
   // metadata へ埋め込むタグ。被写体レジストリから自動生成し、手入力欄は
   // 「追加分」として後ろに連結する（2026-09-21 — 以前は全部手入力だった）。
   const autoEmbedTags = useMemo(() => buildEmbedTagsFromSubjects(allSubjects), [allSubjects]);
@@ -1495,35 +1579,18 @@ export function LoraStudioTab({
     [images, captions, compositionTags, allSubjects],
   );
 
-  // 多すぎる構図から減らす候補を選ぶ（2026-09-25、ホスト指摘「全身が多すぎて切り出しても赤が消えない」）。
-  // その被写体の、その構図だけに当たる取り込み画像（切り出しは除く）から等間隔に count 枚。削除はユーザーが
-  // 一覧で見比べてから「選択した N 枚を削除」で行う（勝手には消さない）。
-  const prepareTrimForSubject = useCallback(
-    (subject: string, bucket: string, count: number) => {
-      const pool = images.filter((img) => {
-        if (img.cropKind) return false;
-        const cap = (captions[img.id] ?? "").trim();
-        const tags = compositionTags[img.id] ?? "";
-        const comp = compositionText({ caption: cap, tags });
-        if (!comp) return false;
-        const dist = captionBuckets(comp, "distance");
-        if (dist.length !== 1 || dist[0] !== bucket) return false;
-        // 2 人以上写っている画像は候補にしない（2026-09-25、ホスト報告「候補が全部 duo 画像」）。2 人の画像は
-        // 両方の被写体に数えられるので、消すともう一方も減る。同じ絵に 2 人いる構図自体も貴重。
-        if (tags && peopleCountFromTags(tags) >= 2) return false;
-        if (allSubjects.length <= 1) return true;
-        const present = imageSubjects(cap, tags, allSubjects);
-        return present.length === 1 && present[0].trigger === subject;
-      });
+  // 減らす候補の選び方（2026-09-25）。手作業の「減らす候補を選ぶ」と「おまかせで整える」が同じ選び方を使う。
+  // 同じ構図の 3 枚目以降を、構図の枚数が多い順に優先し、足りなければ残りから等間隔で足す（服装違いの同じ構図は
+  // 減らしても影響が小さい）。
+  const sigOf = useCallback(
+    (img: DatasetImage) =>
+      compositionSignature(compositionText({ caption: captions[img.id], tags: compositionTags[img.id] })),
+    [captions, compositionTags],
+  );
+  const pickDupFirst = useCallback(
+    (pool: DatasetImage[], count: number): string[] => {
       const n = Math.min(count, pool.length);
-      if (n <= 0) {
-        setAddNotice(`${subject} が 1 人で写っている画像の中に、減らす候補がありませんでした。切り出しで足す方法を使ってください。`);
-        return;
-      }
-      // 同じ構図が多いものから減らす（服装違いの同じ構図は減らしても影響が小さい、2026-09-25）。
-      // 各構図の 2 枚目以降を、構図の枚数が多い順に並べ、足りなければ残りから等間隔で足す。
-      const sigOf = (img: DatasetImage) =>
-        compositionSignature(compositionText({ caption: captions[img.id], tags: compositionTags[img.id] }));
+      if (n <= 0) return [];
       const bySig = new Map<string, DatasetImage[]>();
       for (const img of pool) {
         const k = sigOf(img);
@@ -1539,7 +1606,71 @@ export function LoraStudioTab({
         const step = rest.length / need;
         for (let k = 0; k < need; k++) picked.add(rest[Math.floor(k * step)].id);
       }
-      const ids = [...picked];
+      return [...picked];
+    },
+    [sigOf],
+  );
+  // その被写体が 1 人で写っていて、その構図だけに当たる取り込み画像（切り出しは除く）。
+  // 2 人以上写っている画像は候補にしない（2026-09-25、ホスト報告「候補が全部 duo 画像」）。2 人の画像は
+  // 両方の被写体に数えられるので、消すともう一方も減る。同じ絵に 2 人いる構図自体も貴重。
+  const trimPoolFor = useCallback(
+    (subject: string, bucket: string) =>
+      images.filter((img) => {
+        if (img.cropKind) return false;
+        const cap = (captions[img.id] ?? "").trim();
+        const tags = compositionTags[img.id] ?? "";
+        const comp = compositionText({ caption: cap, tags });
+        if (!comp) return false;
+        const dist = captionBuckets(comp, "distance");
+        if (dist.length !== 1 || dist[0] !== bucket) return false;
+        if (tags && peopleCountFromTags(tags) >= 2) return false;
+        if (allSubjects.length <= 1) return true;
+        const present = imageSubjects(cap, tags, allSubjects);
+        return present.length === 1 && present[0].trigger === subject;
+      }),
+    [images, captions, compositionTags, allSubjects],
+  );
+  // 2 人写り（subjects 全員が写っている）で、その構図だけに当たる取り込み画像。
+  const duoPoolFor = useCallback(
+    (bucket: string, subjects: string[]) =>
+      images.filter((img) => {
+        if (img.cropKind) return false;
+        const cap = (captions[img.id] ?? "").trim();
+        const tags = compositionTags[img.id] ?? "";
+        const dist = captionBuckets(compositionText({ caption: cap, tags }), "distance");
+        if (dist.length !== 1 || dist[0] !== bucket) return false;
+        const present = imageSubjects(cap, tags, allSubjects).map((x) => x.trigger);
+        return present.length >= 2 && subjects.every((x) => present.includes(x));
+      }),
+    [images, captions, compositionTags, allSubjects],
+  );
+  // 同じ構図（signature）の 1 人写りのうち、2 枚を残した残り。残す 2 枚は等間隔で選ぶ。
+  const sameCompositionRest = useCallback(
+    (subject: string, signature: string): string[] => {
+      const group = images.filter((img) => {
+        if (sigOf(img) !== signature) return false;
+        if (allSubjects.length <= 1) return true;
+        const present = imageSubjects((captions[img.id] ?? "").trim(), compositionTags[img.id] ?? "", allSubjects);
+        return present.length === 1 && present[0].trigger === subject;
+      });
+      if (group.length <= 2) return [];
+      const keep = new Set([group[0].id, group[Math.floor(group.length / 2)].id]);
+      return group.filter((i) => !keep.has(i.id)).map((i) => i.id);
+    },
+    [images, captions, compositionTags, allSubjects, sigOf],
+  );
+
+  // 多すぎる構図から減らす候補を選ぶ（2026-09-25、ホスト指摘「全身が多すぎて切り出しても赤が消えない」）。
+  // 削除はユーザーが一覧で見比べてから「選択した N 枚を削除」で行う（勝手には消さない）。
+  const prepareTrimForSubject = useCallback(
+    (subject: string, bucket: string, count: number) => {
+      const pool = trimPoolFor(subject, bucket);
+      const ids = pickDupFirst(pool, count);
+      const n = ids.length;
+      if (n <= 0) {
+        setAddNotice(`${subject} が 1 人で写っている画像の中に、減らす候補がありませんでした。切り出しで足す方法を使ってください。`);
+        return;
+      }
       revealTrimSelection(
         ids,
         `選択中の ${ids.length} 枚は、${subject} の${DIAGNOSTIC_AXES.distance.buckets.find((b) => b.id === bucket)?.label ?? ""}を減らす候補です（同じ構図の 3 枚目以降から優先して選んでいます）。消すのはこの選択中の画像だけです。残したいものはクリックで選択を外してから削除してください。`,
@@ -1553,44 +1684,19 @@ export function LoraStudioTab({
           : `減らす候補を ${n} 枚選びました（${subject} が 1 人で写っている ${pool.length} 枚から等間隔）。残したいものは選択を外してから「選択した画像を削除」を押してください。`,
       );
     },
-    [images, captions, compositionTags, allSubjects, revealTrimSelection],
+    [trimPoolFor, pickDupFirst, revealTrimSelection],
   );
 
   // 2 人写りの画像から減らす候補を選ぶ（2026-09-25、ホスト指摘「duo 画像の比率が高い素材はここを減らさないと
   // どうにもならない」）。2 人とも同じ構図が多すぎるときだけ出す（DatasetDiagnosticsPanel の duoPlan）。
-  // 同じ構図の 3 枚目以降から優先。2 人写りは切り出し元でもあるので、消す前に切り出す操作を一緒に出す。
+  // 2 人写りは切り出し元でもあるので、消す前に切り出す操作を一緒に出す。
   const prepareDuoTrim = useCallback(
     (bucket: string, count: number, subjects: string[]) => {
-      const pool = images.filter((img) => {
-        if (img.cropKind) return false;
-        const cap = (captions[img.id] ?? "").trim();
-        const tags = compositionTags[img.id] ?? "";
-        const dist = captionBuckets(compositionText({ caption: cap, tags }), "distance");
-        if (dist.length !== 1 || dist[0] !== bucket) return false;
-        const present = imageSubjects(cap, tags, allSubjects).map((x) => x.trigger);
-        return present.length >= 2 && subjects.every((x) => present.includes(x));
-      });
-      const n = Math.min(count, pool.length);
-      if (n <= 0) {
+      const ids = pickDupFirst(duoPoolFor(bucket, subjects), count);
+      if (ids.length <= 0) {
         setAddNotice("2 人写りの画像の中に、減らす候補がありませんでした。");
         return;
       }
-      const bySig = new Map<string, DatasetImage[]>();
-      for (const img of pool) {
-        const k = compositionSignature(compositionText({ caption: captions[img.id], tags: compositionTags[img.id] }));
-        bySig.set(k, [...(bySig.get(k) ?? []), img]);
-      }
-      const picked = new Set(
-        [...bySig.values()]
-          .sort((x, y) => y.length - x.length)
-          .flatMap((g) => g.slice(2))
-          .slice(0, n)
-          .map((i) => i.id),
-      );
-      const rest = pool.filter((i) => !picked.has(i.id));
-      const need = n - picked.size;
-      for (let k = 0; k < need; k++) picked.add(rest[Math.floor((k * rest.length) / need)].id);
-      const ids = [...picked];
       setDuoTrimIds(ids);
       revealTrimSelection(
         ids,
@@ -1602,24 +1708,15 @@ export function LoraStudioTab({
       setSelectionPurpose("trim");
       setTrimVisited((prev) => new Set([...prev, ...subjects]));
     },
-    [images, captions, compositionTags, allSubjects, revealTrimSelection],
+    [duoPoolFor, pickDupFirst, revealTrimSelection],
   );
 
   // 同じ構図の画像から、2 枚だけ残して他を減らす候補として選ぶ（2026-09-25、ホスト提案「同じ構図で服装だけ違う
-  // 素材は減らしても影響が小さい」）。残す 2 枚は等間隔で選ぶ。削除はユーザーが一覧で見比べてから行う。
+  // 素材は減らしても影響が小さい」）。削除はユーザーが一覧で見比べてから行う。
   const prepareSameCompositionForSubject = useCallback(
     (subject: string, signature: string) => {
-      const group = images.filter((img) => {
-        const cap = (captions[img.id] ?? "").trim();
-        const tags = compositionTags[img.id] ?? "";
-        if (compositionSignature(compositionText({ caption: cap, tags })) !== signature) return false;
-        if (allSubjects.length <= 1) return true;
-        const present = imageSubjects(cap, tags, allSubjects);
-        return present.length === 1 && present[0].trigger === subject;
-      });
-      if (group.length <= 2) return;
-      const keep = new Set([group[0].id, group[Math.floor(group.length / 2)].id]);
-      const ids = group.filter((i) => !keep.has(i.id)).map((i) => i.id);
+      const ids = sameCompositionRest(subject, signature);
+      if (ids.length === 0) return;
       revealTrimSelection(
         ids,
         `選択中の ${ids.length} 枚は、${subject} の同じ構図（${compositionSignatureLabel(signature)}）のうち 2 枚を残した残りです。服装だけが違う重複なので、消しても学習への影響は小さめです。残したいものはクリックで選択を外してから削除してください。`,
@@ -1628,10 +1725,10 @@ export function LoraStudioTab({
       setTrimVisited((prev) => new Set([...prev, subject]));
       setDuoTrimIds(null);
       setAddNotice(
-        `同じ構図（${compositionSignatureLabel(signature)}）の ${group.length} 枚のうち、2 枚を残して ${ids.length} 枚を減らす候補に選びました。服装の違いを残したいものは選択を外してから「選択した画像を削除」を押してください。`,
+        `同じ構図（${compositionSignatureLabel(signature)}）の ${ids.length + 2} 枚のうち、2 枚を残して ${ids.length} 枚を減らす候補に選びました。服装の違いを残したいものは選択を外してから「選択した画像を削除」を押してください。`,
       );
     },
-    [images, captions, compositionTags, allSubjects, revealTrimSelection],
+    [sameCompositionRest, revealTrimSelection],
   );
 
   // キャプションに実際に入っている被写体の内訳（2026-09-21、ホスト指摘）。
@@ -3168,6 +3265,7 @@ export function LoraStudioTab({
         trimAvailable: trimPendingSubjects.size > 0,
         trimVisited: false,
         trimSelected: selectionPurpose === "trim" && selectedImageIds.size > 0,
+        autoTidied: autoTidy?.phase === "done",
         repeatsApplied,
         settingsVisited,
         cropAvailable: flowDiag.issues.some(
@@ -3201,6 +3299,7 @@ export function LoraStudioTab({
       trimPendingSubjects,
       repeatsApplied,
       settingsVisited,
+      autoTidy,
     ],
   );
   const flowRing = (t: LoraFlowTarget) => (flow.targets.includes(t) ? " flow-next" : "");
@@ -3232,9 +3331,264 @@ export function LoraStudioTab({
     if (!was || autoCap.running || phase !== "form" || captionSource !== "ai") return;
     setRepeatsApplied(false);
     setSettingsVisited(false);
+    // おまかせで整えた後は、学習回数の均しも自動でかける（2026-09-25、ホスト案の④）。
+    if (autoTidyRef.current?.phase === "done") {
+      setAutoTidy((s) => (s ? { ...s, repeatsPending: true } : s));
+    }
     const t = window.setTimeout(scrollToNextFlow, 300);
     return () => window.clearTimeout(t);
   }, [autoCap.running, phase, captionSource, scrollToNextFlow]);
+
+  // ---- おまかせで整える（2026-09-25、ホスト案。docs/STATUS.md 00000000）----
+  // 手作業の「減らす → 切り出す → 削除 → 均す」を 1 回のクリックで通す。順番:
+  //   A. 同じ構図の重複（2 枚残し。2 人写りは 2 人とも多すぎるときだけ）を除外の候補にし、足りない顔アップ・
+  //      上半身を手持ちの画像から切り出す。除外する画像も切り出し元に使ってから除外する（2 人写りは特に貴重）。
+  //   B. 切り出した画像の構図の判定を待ってから、2 人以上写っている切り出しを除外し、それでも多すぎる構図
+  //      （赤の指摘）を減らす。減らす量は切り出しを足した後の診断で決める（先に決めると減らしすぎる）。
+  //   C. キャプションが出来たら「構図の偏りを均す」を自動でかける（自分で用意する場合は B の直後）。
+  // 除外した画像は消さずに脇へ置き（excludedImages）、いつでも元に戻せる。個別の操作は今までどおり使える。
+  const bucketLabel = (id: string) => DIAGNOSTIC_AXES.distance.buckets.find((b) => b.id === id)?.label ?? id;
+  const cropIdOf = (f: File) => `${f.name}::${f.size}::${f.lastModified}`;
+  const runAutoTidy = useCallback(async () => {
+    if (smartCropBusy || composition.running || phase !== "form" || submitting) return;
+    const run = (autoTidyRef.current?.run ?? 0) + 1;
+    const start: AutoTidyState = { run, phase: "cropping", cropIds: [], cropDone: 0, cropTotal: 0, log: [], repeatsPending: false };
+    autoTidyRef.current = start;
+    setAutoTidy(start);
+    setSelectedImageIds(new Set());
+    setSelectionPurpose(null);
+    setSelectionNote(null);
+    setDuoTrimIds(null);
+    setTrimVisited(new Set(["*"]));
+    setErrorMessage(null);
+    const issues = flowDiag.issues;
+    const log: string[] = [];
+
+    // A-1. 同じ構図の 3 枚目以降を除外の候補にする（1 人写り）。
+    const exclude = new Map<string, string>();
+    for (const i of issues) {
+      if (!i.subject || !i.sameComposition) continue;
+      const label = compositionSignatureLabel(i.sameComposition.signature);
+      const ids = sameCompositionRest(i.subject, i.sameComposition.signature).filter((id) => !exclude.has(id));
+      ids.forEach((id) => exclude.set(id, `${i.subject} の同じ構図（${label}）の 3 枚目以降`));
+      if (ids.length) log.push(`${i.subject}: 同じ構図（${label}）${i.sameComposition.count} 枚のうち 2 枚を残して ${ids.length} 枚を除外`);
+    }
+    // 2 人写りの同じ構図は、2 人とも多すぎるときだけ（診断パネルの duoPlan と同じ条件）。
+    for (const [bucket, plan] of buildDuoPlan(buildTrimPlan(issues))) {
+      const bySig = new Map<string, DatasetImage[]>();
+      for (const img of duoPoolFor(bucket, plan.subjects)) {
+        const k = sigOf(img);
+        bySig.set(k, [...(bySig.get(k) ?? []), img]);
+      }
+      let n = 0;
+      for (const [sig, g] of bySig) {
+        if (g.length < DIAGNOSTIC_TARGETS.sameCompositionMin) continue;
+        const keep = new Set([g[0].id, g[Math.floor(g.length / 2)].id]);
+        for (const img of g) {
+          if (keep.has(img.id) || exclude.has(img.id)) continue;
+          exclude.set(img.id, `2 人写り（${plan.subjects.join(" + ")}）の同じ構図（${compositionSignatureLabel(sig)}）の 3 枚目以降`);
+          n++;
+        }
+      }
+      if (n) log.push(`2 人写り（${plan.subjects.join(" + ")}）: 同じ構図の 3 枚目以降 ${n} 枚を除外`);
+    }
+
+    // A-2. 足りない顔アップ・上半身を切り出す。目安の枚数は診断の balance.add（無ければ下限枚数）。
+    const need = new Map<string, Map<"face" | "upper", number>>();
+    for (const i of issues) {
+      if (i.fixableWith !== "smart_crop" || !i.subject || !i.cropKinds?.length) continue;
+      const m = need.get(i.subject) ?? new Map<"face" | "upper", number>();
+      for (const k of i.cropKinds) {
+        const fallback = DIAGNOSTIC_TARGETS.distanceMin[k === "face" ? "closeup" : "upper"] ?? 4;
+        m.set(k, Math.max(m.get(k) ?? 0, i.balance?.add ?? fallback));
+      }
+      need.set(i.subject, m);
+    }
+    const cropIds: string[] = [];
+    const croppedSources = new Set<string>();
+    const made = { face: 0, upper: 0 };
+    let unusable = 0;
+    const distanceRank = (id: string) => {
+      const d = distanceById[id] ?? [];
+      return d.includes("full") ? 0 : d.includes("upper") ? 1 : 2;
+    };
+    // 切り出し元: その被写体が写っている取り込み画像。除外する画像を先に（どうせ消えるので）、次に引きの画像から。
+    const sourcesFor = (subject: string) =>
+      imagesRef.current
+        .filter((img) => {
+          if (img.cropKind || croppedSources.has(img.id)) return false;
+          const cap = (captionsRef.current[img.id] ?? "").trim();
+          const tags = compositionTagsRef.current[img.id] ?? "";
+          if (!cap && !tags) return false;
+          if (allSubjects.length <= 1) return true;
+          const present = imageSubjects(cap, tags, allSubjects);
+          if (subject === WHOLE_DATASET_SUBJECT) return present.length === 0;
+          return present.some((x) => x.trigger === subject);
+        })
+        .sort(
+          (a, b) =>
+            (exclude.has(b.id) ? 1 : 0) - (exclude.has(a.id) ? 1 : 0) || distanceRank(a.id) - distanceRank(b.id),
+        );
+    const wantTotal = [...need.values()].reduce((sum, m) => sum + [...m.values()].reduce((x, y) => x + y, 0), 0);
+    setAutoTidy((st) => (st ? { ...st, cropTotal: wantTotal } : st));
+    if (wantTotal > 0) {
+      setSmartCropBusy(true);
+      setSmartCropProgress({ done: 0, total: wantTotal });
+    }
+    for (const [subject, m] of need) {
+      let attempts = 0;
+      const maxAttempts = [...m.values()].reduce((x, y) => x + y, 0) * 4 + 4;
+      for (const src of sourcesFor(subject)) {
+        const kinds = [...m.entries()].filter(([, n]) => n > 0).map(([k]) => k as SmartCropKind);
+        if (kinds.length === 0 || attempts >= maxAttempts) break;
+        attempts++;
+        croppedSources.add(src.id);
+        let outputs: SmartCropOutput[];
+        try {
+          outputs = await runSmartCrop(src.file);
+        } catch (err) {
+          console.error("[LoraStudioTab] auto tidy crop failed:", src.file.name, err);
+          continue;
+        }
+        const wanted = outputs.filter((o) => kinds.includes(o.kind));
+        // 手作業の切り出しと同じ足切り（runSmartCropForDataset）。
+        const keep = wanted.filter(
+          (o) =>
+            o.upscale <= SMART_CROP_MAX_UPSCALE &&
+            Math.min(o.width, o.height) >= SMART_CROP_MIN_SHORT_EDGE &&
+            o.coverage < SMART_CROP_REDUNDANT_COVERAGE,
+        );
+        unusable += wanted.length - keep.length;
+        if (keep.length === 0) continue;
+        // 2 人写りが元なら、写っている全員の分が出るので、人数で割って各自の必要数から引く。
+        const cap = (captionsRef.current[src.id] ?? "").trim();
+        const tags = compositionTagsRef.current[src.id] ?? "";
+        const present =
+          allSubjects.length <= 1 ? [subject] : imageSubjects(cap, tags, allSubjects).map((x) => x.trigger);
+        const owners = present.length ? present : [subject];
+        for (const k of ["face", "upper"] as const) {
+          const got = keep.filter((o) => o.kind === k).length;
+          if (!got) continue;
+          made[k] += got;
+          const each = Math.max(1, Math.round(got / owners.length));
+          for (const t of owners) {
+            const mm = need.get(t);
+            if (mm?.has(k)) mm.set(k, (mm.get(k) ?? 0) - each);
+          }
+        }
+        addDatasetFiles(keep.map((o) => ({ file: o.file, cropKind: o.kind })));
+        keep.forEach((o) => cropIds.push(cropIdOf(o.file)));
+        setSmartCropProgress({ done: Math.min(wantTotal, made.face + made.upper), total: wantTotal });
+        setAutoTidy((st) =>
+          st ? { ...st, cropDone: Math.min(st.cropTotal, made.face + made.upper), cropIds: [...cropIds] } : st,
+        );
+      }
+    }
+    if (made.face + made.upper > 0) {
+      log.push(
+        `足りない構図を手持ちの画像から切り出して追加: 顔アップ ${made.face} 枚・上半身 ${made.upper} 枚` +
+          (unusable ? `（小さすぎる・元と同じ範囲などで ${unusable} 枚は不採用）` : ""),
+      );
+    } else if (need.size > 0) {
+      log.push("切り出せる画像がありませんでした（人物を検出できない、または切り出すと小さすぎる）。");
+    }
+    setSmartCropBusy(false);
+    setSmartCropProgress(null);
+
+    // A-3. 除外を実行（切り出し元に使い終わってから）。
+    excludeImages([...exclude.entries()].map(([id, reason]) => ({ id, reason })), run);
+    const next: AutoTidyState = { ...(autoTidyRef.current ?? start), phase: "waitingTags", cropIds, log: [...log] };
+    autoTidyRef.current = next;
+    setAutoTidy(next);
+  }, [
+    smartCropBusy,
+    composition.running,
+    phase,
+    submitting,
+    flowDiag,
+    sameCompositionRest,
+    duoPoolFor,
+    sigOf,
+    allSubjects,
+    distanceById,
+    addDatasetFiles,
+    excludeImages,
+  ]);
+
+  // B. 切り出した画像の構図の判定が終わったら、2 人以上の切り出しを除外し、多すぎる構図を減らす。
+  useEffect(() => {
+    const st = autoTidy;
+    if (!st || st.phase !== "waitingTags" || composition.running) return;
+    const alive = new Set(images.map((i) => i.id));
+    const ready = st.cropIds.every(
+      (id) => !alive.has(id) || Boolean(compositionTags[id]) || compositionAttemptedRef.current.has(id),
+    );
+    if (!ready) return;
+    const log: string[] = [];
+    const ex: { id: string; reason: string }[] = [];
+    const multi = st.cropIds.filter((id) => alive.has(id) && multiSubjectCropIds.has(id));
+    multi.forEach((id) => ex.push({ id, reason: "切り出した画像に 2 人以上写っている" }));
+    if (multi.length) log.push(`切り出した画像のうち、2 人以上写っている ${multi.length} 枚を除外`);
+    const skip = new Set(multi);
+    const trimPlan = buildTrimPlan(flowDiag.issues);
+    for (const [bucket, plan] of buildDuoPlan(trimPlan)) {
+      const ids = pickDupFirst(duoPoolFor(bucket, plan.subjects).filter((i) => !skip.has(i.id)), plan.count);
+      ids.forEach((id) => ex.push({ id, reason: `2 人写り（${plan.subjects.join(" + ")}）の${bucketLabel(bucket)}が多すぎる` }));
+      for (const subj of plan.subjects) {
+        const t = trimPlan.get(subj);
+        if (t) t.count -= ids.length;
+      }
+      if (ids.length) log.push(`2 人写り（${plan.subjects.join(" + ")}）の${bucketLabel(bucket)}を ${ids.length} 枚除外`);
+    }
+    for (const [subject, t] of trimPlan) {
+      if (t.count <= 0) continue;
+      const ids = pickDupFirst(trimPoolFor(subject, t.bucket).filter((i) => !skip.has(i.id)), t.count);
+      ids.forEach((id) => ex.push({ id, reason: `${subject} の${bucketLabel(t.bucket)}が多すぎる` }));
+      if (ids.length) log.push(`${subject}: 多すぎる${bucketLabel(t.bucket)}を ${ids.length} 枚除外（同じ構図の 3 枚目以降から優先）`);
+    }
+    excludeImages(ex, st.run);
+    if (log.length === 0) log.push("減らすものはありませんでした。");
+    log.push(
+      captionSource === "manual"
+        ? "構図の偏りを学習回数で均します。"
+        : "キャプションが出来たら、構図の偏りを学習回数で均します。",
+    );
+    const done: AutoTidyState = { ...st, phase: "done", log: [...st.log, ...log], repeatsPending: captionSource === "manual" };
+    autoTidyRef.current = done;
+    setAutoTidy(done);
+    window.setTimeout(scrollToNextFlow, 400);
+  }, [autoTidy, composition.running, images, compositionTags, multiSubjectCropIds, flowDiag, pickDupFirst, duoPoolFor, trimPoolFor, excludeImages, captionSource, scrollToNextFlow]);
+
+  // C. 学習回数の均し（除外が画面に反映されてから、次の描画でかける）。
+  useEffect(() => {
+    if (!autoTidy?.repeatsPending || composition.running) return;
+    applySuggestedRepeats();
+    const next: AutoTidyState = { ...autoTidy, repeatsPending: false, log: [...autoTidy.log, "構図の偏りを学習回数で均しました（学習回数の欄で個別に直せます）。"] };
+    autoTidyRef.current = next;
+    setAutoTidy(next);
+  }, [autoTidy, composition.running, applySuggestedRepeats]);
+
+  // すべて元に戻す: 切り出した画像を消し、除外した画像を戻し、学習回数を戻す。
+  const undoAutoTidy = useCallback(() => {
+    const st = autoTidyRef.current;
+    if (!st) return;
+    const cropSet = new Set(st.cropIds);
+    st.cropIds.forEach((id) => removeImage(id));
+    const mine = excludedImages.filter((e) => e.run === st.run);
+    const dropped = mine.filter((e) => cropSet.has(e.img.id));
+    dropped.forEach((e) => URL.revokeObjectURL(e.img.url));
+    if (dropped.length) setExcludedImages((prev) => prev.filter((e) => !(e.run === st.run && cropSet.has(e.img.id))));
+    restoreExcluded(mine.filter((e) => !cropSet.has(e.img.id)).map((e) => e.img.id));
+    if (repeatsApplied) {
+      setImageRepeats(imagesRef.current.map((i) => i.id), 1);
+      setRepeatsApplied(false);
+      setRepeatsNotice(null);
+    }
+    autoTidyRef.current = null;
+    setAutoTidy(null);
+    setTrimVisited(new Set());
+    setAddNotice("おまかせで整えた内容を元に戻しました（切り出した画像を消し、除外した画像を戻しました）。");
+  }, [excludedImages, removeImage, restoreExcluded, repeatsApplied, setImageRepeats]);
 
   // 減らす段階（減らすボタン・削除ボタンが光っている間）が終わったら、次の場所へ送る（2026-09-25、ホスト要望）。
   const inTrimPhase = flow.targets.includes("trimPrepare") || flow.targets.includes("deleteSelected");
@@ -4081,6 +4435,10 @@ export function LoraStudioTab({
     setRepeatsApplied(false);
     setSettingsVisited(false);
     setCompositionTags({});
+    excludedImages.forEach((e) => URL.revokeObjectURL(e.img.url));
+    setExcludedImages([]);
+    setAutoTidy(null);
+    autoTidyRef.current = null;
     setComposition({ running: false, done: 0, total: 0, error: null });
     compositionAttemptedRef.current = new Set();
     setCurationPairs([]);
@@ -4839,9 +5197,21 @@ export function LoraStudioTab({
               onPrepareDuoTrim={prepareDuoTrim}
               highlightTrimSubjects={flow.targets.includes("trimPrepare") ? trimPendingSubjects : undefined}
               highlightPrepare={flow.targets.includes("cropPrepare")}
+              onAutoTidy={() => void runAutoTidy()}
+              autoTidyBusy={autoTidy !== null && autoTidy.phase !== "done"}
+              highlightAutoTidy={flow.targets.includes("trimPrepare") || flow.targets.includes("cropPrepare")}
             />
             {flowHint("trimPrepare")}
             </div>
+          )}
+          {autoTidy && (
+            <AutoTidyPanel
+              state={autoTidy}
+              excluded={excludedImages.filter((e) => e.run === autoTidy.run)}
+              disabled={busy || smartCropBusy || composition.running}
+              onRestore={(id) => restoreExcluded([id])}
+              onUndo={undoAutoTidy}
+            />
           )}
 
           {/* 診断の下にクロップ欄を置く（2026-09-22、ホスト指摘）。
