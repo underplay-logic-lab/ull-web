@@ -2909,8 +2909,10 @@ export function LoraStudioTab({
         // ズレると trigger が本文へ紛れ込むので、値を入力させる設計をやめた。
         speed: effectiveSpeed,
         // 複数人物のジョブは ai-toolkit に trigger_word を注入させない（2026-09-25、modal_lora_worker.py 参照）。
+        // 生 YAML でも送る（2026-09-26。送らないと worker が 1 人の LoRA と見て画面の主トリガーを補い、
+        // もう一人だけのキャプションにも主トリガーが足されていた）。
         extraTriggers:
-          !yamlMode && allSubjects.length > 1
+          allSubjects.length > 1
             ? allSubjects.slice(1).map((x) => x.trigger.trim()).filter(Boolean)
             : undefined,
         keepTokensPerImage:
