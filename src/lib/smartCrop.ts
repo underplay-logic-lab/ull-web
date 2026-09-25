@@ -41,7 +41,21 @@ export type SmartCropOutput = {
   upscale: number;
   /** 切り出し元の領域が元画像の面積に占める割合。1に近いほど元画像と同じ。 */
   coverage: number;
+  /**
+   * 顔・頭が枠から欠けていそうか（2026-09-26、「おまかせで整える」の品質の足切り）。顔アップは顔の枠が元画像の端から
+   * 大きくはみ出している（元画像の時点で顔が切れている）、上半身は推定した頭頂部が画像の中に収まる枠の外にある。
+   */
+  headCut?: boolean;
 };
+
+// はみ出しを許す割合（枠の高さ・幅に対して）。顔の枠は髪の余白込みなので、少しのはみ出しは顔そのものは欠けていない。
+const FACE_OUTSIDE_TOLERANCE = 0.15;
+const HEAD_OUTSIDE_TOLERANCE = 0.02;
+function boxOutsideRatio(box: { left: number; top: number; width: number; height: number }, w: number, h: number): number {
+  const ox = Math.max(0, -box.left) + Math.max(0, box.left + box.width - w);
+  const oy = Math.max(0, -box.top) + Math.max(0, box.top + box.height - h);
+  return Math.max(ox / Math.max(1, box.width), oy / Math.max(1, box.height));
+}
 
 export const SMART_CROP_KIND_LABEL: Record<SmartCropKind, string> = {
   face: "顔",
@@ -213,6 +227,7 @@ export async function runSmartCrop(file: File): Promise<SmartCropOutput[]> {
           height: outH,
           upscale: outW / Math.max(1, box.width),
           coverage: (box.width * box.height) / (w * h),
+          headCut: boxOutsideRatio(box, w, h) > FACE_OUTSIDE_TOLERANCE,
         });
       }
       if (forehead) headTop = pt(forehead, w, h);
@@ -289,6 +304,11 @@ export async function runSmartCrop(file: File): Promise<SmartCropOutput[]> {
           height: uH,
           upscale: uW / Math.max(1, upperBox.width),
           coverage: (upperBox.width * upperBox.height) / (w * h),
+          // 画像に収めた後の枠より頭頂部が上にある（＝頭が切れる）。元画像の上端より上に頭がある場合も含む。
+          headCut: (() => {
+            const c = clampBoxToImage(upperBox, w, h);
+            return estimatedHeadTop.y < c.top - HEAD_OUTSIDE_TOLERANCE * c.height;
+          })(),
         });
 
         const bodyPoints: Point[] = pose.filter(isLandmarkVisible).map((lm) => pt(lm, w, h));

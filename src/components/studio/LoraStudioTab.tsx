@@ -1144,7 +1144,7 @@ export function LoraStudioTab({
     const failures: string[] = [];
     // 数が合わないという指摘（2026-09-22）に応えるため、全部を数えて最後に
     // 1回だけ内訳を出す。「対象 = 追加 + 除外 + 作れなかった」が必ず合う。
-    const rejected = { upscaled: 0, redundant: 0, tooSmall: 0 };
+    const rejected = { upscaled: 0, redundant: 0, tooSmall: 0, headCut: 0 };
     let kept = 0;
     let noOutput = 0;
     for (let i = 0; i < candidates.length; i++) {
@@ -1166,6 +1166,11 @@ export function LoraStudioTab({
           // 元画像とほぼ同じ範囲＝情報が増えない重複（全身→全身）。
           if (o.coverage >= SMART_CROP_REDUNDANT_COVERAGE) {
             rejected.redundant += 1;
+            return false;
+          }
+          // 顔・頭が枠から欠ける（2026-09-26）。顔が切れた画像は顔を覚えさせる素材として逆効果。
+          if (o.headCut) {
+            rejected.headCut += 1;
             return false;
           }
           return true;
@@ -1194,7 +1199,7 @@ export function LoraStudioTab({
     scrollToCompositionRef.current = true;
     setAddNotice(
       `元画像 ${candidates.length} 枚から ${kept} 枚を切り出してデータセットに追加しました。` +
-        ` 内訳: 生成 ${kept + rejected.upscaled + rejected.redundant + rejected.tooSmall} 枚` +
+        ` 内訳: 生成 ${kept + rejected.upscaled + rejected.redundant + rejected.tooSmall + rejected.headCut} 枚` +
         ` → 採用 ${kept}` +
         (rejected.upscaled
           ? ` / 切り出し元が小さすぎて除外 ${rejected.upscaled}（${SMART_CROP_MAX_UPSCALE}倍以上に引き伸ばされるため。全身写真から顔アップを作っても、ぼけた顔を学習させるだけです）`
@@ -1205,6 +1210,7 @@ export function LoraStudioTab({
         (rejected.redundant
           ? ` / 元画像とほぼ同じ範囲で除外 ${rejected.redundant}（情報が増えません）`
           : "") +
+        (rejected.headCut ? ` / 顔・頭が枠から欠けるので除外 ${rejected.headCut}` : "") +
         (noOutput
           ? `。 ${noOutput} 枚は人物の骨格を検出できず、選んだ構図を作れませんでした。`
           : "。"),
@@ -3458,7 +3464,8 @@ export function LoraStudioTab({
           (o) =>
             o.upscale <= SMART_CROP_MAX_UPSCALE &&
             Math.min(o.width, o.height) >= SMART_CROP_MIN_SHORT_EDGE &&
-            o.coverage < SMART_CROP_REDUNDANT_COVERAGE,
+            o.coverage < SMART_CROP_REDUNDANT_COVERAGE &&
+            !o.headCut,
         );
         unusable += wanted.length - keep.length;
         if (keep.length === 0) continue;
@@ -3489,7 +3496,7 @@ export function LoraStudioTab({
     if (made.face + made.upper > 0) {
       log.push(
         `足りない構図を手持ちの画像から切り出して追加: 顔アップ ${made.face} 枚・上半身 ${made.upper} 枚` +
-          (unusable ? `（小さすぎる・元と同じ範囲などで ${unusable} 枚は不採用）` : ""),
+          (unusable ? `（小さすぎる・元と同じ範囲・顔が欠けるなどで ${unusable} 枚は不採用）` : ""),
       );
     } else if (need.size > 0) {
       log.push("切り出せる画像がありませんでした（人物を検出できない、または切り出すと小さすぎる）。");
