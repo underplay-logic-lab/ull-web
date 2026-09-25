@@ -4994,7 +4994,7 @@ export function LoraStudioTab({
                   <p className="flex items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
                     <Loader2 size={13} className="shrink-0 animate-spin" />
                     <span>
-                      <span className="font-medium">高速AIビジョンが全画像を自動解析中…</span>（
+                      <span className="font-medium">AI がキャプションを作っています…</span>（
                       {Math.min(aiCaptionedCount, aiTargetCount)}/{aiTargetCount}）
                       {autoCap.note && (
                         <span className="ml-1 text-neon-violet/70">— {autoCap.note}</span>
@@ -5022,8 +5022,8 @@ export function LoraStudioTab({
                           {restoredCaptionCount >= aiCaptionedCount
                             ? `この端末に残っていた前回の解析結果（${restoredCaptionCount} 枚）を再利用しました（AI 解析は使っていません）`
                             : restoredCaptionCount > 0
-                              ? `高速AIビジョンが自動解析しました（うち ${restoredCaptionCount} 枚は前回の解析結果を再利用）`
-                              : "高速AIビジョンが全画像を自動解析しました（最適タグを即時付与）"}
+                              ? `AI がキャプションを作りました（うち ${restoredCaptionCount} 枚は前回の結果を再利用）`
+                              : `AI がキャプションを作りました（${aiCaptionedCount} 枚）`}
                         </span>
 
               {pendingCaptionCount > 0 &&
@@ -5036,8 +5036,7 @@ export function LoraStudioTab({
                   <p className="flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-neon-violet">
                     <span className="shrink-0">✨</span>
                     <span>
-                      <span className="font-medium">高速AIビジョンが全画像を自動解析</span>
-                      し、最適なタグを即時付与します（画像＋同名 .txt の ZIP を入れると自前キャプション扱い）。
+                      キャプションはこのあと AI が作ります（画像と同名の .txt を一緒に入れると、そのキャプションを使います）。
                     </span>
                   </p>
                 ))}
