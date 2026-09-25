@@ -3168,6 +3168,14 @@ export function LoraStudioTab({
     const el = document.querySelector(".flow-next") ?? document.getElementById(DIAGNOSTICS_PANEL_ID);
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, []);
+  // 特徴を確定したら、次に光っている場所（構図の診断・キャプション作成など）へ送る（2026-09-25、ホスト報告
+  // 「確定しても自動スクロールしない」）。診断欄への自動スクロールは 1 データセットにつき 1 回なので、キャプションの
+  // 作り方を途中で「AI に作らせる」に変えて確定が必要になったときは、そちらが既に済んでいて動かなかった。
+  const onIdentityConfirmChange = (checked: boolean) => {
+    setIdentityConfirmed(checked);
+    if (checked) window.setTimeout(scrollToNextFlow, 250);
+  };
+
   // 減らす段階（減らすボタン・削除ボタンが光っている間）が終わったら、次の場所へ送る（2026-09-25、ホスト要望）。
   const inTrimPhase = flow.targets.includes("trimPrepare") || flow.targets.includes("deleteSelected");
   const prevTrimPhaseRef = useRef(false);
@@ -5391,7 +5399,7 @@ export function LoraStudioTab({
                   <input
                     type="checkbox"
                     checked={identityConfirmed}
-                    onChange={(e) => setIdentityConfirmed(e.target.checked)}
+                    onChange={(e) => onIdentityConfirmChange(e.target.checked)}
                     disabled={busy || identityExtracting !== null}
                     className="mt-0.5 accent-neon-violet"
                   />
@@ -5496,7 +5504,7 @@ export function LoraStudioTab({
                         <input
                           type="checkbox"
                           checked={identityConfirmed}
-                          onChange={(e) => setIdentityConfirmed(e.target.checked)}
+                          onChange={(e) => onIdentityConfirmChange(e.target.checked)}
                           disabled={busy || identityExtracting !== null}
                           className="mt-0.5 accent-neon-violet"
                         />
