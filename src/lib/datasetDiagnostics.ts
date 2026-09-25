@@ -226,6 +226,12 @@ function tagSet(tags: string): Set<string> {
   return new Set(splitTags(tags));
 }
 
+/** 構図タグ（WD）から数えた人数。切り出しの「2 人以上写っている」判定にキャプション前から使う（2026-09-25）。 */
+export function peopleCountFromTags(tags: string): number {
+  const { f, m } = peopleOf(tagSet(tags));
+  return f + m;
+}
+
 function peopleOf(set: Set<string>): { f: number; m: number } {
   const count = (kind: "girl" | "boy") => {
     let n = 0;

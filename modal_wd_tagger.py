@@ -28,9 +28,12 @@ app = modal.App("ull-wd-tagger")
 REPO = "SmilingWolf/wd-eva02-large-tagger-v3"
 MODEL_DIR = "/opt/wd"
 THRESHOLD = 0.35
-# 1 コンテナに渡す枚数。小さいほど並列に広がる（起動は image に焼いたモデルの読み込み 数秒）。
-CHUNK = 12
-MAX_CONTAINERS = 16
+# 1 コンテナに渡す枚数と、同時に立てる台数（2026-09-25 見直し）。CPU は「確保したコア × 時間」で課金され、
+# 12 枚ずつ・最大 16 台・終了後 60 秒待機では、待機と起動の分が本処理（145 枚で約 1,600 コア秒 ≈ $0.02）を
+# 大きく上回り、1 回 $0.1〜0.27 かかっていた（ホスト報告、docs/gpu-benchmarks.md の CPU 課金の節）。
+# 台数を絞って 1 台あたりを増やし、終わったら 2 秒で止める。145 枚で 5 台・1 分弱の見込み。
+CHUNK = 32
+MAX_CONTAINERS = 6
 MAX_IMAGES = 500
 KAOMOJI = {"0_0", "(o)_(o)", "+_+", "+_-", "._.", "<o>_<o>", "<|>_<|>", "=_=", ">_<", "3_3", "6_9", ">_o",
            "@_@", "^_^", "o_o", "u_u", "x_x", "|_|", "||_||"}
@@ -72,7 +75,8 @@ def _authorize(request: fastapi.Request) -> None:
     cpu=8.0,
     memory=6144,
     timeout=10 * 60,
-    scaledown_window=60,
+    # 終わったら 2 秒で止める（上のコメント参照。8 コア × 台数分の待機課金を残さない）。
+    scaledown_window=2,
     max_containers=MAX_CONTAINERS,
     retries=0,
     secrets=[modal.Secret.from_name("r2-artifacts")],
@@ -168,7 +172,7 @@ class WdTagger:
 @app.function(
     image=cpu_image,
     timeout=15 * 60,
-    scaledown_window=60,
+    scaledown_window=2,
     retries=0,
     secrets=[modal.Secret.from_name("r2-artifacts")],
 )
@@ -207,7 +211,7 @@ def tag_run(job: dict) -> dict:
     image=endpoint_image,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
     timeout=60,
-    scaledown_window=60,
+    scaledown_window=2,
 )
 @modal.fastapi_endpoint(method="POST")
 def tag_dispatch(body: dict, request: fastapi.Request):
@@ -226,7 +230,7 @@ def tag_dispatch(body: dict, request: fastapi.Request):
     image=endpoint_image,
     secrets=[modal.Secret.from_name("wan-animate-auth")],
     timeout=30,
-    scaledown_window=60,
+    scaledown_window=2,
 )
 @modal.fastapi_endpoint(method="GET")
 def tag_status(dict_key: str, request: fastapi.Request):

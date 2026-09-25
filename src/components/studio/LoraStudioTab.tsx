@@ -97,6 +97,7 @@ import {
   compositionText,
   DIAGNOSTIC_AXES,
   imageSubjects,
+  peopleCountFromTags,
   suggestRepeats,
   WHOLE_DATASET_SUBJECT,
 } from "@/lib/datasetDiagnostics";
@@ -1499,10 +1500,13 @@ export function LoraStudioTab({
     if (allSubjects.filter((x) => x.trigger.trim()).length < 2) return [];
     return croppedImages.filter((img) => {
       const cap = (captions[img.id] ?? "").trim();
-      if (!cap) return false;
-      return matchLeadingSubjectTriggers(cap, allSubjects).length >= 2;
+      if (cap) return matchLeadingSubjectTriggers(cap, allSubjects).length >= 2;
+      // 切り出しはキャプションより前なので、構図タグの人数（1girl, 1boy / 2girls 等）で見る（2026-09-25、
+      // ホスト指摘「キャプション前では正しく判定できない」）。
+      const tags = compositionTags[img.id] ?? "";
+      return tags ? peopleCountFromTags(tags) >= 2 : false;
     });
-  }, [croppedImages, captions, allSubjects]);
+  }, [croppedImages, captions, compositionTags, allSubjects]);
 
   // 手で足した特徴を1語だけ英訳する（2026-09-22）。以前は日本語のまま英側へ
   // 入り、LoRA の metadata に日本語タグが焼かれていた。

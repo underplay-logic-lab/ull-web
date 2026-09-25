@@ -103,6 +103,7 @@ ULL Studio の差別化は「ローカルPCでも他のSaaSでも不可能な処
 - **動画生成系 GPU ワーカー（30秒 Keep-Warm 規格）**: `gpu=` を持つ関数・クラスには **`scaledown_window=30`** を明示。値は一律 `30` で統一し個別に変更しない。理由: コスト最適化とUX（30秒以内の連続生成でコールドスタート回避）の両立。
 - **LoRA worker（`modal_lora_worker.py`）は例外 — 全関数一律 `scaledown_window=2`（2秒即切り）**: この1ファイル内の全 `@app.function` / `@app.cls`（Webエンドポイント／内部関数を問わず）に明示し、`min_containers` は使わない（常に0）。理由: LoRA学習は長時間の単発バッチジョブで連続生成UXが無く、30秒Keep-Warmの恩恵がなくアイドル課金だけが残る。
 - GPU-less（CPUのみ）の関数（`ModalStorage*` 等、`modal_lora_worker.py` 以外）はこの規格の対象外。
+- **CPU のみの関数も既定は `scaledown_window=2`（終わったら即停止、台数に関わらず。2026-09-25 ホスト判断）。** 確保コア×台数×(起動+待機) で課金され、待機が本処理より高くつく（WD タガーで実例、docs §CPU の並列起動）。多台数の `.map` は台数も絞る。
 
 ### torch.compile 標準
 
