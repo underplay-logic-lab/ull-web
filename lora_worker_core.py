@@ -539,7 +539,7 @@ ULL_COST_GUARD_MULTIPLIER = max(
 # sdxl は別ワーカー（sd-scripts / 別 tier）で桁が違うため別扱い。旧値 0.9 は
 # 実測前の仮値だったので、2026-09-15 スモーク実測(1.32s/it)由来の 1.4 へ揃える。
 LORA_SPI_BASELINE: dict[str, float] = {
-    # src/lib/pricing/loraRuntime.ts と同値に保つこと（payload に
+    # src/lib/pricing/loraRuntime.ts と同値に保つこと（2026-09-26 に全 arch を揃え直した。payload に
     # cost_cap_seconds が乗らなかった場合のフォールバック用）。
     # 2026-09-20（夜）: GUI 既定条件（実効バッチ1 / gradient_checkpointing 無効 /
     # torch.compile **有効**）の本番ランで minimax_h3 を直接実測し 1.80 s/it。
@@ -547,17 +547,19 @@ LORA_SPI_BASELINE: dict[str, float] = {
     # 逆算」で、実測の半分だった。未実測の他 arch は相対順序を保ったまま同じ
     # 倍率（x2.0）でスケールしてある。
     # 詳細は loraRuntime.ts のコメントと docs/gpu-benchmarks.md §14.15。
-    "minimax_h3": 1.8,
-    "wan22_14b": 1.44,
+    # 2026-09-26 実ジョブ 2 本（cbeb0865 0.31 / 3e8c7fc1 0.33、compile 無効・rank32・1024px）に 20% 上乗せで 0.40。
+    # loraRuntime.ts の LORA_SPI_BASELINE と揃えること。
+    "minimax_h3": 0.40,
+    "wan22_14b": 0.55,
     "wan21": 1.24,
-    "ltx2": 1.24,
+    "ltx2": 1.10,
     "hunyuan": 1.44,
     "cogvideox": 1.44,
     "qwen_image": 0.72,
-    "krea2": 0.72,
-    "anima": 0.5,
-    "zimage": 0.42,
-    "flux2_klein_4b": 0.4,
+    "krea2": 0.89,
+    "anima": 0.57,
+    "zimage": 0.64,
+    "flux2_klein_4b": 0.67,
     "sdxl": 0.67,  # 2026-09-23 RTX PRO 6000 実測 0.645（LoCon 既定込み、docs §14.28）
 }
 # 未知 arch（カスタムモデル）の s/it フォールバック。pricing_knobs の

@@ -74,7 +74,11 @@ export const LORA_SPI_REFERENCE_RESOLUTION = 1024;
  */
 export const LORA_SPI_BASELINE: Readonly<Record<string, number>> = {
   // --- ai-toolkit ワーカー ---
-  minimax_h3: 1.80, // 実測（docs §14.15）。GUI 既定条件そのもので計測した値
+  // 2026-09-26 に 1.80 → 0.40。実ジョブ 2 本（cbeb0865: 500step 0.31 / 3e8c7fc1: 1906step 0.33、B300・1024px・rank32・
+  // batch1・compile 無効）に他 arch と同じ 20% を乗せた値。途中保存込みの壁時計（764s/1906step = 0.40）とも一致。
+  // 1.80（docs §14.15、2026-09-20 のベンチ・compile 有効・rank64）との 5 倍の差の原因は未特定。1.80 のままだと
+  // 原価の約 8 倍を請求していた（目標 3 倍）。
+  minimax_h3: 0.40,
   // 2026-09-23 実測 0.46（実写220枚・1024px・batch1・block_compile・50step、B300、docs §14.16）。
   // 単発50stepなので 20% の安全側を乗せて 0.55。それでも旧推測 1.44 の 1/2.6。
   wan22_14b: 0.55,
