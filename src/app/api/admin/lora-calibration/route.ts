@@ -9,7 +9,7 @@ import {
   loraPrepPerImageSeconds,
   type LoraSpeed,
 } from "@/lib/pricing/loraRuntime";
-import { getPricingKnobs } from "@/lib/pricing/knobs.server";
+import { makeRowCostJpy } from "@/lib/adminLogsSummary.server";
 
 // admin「Pricing」— LoRA の見積もりと実績の比較（2026-09-26、ホスト判断）。
 //
@@ -22,6 +22,7 @@ import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 // と実測の s/it の比から、実測を「基準条件（1024px・バッチ1・rank32）の s/it」に直し、今のコードの前提と比べる。
 
 const DAYS = 90;
+const FEATURE_DAYS = 30;
 // 前提は「実測 + 20%」で置く約束（loraRuntime.ts）。この範囲を外れたら目立たせる。
 const TARGET_MARGIN = 1.2;
 const OVER_RATIO = 1.5; // 前提が実測の 1.5 倍超 → 取りすぎ
@@ -66,7 +67,7 @@ export async function GET() {
     .limit(500);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const knobs = await getPricingKnobs();
+  const { rowCostJpy, knobs } = await makeRowCostJpy();
 
   type Job = {
     id: string;
@@ -175,7 +176,74 @@ export async function GET() {
   const order = { over: 0, under: 1, ok: 2, no_data: 3 } as const;
   rows.sort((a, b) => order[a.status] - order[b.status] || b.jobs - a.jobs);
 
+  // ---- LoRA 以外も含む、機能ごとの売上と原価（2026-09-26、ホスト要望「LoRA 以外も欲しい」）----
+  // 超解像・Multi-Angle・Director は「1 step 秒数」のような前提を持たず、単価（knob）で課金している。ここでは
+  // 実行ログ（generation_logs）から「売上 ÷ GPU 原価」を機能 × GPU ごとに出す。原価の計算は実稼働ログ・日次サマリーと
+  // 共通（makeRowCostJpy）。成功だけで倍率を出し、失敗の原価は別に数える（失敗は返金で売上 0 のため）。
+  const featureSince = new Date(Date.now() - FEATURE_DAYS * 86400_000).toISOString();
+  const { data: logs, error: logErr } = await supabaseAdmin
+    .from("generation_logs")
+    .select("job_type, status, gpu_tier, execution_time_ms, credits_consumed")
+    .gte("created_at", featureSince)
+    .limit(20000);
+  if (logErr) return NextResponse.json({ error: logErr.message }, { status: 500 });
+  type Agg = { jobType: string; gpuTier: string; count: number; failed: number; revenueJpy: number; costJpy: number; failedCostJpy: number; markups: number[]; negative: number; low: number };
+  const aggs = new Map<string, Agg>();
+  const lowMarkup = 1 / (1 - Math.min(0.99, Math.max(0, knobs.alert_low_margin_percent / 100)));
+  for (const l of logs ?? []) {
+    const tier = String(l.gpu_tier ?? "").trim() || "none";
+    const k = `${l.job_type}|${tier}`;
+    const a =
+      aggs.get(k) ??
+      { jobType: String(l.job_type), gpuTier: tier, count: 0, failed: 0, revenueJpy: 0, costJpy: 0, failedCostJpy: 0, markups: [], negative: 0, low: 0 };
+    const cost = rowCostJpy({ job_type: String(l.job_type), execution_time_ms: l.execution_time_ms, gpu_tier: l.gpu_tier });
+    if (l.status === "success") {
+      const rev = (l.credits_consumed ?? 0) * knobs.credit_to_jpy;
+      a.count += 1;
+      a.revenueJpy += rev;
+      a.costJpy += cost;
+      if (cost > 0 && rev > 0) {
+        const mk = rev / cost;
+        a.markups.push(mk);
+        if (mk < 1) a.negative += 1;
+        else if (mk < lowMarkup) a.low += 1;
+      }
+    } else {
+      a.failed += 1;
+      a.failedCostJpy += cost;
+    }
+    aggs.set(k, a);
+  }
+  const features = [...aggs.values()]
+    .filter((a) => a.count > 0 || a.failedCostJpy > 0)
+    .map((a) => {
+      const markup = a.costJpy > 0 ? a.revenueJpy / a.costJpy : null;
+      const status: "negative" | "low" | "ok" | "no_data" =
+        a.markups.length === 0 ? "no_data" : a.negative > 0 ? "negative" : a.low > 0 ? "low" : "ok";
+      return {
+        jobType: a.jobType,
+        gpuTier: a.gpuTier,
+        count: a.count,
+        failed: a.failed,
+        revenueJpy: Math.round(a.revenueJpy),
+        costJpy: Math.round(a.costJpy),
+        failedCostJpy: Math.round(a.failedCostJpy),
+        markup: round(markup, 2),
+        medianMarkup: round(median(a.markups), 2),
+        minMarkup: round(a.markups.length ? Math.min(...a.markups) : null, 2),
+        maxMarkup: round(a.markups.length ? Math.max(...a.markups) : null, 2),
+        negative: a.negative,
+        low: a.low,
+        status,
+      };
+    });
+  const fOrder = { negative: 0, low: 1, ok: 2, no_data: 3 } as const;
+  features.sort((a, b) => fOrder[a.status] - fOrder[b.status] || b.revenueJpy - a.revenueJpy);
+
   return NextResponse.json({
+    featureDays: FEATURE_DAYS,
+    lowMarginPercent: knobs.alert_low_margin_percent,
+    features,
     days: DAYS,
     targetMargin: TARGET_MARGIN,
     overRatio: OVER_RATIO,

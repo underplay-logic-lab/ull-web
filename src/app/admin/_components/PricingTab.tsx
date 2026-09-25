@@ -189,6 +189,9 @@ export function PricingTab() {
 
   return (
     <div>
+      {/* 見積もりと実績（2026-09-26、ホスト要望「一番上に」）。単価を直す前に、まずずれを見る。 */}
+      <LoraCalibrationCard />
+
       <p className="mb-5 text-sm text-muted">
         全工程のクレジット単価・課金係数・損切り閾値をここで編集します。保存すると約1分以内に反映され、Modal
         の再デプロイは不要です。
@@ -284,8 +287,6 @@ export function PricingTab() {
               </section>
             );
           })}
-
-          <LoraCalibrationCard />
 
           <section className="mb-8">
             <h3 className="mb-1 text-sm font-semibold text-foreground">Wan Animate（旧 studio_pricing）</h3>

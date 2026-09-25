@@ -1766,6 +1766,7 @@ def train_sdxl_lora_job(params: dict) -> dict:
         last_vram_log = 0.0
         vram_peak = 0.0  # 完了時に vram_peak_gb として残す（CLAUDE.md §6-3）
         committed_ckpts = 0
+        first_step_at = 0.0  # 最初の step の時刻（準備時間 = これ − 開始、2026-09-26 metrics 用）
         for line in proc.stdout:
             # ⚠️ 読むだけで print していなかった（2026-09-22 発見）。sd-scripts の
             # 起動ログ・バケット情報・ステップ進捗が丸ごと飲み込まれており、
@@ -1782,6 +1783,7 @@ def train_sdxl_lora_job(params: dict) -> dict:
                 if cur > last_step:
                     if not rate_hist:
                         first_step = cur
+                        first_step_at = now
                     rate_hist.append((now, cur))
                     if len(rate_hist) > 120:
                         rate_hist = rate_hist[-120:]
@@ -1993,6 +1995,30 @@ def train_sdxl_lora_job(params: dict) -> dict:
             metadata["license_url"] = license_info["url"]
             metadata["license_metadata_keys"] = license_keys
         metadata["host_ram_peak_gb"] = _host_ram_peak_gb()
+        # 課金の前提（loraRuntime.ts の LORA_SPI_BASELINE["sdxl"]）と比べるための実測（2026-09-26、admin「Pricing」の
+        # 見積もりと実績の表）。ai-toolkit ワーカーの metadata.metrics と同じキー。s_per_it は終盤 ~30 step の
+        # trimmed 平均（保存で跳ねた step を落とす）、s_per_it_wall は最初〜最後の step の壁時計（保存込み）。
+        try:
+            spi_trim = _trimmed_spi(rate_hist)
+            spi_wall = (
+                (rate_hist[-1][0] - first_step_at) / (last_step - first_step)
+                if first_step_at and last_step > first_step
+                else None
+            )
+            metadata["metrics"] = {
+                "arch": "sdxl",
+                "images": len(image_paths),
+                "resolution": int(resolution),
+                "steps_config": declared_steps,
+                "steps_observed": int(last_step),
+                "prep_s": round(first_step_at - started, 1) if first_step_at else None,
+                "s_per_it": round(float(spi_trim), 4) if spi_trim else None,
+                "s_per_it_wall": round(float(spi_wall), 4) if spi_wall else None,
+                "raw_yaml": False,
+            }
+            log(f"metrics: {metadata['metrics']}")
+        except Exception as mx:  # noqa: BLE001 — 記録だけなので本処理は止めない
+            print(f"[sdxl] metrics skipped: {mx!r}", flush=True)
         print(f"[sdxl] {_host_ram_report()}", flush=True)
         _patch_job(
             job_id,
