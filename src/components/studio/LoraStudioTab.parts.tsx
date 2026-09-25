@@ -910,6 +910,9 @@ export function ImageDropzone({
               </span>
             )}
           </div>
+          {/* 説明の帯と表示の行をひとまとめにして、候補を選んだらこの上端へスクロールする（2026-09-25、ホスト指摘
+              「表示の行に合わせると上の説明が見切れる」）。 */}
+          <div id={DATASET_GRID_BAR_ID} className="scroll-mt-28">
           {selectionNote && selected.size > 0 && (
             <div className="mt-2 space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-200">
               <p>{selectionNote}</p>
@@ -927,7 +930,7 @@ export function ImageDropzone({
             </div>
           )}
           {(selected.size > 0 || (warnIds?.size ?? 0) > 0 || onBackToDiagnostics) && (
-            <div id={DATASET_GRID_BAR_ID} className="mt-2 flex scroll-mt-24 flex-wrap items-center gap-1.5 text-[10px]">
+            <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px]">
               <span className="text-muted">表示:</span>
               {(
                 [
@@ -960,6 +963,7 @@ export function ImageDropzone({
               )}
             </div>
           )}
+          </div>
           <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-5">
             {images
               .filter((img) =>

@@ -87,6 +87,9 @@ export function DatasetDiagnosticsPanel({
   const trimPlan = new Map<string, { bucket: string; count: number }>();
   for (const i of diag.issues) {
     const b = i.balance;
+    // 減らすボタンは赤（学習回数では届かない）の比率不足だけ（2026-09-25、ホスト報告「減らしたら比率が変わって
+    // また別の減らすボタンが出る」）。黄は後の学習回数で均せるので、文章で案内するだけにする。
+    if (i.level !== "error") continue;
     if (!i.subject || !b?.trimBucket || b.trim <= 0) continue;
     const cur = trimPlan.get(i.subject);
     if (!cur || b.trim > cur.count) trimPlan.set(i.subject, { bucket: b.trimBucket, count: b.trim });

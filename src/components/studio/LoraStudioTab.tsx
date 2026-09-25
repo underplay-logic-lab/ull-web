@@ -2910,7 +2910,8 @@ export function LoraStudioTab({
     if (trimVisited.has("*")) return out;
     for (const x of flowDiag.issues) {
       if (!x.subject || trimVisited.has(x.subject)) continue;
-      if (x.balance?.trimBucket || x.sameComposition) out.add(x.subject);
+      // 減らすは赤の比率不足（DatasetDiagnosticsPanel と同じ条件）と、同じ構図の重複（任意）。
+      if ((x.level === "error" && x.balance?.trimBucket) || x.sameComposition) out.add(x.subject);
     }
     return out;
   }, [flowDiag, trimVisited]);
@@ -2976,6 +2977,23 @@ export function LoraStudioTab({
     ],
   );
   const flowRing = (t: LoraFlowTarget) => (flow.targets.includes(t) ? " flow-next" : "");
+
+  // 次に光っている場所へスクロールする（2026-09-25）。光る要素には flow-next クラスが付くので、画面上で最初の
+  // ものへ送る。無ければ診断欄へ。
+  const scrollToNextFlow = useCallback(() => {
+    const el = document.querySelector(".flow-next") ?? document.getElementById(DIAGNOSTICS_PANEL_ID);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
+  // 減らす段階（減らすボタン・削除ボタンが光っている間）が終わったら、次の場所へ送る（2026-09-25、ホスト要望）。
+  const inTrimPhase = flow.targets.includes("trimPrepare") || flow.targets.includes("deleteSelected");
+  const prevTrimPhaseRef = useRef(false);
+  useEffect(() => {
+    const was = prevTrimPhaseRef.current;
+    prevTrimPhaseRef.current = inTrimPhase;
+    if (!was || inTrimPhase) return;
+    const t = window.setTimeout(scrollToNextFlow, 200);
+    return () => window.clearTimeout(t);
+  }, [inTrimPhase, scrollToNextFlow]);
   // 被写体ごとの欄は「未入力の最初の1人」だけ光らせる（2026-09-22、ホスト指摘
   // 「2人目を追加すると1人目の欄も光る」）。allSubjects の 0 番が1人目。
   const genderMissingIdx = allSubjects.findIndex((x) => !(x.fixedTags ?? "").trim());
@@ -4297,13 +4315,8 @@ export function LoraStudioTab({
               setSelectionNote(null);
               setDuoTrimIds(null);
               setAddNotice(`${n} 枚を削除しました。診断を更新したので、下の診断で結果を確認してください。`);
-              window.setTimeout(
-                () =>
-                  document
-                    .getElementById(DIAGNOSTICS_PANEL_ID)
-                    ?.scrollIntoView({ behavior: "smooth", block: "start" }),
-                150,
-              );
+              // 次に光っている場所（次の人の減らす・切り出しの準備・キャプション作成）へ送る。
+              window.setTimeout(scrollToNextFlow, 200);
             }}
             belowDropArea={
               <>
