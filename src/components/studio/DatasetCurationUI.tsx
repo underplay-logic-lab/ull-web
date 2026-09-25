@@ -362,6 +362,10 @@ export function DatasetCurationUI({
       return { term, count: kept.filter((p) => re.test(p.caption)).length };
     });
   }, [featureTerms, kept]);
+  const featureHits = featureChips.filter((c) => c.count > 0);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  // 検索中・置換の結果を出している間は閉じられないようにする（閉じると絞り込みの理由が見えなくなる）。
+  const showTools = toolsOpen || Boolean(search.trim()) || Boolean(lastReplace);
   const keptBytes = useMemo(() => kept.reduce((s, p) => s + p.file.size, 0), [kept]);
   const overCount = kept.length > maxImages;
   const overBytes = keptBytes > maxTotalBytes;
@@ -632,30 +636,54 @@ export function DatasetCurationUI({
         <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-400">{error}</p>
       )}
 
-      {/* キャプションの検索・置換（2026-09-25、ホスト指摘「特徴が混ざったキャプションを直すのに検索が要る」）。 */}
-      <div className="space-y-2 rounded-lg border border-border bg-background/40 px-3 py-2">
-        {featureChips.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-            <span className="text-muted">学習したい特徴がキャプションに混ざっていないか:</span>
-            {featureChips.map(({ term, count }) => (
+      {/* キャプションのチェック結果（2026-09-25、ホスト指摘「特徴が入っていません、では良いのか悪いのか分からない」）。
+          学習したい特徴が混ざっていなければ結果だけを 1 行、混ざっていれば該当の語を出して、押すと絞り込む。 */}
+      {featureChips.length > 0 &&
+        (featureHits.length === 0 ? (
+          <p className="rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-[11px] text-green-400">
+            ✓ チェック完了: すべて正しくキャプションされています。
+          </p>
+        ) : (
+          <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[10px]">
+            <span className="text-amber-300">
+              ⚠️ 直した方がいいキャプションがあります（トリガーワードに覚えさせたい特徴が書かれています）。押すと該当の画像だけ表示します:
+            </span>
+            {featureHits.map(({ term, count }) => (
               <button
                 key={term}
                 type="button"
                 onClick={() => {
                   setSearch(term);
                   setOnlyMatches(true);
+                  setToolsOpen(true);
                 }}
-                className={`rounded-md border px-2 py-0.5 transition-colors ${
-                  count > 0
-                    ? "border-amber-500/50 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
-                    : "border-border text-muted"
-                }`}
+                className="rounded-md border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-amber-300 transition-colors hover:bg-amber-500/20"
               >
                 {term}（{count}枚）
               </button>
             ))}
           </div>
-        )}
+        ))}
+
+      {/* キャプションの検索・置換（2026-09-25、ホスト指摘「特徴が混ざったキャプションを直すのに検索が要る」）。
+          普段は畳む（AI の自己チェックで直っていれば使わないため）。特徴が混ざっている・検索中は開く。 */}
+      <div className="space-y-2 rounded-lg border border-border bg-background/40 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => {
+            if (!showTools) return setToolsOpen(true);
+            // 閉じるときは検索と置換の結果も片付けて、全カードの表示に戻す。
+            setToolsOpen(false);
+            setSearch("");
+            setLastReplace(null);
+          }}
+          className="flex w-full items-center justify-between text-[11px] font-medium text-foreground"
+        >
+          <span>一括で直す（検索・置換）</span>
+          <span className="text-muted">{showTools ? "▲ 閉じる" : "▼ 開く"}</span>
+        </button>
+        {showTools && (
+        <>
         <div className="flex flex-wrap items-center gap-2 text-[11px]">
           <input
             value={search}
@@ -753,6 +781,8 @@ export function DatasetCurationUI({
             ))}
             <p className="text-[10px] text-muted">下には変えた {lastReplace.ids.size} 枚だけを表示しています。</p>
           </div>
+        )}
+        </>
         )}
       </div>
 
