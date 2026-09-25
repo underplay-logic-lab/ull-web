@@ -118,6 +118,8 @@ type GenRow = {
   createdAt: string;
   /** kind:"upscale" のみ — WebP劣化前の元PNGがModal Volumeにある場合そのファイル名。 */
   originalFilename: string | null;
+  /** kind:"upscale" のみ — まとめて処理のバッチ id（中止ボタンはバッチ単位で閉じる、2026-09-25）。 */
+  batchId?: string | null;
 };
 
 function firstString(v: unknown): string | null {
@@ -142,7 +144,7 @@ export async function GET() {
       .limit(PER_TABLE),
     supabaseAdmin
       .from("upscale_jobs")
-      .select("id, user_id, status, model_key, preset, result_url, credits_cost, error_message, created_at, metadata")
+      .select("id, user_id, status, model_key, preset, result_url, credits_cost, error_message, created_at, metadata, batch_id, batch_index, batch_total")
       .order("created_at", { ascending: false })
       .limit(PER_TABLE),
     supabaseAdmin
@@ -219,7 +221,9 @@ export async function GET() {
     rows.push({
       id: r.id as string,
       kind: "upscale",
-      label: `超解像 · ${r.model_key ?? "?"} · ${r.preset ?? "?"}`,
+      label:
+        `超解像 · ${r.model_key ?? "?"} · ${r.preset ?? "?"}` +
+        (r.batch_id ? ` · バッチ ${((r.batch_index as number) ?? 0) + 1}/${r.batch_total ?? "?"}` : ""),
       userId: r.user_id as string,
       userEmail: null,
       status: r.status as string,
@@ -229,6 +233,7 @@ export async function GET() {
       errorMessage: (r.error_message as string) ?? null,
       createdAt: r.created_at as string,
       originalFilename,
+      batchId: (r.batch_id as string | null) ?? null,
     });
   }
 

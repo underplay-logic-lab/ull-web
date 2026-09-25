@@ -1235,6 +1235,34 @@ def _patch_upscale_job(job_id: str, fields: dict) -> None:
         print(f"[upscale-job] failed to patch job {job_id} (after retries): {exc}", flush=True)
 
 
+def _claim_upscale_job(job_id: str) -> bool:
+    """処理を始める前に、まだ終わっていない行（pending / processing）だけを processing にする（2026-09-25）。
+
+    admin の「中止」（/api/admin/upscale/abort）は残りの行を failed＋返金で閉じる。バッチは次の画像の状態を
+    先読みしているので、先読みの後に閉じられた画像をそのまま処理すると「返金したのに完成」になる。
+    条件付き PATCH で確保できなかった（＝もう終わっている）ときは False。通信の失敗は判定できないので
+    従来どおり続行する（True）。
+    """
+    if not job_id:
+        return True
+    try:
+        res = _supabase_request(
+            "PATCH",
+            "/rest/v1/upscale_jobs",
+            params={"id": f"eq.{job_id}", "status": "in.(pending,processing)"},
+            json={"status": "processing", "updated_at": _now_iso()},
+            headers={"Prefer": "return=representation"},
+        )
+        if res is None or not res.ok:
+            _patch_upscale_job(job_id, {"status": "processing"})
+            return True
+        return bool(res.json())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[upscale-job] claim failed {job_id}: {exc} — continuing", flush=True)
+        _patch_upscale_job(job_id, {"status": "processing"})
+        return True
+
+
 def _merge_upscale_metadata(job_id: str, extra: dict) -> None:
     """metadata は jsonb。周期 PATCH で既存キーを潰さないよう GET→merge→PATCH。"""
     if not job_id:
@@ -2401,7 +2429,9 @@ class SeedVR2Worker:
             _refund_upscale_credits(user_id, credits_cost)
             return {"ok": False, "error": "image is required"}
 
-        _patch_upscale_job(job_id, {"status": "processing"})
+        if not _claim_upscale_job(job_id):
+            print(f"[upscale-job] {job_id} closed before start (aborted?) — no-op", flush=True)
+            return {"ok": True, "skipped": True}
 
         # ライブ VRAM 表示: ~8秒毎に metadata.vram_used_gb を更新
         # （studio-vram-badge.md の非同期タブ規約）。job作成時に route.ts が
@@ -2745,6 +2775,10 @@ class SeedVR2Worker:
                 for it in items:
                     jid = str(it.get("job_id"))
                     if jid in remaining:
+                        # admin の中止などで既に閉じた行は触らない（二重返金しない、2026-09-25）。
+                        cur = _get_upscale_job_status(jid)
+                        if cur and cur.get("status") in ("completed", "failed"):
+                            continue
                         _patch_upscale_job(
                             jid, {"status": "failed", "error_message": "処理時間の上限を超えました。"}
                         )

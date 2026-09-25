@@ -28,6 +28,7 @@ type Generation = {
   errorMessage: string | null;
   createdAt: string;
   originalFilename: string | null;
+  batchId?: string | null;
 };
 
 // 超解像ワーカーは20MB超のPNGをWebP q92へ自動再エンコードして保存する
@@ -186,6 +187,39 @@ function RecentGenerations() {
     [load],
   );
 
+  // 超解像の中止（2026-09-25）。バッチなら残り（まだ始まっていない画像）を全部、単発ならその 1 件を
+  // failed＋全額返金で閉じる。今まさに処理中の 1 枚は完走させる（/api/admin/upscale/abort）。
+  const abortUpscale = useCallback(
+    async (row: Generation) => {
+      const what = row.batchId ? "このバッチの残り（まだ始まっていない画像）" : "このジョブ";
+      if (!window.confirm(`${what}を中止して、全額返金します（管理者操作）。
+今まさに処理中の 1 枚は完走させます。
+
+よろしいですか？`)) return;
+      setAborting(row.id);
+      setError(null);
+      try {
+        const res = await fetch("/api/admin/upscale/abort", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobId: row.id }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json?.error ?? "中止に失敗しました。");
+        window.alert(
+          `${json.closed ?? 0} 件を中止し、${json.refunded ?? 0}C を返金しました。` +
+            (json.running ? `（処理中の ${json.running} 件は完走させます）` : ""),
+        );
+        await load();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "中止に失敗しました。");
+      } finally {
+        setAborting(null);
+      }
+    },
+    [load],
+  );
+
   return (
     <div className="rounded-2xl border-gradient bg-surface/40 p-6">
       <div className="mb-4 flex items-center justify-between">
@@ -307,6 +341,21 @@ function RecentGenerations() {
                           title="このジョブを cancelled にして閉じる（Modal call のキャンセルと返金判定はサーバー側）"
                         >
                           {aborting === r.id ? "終了中…" : "強制終了"}
+                        </button>
+                      )}
+                      {r.kind === "upscale" && (r.status === "pending" || r.status === "processing") && (
+                        <button
+                          type="button"
+                          onClick={() => void abortUpscale(r)}
+                          disabled={aborting === r.id}
+                          className="ml-1.5 rounded border border-red-400/40 px-1 text-[10px] text-red-300 transition-colors hover:bg-red-400/10 disabled:opacity-50"
+                          title={
+                            r.batchId
+                              ? "このバッチのまだ始まっていない画像を全部中止して返金（処理中の 1 枚は完走）"
+                              : "このジョブを中止して返金（処理中なら 15 分以上止まっているときだけ閉じる）"
+                          }
+                        >
+                          {aborting === r.id ? "中止中…" : r.batchId ? "バッチを中止（返金）" : "中止（返金）"}
                         </button>
                       )}
                     </td>
