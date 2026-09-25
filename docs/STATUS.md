@@ -399,7 +399,12 @@ t=  4.4s  sd-scripts 起動
 
 半日規模。
 
-### キャプション経路の課題（2026-09-22・未着手）
+### 【閉じた 2026-09-25】キャプション経路の課題（2026-09-22 起票）
+
+**全部片付いた（以下は経緯として残す）**: ① Gemini の NSFW 拒否 → 2026-09-24 にキャプションを自前 Qwen（abliterated）へ
+切り替えて解消（バッチを 4 に抑える必要も、Gemini と混在させる検討も不要に）。② sd-scripts の品質設定 4 つ（conv_dim・
+cosine＋warmup・min_snr_gamma・タグ dropout）は `modal_sdxl_lora_worker.py` に既定として実装済み。③「Illustrious は男性が
+入りにくい」は、真因が生成側のネガティブ「醜い」だったことで決着（メモリ `illustrious-male-subject-bias`）。
 
 **Gemini は NSFW 寄りの素材を確率的に拒否する。枠切れではない。**
 `geminiText.ts` の `RELAXED_SAFETY` で設定可能な4カテゴリは全て `BLOCK_NONE` に
@@ -690,7 +695,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    目安（50 枚・2,000 step）: zimage 23 分 359C → 12 分 453C、klein 24 分 376C → 14 分 493C（prep も B300 時給になるので +26〜31%）。
    **コミット・push 済み（`6d062ce`）。** anima（§14.26: B300 0.509 > RTX PRO 0.477）と SDXL（§14.29: B300 0.75 > RTX PRO 0.645）は
    B300 の方が遅いので高速モードは付けない（確定 2026-09-24）。高速 zimage の実機確認済み（2026-09-24、s/it 0.304 ＜ knob 0.32、§14.30）。klein の高速も実機確認済み（s/it 0.282 ＜ knob 0.35、§14.30）。
-6. **キャプション経路の課題**（2026-09-22 起票の節、未着手）。
+6. ~~キャプション経路の課題~~ **閉じた（2026-09-25）**: Qwen への切り替えと sd-scripts の既定設定で全部片付いた（節の冒頭に内訳）。
 7. ~~SDXL の RTX PRO 6000 品質確認~~ **閉じた（2026-09-24）**: 学習は同じ bf16・同じ sd-scripts で GPU と torch の版が違うだけなので、
    出力差は数値ノイズ程度で品質差は期待されない。ホスト「そんなには変わらないだろ」。異常が見えたときだけ L40S 経路に戻す（1 行）。
 8. 掃除 — **一部済み（2026-09-24）**: Cinematic Video の残骸（`CinematicVideoTab.tsx`・`cinematicApi.ts`）を削除（`cinematicWorkflow/Pricing.ts` は Director が使うので残す、Wan Animate は復活予定で残す）。
