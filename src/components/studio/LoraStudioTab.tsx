@@ -4444,6 +4444,8 @@ export function LoraStudioTab({
     // resolution はもう state ではない（modelChoice/baseArchitecture から
     // 自動導出。上の2行のリセットで自然に 1024 へ戻る）。
     setTriggerWord("");
+    // 導線の「最初はモデル選択」を戻す（2026-09-26、ホスト報告「初期なのにモデル選択が光らない」）。
+    setBaseModelTouched(false);
     setPrimaryDescription("");
     setPrimaryFixedTags("");
     setPrimaryIdentityTags("");
