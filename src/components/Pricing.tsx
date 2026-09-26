@@ -6,6 +6,7 @@ import Link from "next/link";
 import { ArrowRight, Check, Gift, Loader2, Settings, Sparkles } from "lucide-react";
 import { pricingPlans, type PricingPlan } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
+import { ToastStack, type ToastData } from "@/components/Toast";
 import { CancellationWarningModal } from "@/components/CancellationWarningModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, TOPUP_PRICE_BY_TIER, type SubscriptionTier } from "@/hooks/useProfileCredits";
@@ -36,11 +37,21 @@ export function Pricing() {
   // プラン変更・同じプランの買い直しの確認（2026-09-26）。今の契約は即時終了し、新しい契約の支払い画面へ。
   const [replaceTarget, setReplaceTarget] = useState<PricingPlan | null>(null);
 
-  // 決済から戻ったとき（/?purchase=success#pricing）や #pricing で開いたとき、ブラウザは読み込み直後に一度だけ
-  // 飛ぶが、その後に上の区画の画像・動画が読み込まれて位置がずれ、見出しの途中で止まっていた（2026-09-26）。
-  // 落ち着くまで何度か合わせ直す。ユーザーが自分でスクロールしたらやめる。
+  // #pricing / #studio で開いたとき（決済から戻る /?purchase=success#studio を含む）、ブラウザは読み込み直後に
+  // 一度だけ飛ぶが、その後に上の区画の画像・動画が読み込まれて位置がずれ、見出しの途中で止まっていた（2026-09-26）。
+  // 落ち着くまで何度か合わせ直す。ユーザーが自分でスクロールしたらやめる。購入完了ならトーストも出す。
+  const [toasts, setToasts] = useState<ToastData[]>([]);
   useEffect(() => {
-    if (typeof window === "undefined" || window.location.hash !== "#pricing") return;
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("purchase") === "success") {
+      // effect 内で同期 setState しない（react-hooks の規則）。次のタスクで出す。
+      setTimeout(() => setToasts([{ id: Date.now(), message: "ご購入ありがとうございます。クレジットを付与しました。" }]), 0);
+      url.searchParams.delete("purchase");
+      window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+    const targetId = window.location.hash === "#pricing" ? "pricing" : window.location.hash === "#studio" ? "studio" : "";
+    if (!targetId) return;
     let userMoved = false;
     const stop = () => {
       userMoved = true;
@@ -50,7 +61,7 @@ export function Pricing() {
     window.addEventListener("keydown", stop);
     const timers = [150, 600, 1200, 2000, 3000].map((ms) =>
       setTimeout(() => {
-        if (!userMoved) document.getElementById("pricing")?.scrollIntoView({ block: "start" });
+        if (!userMoved) document.getElementById(targetId)?.scrollIntoView({ block: "start" });
       }, ms),
     );
     return () => {
@@ -353,6 +364,8 @@ export function Pricing() {
         onClose={() => setLoginOpen(false)}
         message="購入を続けるにはログインしてください。"
       />
+
+      <ToastStack toasts={toasts} onDismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))} />
 
       <PlanReplaceModal
         target={replaceTarget}
