@@ -4944,7 +4944,7 @@ export function LoraStudioTab({
               取り込みとかも弾くようにした方がいい」）。被写体が未登録のまま
               キャプションを走らせると、AI が誰を指すか分からず全部やり直しに
               なり、しかも無料枠を食い潰す。 */}
-          {!triggerWord.trim() && (
+          {!effectiveTrigger && (
             <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-400">
               <strong>先にトリガーワードを入力してください。</strong>
               被写体が決まっていない状態で画像を解析すると、AI がどの人物か判断できず、キャプションをやり直すことになります。
@@ -4998,7 +4998,8 @@ export function LoraStudioTab({
             images={images}
             onAdd={addImages}
             onRemove={removeImage}
-            disabled={busy || !triggerWord.trim()}
+            // 取り込めるかと導線の光りを同じ判定に（2026-09-26。画面が空でも生 YAML の trigger_word があれば取り込める）。
+            disabled={busy || !effectiveTrigger}
             warnIds={multiSubjectCropIds}
             notice={addNotice}
             onDismissNotice={() => setAddNotice(null)}
