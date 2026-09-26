@@ -6374,6 +6374,21 @@ export function LoraStudioTab({
             )}
           </div>
 
+          {/* 生 YAML のチェックは admin には画像を取り込む前から出す（2026-09-26、ホスト報告「初期状態で yaml の
+              チェックが無い」）。下の学習設定の欄（画像を取り込んでから出る）にも同じチェックがある。 */}
+          {isAdmin && images.length === 0 && (
+            <label className="flex items-center gap-2 rounded-xl border border-neon-pink/30 bg-neon-pink/5 p-3 text-[11px] font-medium text-neon-pink">
+              <input
+                type="checkbox"
+                checked={pro.useRawYaml}
+                onChange={(e) => updatePro({ useRawYaml: e.target.checked })}
+                disabled={busy}
+                className="h-3.5 w-3.5 accent-neon-pink"
+              />
+              生 YAML を直接編集（学習ジョブ設定・admin）— YAML の欄は画像を取り込むと下に出ます
+            </label>
+          )}
+
           {/* 画像を取り込む前は rank / ステップ数の欄を出さない（2026-09-21、
               ホスト指摘）。推奨値は枚数とカテゴリから決まるので、素材が無い
               段階で数字だけ並べても迷わせるだけ。 */}
