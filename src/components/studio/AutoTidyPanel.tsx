@@ -42,6 +42,7 @@ export function AutoTidyPanel({
   disabled,
   onRestore,
   onUndo,
+  nextStep,
 }: {
   state: AutoTidyState;
   /** この回で除外した画像。 */
@@ -51,6 +52,8 @@ export function AutoTidyPanel({
   onRestore: (id: string) => void;
   /** 全部元に戻す（切り出した画像も消す）。 */
   onUndo: () => void;
+  /** 整えた後に次にやること（2026-09-26、ホスト報告「何をすればよいか分からない」）。押すとその場所へ送る。 */
+  nextStep?: { label: string; onClick: () => void } | null;
 }) {
   const [open, setOpen] = useState(true);
   const running = state.phase !== "done";
@@ -108,6 +111,18 @@ export function AutoTidyPanel({
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+          {!running && nextStep && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-neon-pink/40 bg-background/60 px-2.5 py-2">
+              <span className="text-[11px] font-medium text-foreground">次は: {nextStep.label}</span>
+              <button
+                type="button"
+                onClick={nextStep.onClick}
+                className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1 text-[11px] font-semibold text-white hover:opacity-90"
+              >
+                次へ進む
+              </button>
             </div>
           )}
           {!running && (

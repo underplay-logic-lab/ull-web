@@ -3624,14 +3624,20 @@ export function LoraStudioTab({
     const done: AutoTidyState = { ...st, phase: "done", log: [...st.log, ...log], repeatsPending: captionSource === "manual" };
     autoTidyRef.current = done;
     setAutoTidy(done);
-    window.setTimeout(scrollToNextFlow, 400);
+    // 結果と「次へ進む」が見えるよう、おまかせの欄へ送る（2026-09-26。以前は次の手順へ直接飛んで、何をしたか見えなかった）。
+    window.setTimeout(
+      () => document.getElementById(AUTO_TIDY_PANEL_ID)?.scrollIntoView({ behavior: "smooth", block: "center" }),
+      400,
+    );
   }, [autoTidy, autoTidyWaitExpired, composition.running, images, compositionTags, multiSubjectCropIds, flowDiag, pickDupFirst, duoPoolFor, trimPoolFor, excludeImages, captionSource, scrollToNextFlow]);
 
   // C. 学習回数の均し（除外が画面に反映されてから、次の描画でかける）。
   useEffect(() => {
     if (!autoTidy?.repeatsPending || composition.running) return;
     applySuggestedRepeats();
-    const next: AutoTidyState = { ...autoTidy, repeatsPending: false, log: [...autoTidy.log, "構図の偏りを学習回数で均しました（学習回数の欄で個別に直せます）。"] };
+    // 「均します」の予告を「均しました」に置き換える（2026-09-26、2 行続いて紛らわしかった）。
+    const kept = autoTidy.log.filter((l) => !l.startsWith("構図の偏りを学習回数で均します") && !l.startsWith("キャプションが出来たら"));
+    const next: AutoTidyState = { ...autoTidy, repeatsPending: false, log: [...kept, "構図の偏りを学習回数で均しました（学習回数の欄で個別に直せます）。"] };
     autoTidyRef.current = next;
     setAutoTidy(next);
   }, [autoTidy, composition.running, applySuggestedRepeats]);
@@ -5296,6 +5302,7 @@ export function LoraStudioTab({
               highlightPrepare={flow.targets.includes("cropPrepare")}
               onAutoTidy={() => void runAutoTidy()}
               autoTidyBusy={autoTidy !== null && autoTidy.phase !== "done"}
+              autoTidyDone={autoTidy?.phase === "done"}
               highlightAutoTidy={flow.targets.includes("trimPrepare") || flow.targets.includes("cropPrepare")}
             />
             {flowHint("trimPrepare")}
@@ -5308,6 +5315,18 @@ export function LoraStudioTab({
               disabled={busy || smartCropBusy || composition.running}
               onRestore={(id) => restoreExcluded([id])}
               onUndo={undoAutoTidy}
+              nextStep={
+                autoTidy.phase === "done"
+                  ? {
+                      label:
+                        flow.hint ||
+                        (captionSource === "ai" && !captionStarted
+                          ? "キャプションを作ります"
+                          : "学習回数を確認して、学習設定へ進みます"),
+                      onClick: scrollToNextFlow,
+                    }
+                  : null
+              }
             />
           )}
 
