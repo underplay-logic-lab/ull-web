@@ -54,7 +54,7 @@ export function AutoTidyPanel({
   /** 整えた後に次にやること（2026-09-26、ホスト報告「何をすればよいか分からない」）。押すとその場所へ送る。 */
   nextStep?: { label: string; onClick: () => void } | null;
   /** おまかせで直しきれなかった指摘（2026-09-26）。あれば「手作業で修正する」を出す。 */
-  leftover?: { count: number; onFix: () => void } | null;
+  leftover?: { count: number; reason: string; fixLabel: string; onFix: () => void } | null;
   /** 補足（2026-09-26: 切り出した画像にキャプションが無い等）。 */
   note?: string | null;
 }) {
@@ -118,9 +118,8 @@ export function AutoTidyPanel({
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-neon-pink/40 bg-background/60 px-2.5 py-2">
               <span className="min-w-0 flex-1 text-[11px] text-foreground">
                 {leftover
-                  ? `おまかせで直しきれなかった指摘が ${leftover.count} 件あります（切り出せる画像が足りない等）。手作業で修正するか、このまま次へ進んでください。`
-                  : "結果を確認して、良ければ次へ進んでください。"}
-                {nextStep && <span className="text-muted">（次は: {nextStep.label}）</span>}
+                  ? `おまかせで直しきれなかった指摘が ${leftover.count} 件あります（${leftover.reason}）。`
+                  : "結果を確認して、良ければ先へ進んでください。"}
               </span>
               <button
                 type="button"
@@ -138,7 +137,7 @@ export function AutoTidyPanel({
                   onClick={leftover.onFix}
                   className="rounded-lg border border-neon-violet/50 bg-neon-violet/10 px-3 py-1 text-[11px] font-semibold text-neon-violet hover:bg-neon-violet/20 disabled:opacity-50"
                 >
-                  手作業で修正する（{leftover.count} 件）
+                  {leftover.fixLabel}
                 </button>
               )}
               {nextStep && (
@@ -147,7 +146,7 @@ export function AutoTidyPanel({
                   onClick={nextStep.onClick}
                   className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1 text-[11px] font-semibold text-white hover:opacity-90"
                 >
-                  {leftover ? "このまま次へ進む" : "次へ進む"}
+                  {leftover ? `このまま${nextStep.label}` : nextStep.label}
                 </button>
               )}
             </div>

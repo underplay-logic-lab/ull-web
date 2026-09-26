@@ -3568,12 +3568,21 @@ export function LoraStudioTab({
     setAutoTidyAccepted(false);
   }, [autoTidy?.run]);
   const hideManualTools = autoTidy !== null && !manualRevealed && !autoTidyAccepted;
+  // 切り出した画像の点検欄には、おまかせの切り出しは出さない（2026-09-26。おまかせは 2 人写りの切り出しを自動で除外済みで、
+  // 点検欄の「点検が終わったので次へ進む」が別の導線になって紛らわしかった）。手作業の切り出しだけ。
+  const reviewCroppedImages = useMemo(() => {
+    const auto = new Set(autoTidy?.cropIds ?? []);
+    return croppedImages.filter((i) => !auto.has(i.id));
+  }, [croppedImages, autoTidy?.cropIds]);
   // おまかせで直しきれなかった指摘（手作業の減らす・切り出すの対象、診断パネルの samePlan / trimPlan / cropPlan と同じ条件）。
-  const autoTidyLeftover = flowDiag.issues.filter(
+  // 減らす系（手作業で直せる）と、足りない構図（切り出す元が無ければマルチアングルで作るしかない）に分ける。
+  const autoTidyLeftoverTrim = flowDiag.issues.filter(
     (x) =>
       Boolean(x.subject && x.sameComposition) ||
-      (x.level === "error" && Boolean(x.subject && x.balance?.trimBucket && x.balance.trim > 0)) ||
-      (x.fixableWith === "smart_crop" && Boolean(x.subject) && (x.cropKinds?.length ?? 0) > 0),
+      (x.level === "error" && Boolean(x.subject && x.balance?.trimBucket && x.balance.trim > 0)),
+  ).length;
+  const autoTidyLeftoverAdd = flowDiag.issues.filter(
+    (x) => x.fixableWith === "smart_crop" && Boolean(x.subject) && (x.cropKinds?.length ?? 0) > 0,
   ).length;
 
   // 判定待ちの保険（2026-09-26）: 4 分待っても判定が揃わなければ、付いた分だけで仕上げに進む。
@@ -3681,6 +3690,11 @@ export function LoraStudioTab({
     setAutoTidy(null);
     setTrimVisited(new Set());
     setAddNotice("おまかせで整えた内容を元に戻しました（切り出した画像を消し、除外した画像を戻しました）。");
+    // 診断欄（おまかせのボタンがある位置）へ戻す（2026-09-26、ホスト要望）。
+    window.setTimeout(
+      () => document.getElementById(DIAGNOSTICS_PANEL_ID)?.scrollIntoView({ behavior: "smooth", block: "start" }),
+      200,
+    );
   }, [excludedImages, removeImage, restoreExcluded, repeatsApplied, setImageRepeats]);
 
   // 減らす段階（減らすボタン・削除ボタンが光っている間）が終わったら、次の場所へ送る（2026-09-25、ホスト要望）。
@@ -5221,13 +5235,13 @@ export function LoraStudioTab({
           {/* 切り出した画像は人手で点検しないと使えない（2026-09-22）。
               判断基準と**切り出した画像だけのグリッド**をクロップ欄の直下に
               置く。上のサムネイル一覧まで戻って探させない（ホスト指摘）。 */}
-          {croppedImages.length > 0 && (
+          {reviewCroppedImages.length > 0 && (
             <div
               id={CROP_REVIEW_PANEL_ID}
               className="space-y-2 scroll-mt-24 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2"
             >
               <p className="text-[11px] font-medium text-neon-violet">
-                切り出した {croppedImages.length} 枚を確認してください
+                切り出した {reviewCroppedImages.length} 枚を確認してください
               </p>
               <ul className="space-y-0.5 text-[10px] leading-relaxed text-muted">
                 <li>
@@ -5268,11 +5282,11 @@ export function LoraStudioTab({
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => selectAndReveal(croppedImages.map((i) => i.id))}
+                  onClick={() => selectAndReveal(reviewCroppedImages.map((i) => i.id))}
                   className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-[10px] font-medium text-neon-violet transition-colors hover:bg-neon-violet/20"
                 >
                   <Scissors size={11} />
-                  切り出した {croppedImages.length} 枚を選択して目立たせる
+                  切り出した {reviewCroppedImages.length} 枚を選択して目立たせる
                 </button>
                 {/* 点検が済んだら次の工程へ送る（2026-09-22、ホスト指摘）。
                     まだ切り出しが要るなら診断側の準備ボタンが光っているし、
@@ -5345,9 +5359,19 @@ export function LoraStudioTab({
                   : `切り出した ${n} 枚はキャプションがまだありません。キャプションの欄の「作れなかったキャプションを作り直す」で作れます。`;
               })()}
               leftover={
-                autoTidy.phase === "done" && autoTidyLeftover > 0 && !manualRevealed
-                  ? {
-                      count: autoTidyLeftover,
+                autoTidy.phase === "done" && autoTidyLeftoverTrim + autoTidyLeftoverAdd > 0 && !manualRevealed
+                  ? autoTidyLeftoverTrim === 0 && onOpenMultiAngle
+                    ? {
+                        // 足りない構図だけが残った＝切り出す元が無い。手作業に回しても意味が無いので、マルチアングルで作る。
+                        count: autoTidyLeftoverAdd,
+                        reason: "足りない構図を切り出せる画像がありません",
+                        fixLabel: "マルチアングルで足りない構図を作る",
+                        onFix: onOpenMultiAngle,
+                      }
+                    : {
+                      count: autoTidyLeftoverTrim + autoTidyLeftoverAdd,
+                      reason: "減らす・切り出すの指摘が残っています",
+                      fixLabel: "手作業で修正する",
                       onFix: () => {
                         setManualRevealed(true);
                         window.setTimeout(
@@ -5364,14 +5388,22 @@ export function LoraStudioTab({
               nextStep={
                 autoTidy.phase === "done"
                   ? {
-                      label:
-                        flow.hint ||
-                        (captionSource === "ai" && !captionStarted
-                          ? "キャプションを作ります"
-                          : "学習回数を確認して、学習設定へ進みます"),
+                      // 行き先を名前にする（2026-09-26、ホスト指摘「次へ進むだとどこへ行くのか分からない」）。
+                      label: captionSource === "ai" && !captionStarted ? "キャプションを作る" : "学習設定へ進む",
                       onClick: () => {
                         setAutoTidyAccepted(true);
-                        window.setTimeout(scrollToNextFlow, 200);
+                        if (captionSource === "ai" && !captionStarted) {
+                          window.setTimeout(scrollToNextFlow, 200);
+                        } else {
+                          setSettingsVisited(true);
+                          window.setTimeout(
+                            () =>
+                              document
+                                .getElementById(LORA_SUBMIT_ID)
+                                ?.scrollIntoView({ behavior: "smooth", block: "center" }),
+                            200,
+                          );
+                        }
                       },
                     }
                   : null
