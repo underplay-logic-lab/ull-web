@@ -5685,8 +5685,7 @@ export function LoraStudioTab({
               取り込み → クロップ → 診断 を見てから比率を決める操作なので、
               順番として最後でないと「これで終わりなのか」が分からなくなる。 */}
           {images.length > 0 && !hideManualTools && (
-            // 均す段階では欄ごと光らせる（2026-09-26、ホスト指摘）。ボタン（おまかせ: 構図の偏りを均す）も光る。
-            <div className={`rounded-xl${flow.targets.includes("suggestRepeats") ? " flow-next" : ""}`}>
+            <div>
             <RepeatWeightPanel
               images={images}
               disabled={busy}
@@ -5703,6 +5702,8 @@ export function LoraStudioTab({
               }}
               highlightGoToSettings={flow.targets.includes("goToSettings")}
               highlightSuggest={flow.targets.includes("suggestRepeats")}
+              // 均す段階では学習回数の欄ごと光らせる（「学習設定へ進む」は含めない。ボタンも光る、2026-09-26）。
+              highlightPanel={flow.targets.includes("suggestRepeats")}
               suggestNotice={repeatsNotice}
             />
             </div>

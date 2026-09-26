@@ -1097,6 +1097,7 @@ export function RepeatWeightPanel({
   onGoToSettings,
   highlightSuggest,
   highlightGoToSettings,
+  highlightPanel,
   suggestNotice,
 }: {
   images: DatasetImage[];
@@ -1111,6 +1112,8 @@ export function RepeatWeightPanel({
   /** 導線として光らせる対象（枠ではなく押すボタン）。 */
   highlightSuggest?: boolean;
   highlightGoToSettings?: boolean;
+  /** 均す段階で、学習回数の欄（「学習設定へ進む」を含めない範囲）を光らせる（2026-09-26、ホスト指摘）。 */
+  highlightPanel?: boolean;
   /** 📐 の実行結果。ボタンのすぐ下に出す。 */
   suggestNotice?: string | null;
 }) {
@@ -1153,7 +1156,7 @@ export function RepeatWeightPanel({
     枚数が多いと選択のための上下移動が辛いので、キャプションから
     作った一括選択チップ（被写体・構図）を併設する。 */}
 {onSetRepeats && !disabled && (
-  <div className="mt-2 rounded-lg border border-border bg-background/60 px-3 py-2">
+  <div className={`mt-2 rounded-lg border border-border bg-background/60 px-3 py-2${highlightPanel ? " flow-next" : ""}`}>
     {selectionGroups && selectionGroups.length > 0 && (
       <div className="mb-2 space-y-1 border-b border-border/60 pb-2">
         {selectionGroups.map((g) => (
