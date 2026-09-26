@@ -2271,8 +2271,9 @@ export function ProgressPanel({
           />
         </div>
         {telemetry}
-        {/* Latest one-liner — always visible directly under the bar. */}
-        {job.progressMessage && (
+        {/* Latest one-liner — always visible directly under the bar. 学習中は上の Step / 残り / Loss と同じ内容の
+            繰り返しなので出さない（2026-09-26、ホスト指摘「意味の無い 2 重表示」）。準備中・保存中の一言は出す。 */}
+        {job.progressMessage && !(hasSteps && job.progressMessage.startsWith("🔥")) && (
           <p className="mt-2 text-[11px] leading-relaxed text-muted">{job.progressMessage}</p>
         )}
         {job.logs && job.logs.length > 0 && <LiveTerminal logs={job.logs} />}
