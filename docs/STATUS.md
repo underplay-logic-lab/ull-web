@@ -590,6 +590,12 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    `[upscale-video-job] … save Xs for YMB (compute Zs)` で測り、大きければ別の手を考える。
    ③ LoRA: 途中版の保存ログの 30 秒後に裏で commit（従来は 2 分おき → 最後の数本が学習後の commit に回り約 45 秒待ち）。
    ログ `final vol.commit() after training took Xs` / `persisted … (commit Xs)`。
+   **v7 の結果（ホスト 2026-09-26）**: 1250 以降はどれも kch3 が出るが、**プロンプトを完全に無視**（全部 NG）。21 枚で 3000 step
+   ＝ 143 周で覚え込みすぎ。prodigy＋cosine の式（1000＋24×枚数）は少ない枚数で過学習。→ `lora-minimax-defaults` は入れない。
+   次: **v8 = yukipas v5 の設定（adamw 1.5e-4・cosine・rank64/32・実効バッチ 4）を kch3 21 枚で**。batch2 は minimax で遅いので
+   batch1×`gradient_accumulation_steps` 4・4000 step（更新 1000 回・4000 枚＝v5 と同じ）。YAML `kch3_solo_minimax_v8_yukipas_recipe_gas4.yaml`。
+   見ること: 出現と同時にプロンプトに従うか（服・場所・動作を変えて）。バッチの品質効果の問いも兼ねる。
+   容量メモ: 6 モデルを admin 限定にしたので、検証に使わない重みを Volume から外せば minimax の baked 版（読み込み 10 分解消）を戻せる。
    **新発見: minimax は毎ジョブ model_load が約 600 秒**（v7 `66fd4f72` 593.6s、直近 6 本とも 593〜636s、B300 で 1 回 約 $1.2 の待ち）。
    docs §14.4 の「逆量子化は毎ジョブ恒久的」がこれ。45 秒よりずっと大きいので、次に中身（Volume 読み・逆量子化・TE bake）を切り分ける。
 00000000000000. **ローンチ時の LoRA 対応モデルは minimax_h3 と SDXL（WAI Illustrious）の 2 つだけ（2026-09-26 ホスト判断）。**
