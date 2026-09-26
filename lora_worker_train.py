@@ -605,6 +605,10 @@ def _group_dataset_by_repeats(image_paths: list, repeats: list) -> list:
     return out
 
 
+# prodigy に cosine の学習率スケジュールを付ける arch（2026-09-26、実験で確かめたものだけ）。
+PRODIGY_COSINE_ARCHES = frozenset({"minimax_h3"})
+
+
 def _build_config(
     lora_name: str,
     trigger: str,
@@ -806,6 +810,14 @@ def _build_config(
                         "noise_scheduler": "flowmatch",
                         "optimizer": optimizer,
                         "lr": lr,
+                        # prodigy は学習率を下げる設定と組み合わせる arch がある（2026-09-26、minimax_h3 の実験）。
+                        # 定数のままだと大きい歩幅でピーク（88 枚で 1000 step 付近）を通り過ぎて崩れた（v1）。cosine で
+                        # 後半を落とすと 88 枚・3000 step で 2250〜2750 が安定して似た（v5）。docs/STATUS.md 参照。
+                        **(
+                            {"lr_scheduler": "cosine"}
+                            if optimizer == "prodigy" and target["arch"] in PRODIGY_COSINE_ARCHES
+                            else {}
+                        ),
                         "dtype": "bf16",
                         # 2026-09-20: サンプル生成を全面的に止めた（ホスト判断
                         # 「sample生成は不要。使ったことがない」）。

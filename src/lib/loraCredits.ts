@@ -68,12 +68,23 @@ export const LORA_AUTO_STEPS_MAX = 5000;
 export const LORA_AUTO_STEPS_BASE_SDXL = 600;
 export const LORA_AUTO_STEPS_PER_IMAGE_SDXL = 6.5;
 
+// 2026-09-26: minimax_h3 は別の式（prodigy＋cosine、worker の PRODIGY_COSINE_ARCHES とセット）。実験（hitozuma+kocho・
+// 88 枚、倍率込みで実質約 104 枚）で、上の共通式の 1,906 step（prodigy 定数）は 1,000 付近の 1 点だけ当たって崩れ、
+// prodigy＋cosine で 3,000 step にすると、多い方（hitozuma 67 枚）は 2,250 から似て、少ない方（kocho 31 枚）が名前どおりに
+// 分かれたのは最終の 3,000 だけだった（docs/STATUS.md、LoRA 既定値の検証）。cosine は最後に歩幅が 0 になるので最終版が当たりに
+// なりやすい。88 枚で 3,000 を少し超える 1,000 + 24×枚数（53 枚 → 2,272、176 枚 → 5,000 で上限）。
+export const LORA_AUTO_STEPS_BASE_MINIMAX = 1000;
+export const LORA_AUTO_STEPS_PER_IMAGE_MINIMAX = 24;
+
 export function autoLoraSteps(imageCount: number, arch?: string | null): number {
   const n = Math.max(1, Math.round(imageCount) || 1);
-  const sdxl = String(arch ?? "").trim().toLowerCase() === "sdxl";
-  const raw = sdxl
-    ? LORA_AUTO_STEPS_BASE_SDXL + n * LORA_AUTO_STEPS_PER_IMAGE_SDXL
-    : LORA_AUTO_STEPS_BASE + n * LORA_AUTO_STEPS_PER_IMAGE;
+  const a = String(arch ?? "").trim().toLowerCase();
+  const raw =
+    a === "sdxl"
+      ? LORA_AUTO_STEPS_BASE_SDXL + n * LORA_AUTO_STEPS_PER_IMAGE_SDXL
+      : a === "minimax_h3"
+        ? LORA_AUTO_STEPS_BASE_MINIMAX + n * LORA_AUTO_STEPS_PER_IMAGE_MINIMAX
+        : LORA_AUTO_STEPS_BASE + n * LORA_AUTO_STEPS_PER_IMAGE;
   return Math.min(LORA_AUTO_STEPS_MAX, Math.max(LORA_AUTO_STEPS_MIN, Math.round(raw)));
 }
 
