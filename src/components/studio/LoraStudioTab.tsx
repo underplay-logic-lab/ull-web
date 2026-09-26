@@ -50,6 +50,7 @@ import {
   DEFAULT_LORA_RESOLUTION,
   isBlockedLoraModel,
   loraPresetById,
+  isLoraPresetAvailable,
   recommendedResolution,
   type LoraBaseArchitecture,
   type LoraResolution,
@@ -2287,6 +2288,12 @@ export function LoraStudioTab({
   const alphaLinked = pro.alphaLinked ?? true;
   // When linked, Alpha is always exactly Rank regardless of what's stored.
   const effectiveAlpha = alphaLinked ? pro.rank : pro.alpha;
+
+  // admin 用のモデルが下書きから戻った／admin 判定が外れた一般ユーザーは既定へ（2026-09-26）。
+  useEffect(() => {
+    if (adminLoading || isAdmin || modelChoice === "__custom__") return;
+    if (!isLoraPresetAvailable(modelChoice, false)) handleModelChange("minimax_h3");
+  }, [adminLoading, isAdmin, modelChoice]);
 
   const isCustom = modelChoice === "__custom__";
   const customBlocked = isCustom && isBlockedLoraModel(customModelId);
@@ -5749,9 +5756,11 @@ export function LoraStudioTab({
               disabled={busy}
               className={fieldCls}
             >
-              {PRESET_GROUPS.map((g) => (
+              {PRESET_GROUPS.filter((g) =>
+                LORA_PRESETS.some((p) => p.group === g && isLoraPresetAvailable(p.id, isAdmin)),
+              ).map((g) => (
                 <optgroup key={g} label={LORA_PRESET_GROUP_LABELS[g]}>
-                  {LORA_PRESETS.filter((p) => p.group === g).map((p) => (
+                  {LORA_PRESETS.filter((p) => p.group === g && isLoraPresetAvailable(p.id, isAdmin)).map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.label} — {p.note}
                     </option>

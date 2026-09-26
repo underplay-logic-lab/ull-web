@@ -188,6 +188,14 @@ export const LORA_PRESETS: LoraPreset[] = [
 
 export const LORA_PRESET_IDS = new Set(LORA_PRESETS.map((p) => p.id));
 
+// 一般ユーザーに出すのはこの 2 つだけ（2026-09-26 ホスト判断: ローンチ時は需要の確定している minimax と
+// WAI Illustrious。他は人物の既定値を確かめてから追加する）。残りは admin だけが選べる（検証用）。
+export const LORA_PUBLIC_PRESET_IDS: ReadonlySet<string> = new Set(["minimax_h3", "wai_illustrious"]);
+
+export function isLoraPresetAvailable(id: string, isAdmin: boolean): boolean {
+  return LORA_PRESET_IDS.has(id) && (isAdmin || LORA_PUBLIC_PRESET_IDS.has(id));
+}
+
 export function loraPresetById(id: string): LoraPreset | undefined {
   return LORA_PRESETS.find((p) => p.id === id);
 }

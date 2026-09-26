@@ -587,7 +587,8 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    理由: 全モデルの既定値検証がローンチを遅らせるため。需要が確定しているこの 2 つで出し、他（wan22 / ltx2 / krea2 / anima /
    zimage / klein）はリクエストがあるか手が空いたら既定値を確かめて追加。→ **下の「他 6 モデルを 1 回ずつ確認」はやらない。**
    minimax の v7 検証が終わったら（良ければ `lora-minimax-defaults` を main へ入れて worker デプロイ）、ローンチに向けた整備へ移る。
-   ローンチ前にやること: 他 6 モデルを一般ユーザーの選択肢から外す（admin だけ残すか要相談）。
+   → 一般ユーザーは minimax_h3 と WAI Illustrious だけ、他（Illustrious XL・Juggernaut XL を含む）は admin だけ選べる形にした
+   （`LORA_PUBLIC_PRESET_IDS`、`/api/studio/lora/train` でも admin 以外は弾く）。追加するときはこの Set に足すだけ。
 0000000000000. **2026-09-26 の LoRA Studio 画面まわり（全部 push 済み）**: 生 YAML は「学習設定と LoRA 名だけ差し替える」位置付けに
    （人物・特徴・AI キャプション・導線は通常どおり、`6a465b3`）、生 YAML のチェックは admin に取り込み前から表示、生 YAML で
    先頭の名前が消える不具合・extraTriggers 未送信を修正、人物のトリガー重複警告、確認画面に「名前の無いキャプション」警告、

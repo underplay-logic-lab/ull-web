@@ -28,6 +28,7 @@ import {
   DEFAULT_LORA_RESOLUTION,
   LORA_BASE_ARCHITECTURES,
   LORA_PRESET_IDS,
+  isLoraPresetAvailable,
   isBlockedLoraModel,
   loraPresetById,
   recommendedResolution,
@@ -235,6 +236,15 @@ async function handlePost(request: Request): Promise<NextResponse> {
   // the preset id and any custom model id / path.
   if (isBlockedLoraModel(targetModel) || isBlockedLoraModel(customModelId)) {
     return NextResponse.json({ error: BLOCKED_LORA_MODEL_MESSAGE }, { status: 400 });
+  }
+
+  // admin 以外は公開中のプリセットだけ（2026-09-26、他は admin の検証用。カスタム指定も admin だけ）。
+  if (!hasOverride) {
+    const email = user.email?.toLowerCase() ?? "";
+    const requesterIsAdmin = !!email && getAdminEmails().includes(email);
+    if (!requesterIsAdmin && !isLoraPresetAvailable(targetModel, false)) {
+      return NextResponse.json({ error: "指定されたベースモデルは利用できません。" }, { status: 400 });
+    }
   }
 
   if (targetModel === "custom") {
