@@ -3245,8 +3245,14 @@ export function LoraStudioTab({
   useEffect(() => {
     if (!composition.running || !scrollToStatusOnStartRef.current) return;
     scrollToStatusOnStartRef.current = false;
-    const t = window.setTimeout(() => scrollToCenterAbove(COMPOSITION_STATUS_ID), 100);
-    return () => window.clearTimeout(t);
+    // 表示が出た直後と、上の表示（画像一覧の印など）の高さが落ち着いた頃の 2 回送る（2026-09-26、1 回だと直後に
+    // 位置がずれて見切れた）。
+    const t1 = window.setTimeout(() => scrollToCenterAbove(COMPOSITION_STATUS_ID), 100);
+    const t2 = window.setTimeout(() => scrollToCenterAbove(COMPOSITION_STATUS_ID), 700);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
   }, [composition.running]);
   const backToCropReviewRef = useRef(false);
   useEffect(() => {
