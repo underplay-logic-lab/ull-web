@@ -43,6 +43,7 @@ export function AutoTidyPanel({
   onUndo,
   nextStep,
   leftover,
+  note,
 }: {
   state: AutoTidyState;
   /** この回で除外した画像。 */
@@ -54,6 +55,8 @@ export function AutoTidyPanel({
   nextStep?: { label: string; onClick: () => void } | null;
   /** おまかせで直しきれなかった指摘（2026-09-26）。あれば「手作業で修正する」を出す。 */
   leftover?: { count: number; onFix: () => void } | null;
+  /** 補足（2026-09-26: 切り出した画像にキャプションが無い等）。 */
+  note?: string | null;
 }) {
   const [open, setOpen] = useState(true);
   const running = state.phase !== "done";
@@ -104,6 +107,11 @@ export function AutoTidyPanel({
                 ))}
               </div>
             </div>
+          )}
+          {!running && note && (
+            <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[10px] leading-relaxed text-amber-300">
+              {note}
+            </p>
           )}
           {/* 終わったらボタンは 2 つだけ（2026-09-26、ホスト判断）: 結果が良ければ次へ、ダメなら元に戻す。 */}
           {!running && (

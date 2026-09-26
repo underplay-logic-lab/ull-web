@@ -5334,6 +5334,16 @@ export function LoraStudioTab({
               excluded={excludedImages.filter((e) => e.run === autoTidy.run)}
               disabled={busy || smartCropBusy || composition.running}
               onUndo={undoAutoTidy}
+              note={(() => {
+                // 切り出した画像のキャプション（2026-09-26、ホスト質問「なぜキャプションが 4 枚ありませんと出る？」）。
+                // 元の画像のキャプションは構図が違うので流用しない。AI でまだ作っていないなら、他の画像と一緒に作られる。
+                const alive = new Set(images.map((i) => i.id));
+                const n = autoTidy.cropIds.filter((id) => alive.has(id) && !(captions[id] ?? "").trim()).length;
+                if (n === 0 || (captionSource === "ai" && !captionStarted)) return null;
+                return captionSource === "manual"
+                  ? `切り出した ${n} 枚はキャプションがありません（元の画像のキャプションは構図が違うので使えません）。次の確認画面で書いてください。AI に作らせる場合は、キャプションの作り方を「AI に作らせる」に切り替えてください。`
+                  : `切り出した ${n} 枚はキャプションがまだありません。キャプションの欄の「作れなかったキャプションを作り直す」で作れます。`;
+              })()}
               leftover={
                 autoTidy.phase === "done" && autoTidyLeftover > 0 && !manualRevealed
                   ? {
