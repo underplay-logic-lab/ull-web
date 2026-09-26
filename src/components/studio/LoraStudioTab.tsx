@@ -2349,6 +2349,15 @@ export function LoraStudioTab({
   // user explicitly starts a new run. Like `inFlightJob`, it survives a soft
   // "フォームに戻る" — only resetForm() / a fresh dispatch drops it.
   const completedJob = job && job.status === "completed" ? job : null;
+  // 人物どうしで重複しているトリガーワード（大文字小文字は区別しない、2026-09-26）。
+  const duplicateTriggers = (() => {
+    const seen = new Map<string, number>();
+    for (const x of allSubjects) {
+      const t = (x.trigger ?? "").trim().toLowerCase();
+      if (t) seen.set(t, (seen.get(t) ?? 0) + 1);
+    }
+    return [...seen.entries()].filter(([, n]) => n > 1).map(([t]) => t);
+  })();
   // 完了画面のヒントに出すトリガーワード（フォームの被写体。再読み込み後も下書きから戻る）。
   const completedTriggers = allSubjects.map((x) => (x.trigger ?? "").trim()).filter(Boolean);
 
@@ -5669,6 +5678,19 @@ export function LoraStudioTab({
             {!yamlMode && (
               <p className="mb-1 text-[10px] leading-relaxed text-muted">
                 意味の無い造語（例: hzm7・yukipas）が無難です。実在する単語（例: 人妻 = hitozuma、校長 = kocho）だと、元のモデルが意味を連想して、別の特徴が混ざることがあります。
+              </p>
+            )}
+            {/* 被写体の重複・隠れた被写体の警告（2026-09-26）。1 人目を kocho に書き換えて 2 人目（kocho）が残ったまま、
+                生 YAML で投げた（kocho + kocho、生 YAML では人物の枠が隠れるので気付けない）。 */}
+            {duplicateTriggers.length > 0 && (
+              <p className="mb-1 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[10px] leading-relaxed text-red-300">
+                ⚠️ トリガーワード「{duplicateTriggers.join("・")}」が複数の人物に入っています。人物ごとに別の名前にするか、重複している人物を削除してください。
+              </p>
+            )}
+            {yamlMode && allSubjects.length > 1 && (
+              <p className="mb-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] leading-relaxed text-amber-300">
+                通常の画面で人物が {allSubjects.length} 人入っています（{allSubjects.map((x) => x.trigger || "（空）").join("・")}）。
+                生 YAML では人物の欄が隠れますが、2 人目以降の名前は学習に渡されます。1 人の LoRA を作るなら、通常の画面に戻って 2 人目以降を削除してください。
               </p>
             )}
             {(() => {
