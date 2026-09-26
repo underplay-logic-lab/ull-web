@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { ArrowRight, Check, Gift, Loader2, Settings, Sparkles } from "lucide-react";
 import { pricingPlans, type PricingPlan } from "@/lib/data";
@@ -23,6 +24,8 @@ type WarningState =
   | { mode: "manage" }
   | null;
 
+const yenPerCredit = (yen: number, credits: number) => (yen / credits).toFixed(2);
+
 export function Pricing() {
   const { user } = useSupabaseUser();
   const { tier, cancelAtPeriodEnd } = useProfileCredits(user);
@@ -30,6 +33,8 @@ export function Pricing() {
   const [processingPlanId, setProcessingPlanId] = useState<string | null>(null);
   const [warning, setWarning] = useState<WarningState>(null);
   const [portalLoading, setPortalLoading] = useState(false);
+  // プラン変更・同じプランの買い直しの確認（2026-09-26）。今の契約は即時終了し、新しい契約の支払い画面へ。
+  const [replaceTarget, setReplaceTarget] = useState<PricingPlan | null>(null);
 
   const currentTier: SubscriptionTier = tier ?? "free";
   const isPaidMember = Boolean(user) && currentTier !== "free";
@@ -46,18 +51,17 @@ export function Pricing() {
   // POLAR_PRODUCT_IDS in src/lib/polarProducts.ts). A button only stays
   // disabled when that id is missing.
   const isPurchasable = (plan: PricingPlan) => Boolean(plan.productId);
-  const isCurrentPlan = (plan: PricingPlan) =>
-    isPaidMember && plan.id !== "topup" && plan.id === currentTier;
+  const currentPlan = pricingPlans.find((p) => p.id === currentTier);
 
   const buttonLabel = (plan: PricingPlan) => {
     if (plan.id === "topup" || !isPaidMember) return plan.cta;
-    if (plan.id === currentTier) return "ご利用中のプラン";
+    if (plan.id === currentTier) return `同じプランをもう一度購入（+${plan.credits.toLocaleString()}C）`;
     return TIER_RANK[plan.id] > TIER_RANK[currentTier]
       ? "このプランにアップグレード"
       : "このプランへ変更";
   };
 
-  const startCheckout = async (plan: PricingPlan) => {
+  const startCheckout = async (plan: PricingPlan, opts: { replaceCurrent?: boolean } = {}) => {
     setProcessingPlanId(plan.id);
     try {
       const {
@@ -76,7 +80,7 @@ export function Pricing() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ productId: plan.productId }),
+        body: JSON.stringify({ productId: plan.productId, replaceCurrent: opts.replaceCurrent === true }),
       });
 
       const data = await res.json();
@@ -93,7 +97,7 @@ export function Pricing() {
   };
 
   const handlePurchase = (plan: PricingPlan) => {
-    if (!isPurchasable(plan) || isCurrentPlan(plan)) return;
+    if (!isPurchasable(plan)) return;
 
     if (!user) {
       setLoginOpen(true);
@@ -111,6 +115,12 @@ export function Pricing() {
       return;
     }
 
+    // 会員が月額プランを買う＝プラン変更か買い直し。今の契約を終了する確認を挟む。
+    if (plan.id !== "topup" && isPaidMember) {
+      setReplaceTarget(plan);
+      return;
+    }
+
     void startCheckout(plan);
   };
 
@@ -122,7 +132,7 @@ export function Pricing() {
     if (warning.mode === "downgrade") {
       const plan = warning.plan;
       setWarning(null);
-      void startCheckout(plan);
+      setReplaceTarget(plan);
       return;
     }
 
@@ -229,9 +239,7 @@ export function Pricing() {
               <button
                 type="button"
                 onClick={() => handlePurchase(plan)}
-                disabled={
-                  !isPurchasable(plan) || isCurrentPlan(plan) || processingPlanId === plan.id
-                }
+                disabled={!isPurchasable(plan) || processingPlanId === plan.id}
                 className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {processingPlanId === plan.id ? (
@@ -249,6 +257,14 @@ export function Pricing() {
                   ※ 決済完了後、直ちにクレジットが付与されます。
                   {topupDiscountPct === 0 &&
                     " 月額会員は会員ランクに応じて最大50%OFFの優待価格が自動適用されます。"}
+                  {/* 会員はプランを買い直す方が 1C あたり安い（2026-09-26 ホスト方針: 買い直しを推奨）。 */}
+                  {isPaidMember && currentPlan && currentPlan.priceYen / currentPlan.credits < topupPrice / plan.credits && (
+                    <span className="mt-1.5 block text-neon-pink">
+                      まとめて足すなら、ご契約中の{currentPlan.name}をもう一度購入する方がお得です（1C あたり ¥
+                      {yenPerCredit(currentPlan.priceYen, currentPlan.credits)}、このチャージは ¥
+                      {yenPerCredit(topupPrice, plan.credits)}）。
+                    </span>
+                  )}
                 </p>
               ) : (
                 <p className="mt-3 text-[11px] leading-relaxed text-muted">
@@ -277,7 +293,7 @@ export function Pricing() {
             <p className="text-[11px] text-muted">
               {cancelAtPeriodEnd
                 ? "現在、解約予約中です（次回請求日で終了）。管理画面から再開できます。"
-                : "プラン変更・お支払い方法の変更・解約はこちらから行えます。"}
+                : "お支払い方法の変更・解約はこちらから行えます（プラン変更は上の各プランのボタンから）。"}
             </p>
           </div>
         )}
@@ -312,6 +328,17 @@ export function Pricing() {
         message="購入を続けるにはログインしてください。"
       />
 
+      <PlanReplaceModal
+        target={replaceTarget}
+        current={currentPlan ?? null}
+        onClose={() => setReplaceTarget(null)}
+        onConfirm={() => {
+          const plan = replaceTarget;
+          setReplaceTarget(null);
+          if (plan) void startCheckout(plan, { replaceCurrent: true });
+        }}
+      />
+
       <CancellationWarningModal
         open={warning !== null}
         onClose={() => {
@@ -326,5 +353,61 @@ export function Pricing() {
         loading={portalLoading}
       />
     </section>
+  );
+}
+
+// プラン変更・買い直しの確認（2026-09-26 ホスト方針）。購入した瞬間にクレジットは付与済みで、契約で残るのは
+// 「チャージ優待とログインボーナスの権利」だけなので、変更は即日・期間リセット・残り期間の返金なし。
+function PlanReplaceModal({
+  target,
+  current,
+  onClose,
+  onConfirm,
+}: {
+  target: PricingPlan | null;
+  current: PricingPlan | null;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  if (!target || typeof document === "undefined") return null;
+  const rebuy = current?.id === target.id;
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div className="w-full max-w-md rounded-2xl border-gradient bg-surface p-8" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-lg font-bold">{rebuy ? "同じプランをもう一度購入" : "プラン変更前のご確認"}</h3>
+        <ul className="mt-4 list-disc space-y-2 pl-5 text-sm leading-relaxed text-foreground/85">
+          <li>
+            {rebuy
+              ? `ご契約中の${target.name}を、今日から新しく契約し直します。`
+              : `ご契約中の${current?.name ?? "プラン"}はこの時点で終了し、${target.name}に切り替わります。`}
+          </li>
+          <li>
+            購入が完了すると {target.credits.toLocaleString()} クレジットがすぐに付与され、次回の更新日は今日から 1 か月後になります。
+          </li>
+          <li>今のプランの残り期間の返金はありません。お持ちのクレジットはそのまま残ります。</li>
+          <li>支払いを完了しなかった場合は、プランなしの状態になります（クレジットはそのまま残ります）。</li>
+        </ul>
+        <div className="mt-6 flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
+          >
+            {target.price} で購入手続きへ進む
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-6 py-2 text-xs text-muted transition-colors hover:text-foreground"
+          >
+            キャンセル
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }

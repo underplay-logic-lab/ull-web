@@ -79,12 +79,17 @@ export type PricingPlan = {
   features: string[];
   cta: string;
   highlighted?: boolean;
+  /** 1 回の購入で付くクレジットと税込価格（1C あたりの比較・確認画面に使う。webhook の付与量は polar.ts が正）。 */
+  credits: number;
+  priceYen: number;
 };
 
 export const pricingPlans: PricingPlan[] = [
   // 2026-09-23 改定（docs/pricing-decision-sheet.md）。床は Studio の 1.66 ¥/C。
   {
     id: "topup",
+    credits: 300,
+    priceYen: 1000,
     productId: POLAR_PRODUCT_IDS.topup,
     name: "都度チャージ",
     price: "¥1,000",
@@ -99,6 +104,8 @@ export const pricingPlans: PricingPlan[] = [
   },
   {
     id: "entry",
+    credits: 800,
+    priceYen: 1980,
     productId: POLAR_PRODUCT_IDS.entry,
     name: "月額エントリー",
     price: "¥1,980",
@@ -113,6 +120,8 @@ export const pricingPlans: PricingPlan[] = [
   },
   {
     id: "standard",
+    credits: 2200,
+    priceYen: 4980,
     productId: POLAR_PRODUCT_IDS.standard,
     name: "月額スタンダード",
     price: "¥4,980",
@@ -127,6 +136,8 @@ export const pricingPlans: PricingPlan[] = [
   },
   {
     id: "pro",
+    credits: 5000,
+    priceYen: 9980,
     productId: POLAR_PRODUCT_IDS.pro,
     name: "月額プロ",
     price: "¥9,980",
@@ -143,6 +154,8 @@ export const pricingPlans: PricingPlan[] = [
   },
   {
     id: "master",
+    credits: 11000,
+    priceYen: 19800,
     productId: POLAR_PRODUCT_IDS.master,
     name: "月額マスター",
     price: "¥19,800",
@@ -158,6 +171,8 @@ export const pricingPlans: PricingPlan[] = [
   },
   {
     id: "studio",
+    credits: 18000,
+    priceYen: 29800,
     productId: POLAR_PRODUCT_IDS.studio,
     name: "月額スタジオ",
     price: "¥29,800",

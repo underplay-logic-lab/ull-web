@@ -37,7 +37,7 @@ export async function POST(request: Request) {
   }
   const user = userData.user;
 
-  let body: { productId?: string };
+  let body: { productId?: string; replaceCurrent?: boolean };
   try {
     body = await request.json();
   } catch (err) {
@@ -126,6 +126,28 @@ export async function POST(request: Request) {
       checkout = await createCheckout(false);
     }
 
+    // プラン変更・同じプランの買い直し（2026-09-26 ホスト方針）: 今の契約を即時終了してから新しい契約の
+    // 支払い画面へ。Polar は有効なサブスクを 1 人 1 本しか許さない（allow_multiple_subscriptions=false の
+    // まま＝二重請求が起きない）。クレジットは購入時に付与済みなので、終了で失うのは残り期間の特典だけ。
+    // 支払い画面を作れてから終了させる（作れずに契約だけ消える事故を避ける）。購入をやめるとプランなしに
+    // なるが、それは確認画面で伝えている。終了の webhook は「今の tier が終了した契約の tier のときだけ
+    // free に戻す」ので、先に新しい契約が反映されても消されない。
+    if (config.tier !== "topup") {
+      const active = await listActiveSubscriptionIds(user.id);
+      if (active.length > 0) {
+        if (body.replaceCurrent !== true) {
+          return NextResponse.json(
+            { error: "すでにご契約中のプランがあります。", code: "has_active_subscription" },
+            { status: 409 },
+          );
+        }
+        for (const id of active) {
+          await revokeSubscription(id);
+          console.log(`${LOG_PREFIX} revoked subscription ${id} for ${user.id} before plan change/rebuy`);
+        }
+      }
+    }
+
     // Belt-and-suspenders on top of the `locale: "ja"` create param: force
     // ?locale=ja onto the hosted checkout URL so the page always renders in
     // Japanese regardless of the visitor's browser locale.
@@ -141,5 +163,35 @@ export async function POST(request: Request) {
     return NextResponse.json({ checkoutUrl, url: checkoutUrl });
   } catch (err) {
     return apiErrorResponse(err, "create_checkout", 502, LOG_PREFIX);
+  }
+}
+
+// Polar REST を直接叩く（SDK の型に頼らない小さな 2 本）。本番サーバー・API 版は getPolarClient と揃える。
+const POLAR_API_BASE =
+  (process.env.POLAR_SERVER || "production") === "sandbox" ? "https://sandbox-api.polar.sh" : "https://api.polar.sh";
+
+async function polarRest(path: string, init: RequestInit = {}): Promise<Response> {
+  const token = process.env.POLAR_ACCESS_TOKEN;
+  if (!token) throw new Error("Missing POLAR_ACCESS_TOKEN environment variable.");
+  return fetch(`${POLAR_API_BASE}${path}`, {
+    ...init,
+    headers: { Authorization: `Bearer ${token}`, "Polar-Version": "2026-04", ...(init.headers ?? {}) },
+  });
+}
+
+async function listActiveSubscriptionIds(userId: string): Promise<string[]> {
+  const res = await polarRest(
+    `/v1/subscriptions/?active=true&limit=10&external_customer_id=${encodeURIComponent(userId)}`,
+  );
+  if (!res.ok) throw new Error(`Polar subscriptions list failed: ${res.status} ${await res.text()}`);
+  const data = (await res.json()) as { items?: { id: string }[] };
+  return (data.items ?? []).map((s) => s.id);
+}
+
+async function revokeSubscription(id: string): Promise<void> {
+  const res = await polarRest(`/v1/subscriptions/${encodeURIComponent(id)}`, { method: "DELETE" });
+  // 既に終わっている（404 / 403 already canceled）は目的どおりなので通す。
+  if (!res.ok && res.status !== 404 && res.status !== 403) {
+    throw new Error(`Polar subscription revoke failed: ${res.status} ${await res.text()}`);
   }
 }
