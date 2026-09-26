@@ -40,7 +40,6 @@ export function AutoTidyPanel({
   state,
   excluded,
   disabled,
-  onRestore,
   onUndo,
   nextStep,
 }: {
@@ -48,8 +47,6 @@ export function AutoTidyPanel({
   /** この回で除外した画像。 */
   excluded: ExcludedImage[];
   disabled: boolean;
-  /** 1 枚だけ戻す。 */
-  onRestore: (id: string) => void;
   /** 全部元に戻す（切り出した画像も消す）。 */
   onUndo: () => void;
   /** 整えた後に次にやること（2026-09-26、ホスト報告「何をすればよいか分からない」）。押すとその場所へ送る。 */
@@ -89,7 +86,7 @@ export function AutoTidyPanel({
           {excluded.length > 0 && (
             <div className="space-y-1">
               <p className="text-[10px] text-muted">
-                除外した画像 {excluded.length} 枚（学習には使いません。消してはいないので、戻したいものは「戻す」）:
+                除外した画像 {excluded.length} 枚（学習には使いません。消してはいないので、「元に戻す」で全部戻ります）:
               </p>
               <div className="flex flex-wrap gap-1.5">
                 {excluded.map((e) => (
@@ -100,43 +97,36 @@ export function AutoTidyPanel({
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={e.img.url} alt={e.img.file.name} className="h-12 w-12 rounded object-cover opacity-70" />
-                    <button
-                      type="button"
-                      disabled={disabled}
-                      onClick={() => onRestore(e.img.id)}
-                      className="text-[9px] text-neon-violet hover:underline disabled:opacity-50"
-                    >
-                      戻す
-                    </button>
                   </div>
                 ))}
               </div>
             </div>
           )}
-          {!running && nextStep && (
-            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-neon-pink/40 bg-background/60 px-2.5 py-2">
-              <span className="text-[11px] font-medium text-foreground">次は: {nextStep.label}</span>
-              <button
-                type="button"
-                onClick={nextStep.onClick}
-                className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1 text-[11px] font-semibold text-white hover:opacity-90"
-              >
-                次へ進む
-              </button>
-            </div>
-          )}
+          {/* 終わったらボタンは 2 つだけ（2026-09-26、ホスト判断）: 結果が良ければ次へ、ダメなら元に戻す。 */}
           {!running && (
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-neon-pink/40 bg-background/60 px-2.5 py-2">
+              <span className="min-w-0 flex-1 text-[11px] text-foreground">
+                結果を確認して、良ければ次へ進んでください。
+                {nextStep && <span className="text-muted">（次は: {nextStep.label}）</span>}
+              </span>
               <button
                 type="button"
                 disabled={disabled}
                 onClick={onUndo}
-                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:text-foreground disabled:opacity-50"
+                className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1 text-[11px] text-muted transition-colors hover:text-foreground disabled:opacity-50"
               >
-                <Undo2 size={11} />
-                すべて元に戻す（切り出した画像も消します）
+                <Undo2 size={12} />
+                元に戻す
               </button>
-              <span className="text-[10px] text-muted">個別の操作（減らす・切り出す）はこのまま続けて使えます。</span>
+              {nextStep && (
+                <button
+                  type="button"
+                  onClick={nextStep.onClick}
+                  className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1 text-[11px] font-semibold text-white hover:opacity-90"
+                >
+                  次へ進む
+                </button>
+              )}
             </div>
           )}
         </div>

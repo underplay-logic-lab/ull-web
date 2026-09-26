@@ -5300,9 +5300,9 @@ export function LoraStudioTab({
               onPrepareDuoTrim={prepareDuoTrim}
               highlightTrimSubjects={flow.targets.includes("trimPrepare") ? trimPendingSubjects : undefined}
               highlightPrepare={flow.targets.includes("cropPrepare")}
-              onAutoTidy={() => void runAutoTidy()}
+              // 押した後は、おまかせの説明とボタンを出さない（2026-09-26、ホスト判断）。結果の欄の「元に戻す」で戻せば、また出る。
+              onAutoTidy={autoTidy ? undefined : () => void runAutoTidy()}
               autoTidyBusy={autoTidy !== null && autoTidy.phase !== "done"}
-              autoTidyDone={autoTidy?.phase === "done"}
               highlightAutoTidy={flow.targets.includes("trimPrepare") || flow.targets.includes("cropPrepare")}
             />
             {flowHint("trimPrepare")}
@@ -5313,7 +5313,6 @@ export function LoraStudioTab({
               state={autoTidy}
               excluded={excludedImages.filter((e) => e.run === autoTidy.run)}
               disabled={busy || smartCropBusy || composition.running}
-              onRestore={(id) => restoreExcluded([id])}
               onUndo={undoAutoTidy}
               nextStep={
                 autoTidy.phase === "done"

@@ -33,7 +33,6 @@ export function DatasetDiagnosticsPanel({
   onAutoTidy,
   autoTidyBusy = false,
   highlightAutoTidy = false,
-  autoTidyDone = false,
 }: {
   items: DiagnosticInput[];
   subjects: LoraSubject[];
@@ -72,8 +71,6 @@ export function DatasetDiagnosticsPanel({
   onAutoTidy?: () => void;
   autoTidyBusy?: boolean;
   highlightAutoTidy?: boolean;
-  /** おまかせで整え済み（2026-09-26、ホスト報告「終わった後もボタンが押せて、またやるのかと迷う」）。 */
-  autoTidyDone?: boolean;
 }) {
   const [open, setOpen] = useState(true);
   const diag = useMemo(() => analyzeDataset(items, subjects), [items, subjects]);
@@ -159,31 +156,14 @@ export function DatasetDiagnosticsPanel({
           {onAutoTidy && (samePlan.length > 0 || cropPlan.size > 0 || trimPlan.size > 0) && (
             <div
               className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border border-neon-pink/40 bg-neon-pink/5 px-3 py-2${
-                highlightAutoTidy && !autoTidyDone ? " flow-next" : ""
+                highlightAutoTidy ? " flow-next" : ""
               }`}
             >
-              {autoTidyDone ? (
-                <p className="min-w-0 flex-1 text-[10px] leading-relaxed text-muted">
-                  <span className="font-medium text-green-400">✓ おまかせで整えました。</span>
-                  やったことと次の手順は、この診断欄のすぐ下の「おまかせで整える」の欄にあります。
-                </p>
-              ) : (
               <p className="min-w-0 flex-1 text-[10px] leading-relaxed text-muted">
                 <span className="font-medium text-foreground">おまかせで整える（無料）</span> —
                 同じ構図の重複を 2 枚残して除外し、足りない顔アップ・上半身を手持ちの画像から切り出し、多すぎる構図を減らします。
                 除外した画像は消さずに脇へ置くので、あとから 1 枚ずつでも全部でも戻せます。下の個別の操作で手作業で進めることもできます。
               </p>
-              )}
-              {autoTidyDone ? (
-                <button
-                  type="button"
-                  disabled={autoTidyBusy || provisional || stalledCount > 0}
-                  onClick={onAutoTidy}
-                  className="shrink-0 text-[10px] text-muted underline hover:text-foreground disabled:opacity-50"
-                >
-                  もう一度おまかせで整える
-                </button>
-              ) : (
               <button
                 type="button"
                 disabled={autoTidyBusy || provisional || stalledCount > 0}
@@ -193,7 +173,6 @@ export function DatasetDiagnosticsPanel({
                 {autoTidyBusy ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
                 {autoTidyBusy ? "整えています…" : "おまかせで整える"}
               </button>
-              )}
             </div>
           )}
           {/* --- 被写体ごとの構成表 --- */}
