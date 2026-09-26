@@ -5664,6 +5664,13 @@ export function LoraStudioTab({
             >
               トリガーワード（任意）
             </label>
+            {/* 造語を勧める（2026-09-26）。hitozuma（人妻）・kocho（校長）の実験で、名前の取り違えや、もう一人の服
+                （校長 → スーツ・革靴）が滲む結果が出た。テキストエンコーダーが実在する単語の意味を連想するため。 */}
+            {!yamlMode && (
+              <p className="mb-1 text-[10px] leading-relaxed text-muted">
+                意味の無い造語（例: hzm7・yukipas）が無難です。実在する単語（例: 人妻 = hitozuma、校長 = kocho）だと、元のモデルが意味を連想して、別の特徴が混ざることがあります。
+              </p>
+            )}
             {(() => {
               // 複数人物・性別/人数・特徴の欄は全モデル共通（2026-09-25、ホスト判断。以前は SDXL 限定だった）。
               const multiSubject = !yamlMode && characterLora && extraSubjects.length > 0;
