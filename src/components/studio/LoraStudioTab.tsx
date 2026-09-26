@@ -69,6 +69,7 @@ import { validateLoraYaml, loraYamlIdentity } from "@/lib/loraYaml";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import {
   LORA_REPLACE_EVENT,
+  LORA_ADD_EVENT,
   requestStudioBatchHandoff,
   type LoraReplacement,
 } from "@/lib/studioHandoff";
@@ -80,6 +81,7 @@ import {
   type BackgroundLoraJob,
 } from "@/components/studio/LoraBackgroundJobs";
 import { QueueChoiceModal } from "@/components/studio/QueueChoiceModal";
+import { LoraAnglePicker } from "@/components/studio/LoraAnglePicker";
 import { parseDatasetZip, isZipFile, buildDatasetZip, downloadBlob } from "@/lib/datasetZip";
 import {
   LORA_CAPTION_CATEGORIES,
@@ -1035,6 +1037,20 @@ export function LoraStudioTab({
     },
     [addDatasetFiles, prepareWithProgress],
   );
+
+  // マルチアングルへ元画像を運び、作った画像を選んで戻す（2026-09-26、ホスト要望）。
+  const [anglePickerOpen, setAnglePickerOpen] = useState(false);
+  const openAnglePicker = onOpenMultiAngle ? () => setAnglePickerOpen(true) : undefined;
+  useEffect(() => {
+    const onAdd = (e: Event) => {
+      const files = (e as CustomEvent<{ files: File[]; source: string }>).detail?.files ?? [];
+      if (files.length === 0) return;
+      void addDatasetFilesChecked(files.map((file) => ({ file })));
+      setAddNotice(`マルチアングルで作った ${files.length} 枚をデータセットに追加しました。構図の判定とキャプションは通常どおり進みます。`);
+    };
+    window.addEventListener(LORA_ADD_EVENT, onAdd);
+    return () => window.removeEventListener(LORA_ADD_EVENT, onAdd);
+  }, [addDatasetFilesChecked]);
 
   const addImages = useCallback(
     (incoming: FileList | File[]) => {
@@ -5463,7 +5479,7 @@ export function LoraStudioTab({
               onRetryStalled={() => void runCompositionTagging(untaggedImages)}
               items={diagnosticItems}
               subjects={allSubjects}
-              onOpenMultiAngle={onOpenMultiAngle}
+              onOpenMultiAngle={openAnglePicker}
               onPrepareCrop={hideManualTools ? undefined : prepareCropForSubject}
               onPrepareTrim={hideManualTools ? undefined : prepareTrimForSubject}
               onPrepareSameComposition={hideManualTools ? undefined : prepareSameCompositionForSubject}
@@ -5496,13 +5512,13 @@ export function LoraStudioTab({
               })()}
               leftover={
                 autoTidy.phase === "done" && autoTidyLeftoverTrim + autoTidyLeftoverAdd > 0 && !manualRevealed
-                  ? autoTidyLeftoverTrim === 0 && onOpenMultiAngle
+                  ? autoTidyLeftoverTrim === 0 && openAnglePicker
                     ? {
                         // 足りない構図だけが残った＝切り出す元が無い。手作業に回しても意味が無いので、マルチアングルで作る。
                         count: autoTidyLeftoverAdd,
                         reason: "足りない構図を切り出せる画像がありません",
                         fixLabel: "マルチアングルで足りない構図を作る",
-                        onFix: onOpenMultiAngle,
+                        onFix: openAnglePicker,
                       }
                     : {
                       count: autoTidyLeftoverTrim + autoTidyLeftoverAdd,
@@ -7086,6 +7102,23 @@ export function LoraStudioTab({
         </div>
       </div>
 
+      <LoraAnglePicker
+        open={anglePickerOpen}
+        items={images.filter((i) => !i.cropKind).map((i) => ({ id: i.id, url: i.url, file: i.file }))}
+        onClose={() => setAnglePickerOpen(false)}
+        onConfirm={(files) => {
+          setAnglePickerOpen(false);
+          requestStudioBatchHandoff(
+            {
+              files,
+              source: `LoRA Studio の画像 ${files.length} 枚`,
+              loraAngleReturn: true,
+              hint: "構図を選んで生成し、できた画像から LoRA に使うものを選んで戻してください。",
+            },
+            "angle",
+          );
+        }}
+      />
       <LoginModal
         open={loginOpen}
         onClose={() => setLoginOpen(false)}

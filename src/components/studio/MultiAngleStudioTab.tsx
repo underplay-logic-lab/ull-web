@@ -57,7 +57,12 @@ import {
 } from "@/lib/angleApi";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { VramBadge } from "@/components/studio/VramBadge";
-import { requestStudioBatchHandoff, requestStudioHandoff } from "@/lib/studioHandoff";
+import {
+  requestStudioBatchHandoff,
+  requestStudioHandoff,
+  sendLoraAdditions,
+  takeStudioBatchHandoff,
+} from "@/lib/studioHandoff";
 import {
   QueueChoiceModal,
   QueuedNextBanner,
@@ -747,6 +752,33 @@ export function MultiAngleStudioTab() {
     setPhase("running"); // ポーリングが 1 回で completed を検知して done に落とす
   };
 
+  // --- LoRA Studio との往復（2026-09-26、ホスト要望）---
+  // LoRA から元画像を受け取り（1 枚ずつ順番待ちで生成）、できた構図から LoRA に使うものを選んで戻す。
+  // File は保存できないので再読み込みで消える（LoRA 側の画像も再読み込みで消えるので揃っている）。
+  type LoraCandidate = { key: string; jobId: string; index: number; url: string; label: string };
+  const [loraSources, setLoraSources] = useState<File[]>([]);
+  const [loraMode, setLoraMode] = useState(false);
+  const loraModeRef = useRef(false);
+  const [loraNotice, setLoraNotice] = useState<string | null>(null);
+  const [loraCandidates, setLoraCandidates] = useState<LoraCandidate[]>([]);
+  const [loraPicked, setLoraPicked] = useState<Set<string>>(new Set());
+  const [loraSending, setLoraSending] = useState(false);
+  useEffect(() => {
+    const h = takeStudioBatchHandoff("angle");
+    if (!h || h.files.length === 0) return;
+    // 取り出しは破壊的なので cleanup で打ち消さない。effect 内で同期 setState しない。
+    queueMicrotask(() => {
+      setImage(h.files[0]);
+      setImageError(null);
+      setLoraSources(h.files);
+      if (h.loraAngleReturn) {
+        loraModeRef.current = true;
+        setLoraMode(true);
+      }
+      setLoraNotice(`${h.source}を受け取りました。${h.hint ? ` ${h.hint}` : ""}`);
+    });
+  }, []);
+
   const elapsedMs = useElapsedTimer(phase === "running");
   // Angle worker の scaledown_window=30秒（CLAUDE.md §1）に合わせたローカル
   // カウントダウン。直前の生成完了時刻だけを基準にする自分専用の表示なので、
@@ -840,6 +872,23 @@ export function MultiAngleStudioTab() {
 
           if (next.status === "completed") {
             setPhase("done");
+            if (loraModeRef.current && next.images.length > 0) {
+              const jid = jobId;
+              setLoraCandidates((prev) =>
+                prev.some((c) => c.jobId === jid)
+                  ? prev
+                  : [
+                      ...prev,
+                      ...next.images.map((url, i) => ({
+                        key: `${jid}:${i}`,
+                        jobId: jid,
+                        index: i,
+                        url,
+                        label: next.labels?.[i] ?? "",
+                      })),
+                    ],
+              );
+            }
             if (sawInProgress) markGpuWarm();
             // 「順番待ち」で予約されていた次の1件を、コンテナがまだ温かい
             // うちに自動発火する。ref はイベントハンドラでのみ書かれるので
@@ -985,6 +1034,53 @@ export function MultiAngleStudioTab() {
   const doGenerate = async () => {
     if (!image) return;
     await runGenerate({ image, subImages, selection, combos });
+  };
+
+  // LoRA から受け取った全部の画像で、同じ構図を順番に生成する（2 枚目以降は無料の順番待ち）。
+  const generateAllLoraSources = () => {
+    if (loraSources.length === 0 || count === 0 || overCap || underMin) return;
+    if (!user) return setLoginOpen(true);
+    const snaps = loraSources.map((f) => ({ image: f, subImages: [] as File[], selection, combos }));
+    if (busy) {
+      const next = [...queuedNextRef.current, ...snaps];
+      queuedNextRef.current = next;
+      setQueuedNext(next);
+      return;
+    }
+    if (insufficientCredits) return setChargeOpen(true);
+    const [first, ...rest] = snaps;
+    queuedNextRef.current = [...queuedNextRef.current, ...rest];
+    setQueuedNext(queuedNextRef.current);
+    setImage(first.image);
+    void runGenerate(first, { continuation: true });
+  };
+
+  const sendPickedToLora = async () => {
+    const picks = loraCandidates.filter((c) => loraPicked.has(c.key));
+    if (picks.length === 0) return;
+    setLoraSending(true);
+    setSaveError(null);
+    try {
+      const files = await Promise.all(
+        picks.map(async (c, n) => {
+          const url = await freshAngleImageUrl(c.jobId, c.index, c.url);
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const blob = await res.blob();
+          return new File([blob], `angle_${c.jobId.slice(0, 6)}_${String(n + 1).padStart(2, "0")}.png`, {
+            type: blob.type || "image/png",
+          });
+        }),
+      );
+      sendLoraAdditions(files, "マルチアングル");
+      setLoraCandidates((prev) => prev.filter((c) => !loraPicked.has(c.key)));
+      setLoraPicked(new Set());
+    } catch (err) {
+      console.warn("[MultiAngleStudioTab] send to LoRA failed:", err);
+      setSaveError("LoRA Studio への受け渡しに失敗しました。時間をおいてもう一度お試しください。");
+    } finally {
+      setLoraSending(false);
+    }
   };
 
   const handleGenerate = () => {
@@ -1203,6 +1299,113 @@ export function MultiAngleStudioTab() {
       data-source-file="src/components/studio/MultiAngleStudioTab.tsx"
       className="rounded-2xl border-gradient bg-surface/40 p-6 sm:p-8"
     >
+      {loraMode && (
+        <div className="mb-6 space-y-3 rounded-xl border border-neon-violet/40 bg-neon-violet/5 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <p className="text-xs leading-relaxed text-foreground/90">
+              🎨 <strong>LoRA Studio 連携中</strong>
+              {loraNotice ? ` — ${loraNotice}` : ""}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                loraModeRef.current = false;
+                setLoraMode(false);
+                setLoraCandidates([]);
+                setLoraPicked(new Set());
+              }}
+              className="text-[11px] text-muted hover:text-foreground"
+            >
+              連携を終える
+            </button>
+          </div>
+          {loraSources.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap gap-1.5">
+                {loraSources.map((f, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setImage(f)}
+                    title="この画像をメイン参照にする"
+                    className={`h-12 w-12 overflow-hidden rounded-md border-2 ${image === f ? "border-neon-pink" : "border-transparent"}`}
+                  >
+                    <LoraSourceThumb file={f} />
+                  </button>
+                ))}
+              </div>
+              {loraSources.length > 1 && (
+                <button
+                  type="button"
+                  onClick={generateAllLoraSources}
+                  disabled={count === 0 || overCap || underMin}
+                  className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                >
+                  {loraSources.length} 枚すべてを同じ構図で生成（{count} 構図 × {loraSources.length} 枚・合計 {(cost * loraSources.length).toLocaleString()}C）
+                </button>
+              )}
+            </div>
+          )}
+          {loraSources.length > 1 && (
+            <p className="text-[10px] leading-relaxed text-muted">
+              下で構図を選んでから押すと、1 枚ずつ順番に生成します（順番待ちなので追加料金はかかりません。クレジットは 1 枚ずつ始まるときに消費します）。
+              1 枚だけ作るなら、画像を選んで通常の生成ボタンを押してください。
+            </p>
+          )}
+          {loraCandidates.length > 0 && (
+            <div className="space-y-2 border-t border-neon-violet/30 pt-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-medium text-foreground">
+                  LoRA に使う画像を選んでください（{loraPicked.size}/{loraCandidates.length} 枚）
+                </p>
+                <div className="flex items-center gap-2 text-[11px]">
+                  <button type="button" onClick={() => setLoraPicked(new Set(loraCandidates.map((c) => c.key)))} className="text-neon-violet hover:underline">
+                    全部選ぶ
+                  </button>
+                  <button type="button" onClick={() => setLoraPicked(new Set())} className="text-muted hover:text-foreground">
+                    全部外す
+                  </button>
+                </div>
+              </div>
+              <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-8">
+                {loraCandidates.map((c) => {
+                  const on = loraPicked.has(c.key);
+                  return (
+                    <button
+                      key={c.key}
+                      type="button"
+                      title={c.label}
+                      onClick={() =>
+                        setLoraPicked((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(c.key)) next.delete(c.key);
+                          else next.add(c.key);
+                          return next;
+                        })
+                      }
+                      className={`relative aspect-square overflow-hidden rounded-md border-2 ${on ? "border-neon-pink" : "border-transparent opacity-70 hover:opacity-100"}`}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={c.url} alt={c.label} className="h-full w-full object-cover" onError={refreshImageUrls} />
+                      {on && <Check size={12} className="absolute right-1 top-1 rounded-full bg-neon-pink p-0.5 text-white" />}
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={() => void sendPickedToLora()}
+                disabled={loraPicked.size === 0 || loraSending}
+                className="flow-next inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-bold text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {loraSending ? <Loader2 size={13} className="animate-spin" /> : null}
+                選んだ {loraPicked.size} 枚を LoRA Studio に追加
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="grid gap-8 lg:grid-cols-2">
         {/* 左: 入力 */}
         <div className="flex flex-col gap-6">
@@ -1615,4 +1818,11 @@ export function MultiAngleStudioTab() {
       />
     </div>
   );
+}
+
+function LoraSourceThumb({ file }: { file: File }) {
+  const url = useObjectUrl(file);
+  if (!url) return null;
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={url} alt={file.name} className="h-full w-full object-cover" />;
 }

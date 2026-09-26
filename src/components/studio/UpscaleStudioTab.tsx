@@ -598,7 +598,7 @@ export function UpscaleStudioTab() {
   // 実体はページ内の共有ストア（タブを切り替えても残る）。state はその写し。
   const [batchLoraMap, setBatchLoraMap] = useState<Record<string, string>>(() => getLoraReturnMap());
   useEffect(() => {
-    const handoff = takeStudioBatchHandoff();
+    const handoff = takeStudioBatchHandoff("upscale");
     if (!handoff || handoff.files.length === 0) return;
     const ids = handoff.loraReturnIds;
     if (ids && ids.length === handoff.files.length) {

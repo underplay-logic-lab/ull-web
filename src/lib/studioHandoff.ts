@@ -7,7 +7,7 @@
 // 受け取る側はマウント時に 1 回だけ取り出して消す（再読み込みで二重に
 // 取り込まない）。Studio.tsx が `ull:studio-tab` を拾って goTab する。
 
-export type StudioHandoffTab = "upscale" | "upscale_video" | "lora";
+export type StudioHandoffTab = "upscale" | "upscale_video" | "lora" | "angle";
 
 export type StudioHandoff = {
   kind: "image" | "video";
@@ -76,21 +76,38 @@ export type StudioBatchHandoff = {
   suggestedModelKey?: string;
   /** 取り込み通知に添える一言。 */
   hint?: string;
+  /** 受け取るタブ（requestStudioBatchHandoff が入れる）。別のタブが先に取り出さないように。 */
+  target?: StudioHandoffTab;
+  /**
+   * LoRA Studio → マルチアングル（2026-09-26）: 生成後に「LoRA に使う画像を選んで戻す」を出す。
+   */
+  loraAngleReturn?: boolean;
 };
 
 let pendingBatch: StudioBatchHandoff | null = null;
 
 export function requestStudioBatchHandoff(handoff: StudioBatchHandoff, tab: StudioHandoffTab): void {
   if (typeof window === "undefined") return;
-  pendingBatch = handoff;
+  pendingBatch = { ...handoff, target: tab };
   window.dispatchEvent(new CustomEvent(STUDIO_TAB_EVENT, { detail: { tab } }));
 }
 
 /** まとめ渡しを取り出して消す。無ければ null。 */
-export function takeStudioBatchHandoff(): StudioBatchHandoff | null {
+export function takeStudioBatchHandoff(tab?: StudioHandoffTab): StudioBatchHandoff | null {
   const h = pendingBatch;
+  if (h && tab && h.target && h.target !== tab) return null;
   pendingBatch = null;
   return h;
+}
+
+// --- マルチアングルで作った画像を LoRA Studio に足す（2026-09-26、ホスト要望）---
+// LoRA Studio は hidden で残る（Studio.tsx）ので、非表示のままでもイベントを受け取れる。
+export const LORA_ADD_EVENT = "ull:lora-add";
+
+export function sendLoraAdditions(files: File[], source: string): void {
+  if (typeof window === "undefined" || files.length === 0) return;
+  window.dispatchEvent(new CustomEvent(LORA_ADD_EVENT, { detail: { files, source } }));
+  window.dispatchEvent(new CustomEvent(STUDIO_TAB_EVENT, { detail: { tab: "lora" } }));
 }
 
 // --- 超解像の結果を LoRA Studio へ戻して差し替える（2026-09-24、ホスト要望）---
