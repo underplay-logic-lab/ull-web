@@ -3247,12 +3247,17 @@ export function LoraStudioTab({
     scrollToStatusOnStartRef.current = false;
     // 表示が出た直後と、上の表示（画像一覧の印など）の高さが落ち着いた頃の 2 回送る（2026-09-26、1 回だと直後に
     // 位置がずれて見切れた）。
-    const t1 = window.setTimeout(() => scrollToCenterAbove(COMPOSITION_STATUS_ID), 100);
-    const t2 = window.setTimeout(() => scrollToCenterAbove(COMPOSITION_STATUS_ID), 700);
-    return () => {
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-    };
+    // 最初に送り、その後 3 秒の間は「見切れていたら」だけ送り直す（2026-09-26、上の表示の出入りで枠 1 つ分上に切れた）。
+    // 見えていれば動かさないので、手でスクロールしても引き戻さない。
+    const timers = [100, 700, 1500, 2300, 3000].map((ms, k) =>
+      window.setTimeout(() => {
+        const el = document.getElementById(COMPOSITION_STATUS_ID);
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        if (k === 0 || r.top < 64 || r.bottom > window.innerHeight - 16) scrollToCenterAbove(COMPOSITION_STATUS_ID);
+      }, ms),
+    );
+    return () => timers.forEach((t) => window.clearTimeout(t));
   }, [composition.running]);
   const backToCropReviewRef = useRef(false);
   useEffect(() => {
