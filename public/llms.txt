@@ -21,6 +21,7 @@
 
 - [トップページ](https://www.ullstudio.com/)
 - [料金の目安（機能ごとの消費クレジット）](https://www.ullstudio.com/pricing)
+- [よくある質問](https://www.ullstudio.com/faq)
 - [利用規約](https://www.ullstudio.com/terms)
 - [プライバシーポリシー](https://www.ullstudio.com/privacy)
 - [特定商取引法に基づく表記](https://www.ullstudio.com/tokushoho)

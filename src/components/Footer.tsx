@@ -7,6 +7,7 @@ import { EditableText } from "@/components/EditableText";
 
 const legalLinks = [
   { label: "料金の目安", href: "/pricing" },
+  { label: "よくある質問", href: "/faq" },
   { label: "利用規約", href: "/terms" },
   { label: "プライバシーポリシー", href: "/privacy" },
   { label: "特定商取引法に基づく表記", href: "/tokushoho" },
