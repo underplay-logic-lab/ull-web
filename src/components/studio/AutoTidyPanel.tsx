@@ -42,6 +42,7 @@ export function AutoTidyPanel({
   disabled,
   onUndo,
   nextStep,
+  leftover,
 }: {
   state: AutoTidyState;
   /** この回で除外した画像。 */
@@ -51,6 +52,8 @@ export function AutoTidyPanel({
   onUndo: () => void;
   /** 整えた後に次にやること（2026-09-26、ホスト報告「何をすればよいか分からない」）。押すとその場所へ送る。 */
   nextStep?: { label: string; onClick: () => void } | null;
+  /** おまかせで直しきれなかった指摘（2026-09-26）。あれば「手作業で修正する」を出す。 */
+  leftover?: { count: number; onFix: () => void } | null;
 }) {
   const [open, setOpen] = useState(true);
   const running = state.phase !== "done";
@@ -106,7 +109,9 @@ export function AutoTidyPanel({
           {!running && (
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-neon-pink/40 bg-background/60 px-2.5 py-2">
               <span className="min-w-0 flex-1 text-[11px] text-foreground">
-                結果を確認して、良ければ次へ進んでください。
+                {leftover
+                  ? `おまかせで直しきれなかった指摘が ${leftover.count} 件あります（切り出せる画像が足りない等）。手作業で修正するか、このまま次へ進んでください。`
+                  : "結果を確認して、良ければ次へ進んでください。"}
                 {nextStep && <span className="text-muted">（次は: {nextStep.label}）</span>}
               </span>
               <button
@@ -118,13 +123,23 @@ export function AutoTidyPanel({
                 <Undo2 size={12} />
                 元に戻す
               </button>
+              {leftover && (
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={leftover.onFix}
+                  className="rounded-lg border border-neon-violet/50 bg-neon-violet/10 px-3 py-1 text-[11px] font-semibold text-neon-violet hover:bg-neon-violet/20 disabled:opacity-50"
+                >
+                  手作業で修正する（{leftover.count} 件）
+                </button>
+              )}
               {nextStep && (
                 <button
                   type="button"
                   onClick={nextStep.onClick}
                   className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1 text-[11px] font-semibold text-white hover:opacity-90"
                 >
-                  次へ進む
+                  {leftover ? "このまま次へ進む" : "次へ進む"}
                 </button>
               )}
             </div>

@@ -3557,6 +3557,21 @@ export function LoraStudioTab({
     excludeImages,
   ]);
 
+  // おまかせの結果を確認している間は、手作業の「減らす・切り出す」を隠す（2026-09-26、ホスト判断）。結果の欄の
+  // 「手作業で修正する」を押すと出す。おまかせをやり直す・元に戻すと、また隠す／おまかせのボタンに戻る。
+  const [manualRevealed, setManualRevealed] = useState(false);
+  useEffect(() => {
+    setManualRevealed(false);
+  }, [autoTidy?.run]);
+  const hideManualTools = autoTidy !== null && !manualRevealed;
+  // おまかせで直しきれなかった指摘（手作業の減らす・切り出すの対象、診断パネルの samePlan / trimPlan / cropPlan と同じ条件）。
+  const autoTidyLeftover = flowDiag.issues.filter(
+    (x) =>
+      Boolean(x.subject && x.sameComposition) ||
+      (x.level === "error" && Boolean(x.subject && x.balance?.trimBucket && x.balance.trim > 0)) ||
+      (x.fixableWith === "smart_crop" && Boolean(x.subject) && (x.cropKinds?.length ?? 0) > 0),
+  ).length;
+
   // 判定待ちの保険（2026-09-26）: 4 分待っても判定が揃わなければ、付いた分だけで仕上げに進む。
   const [autoTidyWaitExpired, setAutoTidyWaitExpired] = useState(false);
   useEffect(() => {
@@ -5294,10 +5309,10 @@ export function LoraStudioTab({
               items={diagnosticItems}
               subjects={allSubjects}
               onOpenMultiAngle={onOpenMultiAngle}
-              onPrepareCrop={prepareCropForSubject}
-              onPrepareTrim={prepareTrimForSubject}
-              onPrepareSameComposition={prepareSameCompositionForSubject}
-              onPrepareDuoTrim={prepareDuoTrim}
+              onPrepareCrop={hideManualTools ? undefined : prepareCropForSubject}
+              onPrepareTrim={hideManualTools ? undefined : prepareTrimForSubject}
+              onPrepareSameComposition={hideManualTools ? undefined : prepareSameCompositionForSubject}
+              onPrepareDuoTrim={hideManualTools ? undefined : prepareDuoTrim}
               highlightTrimSubjects={flow.targets.includes("trimPrepare") ? trimPendingSubjects : undefined}
               highlightPrepare={flow.targets.includes("cropPrepare")}
               // 押した後は、おまかせの説明とボタンを出さない（2026-09-26、ホスト判断）。結果の欄の「元に戻す」で戻せば、また出る。
@@ -5314,6 +5329,23 @@ export function LoraStudioTab({
               excluded={excludedImages.filter((e) => e.run === autoTidy.run)}
               disabled={busy || smartCropBusy || composition.running}
               onUndo={undoAutoTidy}
+              leftover={
+                autoTidy.phase === "done" && autoTidyLeftover > 0 && !manualRevealed
+                  ? {
+                      count: autoTidyLeftover,
+                      onFix: () => {
+                        setManualRevealed(true);
+                        window.setTimeout(
+                          () =>
+                            document
+                              .getElementById(DIAGNOSTICS_PANEL_ID)
+                              ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+                          150,
+                        );
+                      },
+                    }
+                  : null
+              }
               nextStep={
                 autoTidy.phase === "done"
                   ? {
