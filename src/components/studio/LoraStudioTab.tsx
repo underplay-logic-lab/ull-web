@@ -325,8 +325,26 @@ export function LoraStudioTab({
   // 人物の欄（性別・どんな人物か・特徴・2 人目以降）は「人物・キャラクター」の LoRA だけ（2026-09-25、ホスト指摘
   // 「背景 LoRA で『どんな人物か』と出るのはおかしい」）。それ以外はトリガーワードだけの従来の単独経路。
   const characterLora = captionCategory === "character";
+  const [loraName, setLoraName] = useState("");
+  // SDXL/sd-scriptsワーカー限定のメタデータタグ埋め込み（2026-09-15、
+  // [[sdxl-training-sd-scripts-plan]] の「フロントUI未着手」項目）。
+  // "tag:freq,tag,..." 形式の文字列。空ならopt-out（sd-scripts純正メタデータ
+  // のまま）— modal_sdxl_lora_worker.py の _parse_embed_tags と同じ書式。
+  // keep_tokens の手入力欄は 2026-09-21 に廃止した。値はキャプションの
+  // 固定ブロック長から keepTokensForCaption() が画像ごとに算出する。
+  const [embedTagsOpen, setEmbedTagsOpen] = useState(false);
+  const [pro, setPro] = useState<ProConfig>(DEFAULT_PRO);
+  // 生 YAML に trigger_word があるときは、その 1 人の LoRA として扱う（2026-09-26）。以前は生 YAML でも通常の画面で入れた
+  // 人物（hitozuma・kocho）が裏に残り、確認画面の「名前が無い」警告や診断の被写体がそちらで出ていた（生 YAML では人物の欄が
+  // 隠れて直せない）。trigger_word が無い YAML（複数人物）は、従来どおり通常の画面の人物を使う。
+  const yamlTriggerForSubjects = useMemo(() => {
+    if (!(pro.useRawYaml && isAdmin)) return "";
+    const chk = validateLoraYaml(pro.rawYaml);
+    return chk.ok ? loraYamlIdentity(chk.data).triggerWord : "";
+  }, [pro.useRawYaml, pro.rawYaml, isAdmin]);
   const allSubjects = useMemo<LoraSubject[]>(
     () =>
+      !yamlTriggerForSubjects &&
       characterLora && (extraSubjects.length > 0 || primaryFixedTags.trim() || primaryIdentityTags.trim())
         ? [
             {
@@ -340,6 +358,7 @@ export function LoraStudioTab({
           ]
         : [],
     [
+      yamlTriggerForSubjects,
       characterLora,
       triggerWord,
       primaryDescription,
@@ -349,15 +368,6 @@ export function LoraStudioTab({
       extraSubjects,
     ],
   );
-  const [loraName, setLoraName] = useState("");
-  // SDXL/sd-scriptsワーカー限定のメタデータタグ埋め込み（2026-09-15、
-  // [[sdxl-training-sd-scripts-plan]] の「フロントUI未着手」項目）。
-  // "tag:freq,tag,..." 形式の文字列。空ならopt-out（sd-scripts純正メタデータ
-  // のまま）— modal_sdxl_lora_worker.py の _parse_embed_tags と同じ書式。
-  // keep_tokens の手入力欄は 2026-09-21 に廃止した。値はキャプションの
-  // 固定ブロック長から keepTokensForCaption() が画像ごとに算出する。
-  const [embedTagsOpen, setEmbedTagsOpen] = useState(false);
-  const [pro, setPro] = useState<ProConfig>(DEFAULT_PRO);
   const [captionFixed, setCaptionFixed] = useState("");
   const [captionVarying, setCaptionVarying] = useState("");
   // User-edited final English instruction — empty = use whatever Gemini builds

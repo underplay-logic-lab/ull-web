@@ -366,13 +366,14 @@ export function DatasetCurationUI({
   // どの人物の名前（トリガーワード）も入っていないキャプション（2026-09-26）。名前が無い画像は、その人物として
   // 覚えさせられない。生 YAML への切り替えで先頭の名前が消える不具合（hitozuma_kocho_minimax_v2）で実際に起きた。
   const namelessIds = useMemo(() => {
-    const names = (subjects ?? [])
-      .map((x) => x.trigger.trim())
+    // 1 人の LoRA は subjects が渡らないので、トリガーワードで見る（翻訳の subjectList と同じ考え方）。
+    const names = (subjects && subjects.length ? subjects.map((x) => x.trigger) : [triggerWord])
+      .map((x) => x.trim())
       .filter(Boolean)
       .map((t) => new RegExp(`(^|[^A-Za-z0-9_])${escapeRe(t)}([^A-Za-z0-9_]|$)`, "i"));
     if (names.length === 0) return [] as string[];
     return kept.filter((p) => p.caption.trim() && !names.some((re) => re.test(p.caption))).map((p) => p.id);
-  }, [subjects, kept]);
+  }, [subjects, kept, triggerWord]);
   const [toolsOpen, setToolsOpen] = useState(false);
   // 検索中・置換の結果を出している間は閉じられないようにする（閉じると絞り込みの理由が見えなくなる）。
   const showTools = toolsOpen || Boolean(search.trim()) || Boolean(lastReplace);
@@ -676,7 +677,7 @@ export function DatasetCurationUI({
 
       {namelessIds.length > 0 && (
         <p className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-[11px] leading-relaxed text-red-300">
-          ⚠️ 人物の名前（{(subjects ?? []).map((x) => x.trigger).filter(Boolean).join("・")}）がどこにも入っていないキャプションが{" "}
+          ⚠️ 人物の名前（{(subjects && subjects.length ? subjects.map((x) => x.trigger) : [triggerWord]).filter(Boolean).join("・")}）がどこにも入っていないキャプションが{" "}
           {namelessIds.length} 枚あります。名前が無い画像は、その人物として覚えさせられません。先頭に名前を足してから学習してください。
         </p>
       )}
