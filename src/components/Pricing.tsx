@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { ArrowRight, Check, Gift, Loader2, Settings, Sparkles } from "lucide-react";
 import { pricingPlans, type PricingPlan } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
@@ -162,6 +163,13 @@ export function Pricing() {
             <Gift size={14} />
             新規アカウント登録で即時10クレジット無料進呈（クレカ登録不要）
           </div>
+          <p className="mt-4 text-xs text-muted">
+            1 回あたりの消費クレジットは{" "}
+            <Link href="/pricing" className="text-neon-pink hover:underline">
+              料金の目安
+            </Link>
+            {" "}で確認できます。
+          </p>
         </div>
 
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
