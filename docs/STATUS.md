@@ -583,6 +583,15 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 - R2 移行は計画 1〜9 すべて閉じた（8-② の転送パネルだけローンチ後）。
 
 **残り**
+0000000000000000. **課金まわり（2026-09-26）**: プラン変更・同じプランの買い直し＝今の契約を即時 revoke → 新規チェックアウト（即日付与・
+   期間リセット・残り期間の返金なし、`/api/checkout/polar` の `replaceCurrent`、`Pricing.tsx` の `PlanReplaceModal`、規約第2条）。
+   Polar のポータルからのプラン変更はオフ（`update_plan=false`、日割り方式で webhook と噛み合わないため）。会員は買い直しの方が
+   1C あたり安い（Studio 以外）ので、チャージ欄で買い直しを案内。**会員特典（LoRA 限定等）は後日決める（ホスト）。**
+   手取りの目安（Starter 5%+50¢・日本カード +1.5%・Polar が消費税 1/11 を差し引く）: 10 万円で 7.5〜8.2 万円。
+   **次: ホストの実機テスト**（Entry→Studio を Developer Test で購入し Entry が自動終了するか → ¥500 チャージで実決済の税・手数料を
+   API の注文で確認 → Studio を解約）。
+   minimax v8（yukipas v5 の設定・kch3 21 枚）も**プロンプトを無視**（室内で喋る映像ばかり）。v7 と同じ＝設定ではなく素材が原因の
+   見込み: kch3 の 21 枚は全部「黒背景・同じスーツ・立ちポーズの資料風」。hitozuma（88 枚・素材がばらける）は v5 で服を変えられた。
 000000000000000. **GPU 待ちの削減（2026-09-26、3 ワーカーともデプロイ済み・効果は次の実行のログで確認）。**
    ① Multi-Angle: 1 構図ごとの PNG 化・Volume 書き込み＋commit・DB 記録を 1 本の裏スレッドへ（`_finalize_angle`）。
    ログ `angle N computed in Xs` / `saved … finalize Xs` / `finalize total Xs (in background)` で効果を見る。
