@@ -339,17 +339,8 @@ export function LoraStudioTab({
   // 固定ブロック長から keepTokensForCaption() が画像ごとに算出する。
   const [embedTagsOpen, setEmbedTagsOpen] = useState(false);
   const [pro, setPro] = useState<ProConfig>(DEFAULT_PRO);
-  // 生 YAML に trigger_word があるときは、その 1 人の LoRA として扱う（2026-09-26）。以前は生 YAML でも通常の画面で入れた
-  // 人物（hitozuma・kocho）が裏に残り、確認画面の「名前が無い」警告や診断の被写体がそちらで出ていた（生 YAML では人物の欄が
-  // 隠れて直せない）。trigger_word が無い YAML（複数人物）は、従来どおり通常の画面の人物を使う。
-  const yamlTriggerForSubjects = useMemo(() => {
-    if (!(pro.useRawYaml && isAdmin)) return "";
-    const chk = validateLoraYaml(pro.rawYaml);
-    return chk.ok ? loraYamlIdentity(chk.data).triggerWord : "";
-  }, [pro.useRawYaml, pro.rawYaml, isAdmin]);
   const allSubjects = useMemo<LoraSubject[]>(
     () =>
-      !yamlTriggerForSubjects &&
       characterLora && (extraSubjects.length > 0 || primaryFixedTags.trim() || primaryIdentityTags.trim())
         ? [
             {
@@ -363,7 +354,6 @@ export function LoraStudioTab({
           ]
         : [],
     [
-      yamlTriggerForSubjects,
       characterLora,
       triggerWord,
       primaryDescription,
@@ -2134,7 +2124,10 @@ export function LoraStudioTab({
     [yamlMode, yamlCheck],
   );
   const effectiveLoraName = yamlMode ? (yamlIdentity?.name ?? "") : loraName.trim();
-  const effectiveTrigger = yamlMode ? (yamlIdentity?.triggerWord ?? "") : triggerWord.trim();
+  // トリガーは生 YAML でも画面の値（2026-09-26、ホスト判断「生 YAML は設定を細かくしたいから使うもの。AI キャプションも
+  // 欲しい」）。人物・特徴・キャプションの準備は通常と同じに動かし、YAML が決めるのは学習設定と LoRA 名だけ。
+  // 画面が空で YAML に trigger_word があるときだけ YAML を使う。
+  const effectiveTrigger = triggerWord.trim() || (yamlMode ? (yamlIdentity?.triggerWord ?? "") : "");
   const yamlNameValid = !yamlMode || LORA_NAME_RE.test(effectiveLoraName);
   // Mirrors the worker's _derive_trigger: explicit trigger, else the first
   // alnum run of the LoRA name. Used to protect the token during translation.
@@ -2314,14 +2307,13 @@ export function LoraStudioTab({
   // 自分で用意する場合は特徴を使わないので確認しない。
   const needsIdentityConfirm = useMemo(
     () =>
-      !yamlMode &&
       characterLora &&
       captionSource === "ai" &&
       (isSdxlJob
         ? autoEmbedTags.trim().length > 0
         : allSubjects.some((x) => (x.identityTags ?? "").trim().length > 0)) &&
       !identityConfirmed,
-    [yamlMode, characterLora, captionSource, isSdxlJob, autoEmbedTags, allSubjects, identityConfirmed],
+    [characterLora, captionSource, isSdxlJob, autoEmbedTags, allSubjects, identityConfirmed],
   );
 
   // Caption FORMAT resolved for the model in the dropdown right now. The key
@@ -2445,12 +2437,12 @@ export function LoraStudioTab({
   // SDXL 以外は性別/人数タグを使わない（2026-09-25、欄はグレーアウト）。下書きや切り替え前の値が残っていると、
   // タグ形式を手で選んだときに差し込まれてしまうので消しておく。
   useEffect(() => {
-    if (isSdxlJob || yamlMode) return;
+    if (isSdxlJob) return;
     if (primaryFixedTags) setPrimaryFixedTags("");
     if (extraSubjects.some((x) => x.fixedTags)) {
       setExtraSubjects((prev) => prev.map((x) => (x.fixedTags ? { ...x, fixedTags: "" } : x)));
     }
-  }, [isSdxlJob, yamlMode, primaryFixedTags, extraSubjects]);
+  }, [isSdxlJob, primaryFixedTags, extraSubjects]);
 
   const handleModelChange = (value: string) => {
     setModelChoice(value);
@@ -3030,7 +3022,7 @@ export function LoraStudioTab({
     // 読むので、切り替えた直後（YAML が空）や、複数人物で trigger_word を書かない YAML では「hitozuma → 空」になり、
     // AI キャプション先頭の名前が消えていた（hitozuma_kocho_minimax_v2 で 36 枚、学習前に中止）。前の値は残しておき、
     // 通常の画面に戻ったときに本当に変わっていれば差し替える。
-    if (yamlMode || !curationTrigger.trim()) return;
+    if (!curationTrigger.trim()) return;
     const from = prevTriggerRef.current;
     const to = curationTrigger;
     if (from === to) return;
@@ -3069,7 +3061,7 @@ export function LoraStudioTab({
     }, 200);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [curationTrigger, yamlMode]);
+  }, [curationTrigger]);
 
   // Images that are the AI pass's responsibility (everything the user didn't
   // caption themselves) — the live denominator for the progress badge.
@@ -3281,7 +3273,8 @@ export function LoraStudioTab({
     () =>
       loraFlowStep({
         isSdxlJob,
-        yamlMode,
+        // 生 YAML でも導線を出す（2026-09-26、生 YAML は学習設定だけを差し替えるもの。データセットの準備は同じ）。
+        yamlMode: false,
         busy: phase !== "form" || submitting,
         baseModelTouched,
         loraNameFilled: Boolean(effectiveLoraName.trim()),
@@ -3316,7 +3309,6 @@ export function LoraStudioTab({
     [
       characterLora,
       isSdxlJob,
-      yamlMode,
       phase,
       submitting,
       baseModelTouched,
@@ -4952,7 +4944,7 @@ export function LoraStudioTab({
               取り込みとかも弾くようにした方がいい」）。被写体が未登録のまま
               キャプションを走らせると、AI が誰を指すか分からず全部やり直しに
               なり、しかも無料枠を食い潰す。 */}
-          {!yamlMode && !triggerWord.trim() && (
+          {!triggerWord.trim() && (
             <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-400">
               <strong>先にトリガーワードを入力してください。</strong>
               被写体が決まっていない状態で画像を解析すると、AI がどの人物か判断できず、キャプションをやり直すことになります。
@@ -4963,7 +4955,7 @@ export function LoraStudioTab({
               学習が始まる。文言も実態に合わせた——「アップロード後」ではなく
               実際には開始ボタンを押した直後に確認画面へ移動する。 */}
           {/* キャプションの作り方は最初に選ぶ（2026-09-25、ホスト方針）。支払いはキャプションと学習で別々。 */}
-          {!yamlMode && (
+          {(
             <div className="space-y-1 rounded-lg border border-border bg-background/40 px-3 py-2">
               <p className="text-[11px] font-medium text-foreground">キャプションの作り方</p>
               {(
@@ -5006,7 +4998,7 @@ export function LoraStudioTab({
             images={images}
             onAdd={addImages}
             onRemove={removeImage}
-            disabled={busy || (!yamlMode && !triggerWord.trim())}
+            disabled={busy || !triggerWord.trim()}
             warnIds={multiSubjectCropIds}
             notice={addNotice}
             onDismissNotice={() => setAddNotice(null)}
@@ -5772,7 +5764,7 @@ export function LoraStudioTab({
 
           {/* 何を学習させるか（2026-09-25）。人物の欄を出すかどうかがこれで決まるので、トリガーワードより上に置く。
               以前は奥の「キャプション自動最適化」の中にしか無かった（そちらも同じ値を操作する）。 */}
-          {!yamlMode && (
+          {(
             <div>
               <label className="mb-1 block text-[11px] font-medium text-muted">何を学習させるか</label>
               <div className="flex flex-wrap gap-1.5">
@@ -5822,7 +5814,7 @@ export function LoraStudioTab({
             </label>
             {/* 造語を勧める（2026-09-26）。hitozuma（人妻）・kocho（校長）の実験で、名前の取り違えや、もう一人の服
                 （校長 → スーツ・革靴）が滲む結果が出た。テキストエンコーダーが実在する単語の意味を連想するため。 */}
-            {!yamlMode && (
+            {(
               <p className="mb-1 text-[10px] leading-relaxed text-muted">
                 意味の無い造語（例: hzm7・yukipas）が無難です。実在する単語（例: 人妻 = hitozuma、校長 = kocho）だと、元のモデルが意味を連想して、別の特徴が混ざることがあります。
               </p>
@@ -5834,28 +5826,22 @@ export function LoraStudioTab({
                 ⚠️ トリガーワード「{duplicateTriggers.join("・")}」が複数の人物に入っています。人物ごとに別の名前にするか、重複している人物を削除してください。
               </p>
             )}
-            {yamlMode && allSubjects.length > 1 && (
+            {yamlMode && yamlIdentity?.triggerWord && yamlIdentity.triggerWord !== triggerWord.trim() && (
               <p className="mb-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] leading-relaxed text-amber-300">
-                通常の画面で人物が {allSubjects.length} 人入っています（{allSubjects.map((x) => x.trigger || "（空）").join("・")}）。
-                生 YAML では人物の欄が隠れますが、2 人目以降の名前は学習に渡されます。1 人の LoRA を作るなら、通常の画面に戻って 2 人目以降を削除してください。
+                生 YAML に trigger_word「{yamlIdentity.triggerWord}」が書かれています。学習では YAML が優先されます。画面のトリガーワード（
+                {triggerWord.trim() || "空"}）と揃えてください（2 人以上の LoRA なら YAML の trigger_word は消してください）。
               </p>
             )}
             {(() => {
               // 複数人物・性別/人数・特徴の欄は全モデル共通（2026-09-25、ホスト判断。以前は SDXL 限定だった）。
-              const multiSubject = !yamlMode && characterLora && extraSubjects.length > 0;
+              const multiSubject = characterLora && extraSubjects.length > 0;
               const triggerInput = (
                 <input
-                  value={yamlMode ? (yamlIdentity?.triggerWord ?? "") : triggerWord}
+                  value={triggerWord}
                   onChange={(e) => setTriggerWord(e.target.value)}
-                  placeholder={
-                    yamlMode
-                      ? "生YAML の process[0].trigger_word"
-                      : multiSubject
-                        ? "1人目のtrigger word（例: yukipas）"
-                        : "yukipas（空欄なら LoRA 名から自動）"
-                  }
-                  disabled={busy || yamlMode}
-                  className={`${fieldCls} font-mono ${yamlMode ? "opacity-60" : ""}${flowRing("trigger")}`}
+                  placeholder={multiSubject ? "1人目のtrigger word（例: yukipas）" : "yukipas（空欄なら LoRA 名から自動）"}
+                  disabled={busy}
+                  className={`${fieldCls} font-mono${flowRing("trigger")}`}
                 />
               );
               const triggerHint = (
@@ -5871,8 +5857,8 @@ export function LoraStudioTab({
                   <>
                     {triggerInput}
                     {/* 人物以外（衣装・物体・背景・画風）はトリガーワードだけ（2026-09-25）。 */}
-                    {!yamlMode && !characterLora && <>{triggerHint}</>}
-                    {!yamlMode && characterLora && (
+                    {!characterLora && <>{triggerHint}</>}
+                    {characterLora && (
                       <>
                         <div className={`rounded-xl${flowRingAt("genderTag", 0)}`}>
                           <GenderTagPicker value={primaryFixedTags} onChange={setPrimaryFixedTags} disabled={busy || !isSdxlJob} plain={!isSdxlJob} />
@@ -5947,16 +5933,9 @@ export function LoraStudioTab({
                 </div>
               );
             })()}
-            {yamlMode && (
-              <p className="mt-1 text-[10px] text-muted">
-                生YAML モードでは YAML内の{" "}
-                <code className="text-neon-violet">process[0].trigger_word</code> が使われます。
-              </p>
-            )}
             {/* 2026-09-15 に SDXL 限定にしたが、2026-09-25 に全モデル共通へ戻した（ホスト判断「分ける必要は無い」）。
                 ai-toolkit 側は複数人物のジョブで trigger_word を設定しない（modal_lora_worker.py）。 */}
-            {!yamlMode &&
-              characterLora &&
+            {characterLora &&
               extraSubjects.map((s, i) => (
                 <div
                   key={i}
@@ -6038,7 +6017,7 @@ export function LoraStudioTab({
               ))}
             {/* 初回だけ出す（2026-09-22、ホスト指摘）。一度読めば済む説明で、
                 毎回出ると画面の密度を上げるだけ。localStorage に既読を持つ。 */}
-            {!yamlMode && characterLora && extraSubjects.length > 0 && !subjectHintSeen && (
+            {characterLora && extraSubjects.length > 0 && !subjectHintSeen && (
               <p className="mt-1.5 rounded-lg border border-border/60 bg-background/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted">
                 「特徴」は、自動キャプションのAIが画像ごとに
                 <strong className="text-foreground">どちらが写っているかを判定するための手がかり</strong>
@@ -6046,7 +6025,7 @@ export function LoraStudioTab({
                 <strong className="text-foreground">空のままだとAIが2人を見分けられず、トリガーワードが取り違えられます。</strong>
               </p>
             )}
-            {!yamlMode && characterLora && (
+            {characterLora && (
               <button
                 type="button"
                 onClick={() =>
@@ -6064,7 +6043,7 @@ export function LoraStudioTab({
             )}
             {/* SDXL 以外の特徴の確認（2026-09-25）。SDXL は metadata の書き込み欄に同じ確認がある。特徴はキャプションに
                 書かせない言葉のリストなので、キャプションを作る前に確定させる。 */}
-            {!yamlMode && !isSdxlJob && characterLora && captionSource === "ai" && images.length > 0 &&
+            {!isSdxlJob && characterLora && captionSource === "ai" && images.length > 0 &&
               allSubjects.some((x) => (x.identityTags ?? "").trim()) && (
                 <label
                   id={IDENTITY_CONFIRM_ID}
@@ -6123,7 +6102,7 @@ export function LoraStudioTab({
           {/* 画像が1枚も無いうちは出さない（2026-09-21、ホスト指摘）。
               「画像から抽出」が主経路なので、素材が無い状態で見せても
               できることが無い。 */}
-          {!yamlMode && isSdxlJob && images.length > 0 && (
+          {isSdxlJob && images.length > 0 && (
             <div
               id={METADATA_PANEL_ID}
               className="scroll-mt-24 rounded-xl border border-neon-violet/30 bg-neon-violet/5"
