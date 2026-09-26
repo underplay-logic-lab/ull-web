@@ -3560,10 +3560,14 @@ export function LoraStudioTab({
   // おまかせの結果を確認している間は、手作業の「減らす・切り出す」を隠す（2026-09-26、ホスト判断）。結果の欄の
   // 「手作業で修正する」を押すと出す。おまかせをやり直す・元に戻すと、また隠す／おまかせのボタンに戻る。
   const [manualRevealed, setManualRevealed] = useState(false);
+  // 「次へ進む」を押した（おまかせの結果を受け入れた）か。押すまでは、下の切り出し・学習回数の欄も隠す（2026-09-26、
+  // ホスト報告「おまかせを押したのに、下にスマートクロップ・学習回数・学習設定へ進むが残ったまま」）。
+  const [autoTidyAccepted, setAutoTidyAccepted] = useState(false);
   useEffect(() => {
     setManualRevealed(false);
+    setAutoTidyAccepted(false);
   }, [autoTidy?.run]);
-  const hideManualTools = autoTidy !== null && !manualRevealed;
+  const hideManualTools = autoTidy !== null && !manualRevealed && !autoTidyAccepted;
   // おまかせで直しきれなかった指摘（手作業の減らす・切り出すの対象、診断パネルの samePlan / trimPlan / cropPlan と同じ条件）。
   const autoTidyLeftover = flowDiag.issues.filter(
     (x) =>
@@ -5302,6 +5306,7 @@ export function LoraStudioTab({
               // 未解析が残っていないなら「解析中」と出す意味が無い（旗が
               // 立ちっぱなしでも診断が固まらないようにする二重の保険）。
               provisional={composition.running}
+              provisionalProgress={{ done: composition.done, total: composition.total }}
               // 判定が止まっているのに「判定中」と出し続けない（2026-09-22、ホスト報告）。
               // 読めなかった画像は自動では再試行しないので、件数とやり直しの導線を出す。
               stalledCount={!composition.running ? untaggedImages.length : 0}
@@ -5354,7 +5359,10 @@ export function LoraStudioTab({
                         (captionSource === "ai" && !captionStarted
                           ? "キャプションを作ります"
                           : "学習回数を確認して、学習設定へ進みます"),
-                      onClick: scrollToNextFlow,
+                      onClick: () => {
+                        setAutoTidyAccepted(true);
+                        window.setTimeout(scrollToNextFlow, 200);
+                      },
                     }
                   : null
               }
@@ -5363,6 +5371,7 @@ export function LoraStudioTab({
 
           {/* 診断の下にクロップ欄を置く（2026-09-22、ホスト指摘）。
               何が足りないかを見てから切り出す、という順番にする。 */}
+          {!hideManualTools && (
           <div>
           <SmartCropPanel
             images={images}
@@ -5378,7 +5387,8 @@ export function LoraStudioTab({
             highlightRun={flow.targets.includes("crop")}
           />
           </div>
-          {flowHint("crop")}
+          )}
+          {!hideManualTools && flowHint("crop")}
 
           {/* キャプション（2026-09-25 の順番の改修）。構図の診断とクロップが済んでから 1 回だけ作る（有料）。
               切り出した画像も含めて作れるので、クロップより後に置く。学習回数は被写体ごとの比率を
@@ -5593,7 +5603,7 @@ export function LoraStudioTab({
           {/* データセットを触る工程の最後（2026-09-22、ホスト指摘）。
               取り込み → クロップ → 診断 を見てから比率を決める操作なので、
               順番として最後でないと「これで終わりなのか」が分からなくなる。 */}
-          {images.length > 0 && (
+          {images.length > 0 && !hideManualTools && (
             <div>
             <RepeatWeightPanel
               images={images}

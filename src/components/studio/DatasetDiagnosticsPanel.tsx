@@ -23,6 +23,7 @@ export function DatasetDiagnosticsPanel({
   onOpenMultiAngle,
   onPrepareCrop,
   provisional = false,
+  provisionalProgress,
   stalledCount = 0,
   onRetryStalled,
   onPrepareTrim,
@@ -53,6 +54,8 @@ export function DatasetDiagnosticsPanel({
    * 数字が動くのは当然だが、黙っていると不信の元になるので明示する。
    */
   provisional?: boolean;
+  /** 判定中の進み具合（2026-09-26、暫定表示を目立たせる帯に出す）。 */
+  provisionalProgress?: { done: number; total: number };
   /** 判定が走っていないのに構図が未判定のまま残っている枚数（0なら正常）。 */
   stalledCount?: number;
   /** 未判定の画像だけ構図の判定をやり直す（無料）。 */
@@ -127,8 +130,8 @@ export function DatasetDiagnosticsPanel({
             </span>
           )}
           {provisional && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
-              <Loader2 size={9} className="animate-spin" />
+            <span className="inline-flex animate-pulse items-center gap-1 rounded-full border border-amber-400/70 bg-amber-500/30 px-2.5 py-0.5 text-[11px] font-bold text-amber-300">
+              <Loader2 size={11} className="animate-spin" />
               判定中・暫定
             </span>
           )}
@@ -151,6 +154,19 @@ export function DatasetDiagnosticsPanel({
 
       {open && (
         <div className="space-y-3 px-3 pb-3">
+          {/* 暫定の帯（2026-09-26、ホスト要望「すぐに目に止まるように」）。以前は見出しの小さなバッジと、欄の一番下の 1 行だけ。 */}
+          {provisional && (
+            <div className="flex items-center gap-2 rounded-lg border-2 border-amber-400/70 bg-amber-500/15 px-3 py-2 text-[12px] font-semibold text-amber-300">
+              <Loader2 size={15} className="shrink-0 animate-spin" />
+              <span>
+                構図を判定しています
+                {provisionalProgress && provisionalProgress.total > 0
+                  ? `（${provisionalProgress.done}/${provisionalProgress.total}）`
+                  : ""}
+                … この下の数字はまだ暫定です。終わるまで判断しないでください。
+              </span>
+            </div>
+          )}
           {/* おまかせで整える（2026-09-25、ホスト案）。減らす・切り出す・除外を 1 回で通す。個別の操作は下に残す。
               やることが 1 つも無いときは出さない。 */}
           {onAutoTidy && (samePlan.length > 0 || cropPlan.size > 0 || trimPlan.size > 0) && (
@@ -426,11 +442,6 @@ export function DatasetDiagnosticsPanel({
             </p>
           )}
 
-          {provisional && (
-            <p className="text-[10px] leading-relaxed text-amber-400">
-              構図の判定が終わっていないため、この数字はまだ動きます。全部終わってから判断してください。
-            </p>
-          )}
           {!provisional && stalledCount > 0 && (
             <p className="text-[10px] leading-relaxed text-red-400">
               {stalledCount} 枚は構図を判定できませんでした。この {stalledCount} 枚は上の集計に入っていません。
