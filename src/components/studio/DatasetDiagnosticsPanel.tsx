@@ -32,6 +32,7 @@ export function DatasetDiagnosticsPanel({
   onPrepareDuoTrim,
   highlightPrepare = false,
   onAutoTidy,
+  onProceed,
   autoTidyBusy = false,
   highlightAutoTidy = false,
 }: {
@@ -72,6 +73,8 @@ export function DatasetDiagnosticsPanel({
   highlightPrepare?: boolean;
   /** 「おまかせで整える」（2026-09-25、ホスト案）。減らす・切り出す・除外を 1 回で通す。 */
   onAutoTidy?: () => void;
+  /** 注意（黄）だけのときの「このまま進む」（2026-09-26）。次に光っている場所へ送る。 */
+  onProceed?: () => void;
   autoTidyBusy?: boolean;
   highlightAutoTidy?: boolean;
 }) {
@@ -169,6 +172,23 @@ export function DatasetDiagnosticsPanel({
           )}
           {/* おまかせで整える（2026-09-25、ホスト案）。減らす・切り出す・除外を 1 回で通す。個別の操作は下に残す。
               やることが 1 つも無いときは出さない。 */}
+          {/* 注意だけのときの一言（2026-09-26、ホスト指摘「注意 4 で文字がたくさん出て途方に暮れる」）。 */}
+          {!provisional && errors.length === 0 && warns.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-green-500/40 bg-green-500/10 px-3 py-2">
+              <p className="min-w-0 flex-1 text-[11px] leading-relaxed text-green-300">
+                ✓ 重大な問題はありません。下の注意は学習回数で補えるので、このまま進めて大丈夫です。
+              </p>
+              {onProceed && (
+                <button
+                  type="button"
+                  onClick={onProceed}
+                  className="shrink-0 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1 text-[11px] font-semibold text-white hover:opacity-90"
+                >
+                  このまま進む
+                </button>
+              )}
+            </div>
+          )}
           {/* 赤（学習回数では届かない）の指摘があるときだけ出す（2026-09-26、ホスト指摘「注意だけならいつもどおり学習回数を
               均して学習設定へ。おまかせを押すと条件が変わってマルチアングルへの誘導まで出る」）。 */}
           {onAutoTidy && errors.length > 0 && (samePlan.length > 0 || cropPlan.size > 0 || trimPlan.size > 0) && (

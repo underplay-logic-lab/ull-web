@@ -3734,8 +3734,13 @@ export function LoraStudioTab({
     const was = prevTrimPhaseRef.current;
     prevTrimPhaseRef.current = inTrimPhase;
     if (!was || inTrimPhase) return;
+    // 構図の判定中・未判定が残っている間は送らない（2026-09-26、診断開始の瞬間に前の判定で一瞬「減らす」が光って消え、
+    // 「減らす段階が終わった」と誤解して診断欄へ送り、すぐ判定中の表示へ戻る動きになっていた）。
+    if (composition.running || compositionPending) return;
     const t = window.setTimeout(scrollToNextFlow, 200);
     return () => window.clearTimeout(t);
+    // composition / compositionPending は「その時点の状態」を見るだけなので依存に入れない（入れると判定の終わりで発火する）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inTrimPhase, scrollToNextFlow]);
   // 被写体ごとの欄は「未入力の最初の1人」だけ光らせる（2026-09-22、ホスト指摘
   // 「2人目を追加すると1人目の欄も光る」）。allSubjects の 0 番が1人目。
@@ -5205,8 +5210,8 @@ export function LoraStudioTab({
                 )}
                 {/* 構図の判定（無料）の状態。キャプションの状態はクロップ欄の下へ移した（2026-09-25 の順番の改修）。 */}
                 {analysisStarted && composition.running && (
-                  <p id={COMPOSITION_STATUS_ID} className="mt-2 flex scroll-mt-24 items-center gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] text-neon-violet">
-                    <Loader2 size={13} className="shrink-0 animate-spin" />
+                  <p id={COMPOSITION_STATUS_ID} className="mt-2 flex scroll-mt-24 items-center gap-2 rounded-lg border-2 border-amber-400/70 bg-amber-500/15 px-3 py-2.5 text-[12px] font-semibold text-amber-300">
+                    <Loader2 size={16} className="shrink-0 animate-spin" />
                     {/* 32 枚ずつ並列に処理して、まとまって終わるので数字はしばらく動かない（2026-09-25、ホスト指摘）。 */}
                     構図を判定しています…（{composition.done}/{composition.total}）— 1 分ほどかかります。数字はまとめて進みます。
                   </p>
@@ -5354,6 +5359,7 @@ export function LoraStudioTab({
               // 立ちっぱなしでも診断が固まらないようにする二重の保険）。
               provisional={composition.running}
               provisionalProgress={{ done: composition.done, total: composition.total }}
+              onProceed={() => window.setTimeout(scrollToNextFlow, 50)}
               // 判定が止まっているのに「判定中」と出し続けない（2026-09-22、ホスト報告）。
               // 読めなかった画像は自動では再試行しないので、件数とやり直しの導線を出す。
               stalledCount={!composition.running ? untaggedImages.length : 0}
@@ -5679,7 +5685,8 @@ export function LoraStudioTab({
               取り込み → クロップ → 診断 を見てから比率を決める操作なので、
               順番として最後でないと「これで終わりなのか」が分からなくなる。 */}
           {images.length > 0 && !hideManualTools && (
-            <div>
+            // 均す段階では欄ごと光らせる（2026-09-26、ホスト指摘）。ボタン（おまかせ: 構図の偏りを均す）も光る。
+            <div className={`rounded-xl${flow.targets.includes("suggestRepeats") ? " flow-next" : ""}`}>
             <RepeatWeightPanel
               images={images}
               disabled={busy}

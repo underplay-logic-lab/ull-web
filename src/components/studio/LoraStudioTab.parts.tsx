@@ -1264,7 +1264,7 @@ export function RepeatWeightPanel({
             onClick={onSuggestRepeats}
             className={`${quickSelectBtnCls}${highlightSuggest ? " flow-next" : ""}`}
           >
-            📐 構図の偏りを均す回数を自動で入れる
+            📐 おまかせ: 構図の偏りを均す回数を自動で入れる
           </button>
           <span className="opacity-70">
             被写体ごとに、一番多い構図の枚数へ揃うよう回数を割り当てます（上限 ×3）。
