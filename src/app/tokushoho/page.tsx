@@ -1,10 +1,9 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { LegalPage } from "@/components/LegalPage";
-import { siteConfig } from "@/lib/data";
 
 export const metadata: Metadata = {
-  title: `特定商取引法に基づく表記 — ${siteConfig.name}`,
+  title: "特定商取引法に基づく表記 — ULL Studio",
 };
 
 // Kept as its own literal (matches CONTACT_EMAIL in src/lib/data.ts, both
@@ -61,7 +60,7 @@ const entries: LegalEntry[] = [
   },
   {
     label: "販売価格",
-    value: "各商品・クレジット購入画面に表示する価格（すべて税込/USD表記）によります。",
+    value: "各商品・クレジット購入画面に表示する価格（日本円表記）によります。",
   },
   {
     label: "商品代金以外の必要料金",
@@ -95,7 +94,7 @@ const entries: LegalEntry[] = [
 
 export default function TokushohoPage() {
   return (
-    <LegalPage title="特定商取引法に基づく表記" updatedAt="2026年8月26日">
+    <LegalPage title="特定商取引法に基づく表記" updatedAt="2026年9月26日">
       <div className="overflow-hidden rounded-2xl border border-border">
         <dl className="divide-y divide-border">
           {entries.map((entry) => (

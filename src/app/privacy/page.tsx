@@ -1,17 +1,17 @@
 import type { Metadata } from "next";
 import { LegalPage, LegalSection } from "@/components/LegalPage";
-import { siteConfig, CONTACT_EMAIL } from "@/lib/data";
+import { CONTACT_EMAIL } from "@/lib/data";
 
 export const metadata: Metadata = {
-  title: `プライバシーポリシー — ${siteConfig.name}`,
+  title: "プライバシーポリシー — ULL Studio",
 };
 
 export default function PrivacyPage() {
   return (
-    <LegalPage title="プライバシーポリシー" updatedAt="2026年9月13日">
+    <LegalPage title="プライバシーポリシー" updatedAt="2026年9月26日">
       <LegalSection heading="1. 基本方針">
         <p>
-          {siteConfig.name}（以下「当サイト」といいます）は、ユーザーの個人情報の重要性を認識し、適切に取得・利用・管理することをお約束します。本ポリシーは、当サイトが提供するサービスにおける個人情報の取り扱いについて定めるものです。
+          ULL Studio（運営：Underplay Logic Lab）（以下「当サイト」といいます）は、ユーザーの個人情報の重要性を認識し、適切に取得・利用・管理することをお約束します。本ポリシーは、当サイトが提供するサービスにおける個人情報の取り扱いについて定めるものです。
         </p>
       </LegalSection>
 
@@ -28,7 +28,7 @@ export default function PrivacyPage() {
             【生成データおよびアップロードファイルの取り扱い】
           </strong>
           <br />
-          Studio機能において生成されたメディアデータおよび入力設定は、サービス品質向上、不具合調査および不正利用防止の目的のため、一時ストレージ（最長14日間）に保持された後、自動的に安全に破棄されます。第三者への提供や公開は一切行われません。
+          Studio機能において生成されたメディアデータおよび入力設定は、サービス品質向上、不具合調査および不正利用防止の目的のため、一時ストレージ（最長14日間）に保持された後、自動的に安全に破棄されます。下記「4. 第三者提供」に記載する処理の委託先を除き、第三者への提供や公開は行いません。
         </p>
       </LegalSection>
 
@@ -43,7 +43,7 @@ export default function PrivacyPage() {
 
       <LegalSection heading="4. 第三者提供">
         <p>
-          当サイトは、法令に基づく場合を除き、ユーザーの同意なく個人情報を第三者に提供することはありません。ただし、決済処理（Polar.sh等）、認証（Google等）、不正アクセス対策（Cloudflare Turnstile等）、通知（Discord Webhook等）のために必要な範囲で、業務委託先・連携先に情報を提供する場合があります。
+          当サイトは、法令に基づく場合を除き、ユーザーの同意なく個人情報を第三者に提供することはありません。ただし、決済処理（Polar.sh等）、認証（Google等）、不正アクセス対策（Cloudflare Turnstile等）、通知（Discord Webhook等）、生成・学習の計算処理（クラウドGPU事業者）、データの保管（クラウドストレージ・データベース事業者）、AIによる解析・翻訳（Google Gemini API等。アップロードされた画像の特徴抽出や文章の翻訳に利用します）のために必要な範囲で、業務委託先・連携先に情報を提供する場合があります。
         </p>
       </LegalSection>
 

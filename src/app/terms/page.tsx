@@ -1,17 +1,17 @@
 import type { Metadata } from "next";
 import { LegalPage, LegalSection } from "@/components/LegalPage";
-import { siteConfig, CONTACT_EMAIL } from "@/lib/data";
+import { CONTACT_EMAIL } from "@/lib/data";
 
 export const metadata: Metadata = {
-  title: `利用規約 — ${siteConfig.name}`,
+  title: "利用規約 — ULL Studio",
 };
 
 export default function TermsPage() {
   return (
-    <LegalPage title="利用規約" updatedAt="2026年9月21日">
+    <LegalPage title="利用規約" updatedAt="2026年9月26日">
       <LegalSection heading="第1条（適用）">
         <p>
-          本規約は、{siteConfig.name}（以下「当サイト」といいます）が提供するAI生成サービス「Studio」、ツール配布、および関連コンテンツ（以下「本サービス」といいます）の利用条件を定めるものです。ユーザーは本サービスを利用することで、本規約に同意したものとみなされます。
+          本規約は、ULL Studio（運営：Underplay Logic Lab）（以下「当サイト」といいます）が提供するAI生成サービス「Studio」、ツール配布、および関連コンテンツ（以下「本サービス」といいます）の利用条件を定めるものです。ユーザーは本サービスを利用することで、本規約に同意したものとみなされます。
         </p>
       </LegalSection>
 
@@ -65,9 +65,16 @@ export default function TermsPage() {
         </p>
       </LegalSection>
 
+      {/* 2026-09-26: 通常 UI には保持期間を書かない方針なので、ここ（規約）で明示する。 */}
+      <LegalSection heading="第3条の3（データの保持期間）">
+        <p>
+          生成物、学習したLoRA、アップロードされた素材およびキャプション等のデータは、生成または登録から14日間保持した後、自動的に削除されます。削除されたデータは復元できません。必要なデータは保持期間内にダウンロードしてください。
+        </p>
+      </LegalSection>
+
       <LegalSection heading="第4条（生成処理の実行制限）">
         <p>
-          1回の生成処理には、処理内容（画像・動画・学習等の種別、解像度、尺、バッチ数等）に応じて当サイトが定める最大実行時間の上限があります。上限は機能・処理内容ごとに異なり、高負荷な設定ほど長い上限が設定される場合があります。実行時間が上限に達した場合、処理は自動的に強制終了されます。この場合、当該生成のために消費されたクレジットの返金は、当サイトの過失による場合を除き行いません。
+          1回の生成処理には、処理内容（画像・動画・学習等の種別、解像度、尺、バッチ数等）に応じて当サイトが定める最大実行時間の上限があります。上限は機能・処理内容ごとに異なり、高負荷な設定ほど長い上限が設定される場合があります。実行時間が上限に達した場合、処理は自動的に強制終了されます。この場合、およびシステム側の不具合で処理が完了しなかった場合は、完了しなかった分のクレジットを返金します。ただし、ユーザーが指定した設定そのものの誤り（上級者向けの詳細設定の記述誤り等）により処理が完了しなかった場合は、この限りではありません。
         </p>
       </LegalSection>
 
