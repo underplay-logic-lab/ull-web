@@ -590,7 +590,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    `[upscale-video-job] … save Xs for YMB (compute Zs)` で測り、大きければ別の手を考える。
    ③ LoRA: 途中版の保存ログの 30 秒後に裏で commit（従来は 2 分おき → 最後の数本が学習後の commit に回り約 45 秒待ち）。
    ログ `final vol.commit() after training took Xs` / `persisted … (commit Xs)`。
-   **v7 の結果（ホスト 2026-09-26）**: 1250 以降はどれも kch3 が出るが、**プロンプトを完全に無視**（全部 NG）。21 枚で 3000 step
+   **v7 の結果（ホスト 2026-09-26、kch3 で確認し直し）**: 1250 以降はどれも出るが、**プロンプトに従わない**（トリガーを kocho にしても出る）。21 枚で 3000 step
    ＝ 143 周で覚え込みすぎ。prodigy＋cosine の式（1000＋24×枚数）は少ない枚数で過学習。→ `lora-minimax-defaults` は入れない。
    次: **v8 = yukipas v5 の設定（adamw 1.5e-4・cosine・rank64/32・実効バッチ 4）を kch3 21 枚で**。batch2 は minimax で遅いので
    batch1×`gradient_accumulation_steps` 4・4000 step（更新 1000 回・4000 枚＝v5 と同じ）。YAML `kch3_solo_minimax_v8_yukipas_recipe_gas4.yaml`。
