@@ -115,12 +115,14 @@ export function AutoTidyPanel({
           )}
           {/* 終わったらボタンは 2 つだけ（2026-09-26、ホスト判断）: 結果が良ければ次へ、ダメなら元に戻す。 */}
           {!running && (
-            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-neon-pink/40 bg-background/60 px-2.5 py-2">
-              <span className="min-w-0 flex-1 text-[11px] text-foreground">
+            <div className="space-y-2 rounded-lg border border-neon-pink/40 bg-background/60 px-2.5 py-2">
+              {/* 文章を上、ボタンを下の行に（2026-09-26、横並びで文章が 1 行 5 文字に潰れていた）。 */}
+              <p className="text-[11px] leading-relaxed text-foreground">
                 {leftover
                   ? `おまかせで直しきれなかった指摘が ${leftover.count} 件あります（${leftover.reason}）。`
                   : "結果を確認して、良ければ先へ進んでください。"}
-              </span>
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 disabled={disabled}
@@ -149,6 +151,7 @@ export function AutoTidyPanel({
                   {leftover ? `このまま${nextStep.label}` : nextStep.label}
                 </button>
               )}
+              </div>
             </div>
           )}
         </div>

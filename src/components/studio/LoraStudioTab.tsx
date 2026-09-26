@@ -207,6 +207,16 @@ import {
 // 日本語のカンマ（、）も区切りとして扱う。
 const SPLIT_TAGS_RE = /\s*[,、]\s*/;
 
+// 要素を画面の中央より少し上に収める（2026-09-26、ホスト指摘「少し行き過ぎる。もう少し上を狙った方が良い」）。
+// 直後に上へ表示が差し込まれても（構図の判定中の表示など）、見切れにくくする。
+function scrollToCenterAbove(id: string, abovePx = 120) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  const top = window.scrollY + r.top - window.innerHeight / 2 + r.height / 2 - abovePx;
+  window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+}
+
 export function LoraStudioTab({
   onUseLora,
   onOpenMultiAngle,
@@ -3092,9 +3102,11 @@ export function LoraStudioTab({
     setEmbedTagsOpen(true);
     // SDXL は metadata の書き込み欄、それ以外は人物欄の下の確認へ（2026-09-25）。
     const t = window.setTimeout(() => {
-      document
-        .getElementById(isSdxlJobRef.current ? METADATA_PANEL_ID : IDENTITY_CONFIRM_ID)
-        ?.scrollIntoView({ behavior: "smooth", block: isSdxlJobRef.current ? "start" : "center" });
+      if (isSdxlJobRef.current) {
+        document.getElementById(METADATA_PANEL_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      } else {
+        scrollToCenterAbove(IDENTITY_CONFIRM_ID);
+      }
     }, 150);
     return () => window.clearTimeout(t);
   }, [analysisStarted, identityExtracting, needsIdentityConfirm]);
@@ -3229,6 +3241,13 @@ export function LoraStudioTab({
   // 切り出しの直後だけ、構図の判定が始まったら判定中の表示へスクロールする。
   // 判定が終わったら、切り出した画像の確認欄へ戻す（「2 人以上」の枠はそこで確定する）。
   const scrollToCompositionRef = useRef(false);
+  const scrollToStatusOnStartRef = useRef(false);
+  useEffect(() => {
+    if (!composition.running || !scrollToStatusOnStartRef.current) return;
+    scrollToStatusOnStartRef.current = false;
+    const t = window.setTimeout(() => scrollToCenterAbove(COMPOSITION_STATUS_ID), 100);
+    return () => window.clearTimeout(t);
+  }, [composition.running]);
   const backToCropReviewRef = useRef(false);
   useEffect(() => {
     if (composition.running && scrollToCompositionRef.current) {
@@ -3573,8 +3592,10 @@ export function LoraStudioTab({
       Boolean(x.subject && x.sameComposition) ||
       (x.level === "error" && Boolean(x.subject && x.balance?.trimBucket && x.balance.trim > 0)),
   ).length;
+  // 黄（学習回数で補える）は数えない（2026-09-26、ホスト指摘「注意だけならいつもどおり学習回数 → 学習設定」）。
   const autoTidyLeftoverAdd = flowDiag.issues.filter(
-    (x) => x.fixableWith === "smart_crop" && Boolean(x.subject) && (x.cropKinds?.length ?? 0) > 0,
+    (x) =>
+      x.level === "error" && x.fixableWith === "smart_crop" && Boolean(x.subject) && (x.cropKinds?.length ?? 0) > 0,
   ).length;
 
   // 判定待ちの保険（2026-09-26）: 4 分待っても判定が揃わなければ、付いた分だけで仕上げに進む。
@@ -5099,6 +5120,8 @@ export function LoraStudioTab({
                       disabled={busy}
                       onClick={() => {
                         // 押した時点ではその場に留まり、構図の判定が終わってから診断へ送る（下の終了時 effect）。
+                        // ボタンの欄が消えて判定中の表示に入れ替わるので、その表示が見える位置へ送る（2026-09-26）。
+                        scrollToStatusOnStartRef.current = true;
                         setAnalysisStarted(true);
                       }}
                       className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"

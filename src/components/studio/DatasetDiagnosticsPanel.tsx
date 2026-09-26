@@ -169,7 +169,9 @@ export function DatasetDiagnosticsPanel({
           )}
           {/* おまかせで整える（2026-09-25、ホスト案）。減らす・切り出す・除外を 1 回で通す。個別の操作は下に残す。
               やることが 1 つも無いときは出さない。 */}
-          {onAutoTidy && (samePlan.length > 0 || cropPlan.size > 0 || trimPlan.size > 0) && (
+          {/* 赤（学習回数では届かない）の指摘があるときだけ出す（2026-09-26、ホスト指摘「注意だけならいつもどおり学習回数を
+              均して学習設定へ。おまかせを押すと条件が変わってマルチアングルへの誘導まで出る」）。 */}
+          {onAutoTidy && errors.length > 0 && (samePlan.length > 0 || cropPlan.size > 0 || trimPlan.size > 0) && (
             <div
               className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border border-neon-pink/40 bg-neon-pink/5 px-3 py-2${
                 highlightAutoTidy ? " flow-next" : ""
