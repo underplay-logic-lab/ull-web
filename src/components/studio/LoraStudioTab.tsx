@@ -3117,9 +3117,15 @@ export function LoraStudioTab({
   // 2 回目以降のデータセットでは一度も送られなかった（ホスト報告「解析が終わっても診断に飛ばない」）。
   // 今は「構図の判定・特徴の抽出・確認がすべて済み、診断欄がある」状態になった時に 1 回だけ送る。
   const scrolledToDiagRef = useRef(false);
+  // まだ判定していない画像が残っているうちは「出そろった」としない（2026-09-26、ホスト報告: 前に判定済みの画像があると
+  // 押した直後に診断欄へ送られ、0.6 秒後に判定中の表示が上に差し込まれて画面がずれた）。
+  const compositionPending = images.some(
+    (img) => !compositionTags[img.id] && !compositionAttemptedRef.current.has(img.id),
+  );
   const diagReady =
     analysisStarted &&
     !composition.running &&
+    !compositionPending &&
     identityExtracting === null &&
     !needsIdentityConfirm &&
     diagnosticItems.length > 0;
