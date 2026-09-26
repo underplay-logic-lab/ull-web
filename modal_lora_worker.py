@@ -1064,8 +1064,13 @@ def train_lora_job(params: dict) -> dict:
         #    B300 アイドルを踏んだ）。完了行を書いた直後に CPU 関数
         #    publish_lora_artifacts_r2 を spawn し、そちらが Volume → R2 へ
         #    上げて metadata.checkpoints[].r2_key を焼き込み、Volume 側を消す。
-        vol.commit()
-        print(f"[train] persisted {len(checkpoints)} checkpoint(s) -> {job_ckpt_dir or '(local, skipped)'}")
+        _t_pc = time.time()
+        with _VOL_COMMIT_LOCK:
+            vol.commit()
+        print(
+            f"[train] persisted {len(checkpoints)} checkpoint(s) -> {job_ckpt_dir or '(local, skipped)'} "
+            f"(commit {time.time() - _t_pc:.1f}s)"
+        )
 
         final_vram = _current_effective_vram_gb()
         metadata = {"checkpoints": checkpoints, "gpu_tier": _gpu_tier_label()}

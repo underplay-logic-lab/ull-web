@@ -83,6 +83,7 @@ import pathlib
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
 import fastapi
@@ -1984,11 +1985,72 @@ class QwenImageEditWorker:
             return a[-1] if a and isinstance(a[-1], dict) else {}
 
         done = 0
+        # 保存・記録は GPU の横で回す（2026-09-26、超解像バッチと同じ形）。PNG 化 → Volume 書き込み・commit →
+        # DB 記録を 1 本のスレッドで順に処理し、GPU は次の構図の推論へすぐ進む。記録の順番を崩さないため 1 本。
+        done_box = [0]
+        finalize_s = [0.0]
+        finalize_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="angle-finalize")
+        finalize_futs: list = []
+
+        def _finalize_angle(idx: int, image, vram_gb):
+            _tf = time.time()
+            try:
+                buf = io.BytesIO()
+                image.save(buf, format="PNG")
+                png = buf.getvalue()
+                url = _save_angle_image(user_id, job_id, idx, png)
+                if url is None:
+                    # ストレージ不通でもフロントで表示できるよう data URI で返す。
+                    url = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+                label = str(labels[idx]) if idx < len(labels) else ""
+                recorded = _append_angle_result(job_id, url, label)
+                # 画像単位でも Heartbeat（保存・記録の隙間を埋める）。
+                last_progress_time[0] = time.time()
+                if recorded:
+                    done_box[0] += 1
+                    progress_box["done"] = done_box[0]
+                else:
+                    # 2026-09-13 実障害: 記録できなかった分を done に入れない＝最終的に _refund_remaining で返金。
+                    print(
+                        f"[angle-job] {job_id} angle {idx} generated but NOT recorded "
+                        f"(DB write failed after retries) — will be refunded",
+                        flush=True,
+                    )
+                if vram_gb is not None:
+                    # PATCH は jsonb 丸ごと置き換えなので route が書いた ref_image_count も乗せ直す（2026-09-23）。
+                    _patch_angle_job(
+                        job_id,
+                        {
+                            "metadata": {
+                                "vram_used_gb": vram_gb,
+                                "gpu_tier": _gpu_tier_label(),
+                                "ref_image_count": len(refs),
+                            }
+                        },
+                    )
+            except Exception as _fe:  # noqa: BLE001 — 1 構図の保存失敗でジョブ全体を落とさない（返金される）
+                print(f"[angle-job] {job_id} angle {idx} finalize failed: {_fe!r}", flush=True)
+            finally:
+                finalize_s[0] += time.time() - _tf
+                print(
+                    f"[angle-job] {job_id} {done_box[0]}/{n_total} saved "
+                    f"({time.time() - t0:.1f}s cum, finalize {time.time() - _tf:.1f}s) VRAM={vram_gb}GB",
+                    flush=True,
+                )
+
+        def _drain_finalize():
+            for _f in finalize_futs:
+                try:
+                    _f.result(timeout=600)
+                except Exception as _e:  # noqa: BLE001
+                    print(f"[angle-job] {job_id} finalize wait failed: {_e!r}", flush=True)
+            finalize_pool.shutdown(wait=True)
+
         try:
             for idx, instr in enumerate(instructions):
                 if cost_stop.is_set():
                     print(
-                        f"[angle-job] {job_id} halting at {done}/{n_total} — cost cap",
+                        f"[angle-job] {job_id} halting at {done_box[0]}/{n_total} — cost cap",
                         flush=True,
                     )
                     break
@@ -2017,61 +2079,23 @@ class QwenImageEditWorker:
                 if self._supports_step_cb:
                     call_kwargs["callback_on_step_end"] = _heartbeat
 
+                _tc = time.time()
                 result = self.pipe(**call_kwargs)
-
-                buf = io.BytesIO()
-                result.images[0].save(buf, format="PNG")
-                png = buf.getvalue()
-
-                url = _save_angle_image(user_id, job_id, idx, png)
-                if url is None:
-                    # ストレージ不通でもフロントで表示できるよう data URI で返す。
-                    url = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
-                label = str(labels[idx]) if idx < len(labels) else ""
-                recorded = _append_angle_result(job_id, url, label)
-                # 画像単位でも Heartbeat（デコード + アップロードの隙間を埋める）。
-                # GPU 側は生成できているので、DB 記録の成否に関わらずフリーズ
-                # 判定はリセットする。
-                last_progress_time[0] = time.time()
-                if recorded:
-                    done += 1
-                    progress_box["done"] = done
-                else:
-                    # 2026-09-13 実障害: ここで無条件に done += 1 していたため、
-                    # DB 記録が失敗した分も「完了」扱いになり、画像が静かに
-                    # 消えるうえ返金もされなかった。記録できなかった分は
-                    # done に入れない＝最終的に _refund_remaining で返金される。
-                    print(
-                        f"[angle-job] {job_id} angle {idx} generated but NOT recorded "
-                        f"(DB write failed after retries) — will be refunded",
-                        flush=True,
-                    )
                 vram_gb = self._vram_gb()
-                # ライブ「Active VRAM」バッジ用（ネタバレ防止 — 分母・％・GPU名なし。
-                # フロントは angle_jobs.metadata.vram_used_gb を pollAngleJob で読む）。
-                # gpu_tier もここで一緒に乗せる — completed_fields 側では
-                # metadata キー自体を送らない（PATCHはJSONBカラム丸ごと
-                # 置き換えのため、ここで乗せた値が完了時までそのまま残る）。
-                if vram_gb is not None:
-                    # PATCH は jsonb 丸ごと置き換えなので、route が書いた ref_image_count
-                    # が消えていた（2026-09-23 発見、admin の粗利分析で参照枚数が追えない）。
-                    # worker 側で知っている値をここで一緒に乗せ直す。
-                    _patch_angle_job(
-                        job_id,
-                        {
-                            "metadata": {
-                                "vram_used_gb": vram_gb,
-                                "gpu_tier": _gpu_tier_label(),
-                                "ref_image_count": len(refs),
-                            }
-                        },
-                    )
-                print(
-                    f"[angle-job] {job_id} {done}/{n_total} "
-                    f"({time.time() - t0:.1f}s cum) VRAM={vram_gb}GB",
-                    flush=True,
-                )
+                last_progress_time[0] = time.time()
+                print(f"[angle-job] {job_id} angle {idx} computed in {time.time() - _tc:.1f}s", flush=True)
+                finalize_futs.append(finalize_pool.submit(_finalize_angle, idx, result.images[0], vram_gb))
+            _tj = time.time()
+            _drain_finalize()
+            done = done_box[0]
+            print(
+                f"[angle-job] {job_id} finalize total {finalize_s[0]:.1f}s (in background), "
+                f"waited {time.time() - _tj:.1f}s after the last angle",
+                flush=True,
+            )
         except Exception as exc:  # noqa: BLE001
+            _drain_finalize()
+            done = done_box[0]
             print(f"[angle-job] {job_id} failed after {done}/{n_total}: {exc}", flush=True)
             _patch_angle_job(
                 job_id,

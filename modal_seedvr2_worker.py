@@ -2580,7 +2580,14 @@ class SeedVR2Worker:
         _vram_stop.set()
         _vram_thread.join(timeout=3)
 
+        _ts = time.time()
         url = _save_upscale_video(user_id, job_id, r["data"])
+        # 保存（Volume 書き込み＋commit）の GPU 待ちを測る（2026-09-26、裏へ回すかの判断材料）。
+        print(
+            f"[upscale-video-job] {job_id} save {time.time() - _ts:.1f}s for {len(r['data']) / 1024**2:.1f}MB "
+            f"(compute {r['elapsed_time']}s)",
+            flush=True,
+        )
         meta = {
             "vram_used_gb": r["vram_used_gb"],
             "vram_peak_gb": r["vram_peak_gb"],

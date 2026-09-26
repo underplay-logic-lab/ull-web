@@ -43,6 +43,7 @@ from lora_worker_core import (  # noqa: F401
     LORA_PREP_SILENCE_S,
     LORA_SAFETY_LIMIT_S,
     MODELS_DIR,
+    _VOL_COMMIT_LOCK,
     OUTPUT_DIR,
     PERSIST_OUTPUT_ROOT,
     PERSIST_ROOT,
@@ -1669,10 +1670,33 @@ except Exception as _e:  # noqa: BLE001
             return
         last_commit[0] = now
         try:
-            vol.commit()
-            print(f"[stage2] vol.commit() — checkpoints persisted (step {state['step']})", flush=True)
+            _tc = time.time()
+            with _VOL_COMMIT_LOCK:
+                vol.commit()
+            print(
+                f"[stage2] vol.commit() — checkpoints persisted (step {state['step']}, {time.time() - _tc:.1f}s)",
+                flush=True,
+            )
         except Exception as _ce:  # noqa: BLE001 — best-effort, never fatal
             print(f"[stage2] vol.commit() skipped: {_ce}", flush=True)
+
+    # 途中版の保存が済んだら、学習の横ですぐ Volume に確定させる（2026-09-26）。2 分おきの commit だけだと、
+    # 最後の数本が学習後の commit に回り、その間 GPU が待っていた（約 45 秒）。保存ログの 30 秒後に裏で 1 回。
+    _ckpt_commit_timer: list = [None]
+
+    def _commit_soon_after_save() -> None:
+        if not commit_vol:
+            return
+        if _ckpt_commit_timer[0] is not None:
+            _ckpt_commit_timer[0].cancel()
+
+        def _bg() -> None:
+            _maybe_commit(force=True)
+
+        t = threading.Timer(30.0, _bg)
+        t.daemon = True
+        t.start()
+        _ckpt_commit_timer[0] = t
 
     def _push(force: bool = False) -> None:
         now = time.time()
@@ -1855,6 +1879,7 @@ except Exception as _e:  # noqa: BLE001
                     # ensuing silence never reads as a stall.
                     if _CKPT_SAVE_RE.search(line):
                         io_grace_until = time.time() + LORA_CKPT_IO_GRACE_S
+                        _commit_soon_after_save()
                         print(f"[stage2] checkpoint I/O — monitor grace {LORA_CKPT_IO_GRACE_S // 60}m", flush=True)
 
                     # --- LATENT-CACHE (prep) bar — its OWN phase. Keep step 0,
@@ -2014,7 +2039,11 @@ except Exception as _e:  # noqa: BLE001
     finally:
         if state["step"] > 0 or cache_state["active"] or log_ring:
             _push(force=True)
+        if _ckpt_commit_timer[0] is not None:
+            _ckpt_commit_timer[0].cancel()
+        _tfc = time.time()
         _maybe_commit(force=True)  # persist every save_every checkpoint written so far
+        print(f"[stage2] final vol.commit() after training took {time.time() - _tfc:.1f}s", flush=True)
         # steady-state の s/it を残す。cost-guard の予測に使っているのと同じ
         # trimmed 平均（外れ値＝チェックポイント保存やサンプル生成を落とす）。
         try:

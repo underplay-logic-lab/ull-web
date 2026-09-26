@@ -583,6 +583,15 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 - R2 移行は計画 1〜9 すべて閉じた（8-② の転送パネルだけローンチ後）。
 
 **残り**
+000000000000000. **GPU 待ちの削減（2026-09-26、3 ワーカーともデプロイ済み・効果は次の実行のログで確認）。**
+   ① Multi-Angle: 1 構図ごとの PNG 化・Volume 書き込み＋commit・DB 記録を 1 本の裏スレッドへ（`_finalize_angle`）。
+   ログ `angle N computed in Xs` / `saved … finalize Xs` / `finalize total Xs (in background)` で効果を見る。
+   ② 動画超解像: 1 ジョブ 1 本なので裏へ回す余地がない（関数を抜けるまでコンテナが次を受けない）。保存時間だけ
+   `[upscale-video-job] … save Xs for YMB (compute Zs)` で測り、大きければ別の手を考える。
+   ③ LoRA: 途中版の保存ログの 30 秒後に裏で commit（従来は 2 分おき → 最後の数本が学習後の commit に回り約 45 秒待ち）。
+   ログ `final vol.commit() after training took Xs` / `persisted … (commit Xs)`。
+   **新発見: minimax は毎ジョブ model_load が約 600 秒**（v7 `66fd4f72` 593.6s、直近 6 本とも 593〜636s、B300 で 1 回 約 $1.2 の待ち）。
+   docs §14.4 の「逆量子化は毎ジョブ恒久的」がこれ。45 秒よりずっと大きいので、次に中身（Volume 読み・逆量子化・TE bake）を切り分ける。
 00000000000000. **ローンチ時の LoRA 対応モデルは minimax_h3 と SDXL（WAI Illustrious）の 2 つだけ（2026-09-26 ホスト判断）。**
    理由: 全モデルの既定値検証がローンチを遅らせるため。需要が確定しているこの 2 つで出し、他（wan22 / ltx2 / krea2 / anima /
    zimage / klein）はリクエストがあるか手が空いたら既定値を確かめて追加。→ **下の「他 6 モデルを 1 回ずつ確認」はやらない。**
