@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { ArrowRight, Check, Gift, Loader2, Settings, Sparkles } from "lucide-react";
@@ -35,6 +35,31 @@ export function Pricing() {
   const [portalLoading, setPortalLoading] = useState(false);
   // プラン変更・同じプランの買い直しの確認（2026-09-26）。今の契約は即時終了し、新しい契約の支払い画面へ。
   const [replaceTarget, setReplaceTarget] = useState<PricingPlan | null>(null);
+
+  // 決済から戻ったとき（/?purchase=success#pricing）や #pricing で開いたとき、ブラウザは読み込み直後に一度だけ
+  // 飛ぶが、その後に上の区画の画像・動画が読み込まれて位置がずれ、見出しの途中で止まっていた（2026-09-26）。
+  // 落ち着くまで何度か合わせ直す。ユーザーが自分でスクロールしたらやめる。
+  useEffect(() => {
+    if (typeof window === "undefined" || window.location.hash !== "#pricing") return;
+    let userMoved = false;
+    const stop = () => {
+      userMoved = true;
+    };
+    window.addEventListener("wheel", stop, { passive: true });
+    window.addEventListener("touchstart", stop, { passive: true });
+    window.addEventListener("keydown", stop);
+    const timers = [150, 600, 1200, 2000, 3000].map((ms) =>
+      setTimeout(() => {
+        if (!userMoved) document.getElementById("pricing")?.scrollIntoView({ block: "start" });
+      }, ms),
+    );
+    return () => {
+      timers.forEach(clearTimeout);
+      window.removeEventListener("wheel", stop);
+      window.removeEventListener("touchstart", stop);
+      window.removeEventListener("keydown", stop);
+    };
+  }, []);
 
   const currentTier: SubscriptionTier = tier ?? "free";
   const isPaidMember = Boolean(user) && currentTier !== "free";
@@ -200,7 +225,7 @@ export function Pricing() {
               )}
 
               <h3 className="text-base font-bold text-muted">{plan.name}</h3>
-              <div className="mt-3 flex items-baseline gap-1">
+              <div className="mt-3 flex flex-wrap items-baseline gap-x-1">
                 {plan.id === "topup" && topupDiscountPct > 0 && (
                   <span className="font-mono text-base font-medium text-muted line-through">
                     ¥{TOPUP_FULL_PRICE.toLocaleString()}
@@ -209,7 +234,8 @@ export function Pricing() {
                 <span className="text-3xl font-bold tracking-tight text-gradient">
                   {plan.id === "topup" ? `¥${topupPrice.toLocaleString()}` : plan.price}
                 </span>
-                {plan.period && (
+                {/* 都度チャージは「/ 300 Credits」を出さない（割引の打ち消し線と並ぶとカードからはみ出す。枚数は下の一覧にある）。 */}
+                {plan.period && plan.id !== "topup" && (
                   <span className="font-mono text-xs text-muted">
                     {plan.period}
                   </span>
