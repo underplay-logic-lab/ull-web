@@ -141,7 +141,12 @@ const SMART_CROP_MIN_SHORT_EDGE = 384;
 // 増えないので捨てる（全身写真から全身を切り出すケース）。
 const SMART_CROP_REDUNDANT_COVERAGE = 0.85;
 import { warmSmartCropModels } from "@/lib/smartCropDetect";
-import { AutoTidyPanel, type AutoTidyState, type ExcludedImage } from "@/components/studio/AutoTidyPanel";
+import {
+  AUTO_TIDY_PANEL_ID,
+  AutoTidyPanel,
+  type AutoTidyState,
+  type ExcludedImage,
+} from "@/components/studio/AutoTidyPanel";
 import {
   ImageDropzone,
   DATASET_GRID_BAR_ID,
@@ -3218,7 +3223,9 @@ export function LoraStudioTab({
     }
   }, []);
   useEffect(() => {
-    if (!user || phase !== "form" || yamlMode || !analysisStarted || composition.running) return;
+    // 生 YAML でも判定する（2026-09-26）。生 YAML が決めるのは学習の設定だけで、データセットの準備（診断・切り出し・
+    // キャプション）は同じ。以前は生 YAML だと判定が走らず、おまかせで整えるが判定待ちのまま止まった。
+    if (!user || phase !== "form" || !analysisStarted || composition.running) return;
     const pending = images.filter(
       (img) => !compositionTags[img.id] && !compositionAttemptedRef.current.has(img.id),
     );
@@ -3226,7 +3233,7 @@ export function LoraStudioTab({
     // 連続で足された画像を 1 回にまとめる。
     const t = setTimeout(() => void runCompositionTagging(pending), 600);
     return () => clearTimeout(t);
-  }, [user, phase, yamlMode, analysisStarted, composition.running, images, compositionTags, runCompositionTagging]);
+  }, [user, phase, analysisStarted, composition.running, images, compositionTags, runCompositionTagging]);
   // 切り出しの直後だけ、構図の判定が始まったら判定中の表示へスクロールする。
   // 判定が終わったら、切り出した画像の確認欄へ戻す（「2 人以上」の枠はそこで確定する）。
   const scrollToCompositionRef = useRef(false);
@@ -3550,14 +3557,40 @@ export function LoraStudioTab({
     excludeImages,
   ]);
 
+  // 判定待ちの保険（2026-09-26）: 4 分待っても判定が揃わなければ、付いた分だけで仕上げに進む。
+  const [autoTidyWaitExpired, setAutoTidyWaitExpired] = useState(false);
+  useEffect(() => {
+    if (autoTidy?.phase !== "waitingTags") {
+      setAutoTidyWaitExpired(false);
+      return;
+    }
+    const t = window.setTimeout(() => setAutoTidyWaitExpired(true), 4 * 60 * 1000);
+    return () => window.clearTimeout(t);
+  }, [autoTidy?.phase, autoTidy?.run]);
+  // おまかせの欄を画面に収める（2026-09-26、ホスト報告「画像が追加された分スクロールして状況が分からない」）。押した直後と、
+  // 切り出しが進むたび・段階が変わるたびに送る。
+  const autoTidyPhase = autoTidy?.phase;
+  const autoTidyCropDone = autoTidy?.cropDone;
+  const autoTidyRun = autoTidy?.run;
+  useEffect(() => {
+    if (!autoTidyPhase || autoTidyPhase === "done") return;
+    const t = window.setTimeout(
+      () => document.getElementById(AUTO_TIDY_PANEL_ID)?.scrollIntoView({ behavior: "smooth", block: "center" }),
+      150,
+    );
+    return () => window.clearTimeout(t);
+  }, [autoTidyPhase, autoTidyCropDone, autoTidyRun]);
+
   // B. 切り出した画像の構図の判定が終わったら、2 人以上の切り出しを除外し、多すぎる構図を減らす。
   useEffect(() => {
     const st = autoTidy;
     if (!st || st.phase !== "waitingTags" || composition.running) return;
     const alive = new Set(images.map((i) => i.id));
-    const ready = st.cropIds.every(
-      (id) => !alive.has(id) || Boolean(compositionTags[id]) || compositionAttemptedRef.current.has(id),
-    );
+    const ready =
+      autoTidyWaitExpired ||
+      st.cropIds.every(
+        (id) => !alive.has(id) || Boolean(compositionTags[id]) || compositionAttemptedRef.current.has(id),
+      );
     if (!ready) return;
     const log: string[] = [];
     const ex: { id: string; reason: string }[] = [];
@@ -3592,7 +3625,7 @@ export function LoraStudioTab({
     autoTidyRef.current = done;
     setAutoTidy(done);
     window.setTimeout(scrollToNextFlow, 400);
-  }, [autoTidy, composition.running, images, compositionTags, multiSubjectCropIds, flowDiag, pickDupFirst, duoPoolFor, trimPoolFor, excludeImages, captionSource, scrollToNextFlow]);
+  }, [autoTidy, autoTidyWaitExpired, composition.running, images, compositionTags, multiSubjectCropIds, flowDiag, pickDupFirst, duoPoolFor, trimPoolFor, excludeImages, captionSource, scrollToNextFlow]);
 
   // C. 学習回数の均し（除外が画面に反映されてから、次の描画でかける）。
   useEffect(() => {
@@ -5025,7 +5058,7 @@ export function LoraStudioTab({
                 {/* 解析の開始はユーザーが決める（2026-09-22、ホスト判断）。タイマーで
                     「取り込みが終わった」を判定すると、前半のフォルダに片方の被写体
                     しか無い状態で特徴を確定してしまう。 */}
-                {images.length > 0 && !analysisStarted && !yamlMode && (
+                {images.length > 0 && !analysisStarted && (
                   <div
                     className={`rounded-xl border border-neon-pink/40 bg-neon-pink/5 px-3 py-2.5${flowRing("startAnalysis")}`}
                   >
@@ -5300,7 +5333,7 @@ export function LoraStudioTab({
           {/* キャプション（2026-09-25 の順番の改修）。構図の診断とクロップが済んでから 1 回だけ作る（有料）。
               切り出した画像も含めて作れるので、クロップより後に置く。学習回数は被写体ごとの比率を
               キャプションで決めるので、この下。 */}
-          {analysisStarted && !yamlMode && images.length > 0 && (
+          {analysisStarted && images.length > 0 && (
             <div className="space-y-2 rounded-xl border border-border bg-background/40 px-3 py-2.5">
               <h4 className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
                 <Languages size={13} className="text-neon-violet" />
