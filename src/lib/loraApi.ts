@@ -482,6 +482,8 @@ export async function uploadLoraDataset(
 export type StartLoraTrainingParams = {
   // 実行速度。"fast" は高速 tier がある arch（loraFastOption）でだけ効き、料金もその tier で決まる。
   speed?: "standard" | "fast";
+  /** 学習中にもう 1 本出す（並列・追加料金、2026-09-26）。 */
+  priority?: boolean;
   // Supabase Storage object paths (from uploadLoraDataset), in caption order.
   storagePaths: string[];
   captions: string[];
@@ -559,6 +561,7 @@ export async function startLoraTraining(params: StartLoraTrainingParams): Promis
       embed_tags: params.embedTags,
       keep_tokens: params.keepTokens,
       ...(params.speed === "fast" ? { speed: "fast" } : {}),
+      ...(params.priority ? { priority: true } : {}),
     }),
   });
 

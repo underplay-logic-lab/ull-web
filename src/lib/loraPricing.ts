@@ -23,6 +23,7 @@
 // ai-toolkit config object so the two can never disagree.
 
 import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";
+import { parallelSurcharge } from "@/lib/pricing/parallelSurcharge";
 import {
   loraCreditsPerGpuSecond,
   loraCreditWorstCase,
@@ -260,4 +261,10 @@ export function loraPriceMultiplierSummary(b: LoraPriceBreakdown): string {
   if (b.imageCount > 0) parts.push(`画像 ${b.imageCount}枚`);
   parts.push(`推定処理時間 ${formatMinutes(b.totalSeconds)}`);
   return parts.join(" ・ ");
+}
+
+// 学習中にもう 1 本出すときの上乗せ（2026-09-26、全タブ共通の式。src/lib/pricing/parallelSurcharge.ts）。
+// 損切り（cost_cap）は通常料金から出すので、ここで足した分は請求にだけ乗る。
+export function loraPriorityParallelSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS, baseCost = 0): number {
+  return parallelSurcharge(baseCost, knobs.lora_priority_parallel_rate, knobs.lora_priority_parallel_surcharge);
 }

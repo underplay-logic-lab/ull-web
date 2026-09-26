@@ -59,6 +59,7 @@ import { autoLoraSteps, autoLoraRankAlpha } from "@/lib/loraCredits";
 import {
   guiLoraPricingConfig,
   loraPriceBreakdown,
+  loraPriorityParallelSurcharge,
   loraPriceMultiplierSummary,
   loraEstimatedMinutesLabel,
   LORA_CREDIT_WORST_CASE,
@@ -72,6 +73,13 @@ import {
   type LoraReplacement,
 } from "@/lib/studioHandoff";
 import { DatasetCurationUI, type CurationPair } from "@/components/studio/DatasetCurationUI";
+import {
+  LoraBackgroundJobs,
+  loadBackgroundLoraJobs,
+  saveBackgroundLoraJobs,
+  type BackgroundLoraJob,
+} from "@/components/studio/LoraBackgroundJobs";
+import { QueueChoiceModal } from "@/components/studio/QueueChoiceModal";
 import { parseDatasetZip, isZipFile, buildDatasetZip, downloadBlob } from "@/lib/datasetZip";
 import {
   LORA_CAPTION_CATEGORIES,
@@ -527,6 +535,20 @@ export function LoraStudioTab({
       /* private mode / disabled storage — the ref alone still guards this session */
     }
   };
+  // 並列で出して今は追っていない学習（2026-09-26）。表示名は出した時点で覚えておく。
+  const [backgroundJobs, setBackgroundJobs] = useState<BackgroundLoraJob[]>([]);
+  useEffect(() => {
+    setBackgroundJobs(loadBackgroundLoraJobs());
+  }, []);
+  const updateBackgroundJobs = (fn: (prev: BackgroundLoraJob[]) => BackgroundLoraJob[]) => {
+    setBackgroundJobs((prev) => {
+      const next = fn(prev);
+      saveBackgroundLoraJobs(next);
+      return next;
+    });
+  };
+  const activeJobLabelRef = useRef<string>("");
+  const [parallelModalOpen, setParallelModalOpen] = useState(false);
   // The job id currently being polled and when it entered 'queued'.
   const activeJobIdRef = useRef<string>("");
   const queuedSinceRef = useRef<number>(0);
@@ -2446,6 +2468,7 @@ export function LoraStudioTab({
       ? Math.min(LORA_CREDIT_WORST_CASE, priceBreakdown.credits)
       : LORA_CREDIT_WORST_CASE;
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < requiredCredits;
+  const parallelSurchargeCredits = loraPriorityParallelSurcharge(pricingKnobs, requiredCredits);
 
   // Model dropdown change — resolution はもう手動で追従させない。pricedArch
   // が決まった直後の useEffect が recommendedResolution() から自動で同期する
@@ -2600,6 +2623,42 @@ export function LoraStudioTab({
     },
     [refreshCredits],
   );
+
+  // 「並列で出した学習」から 1 本を選んで進行状況パネルに出す（2026-09-26）。今追っている学習は一覧へ回す。
+  const showBackgroundJob = async (bg: BackgroundLoraJob) => {
+    let target: LoraJobStatus;
+    try {
+      target = await pollLoraJob(bg.jobId);
+    } catch {
+      setErrorMessage("学習の状態を取得できませんでした。少し待ってからもう一度お試しください。");
+      return;
+    }
+    const prevId = activeJobIdRef.current;
+    const prevLabel = activeJobLabelRef.current || activeJobModelLabel || "";
+    updateBackgroundJobs((prev) => {
+      const rest = prev.filter((j) => j.jobId !== bg.jobId && j.jobId !== prevId);
+      return prevId && prevId !== bg.jobId ? [...rest, { jobId: prevId, label: prevLabel }] : rest;
+    });
+    jobBindGenRef.current += 1;
+    pollCancelledRef.current = true;
+    if (pollTimeoutRef.current) {
+      clearTimeout(pollTimeoutRef.current);
+      pollTimeoutRef.current = null;
+    }
+    dismissedJobIdsRef.current.delete(bg.jobId);
+    setRecoveredJob(null);
+    activeJobIdRef.current = bg.jobId;
+    activeJobLabelRef.current = bg.label;
+    setActiveJobModelLabel(null);
+    setJob(target);
+    try {
+      localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, bg.jobId);
+    } catch {
+      /* storage disabled */
+    }
+    setPhase("tracking");
+    if (target.status === "queued" || target.status === "processing") startPolling(bg.jobId, { immediate: true });
+  };
 
   // "[今すぐ再接続]" on the degraded card — restarts the poll loop against the
   // same job id with an IMMEDIATE first fetch (no 3s wait), so the newest
@@ -2797,8 +2856,15 @@ export function LoraStudioTab({
     imgs: DatasetImage[],
     ownCaptions: string[] | null,
     captionsFromUser: boolean,
+    opts: { priority?: boolean } = {},
   ) => {
     if (!user) return;
+    // 並列で出すときは、今追っている学習を「並列で出した学習」の一覧へ移す（成果物に戻れるように）。
+    if (opts.priority && activeJobIdRef.current) {
+      const prevId = activeJobIdRef.current;
+      const prevLabel = activeJobLabelRef.current || activeJobModelLabel || "";
+      updateBackgroundJobs((prev) => [...prev.filter((j) => j.jobId !== prevId), { jobId: prevId, label: prevLabel }]);
+    }
     // HARD-DETACH any previous job BEFORE anything async runs. A lingering
     // mount-restore / poll must not be able to bind its old id or shove the
     // old ProgressPanel back after we've started a fresh job.
@@ -2941,6 +3007,7 @@ export function LoraStudioTab({
         // キャプションの固定ブロック（trigger 群 + 数/性別タグ）の長さと
         // ズレると trigger が本文へ紛れ込むので、値を入力させる設計をやめた。
         speed: effectiveSpeed,
+        priority: opts.priority,
         // 複数人物のジョブは ai-toolkit に trigger_word を注入させない（2026-09-25、modal_lora_worker.py 参照）。
         // 生 YAML でも送る（2026-09-26。送らないと worker が 1 人の LoRA と見て画面の主トリガーを補い、
         // もう一人だけのキャプションにも主トリガーが足されていた）。
@@ -2956,9 +3023,11 @@ export function LoraStudioTab({
       const { jobId, remainingCredits } = startRes;
       console.log("[lora] train ->", startRes);
       broadcastCreditsUpdate(user.id, remainingCredits);
-      setActiveJobModelLabel(
-        isCustom ? customModelId.trim() || "カスタムモデル" : (loraPresetById(targetModel)?.label ?? targetModel),
-      );
+      const startedModelLabel = isCustom
+        ? customModelId.trim() || "カスタムモデル"
+        : (loraPresetById(targetModel)?.label ?? targetModel);
+      setActiveJobModelLabel(startedModelLabel);
+      activeJobLabelRef.current = `${effectiveLoraName || "LoRA"}（${startedModelLabel}）`;
       setJob({
         jobId,
         status: "queued",
@@ -4225,10 +4294,7 @@ export function LoraStudioTab({
 
   const handleStart = async () => {
     if (submitting || phase !== "form") return; // already in flight — ignore re-clicks
-    // Physical double-submit guard — a job dispatched this session is still
-    // queued/processing (the button is disabled for this too, but Enter-key
-    // submits or a stale render must not slip through).
-    if (inFlightJob) return;
+    // 学習中でも確認画面までは進める（2026-09-26。並列にするかは確認画面の「学習を開始」で追加料金を見せて選ぶ）。
     if (!user) {
       setLoginOpen(true);
       return;
@@ -4443,9 +4509,14 @@ export function LoraStudioTab({
 
   // From the curation screen — flush the curated dataset back into the form
   // state, then train on exactly what's kept.
-  const confirmCuration = async () => {
+  const confirmCuration = async (opts: { priority?: boolean } = {}) => {
     const kept = curationPairs.filter((p) => !p.excluded);
     if (!kept.length) return;
+    // 学習中にもう 1 本 → 追加料金の確認を挟む（2026-09-26）。
+    if (inFlightJob && !opts.priority) {
+      setParallelModalOpen(true);
+      return;
+    }
     flushCurationToForm(curationPairs);
     // ⚠️ ここで画像オブジェクトを作り直すと **repeats（学習回数）と cropKind が
     // 落ちる**（2026-09-22、ホスト報告「構図の偏りはやっているのにログが
@@ -4466,7 +4537,9 @@ export function LoraStudioTab({
     const caps = kept.map((p) => p.caption.trim());
     // A .txt/ZIP dataset stays "bring your own" (blank = intentional). An
     // AI-captioned one keeps its VLM gap-fill even after culling images.
-    await runTraining(keptImages, caps.some((c) => c.length > 0) ? caps : null, hasUserCaptions);
+    await runTraining(keptImages, caps.some((c) => c.length > 0) ? caps : null, hasUserCaptions, {
+      priority: opts.priority,
+    });
   };
 
   // The one place the progress panel hands control back to the form. Must be
@@ -4787,7 +4860,7 @@ export function LoraStudioTab({
         <DatasetCurationUI
           pairs={curationPairs}
           onChange={setCurationPairs}
-          onConfirm={confirmCuration}
+          onConfirm={() => confirmCuration()}
           onCancel={() => {
             // Flush & Sync: carry the curated image list + latest captions
             // back to the form before leaving — "戻る" must never discard edits.
@@ -4811,6 +4884,18 @@ export function LoraStudioTab({
           onClose={() => setLoginOpen(false)}
           message="LoRA Studio でキャラクター学習を行うにはログインしてください。"
         />
+        <QueueChoiceModal
+          open={parallelModalOpen}
+          title="まだ学習中です"
+          description="今の学習が終わってから出せば通常料金です。待たずに今すぐ並列で学習することもできます（追加料金）。今の学習は止まらず、画面上部の「並列で出した学習」から進み具合と成果物を見られます。"
+          surcharge={parallelSurchargeCredits}
+          total={requiredCredits + parallelSurchargeCredits}
+          onCancel={() => setParallelModalOpen(false)}
+          onParallel={() => {
+            setParallelModalOpen(false);
+            void confirmCuration({ priority: true });
+          }}
+        />
       </div>
     );
   }
@@ -4825,6 +4910,11 @@ export function LoraStudioTab({
           this session is still queued/processing and the user has soft-
           returned to the form ("フォームに戻る（学習は継続）"). Also backs
           the multi-submit guard on the button at the bottom of this form. */}
+      <LoraBackgroundJobs
+        jobs={backgroundJobs.filter((j) => j.jobId !== job?.jobId)}
+        onShow={(bg) => void showBackgroundJob(bg)}
+        onDismiss={(id) => updateBackgroundJobs((prev) => prev.filter((j) => j.jobId !== id))}
+      />
       {inFlightJob && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-neon-violet/50 bg-neon-violet/10 p-3">
           <p className="flex items-center gap-2 text-[12px] font-semibold text-neon-violet">
@@ -6912,7 +7002,6 @@ export function LoraStudioTab({
               onClick={handleStart}
               disabled={
                 submitting ||
-                Boolean(inFlightJob) ||
                 (Boolean(user) && !insufficientCredits && !canSubmit) ||
                 (Boolean(user) && captionSource === "ai" && !autoCap.running && pendingCaptionCount > 0) ||
                 captionGen.state === "generating" ||
@@ -6934,11 +7023,6 @@ export function LoraStudioTab({
                   {autoCap.running
                     ? `学習したい特徴が変わったので、キャプションを作り直しています… ${autoCap.done}/${autoCap.total}`
                     : "データセットを準備しています…（学習はまだ始まりません）"}
-                </>
-              ) : inFlightJob ? (
-                <>
-                  <AlertTriangle size={16} />
-                  ⚠️ 別の学習が進行中です
                 </>
               ) : !user ? (
                 <>
@@ -6978,15 +7062,19 @@ export function LoraStudioTab({
               )}
             </button>
             {inFlightJob ? (
-              // Two physical barriers against a double submit: the button
-              // above is disabled, and this is the only live action here.
-              <button
-                type="button"
-                onClick={() => setPhase("tracking")}
-                className="flex w-full items-center justify-center gap-1.5 text-[11px] font-medium text-neon-violet hover:underline"
-              >
-                進行状況を確認する →
-              </button>
+              <div className="space-y-1 text-center">
+                <p className="text-[11px] leading-relaxed text-muted">
+                  別の学習が進行中です。このまま進めると並列で学習します（追加料金 +{parallelSurchargeCredits}C）。
+                  終わってから出せば通常料金です。
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setPhase("tracking")}
+                  className="inline-flex items-center justify-center gap-1.5 text-[11px] font-medium text-neon-violet hover:underline"
+                >
+                  進行状況を確認する →
+                </button>
+              </div>
             ) : (
               <p className="flex items-start gap-2 text-[11px] leading-relaxed text-muted">
                 <Sparkles size={13} className="mt-0.5 shrink-0 text-neon-violet" />

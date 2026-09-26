@@ -29,6 +29,8 @@ export type KnobKey =
   | "director_qwen_script_credits"
   | "lora_caption_base"
   | "lora_caption_per_image"
+  | "lora_priority_parallel_rate"
+  | "lora_priority_parallel_surcharge"
   | "upscale_per_mp"
   | "upscale_min_credits"
   | "upscale_priority_parallel_surcharge"
@@ -328,6 +330,25 @@ export const KNOB_META: Record<KnobKey, KnobMeta> = {
     category: "feature_credits",
     unit: "C",
     description: "1枚あたりの消費クレジット下限（コールドスタート償却）",
+    isPublic: true,
+  },
+  lora_priority_parallel_rate: {
+    // 2026-09-26 ホスト判断: LoRA も他タブと同じ「通常料金 × 率 + 固定」（合計 2 倍 + 50C）。
+    // LoRA は scaledown_window=2 でコールド差は無いが、1 人が GPU 枠を長時間占有するのを防ぐ混雑料金。
+    // 実行中の学習が無ければ掛からない。順番待ちは無い（終わるのを待てば通常料金）。
+    value: 1.0,
+    label: "LoRA 並列実行 上乗せ率",
+    category: "feature_credits",
+    unit: "×",
+    description: "学習中にもう 1 本出すときに通常料金へ掛けて上乗せする割合（1.0 = 合計 2 倍）。固定分と合算。",
+    isPublic: true,
+  },
+  lora_priority_parallel_surcharge: {
+    value: 50,
+    label: "LoRA 並列実行 固定追加料金",
+    category: "feature_credits",
+    unit: "C",
+    description: "学習中にもう 1 本出すときに 1 ジョブへ一律で足す固定分。率と合算。",
     isPublic: true,
   },
   upscale_priority_parallel_rate: {

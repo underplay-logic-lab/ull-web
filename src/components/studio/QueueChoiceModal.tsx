@@ -14,6 +14,8 @@ export function QueueChoiceModal({
   onCancel,
   onQueue,
   onParallel,
+  title = "まだ生成中です",
+  description,
 }: {
   open: boolean;
   surcharge: number;
@@ -21,8 +23,11 @@ export function QueueChoiceModal({
    * 「足されるのか置き換わるのか分からない」というホスト指摘への対応）。 */
   total?: number;
   onCancel: () => void;
-  onQueue: () => void;
+  /** 無ければ「順番待ち」を出さない（LoRA、2026-09-26: 終わるのを待てば通常料金）。 */
+  onQueue?: () => void;
   onParallel: () => void;
+  title?: string;
+  description?: string;
 }) {
   if (!open || typeof document === "undefined") return null;
   return createPortal(
@@ -32,23 +37,29 @@ export function QueueChoiceModal({
     >
       <div className="w-full max-w-sm rounded-2xl border-gradient bg-surface p-8" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
-          <h3 className="text-lg font-bold">まだ生成中です</h3>
+          <h3 className="text-lg font-bold">{title}</h3>
           <button type="button" onClick={onCancel} aria-label="閉じる" className="text-muted transition-colors hover:text-foreground">
             <X size={20} />
           </button>
         </div>
         <p className="mt-2 text-sm leading-relaxed text-muted">
-          今の生成が終わり次第、自動的に次を実行できます（無料）。待たずに今すぐ並列で実行することもできます（追加料金）。
-          ※並列実行を選ぶと、今表示中の生成の進捗はこの画面では追えなくなります（生成自体は裏で完了します）。
+          {description ?? (
+            <>
+              今の生成が終わり次第、自動的に次を実行できます（無料）。待たずに今すぐ並列で実行することもできます（追加料金）。
+              ※並列実行を選ぶと、今表示中の生成の進捗はこの画面では追えなくなります（生成自体は裏で完了します）。
+            </>
+          )}
         </p>
         <div className="mt-6 flex flex-col gap-2">
-          <button
-            type="button"
-            onClick={onQueue}
-            className="rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
-          >
-            順番待ち（無料）
-          </button>
+          {onQueue && (
+            <button
+              type="button"
+              onClick={onQueue}
+              className="rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
+            >
+              順番待ち（無料）
+            </button>
+          )}
           <button
             type="button"
             onClick={onParallel}

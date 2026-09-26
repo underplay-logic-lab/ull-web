@@ -5,7 +5,7 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { spawnLoraTrainingJob, buildLoraDispatchPayload } from "@/lib/modalLoraTrain";
 import { loraArchGpuTier, type LoraSpeed } from "@/lib/pricing/loraRuntime";
 import { DEFAULT_LORA_STEPS, LORA_MAX_STEPS, autoLoraSteps, autoLoraRankAlpha } from "@/lib/loraCredits";
-import { guiLoraPricingConfig, loraPriceBreakdown } from "@/lib/loraPricing";
+import { guiLoraPricingConfig, loraPriceBreakdown, loraPriorityParallelSurcharge } from "@/lib/loraPricing";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { loraCostCapSeconds } from "@/lib/pricing/costGuard.server";
 import { loraCreditWorstCase, loraMaxSteps } from "@/lib/pricing/loraRuntime";
@@ -559,6 +559,36 @@ async function handlePost(request: Request): Promise<NextResponse> {
     knobs,
   });
 
+  // --- 並列実行（2026-09-26 ホスト判断）------------------------------------
+  // 学習中にもう 1 本出すのは追加料金（通常料金 × 率 + 固定、他タブと同じ式）。1 人が GPU 枠を
+  // 長く占有するのを防ぐ混雑料金。明示の priority が無ければ受けない（手で叩いた要求で上乗せを
+  // 逃れさせない）。24 時間より古い queued/processing は止まった行とみなして数えない。
+  const priority = body.priority === true;
+  const { data: runningRows, error: runningError } = await supabaseAdmin
+    .from("generation_jobs")
+    .select("id")
+    .eq("user_id", user.id)
+    .eq("workflow_type", "lora_training")
+    .in("status", ["queued", "processing"])
+    .gte("created_at", new Date(Date.now() - 24 * 3600 * 1000).toISOString())
+    .limit(1);
+  if (runningError) {
+    console.error("[studio/lora/train] running-job lookup failed:", runningError.message);
+    return NextResponse.json({ error: "ジョブの確認に失敗しました。" }, { status: 500 });
+  }
+  const hasRunning = (runningRows?.length ?? 0) > 0;
+  if (hasRunning && !priority) {
+    return NextResponse.json(
+      {
+        error: "別の学習が進行中です。終わるのを待つか、並列実行（追加料金）を選んでください。",
+        code: "lora_in_flight",
+      },
+      { status: 409 },
+    );
+  }
+  const parallelExtra = hasRunning ? loraPriorityParallelSurcharge(knobs, requiredCredits) : 0;
+  const chargedCredits = requiredCredits + parallelExtra;
+
   // --- credits ------------------------------------------------------------
   const { data: profile, error: profileError } = await getOrCreateProfile(
     user.id,
@@ -574,20 +604,20 @@ async function handlePost(request: Request): Promise<NextResponse> {
   const isExpired = creditsExpireAt ? new Date(creditsExpireAt).getTime() < Date.now() : false;
   const currentCredits = isExpired ? 0 : (rawCredits ?? 0);
 
-  if (currentCredits < requiredCredits) {
+  if (currentCredits < chargedCredits) {
     return NextResponse.json(
       {
         error: isExpired
           ? "クレジットの有効期限が切れています。チャージしてから再度お試しください。"
           : "クレジットが不足しています。チャージしてから再度お試しください。",
         remainingCredits: currentCredits,
-        requiredCredits,
+        requiredCredits: chargedCredits,
       },
       { status: 402 },
     );
   }
 
-  const debitedCredits = currentCredits - requiredCredits;
+  const debitedCredits = currentCredits - chargedCredits;
   const { error: debitError } = await supabaseAdmin
     .from("profiles")
     .update({ credits: debitedCredits })
@@ -601,7 +631,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
   const spawnParams = {
     jobId: "", // filled after insert
     userId: user.id,
-    creditsCost: requiredCredits,
+    creditsCost: chargedCredits,
     costCapSeconds: costCap.seconds,
     // 課金に使った GPU tier（speed 込み）をそのまま実行 tier にする（SSOT は loraArchGpuTier）。
     gpuTier: priceBreakdown ? priceBreakdown.gpuTier : loraArchGpuTier(pricedArch),
@@ -674,8 +704,8 @@ async function handlePost(request: Request): Promise<NextResponse> {
     user_id: user.id,
     status: "queued",
     workflow_type: "lora_training",
-    inputs: jobInputs,
-    credits_cost: requiredCredits,
+    inputs: parallelExtra ? { ...jobInputs, parallel_surcharge: parallelExtra } : jobInputs,
+    credits_cost: chargedCredits,
     progress_percent: 0,
     progress_message: "queued",
     retry_count: 0,
@@ -702,8 +732,8 @@ async function handlePost(request: Request): Promise<NextResponse> {
           user_id: user.id,
           status: "queued",
           workflow_type: "lora_training",
-          inputs: jobInputs,
-          credits_cost: requiredCredits,
+          inputs: parallelExtra ? { ...jobInputs, parallel_surcharge: parallelExtra } : jobInputs,
+          credits_cost: chargedCredits,
         })
         .select("id")
         .single();
