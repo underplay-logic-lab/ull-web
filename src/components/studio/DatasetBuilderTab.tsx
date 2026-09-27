@@ -740,7 +740,9 @@ export function DatasetBuilderTab() {
                       ? "生成中…"
                       : phase === "review"
                         ? "下の一覧を確認してください"
-                        : `${safeCount} 枚の内容を確認する（${totalCost.toLocaleString()} C）`}
+                        : confirmFirst && safeCount > SCENE_BATCH_SIZE
+                          ? `内容を確認して、まず ${firstBatch} 枚を作る（${firstCost.toLocaleString()} C・全 ${safeCount} 枚で ${totalCost.toLocaleString()} C）`
+                          : `内容を確認して ${safeCount} 枚を作る（${totalCost.toLocaleString()} C）`}
               </button>
             )}
             {errorMessage && <p className="mt-2 text-[11px] text-red-400">{errorMessage}</p>}
