@@ -194,7 +194,7 @@ export function ImageDropzone({
           setIsDragging(false);
           handleFiles(e.dataTransfer.files);
         }}
-        className={`relative flex min-h-[200px] cursor-pointer flex-col items-center justify-center gap-2 overflow-hidden rounded-xl border border-dashed p-4 text-center transition-colors ${
+        className={`relative flex ${file ? "min-h-[380px]" : "min-h-[200px]"} cursor-pointer flex-col items-center justify-center gap-2 overflow-hidden rounded-xl border border-dashed p-4 text-center transition-colors ${
           isDragging
             ? "border-neon-pink/70 bg-neon-pink/10"
             : "border-border bg-background hover:border-neon-violet/40"
@@ -206,9 +206,9 @@ export function ImageDropzone({
             <img
               src={previewUrl}
               alt={file?.name ?? "アップロード画像"}
-              className="absolute inset-0 h-full w-full object-contain"
+              className="absolute inset-x-0 top-0 bottom-9 w-full object-contain"
             />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/60 to-transparent" />
             <button
               type="button"
               onClick={(e) => {
