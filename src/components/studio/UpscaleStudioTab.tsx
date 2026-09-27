@@ -265,6 +265,8 @@ function CompareSlider({
         <img
           src={before}
           alt="元画像"
+          // 比較スライダー: 前後を同じ枠にぴったり重ねるため意図的に cover（縦横比は同じ）。
+          // eslint-disable-next-line no-restricted-syntax
           className="absolute inset-0 h-full w-full object-cover"
           draggable={false}
         />
@@ -299,7 +301,7 @@ function BatchThumb({ file, onRemove }: { file: File; onRemove: () => void }) {
     <div className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-background">
       {url && (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={url} alt={file.name} className="h-full w-full object-cover" />
+        <img src={url} alt={file.name} className="h-full w-full bg-black/40 object-contain" />
       )}
       <button
         type="button"
@@ -374,7 +376,7 @@ function BatchResultCard({ job }: { job: UpscaleJob | undefined }) {
         <img
           src={displayUrl}
           alt="結果"
-          className="h-full w-full object-cover"
+          className="h-full w-full bg-black/40 object-contain"
           onError={() => {
             if (reloads < 2) setReloads((n) => n + 1);
           }}

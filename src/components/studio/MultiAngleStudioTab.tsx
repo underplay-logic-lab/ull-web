@@ -297,7 +297,7 @@ function SubReferenceSlots({
             <img
               src={previews[i]}
               alt={file.name}
-              className="h-full w-full object-cover"
+              className="h-full w-full bg-black/40 object-contain"
             />
             <button
               type="button"
@@ -784,6 +784,17 @@ export function MultiAngleStudioTab() {
       setLoraSources(h.files);
       setLoraUsed(new Set());
       // 前回のプリセットのまま始めない（2026-09-27、ホスト指摘）。LoRA 素材には全方位を元の距離のまま作るのが基本。
+      // 連携は前回の結果を画面から外して始める（2026-09-27、ホスト判断）。前回の結果は「最近の生成」から開き直せる
+      // （サーバーに残っている）ので消えない。復元したジョブのポーリングも止める（完了時に画面へ戻ってくるため）。
+      if (h.loraAngleReturn) {
+        setJob(null);
+        setJobId(null);
+        setPhase("idle");
+        setSubmittedCombos([]);
+        setSessionIds([]);
+        sessionIdsRef.current = [];
+        saveFormState(SESSION_KEY, { ids: [] });
+      }
       // LoRA の診断の不足から組んだ構図があればそれ、無ければ 8 方向（2026-09-27）。
       if (h.loraAngleReturn) {
         setSelection(

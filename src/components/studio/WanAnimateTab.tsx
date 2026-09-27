@@ -171,12 +171,12 @@ function FileDropzone({
               <img
                 src={previewUrl}
                 alt={file?.name ?? "アップロード画像"}
-                className="absolute inset-0 h-full w-full object-cover"
+                className="absolute inset-0 h-full w-full bg-black/40 object-contain"
               />
             ) : (
               <video
                 src={previewUrl}
-                className="absolute inset-0 h-full w-full object-cover"
+                className="absolute inset-0 h-full w-full bg-black/40 object-contain"
                 muted
                 loop
                 autoPlay
@@ -511,7 +511,7 @@ export function WanAnimateTab() {
                       <video
                         src={preset.video_url}
                         poster={preset.thumbnail_url ?? undefined}
-                        className="h-full w-full object-cover"
+                        className="h-full w-full bg-black/40 object-contain"
                         muted
                         loop
                         autoPlay

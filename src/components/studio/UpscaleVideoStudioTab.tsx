@@ -200,6 +200,8 @@ function VideoCompare({
         className="pointer-events-none absolute inset-0 overflow-hidden"
         style={{ clipPath: `inset(0 ${100 - pos}% 0 0)` }}
       >
+        {/* 比較スライダー: 前後を同じ枠にぴったり重ねるため意図的に cover（縦横比は同じ）。 */}
+        {/* eslint-disable-next-line no-restricted-syntax */}
         <video ref={beforeRef} src={before} muted playsInline className="absolute inset-0 h-full w-full object-cover" />
       </div>
       <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">

@@ -102,7 +102,7 @@ export function AutoTidyPanel({
                     className="flex w-16 flex-col items-center gap-0.5 rounded-md border border-border/60 bg-background/60 p-1"
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={e.img.url} alt={e.img.file.name} className="h-12 w-12 rounded object-cover opacity-70" />
+                    <img src={e.img.url} alt={e.img.file.name} className="h-12 w-12 rounded bg-black/40 object-contain opacity-70" />
                   </div>
                 ))}
               </div>

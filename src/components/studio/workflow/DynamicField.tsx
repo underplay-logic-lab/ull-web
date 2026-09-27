@@ -107,7 +107,7 @@ function ImageDropzone({
         {previewUrl ? (
           <>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={previewUrl} alt={file?.name ?? "アップロード画像"} className="absolute inset-0 h-full w-full object-cover" />
+            <img src={previewUrl} alt={file?.name ?? "アップロード画像"} className="absolute inset-0 h-full w-full bg-black/40 object-contain" />
             <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent" />
             <button
               type="button"

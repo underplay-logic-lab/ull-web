@@ -2110,6 +2110,23 @@ export function LoraStudioTab({
   );
 
   const tooSmallImages = useMemo(() => images.filter((i) => i.sizeVerdict === "tooSmall"), [images]);
+  // 該当画像を超解像タブの「まとめて処理」へそのまま入れる（2026-09-24、ホスト要望）。タブ切替は Studio.tsx が
+  // STUDIO_TAB_EVENT で行う。取り込み欄の注意と、診断の下の「小さすぎる切り出し」の注意（2026-09-27）で共用。
+  const sendTooSmallToUpscale = (list: DatasetImage[]) =>
+    requestStudioBatchHandoff(
+      {
+        files: list.map((i) => i.file),
+        source: `LoRA Studio の短辺 ${MIN_SHORT_EDGE_ERROR}px 未満の素材 ${list.length} 枚`,
+        targetShortEdge: MIN_SHORT_EDGE_WARN,
+        loraReturnIds: list.map((i) => i.id),
+        // 学習素材は細部を作り直さない Real-ESRGAN 系で拡大する（作り直されたディテールまで LoRA に焼き込まれるため）。
+        // アニメ系プリセットは anime 6B、それ以外（実写・汎用・カスタム）は SwinIR-L（T4 実機比較で実写は
+        // swinir_l > x4plus > anime。JPEG ブロックも除去する、upscaleStudio.ts 参照）。
+        suggestedModelKey: selectedPreset?.group === "anime" ? "real_esrgan_anime" : "swinir_l",
+        hint: "LoRA の素材には、細部を作り直さない軽量モデルがおすすめです（アニメ・イラストは Real-ESRGAN anime 6B、実写は SwinIR-L）。",
+      },
+      "upscale",
+    );
 
   // 手入力の追加欄は 2026-09-22 に廃止。被写体レジストリから作った分だけ。
   const effectiveEmbedTags = autoEmbedTags;
@@ -5301,26 +5318,7 @@ export function LoraStudioTab({
                     {onOpenUpscale && (
                       <button
                         type="button"
-                        onClick={() =>
-                          // 該当画像を超解像タブの「まとめて処理」へそのまま入れる（2026-09-24、
-                          // ホスト要望）。タブ切替は Studio.tsx が STUDIO_TAB_EVENT で行う。
-                          requestStudioBatchHandoff(
-                            {
-                              files: tooSmallImages.map((i) => i.file),
-                              source: `LoRA Studio の短辺 ${MIN_SHORT_EDGE_ERROR}px 未満の素材 ${tooSmallImages.length} 枚`,
-                              targetShortEdge: MIN_SHORT_EDGE_WARN,
-                              loraReturnIds: tooSmallImages.map((i) => i.id),
-                              // 学習素材は細部を作り直さない Real-ESRGAN 系で拡大する（作り直された
-                              // ディテールまで LoRA に焼き込まれるため）。アニメ系プリセットは anime 6B、
-                              // それ以外（実写・汎用・カスタム）は SwinIR-L（T4 実機比較で実写は
-                              // swinir_l > x4plus > anime。JPEG ブロックも除去する、upscaleStudio.ts 参照）。
-                              suggestedModelKey:
-                                selectedPreset?.group === "anime" ? "real_esrgan_anime" : "swinir_l",
-                              hint: "LoRA の素材には、細部を作り直さない軽量モデルがおすすめです（アニメ・イラストは Real-ESRGAN anime 6B、実写は SwinIR-L）。",
-                            },
-                            "upscale",
-                          )
-                        }
+                        onClick={() => sendTooSmallToUpscale(tooSmallImages)}
                         className={`inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-400 transition-colors hover:bg-amber-500/20${flowRing("upscaleSmall")}`}
                       >
                         <Wand2 size={11} />
@@ -5510,6 +5508,37 @@ export function LoraStudioTab({
             {flowHint("trimPrepare")}
             </div>
           )}
+          {/* 小さすぎる切り出しの注意を、診断を見ている位置にも出す（2026-09-27、ホスト指摘「上の方に出すぎて気づけない」）。 */}
+          {(() => {
+            const small = tooSmallImages.filter((i) => i.cropKind);
+            if (small.length === 0) return null;
+            return (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                <p className="text-[11px] leading-relaxed text-amber-400">
+                  切り出した <strong>{small.length} 枚</strong>は短辺が {MIN_SHORT_EDGE_ERROR}px 未満で、このままだと仕上がりが甘くなります。
+                </p>
+                {onOpenUpscale && (
+                  <button
+                    type="button"
+                    onClick={() => sendTooSmallToUpscale(small)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-400 hover:bg-amber-500/20"
+                  >
+                    <Wand2 size={11} />
+                    ✨ 超解像で拡大する
+                  </button>
+                )}
+                {openAnglePicker && (
+                  <button
+                    type="button"
+                    onClick={openAnglePicker}
+                    className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-[10px] font-medium text-neon-violet hover:bg-neon-violet/20"
+                  >
+                    🎭 マルチアングルの「寄り」で作る
+                  </button>
+                )}
+              </div>
+            );
+          })()}
           {autoTidy && (
             <AutoTidyPanel
               state={autoTidy}
