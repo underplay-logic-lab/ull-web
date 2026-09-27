@@ -458,6 +458,24 @@ export function DatasetDiagnosticsPanel({
             </div>
           )}
 
+          {/* 穴が無くても枚数・構図を増やしたいことはある（2026-09-27、ホスト指摘「kch3 21 枚だと導線が出てこない」）。
+              上の指摘付きボタンが出ていないときだけ、控えめに常設する。 */}
+          {onOpenMultiAngle && !(needMaterial > 0 && angleFixable > 0) && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={onOpenMultiAngle}
+                className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/30 bg-transparent px-2.5 py-1 text-[10px] font-medium text-neon-violet/90 transition-colors hover:bg-neon-violet/10"
+              >
+                <Wand2 size={11} />
+                🎭 マルチアングルで構図を増やす
+              </button>
+              <span className="text-[10px] text-muted opacity-80">
+                手持ちの画像から別の向き・距離の画像を作って足せます。
+              </span>
+            </div>
+          )}
+
           {diag.uncaptioned > 0 && (
             <p className="text-[10px] text-amber-400">
               {diag.uncaptioned} 枚は構図を判定できなかったか、どの被写体か判定できませんでした。診断はその分だけ不正確です。
