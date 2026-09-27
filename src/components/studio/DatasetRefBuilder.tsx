@@ -219,6 +219,7 @@ export function CandidatePanel({
     void start(user, image, specs);
   };
   const fileRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
 
   return (
     <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
@@ -251,8 +252,23 @@ export function CandidatePanel({
       </div>
       <p className="text-[10px] leading-relaxed text-muted">{description}</p>
       {onPickLocal && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] text-muted">持っているなら:</span>
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragOver(true);
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOver(false);
+            const f = Array.from(e.dataTransfer.files).find((x) => x.type.startsWith("image/"));
+            if (f) onPickLocal(f);
+          }}
+          className={`flex flex-wrap items-center gap-1.5 rounded-lg border border-dashed px-2 py-1.5 transition-colors ${
+            dragOver ? "border-neon-pink/60 bg-neon-pink/10" : "border-transparent"
+          }`}
+        >
+          <span className="text-[10px] text-muted">持っているなら（ここにドロップも可）:</span>
           {(existingRefs ?? []).map((f, i) => (
             <button
               key={i}
