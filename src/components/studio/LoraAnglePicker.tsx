@@ -54,7 +54,7 @@ export function LoraAnglePicker({
             <X size={20} />
           </button>
         </div>
-        <div className="mt-4 grid flex-1 grid-cols-4 gap-2 overflow-y-auto sm:grid-cols-6">
+        <div className="mt-4 grid min-h-0 flex-1 grid-cols-4 content-start gap-2 overflow-y-auto sm:grid-cols-6">
           {items.map((it) => {
             const on = picked.has(it.id);
             return (
@@ -67,7 +67,7 @@ export function LoraAnglePicker({
                 }`}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={it.url} alt={it.file.name} className={`h-full w-full object-cover ${on ? "" : "opacity-80"}`} />
+                <img src={it.url} alt={it.file.name} className={`h-full w-full bg-black/40 object-contain ${on ? "" : "opacity-80"}`} />
                 {on && (
                   <span className="absolute right-1 top-1 rounded-full bg-neon-pink p-0.5 text-white">
                     <Check size={12} />
