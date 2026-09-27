@@ -630,7 +630,9 @@ export function DatasetBuilderTab() {
                     ? "クレジットが足りません（チャージ）"
                     : busy
                       ? "生成中…"
-                      : `${safeCount} 枚の素材を作る（${confirmFirst && safeCount > SCENE_BATCH_SIZE ? `まず ${firstCost.toLocaleString()} C` : `${totalCost.toLocaleString()} C`}）`}
+                      : confirmFirst && safeCount > SCENE_BATCH_SIZE
+                        ? `まず ${firstBatch} 枚を作る（${firstCost.toLocaleString()} C・全 ${safeCount} 枚で ${totalCost.toLocaleString()} C）`
+                        : `${safeCount} 枚の素材を作る（${totalCost.toLocaleString()} C）`}
               </button>
             )}
             {errorMessage && <p className="mt-2 text-[11px] text-red-400">{errorMessage}</p>}
