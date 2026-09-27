@@ -823,7 +823,7 @@ export function DatasetBuilderTab() {
           {effectiveMain && (viewsInPlan.has("back") || refBack) && (
             <CandidatePanel
               title={refBack ? "後ろ姿の参照（確定済み）" : "後ろ姿の参照を作る"}
-              description="後ろ向きの行は、ここで選んだ後ろ姿を参照にして作ります（選ばないと毎回ちがう背中になります）。選ぶと参照欄に入ります。"
+              description="後ろ向きの行は、ここで選んだ後ろ姿を参照にして作ります（選ばないと毎回ちがう背中になります）。手持ちの後ろ姿があればそれを、無ければ候補を作って選びます。選ぶと参照欄に入ります。"
               user={user}
               image={effectiveMain}
               specs={BACK_VIEW_SPECS}
@@ -840,12 +840,18 @@ export function DatasetBuilderTab() {
               onLogin={() => setLoginOpen(true)}
               onCharge={() => setChargeOpen(true)}
               fileName="ref_back.png"
+              existingRefs={subImages}
+              onPickLocal={(file) => {
+                setPicks((p) => ({ ...p, back: null }));
+                if (!subImages.includes(file)) putRef(refBack, file);
+                setRefBack(file);
+              }}
             />
           )}
           {effectiveMain && (viewsInPlan.has("side") || refSide) && (
             <CandidatePanel
               title={refSide ? "真横の参照（確定済み）" : "真横の参照を作る"}
-              description="真横の行は、ここで選んだ真横を参照にして作ります。選ぶと参照欄に入ります。"
+              description="真横の行は、ここで選んだ真横を参照にして作ります。手持ちの真横があればそれを、無ければ候補を作って選びます。選ぶと参照欄に入ります。"
               user={user}
               image={effectiveMain}
               specs={SIDE_VIEW_SPECS}
@@ -862,6 +868,12 @@ export function DatasetBuilderTab() {
               onLogin={() => setLoginOpen(true)}
               onCharge={() => setChargeOpen(true)}
               fileName="ref_side.png"
+              existingRefs={subImages}
+              onPickLocal={(file) => {
+                setPicks((p) => ({ ...p, side: null }));
+                if (!subImages.includes(file)) putRef(refSide, file);
+                setRefSide(file);
+              }}
             />
           )}
           {notice && <p className="text-[11px] text-neon-violet">{notice}</p>}

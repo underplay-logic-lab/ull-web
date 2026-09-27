@@ -172,6 +172,9 @@ export function CandidatePanel({
   onLogin: () => void;
   onCharge: () => void;
   fileName: string;
+  /** 手持ちの画像で確定する（候補を作らない、2026-09-27 ホスト提案）。参照欄の画像を選ぶかファイルを選ぶ。 */
+  onPickLocal?: (file: File) => void;
+  existingRefs?: File[];
 }) {
   const { job, status, error, start, reset } = useCandidateJob(storageKey);
   const [picking, setPicking] = useState<number | null>(null);
@@ -213,6 +216,7 @@ export function CandidatePanel({
     if (insufficient) return onCharge();
     void start(user, image, specs);
   };
+  const fileRef = useRef<HTMLInputElement>(null);
 
   return (
     <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
@@ -244,6 +248,40 @@ export function CandidatePanel({
         ) : null}
       </div>
       <p className="text-[10px] leading-relaxed text-muted">{description}</p>
+      {onPickLocal && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] text-muted">持っているなら:</span>
+          {(existingRefs ?? []).map((f, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => onPickLocal(f)}
+              title={f.name}
+              className="rounded-full border border-border px-2.5 py-1 text-[11px] text-muted hover:border-neon-violet/40 hover:text-foreground"
+            >
+              参照 {i + 1} を使う
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            className="rounded-full border border-border px-2.5 py-1 text-[11px] text-muted hover:border-neon-violet/40 hover:text-foreground"
+          >
+            ファイルを選ぶ
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f && f.type.startsWith("image/")) onPickLocal(f);
+              e.target.value = "";
+            }}
+          />
+        </div>
+      )}
       {busy && (
         <p className="flex items-center gap-1.5 text-[10px] text-muted">
           <Loader2 size={10} className="animate-spin" />
