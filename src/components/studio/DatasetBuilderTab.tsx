@@ -759,8 +759,8 @@ export function DatasetBuilderTab() {
                       : phase === "review"
                         ? "下の一覧を確認してください"
                         : confirmFirst && safeCount > SCENE_BATCH_SIZE
-                          ? `内容を確認して、まず ${firstBatch} 枚を作る（${firstCost.toLocaleString()} C・全 ${safeCount} 枚で ${totalCost.toLocaleString()} C）`
-                          : `内容を確認して ${safeCount} 枚を作る（${totalCost.toLocaleString()} C）`}
+                          ? `内容を確認する（無料）→ まず ${firstBatch} 枚 ${firstCost.toLocaleString()} C／全 ${safeCount} 枚 ${totalCost.toLocaleString()} C`
+                          : `内容を確認する（無料）→ ${safeCount} 枚 ${totalCost.toLocaleString()} C`}
               </button>
             )}
             {errorMessage && <p className="mt-2 text-[11px] text-red-400">{errorMessage}</p>}
