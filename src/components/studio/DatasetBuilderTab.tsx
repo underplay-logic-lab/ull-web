@@ -10,7 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
-import { Check, Download, ImagePlus, Loader2, Sparkles, Wand2, X } from "lucide-react";
+import { Check, Download, ImagePlus, Loader2, Sparkles, Wand2, X, ZoomIn } from "lucide-react";
 import { MAX_SUB_REFERENCE_IMAGES } from "@/lib/angleStudio";
 import {
   AngleJobNotFoundError,
@@ -26,7 +26,7 @@ import {
   orderPlanForBatches,
   planBatches,
   sceneItemCredits,
-  sceneItemNeedsRefs,
+  sceneItemGroup,
   scenePlanCredits,
   DEFAULT_SCENE_SELECTION,
   SCENE_BATCH_SIZE,
@@ -74,6 +74,8 @@ type PersistedRun = {
   /** 「続きを作る」を押した後 true。 */
   confirmed: boolean;
   subCount: number;
+  /** 上半身・バストアップの行の元画像（参照の何番目か）。無ければ null＝メイン画像で作る。 */
+  closeMainIndex: number | null;
 };
 
 type Phase = "idle" | "review" | "submitting" | "running" | "paused" | "done" | "error";
@@ -204,6 +206,8 @@ export function DatasetBuilderTab() {
     setSubImagesState(next);
   }, []);
   const [subError, setSubError] = useState<string | null>(null);
+  // 上半身・バストアップの行の元にする参照（index）。文章では寄りにならないので、寄った画像を元にする（2026-09-27）。
+  const [closeMainIndex, setCloseMainIndex] = useState<number | null>(null);
   const [sel, setSel] = useState<SceneSelection>(() => ({ ...DEFAULT_SCENE_SELECTION, ...(savedForm?.sel ?? {}) }));
   const [count, setCount] = useState<number>(() => savedForm?.count ?? SCENE_DEFAULT_COUNT);
   const [confirmFirst, setConfirmFirst] = useState<boolean>(() => savedForm?.confirmFirst ?? true);
@@ -226,6 +230,7 @@ export function DatasetBuilderTab() {
           confirmFirst: Boolean(r.confirmFirst),
           confirmed: Boolean(r.confirmed),
           subCount: Number(r.subCount ?? 0),
+          closeMainIndex: typeof r.closeMainIndex === "number" ? r.closeMainIndex : null,
         }
       : null;
   });
@@ -290,13 +295,16 @@ export function DatasetBuilderTab() {
   const perImage = sceneCreditsPerImage(knobs, 0);
   const perImageRefs = sceneCreditsPerImage(knobs, subCount);
   const safeCount = Math.max(1, Math.min(SCENE_MAX_COUNT, Math.trunc(count || 0)));
+  const hasCloseMain = closeMainIndex !== null && closeMainIndex < subImages.length;
+  const batchOpt = useMemo(() => ({ subCount, hasCloseMain }), [subCount, hasCloseMain]);
   // 料金は行ごと（参照が要る向きだけ係数付き）。指定を変えるたびに計画を組み直して見積もる。
-  const previewPlan = useMemo(() => orderPlanForBatches(buildScenePlan(sel, safeCount), subCount), [sel, safeCount, subCount]);
-  const previewBatches = useMemo(() => planBatches(previewPlan, subCount), [previewPlan, subCount]);
-  const totalCost = scenePlanCredits(previewPlan, knobs, subCount);
+  const previewPlan = useMemo(() => orderPlanForBatches(buildScenePlan(sel, safeCount), batchOpt), [sel, safeCount, batchOpt]);
+  const previewBatches = useMemo(() => planBatches(previewPlan, batchOpt), [previewPlan, batchOpt]);
+  const totalCost = scenePlanCredits(previewPlan, knobs, batchOpt);
   const firstBatch = previewBatches[0]?.items.length ?? 0;
-  const firstCost = previewBatches[0] ? scenePlanCredits(previewBatches[0].items, knobs, subCount) : 0;
-  const refRows = previewPlan.filter((it) => sceneItemNeedsRefs(it, subCount)).length;
+  const firstCost = previewBatches[0] ? scenePlanCredits(previewBatches[0].items, knobs, batchOpt) : 0;
+  const refRows = previewPlan.filter((it) => sceneItemGroup(it, batchOpt) === "refs").length;
+  const closeRows = previewPlan.filter((it) => ["upper", "bust"].includes(it.framingId)).length;
   const busy = phase === "submitting" || phase === "running";
   const insufficientForFirst = Boolean(user) && !creditsLoading && (credits ?? 0) < firstCost;
 
@@ -304,15 +312,18 @@ export function DatasetBuilderTab() {
   const submitBatch = useCallback(
     async (r: PersistedRun, batchIndex: number, mainFile: File, subs: File[]) => {
       if (!user) return;
-      const batch = planBatches(r.plan, r.subCount)[batchIndex];
+      const opt = { subCount: r.subCount, hasCloseMain: r.closeMainIndex !== null && r.closeMainIndex < subs.length };
+      const batch = planBatches(r.plan, opt)[batchIndex];
       const items = batch?.items;
       if (!items) return;
       setPhase("submitting");
       setErrorMessage(null);
       try {
+        // 寄りの行は「寄りの元画像」をメインにして参照なし。参照付きの行はメイン＋参照。それ以外はメインだけ。
+        const closeFile = batch.group === "close" && r.closeMainIndex !== null ? subs[r.closeMainIndex] : null;
         const res = await startAngleJob({
           userId: user.id,
-          image: mainFile,
+          image: closeFile ?? mainFile,
           subImages: batch.useRefs ? subs : [],
           selection: { azimuths: [], elevations: [], distances: [] },
           mode: "standard",
@@ -335,7 +346,11 @@ export function DatasetBuilderTab() {
     },
     [user, commitRun, perImage],
   );
-  const runBatches = useMemo(() => (run ? planBatches(run.plan, run.subCount) : []), [run]);
+  const runOpt = useMemo(
+    () => (run ? { subCount: run.subCount, hasCloseMain: run.closeMainIndex !== null && run.closeMainIndex < run.subCount } : { subCount: 0, hasCloseMain: false }),
+    [run],
+  );
+  const runBatches = useMemo(() => (run ? planBatches(run.plan, runOpt) : []), [run, runOpt]);
 
   // 「作る」→ まず一覧（日本語）を出して直せるようにする（2026-09-27、ホスト指摘「どんなプロンプトで作られるか分からない」）。
   const handleStart = () => {
@@ -352,11 +367,12 @@ export function DatasetBuilderTab() {
   const handleConfirmReview = () => {
     if (!image || review.length === 0) return;
     const r: PersistedRun = {
-      plan: orderPlanForBatches(review, subCount, firstKeys),
+      plan: orderPlanForBatches(review, batchOpt, firstKeys),
       jobIds: [],
       confirmFirst,
       confirmed: !confirmFirst,
       subCount,
+      closeMainIndex: hasCloseMain ? closeMainIndex : null,
     };
     setJobs({});
     commitRun(r);
@@ -404,7 +420,10 @@ export function DatasetBuilderTab() {
             if (sawInProgress && next.status === "completed") markGpuWarm();
             const r = runRef.current;
             if (!r) return;
-            const batches = planBatches(r.plan, r.subCount);
+            const batches = planBatches(r.plan, {
+              subCount: r.subCount,
+              hasCloseMain: r.closeMainIndex !== null && r.closeMainIndex < r.subCount,
+            });
             const doneBatches = r.jobIds.length;
             if (next.status === "failed") {
               setErrorMessage(next.errorMessage || "生成に失敗しました。");
@@ -585,8 +604,8 @@ export function DatasetBuilderTab() {
   const producedTotal = results.length;
   const remainingItems = run ? runBatches.slice(run.jobIds.length).flatMap((b) => b.items) : [];
   const remainingCount = remainingItems.length;
-  const remainingCost = run ? scenePlanCredits(remainingItems, knobs, run.subCount) : 0;
-  const nextBatchCost = run && runBatches[run.jobIds.length] ? scenePlanCredits(runBatches[run.jobIds.length].items, knobs, run.subCount) : 0;
+  const remainingCost = run ? scenePlanCredits(remainingItems, knobs, runOpt) : 0;
+  const nextBatchCost = run && runBatches[run.jobIds.length] ? scenePlanCredits(runBatches[run.jobIds.length].items, knobs, runOpt) : 0;
 
   return (
     <div className="space-y-6">
@@ -604,6 +623,35 @@ export function DatasetBuilderTab() {
           <p className="text-[11px] leading-relaxed text-muted/80">
             メインの画像からは分からない後ろ姿・真横があれば参照に足してください。参照は「真横・後ろ」の行にだけ使い、正面・斜めの行はメイン 1 枚で作ります（そのぶん速く・安く）。
           </p>
+          {subImages.length > 0 && closeRows > 0 && (
+            <div className="rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
+              <p className="text-[11px] font-medium text-foreground">上半身・バストアップの行の元画像</p>
+              <p className="mt-0.5 text-[10px] leading-relaxed text-muted">
+                文章で「上半身」と指示しても全身になりやすいので、寄って写っている画像を元にします（元の構図がそのまま保たれます）。
+                参照の中に胸から上・腰から上の画像があれば選んでください。
+              </p>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setCloseMainIndex(null)}
+                  className={`rounded-full border px-2.5 py-1 text-[11px] ${closeMainIndex === null ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink" : "border-border text-muted"}`}
+                >
+                  メイン画像のまま
+                </button>
+                {subImages.map((f, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setCloseMainIndex(i)}
+                    className={`rounded-full border px-2.5 py-1 text-[11px] ${closeMainIndex === i ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink" : "border-border text-muted"}`}
+                    title={f.name}
+                  >
+                    参照 {i + 1}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {notice && <p className="text-[11px] text-neon-violet">{notice}</p>}
         </div>
 
@@ -776,7 +824,7 @@ export function DatasetBuilderTab() {
         <div className="space-y-3 rounded-xl border border-neon-pink/40 bg-neon-pink/5 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="flex flex-wrap items-center gap-2 text-xs font-medium text-foreground">
-              この {review.length} 枚を作ります（{SCENE_BATCH_SIZE} 枚ずつ・合計 {scenePlanCredits(review, knobs, subCount).toLocaleString()} C）
+              この {review.length} 枚を作ります（{SCENE_BATCH_SIZE} 枚ずつ・合計 {scenePlanCredits(review, knobs, batchOpt).toLocaleString()} C）
               <span
                 className={`rounded-full border px-2 py-0.5 font-mono text-[11px] ${
                   firstKeys.size >= SCENE_BATCH_SIZE ? "border-neon-pink/60 bg-neon-pink/15 text-neon-pink" : "border-border text-muted"
@@ -795,18 +843,19 @@ export function DatasetBuilderTab() {
                 className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-1.5 text-xs font-semibold text-white hover:opacity-90"
               >
                 {(() => {
-                  const b = planBatches(orderPlanForBatches(review, subCount, firstKeys), subCount);
+                  const b = planBatches(orderPlanForBatches(review, batchOpt, firstKeys), batchOpt);
                   const first = b[0]?.items ?? [];
                   return confirmFirst && review.length > SCENE_BATCH_SIZE
-                    ? `この内容でまず ${first.length} 枚を作る（${scenePlanCredits(first, knobs, subCount).toLocaleString()} C）`
-                    : `この内容で ${review.length} 枚を作る（${scenePlanCredits(review, knobs, subCount).toLocaleString()} C）`;
+                    ? `この内容でまず ${first.length} 枚を作る（${scenePlanCredits(first, knobs, batchOpt).toLocaleString()} C）`
+                    : `この内容で ${review.length} 枚を作る（${scenePlanCredits(review, knobs, batchOpt).toLocaleString()} C）`;
                 })()}
               </button>
             </div>
           </div>
           <p className="text-[10px] leading-relaxed text-muted">
             各行の文を書き換えられます（日本語のまま。送るときに英訳します）。構図・向きは左の表示のとおり固定です。
-            行を消すと枚数が減ります。左のチェックで「先に作る」行を選ぶと、その行から最初の {SCENE_BATCH_SIZE} 枚に入ります（最大 {SCENE_BATCH_SIZE} 枚）。{subCount > 0 ? "「参照」の印の行だけ参照画像を付けて作ります（料金も参照付き）。実行はメインだけの行 → 参照付きの行の順です。" : ""}
+            行を消すと枚数が減ります。左のチェックで「先に作る」行を選ぶと、その行から最初の {SCENE_BATCH_SIZE} 枚に入ります（最大 {SCENE_BATCH_SIZE} 枚）。
+            {hasCloseMain ? `「寄り元」の行は参照 ${(closeMainIndex ?? 0) + 1} を元に作ります。` : ""}{subCount > 0 ? "「参照」の印の行だけ参照画像を付けて作ります（料金も参照付き）。実行はメインだけの行 → 寄り元の行 → 参照付きの行の順です。" : ""}
           </p>
           <ol className="max-h-[420px] space-y-1 overflow-y-auto pr-1">
             {review.map((it, i) => (
@@ -829,9 +878,10 @@ export function DatasetBuilderTab() {
                 <span className="w-6 shrink-0 text-right font-mono text-muted">{i + 1}</span>
                 <span className="w-28 shrink-0 truncate text-muted" title={scenePlanPreviewJa(it)}>
                   {scenePlanLabel({ ...it, custom: "", bodyJa: "" }).replace(/^（|）$/g, "")}
-                  {sceneItemNeedsRefs(it, subCount) && <span className="ml-1 rounded bg-neon-violet/20 px-1 text-[9px] text-neon-violet">参照</span>}
+                  {sceneItemGroup(it, batchOpt) === "refs" && <span className="ml-1 rounded bg-neon-violet/20 px-1 text-[9px] text-neon-violet">参照</span>}
+                  {sceneItemGroup(it, batchOpt) === "close" && <span className="ml-1 rounded bg-neon-pink/20 px-1 text-[9px] text-neon-pink">寄り元</span>}
                 </span>
-                <span className="w-10 shrink-0 text-right font-mono text-[10px] text-muted">{sceneItemCredits(it, knobs, subCount)}C</span>
+                <span className="w-10 shrink-0 text-right font-mono text-[10px] text-muted">{sceneItemCredits(it, knobs, batchOpt)}C</span>
                 <input
                   value={it.custom ?? it.bodyJa}
                   onChange={(e) => {
@@ -868,11 +918,12 @@ export function DatasetBuilderTab() {
               )}
             </p>
             {/* 全部できてから（または「ここで止める」の後で）まとめて保存・LoRA へ（2026-09-27、ホスト指摘）。 */}
-            {phase === "done" && (
+            {(phase === "done" || phase === "paused") && (
               <div className="flex flex-wrap items-center gap-2">
                 <button type="button" onClick={() => setRejected(new Set())} className="text-[11px] text-muted hover:text-foreground">
                   全部使う
                 </button>
+                {/* ZIP は途中（8 枚で止まっている間）でも押せる。LoRA へ送るのは全部できてから。 */}
                 <button
                   type="button"
                   onClick={() => void downloadZip()}
@@ -882,6 +933,7 @@ export function DatasetBuilderTab() {
                   {zipping ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
                   {kept.length} 枚を ZIP で保存
                 </button>
+                {phase === "done" && (
                 <button
                   type="button"
                   onClick={sendToLora}
@@ -891,6 +943,7 @@ export function DatasetBuilderTab() {
                   {sending ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
                   {kept.length} 枚を LoRA Studio に追加
                 </button>
+                )}
               </div>
             )}
           </div>
@@ -905,7 +958,7 @@ export function DatasetBuilderTab() {
                   key={r.key}
                   className={`relative aspect-[4/5] overflow-hidden rounded-lg border-2 ${off ? "border-transparent opacity-40 grayscale" : "border-neon-pink/60"}`}
                 >
-                  <button type="button" onClick={() => setLightboxIndex(i)} title={r.label} className="block h-full w-full">
+                  <button type="button" onClick={() => setLightboxIndex(i)} title={`拡大: ${r.label}`} className="group block h-full w-full cursor-zoom-in">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={`${r.url}${reloads[r.key] ? `#r${reloads[r.key]}` : ""}`}
@@ -913,6 +966,9 @@ export function DatasetBuilderTab() {
                       className="h-full w-full bg-black/40 object-contain"
                       onError={() => refreshResultUrl(r)}
                     />
+                    <span className="pointer-events-none absolute left-1 top-1 rounded-full bg-black/60 p-1 text-white opacity-80 transition-opacity group-hover:opacity-100">
+                      <ZoomIn size={11} />
+                    </span>
                   </button>
                   <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-black/60 px-1 py-0.5 text-[9px] text-white">{r.label}</span>
                   <button

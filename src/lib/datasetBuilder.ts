@@ -212,36 +212,59 @@ export function sceneItemNeedsRefs(item: ScenePlanItem, subCount: number): boole
   return subCount > 0 && VIEWS_NEED_REFS.has(item.viewId);
 }
 
-export type SceneBatch = { items: ScenePlanItem[]; useRefs: boolean };
+// 上半身・バストアップは文章の指示では効かない（2026-09-27 実測: 2 回で 1/11）。このモデルは入力画像の構図を強く
+// 保つ（距離の語なしでバストの元→バストのまま）ので、寄りの行は「寄りの元画像」（ユーザーが参照の中から指定）を
+// メインにして作る。参照は付けない（顔と上着は寄りの元に写っている）。
+const CLOSE_FRAMINGS = new Set(["upper", "bust"]);
+
+/** ジョブの画像セットの種類。同じ種類の行だけ 1 ジョブにまとめる。 */
+export type SceneGroup = "main" | "close" | "refs";
+
+export type SceneBatchOptions = { subCount: number; hasCloseMain: boolean };
+
+export function sceneItemGroup(item: ScenePlanItem, opt: SceneBatchOptions): SceneGroup {
+  if (sceneItemNeedsRefs(item, opt.subCount)) return "refs";
+  if (opt.hasCloseMain && CLOSE_FRAMINGS.has(item.framingId)) return "close";
+  return "main";
+}
+
+export type SceneBatch = { items: ScenePlanItem[]; group: SceneGroup; useRefs: boolean };
+
+const GROUP_ORDER: SceneGroup[] = ["main", "close", "refs"];
 
 /**
- * 1 ジョブは参照の有無が揃っていなければならない（画像セットがジョブ単位）ので、メインだけの行 → 参照付きの行の順に
- * 並べ替えてから SCENE_BATCH_SIZE ずつに分ける。run.plan にはこの並びで保存する（結果の順と一致させる）。
+ * 1 ジョブは画像セットが揃っていなければならないので、種類ごと（メインだけ → 寄りの元 → 参照付き）に並べ替えてから
+ * SCENE_BATCH_SIZE ずつに分ける。run.plan にはこの並びで保存する（結果の順と一致させる）。
  */
-export function orderPlanForBatches(plan: ScenePlanItem[], subCount: number, firstKeys: Set<string> = new Set()): ScenePlanItem[] {
-  // 「先に作る」と印を付けた行を前へ（並びはそのまま）。印の付いた行が多いほうのグループを先に流す。
+export function orderPlanForBatches(plan: ScenePlanItem[], opt: SceneBatchOptions, firstKeys: Set<string> = new Set()): ScenePlanItem[] {
+  // 「先に作る」と印を付けた行を前へ（並びはそのまま）。印の付いた行が多い種類を先に流す。
   const prioritized = [...plan.filter((it) => firstKeys.has(it.key)), ...plan.filter((it) => !firstKeys.has(it.key))];
-  const main = prioritized.filter((it) => !sceneItemNeedsRefs(it, subCount));
-  const refs = prioritized.filter((it) => sceneItemNeedsRefs(it, subCount));
-  const refsFirst = refs.filter((it) => firstKeys.has(it.key)).length > main.filter((it) => firstKeys.has(it.key)).length;
-  return refsFirst ? [...refs, ...main] : [...main, ...refs];
+  const groups = GROUP_ORDER.map((g) => ({ g, items: prioritized.filter((it) => sceneItemGroup(it, opt) === g) }));
+  const score = (g: (typeof groups)[number]) => g.items.filter((it) => firstKeys.has(it.key)).length;
+  groups.sort((a, b) => score(b) - score(a) || GROUP_ORDER.indexOf(a.g) - GROUP_ORDER.indexOf(b.g));
+  return groups.flatMap((g) => g.items);
 }
 
-export function planBatches(plan: ScenePlanItem[], subCount: number): SceneBatch[] {
-  const main = plan.filter((it) => !sceneItemNeedsRefs(it, subCount));
-  const refs = plan.filter((it) => sceneItemNeedsRefs(it, subCount));
-  return [
-    ...chunkPlan(main).map((items) => ({ items, useRefs: false })),
-    ...chunkPlan(refs).map((items) => ({ items, useRefs: true })),
-  ];
+export function planBatches(plan: ScenePlanItem[], opt: SceneBatchOptions): SceneBatch[] {
+  // plan は orderPlanForBatches の並び（種類ごとに連続）。出現順に種類のまとまりを切り出す。
+  const out: SceneBatch[] = [];
+  let i = 0;
+  while (i < plan.length) {
+    const g = sceneItemGroup(plan[i], opt);
+    let j = i;
+    while (j < plan.length && sceneItemGroup(plan[j], opt) === g) j++;
+    for (const items of chunkPlan(plan.slice(i, j))) out.push({ items, group: g, useRefs: g === "refs" });
+    i = j;
+  }
+  return out;
 }
 
-export function sceneItemCredits(item: ScenePlanItem, knobs: PricingKnobs, subCount: number): number {
-  return sceneCreditsPerImage(knobs, sceneItemNeedsRefs(item, subCount) ? subCount : 0);
+export function sceneItemCredits(item: ScenePlanItem, knobs: PricingKnobs, opt: SceneBatchOptions): number {
+  return sceneCreditsPerImage(knobs, sceneItemGroup(item, opt) === "refs" ? opt.subCount : 0);
 }
 
-export function scenePlanCredits(plan: ScenePlanItem[], knobs: PricingKnobs, subCount: number): number {
-  return plan.reduce((t, it) => t + sceneItemCredits(it, knobs, subCount), 0);
+export function scenePlanCredits(plan: ScenePlanItem[], knobs: PricingKnobs, opt: SceneBatchOptions): number {
+  return plan.reduce((t, it) => t + sceneItemCredits(it, knobs, opt), 0);
 }
 
 /** 参照枚数に応じた 1 枚あたりのクレジット（マルチアングルと同じ単価・同じ係数）。 */
