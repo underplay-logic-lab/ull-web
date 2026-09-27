@@ -775,8 +775,15 @@ export function DatasetBuilderTab() {
       {phase === "review" && review.length > 0 && (
         <div className="space-y-3 rounded-xl border border-neon-pink/40 bg-neon-pink/5 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs font-medium text-foreground">
+            <p className="flex flex-wrap items-center gap-2 text-xs font-medium text-foreground">
               この {review.length} 枚を作ります（{SCENE_BATCH_SIZE} 枚ずつ・合計 {scenePlanCredits(review, knobs, subCount).toLocaleString()} C）
+              <span
+                className={`rounded-full border px-2 py-0.5 font-mono text-[11px] ${
+                  firstKeys.size >= SCENE_BATCH_SIZE ? "border-neon-pink/60 bg-neon-pink/15 text-neon-pink" : "border-border text-muted"
+                }`}
+              >
+                先に作る {firstKeys.size} / {SCENE_BATCH_SIZE}
+              </span>
             </p>
             <div className="flex items-center gap-2">
               <button type="button" onClick={() => setPhase("idle")} className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground">
@@ -799,8 +806,7 @@ export function DatasetBuilderTab() {
           </div>
           <p className="text-[10px] leading-relaxed text-muted">
             各行の文を書き換えられます（日本語のまま。送るときに英訳します）。構図・向きは左の表示のとおり固定です。
-            行を消すと枚数が減ります。左のチェックで「先に作る」行を選ぶと、その行から最初の {SCENE_BATCH_SIZE} 枚に入ります
-            {firstKeys.size > 0 ? `（選択中 ${firstKeys.size} 枚）` : ""}。{subCount > 0 ? "「参照」の印の行だけ参照画像を付けて作ります（料金も参照付き）。実行はメインだけの行 → 参照付きの行の順です。" : ""}
+            行を消すと枚数が減ります。左のチェックで「先に作る」行を選ぶと、その行から最初の {SCENE_BATCH_SIZE} 枚に入ります（最大 {SCENE_BATCH_SIZE} 枚）。{subCount > 0 ? "「参照」の印の行だけ参照画像を付けて作ります（料金も参照付き）。実行はメインだけの行 → 参照付きの行の順です。" : ""}
           </p>
           <ol className="max-h-[420px] space-y-1 overflow-y-auto pr-1">
             {review.map((it, i) => (
@@ -808,6 +814,7 @@ export function DatasetBuilderTab() {
                 <input
                   type="checkbox"
                   checked={firstKeys.has(it.key)}
+                  disabled={!firstKeys.has(it.key) && firstKeys.size >= SCENE_BATCH_SIZE}
                   onChange={() =>
                     setFirstKeys((prev) => {
                       const next = new Set(prev);
