@@ -206,7 +206,7 @@ export function ImageDropzone({
             <img
               src={previewUrl}
               alt={file?.name ?? "アップロード画像"}
-              className="absolute inset-x-0 top-0 bottom-9 w-full object-contain"
+              className="absolute inset-x-0 top-0 h-[calc(100%-2.25rem)] w-full object-contain"
             />
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/60 to-transparent" />
             <button
