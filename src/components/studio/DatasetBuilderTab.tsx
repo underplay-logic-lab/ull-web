@@ -9,7 +9,8 @@
 // VramBadge／起動待ち表示／結果 URL は使い回さない（fresh URL で取り直し）／サムネは切り抜かない。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ImagePlus, Loader2, Sparkles, Trash2, Wand2 } from "lucide-react";
+import JSZip from "jszip";
+import { Check, Download, ImagePlus, Loader2, Sparkles, Wand2, X } from "lucide-react";
 import { MAX_SUB_REFERENCE_IMAGES } from "@/lib/angleStudio";
 import {
   AngleJobNotFoundError,
@@ -34,13 +35,15 @@ import {
 } from "@/lib/datasetBuilder";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
-import { sendLoraAdditions, takeStudioBatchHandoff } from "@/lib/studioHandoff";
+import { requestStudioHandoff, sendLoraAdditions, takeStudioBatchHandoff } from "@/lib/studioHandoff";
 import { VramBadge } from "@/components/studio/VramBadge";
 import {
+  AngleLightbox,
   ImageDropzone,
   InsufficientCreditsModal,
   SubReferenceSlots,
   useObjectUrl,
+  type LightItem,
 } from "@/components/studio/MultiAngleStudioTab";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
@@ -436,8 +439,77 @@ export function DatasetBuilderTab() {
   }, [run, jobs]);
   const [rejected, setRejected] = useState<Set<string>>(new Set());
   const [sending, setSending] = useState(false);
+  const [zipping, setZipping] = useState(false);
   const [reloads, setReloads] = useState<Record<string, number>>({});
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const kept = results.filter((r) => !rejected.has(r.key));
+  const lightItems: LightItem[] = results.map((r) => ({ url: r.url, label: r.label }));
+  const toggleRejected = (key: string) =>
+    setRejected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  // R2 への移動・署名切れで 404 になったら取り直す（2 回まで）。
+  const refreshResultUrl = (r: ResultItem) => {
+    const n = reloads[r.key] ?? 0;
+    if (n >= 2) return;
+    void freshAngleImageUrl(r.jobId, r.index, r.url).then((u) => {
+      setJobs((prev) => {
+        const j = prev[r.jobId];
+        if (!j) return prev;
+        const images = [...j.images];
+        images[r.index] = u;
+        return { ...prev, [r.jobId]: { ...j, images } };
+      });
+      setReloads((prev) => ({ ...prev, [r.key]: n + 1 }));
+    });
+  };
+  // 保存・LoRA・ZIP は押した時点で URL を取り直す（CLAUDE.md §6-11）。
+  const fetchFresh = async (r: ResultItem): Promise<Blob> => {
+    const url = await freshAngleImageUrl(r.jobId, r.index, r.url);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.blob();
+  };
+  const fileName = (r: ResultItem, n: number) => `dataset_${r.jobId.slice(0, 6)}_${String(n + 1).padStart(2, "0")}.png`;
+  const triggerDownload = (blob: Blob, name: string) => {
+    const u = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = u;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(u), 1000);
+  };
+  const saveOne = async (r: ResultItem) => {
+    try {
+      triggerDownload(await fetchFresh(r), fileName(r, results.indexOf(r)));
+    } catch (err) {
+      setErrorMessage(`保存に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  const upscaleOne = async (r: ResultItem) => {
+    const url = await freshAngleImageUrl(r.jobId, r.index, r.url);
+    requestStudioHandoff({ kind: "image", url, filename: fileName(r, results.indexOf(r)), source: "素材づくりの結果" }, "upscale");
+  };
+  const downloadZip = async () => {
+    if (kept.length === 0) return;
+    setZipping(true);
+    setErrorMessage(null);
+    try {
+      const zip = new JSZip();
+      const blobs = await Promise.all(kept.map((r) => fetchFresh(r)));
+      blobs.forEach((b, n) => zip.file(fileName(kept[n], n), b));
+      triggerDownload(await zip.generateAsync({ type: "blob" }), `dataset_${new Date().toISOString().slice(0, 10)}.zip`);
+    } catch (err) {
+      setErrorMessage(`ZIP の作成に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setZipping(false);
+    }
+  };
 
   const sendToLora = async () => {
     if (kept.length === 0) return;
@@ -446,13 +518,8 @@ export function DatasetBuilderTab() {
     try {
       const files = await Promise.all(
         kept.map(async (c, n) => {
-          const url = await freshAngleImageUrl(c.jobId, c.index, c.url);
-          const res = await fetch(url);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const blob = await res.blob();
-          return new File([blob], `dataset_${c.jobId.slice(0, 6)}_${String(n + 1).padStart(2, "0")}.png`, {
-            type: blob.type || "image/png",
-          });
+          const blob = await fetchFresh(c);
+          return new File([blob], fileName(c, n), { type: blob.type || "image/png" });
         }),
       );
       sendLoraAdditions(files, `素材づくりで作った ${files.length} 枚`);
@@ -645,85 +712,91 @@ export function DatasetBuilderTab() {
         <div className="space-y-3 rounded-xl border border-border bg-background p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs font-medium text-foreground">
-              できた素材 {results.length} 枚
-              {rejected.size > 0 && <span className="ml-1 text-muted">（外した {rejected.size} 枚）</span>}
+              できた素材 {results.length} 枚{plannedTotal > results.length ? `（予定 ${plannedTotal} 枚）` : ""}
+              {rejected.size > 0 && <span className="ml-1 text-muted">・外した {rejected.size} 枚</span>}
             </p>
-            <div className="flex items-center gap-2">
-              <button type="button" onClick={() => setRejected(new Set())} className="text-[11px] text-muted hover:text-foreground">
-                全部使う
-              </button>
-              <button
-                type="button"
-                onClick={sendToLora}
-                disabled={sending || kept.length === 0}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
-              >
-                {sending ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
-                {kept.length} 枚を LoRA Studio に追加
-              </button>
-            </div>
+            {/* 全部できてから（または「ここで止める」の後で）まとめて保存・LoRA へ（2026-09-27、ホスト指摘）。 */}
+            {phase === "done" && (
+              <div className="flex flex-wrap items-center gap-2">
+                <button type="button" onClick={() => setRejected(new Set())} className="text-[11px] text-muted hover:text-foreground">
+                  全部使う
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void downloadZip()}
+                  disabled={zipping || kept.length === 0}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-foreground hover:bg-surface disabled:opacity-50"
+                >
+                  {zipping ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                  {kept.length} 枚を ZIP で保存
+                </button>
+                <button
+                  type="button"
+                  onClick={sendToLora}
+                  disabled={sending || kept.length === 0}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                >
+                  {sending ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
+                  {kept.length} 枚を LoRA Studio に追加
+                </button>
+              </div>
+            )}
           </div>
-          <p className="text-[10px] text-muted">クリックで外す／戻す。外した画像は LoRA に送りません（料金は生成した分にかかります）。</p>
+          <p className="text-[10px] text-muted">
+            クリックで拡大。右上の × で外す／戻す。外した画像は保存・LoRA の対象になりません（料金は生成した分にかかります）。
+          </p>
           <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
-            {results.map((r) => {
+            {results.map((r, i) => {
               const off = rejected.has(r.key);
               return (
-                <button
+                <div
                   key={r.key}
-                  type="button"
-                  onClick={() =>
-                    setRejected((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(r.key)) next.delete(r.key);
-                      else next.add(r.key);
-                      return next;
-                    })
-                  }
-                  title={r.label}
                   className={`relative aspect-[4/5] overflow-hidden rounded-lg border-2 ${off ? "border-transparent opacity-40 grayscale" : "border-neon-pink/60"}`}
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={`${r.url}${reloads[r.key] ? `#r${reloads[r.key]}` : ""}`}
-                    alt={r.label}
-                    className="h-full w-full bg-black/40 object-contain"
-                    onError={() => {
-                      // R2 への移動・署名切れで 404 になったら取り直す（2 回まで）。
-                      const n = reloads[r.key] ?? 0;
-                      if (n >= 2) return;
-                      void freshAngleImageUrl(r.jobId, r.index, r.url).then((u) => {
-                        setJobs((prev) => {
-                          const j = prev[r.jobId];
-                          if (!j) return prev;
-                          const images = [...j.images];
-                          images[r.index] = u;
-                          return { ...prev, [r.jobId]: { ...j, images } };
-                        });
-                        setReloads((prev) => ({ ...prev, [r.key]: n + 1 }));
-                      });
-                    }}
-                  />
-                  <span className="absolute inset-x-0 bottom-0 truncate bg-black/60 px-1 py-0.5 text-[9px] text-white">{r.label}</span>
-                  {off ? (
-                    <span className="absolute right-1 top-1 rounded-full bg-black/70 p-0.5 text-white">
-                      <Trash2 size={11} />
-                    </span>
-                  ) : (
-                    <span className="absolute right-1 top-1 rounded-full bg-neon-pink p-0.5 text-white">
-                      <Check size={11} />
-                    </span>
-                  )}
-                </button>
+                  <button type="button" onClick={() => setLightboxIndex(i)} title={r.label} className="block h-full w-full">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={`${r.url}${reloads[r.key] ? `#r${reloads[r.key]}` : ""}`}
+                      alt={r.label}
+                      className="h-full w-full bg-black/40 object-contain"
+                      onError={() => refreshResultUrl(r)}
+                    />
+                  </button>
+                  <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-black/60 px-1 py-0.5 text-[9px] text-white">{r.label}</span>
+                  <button
+                    type="button"
+                    onClick={() => toggleRejected(r.key)}
+                    title={off ? "戻す" : "外す"}
+                    className={`absolute right-1 top-1 rounded-full p-1 text-white ${off ? "bg-black/70" : "bg-neon-pink"}`}
+                  >
+                    {off ? <Check size={11} /> : <X size={11} />}
+                  </button>
+                </div>
               );
             })}
           </div>
           {phase === "done" && (
             <p className="text-[10px] text-muted">
               <ImagePlus size={10} className="mr-1 inline" />
-              足りなければ、枚数を入れてもう一度作れます（前の結果は新しい指定で入れ替わります。必要な分は先に LoRA Studio へ送ってください）。
+              足りなければ、枚数を入れてもう一度作れます（前の結果は新しい指定で入れ替わります。必要な分は先に保存するか LoRA Studio へ送ってください）。
             </p>
           )}
         </div>
+      )}
+
+      {lightboxIndex != null && results[lightboxIndex] && (
+        <AngleLightbox
+          items={lightItems}
+          index={lightboxIndex}
+          onIndexChange={setLightboxIndex}
+          onClose={() => setLightboxIndex(null)}
+          onSave={(i) => void saveOne(results[i])}
+          onUpscale={(i) => void upscaleOne(results[i])}
+          onImageError={() => {
+            const r = results[lightboxIndex];
+            if (r) refreshResultUrl(r);
+          }}
+        />
       )}
 
       <LoginModal open={loginOpen} onClose={() => setLoginOpen(false)} message="素材づくりを使うにはログインしてください。" />

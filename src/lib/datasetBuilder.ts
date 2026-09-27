@@ -40,10 +40,20 @@ export const PLACE_CHIPS: SceneChip[] = [
   { id: "snow", label: "雪景色", en: "in a snowy field with snow falling" },
 ];
 
+// 構図は文頭に置き、切れる位置と「写らないもの」を明記する（2026-09-27 初回実測: 文中の "upper body shot from the
+// waist up" は 3/3 で全身になった。背景・ポーズは従ったので、構図の語だけ弱い）。
 export const FRAMING_CHIPS: SceneChip[] = [
-  { id: "full", label: "全身", en: "full body shot showing the whole body from head to feet" },
-  { id: "upper", label: "上半身", en: "upper body shot from the waist up" },
-  { id: "bust", label: "バストアップ", en: "bust shot from the chest up" },
+  { id: "full", label: "全身", en: "A full body shot showing the whole body from head to feet" },
+  {
+    id: "upper",
+    label: "上半身",
+    en: "A medium shot cropped at the waist, showing only the upper body (the legs and feet are outside the frame, the camera is close to the character)",
+  },
+  {
+    id: "bust",
+    label: "バストアップ",
+    en: "A close-up bust shot cropped at the chest, showing only the head and shoulders (the camera is very close to the face)",
+  },
 ];
 
 export const VIEW_CHIPS: SceneChip[] = [
@@ -140,8 +150,9 @@ export function buildScenePlan(sel: SceneSelection, count: number): ScenePlanIte
     const framing = F[(k + Math.floor(k / (P.length * L.length))) % F.length];
     const view = V[(Math.floor(k / F.length) + Math.floor(k / (P.length * L.length * F.length))) % V.length];
     const parts = [
-      `Make the character ${pose.en} ${place.en}`,
+      // 構図を先頭に（モデルは文頭の指示を優先しやすい）。
       `${framing.en}, ${view.en}`,
+      `Make the character ${pose.en} ${place.en}`,
       outfit ? `wearing ${outfit}` : "",
       extra,
       // 同一性の指示。参照が複数のときはワーカーが更に定型文を足す。

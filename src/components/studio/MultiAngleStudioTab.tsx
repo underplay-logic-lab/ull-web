@@ -400,9 +400,9 @@ function AxisGroup({
 }
 
 // --- 結果ライトボックス（最小構成） ----------------------------------
-type LightItem = { url: string; label: string };
+export type LightItem = { url: string; label: string };
 
-function AngleLightbox({
+export function AngleLightbox({
   items,
   index,
   onIndexChange,
