@@ -14,6 +14,7 @@ import { Check, Download, ImagePlus, Loader2, Sparkles, Wand2, X, ZoomIn } from 
 import { MAX_SUB_REFERENCE_IMAGES } from "@/lib/angleStudio";
 import {
   AngleJobNotFoundError,
+  fetchAngleImageBlob,
   freshAngleImageUrl,
   pollAngleJob,
   startAngleJob,
@@ -644,6 +645,8 @@ export function DatasetBuilderTab() {
   const [zipping, setZipping] = useState(false);
   const [reloads, setReloads] = useState<Record<string, number>>({});
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  // 元画像（切り出し）の拡大表示。
+  const [localPreview, setLocalPreview] = useState<{ url: string; label: string } | null>(null);
   const kept = results.filter((r) => !rejected.has(r.key));
   const lightItems: LightItem[] = results.map((r) => ({ url: r.url, label: r.label }));
   const toggleRejected = (key: string) =>
@@ -669,12 +672,7 @@ export function DatasetBuilderTab() {
     });
   };
   // 保存・LoRA・ZIP は押した時点で URL を取り直す（CLAUDE.md §6-11）。
-  const fetchFresh = async (r: ResultItem): Promise<Blob> => {
-    const url = await freshAngleImageUrl(r.jobId, r.index, r.url);
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.blob();
-  };
+  const fetchFresh = (r: ResultItem): Promise<Blob> => fetchAngleImageBlob(r.jobId, r.index, r.url);
   const fileName = (r: ResultItem, n: number) => `dataset_${r.jobId.slice(0, 6)}_${String(n + 1).padStart(2, "0")}.png`;
   const triggerDownload = (blob: Blob, name: string) => {
     const u = URL.createObjectURL(blob);
@@ -777,8 +775,15 @@ export function DatasetBuilderTab() {
                   return (
                     <div key={f} className="flex flex-wrap items-center gap-1.5">
                       {choice === "auto" && autoUrl ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={autoUrl} alt="" className="h-12 w-10 shrink-0 rounded bg-black/40 object-contain" />
+                        <button
+                          type="button"
+                          onClick={() => setLocalPreview({ url: autoUrl, label: f === "upper" ? "上半身の元（切り出し）" : "バストアップの元（切り出し）" })}
+                          className="relative h-12 w-10 shrink-0 cursor-zoom-in overflow-hidden rounded bg-black/40"
+                          title="拡大"
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={autoUrl} alt="" className="h-full w-full object-contain" />
+                        </button>
                       ) : (
                         <span className="h-12 w-10 shrink-0 rounded bg-black/20" />
                       )}
@@ -1254,6 +1259,24 @@ export function DatasetBuilderTab() {
         </div>
       )}
 
+      {localPreview && (
+        <AngleLightbox
+          items={[localPreview]}
+          index={0}
+          onIndexChange={() => undefined}
+          onClose={() => setLocalPreview(null)}
+          onSave={() => {
+            const a = document.createElement("a");
+            a.href = localPreview.url;
+            a.download = `${localPreview.label}.png`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+          }}
+          onUpscale={() => undefined}
+          onImageError={() => undefined}
+        />
+      )}
       {lightboxIndex != null && results[lightboxIndex] && (
         <AngleLightbox
           items={lightItems}

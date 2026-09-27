@@ -247,6 +247,26 @@ export async function freshAngleImageUrls(jobId: string, fallback: string[]): Pr
   }
 }
 
+/**
+ * 結果画像を Blob で取る。完了直後は Volume → R2 への移動で URL が一時的に 404 になる（2026-09-27、素材づくりの
+ * 候補選択で発生）ので、取り直しを挟んで数回試す。
+ */
+export async function fetchAngleImageBlob(jobId: string, index: number, url: string, tries = 4): Promise<Blob> {
+  let lastStatus = 0;
+  for (let i = 0; i < tries; i++) {
+    const fresh = i === 0 ? url : await freshAngleImageUrl(jobId, index, url);
+    try {
+      const res = await fetch(fresh);
+      if (res.ok) return res.blob();
+      lastStatus = res.status;
+    } catch {
+      lastStatus = 0;
+    }
+    await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+  }
+  throw new Error(lastStatus ? `HTTP ${lastStatus}` : "画像を取得できませんでした");
+}
+
 export async function freshAngleImageUrl(jobId: string, index: number, fallback: string): Promise<string> {
   try {
     const urls = await fetchAngleImageUrls(jobId);

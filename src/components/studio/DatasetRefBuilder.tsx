@@ -6,18 +6,18 @@
 // 候補は素材づくりと同じジョブ（angle_jobs・scene 経路・メイン 1 枚・1 枚 14C）。
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Loader2, RefreshCw, Sparkles } from "lucide-react";
+import { Check, Loader2, RefreshCw, Sparkles, ZoomIn } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
 import {
   AngleJobNotFoundError,
-  freshAngleImageUrl,
+  fetchAngleImageBlob,
   pollAngleJob,
   startAngleJob,
   type AngleApiError,
   type AngleJob,
 } from "@/lib/angleApi";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
-import { useObjectUrl } from "@/components/studio/MultiAngleStudioTab";
+import { AngleLightbox, useObjectUrl, type LightItem } from "@/components/studio/MultiAngleStudioTab";
 import { broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 
 export type CandidateSpec = { instruction: string; label: string };
@@ -67,11 +67,18 @@ type Status = "idle" | "queued" | "submitting" | "running" | "done" | "error";
 const POLL_MS = 2_000;
 
 export async function candidateToFile(jobId: string, index: number, url: string, name: string): Promise<File> {
-  const fresh = await freshAngleImageUrl(jobId, index, url);
-  const res = await fetch(fresh);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const blob = await res.blob();
+  const blob = await fetchAngleImageBlob(jobId, index, url);
   return new File([blob], name, { type: blob.type || "image/png" });
+}
+
+function downloadBlobUrl(url: string, name: string) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.target = "_blank";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 /** 候補ジョブ 1 本を回す。jobId は storageKey に保存し、リロード後も候補を出し直す。 */
@@ -265,6 +272,8 @@ export function CandidatePanel({
   const [dragOver, setDragOver] = useState(false);
   const confirmedUrl = useObjectUrl(confirmed ?? null);
   const confirmedRefIndex = confirmed && existingRefs ? existingRefs.indexOf(confirmed) : -1;
+  // 拡大表示（候補 / 確定した画像）。
+  const [light, setLight] = useState<{ items: LightItem[]; index: number } | null>(null);
 
   return (
     <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
@@ -364,8 +373,15 @@ export function CandidatePanel({
       {confirmed && (
         <div className="flex items-center gap-2 rounded-md border border-neon-pink/40 bg-neon-pink/5 px-2 py-1">
           {confirmedUrl && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={confirmedUrl} alt="" className="h-12 w-10 shrink-0 rounded bg-black/40 object-contain" />
+            <button
+              type="button"
+              onClick={() => setLight({ items: [{ url: confirmedUrl, label: confirmed.name }], index: 0 })}
+              className="relative h-12 w-10 shrink-0 cursor-zoom-in overflow-hidden rounded bg-black/40"
+              title="拡大"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={confirmedUrl} alt="" className="h-full w-full object-contain" />
+            </button>
           )}
           <p className="text-[10px] leading-relaxed text-foreground">
             <span className="font-medium text-neon-pink">確定:</span> {confirmed.name}
@@ -394,6 +410,25 @@ export function CandidatePanel({
                     <Check size={11} />
                   </span>
                 )}
+                <span
+                  role="button"
+                  tabIndex={0}
+                  title="拡大"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setLight({ items: job.images.map((u, k) => ({ url: u, label: job.labels[k] ?? "" })), index: i });
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setLight({ items: job.images.map((u, k) => ({ url: u, label: job.labels[k] ?? "" })), index: i });
+                    }
+                  }}
+                  className="absolute left-1 top-1 cursor-zoom-in rounded-full bg-black/60 p-1 text-white opacity-80 hover:opacity-100"
+                >
+                  <ZoomIn size={11} />
+                </span>
                 {picking === i && (
                   <span className="absolute inset-0 flex items-center justify-center bg-black/40 text-white">
                     <Loader2 size={14} className="animate-spin" />
@@ -404,7 +439,18 @@ export function CandidatePanel({
           })}
         </div>
       )}
-      {status === "done" && !picked && <p className="text-[10px] text-amber-400">気に入った 1 枚をクリックして選んでください。無ければ「作り直す」。</p>}
+      {status === "done" && !picked && <p className="text-[10px] text-amber-400">気に入った 1 枚をクリックして選んでください（左上の虫眼鏡で拡大）。無ければ「作り直す」。</p>}
+      {light && light.items[light.index] && (
+        <AngleLightbox
+          items={light.items}
+          index={light.index}
+          onIndexChange={(i) => setLight((l) => (l ? { ...l, index: i } : l))}
+          onClose={() => setLight(null)}
+          onSave={(i) => downloadBlobUrl(light.items[i].url, `${light.items[i].label || "image"}.png`)}
+          onUpscale={() => undefined}
+          onImageError={() => undefined}
+        />
+      )}
     </div>
   );
 }
