@@ -544,6 +544,9 @@ export function DatasetBuilderTab() {
   );
   const runBatches = useMemo(() => (run ? planBatches(run.plan, runOpt, run.prefixLen) : []), [run, runOpt]);
 
+  // 一覧や進捗の位置へスクロールする（2026-09-28、ホスト指摘「押した場所に取り残される」）。
+  const scrollToId = (id: string) =>
+    window.setTimeout(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
   // 「作る」→ まず一覧（日本語）を出して直せるようにする（2026-09-27、ホスト指摘「どんなプロンプトで作られるか分からない」）。
   const handleStart = () => {
     if (!user) return setLoginOpen(true);
@@ -559,6 +562,7 @@ export function DatasetBuilderTab() {
     setFirstKeys(new Set());
     setErrorMessage(null);
     setPhase("review");
+    scrollToId("dataset-review");
   };
   const handleConfirmReview = () => {
     if (!image || review.length === 0) return;
@@ -576,6 +580,7 @@ export function DatasetBuilderTab() {
     setJobs({});
     commitRun(r);
     void submitBatch(r, 0, image, subImages);
+    scrollToId("dataset-progress");
   };
 
   const handleContinue = () => {
@@ -584,6 +589,7 @@ export function DatasetBuilderTab() {
     const next = { ...r, confirmed: true };
     commitRun(next);
     void submitBatch(next, next.jobIds.length, image, subImages);
+    scrollToId("dataset-progress");
   };
   // 初期状態に戻す（2026-09-27、ホスト指摘「リロードしても前回の続きから抜け出せない」）。
   // 保存した実行を消して、画像・指定はそのまま残す。生成済みの画像はサーバーに 14 日残るが、この画面からは消える。
@@ -1035,7 +1041,7 @@ export function DatasetBuilderTab() {
             </p>
           </div>
 
-          <div className="rounded-xl border border-border bg-background p-4">
+          <div id="dataset-progress" className="scroll-mt-24 rounded-xl border border-border bg-background p-4">
             <div className="flex flex-wrap items-center gap-3">
               <label className="flex items-center gap-2 text-xs text-muted">
                 枚数
@@ -1152,7 +1158,7 @@ export function DatasetBuilderTab() {
 
       {/* 実行前の一覧（日本語で直せる） */}
       {phase === "review" && review.length > 0 && (
-        <div className="space-y-3 rounded-xl border border-neon-pink/40 bg-neon-pink/5 p-4">
+        <div id="dataset-review" className="scroll-mt-24 space-y-3 rounded-xl border border-neon-pink/40 bg-neon-pink/5 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="flex flex-wrap items-center gap-2 text-xs font-medium text-foreground">
               この {review.length} 枚を作ります（{SCENE_BATCH_SIZE} 枚ずつ・合計 {scenePlanCredits(review, knobs, batchOpt).toLocaleString()} C）
