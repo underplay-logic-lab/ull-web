@@ -737,7 +737,7 @@ export function DatasetBuilderTab() {
                       ))}
                       {!auto && !deriving && choice === "auto" && (
                         <span className="w-full text-[10px] text-amber-400">
-                          切り出せなかったので「メインのまま」で作ります。寄った画像を参照に入れて選ぶこともできます。
+                          切り出せなかったので「メインのまま」で作ります{derived.reason ? `（${derived.reason}）` : ""}。寄った画像を参照に入れて選ぶこともできます。
                         </span>
                       )}
                     </div>

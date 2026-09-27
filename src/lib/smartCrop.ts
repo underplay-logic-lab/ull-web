@@ -339,7 +339,7 @@ export async function runSmartCrop(file: File): Promise<SmartCropOutput[]> {
 // --- 素材づくり用: 1 枚から「構図の元画像」（上半身・バストアップ）を切り出す（2026-09-27） -------------------
 // 編集モデルは入力画像の構図を保つ（実測）ので、寄りの構図が欲しければ寄った元画像を渡す。これは学習素材ではなく
 // モデルに渡す元画像なので解像度は問わない（約 1MP に正規化して描き直される）。人物が取れなければ空を返す。
-export type FramingSources = { upper?: File; bust?: File };
+export type FramingSources = { upper?: File; bust?: File; /** 作れなかった理由（表示用）。 */ reason?: string };
 
 async function cropToFile(img: HTMLImageElement, box: Box, stem: string, tag: string, longEdge: number): Promise<File> {
   const clamped = clampBoxToImage(box, img.naturalWidth, img.naturalHeight);
@@ -359,11 +359,12 @@ export async function deriveFramingSources(file: File): Promise<FramingSources> 
     const h = img.naturalHeight;
     const { people } = await detectSmartCropLandmarks(img);
     const person = people[0];
-    if (!person?.pose) return {};
+    console.info("[deriveFramingSources]", { people: people.length, hasPose: Boolean(person?.pose), hasFace: Boolean(person?.face), w, h });
+    if (!person?.pose) return { reason: "人物（体のポーズ）を検出できませんでした" };
     const pose = person.pose;
     const lS0 = pose[POSE_LM.leftShoulder];
     const rS0 = pose[POSE_LM.rightShoulder];
-    if (!isLandmarkVisible(lS0) || !isLandmarkVisible(rS0)) return {};
+    if (!isLandmarkVisible(lS0) || !isLandmarkVisible(rS0)) return { reason: "肩の位置を検出できませんでした" };
     const lS = pt(lS0, w, h);
     const rS = pt(rS0, w, h);
     const shoulderY = Math.min(lS.y, rS.y);
@@ -387,6 +388,7 @@ export async function deriveFramingSources(file: File): Promise<FramingSources> 
     const hipsOk = isLandmarkVisible(lH0) && isLandmarkVisible(rH0);
     const midHipY = hipsOk ? (pt(lH0, w, h).y + pt(rH0, w, h).y) / 2 : null;
     const out: FramingSources = {};
+    if (midHipY === null) out.reason = "腰の位置を検出できませんでした（元が既に寄っている可能性）";
     // 上半身（腰から上）: 腰が画像の中に写っているときだけ。既に寄っている元からは作らない。
     if (midHipY !== null && midHipY < h * 0.98) {
       const upperBox = computeUpperBodyCropBox({
@@ -408,7 +410,7 @@ export async function deriveFramingSources(file: File): Promise<FramingSources> 
     return out;
   } catch (err) {
     console.warn("[deriveFramingSources] failed:", err);
-    return {};
+    return { reason: `切り出しに失敗しました: ${err instanceof Error ? err.message : String(err)}` };
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
