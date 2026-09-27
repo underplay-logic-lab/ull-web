@@ -23,7 +23,11 @@ import {
 import {
   buildScenePlan,
   CHIPS_BY_AXIS,
-  chunkPlan,
+  orderPlanForBatches,
+  planBatches,
+  sceneItemCredits,
+  sceneItemNeedsRefs,
+  scenePlanCredits,
   DEFAULT_SCENE_SELECTION,
   SCENE_BATCH_SIZE,
   SCENE_DEFAULT_COUNT,
@@ -281,11 +285,16 @@ export function DatasetBuilderTab() {
     });
 
   const subCount = subImages.length;
-  const perImage = sceneCreditsPerImage(knobs, subCount);
+  const perImage = sceneCreditsPerImage(knobs, 0);
+  const perImageRefs = sceneCreditsPerImage(knobs, subCount);
   const safeCount = Math.max(1, Math.min(SCENE_MAX_COUNT, Math.trunc(count || 0)));
-  const totalCost = safeCount * perImage;
-  const firstBatch = Math.min(SCENE_BATCH_SIZE, safeCount);
-  const firstCost = firstBatch * perImage;
+  // 料金は行ごと（参照が要る向きだけ係数付き）。指定を変えるたびに計画を組み直して見積もる。
+  const previewPlan = useMemo(() => orderPlanForBatches(buildScenePlan(sel, safeCount), subCount), [sel, safeCount, subCount]);
+  const previewBatches = useMemo(() => planBatches(previewPlan, subCount), [previewPlan, subCount]);
+  const totalCost = scenePlanCredits(previewPlan, knobs, subCount);
+  const firstBatch = previewBatches[0]?.items.length ?? 0;
+  const firstCost = previewBatches[0] ? scenePlanCredits(previewBatches[0].items, knobs, subCount) : 0;
+  const refRows = previewPlan.filter((it) => sceneItemNeedsRefs(it, subCount)).length;
   const busy = phase === "submitting" || phase === "running";
   const insufficientForFirst = Boolean(user) && !creditsLoading && (credits ?? 0) < firstCost;
 
@@ -293,8 +302,8 @@ export function DatasetBuilderTab() {
   const submitBatch = useCallback(
     async (r: PersistedRun, batchIndex: number, mainFile: File, subs: File[]) => {
       if (!user) return;
-      const batches = chunkPlan(r.plan);
-      const items = batches[batchIndex];
+      const batch = planBatches(r.plan, r.subCount)[batchIndex];
+      const items = batch?.items;
       if (!items) return;
       setPhase("submitting");
       setErrorMessage(null);
@@ -302,7 +311,7 @@ export function DatasetBuilderTab() {
         const res = await startAngleJob({
           userId: user.id,
           image: mainFile,
-          subImages: subs,
+          subImages: batch.useRefs ? subs : [],
           selection: { azimuths: [], elevations: [], distances: [] },
           mode: "standard",
           scenes: items.map((it) => ({ instruction: scenePlanInstruction(it), label: scenePlanLabel(it) })),
@@ -324,6 +333,7 @@ export function DatasetBuilderTab() {
     },
     [user, commitRun, perImage],
   );
+  const runBatches = useMemo(() => (run ? planBatches(run.plan, run.subCount) : []), [run]);
 
   // 「作る」→ まず一覧（日本語）を出して直せるようにする（2026-09-27、ホスト指摘「どんなプロンプトで作られるか分からない」）。
   const handleStart = () => {
@@ -338,7 +348,13 @@ export function DatasetBuilderTab() {
   };
   const handleConfirmReview = () => {
     if (!image || review.length === 0) return;
-    const r: PersistedRun = { plan: review, jobIds: [], confirmFirst, confirmed: !confirmFirst, subCount };
+    const r: PersistedRun = {
+      plan: orderPlanForBatches(review, subCount),
+      jobIds: [],
+      confirmFirst,
+      confirmed: !confirmFirst,
+      subCount,
+    };
     setJobs({});
     commitRun(r);
     void submitBatch(r, 0, image, subImages);
@@ -374,7 +390,7 @@ export function DatasetBuilderTab() {
             if (sawInProgress && next.status === "completed") markGpuWarm();
             const r = runRef.current;
             if (!r) return;
-            const batches = chunkPlan(r.plan);
+            const batches = planBatches(r.plan, r.subCount);
             const doneBatches = r.jobIds.length;
             if (next.status === "failed") {
               setErrorMessage(next.errorMessage || "生成に失敗しました。");
@@ -553,8 +569,10 @@ export function DatasetBuilderTab() {
   const activeJob = activeJobId ? jobs[activeJobId] : null;
   const plannedTotal = run?.plan.length ?? 0;
   const producedTotal = results.length;
-  const remainingCount = run ? Math.max(0, plannedTotal - chunkPlan(run.plan).slice(0, run.jobIds.length).flat().length) : 0;
-  const remainingCost = remainingCount * sceneCreditsPerImage(knobs, run?.subCount ?? subCount);
+  const remainingItems = run ? runBatches.slice(run.jobIds.length).flatMap((b) => b.items) : [];
+  const remainingCount = remainingItems.length;
+  const remainingCost = run ? scenePlanCredits(remainingItems, knobs, run.subCount) : 0;
+  const nextBatchCost = run && runBatches[run.jobIds.length] ? scenePlanCredits(runBatches[run.jobIds.length].items, knobs, run.subCount) : 0;
 
   return (
     <div className="space-y-6">
@@ -570,7 +588,7 @@ export function DatasetBuilderTab() {
           {imageError && <p className="text-[11px] text-red-400">{imageError}</p>}
           <SubReferenceSlots files={subImages} onAdd={handleAddSub} onRemove={(i) => setSubImages((p) => p.filter((_, k) => k !== i))} error={subError} />
           <p className="text-[11px] leading-relaxed text-muted/80">
-            メインの画像からは分からない後ろ姿・真横・顔のアップがあれば参照に足してください。参照が多いほど 1 枚あたりの時間と料金は増えます。
+            メインの画像からは分からない後ろ姿・真横があれば参照に足してください。参照は「真横・後ろ」の行にだけ使い、正面・斜めの行はメイン 1 枚で作ります（そのぶん速く・安く）。
           </p>
           {notice && <p className="text-[11px] text-neon-violet">{notice}</p>}
         </div>
@@ -643,7 +661,9 @@ export function DatasetBuilderTab() {
               </label>
               <span className="ml-auto font-mono text-sm text-foreground">
                 合計 <span className="text-neon-pink">{totalCost.toLocaleString()} C</span>
-                <span className="ml-1 text-[10px] text-muted">（1 枚 {perImage}C{subCount > 0 ? `・参照 ${subCount} 枚`: ""}）</span>
+                <span className="ml-1 text-[10px] text-muted">
+                  （1 枚 {perImage}C{refRows > 0 ? `・真横／後ろの ${refRows} 枚は参照 ${subCount} 枚付きで ${perImageRefs}C` : ""}）
+                </span>
               </span>
             </div>
             {confirmFirst && safeCount > SCENE_BATCH_SIZE && (
@@ -688,7 +708,7 @@ export function DatasetBuilderTab() {
                 <button
                   type="button"
                   onClick={handleContinue}
-                  disabled={!image || (!creditsLoading && (credits ?? 0) < Math.min(SCENE_BATCH_SIZE, remainingCount) * perImage)}
+                  disabled={!image || (!creditsLoading && (credits ?? 0) < nextBatchCost)}
                   className="flex-1 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-3 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
                 >
                   続きを作る（残り {remainingCount} 枚・{remainingCost.toLocaleString()} C）
@@ -733,7 +753,7 @@ export function DatasetBuilderTab() {
         <div className="space-y-3 rounded-xl border border-neon-pink/40 bg-neon-pink/5 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs font-medium text-foreground">
-              この {review.length} 枚を作ります（{SCENE_BATCH_SIZE} 枚ずつ・1 枚 {perImage}C）
+              この {review.length} 枚を作ります（{SCENE_BATCH_SIZE} 枚ずつ・合計 {scenePlanCredits(review, knobs, subCount).toLocaleString()} C）
             </p>
             <div className="flex items-center gap-2">
               <button type="button" onClick={() => setPhase("idle")} className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground">
@@ -744,23 +764,29 @@ export function DatasetBuilderTab() {
                 onClick={handleConfirmReview}
                 className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-1.5 text-xs font-semibold text-white hover:opacity-90"
               >
-                {confirmFirst && review.length > SCENE_BATCH_SIZE
-                  ? `この内容でまず ${Math.min(SCENE_BATCH_SIZE, review.length)} 枚を作る（${(Math.min(SCENE_BATCH_SIZE, review.length) * perImage).toLocaleString()} C）`
-                  : `この内容で ${review.length} 枚を作る（${(review.length * perImage).toLocaleString()} C）`}
+                {(() => {
+                  const b = planBatches(orderPlanForBatches(review, subCount), subCount);
+                  const first = b[0]?.items ?? [];
+                  return confirmFirst && review.length > SCENE_BATCH_SIZE
+                    ? `この内容でまず ${first.length} 枚を作る（${scenePlanCredits(first, knobs, subCount).toLocaleString()} C）`
+                    : `この内容で ${review.length} 枚を作る（${scenePlanCredits(review, knobs, subCount).toLocaleString()} C）`;
+                })()}
               </button>
             </div>
           </div>
           <p className="text-[10px] leading-relaxed text-muted">
-            各行の文を書き換えられます（日本語のまま。送るときに英訳します）。構図・向きは括弧内のとおり固定です。
-            行を消すと枚数が減ります。
+            各行の文を書き換えられます（日本語のまま。送るときに英訳します）。構図・向きは左の表示のとおり固定です。
+            行を消すと枚数が減ります。{subCount > 0 ? "「参照」の印の行だけ参照画像を付けて作ります（料金も参照付き）。実行はメインだけの行 → 参照付きの行の順です。" : ""}
           </p>
           <ol className="max-h-[420px] space-y-1 overflow-y-auto pr-1">
             {review.map((it, i) => (
               <li key={it.key} className="flex items-center gap-2 text-[11px]">
                 <span className="w-6 shrink-0 text-right font-mono text-muted">{i + 1}</span>
-                <span className="w-24 shrink-0 truncate text-muted" title={scenePlanPreviewJa(it)}>
+                <span className="w-28 shrink-0 truncate text-muted" title={scenePlanPreviewJa(it)}>
                   {scenePlanLabel({ ...it, custom: "", bodyJa: "" }).replace(/^（|）$/g, "")}
+                  {sceneItemNeedsRefs(it, subCount) && <span className="ml-1 rounded bg-neon-violet/20 px-1 text-[9px] text-neon-violet">参照</span>}
                 </span>
+                <span className="w-10 shrink-0 text-right font-mono text-[10px] text-muted">{sceneItemCredits(it, knobs, subCount)}C</span>
                 <input
                   value={it.custom ?? it.bodyJa}
                   onChange={(e) => {

@@ -203,6 +203,44 @@ export function chunkPlan<T>(items: T[], size = SCENE_BATCH_SIZE): T[][] {
   return out;
 }
 
+// 参照（後ろ姿・真横など）が要るのは、メイン画像に写っていない側を描く行だけ（2026-09-27、ホスト承認）。
+// 正面・斜めの行はメイン 1 枚で作る（1 枚 約 24 秒・14C）。参照 3 枚を付けると約 50 秒・係数付きの料金になるので、
+// 向きで使い分けるとほとんどの行が半分以下になる。
+const VIEWS_NEED_REFS = new Set(["side", "back"]);
+
+export function sceneItemNeedsRefs(item: ScenePlanItem, subCount: number): boolean {
+  return subCount > 0 && VIEWS_NEED_REFS.has(item.viewId);
+}
+
+export type SceneBatch = { items: ScenePlanItem[]; useRefs: boolean };
+
+/**
+ * 1 ジョブは参照の有無が揃っていなければならない（画像セットがジョブ単位）ので、メインだけの行 → 参照付きの行の順に
+ * 並べ替えてから SCENE_BATCH_SIZE ずつに分ける。run.plan にはこの並びで保存する（結果の順と一致させる）。
+ */
+export function orderPlanForBatches(plan: ScenePlanItem[], subCount: number): ScenePlanItem[] {
+  const main = plan.filter((it) => !sceneItemNeedsRefs(it, subCount));
+  const refs = plan.filter((it) => sceneItemNeedsRefs(it, subCount));
+  return [...main, ...refs];
+}
+
+export function planBatches(plan: ScenePlanItem[], subCount: number): SceneBatch[] {
+  const main = plan.filter((it) => !sceneItemNeedsRefs(it, subCount));
+  const refs = plan.filter((it) => sceneItemNeedsRefs(it, subCount));
+  return [
+    ...chunkPlan(main).map((items) => ({ items, useRefs: false })),
+    ...chunkPlan(refs).map((items) => ({ items, useRefs: true })),
+  ];
+}
+
+export function sceneItemCredits(item: ScenePlanItem, knobs: PricingKnobs, subCount: number): number {
+  return sceneCreditsPerImage(knobs, sceneItemNeedsRefs(item, subCount) ? subCount : 0);
+}
+
+export function scenePlanCredits(plan: ScenePlanItem[], knobs: PricingKnobs, subCount: number): number {
+  return plan.reduce((t, it) => t + sceneItemCredits(it, knobs, subCount), 0);
+}
+
 /** 参照枚数に応じた 1 枚あたりのクレジット（マルチアングルと同じ単価・同じ係数）。 */
 export function sceneCreditsPerImage(knobs: PricingKnobs = DEFAULT_KNOBS, subImageCount = 0): number {
   return angleCreditsPerAngle(knobs, subImageCount);
