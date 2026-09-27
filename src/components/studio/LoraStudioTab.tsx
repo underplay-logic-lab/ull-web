@@ -7104,7 +7104,12 @@ export function LoraStudioTab({
 
       <LoraAnglePicker
         open={anglePickerOpen}
-        items={images.filter((i) => !i.cropKind).map((i) => ({ id: i.id, url: i.url, file: i.file }))}
+        items={images
+          .filter((i) => !i.cropKind)
+          .map((i) => {
+            const b = captionBuckets(compositionText({ caption: captions[i.id], tags: compositionTags[i.id] }), "distance");
+            return { id: i.id, url: i.url, file: i.file, closeUp: b.length > 0 && b.every((x) => x === "closeup") };
+          })}
         onClose={() => setAnglePickerOpen(false)}
         onConfirm={(files) => {
           setAnglePickerOpen(false);

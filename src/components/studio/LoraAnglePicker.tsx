@@ -7,7 +7,8 @@ import { Check, X } from "lucide-react";
 // LoRA Studio →「マルチアングルで足りない構図を作る」で、元にする画像を選ぶ（2026-09-26、ホスト要望:
 // 「マルチアングルにどうぞ」で終わらず、選んだ画像がマルチアングルへ運ばれ、結果から選んで LoRA へ戻る導線）。
 
-export type AnglePickItem = { id: string; url: string; file: File };
+// closeUp: 構図の判定が顔アップだけの画像。体のシルエットが無く、真横・背面への回転がほぼ効かない（2026-09-27）。
+export type AnglePickItem = { id: string; url: string; file: File; closeUp?: boolean };
 
 const MAX_PICK = 12;
 
@@ -49,6 +50,12 @@ export function LoraAnglePicker({
               選んだ画像ごとに、別の向き・距離の画像を作ります。顔と服がはっきり写っている画像がおすすめです（最大 {MAX_PICK} 枚）。
               作った画像は、マルチアングルの画面で選んでこのデータセットに戻せます。
             </p>
+            {items.some((it) => it.closeUp) && (
+              <p className="mt-1 text-xs leading-relaxed text-amber-400">
+                「顔アップ」の印が付いた画像は体が写っていないため、真横・背面への回転はほぼ効きません（正面〜斜め前なら作れます）。
+                真横・背面を作るなら、バストアップ〜全身の画像を選んでください。
+              </p>
+            )}
           </div>
           <button type="button" onClick={onClose} aria-label="閉じる" className="text-muted hover:text-foreground">
             <X size={20} />
@@ -68,6 +75,11 @@ export function LoraAnglePicker({
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={it.url} alt={it.file.name} className={`h-full w-full bg-black/40 object-contain ${on ? "" : "opacity-80"}`} />
+                {it.closeUp && (
+                  <span className="absolute bottom-1 left-1 rounded bg-amber-500/90 px-1 text-[9px] font-semibold text-black">
+                    顔アップ
+                  </span>
+                )}
                 {on && (
                   <span className="absolute right-1 top-1 rounded-full bg-neon-pink p-0.5 text-white">
                     <Check size={12} />
@@ -78,7 +90,13 @@ export function LoraAnglePicker({
           })}
         </div>
         <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
-          <span className="mr-auto text-xs text-muted">{picked.size} 枚を選択中</span>
+          <span className="mr-auto text-xs text-muted">
+            {picked.size} 枚を選択中
+            {(() => {
+              const n = items.filter((it) => it.closeUp && picked.has(it.id)).length;
+              return n > 0 ? <span className="text-amber-400">（うち顔アップ {n} 枚: 真横・背面は作れません）</span> : null;
+            })()}
+          </span>
           <button type="button" onClick={onClose} className="px-4 py-2 text-xs text-muted hover:text-foreground">
             キャンセル
           </button>

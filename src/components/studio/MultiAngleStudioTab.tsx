@@ -269,6 +269,12 @@ function SubReferenceSlots({
       <label className="mb-1.5 block text-xs font-medium text-muted">
         サブ参照画像（背面・衣装パーツ等 / 最大{MAX_SUB_REFERENCE_IMAGES}枚・任意）
       </label>
+      {/* 2026-09-27 ホスト要望: 追加する前から「何を足すと効くか」を案内する。 */}
+      {files.length === 0 && (
+        <p className="mb-1.5 text-[11px] leading-relaxed text-muted/80">
+          メインの画像からは想像しにくい背面・真横・衣装の細部が写った画像があれば追加してください。死角の再現精度が上がります。
+        </p>
+      )}
       <input
         ref={inputRef}
         type="file"
@@ -1827,5 +1833,5 @@ function LoraSourceThumb({ file }: { file: File }) {
   const url = useObjectUrl(file);
   if (!url) return null;
   // eslint-disable-next-line @next/next/no-img-element
-  return <img src={url} alt={file.name} className="h-full w-full object-cover" />;
+  return <img src={url} alt={file.name} className="h-full w-full bg-black/40 object-contain" />;
 }
