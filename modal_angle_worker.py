@@ -1666,8 +1666,12 @@ class QwenImageEditWorker:
         text_encoder_repo: str = "",
         height: int | None = None,
         width: int | None = None,
+        raw_prompt: bool = False,
     ) -> dict:
-        """`image_spec` は str（後方互換）。`images`（list, 最大 MAX_REF_IMAGES）を
+        """`image_spec` は str（後方互換）。
+
+        raw_prompt: True なら角度 LoRA のトリガー（`<sks>`）を前置しない（2026-09-27、ポーズ・場面・衣装を
+        文章で指示する試験用）。LoRA は fuse 済みのままだが、トリガー無しではほぼ発火しない想定。`images`（list, 最大 MAX_REF_IMAGES）を
         渡すと Multi-Reference。先頭がメイン参照。
 
         text_encoder_repo: 検閲耐性 text_encoder の実機テスト用（CLI から
@@ -1757,7 +1761,7 @@ class QwenImageEditWorker:
                     _prof["nsteps"] += 1
                     return a[-1] if a and isinstance(a[-1], dict) else {}
 
-                final_prompt = _apply_lora_trigger(instr, self._lora_loaded)
+                final_prompt = instr if raw_prompt else _apply_lora_trigger(instr, self._lora_loaded)
                 if multi_ref and ANGLE_MULTIREF_PROMPT_SUFFIX:
                     final_prompt = f"{final_prompt} {ANGLE_MULTIREF_PROMPT_SUFFIX}".strip()
                 if idx == 0:
@@ -2388,3 +2392,46 @@ def bench(
         if r.get("images"):
             (dst / f"bench_{tag}.png").write_bytes(base64.b64decode(r["images"][0]))
     print(f"[bench] outputs -> {dst}", flush=True)
+
+
+@app.local_entrypoint()
+def scene(
+    image_path: str,
+    instructions: str,
+    sub_paths: str = "",
+    seed: int = 42,
+    out_dir: str = "./angle_scene",
+):
+    """ポーズ・場面・衣装の文章指示の試験（2026-09-27）。角度 LoRA のトリガーを付けずに送る。
+
+    modal run modal_angle_worker.py::scene --image-path ./main.png \
+        --sub-paths "./back.png || ./bust.png" \
+        --instructions "The man is running through the snow while smiling || The man is sitting on a wooden chair"
+    """
+    src = pathlib.Path(image_path).expanduser()
+    if not src.is_file():
+        raise SystemExit(f"--image-path is not a file: {src}")
+    primary = base64.b64encode(src.read_bytes()).decode("ascii")
+    subs = []
+    for p in (s.strip() for s in sub_paths.split("||") if s.strip()):
+        sp = pathlib.Path(p).expanduser()
+        if not sp.is_file():
+            raise SystemExit(f"sub path is not a file: {sp}")
+        subs.append(base64.b64encode(sp.read_bytes()).decode("ascii"))
+    instr_list = [x.strip() for x in instructions.split("||") if x.strip()]
+    if not instr_list:
+        raise SystemExit("pass at least one instruction in --instructions")
+
+    ensure_qwen_edit_cached.remote()
+    result = QwenImageEditWorker().run_edit.remote(
+        primary,
+        instr_list,
+        seed=seed,
+        images=[primary, *subs] if subs else None,
+        raw_prompt=True,
+    )
+    dst = pathlib.Path(out_dir).expanduser()
+    dst.mkdir(parents=True, exist_ok=True)
+    for i, b64 in enumerate(result["images"]):
+        (dst / f"scene_{i:02d}.png").write_bytes(base64.b64decode(b64))
+    print(f"[scene] {result['count']} image(s) in {result['elapsed_time']}s (seed={result.get('seed')}) -> {dst}", flush=True)
