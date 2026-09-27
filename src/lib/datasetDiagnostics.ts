@@ -754,7 +754,16 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
       // 多すぎる構図（一番多いもの）から減らす場合。1 枚 = 学習回数 1 回として近似する。
       const trimBucket = expTop && expTop.id !== b.id ? expTop.id : "";
       const trim = trimBucket ? Math.max(0, Math.ceil(expTotal - exp / share)) : 0;
-      const trimOk = trimBucket !== "" && trim < (s.axes.distance[trimBucket] ?? 0);
+      // 減らした後も、その構図の最低枚数・比率の目安と、被写体のユニーク枚数の目安を割らないときだけ出す
+      // （2026-09-27、ホスト指摘: kch3 21 枚で「全身を約 8 枚減らす」→ 全身 3 枚・全体 13 枚になり別の赤が出る案だった。
+      // おまかせで整えるも同じ案で実際に除外する）。
+      const trimLeft = (s.axes.distance[trimBucket] ?? 0) - trim;
+      const trimOk =
+        trimBucket !== "" &&
+        trim > 0 &&
+        trimLeft >= (DIAGNOSTIC_TARGETS.distanceMin[trimBucket] ?? 0) &&
+        trimLeft >= (DIAGNOSTIC_TARGETS.distanceShare[trimBucket] ?? 0) * (expTotal - trim) &&
+        s.unique - trim >= DIAGNOSTIC_TARGETS.minUniquePerSubject;
       const k = exp > 0 ? (share * (expTotal - exp)) / ((1 - share) * exp) : Infinity;
       const repeat = k <= DIAGNOSTIC_TARGETS.maxRepeats ? Math.max(2, Math.ceil(k)) : null;
       const trimLabel = DIAGNOSTIC_AXES.distance.buckets.find((x) => x.id === trimBucket)?.label ?? "";
@@ -777,7 +786,9 @@ function buildIssues(subjects: SubjectDiagnostic[]): DiagnosticIssue[] {
             ? `キャプションの後、学習回数の段階で均せます（${b.label}の画像を ×${repeat}）。今のうちに直すなら: ${ways
                 .filter((w) => !w.includes("学習回数"))
                 .join(" ／ ")}。`
-            : `学習回数（×${DIAGNOSTIC_TARGETS.maxRepeats} まで）では届かないので、素材を直してください: ${ways.join(" ／ ")}。`
+            : `学習回数（×${DIAGNOSTIC_TARGETS.maxRepeats} まで）では届かないので、素材を直してください: ${ways
+                .filter((w) => !w.includes("学習回数"))
+                .join(" ／ ")}。`
         }`,
         notFixableByRepeats: !laterOk,
         ...fix,
