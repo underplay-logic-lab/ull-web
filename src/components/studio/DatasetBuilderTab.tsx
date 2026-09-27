@@ -1086,7 +1086,24 @@ export function DatasetBuilderTab() {
                   />
                 </div>
                 <p className="mt-1.5 text-center text-[11px] text-muted">
+                  {(() => {
+                    const idx = run ? run.jobIds.length - 1 : -1;
+                    const b = idx >= 0 ? runBatches[idx] : undefined;
+                    const label =
+                      b?.group === "refs"
+                        ? "真横・後ろの行（参照付き）"
+                        : b?.group === "close:upper"
+                          ? "上半身の行（切り出しが元）"
+                          : b?.group === "close:bust"
+                            ? "バストアップの行（切り出しが元）"
+                            : "全身の行（メイン画像が元）";
+                    return `ジョブ ${idx + 1} / ${runBatches.length}: ${label}`;
+                  })()}
+                  <br />
                   このジョブ {activeJob.completedAngles} / {activeJob.totalAngles} 枚・全体 {producedTotal} / {plannedTotal} 枚（{formatElapsedSeconds(elapsedMs)}s）
+                </p>
+                <p className="mt-1 text-center text-[10px] text-muted/70">
+                  元画像が違う行は別のジョブに分かれます（全身＝メイン画像／上半身・バストアップ＝切り出し／真横・後ろ＝参照付き）。順番に自動で流れます。
                 </p>
                 {activeJob.vramUsedGb != null && (
                   <div className="mt-2 flex justify-center">
