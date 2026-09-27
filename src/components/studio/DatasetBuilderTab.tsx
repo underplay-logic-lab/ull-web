@@ -1068,6 +1068,7 @@ export function DatasetBuilderTab() {
             {confirmFirst && safeCount > SCENE_BATCH_SIZE && (
               <p className="mt-1.5 text-[10px] text-muted">
                 まず {firstBatch} 枚（{firstCost.toLocaleString()} C）を作って止まります（一覧で「先に作る」を選べばその行になります）。良ければ「続きを作る」で残りを作ります。クレジットは作る分ずつ消費します。
+                構図（全身／上半身・バストアップ）や向き（真横・後ろ）が増えると元画像の種類ごとにジョブが分かれ、1 種類増えるごとに約 1 分延びます。
               </p>
             )}
 
@@ -1103,7 +1104,8 @@ export function DatasetBuilderTab() {
                   このジョブ {activeJob.completedAngles} / {activeJob.totalAngles} 枚・全体 {producedTotal} / {plannedTotal} 枚（{formatElapsedSeconds(elapsedMs)}s）
                 </p>
                 <p className="mt-1 text-center text-[10px] text-muted/70">
-                  元画像が違う行は別のジョブに分かれます（全身＝メイン画像／上半身・バストアップ＝切り出し／真横・後ろ＝参照付き）。順番に自動で流れます。
+                  元画像が違う行は別のジョブに分かれます（全身＝メイン画像／上半身・バストアップ＝切り出し／真横・後ろ＝参照付き）。
+                  順番に自動で流れますが、ジョブが 1 本増えるごとに送信と起動で約 1 分延びます。
                 </p>
                 {activeJob.vramUsedGb != null && (
                   <div className="mt-2 flex justify-center">
@@ -1216,8 +1218,8 @@ export function DatasetBuilderTab() {
               return jobs > 1 ? (
                 <span className="text-amber-400">
                   {" "}
-                  選んだ行の元画像（メイン／切り出し／参照付き）が混ざっているため {jobs} 本のジョブに分かれ、確認までの時間が {jobs} 本ぶん延びます
-                  （1 本あたり送信と起動で 30〜45 秒。急ぐなら同じ種類でそろえるか、選ばずに先頭 {SCENE_BATCH_SIZE} 枚で）。
+                  選んだ行の元画像（メイン／切り出し／参照付き）が混ざっているため {jobs} 本のジョブに分かれ、確認までの時間が約 {jobs - 1} 分延びます
+                  （ジョブが 1 本増えるごとに送信と起動で約 1 分。急ぐなら同じ種類でそろえるか、選ばずに先頭 {SCENE_BATCH_SIZE} 枚で）。
                 </span>
               ) : (
                 <span> 選ばなければ先頭の {SCENE_BATCH_SIZE} 枚（同じ種類でまとまるので最速）になります。</span>
