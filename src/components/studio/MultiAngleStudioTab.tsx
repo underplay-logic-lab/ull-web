@@ -759,6 +759,8 @@ export function MultiAngleStudioTab() {
   const [loraSources, setLoraSources] = useState<File[]>([]);
   const [loraMode, setLoraMode] = useState(false);
   const loraModeRef = useRef(false);
+  // 連携中に出したジョブだけを候補にする（2026-09-27、ホスト指摘: 復元した前回の結果まで候補に入っていた）。
+  const loraJobIdsRef = useRef<Set<string>>(new Set());
   const [loraNotice, setLoraNotice] = useState<string | null>(null);
   const [loraCandidates, setLoraCandidates] = useState<LoraCandidate[]>([]);
   const [loraPicked, setLoraPicked] = useState<Set<string>>(new Set());
@@ -836,6 +838,7 @@ export function MultiAngleStudioTab() {
           errorMessage: null,
           vramUsedGb: null,
         });
+        if (loraModeRef.current) loraJobIdsRef.current.add(res.jobId);
         setJobId(res.jobId);
         setPhase("running");
       } catch (err) {
@@ -872,7 +875,7 @@ export function MultiAngleStudioTab() {
 
           if (next.status === "completed") {
             setPhase("done");
-            if (loraModeRef.current && next.images.length > 0) {
+            if (loraModeRef.current && loraJobIdsRef.current.has(jobId) && next.images.length > 0) {
               const jid = jobId;
               setLoraCandidates((prev) =>
                 prev.some((c) => c.jobId === jid)
