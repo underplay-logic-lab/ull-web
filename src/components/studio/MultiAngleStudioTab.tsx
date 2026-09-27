@@ -784,7 +784,12 @@ export function MultiAngleStudioTab() {
       setLoraSources(h.files);
       setLoraUsed(new Set());
       // 前回のプリセットのまま始めない（2026-09-27、ホスト指摘）。LoRA 素材には全方位を元の距離のまま作るのが基本。
-      if (h.loraAngleReturn) setSelection(ANGLE_PRESETS.find((p) => p.id === "turnaround8")?.selection ?? ANGLE_PRESETS[0].selection);
+      // LoRA の診断の不足から組んだ構図があればそれ、無ければ 8 方向（2026-09-27）。
+      if (h.loraAngleReturn) {
+        setSelection(
+          h.angleSelection ?? ANGLE_PRESETS.find((p) => p.id === "turnaround8")?.selection ?? ANGLE_PRESETS[0].selection,
+        );
+      }
       if (h.loraAngleReturn) {
         loraModeRef.current = true;
         setLoraMode(true);

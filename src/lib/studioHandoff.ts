@@ -82,6 +82,8 @@ export type StudioBatchHandoff = {
    * LoRA Studio → マルチアングル（2026-09-26）: 生成後に「LoRA に使う画像を選んで戻す」を出す。
    */
   loraAngleReturn?: boolean;
+  /** マルチアングルの初期の構図（LoRA の診断の不足から、2026-09-27）。無ければ 8 方向。 */
+  angleSelection?: { azimuths: string[]; elevations: string[]; distances: string[] };
 };
 
 let pendingBatch: StudioBatchHandoff | null = null;

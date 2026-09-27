@@ -82,6 +82,7 @@ import {
 } from "@/components/studio/LoraBackgroundJobs";
 import { QueueChoiceModal } from "@/components/studio/QueueChoiceModal";
 import { LoraAnglePicker } from "@/components/studio/LoraAnglePicker";
+import { recommendAngleSelection } from "@/lib/loraAngleRecommend";
 import { parseDatasetZip, isZipFile, buildDatasetZip, downloadBlob } from "@/lib/datasetZip";
 import {
   LORA_CAPTION_CATEGORIES,
@@ -7119,12 +7120,14 @@ export function LoraStudioTab({
         onClose={() => setAnglePickerOpen(false)}
         onConfirm={(files) => {
           setAnglePickerOpen(false);
+          const rec = recommendAngleSelection(flowDiag);
           requestStudioBatchHandoff(
             {
               files,
               source: `LoRA Studio の画像 ${files.length} 枚`,
               loraAngleReturn: true,
-              hint: "構図を選んで生成し、できた画像から LoRA に使うものを選んで戻してください。",
+              angleSelection: rec?.selection,
+              hint: `${rec ? `${rec.reason} ` : ""}構図を選んで生成し、できた画像から LoRA に使うものを選んで戻してください。`,
             },
             "angle",
           );
