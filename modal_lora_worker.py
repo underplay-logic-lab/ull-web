@@ -64,6 +64,8 @@ from lora_worker_core import (  # noqa: F401
     HF_CACHE_DIR,
     HF_HUB_CACHE_DIR,
     IMAGE_EXTS,
+    _flatten_alpha,
+    _flatten_alpha_files,
     INDUCTOR_CACHE_DIR,
     LORA_ARCH_GPU,
     LORA_CAPTION_MIN_S,
@@ -643,6 +645,10 @@ def train_lora_job(params: dict) -> dict:
         image_paths.sort()  # the 4-digit prefix keeps this in caption order
         if not image_paths:
             raise ValueError("no images supplied")
+        # 取り込みを通らなかった経路（フォールバック）も透過を白背景へ。取り込み済みなら 0 枚で素通り。
+        _flat = _flatten_alpha_files(image_paths)
+        if _flat:
+            print(f"[train] flattened {_flat} transparent image(s) onto white", flush=True)
         print(f"[train] staged {len(image_paths)} images for '{lora_name}' (target={target_model})")
 
         # --- Stage 1: captions ----------------------------------------------
@@ -1969,12 +1975,10 @@ def ingest_and_optimize_dataset_cpu(
             print(f"[ingest] {idx:04d}: decode failed ({exc}) — passthrough", flush=True)
             return (bytes_in, bytes_in, False, True)
 
-        has_alpha = im.mode in ("RGBA", "LA", "PA") or (
-            im.mode == "P" and "transparency" in im.info
-        )
-        if has_alpha and im.mode != "RGBA":
-            im = im.convert("RGBA")
-        elif not has_alpha and im.mode in _NEEDS_RGB:
+        # 透過は白背景へ合成する（2026-09-27、INGEST_VERSION 2）。以前は RGBA のまま渡していて、
+        # ai-toolkit の convert("RGB") で透明部分の隠れ色（黒など）がそのまま背景になっていた。
+        im = _flatten_alpha(im)
+        if im.mode in _NEEDS_RGB:
             im = im.convert("RGB")
 
         w, h = im.size
@@ -1999,10 +2003,6 @@ def ingest_and_optimize_dataset_cpu(
             save_kw["method"] = INGEST_WEBP_METHOD
         elif INGEST_FMT == "JPEG":
             save_kw["subsampling"] = 0
-            if im.mode == "RGBA":
-                bg = Image.new("RGB", im.size, (255, 255, 255))
-                bg.paste(im, mask=im.split()[-1])
-                im = bg
         im.save(dst, **save_kw)  # no exif=/icc_profile= -> metadata stripped
         bytes_out = dst.stat().st_size
         im.close()

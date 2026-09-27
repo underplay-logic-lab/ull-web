@@ -29,6 +29,7 @@ import yaml  # pyyaml — in BOTH images (see `image` + `dispatch_image` below)
 
 from lora_worker_core import (  # noqa: F401
     AI_TOOLKIT_DIR,
+    _flatten_alpha,
     CAPTION_INSTRUCTION,
     COMPILE_LOW_VALUE_ARCHES,
     COMPILE_UNSUPPORTED_ARCHES,
@@ -219,9 +220,9 @@ Follow the user's instructions (provided in Japanese or English) and generate a 
             texts.append(rendered)
             if process_vision_info is not None:
                 got, _ = process_vision_info(messages)
-                images.append(got[0] if got else Image.open(img_path).convert("RGB"))
+                images.append(got[0] if got else _flatten_alpha(Image.open(img_path)).convert("RGB"))
             else:
-                images.append(Image.open(img_path).convert("RGB"))
+                images.append(_flatten_alpha(Image.open(img_path)).convert("RGB"))
 
         inputs = processor(text=texts, images=images, padding=True, return_tensors="pt").to(model.device)
         with torch.inference_mode():
@@ -2274,7 +2275,8 @@ AITK_LATENT_CACHE_DIR = f"{DATASET_DIR}/_latent_cache"
 # PERSIST_ROOT/<dataset_id>/_ingest/<ingest_key>/NNNN<INGEST_EXT> and the GPU
 # job copies it verbatim (zero Supabase re-download, zero GPU-side resize).
 # ---------------------------------------------------------------------------
-INGEST_VERSION = 1            # bump -> every dataset re-ingests (the key changes)
+INGEST_VERSION = 2            # bump -> every dataset re-ingests (the key changes)
+# v2 (2026-09-27): transparent images are flattened onto white (were passed as RGBA -> black bg).
 # 2026-09-24: WEBP q95 -> PNG (lossless). Lossy WebP always subsamples chroma
 # 4:2:0, which softens the colour of line-art edges and is baked into every
 # epoch. The downscale is kept: ai-toolkit only does a single Pillow BICUBIC
@@ -2325,7 +2327,8 @@ def _latent_cache_key(target_model: str, custom_model_id: str, resolution: int) 
 
         base = "custom_" + hashlib.md5(custom_model_id.strip().encode()).hexdigest()[:10]
     base = re.sub(r"[^A-Za-z0-9._-]+", "-", base)[:64]
-    return f"{base}_{res}"
+    # 取り込みの版を含める（2026-09-27）: 画像の中身が変わっても古い latent を復元しないように。
+    return f"{base}_{res}_i{INGEST_VERSION}"
 
 
 def _restore_latent_cache(dataset_id: str, key: str) -> int:

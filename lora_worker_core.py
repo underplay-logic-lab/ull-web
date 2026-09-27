@@ -578,6 +578,47 @@ LORA_CAPTION_MIN_S = int(os.environ.get("LORA_CAPTION_MIN_S", str(10 * 60)))
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
+# 透過画像の背景色（2026-09-27）。ai-toolkit / sd-scripts は convert("RGB") でアルファを捨てるだけなので、
+# 透明部分に隠れている色がそのまま学習に乗る（kocho の素材は隠れ色が黒で、白背景に見えて黒背景で学習
+# されていた）。取り込み・学習直前の両方でこの色に合成する。ull_image_prep の既定（白）と揃える。
+TRANSPARENT_BG = (255, 255, 255)
+
+
+def _has_alpha(im) -> bool:
+    return im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info)
+
+
+def _flatten_alpha(im):
+    """透過画像を TRANSPARENT_BG に合成した RGB を返す。透過でなければそのまま返す。"""
+    if not _has_alpha(im):
+        return im
+    from PIL import Image
+
+    rgba = im.convert("RGBA")
+    bg = Image.new("RGB", rgba.size, TRANSPARENT_BG)
+    bg.paste(rgba, mask=rgba.getchannel("A"))
+    return bg
+
+
+def _flatten_alpha_files(paths) -> int:
+    """学習に渡す画像ファイルのうち透過のものを、その場で白背景に合成して書き戻す。書き換えた枚数を返す。
+    EXIF の向きは画素へ焼き込む（書き戻しで EXIF が落ちるため）。"""
+    from PIL import Image, ImageOps
+
+    n = 0
+    for p in paths:
+        try:
+            with Image.open(p) as im:
+                im.load()
+                if not _has_alpha(im):
+                    continue
+                out = _flatten_alpha(ImageOps.exif_transpose(im))
+            out.save(p)
+            n += 1
+        except Exception as exc:  # noqa: BLE001 — 読めない画像は学習側の判定に任せる
+            print(f"[alpha] {p}: flatten skipped ({exc})", flush=True)
+    return n
+
 # Preset target_model -> ai-toolkit arch + a name_or_path (a single-file
 # checkpoint on the Volume when we host it, otherwise a HuggingFace repo id
 # ai-toolkit resolves at load time). This is the FULL, sealed, 14-model

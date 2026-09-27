@@ -860,6 +860,27 @@ def smoke_test_sdxl_lora(
 # independent trainers, a crash-loop in one must never affect the other).
 # ---------------------------------------------------------------------------
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
+
+def _flatten_alpha_files(paths) -> int:
+    """透過の画像をその場で白背景に合成して書き戻す（EXIF の向きは画素へ焼き込む）。書き換えた枚数を返す。"""
+    from PIL import Image, ImageOps
+
+    n = 0
+    for p in paths:
+        try:
+            with Image.open(p) as im:
+                im.load()
+                if not (im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info)):
+                    continue
+                rgba = ImageOps.exif_transpose(im).convert("RGBA")
+            bg = Image.new("RGB", rgba.size, (255, 255, 255))
+            bg.paste(rgba, mask=rgba.getchannel("A"))
+            bg.save(p)
+            n += 1
+        except Exception as exc:  # noqa: BLE001 — 読めない画像は学習側の判定に任せる
+            print(f"[alpha] {p}: flatten skipped ({exc})", flush=True)
+    return n
 # Same Volume (ull-wan-models) AND same path convention as modal_lora_worker.py
 # for both of these — so a job's `ingest_dir` (Smart Ingest's CPU-optimized
 # images) and the checkpoint-download signed-URL endpoint (which serves
@@ -1466,6 +1487,12 @@ def _stage_dataset(
     image_paths.sort()  # the 4-digit prefix keeps this in caption order
     if not image_paths:
         raise ValueError("no images supplied")
+    # 透過は白背景へ（2026-09-27）。sd-scripts は convert("RGB") でアルファを捨てるだけなので、透明部分の
+    # 隠れ色（黒など）が背景として学習される。取り込み（Smart Ingest v2）済みなら 0 枚で素通り。
+    # lora_worker_core._flatten_alpha_files と同じ処理（この image は lora_worker_core を載せていない）。
+    _flat = _flatten_alpha_files(image_paths)
+    if _flat:
+        print(f"[sdxl] flattened {_flat} transparent image(s) onto white", flush=True)
 
     supplied = list(params.get("captions") or [])
     custom_captions = params.get("custom_captions")
