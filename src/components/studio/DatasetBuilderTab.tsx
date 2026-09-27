@@ -279,6 +279,21 @@ export function DatasetBuilderTab() {
     },
     [setSubImages],
   );
+  // 参照欄から消したら確定も解除する（2026-09-27、ホスト指摘「消しても確定のまま」）。確定＝参照欄にある、を保つ。
+  useEffect(() => {
+    if (refBack && !subImages.includes(refBack)) {
+      queueMicrotask(() => {
+        setRefBack(null);
+        setPicks((p) => ({ ...p, back: null }));
+      });
+    }
+    if (refSide && !subImages.includes(refSide)) {
+      queueMicrotask(() => {
+        setRefSide(null);
+        setPicks((p) => ({ ...p, side: null }));
+      });
+    }
+  }, [subImages, refBack, refSide]);
   const closeMain = useMemo<CloseMainMap>(
     () => ({
       upper: typeof closeChoice.upper === "number" ? closeChoice.upper : null,
