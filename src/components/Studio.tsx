@@ -79,7 +79,7 @@ export function Studio() {
   useEffect(() => {
     const onSwitch = (e: Event) => {
       const tab = (e as CustomEvent<{ tab: StudioHandoffTab }>).detail?.tab;
-      if (tab === "upscale" || tab === "upscale_video" || tab === "lora") goTab(tab);
+      if (tab === "upscale" || tab === "upscale_video" || tab === "lora" || tab === "angle") goTab(tab);
     };
     window.addEventListener(STUDIO_TAB_EVENT, onSwitch);
     return () => window.removeEventListener(STUDIO_TAB_EVENT, onSwitch);
