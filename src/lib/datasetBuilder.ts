@@ -63,13 +63,37 @@ export const VIEW_CHIPS: SceneChip[] = [
   { id: "back", label: "後ろ", en: "seen from behind" },
 ];
 
-export type SceneAxis = "poses" | "places" | "framings" | "views";
+// 表情・服装（2026-09-28、ホスト指摘「全部スーツで似た画像ばかり」）。LoRA でも服装・表情の幅があると、
+// 服やスーツを「人物の一部」として覚え込まず、プロンプトで変えやすくなる。
+export const EXPRESSION_CHIPS: SceneChip[] = [
+  { id: "neutral", label: "真顔", en: "with a calm neutral expression" },
+  { id: "smile", label: "笑顔", en: "smiling warmly" },
+  { id: "laugh", label: "大笑い", en: "laughing out loud" },
+  { id: "surprised", label: "驚き", en: "with a surprised expression" },
+  { id: "shy", label: "照れ", en: "blushing shyly" },
+  { id: "angry", label: "怒り", en: "with an angry expression" },
+  { id: "sad", label: "悲しみ", en: "with a sad, teary expression" },
+];
+
+export const OUTFIT_CHIPS: SceneChip[] = [
+  { id: "same", label: "元の服装のまま", en: "" },
+  { id: "casual", label: "カジュアル", en: "wearing casual clothes (a t-shirt and jeans)" },
+  { id: "suit", label: "スーツ", en: "wearing a formal business suit" },
+  { id: "winter", label: "冬のコート", en: "wearing a warm winter coat and a scarf" },
+  { id: "sports", label: "スポーツウェア", en: "wearing sportswear" },
+  { id: "loungewear", label: "部屋着", en: "wearing comfortable loungewear" },
+  { id: "yukata", label: "浴衣", en: "wearing a traditional Japanese yukata" },
+];
+
+export type SceneAxis = "poses" | "places" | "framings" | "views" | "expressions" | "outfits";
 
 export type SceneSelection = {
   poses: string[];
   places: string[];
   framings: string[];
   views: string[];
+  expressions: string[];
+  outfits: string[];
   /** 自分で足したポーズ・場面（日本語可）。指示に入った日本語は API 側で英訳する（2026-09-27）。 */
   customPoses: string[];
   customPlaces: string[];
@@ -85,6 +109,8 @@ export const DEFAULT_SCENE_SELECTION: SceneSelection = {
   places: ["plain", "room", "street"],
   framings: ["full", "upper"],
   views: ["front", "three_quarter"],
+  expressions: ["smile", "neutral"],
+  outfits: ["same", "casual"],
   customPoses: [],
   customPlaces: [],
   outfit: "",
@@ -96,6 +122,8 @@ export const CHIPS_BY_AXIS: Record<SceneAxis, SceneChip[]> = {
   places: PLACE_CHIPS,
   framings: FRAMING_CHIPS,
   views: VIEW_CHIPS,
+  expressions: EXPRESSION_CHIPS,
+  outfits: OUTFIT_CHIPS,
 };
 
 /** 1 ジョブに入れる枚数。GPU の 1 ジョブの時間上限と「最初の 1 ジョブで確認」の単位。 */
@@ -166,12 +194,16 @@ export function buildScenePlan(sel: SceneSelection, count: number): ScenePlanIte
   const places = pick("places", sel.places, sel.customPlaces ?? []);
   const framings = pick("framings", sel.framings);
   const views = pick("views", sel.views);
+  const expressions = pick("expressions", sel.expressions ?? []);
+  const outfits = pick("outfits", sel.outfits ?? []);
   const P = poses.length ? poses : [POSE_CHIPS[0]];
   const L = places.length ? places : [PLACE_CHIPS[0]];
   const F = framings.length ? framings : [FRAMING_CHIPS[0]];
   const V = views.length ? views : [VIEW_CHIPS[0]];
+  const E = expressions.length ? expressions : [EXPRESSION_CHIPS[0]];
+  const O = outfits.length ? outfits : [OUTFIT_CHIPS[0]];
   const total = P.length * L.length * F.length * V.length;
-  const outfit = sel.outfit.trim();
+  const outfitText = sel.outfit.trim();
   const extra = sel.extra.trim();
 
   const items: ScenePlanItem[] = [];
@@ -192,12 +224,19 @@ export function buildScenePlan(sel: SceneSelection, count: number): ScenePlanIte
     const place = L[Math.floor(k / P.length) % L.length];
     const framing = F[(k + Math.floor(k / (P.length * L.length))) % F.length];
     const view = V[(Math.floor(k / F.length) + Math.floor(k / (P.length * L.length * F.length))) % V.length];
-    const bodyEn = [`Make the character ${pose.en} ${place.en}`, outfit ? `wearing ${outfit}` : "", extra]
-      .filter(Boolean)
-      .join(", ");
-    const bodyJa = [`${place.label}で${pose.label}`, outfit ? `服装: ${outfit}` : "", extra].filter(Boolean).join("、");
+    // 表情・服装は行ごとに順に回す（構図・向きの組み合わせとは独立に散らす）。
+    const expr = E[i % E.length];
+    const outfitChip = O[Math.floor(i / E.length) % O.length];
+    // 自由入力の服装があればそれを優先（チップの「元の服装のまま」以外を上書き）。
+    const outfitEn = outfitText ? `wearing ${outfitText}` : outfitChip.en;
+    const outfitJa = outfitText ? `服装: ${outfitText}` : outfitChip.id === "same" ? "" : `服装: ${outfitChip.label}`;
+    // 後ろ向きでは表情が見えないので付けない。
+    const exprEn = view.id === "back" ? "" : expr.en;
+    const exprJa = view.id === "back" ? "" : `表情: ${expr.label}`;
+    const bodyEn = [`Make the character ${pose.en} ${place.en}`, exprEn, outfitEn, extra].filter(Boolean).join(", ");
+    const bodyJa = [`${place.label}で${pose.label}`, exprJa, outfitJa, extra].filter(Boolean).join("、");
     items.push({
-      key: `${i}:${pose.id}|${place.id}|${framing.id}|${view.id}`,
+      key: `${i}:${pose.id}|${place.id}|${framing.id}|${view.id}|${expr.id}|${outfitChip.id}`,
       framingId: framing.id,
       viewId: view.id,
       bodyEn,

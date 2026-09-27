@@ -109,6 +109,8 @@ const AXIS_TITLE: Record<SceneAxis, string> = {
   places: "場面",
   framings: "構図",
   views: "向き",
+  expressions: "表情",
+  outfits: "服装",
 };
 
 function ChipGroup({
@@ -995,7 +997,7 @@ export function DatasetBuilderTab() {
         {/* 右: 指定 */}
         <div className="space-y-4">
           <div className="grid gap-4 rounded-xl border border-border bg-background p-4">
-            {(["poses", "places", "framings", "views"] as SceneAxis[]).map((axis) => (
+            {(["poses", "places", "framings", "views", "expressions", "outfits"] as SceneAxis[]).map((axis) => (
               <ChipGroup
                 key={axis}
                 axis={axis}
@@ -1018,7 +1020,7 @@ export function DatasetBuilderTab() {
             ))}
             <div className="grid gap-2 sm:grid-cols-2">
               <label className="text-[11px] text-muted">
-                服装（任意・日本語OK）
+                服装を自由に指定（任意・日本語OK。書くと上のチップより優先）
                 <input
                   value={sel.outfit}
                   onChange={(e) => setSel((p) => ({ ...p, outfit: e.target.value }))}
@@ -1037,7 +1039,8 @@ export function DatasetBuilderTab() {
               </label>
             </div>
             <p className="text-[11px] leading-relaxed text-muted/70">
-              選んだ組み合わせを順に回して枚数ぶん作ります。未選択の軸は既定（立つ・無地・全身・正面）になります。日本語の入力は送るときに英訳します。
+              選んだ組み合わせを順に回して枚数ぶん作ります。未選択の軸は既定（立つ・無地・全身・正面・真顔・元の服装）になります。
+              表情・服装は行ごとに順に変わります（後ろ向きの行に表情は付けません）。日本語の入力は送るときに英訳します。
             </p>
           </div>
 
