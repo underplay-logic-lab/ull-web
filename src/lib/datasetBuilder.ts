@@ -251,31 +251,58 @@ export type SceneBatch = { items: ScenePlanItem[]; group: SceneGroup; useRefs: b
 
 const GROUP_ORDER: SceneGroup[] = ["main", "close:upper", "close:bust", "refs"];
 
-/**
- * 1 ジョブは画像セットが揃っていなければならないので、種類ごと（メインだけ → 寄りの元 → 参照付き）に並べ替えてから
- * SCENE_BATCH_SIZE ずつに分ける。run.plan にはこの並びで保存する（結果の順と一致させる）。
- */
-export function orderPlanForBatches(plan: ScenePlanItem[], opt: SceneBatchOptions, firstKeys: Set<string> = new Set()): ScenePlanItem[] {
-  // 「先に作る」と印を付けた行を前へ（並びはそのまま）。印の付いた行が多い種類を先に流す。
-  const prioritized = [...plan.filter((it) => firstKeys.has(it.key)), ...plan.filter((it) => !firstKeys.has(it.key))];
-  const groups = GROUP_ORDER.map((g) => ({ g, items: prioritized.filter((it) => sceneItemGroup(it, opt) === g) }));
-  const score = (g: (typeof groups)[number]) => g.items.filter((it) => firstKeys.has(it.key)).length;
-  groups.sort((a, b) => score(b) - score(a) || GROUP_ORDER.indexOf(a.g) - GROUP_ORDER.indexOf(b.g));
-  return groups.flatMap((g) => g.items);
+function groupSorted(items: ScenePlanItem[], opt: SceneBatchOptions): ScenePlanItem[] {
+  return GROUP_ORDER.flatMap((g) => items.filter((it) => sceneItemGroup(it, opt) === g));
 }
 
-export function planBatches(plan: ScenePlanItem[], opt: SceneBatchOptions): SceneBatch[] {
-  // plan は orderPlanForBatches の並び（種類ごとに連続）。出現順に種類のまとまりを切り出す。
+/**
+ * 実行順に並べ替える（run.plan にはこの並びで保存し、結果の順と一致させる）。
+ * 先頭は「最初に確認する行」＝「先に作る」で選んだ行（無ければ先頭 SCENE_BATCH_SIZE 行）。種類が違っても全部入れる
+ * （2026-09-27、ホスト指摘「全身とバストアップを選んだのに上半身しか来ない」）。その後ろに残りの行。どちらも
+ * 種類ごと（メインだけ → 寄りの元 → 参照付き）にまとめる。
+ * 返り値の prefixLen は「最初に確認する行」の数。planBatches はこの境界でジョブを分ける。
+ */
+export function orderPlanForBatches(
+  plan: ScenePlanItem[],
+  opt: SceneBatchOptions,
+  firstKeys: Set<string> = new Set(),
+): { plan: ScenePlanItem[]; prefixLen: number } {
+  const first = firstKeys.size > 0 ? plan.filter((it) => firstKeys.has(it.key)) : plan.slice(0, SCENE_BATCH_SIZE);
+  const firstSet = new Set(first.map((it) => it.key));
+  const rest = plan.filter((it) => !firstSet.has(it.key));
+  return { plan: [...groupSorted(first, opt), ...groupSorted(rest, opt)], prefixLen: first.length };
+}
+
+/**
+ * 1 ジョブは画像セットが揃っていなければならないので、種類が変わるところと prefixLen の境界でジョブを分け、
+ * さらに SCENE_BATCH_SIZE ずつに切る。
+ */
+export function planBatches(plan: ScenePlanItem[], opt: SceneBatchOptions, prefixLen = 0): SceneBatch[] {
   const out: SceneBatch[] = [];
-  let i = 0;
-  while (i < plan.length) {
-    const g = sceneItemGroup(plan[i], opt);
-    let j = i;
-    while (j < plan.length && sceneItemGroup(plan[j], opt) === g) j++;
-    for (const items of chunkPlan(plan.slice(i, j))) out.push({ items, group: g, useRefs: g === "refs" });
-    i = j;
+  const cut = Math.max(0, Math.min(plan.length, prefixLen));
+  for (const seg of [plan.slice(0, cut), plan.slice(cut)]) {
+    let i = 0;
+    while (i < seg.length) {
+      const g = sceneItemGroup(seg[i], opt);
+      let j = i;
+      while (j < seg.length && sceneItemGroup(seg[j], opt) === g) j++;
+      for (const items of chunkPlan(seg.slice(i, j))) out.push({ items, group: g, useRefs: g === "refs" });
+      i = j;
+    }
   }
   return out;
+}
+
+/** 「最初に確認する行」を流し切るのに要るジョブ数。 */
+export function checkBatchCount(plan: ScenePlanItem[], opt: SceneBatchOptions, prefixLen: number): number {
+  let n = 0;
+  let covered = 0;
+  for (const b of planBatches(plan, opt, prefixLen)) {
+    if (covered >= prefixLen) break;
+    covered += b.items.length;
+    n += 1;
+  }
+  return Math.max(1, n);
 }
 
 export function sceneItemCredits(item: ScenePlanItem, knobs: PricingKnobs, opt: SceneBatchOptions): number {

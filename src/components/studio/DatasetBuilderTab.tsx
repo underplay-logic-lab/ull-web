@@ -23,6 +23,7 @@ import {
 import {
   buildScenePlan,
   CHIPS_BY_AXIS,
+  checkBatchCount,
   closeMainIndexFor,
   sceneItemUsesCloseSource,
   orderPlanForBatches,
@@ -83,6 +84,8 @@ type PersistedRun = {
   closeMain: CloseMainMap;
   /** メイン画像から自動で切り出した寄りの元を使う構図（リロード後は切り出し直す）。 */
   derived: Partial<Record<CloseFraming, boolean>>;
+  /** 「最初に確認する行」の数（plan の先頭からこの数）。ここまでのジョブが終わったら止まって確認する。 */
+  prefixLen: number;
 };
 
 type Phase = "idle" | "review" | "submitting" | "running" | "paused" | "done" | "error";
@@ -282,6 +285,7 @@ export function DatasetBuilderTab() {
           subCount: Number(r.subCount ?? 0),
           closeMain: r.closeMain && typeof r.closeMain === "object" ? r.closeMain : {},
           derived: r.derived && typeof r.derived === "object" ? r.derived : {},
+          prefixLen: typeof r.prefixLen === "number" ? r.prefixLen : 8,
         }
       : null;
   });
@@ -348,11 +352,11 @@ export function DatasetBuilderTab() {
   const safeCount = Math.max(1, Math.min(SCENE_MAX_COUNT, Math.trunc(count || 0)));
   const batchOpt = useMemo(() => ({ subCount, closeMain, derived: derivedFlags }), [subCount, closeMain, derivedFlags]);
   // 料金は行ごと（参照が要る向きだけ係数付き）。指定を変えるたびに計画を組み直して見積もる。
-  const previewPlan = useMemo(() => orderPlanForBatches(buildScenePlan(sel, safeCount), batchOpt), [sel, safeCount, batchOpt]);
-  const previewBatches = useMemo(() => planBatches(previewPlan, batchOpt), [previewPlan, batchOpt]);
+  const previewOrdered = useMemo(() => orderPlanForBatches(buildScenePlan(sel, safeCount), batchOpt), [sel, safeCount, batchOpt]);
+  const previewPlan = previewOrdered.plan;
   const totalCost = scenePlanCredits(previewPlan, knobs, batchOpt);
-  const firstBatch = previewBatches[0]?.items.length ?? 0;
-  const firstCost = previewBatches[0] ? scenePlanCredits(previewBatches[0].items, knobs, batchOpt) : 0;
+  const firstBatch = Math.min(previewOrdered.prefixLen, previewPlan.length);
+  const firstCost = scenePlanCredits(previewPlan.slice(0, firstBatch), knobs, batchOpt);
   const refRows = previewPlan.filter((it) => sceneItemGroup(it, batchOpt) === "refs").length;
   const framingsInPlan = new Set(previewPlan.map((it) => it.framingId));
   const busy = phase === "submitting" || phase === "running";
@@ -363,7 +367,7 @@ export function DatasetBuilderTab() {
     async (r: PersistedRun, batchIndex: number, mainFile: File, subs: File[]) => {
       if (!user) return;
       const opt = { subCount: r.subCount, closeMain: r.closeMain, derived: r.derived };
-      const batch = planBatches(r.plan, opt)[batchIndex];
+      const batch = planBatches(r.plan, opt, r.prefixLen)[batchIndex];
       const items = batch?.items;
       if (!items) return;
       // 寄りの行は「寄りの元画像」（参照の指定 → 自動切り出し の順）をメインにして参照なし。
@@ -411,7 +415,7 @@ export function DatasetBuilderTab() {
     () => (run ? { subCount: run.subCount, closeMain: run.closeMain, derived: run.derived } : { subCount: 0, closeMain: {}, derived: {} }),
     [run],
   );
-  const runBatches = useMemo(() => (run ? planBatches(run.plan, runOpt) : []), [run, runOpt]);
+  const runBatches = useMemo(() => (run ? planBatches(run.plan, runOpt, run.prefixLen) : []), [run, runOpt]);
 
   // 「作る」→ まず一覧（日本語）を出して直せるようにする（2026-09-27、ホスト指摘「どんなプロンプトで作られるか分からない」）。
   const handleStart = () => {
@@ -427,14 +431,16 @@ export function DatasetBuilderTab() {
   };
   const handleConfirmReview = () => {
     if (!image || review.length === 0) return;
+    const ordered = orderPlanForBatches(review, batchOpt, firstKeys);
     const r: PersistedRun = {
-      plan: orderPlanForBatches(review, batchOpt, firstKeys),
+      plan: ordered.plan,
       jobIds: [],
       confirmFirst,
       confirmed: !confirmFirst,
       subCount,
       closeMain,
       derived: derivedFlags,
+      prefixLen: ordered.prefixLen,
     };
     setJobs({});
     commitRun(r);
@@ -482,7 +488,8 @@ export function DatasetBuilderTab() {
             if (sawInProgress && next.status === "completed") markGpuWarm();
             const r = runRef.current;
             if (!r) return;
-            const batches = planBatches(r.plan, { subCount: r.subCount, closeMain: r.closeMain, derived: r.derived });
+            const rOpt = { subCount: r.subCount, closeMain: r.closeMain, derived: r.derived };
+            const batches = planBatches(r.plan, rOpt, r.prefixLen);
             const doneBatches = r.jobIds.length;
             if (next.status === "failed") {
               setErrorMessage(next.errorMessage || "生成に失敗しました。");
@@ -493,7 +500,8 @@ export function DatasetBuilderTab() {
               setPhase("done");
               return;
             }
-            if (r.confirmFirst && !r.confirmed) {
+            // 「最初に確認する行」のジョブが全部終わるまでは止めずに続ける（種類ごとに分かれた小さなジョブを連続で流す）。
+            if (r.confirmFirst && !r.confirmed && doneBatches >= checkBatchCount(r.plan, rOpt, r.prefixLen)) {
               setPhase("paused");
               return;
             }
@@ -823,7 +831,7 @@ export function DatasetBuilderTab() {
             </div>
             {confirmFirst && safeCount > SCENE_BATCH_SIZE && (
               <p className="mt-1.5 text-[10px] text-muted">
-                まず {firstBatch} 枚（{firstCost.toLocaleString()} C）を作って止まります。良ければ「続きを作る」で残りを作ります。クレジットは作る分ずつ消費します。
+                まず {firstBatch} 枚（{firstCost.toLocaleString()} C）を作って止まります（一覧で「先に作る」を選べばその行になります）。良ければ「続きを作る」で残りを作ります。クレジットは作る分ずつ消費します。
               </p>
             )}
 
@@ -936,10 +944,11 @@ export function DatasetBuilderTab() {
                 className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-1.5 text-xs font-semibold text-white hover:opacity-90"
               >
                 {(() => {
-                  const b = planBatches(orderPlanForBatches(review, batchOpt, firstKeys), batchOpt);
-                  const first = b[0]?.items ?? [];
-                  return confirmFirst && review.length > SCENE_BATCH_SIZE
-                    ? `この内容でまず ${first.length} 枚を作る（${scenePlanCredits(first, knobs, batchOpt).toLocaleString()} C）`
+                  const ordered = orderPlanForBatches(review, batchOpt, firstKeys);
+                  const first = ordered.plan.slice(0, ordered.prefixLen);
+                  const jobs = checkBatchCount(ordered.plan, batchOpt, ordered.prefixLen);
+                  return confirmFirst && review.length > first.length
+                    ? `この内容でまず ${first.length} 枚を作る（${scenePlanCredits(first, knobs, batchOpt).toLocaleString()} C${jobs > 1 ? `・${jobs} 本に分けて連続` : ""}）`
                     : `この内容で ${review.length} 枚を作る（${scenePlanCredits(review, knobs, batchOpt).toLocaleString()} C）`;
                 })()}
               </button>
@@ -947,7 +956,8 @@ export function DatasetBuilderTab() {
           </div>
           <p className="text-[10px] leading-relaxed text-muted">
             各行の文を書き換えられます（日本語のまま。送るときに英訳します）。構図・向きは左の表示のとおり固定です。
-            行を消すと枚数が減ります。左のチェックで「先に作る」行を選ぶと、その行から最初の {SCENE_BATCH_SIZE} 枚に入ります（最大 {SCENE_BATCH_SIZE} 枚）。
+            行を消すと枚数が減ります。左のチェックで「先に作る」行を選ぶと、選んだ行だけを先に作って止まります（最大 {SCENE_BATCH_SIZE} 枚。
+            全身・上半身・バストアップが混ざっていても全部入ります。元画像が違う行は別のジョブとして続けて流れます）。
             {derivedFlags.upper || derivedFlags.bust ? "「切り出し」の行はメイン画像から自動で切り出した寄りの画像を元に作ります。" : ""}
             {closeMain.upper != null || closeMain.bust != null ? "「寄り元 N」の行は参照 N を元に作ります。" : ""}{subCount > 0 ? "「参照」の印の行だけ参照画像を付けて作ります（料金も参照付き）。実行はメインだけの行 → 寄り元の行 → 参照付きの行の順です。" : ""}
           </p>
