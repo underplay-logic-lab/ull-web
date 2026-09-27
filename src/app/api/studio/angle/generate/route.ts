@@ -55,12 +55,31 @@ const MAX_SCENES_PER_JOB = 64;
 const MAX_SCENE_INSTRUCTION_CHARS = 500;
 const MAX_SCENE_LABEL_CHARS = 120;
 
+const MAX_IMAGE_SETS = 16;
+
+/** 行ごとの画像セット（index のリストのリスト）。未指定は []、不正は null。 */
+function sanitizeImageSets(raw: unknown, imageCount: number): number[][] | null {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw) || raw.length > MAX_IMAGE_SETS) return null;
+  const out: number[][] = [];
+  for (const st of raw) {
+    if (!Array.isArray(st) || st.length === 0 || st.length > MAX_REF_IMAGES) return null;
+    const idxs: number[] = [];
+    for (const v of st) {
+      if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v >= imageCount) return null;
+      idxs.push(v);
+    }
+    out.push(idxs);
+  }
+  return out;
+}
+
 /** 素材づくりの文章指示。配列でなければ null（不正）、空配列は「未指定」として [] を返す。 */
-function sanitizeScenes(raw: unknown): { instruction: string; label: string }[] | null {
+function sanitizeScenes(raw: unknown): { instruction: string; label: string; set?: number }[] | null {
   if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw)) return null;
   if (raw.length > MAX_SCENES_PER_JOB) return null;
-  const out: { instruction: string; label: string }[] = [];
+  const out: { instruction: string; label: string; set?: number }[] = [];
   for (const item of raw) {
     if (!item || typeof item !== "object") return null;
     const o = item as Record<string, unknown>;
@@ -72,7 +91,8 @@ function sanitizeScenes(raw: unknown): { instruction: string; label: string }[] 
       .slice(0, MAX_SCENE_INSTRUCTION_CHARS);
     if (!instruction) return null;
     const label = String(o.label ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, MAX_SCENE_LABEL_CHARS);
-    out.push({ instruction, label });
+    const set = typeof o.set === "number" && Number.isInteger(o.set) && o.set >= 0 ? o.set : undefined;
+    out.push({ instruction, label, ...(set !== undefined ? { set } : {}) });
   }
   return out;
 }
@@ -133,6 +153,8 @@ export async function POST(request: Request) {
   let priorityRaw: unknown;
   // 素材づくり（2026-09-27）: ポーズ・場面の文章指示。あれば selection の代わりに使う。
   let scenesRaw: unknown;
+  // 行ごとの画像セット（2026-09-28）: storagePaths/images の index のリスト。scenes[i].set がセットの index。
+  let imageSetsRaw: unknown;
 
   if (contentType.includes("application/json")) {
     let body: Record<string, unknown>;
@@ -175,6 +197,7 @@ export async function POST(request: Request) {
     seedRaw = body.seed;
     priorityRaw = body.priority;
     scenesRaw = body.scenes;
+    imageSetsRaw = body.imageSets;
   } else {
     let formData: FormData;
     try {
@@ -209,7 +232,13 @@ export async function POST(request: Request) {
   if (imageBuffers.length === 0) {
     return NextResponse.json({ error: "キャラクター画像をアップロードしてください。" }, { status: 400 });
   }
-  if (imageBuffers.length > MAX_REF_IMAGES) {
+  // 行ごとの画像セットのときは、元画像の種類ぶん（メイン・切り出し 2・参照 3 など）まで受ける。
+  const imageSets = sanitizeImageSets(imageSetsRaw, imageBuffers.length);
+  if (imageSetsRaw !== undefined && imageSetsRaw !== null && imageSets === null) {
+    return NextResponse.json({ error: "画像セットの指定が不正です。" }, { status: 400 });
+  }
+  const maxImages = imageSets && imageSets.length > 0 ? MAX_REF_IMAGES * 2 : MAX_REF_IMAGES;
+  if (imageBuffers.length > maxImages) {
     return NextResponse.json(
       { error: `参照画像はメイン1枚＋サブ最大${MAX_SUB_REFERENCE_IMAGES}枚までです。` },
       { status: 400 },
@@ -244,6 +273,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "ポーズ・場面の指定が不正です。" }, { status: 400 });
   }
   const rawPrompt = Boolean(scenes && scenes.length > 0);
+  // 行ごとのセット index（無ければ全行 0 番＝全画像）。
+  const useSets = rawPrompt && imageSets !== null && imageSets.length > 0;
+  const instructionSets = useSets
+    ? scenes!.map((sc) => (typeof sc.set === "number" && sc.set >= 0 && sc.set < imageSets!.length ? sc.set : 0))
+    : null;
   // 素材づくりの自由入力（場面・ポーズ・服装・追加指示）は日本語で書ける。指示に日本語が混ざっていれば
   // 英訳してからワーカーへ（無料の翻訳。失敗時は原文のまま＝生成は止めない）。同じ文は 1 回だけ訳す。
   if (rawPrompt) {
@@ -286,7 +320,10 @@ export async function POST(request: Request) {
   // Server-side price — never trusted from the client.
   // サブ参照ぶんの生成コスト増（B300 実測 ~3.0x @ サブ3枚）を単価へ反映。
   const knobs = await getPricingKnobs();
-  const baseCost = combos.length * angleCreditsPerAngle(knobs, subImageCount);
+  // 行ごとのセットなら、行ごとの参照枚数（セットの枚数 − 1）で単価を出して合計する。
+  const baseCost = useSets
+    ? instructionSets!.reduce((t, si) => t + angleCreditsPerAngle(knobs, Math.max(0, imageSets![si].length - 1)), 0)
+    : combos.length * angleCreditsPerAngle(knobs, subImageCount);
   // 「実行中でも並列で今すぐ実行」を選んだ場合の上乗せ（順番待ち=無料の既定に
   // 対するオプトイン。通常料金 × 率 + 固定分。フロントと同じ関数・同じ baseCost）。
   const generationCost = priority ? baseCost + anglePriorityParallelSurcharge(knobs, baseCost) : baseCost;
@@ -346,7 +383,12 @@ export async function POST(request: Request) {
       credits_cost: generationCost,
       // Multi-Reference のデバッグ用（既存 jsonb 列・マイグレーション不要）。
       // worker が生成中に vram_used_gb を書き込むので、それとマージされる。
-      metadata: { ref_image_count: imageBuffers.length, priority, ...(rawPrompt ? { kind: "scene" } : {}) },
+      metadata: {
+        ref_image_count: useSets ? Math.max(...imageSets!.map((s) => s.length)) : imageBuffers.length,
+        priority,
+        ...(rawPrompt ? { kind: "scene" } : {}),
+        ...(useSets ? { image_sets: imageSets!.length } : {}),
+      },
     })
     .select("id")
     .single();
@@ -375,6 +417,7 @@ export async function POST(request: Request) {
       mode,
       seed,
       rawPrompt,
+      ...(useSets ? { imageSets: imageSets!, instructionSets: instructionSets! } : {}),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

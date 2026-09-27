@@ -1893,15 +1893,41 @@ class QwenImageEditWorker:
         t0 = time.time()
         _patch_angle_job(job_id, {"status": "processing", "total_angles": len(instructions)})
 
+        # 行ごとの画像セット（素材づくり、2026-09-28）: `image_sets` は `images` の index のリストのリスト、
+        # `instruction_sets` は instruction ごとに使うセットの index。無ければ従来どおり全行で同じセット。
+        # 元画像が違う行（全身＝メイン／上半身＝切り出し／後ろ＝参照付き）を 1 ジョブで流すため。
+        image_sets = payload.get("image_sets")
+        instruction_sets = payload.get("instruction_sets")
         try:
-            refs = _resolve_ref_specs(image_list, image_spec)
+            if isinstance(image_sets, list) and image_sets and isinstance(instruction_sets, list):
+                specs = [s for s in (image_list or []) if isinstance(s, str) and s.strip()]
+                if not specs or len(specs) > MAX_REF_IMAGES * 2:
+                    raise ValueError(f"image_sets mode needs 1..{MAX_REF_IMAGES * 2} images (got {len(specs)})")
+                all_refs = [_align_image(_load_ref_image(s)) for s in specs]
+                sets = []
+                for st in image_sets:
+                    idxs = [int(x) for x in (st or []) if 0 <= int(x) < len(all_refs)]
+                    if not idxs or len(idxs) > MAX_REF_IMAGES:
+                        raise ValueError("invalid image set")
+                    sets.append([all_refs[k] for k in idxs])
+                row_sets = [sets[int(k)] if 0 <= int(k) < len(sets) else sets[0] for k in instruction_sets]
+                if len(row_sets) < len(instructions):
+                    row_sets += [sets[0]] * (len(instructions) - len(row_sets))
+                refs = all_refs
+                print(
+                    f"[angle-job] {job_id} per-row image sets: {len(sets)} set(s) over {len(all_refs)} image(s)",
+                    flush=True,
+                )
+            else:
+                refs = _resolve_ref_specs(image_list, image_spec)
+                row_sets = None
         except Exception as exc:  # noqa: BLE001
             _patch_angle_job(
                 job_id, {"status": "failed", "error_message": f"reference image error: {exc}"[:500]}
             )
             _refund_credits(user_id, credits_cost)
             return {"ok": False, "error": str(exc)}
-        multi_ref = len(refs) > 1
+        multi_ref = len(refs) > 1 and row_sets is None
         pipe_image = refs if multi_ref else refs[0]
         if multi_ref:
             print(f"[angle-job] {job_id} multi-reference: {len(refs)} images", flush=True)
@@ -2068,13 +2094,20 @@ class QwenImageEditWorker:
                     generator = torch.Generator(device="cuda").manual_seed(base_seed + idx)
 
                 final_prompt = instr if raw_prompt else _apply_lora_trigger(instr, self._lora_loaded)
-                if multi_ref and ANGLE_MULTIREF_PROMPT_SUFFIX:
+                # 行ごとの画像セットがあればそれを使う（1 枚ならメインだけ、2 枚以上なら Multi-Reference）。
+                row_image = pipe_image
+                row_multi = multi_ref
+                if row_sets is not None:
+                    rs = row_sets[idx] if idx < len(row_sets) else row_sets[0]
+                    row_multi = len(rs) > 1
+                    row_image = rs if row_multi else rs[0]
+                if row_multi and ANGLE_MULTIREF_PROMPT_SUFFIX:
                     final_prompt = f"{final_prompt} {ANGLE_MULTIREF_PROMPT_SUFFIX}".strip()
                 if idx == 0:
                     print(f"[angle-job] {job_id} prompt[0]: {final_prompt!r}", flush=True)
 
                 call_kwargs = dict(
-                    image=pipe_image,
+                    image=row_image,
                     prompt=final_prompt,
                     negative_prompt=negative_prompt,
                     num_inference_steps=steps,

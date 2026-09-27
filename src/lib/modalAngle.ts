@@ -17,6 +17,9 @@ export type SpawnAngleJobParams = {
   seed?: number | null;
   /** 素材づくり（2026-09-27）: 角度 LoRA のトリガーを付けず、文章の指示をそのまま送る。 */
   rawPrompt?: boolean;
+  /** 行ごとの画像セット（2026-09-28）: imagesBase64 の index のリスト。instructionSets は指示ごとのセット index。 */
+  imageSets?: number[][];
+  instructionSets?: number[];
 };
 
 // The dispatch endpoint only .spawn()s the GPU job and ACKs — it never runs
@@ -93,6 +96,9 @@ export async function spawnAngleJob(
     labels: sanitized.map((p) => p.label),
     num_inference_steps: angleModeSteps(),
     ...(params.rawPrompt ? { raw_prompt: true } : {}),
+    ...(params.imageSets && params.instructionSets
+      ? { image_sets: params.imageSets, instruction_sets: params.instructionSets }
+      : {}),
     ...(typeof params.seed === "number" && Number.isFinite(params.seed)
       ? { seed: Math.trunc(params.seed) }
       : {}),

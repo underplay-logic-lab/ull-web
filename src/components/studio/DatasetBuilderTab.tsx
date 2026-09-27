@@ -38,6 +38,7 @@ import {
   SCENE_BATCH_SIZE,
   SCENE_DEFAULT_COUNT,
   SCENE_MAX_COUNT,
+  SCENE_REST_BATCH_SIZE,
   sceneCreditsPerImage,
   scenePlanInstruction,
   scenePlanLabel,
@@ -100,6 +101,9 @@ type PersistedRun = {
   derived: Partial<Record<CloseFraming, boolean>>;
   /** 「最初に確認する行」の数（plan の先頭からこの数）。ここまでのジョブが終わったら止まって確認する。 */
   prefixLen: number;
+  /** 後ろ姿・真横の参照が確定していたか（行ごとの参照枚数＝料金の計算に使う）。 */
+  hasBackRef: boolean;
+  hasSideRef: boolean;
 };
 
 type Phase = "idle" | "review" | "submitting" | "running" | "paused" | "done" | "error";
@@ -281,6 +285,13 @@ export function DatasetBuilderTab() {
   }, [picks]);
   const [refBack, setRefBack] = useState<File | null>(null);
   const [refSide, setRefSide] = useState<File | null>(null);
+  // submitBatch（useCallback）から今の参照を読むための ref。
+  const refBackRef = useRef<File | null>(null);
+  const refSideRef = useRef<File | null>(null);
+  useEffect(() => {
+    refBackRef.current = refBack;
+    refSideRef.current = refSide;
+  }, [refBack, refSide]);
   // 選んだ参照は参照欄に入れる（真横・後ろの行で使われる）。差し替えは前の分を外す。
   const putRef = useCallback(
     (prev: File | null, next: File) => {
@@ -394,6 +405,8 @@ export function DatasetBuilderTab() {
           closeMain: r.closeMain && typeof r.closeMain === "object" ? r.closeMain : {},
           derived: r.derived && typeof r.derived === "object" ? r.derived : {},
           prefixLen: typeof r.prefixLen === "number" ? r.prefixLen : 8,
+          hasBackRef: Boolean(r.hasBackRef),
+          hasSideRef: Boolean(r.hasSideRef),
         }
       : null;
   });
@@ -459,9 +472,11 @@ export function DatasetBuilderTab() {
 
   const subCount = subImages.length;
   const perImage = sceneCreditsPerImage(knobs, 0);
-  const perImageRefs = sceneCreditsPerImage(knobs, subCount);
   const safeCount = Math.max(1, Math.min(SCENE_MAX_COUNT, Math.trunc(count || 0)));
-  const batchOpt = useMemo(() => ({ subCount, closeMain, derived: derivedFlags }), [subCount, closeMain, derivedFlags]);
+  const batchOpt = useMemo(
+    () => ({ subCount, closeMain, derived: derivedFlags, hasBackRef: Boolean(refBack), hasSideRef: Boolean(refSide) }),
+    [subCount, closeMain, derivedFlags, refBack, refSide],
+  );
   // 料金は行ごと（参照が要る向きだけ係数付き）。指定を変えるたびに計画を組み直して見積もる。
   const previewOrdered = useMemo(() => orderPlanForBatches(buildScenePlan(sel, safeCount), batchOpt), [sel, safeCount, batchOpt]);
   const previewPlan = previewOrdered.plan;
@@ -491,23 +506,39 @@ export function DatasetBuilderTab() {
   const submitBatch = useCallback(
     async (r: PersistedRun, batchIndex: number, mainFile: File, subs: File[]) => {
       if (!user) return;
-      const opt = { subCount: r.subCount, closeMain: r.closeMain, derived: r.derived };
+      const opt = { subCount: r.subCount, closeMain: r.closeMain, derived: r.derived, hasBackRef: r.hasBackRef, hasSideRef: r.hasSideRef };
       const batch = planBatches(r.plan, opt, r.prefixLen)[batchIndex];
       const items = batch?.items;
       if (!items) return;
-      // 寄りの行は「寄りの元画像」（参照の指定 → 自動切り出し の順）をメインにして参照なし。
-      // 参照付きの行はメイン＋参照。それ以外はメインだけ。
-      let closeFile: File | null = null;
-      if (batch.group.startsWith("close")) {
-        const f = items[0].framingId as CloseFraming;
-        const closeIdx = closeMainIndexFor(items[0], opt);
-        closeFile = closeIdx !== null ? subs[closeIdx] : (derivedRef.current[f] ?? null);
-        if (!closeFile) {
-          setErrorMessage(`${f === "upper" ? "上半身" : "バストアップ"}の元画像がありません。画像を入れ直すか、参照から選んでください。`);
-          setPhase("paused");
-          return;
+      // 行ごとに画像セットを組む（2026-09-28）: 元＝全身ならメイン／上半身・バストアップなら参照の指定 → 切り出し → メイン、
+      // 参照＝後ろの行は後ろ姿 1 枚・真横の行は真横 1 枚（専用の参照が無ければ参照欄の全部）。同じ File は 1 セットにまとめる。
+      const main = effectiveMainRef.current ?? mainFile;
+      const sourceOf = (it: ScenePlanItem): File => {
+        if (it.framingId === "upper" || it.framingId === "bust") {
+          const idx = closeMainIndexFor(it, opt);
+          if (idx !== null && subs[idx]) return subs[idx];
+          const d = derivedRef.current[it.framingId as CloseFraming];
+          if (d) return d;
         }
-      }
+        return main;
+      };
+      const refsOf = (it: ScenePlanItem): File[] => {
+        if (it.viewId === "back") return refBackRef.current ? [refBackRef.current] : subs;
+        if (it.viewId === "side") return refSideRef.current ? [refSideRef.current] : subs;
+        return [];
+      };
+      const sets: File[][] = [];
+      const setIndex = (files: File[]) => {
+        const found = sets.findIndex((st) => st.length === files.length && st.every((f, k) => f === files[k]));
+        if (found >= 0) return found;
+        sets.push(files);
+        return sets.length - 1;
+      };
+      const scenes = items.map((it) => ({
+        instruction: scenePlanInstruction(it),
+        label: scenePlanLabel(it),
+        set: setIndex([sourceOf(it), ...refsOf(it)]),
+      }));
       setPhase("submitting");
       setErrorMessage(null);
       // 候補づくりが動いていれば、終わるまで待ってから投げる（追加料金なし・温かいまま始まる）。
@@ -515,11 +546,12 @@ export function DatasetBuilderTab() {
       try {
         const res = await startAngleJob({
           userId: user.id,
-          image: closeFile ?? effectiveMainRef.current ?? mainFile,
-          subImages: batch.useRefs ? subs : [],
+          image: main,
+          subImages: [],
           selection: { azimuths: [], elevations: [], distances: [] },
           mode: "standard",
-          scenes: items.map((it) => ({ instruction: scenePlanInstruction(it), label: scenePlanLabel(it) })),
+          scenes,
+          imageSets: sets,
         });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
         const next: PersistedRun = { ...r, jobIds: [...r.jobIds, res.jobId] };
@@ -541,7 +573,10 @@ export function DatasetBuilderTab() {
     [user, commitRun, perImage, gpuLock],
   );
   const runOpt = useMemo(
-    () => (run ? { subCount: run.subCount, closeMain: run.closeMain, derived: run.derived } : { subCount: 0, closeMain: {}, derived: {} }),
+    () =>
+      run
+        ? { subCount: run.subCount, closeMain: run.closeMain, derived: run.derived, hasBackRef: run.hasBackRef, hasSideRef: run.hasSideRef }
+        : { subCount: 0, closeMain: {}, derived: {} },
     [run],
   );
   const runBatches = useMemo(() => (run ? planBatches(run.plan, runOpt, run.prefixLen) : []), [run, runOpt]);
@@ -578,6 +613,8 @@ export function DatasetBuilderTab() {
       closeMain,
       derived: derivedFlags,
       prefixLen: ordered.prefixLen,
+      hasBackRef: Boolean(refBack),
+      hasSideRef: Boolean(refSide),
     };
     setJobs({});
     commitRun(r);
@@ -629,7 +666,7 @@ export function DatasetBuilderTab() {
             if (sawInProgress && next.status === "completed") markGpuWarm();
             const r = runRef.current;
             if (!r) return;
-            const rOpt = { subCount: r.subCount, closeMain: r.closeMain, derived: r.derived };
+            const rOpt = { subCount: r.subCount, closeMain: r.closeMain, derived: r.derived, hasBackRef: r.hasBackRef, hasSideRef: r.hasSideRef };
             const batches = planBatches(r.plan, rOpt, r.prefixLen);
             const doneBatches = r.jobIds.length;
             if (next.status === "failed") {
@@ -1064,14 +1101,18 @@ export function DatasetBuilderTab() {
               <span className="ml-auto font-mono text-sm text-foreground">
                 合計 <span className="text-neon-pink">{totalCost.toLocaleString()} C</span>
                 <span className="ml-1 text-[10px] text-muted">
-                  （1 枚 {perImage}C{refRows > 0 ? `・真横／後ろの ${refRows} 枚は参照 ${subCount} 枚付きで ${perImageRefs}C` : ""}）
+                  （1 枚 {perImage}C
+                  {refRows > 0
+                    ? `・真横／後ろの ${refRows} 枚は参照付きで ${Math.max(...previewPlan.map((it) => sceneItemCredits(it, knobs, batchOpt)))}C`
+                    : ""}
+                  ）
                 </span>
               </span>
             </div>
             {confirmFirst && safeCount > SCENE_BATCH_SIZE && (
               <p className="mt-1.5 text-[10px] text-muted">
                 まず {firstBatch} 枚（{firstCost.toLocaleString()} C）を作って止まります（一覧で「先に作る」を選べばその行になります）。良ければ「続きを作る」で残りを作ります。クレジットは作る分ずつ消費します。
-                構図（全身／上半身・バストアップ）や向き（真横・後ろ）が増えると元画像の種類ごとにジョブが分かれ、1 種類増えるごとに約 1 分延びます。
+                真横・後ろの行は参照 1 枚付き（後ろ姿・真横を確定していれば）で、1 枚あたり 10 秒ほど長くかかります。
               </p>
             )}
 
@@ -1090,25 +1131,12 @@ export function DatasetBuilderTab() {
                   />
                 </div>
                 <p className="mt-1.5 text-center text-[11px] text-muted">
-                  {(() => {
-                    const idx = run ? run.jobIds.length - 1 : -1;
-                    const b = idx >= 0 ? runBatches[idx] : undefined;
-                    const label =
-                      b?.group === "refs"
-                        ? "真横・後ろの行（参照付き）"
-                        : b?.group === "close:upper"
-                          ? "上半身の行（切り出しが元）"
-                          : b?.group === "close:bust"
-                            ? "バストアップの行（切り出しが元）"
-                            : "全身の行（メイン画像が元）";
-                    return `ジョブ ${idx + 1} / ${runBatches.length}: ${label}`;
-                  })()}
+                  ジョブ {run ? run.jobIds.length : 0} / {runBatches.length}
                   <br />
                   このジョブ {activeJob.completedAngles} / {activeJob.totalAngles} 枚・全体 {producedTotal} / {plannedTotal} 枚（{formatElapsedSeconds(elapsedMs)}s）
                 </p>
                 <p className="mt-1 text-center text-[10px] text-muted/70">
-                  元画像が違う行は別のジョブに分かれます（全身＝メイン画像／上半身・バストアップ＝切り出し／真横・後ろ＝参照付き）。
-                  順番に自動で流れますが、ジョブが 1 本増えるごとに送信と起動で約 1 分延びます。
+                  全身・上半身・バストアップ・真横・後ろの行は 1 つのジョブにまとめて流れます（最初の確認分のあとは {SCENE_REST_BATCH_SIZE} 枚ずつ）。
                 </p>
                 {activeJob.vramUsedGb != null && (
                   <div className="mt-2 flex justify-center">
@@ -1219,13 +1247,9 @@ export function DatasetBuilderTab() {
               const ordered = orderPlanForBatches(review, batchOpt, firstKeys);
               const jobs = checkBatchCount(ordered.plan, batchOpt, ordered.prefixLen);
               return jobs > 1 ? (
-                <span className="text-amber-400">
-                  {" "}
-                  選んだ行の元画像（メイン／切り出し／参照付き）が混ざっているため {jobs} 本のジョブに分かれ、確認までの時間が約 {jobs - 1} 分延びます
-                  （ジョブが 1 本増えるごとに送信と起動で約 1 分。急ぐなら同じ種類でそろえるか、選ばずに先頭 {SCENE_BATCH_SIZE} 枚で）。
-                </span>
+                <span className="text-amber-400"> 選んだ行が {SCENE_BATCH_SIZE} 枚を超えるため {jobs} 本のジョブに分かれます。</span>
               ) : (
-                <span> 選ばなければ先頭の {SCENE_BATCH_SIZE} 枚（同じ種類でまとまるので最速）になります。</span>
+                <span> 全身・上半身・バストアップ・真横・後ろが混ざっていても 1 つのジョブで作ります。選ばなければ先頭の {SCENE_BATCH_SIZE} 枚です。</span>
               );
             })()}
             {derivedFlags.upper || derivedFlags.bust ? "「切り出し」の行はメイン画像から自動で切り出した寄りの画像を元に作ります。" : ""}

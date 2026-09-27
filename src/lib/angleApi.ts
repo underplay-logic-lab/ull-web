@@ -59,7 +59,12 @@ export async function startAngleJob(params: {
    * 素材づくり（2026-09-27）: 角度ではなくポーズ・場面の文章指示で生成する。指定すると selection は使わず、
    * ワーカーは角度 LoRA のトリガーを付けない。
    */
-  scenes?: { instruction: string; label: string }[];
+  scenes?: { instruction: string; label: string; set?: number }[];
+  /**
+   * 行ごとの画像セット（2026-09-28）。scenes[i].set がこの配列の index。各セットの先頭がその行のメイン、
+   * 以降が参照。同じ File は 1 回だけアップロードする。指定時は image / subImages は使わない。
+   */
+  imageSets?: File[][];
 }): Promise<StartAngleJobResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -74,23 +79,48 @@ export async function startAngleJob(params: {
   );
 
   const mainFile = new File([imageBlob], filename, { type: imageBlob.type });
-  const { path: mainPath } = await uploadStudioAsset(params.userId, mainFile);
-  const subPaths: string[] = [];
-  for (let i = 0; i < subs.length; i++) {
-    const subFile = new File([subs[i].blob], subs[i].filename || `sub_${i}.png`, {
-      type: subs[i].blob.type,
-    });
-    const { path } = await uploadStudioAsset(params.userId, subFile);
-    subPaths.push(path);
+  let storagePaths: string[];
+  let imageSetIdx: number[][] | undefined;
+  if (params.imageSets && params.imageSets.length > 0) {
+    // 重複する File は 1 回だけ上げて index を共有する。
+    const uniq: File[] = [];
+    const indexOf = (f: File) => {
+      let i = uniq.indexOf(f);
+      if (i < 0) {
+        uniq.push(f);
+        i = uniq.length - 1;
+      }
+      return i;
+    };
+    imageSetIdx = params.imageSets.map((set) => set.map(indexOf));
+    storagePaths = [];
+    for (let i = 0; i < uniq.length; i++) {
+      const norm = await normalizeAngleReferenceImage(uniq[i]);
+      const f = new File([norm.blob], norm.filename || `img_${i}.png`, { type: norm.blob.type });
+      const { path } = await uploadStudioAsset(params.userId, f);
+      storagePaths.push(path);
+    }
+  } else {
+    const { path: mainPath } = await uploadStudioAsset(params.userId, mainFile);
+    const subPaths: string[] = [];
+    for (let i = 0; i < subs.length; i++) {
+      const subFile = new File([subs[i].blob], subs[i].filename || `sub_${i}.png`, {
+        type: subs[i].blob.type,
+      });
+      const { path } = await uploadStudioAsset(params.userId, subFile);
+      subPaths.push(path);
+    }
+    storagePaths = [mainPath, ...subPaths];
   }
 
   const res = await fetch("/api/studio/angle/generate", {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      storagePaths: [mainPath, ...subPaths],
+      storagePaths,
       selection: params.selection,
       ...(params.scenes && params.scenes.length > 0 ? { scenes: params.scenes } : {}),
+      ...(imageSetIdx ? { imageSets: imageSetIdx } : {}),
       mode: params.mode,
       seed: params.seed,
       priority: params.priority ?? false,

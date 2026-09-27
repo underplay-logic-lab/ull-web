@@ -269,14 +269,24 @@ export type CloseFraming = "upper" | "bust";
 export type CloseMainMap = Partial<Record<CloseFraming, number | null>>;
 
 /** ジョブの画像セットの種類。同じ種類の行だけ 1 ジョブにまとめる。 */
-export type SceneGroup = "main" | "close:upper" | "close:bust" | "refs";
+export type SceneGroup = "main" | "close:upper" | "close:bust" | "refs" | "mixed";
 
 export type SceneBatchOptions = {
   subCount: number;
   closeMain: CloseMainMap;
   /** メイン画像から自動で切り出した寄りの元があるか（構図ごと）。参照の指定が無いときに使う。 */
   derived?: Partial<Record<CloseFraming, boolean>>;
+  /** 後ろ姿・真横の参照が確定しているか。あれば該当の向きの行にはその 1 枚だけ付ける（2026-09-28、速く安く）。 */
+  hasBackRef?: boolean;
+  hasSideRef?: boolean;
 };
+
+/** この行に付ける参照の枚数。後ろ→後ろ姿 1 枚、真横→真横 1 枚。専用の参照が無ければ従来どおり参照欄の全部。 */
+export function sceneItemRefCount(item: ScenePlanItem, opt: SceneBatchOptions): number {
+  if (item.viewId === "back") return opt.hasBackRef ? 1 : opt.subCount;
+  if (item.viewId === "side") return opt.hasSideRef ? 1 : opt.subCount;
+  return 0;
+}
 
 /** この行が「寄りの元画像」（参照の指定 or 自動切り出し）から作られるか。 */
 export function sceneItemUsesCloseSource(item: ScenePlanItem, opt: SceneBatchOptions): boolean {
@@ -322,23 +332,19 @@ export function orderPlanForBatches(
   return { plan: [...groupSorted(first, opt), ...groupSorted(rest, opt)], prefixLen: first.length };
 }
 
+/** 確認の後の塊の大きさ。ワーカーが行ごとの画像セットを受けられるので（2026-09-28）、種類が違っても 1 ジョブにまとめる。 */
+export const SCENE_REST_BATCH_SIZE = 16;
+
 /**
- * 1 ジョブは画像セットが揃っていなければならないので、種類が変わるところと prefixLen の境界でジョブを分け、
- * さらに SCENE_BATCH_SIZE ずつに切る。
+ * prefixLen（最初に確認する行）の境界でだけジョブを分け、前半は SCENE_BATCH_SIZE、後半は SCENE_REST_BATCH_SIZE ずつに切る。
+ * 元画像の種類が違う行も同じジョブに入る（行ごとの画像セット）。
  */
 export function planBatches(plan: ScenePlanItem[], opt: SceneBatchOptions, prefixLen = 0): SceneBatch[] {
+  void opt;
   const out: SceneBatch[] = [];
   const cut = Math.max(0, Math.min(plan.length, prefixLen));
-  for (const seg of [plan.slice(0, cut), plan.slice(cut)]) {
-    let i = 0;
-    while (i < seg.length) {
-      const g = sceneItemGroup(seg[i], opt);
-      let j = i;
-      while (j < seg.length && sceneItemGroup(seg[j], opt) === g) j++;
-      for (const items of chunkPlan(seg.slice(i, j))) out.push({ items, group: g, useRefs: g === "refs" });
-      i = j;
-    }
-  }
+  for (const items of chunkPlan(plan.slice(0, cut), SCENE_BATCH_SIZE)) out.push({ items, group: "mixed", useRefs: false });
+  for (const items of chunkPlan(plan.slice(cut), SCENE_REST_BATCH_SIZE)) out.push({ items, group: "mixed", useRefs: false });
   return out;
 }
 
@@ -355,7 +361,7 @@ export function checkBatchCount(plan: ScenePlanItem[], opt: SceneBatchOptions, p
 }
 
 export function sceneItemCredits(item: ScenePlanItem, knobs: PricingKnobs, opt: SceneBatchOptions): number {
-  return sceneCreditsPerImage(knobs, sceneItemGroup(item, opt) === "refs" ? opt.subCount : 0);
+  return sceneCreditsPerImage(knobs, sceneItemRefCount(item, opt));
 }
 
 export function scenePlanCredits(plan: ScenePlanItem[], knobs: PricingKnobs, opt: SceneBatchOptions): number {
