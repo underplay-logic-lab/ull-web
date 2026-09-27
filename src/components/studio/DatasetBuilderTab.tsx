@@ -63,6 +63,13 @@ import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCre
 import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
 import { useLocalWarmCountdown } from "@/hooks/useLocalWarmCountdown";
 import { deriveFramingSources, type FramingSources } from "@/lib/smartCrop";
+import {
+  BACK_VIEW_SPECS,
+  CandidatePanel,
+  FULL_BODY_SPECS,
+  SIDE_VIEW_SPECS,
+  type CandidatePick,
+} from "@/components/studio/DatasetRefBuilder";
 import { WarmCountdownBanner } from "@/components/studio/QueueChoiceModal";
 
 const FORM_ID = "dataset-builder";
@@ -221,20 +228,25 @@ export function DatasetBuilderTab() {
   const [closeChoice, setCloseChoice] = useState<Record<CloseFraming, "auto" | "main" | number>>({ upper: "auto", bust: "auto" });
   const [derived, setDerived] = useState<FramingSources>({});
   const [deriving, setDeriving] = useState(false);
+  // 基準の全身（元が寄っているとき、候補から選んだ 1 枚）。以後の「メインだけ」の行と切り出しの元になる。
+  const [baseFull, setBaseFull] = useState<File | null>(null);
+  const effectiveMain = baseFull ?? image;
+  const effectiveMainRef = useRef<File | null>(null);
   const derivedRef = useRef<FramingSources>({});
   const derivedUpperUrl = useObjectUrl(derived.upper ?? null);
   const derivedBustUrl = useObjectUrl(derived.bust ?? null);
   // メイン画像が変わったら、上半身・バストアップの元画像を自動で切り出す（無料・ブラウザ内）。
   useEffect(() => {
     let alive = true;
-    if (!image) {
+    effectiveMainRef.current = effectiveMain;
+    if (!effectiveMain) {
       derivedRef.current = {};
       queueMicrotask(() => setDerived({}));
       return;
     }
     // effect 本体では同期 setState しない（react-hooks/set-state-in-effect）。
     queueMicrotask(() => setDeriving(true));
-    deriveFramingSources(image)
+    deriveFramingSources(effectiveMain)
       .then((src) => {
         if (!alive) return;
         derivedRef.current = src;
@@ -246,7 +258,27 @@ export function DatasetBuilderTab() {
     return () => {
       alive = false;
     };
-  }, [image]);
+  }, [effectiveMain]);
+  // 参照づくりの選択（候補ジョブと index）。File はリロードで消えるので、パネル側が候補から取り直す。
+  const PICKS_KEY = "dataset-builder-picks";
+  const [picks, setPicks] = useState<{ full?: CandidatePick | null; back?: CandidatePick | null; side?: CandidatePick | null }>(
+    () => loadFormState<{ full?: CandidatePick | null; back?: CandidatePick | null; side?: CandidatePick | null }>(PICKS_KEY) ?? {},
+  );
+  useEffect(() => {
+    saveFormState(PICKS_KEY, picks);
+  }, [picks]);
+  const [refBack, setRefBack] = useState<File | null>(null);
+  const [refSide, setRefSide] = useState<File | null>(null);
+  // 選んだ参照は参照欄に入れる（真横・後ろの行で使われる）。差し替えは前の分を外す。
+  const putRef = useCallback(
+    (prev: File | null, next: File) => {
+      setSubImages((cur) => {
+        const without = cur.filter((f) => f !== prev);
+        return [...without, next].slice(-MAX_SUB_REFERENCE_IMAGES);
+      });
+    },
+    [setSubImages],
+  );
   const closeMain = useMemo<CloseMainMap>(
     () => ({
       upper: typeof closeChoice.upper === "number" ? closeChoice.upper : null,
@@ -325,6 +357,9 @@ export function DatasetBuilderTab() {
       }
       setImageError(null);
       setImage(file);
+      // 新しいメインなら基準の全身と選んだ参照はやり直し。
+      setBaseFull(null);
+      setPicks({});
     },
     [setImage],
   );
@@ -359,6 +394,8 @@ export function DatasetBuilderTab() {
   const firstCost = scenePlanCredits(previewPlan.slice(0, firstBatch), knobs, batchOpt);
   const refRows = previewPlan.filter((it) => sceneItemGroup(it, batchOpt) === "refs").length;
   const framingsInPlan = new Set(previewPlan.map((it) => it.framingId));
+  const viewsInPlan = new Set(previewPlan.map((it) => it.viewId));
+  const needsBaseFull = Boolean(image) && !baseFull && !deriving && derived.framing !== undefined && derived.framing !== "full";
   const busy = phase === "submitting" || phase === "running";
   const insufficientForFirst = Boolean(user) && !creditsLoading && (credits ?? 0) < firstCost;
 
@@ -388,7 +425,7 @@ export function DatasetBuilderTab() {
       try {
         const res = await startAngleJob({
           userId: user.id,
-          image: closeFile ?? mainFile,
+          image: closeFile ?? effectiveMainRef.current ?? mainFile,
           subImages: batch.useRefs ? subs : [],
           selection: { azimuths: [], elevations: [], distances: [] },
           mode: "standard",
@@ -421,6 +458,10 @@ export function DatasetBuilderTab() {
   const handleStart = () => {
     if (!user) return setLoginOpen(true);
     if (!image) return;
+    if (needsBaseFull) {
+      setErrorMessage("メイン画像に全身が写っていません。先に「基準の全身を作る」で 1 枚選んでください。");
+      return;
+    }
     if (insufficientForFirst) return setChargeOpen(true);
     const plan = buildScenePlan(sel, safeCount);
     if (plan.length === 0) return;
@@ -752,6 +793,76 @@ export function DatasetBuilderTab() {
                   );
                 })}
             </div>
+          )}
+          {/* 参照づくり（段階 1・3）: 全身が無ければ基準の全身を、真横・後ろの行があれば参照を、候補から選んで確定する。 */}
+          {image && (needsBaseFull || baseFull) && (
+            <CandidatePanel
+              title={baseFull ? "基準の全身（確定済み）" : "基準の全身を作る"}
+              description={
+                baseFull
+                  ? "この全身を元に、全身の行と切り出し（上半身・バストアップ）を作ります。別の候補に替えることもできます。"
+                  : "メイン画像に足元まで写っていないので、まず全身の候補を作って 1 枚選んでください。体つき・服装はここで確定し、以後の全部の行の元になります。"
+              }
+              user={user}
+              image={image}
+              specs={FULL_BODY_SPECS}
+              costPerImage={perImage}
+              credits={credits}
+              storageKey="dataset-builder-cand-full"
+              picked={picks.full ?? null}
+              hasPickedFile={Boolean(baseFull)}
+              onPick={(pick, file) => {
+                setPicks((p) => ({ ...p, full: pick }));
+                setBaseFull(file);
+              }}
+              onLogin={() => setLoginOpen(true)}
+              onCharge={() => setChargeOpen(true)}
+              fileName="base_full.png"
+            />
+          )}
+          {effectiveMain && (viewsInPlan.has("back") || refBack) && (
+            <CandidatePanel
+              title={refBack ? "後ろ姿の参照（確定済み）" : "後ろ姿の参照を作る"}
+              description="後ろ向きの行は、ここで選んだ後ろ姿を参照にして作ります（選ばないと毎回ちがう背中になります）。選ぶと参照欄に入ります。"
+              user={user}
+              image={effectiveMain}
+              specs={BACK_VIEW_SPECS}
+              costPerImage={perImage}
+              credits={credits}
+              storageKey="dataset-builder-cand-back"
+              picked={picks.back ?? null}
+              hasPickedFile={Boolean(refBack)}
+              onPick={(pick, file) => {
+                setPicks((p) => ({ ...p, back: pick }));
+                putRef(refBack, file);
+                setRefBack(file);
+              }}
+              onLogin={() => setLoginOpen(true)}
+              onCharge={() => setChargeOpen(true)}
+              fileName="ref_back.png"
+            />
+          )}
+          {effectiveMain && (viewsInPlan.has("side") || refSide) && (
+            <CandidatePanel
+              title={refSide ? "真横の参照（確定済み）" : "真横の参照を作る"}
+              description="真横の行は、ここで選んだ真横を参照にして作ります。選ぶと参照欄に入ります。"
+              user={user}
+              image={effectiveMain}
+              specs={SIDE_VIEW_SPECS}
+              costPerImage={perImage}
+              credits={credits}
+              storageKey="dataset-builder-cand-side"
+              picked={picks.side ?? null}
+              hasPickedFile={Boolean(refSide)}
+              onPick={(pick, file) => {
+                setPicks((p) => ({ ...p, side: pick }));
+                putRef(refSide, file);
+                setRefSide(file);
+              }}
+              onLogin={() => setLoginOpen(true)}
+              onCharge={() => setChargeOpen(true)}
+              fileName="ref_side.png"
+            />
           )}
           {notice && <p className="text-[11px] text-neon-violet">{notice}</p>}
         </div>

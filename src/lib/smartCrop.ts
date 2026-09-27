@@ -361,7 +361,14 @@ export async function runSmartCrop(file: File): Promise<SmartCropOutput[]> {
 // --- 素材づくり用: 1 枚から「構図の元画像」（上半身・バストアップ）を切り出す（2026-09-27） -------------------
 // 編集モデルは入力画像の構図を保つ（実測）ので、寄りの構図が欲しければ寄った元画像を渡す。これは学習素材ではなく
 // モデルに渡す元画像なので解像度は問わない（約 1MP に正規化して描き直される）。人物が取れなければ空を返す。
-export type FramingSources = { upper?: File; bust?: File; /** 作れなかった理由（表示用）。 */ reason?: string };
+export type FramingSources = {
+  upper?: File;
+  bust?: File;
+  /** 作れなかった理由（表示用）。 */
+  reason?: string;
+  /** 元画像の構図（足首まで写っていれば full、腰までなら upper、肩までなら bust）。 */
+  framing?: "full" | "upper" | "bust" | "unknown";
+};
 
 async function cropToFile(img: HTMLImageElement, box: Box, stem: string, tag: string, longEdge: number): Promise<File> {
   const clamped = clampBoxToImage(box, img.naturalWidth, img.naturalHeight);
@@ -382,7 +389,7 @@ export async function deriveFramingSources(file: File): Promise<FramingSources> 
     const { people } = await detectSmartCropLandmarks(img);
     const person = people[0];
     console.info("[deriveFramingSources]", { people: people.length, hasPose: Boolean(person?.pose), hasFace: Boolean(person?.face), w, h });
-    if (!person?.pose) return { reason: "人物（体のポーズ）を検出できませんでした" };
+    if (!person?.pose) return { reason: "人物（体のポーズ）を検出できませんでした", framing: "unknown" };
     const pose = person.pose;
     const lS0 = pose[POSE_LM.leftShoulder];
     const rS0 = pose[POSE_LM.rightShoulder];
@@ -411,6 +418,11 @@ export async function deriveFramingSources(file: File): Promise<FramingSources> 
     const midHipY = hipsOk ? (pt(lH0, w, h).y + pt(rH0, w, h).y) / 2 : null;
     const out: FramingSources = {};
     if (midHipY === null) out.reason = "腰の位置を検出できませんでした（元が既に寄っている可能性）";
+    const anklesOk = isLandmarkVisible(pose[POSE_LM.leftAnkle]) || isLandmarkVisible(pose[POSE_LM.rightAnkle]);
+    const ankleInside =
+      anklesOk &&
+      [pose[POSE_LM.leftAnkle], pose[POSE_LM.rightAnkle]].filter(isLandmarkVisible).some((a) => pt(a, w, h).y < h * 0.995);
+    out.framing = ankleInside ? "full" : midHipY !== null && midHipY < h * 0.98 ? "upper" : "bust";
     // 上半身（腰から上）: 腰が画像の中に写っているときだけ。既に寄っている元からは作らない。
     if (midHipY !== null && midHipY < h * 0.98) {
       const upperBox = computeUpperBodyCropBox({
