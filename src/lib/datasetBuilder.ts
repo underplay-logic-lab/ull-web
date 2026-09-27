@@ -215,22 +215,30 @@ export function sceneItemNeedsRefs(item: ScenePlanItem, subCount: number): boole
 // 上半身・バストアップは文章の指示では効かない（2026-09-27 実測: 2 回で 1/11）。このモデルは入力画像の構図を強く
 // 保つ（距離の語なしでバストの元→バストのまま）ので、寄りの行は「寄りの元画像」（ユーザーが参照の中から指定）を
 // メインにして作る。参照は付けない（顔と上着は寄りの元に写っている）。
-const CLOSE_FRAMINGS = new Set(["upper", "bust"]);
+export type CloseFraming = "upper" | "bust";
+/** 構図ごとの「寄りの元画像」（参照の index）。バストアップの元からは腰から上に広がらないので、構図ごとに分ける。 */
+export type CloseMainMap = Partial<Record<CloseFraming, number | null>>;
 
 /** ジョブの画像セットの種類。同じ種類の行だけ 1 ジョブにまとめる。 */
-export type SceneGroup = "main" | "close" | "refs";
+export type SceneGroup = "main" | "close:upper" | "close:bust" | "refs";
 
-export type SceneBatchOptions = { subCount: number; hasCloseMain: boolean };
+export type SceneBatchOptions = { subCount: number; closeMain: CloseMainMap };
+
+export function closeMainIndexFor(item: ScenePlanItem, opt: SceneBatchOptions): number | null {
+  if (item.framingId !== "upper" && item.framingId !== "bust") return null;
+  const idx = opt.closeMain[item.framingId];
+  return typeof idx === "number" && idx >= 0 && idx < opt.subCount ? idx : null;
+}
 
 export function sceneItemGroup(item: ScenePlanItem, opt: SceneBatchOptions): SceneGroup {
   if (sceneItemNeedsRefs(item, opt.subCount)) return "refs";
-  if (opt.hasCloseMain && CLOSE_FRAMINGS.has(item.framingId)) return "close";
+  if (closeMainIndexFor(item, opt) !== null) return item.framingId === "upper" ? "close:upper" : "close:bust";
   return "main";
 }
 
 export type SceneBatch = { items: ScenePlanItem[]; group: SceneGroup; useRefs: boolean };
 
-const GROUP_ORDER: SceneGroup[] = ["main", "close", "refs"];
+const GROUP_ORDER: SceneGroup[] = ["main", "close:upper", "close:bust", "refs"];
 
 /**
  * 1 ジョブは画像セットが揃っていなければならないので、種類ごと（メインだけ → 寄りの元 → 参照付き）に並べ替えてから
