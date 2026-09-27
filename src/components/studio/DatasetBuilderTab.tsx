@@ -876,10 +876,10 @@ export function DatasetBuilderTab() {
                   className="shrink-0"
                 />
                 <span className="w-6 shrink-0 text-right font-mono text-muted">{i + 1}</span>
-                <span className="w-28 shrink-0 truncate text-muted" title={scenePlanPreviewJa(it)}>
-                  {scenePlanLabel({ ...it, custom: "", bodyJa: "" }).replace(/^（|）$/g, "")}
-                  {sceneItemGroup(it, batchOpt) === "refs" && <span className="ml-1 rounded bg-neon-violet/20 px-1 text-[9px] text-neon-violet">参照</span>}
-                  {sceneItemGroup(it, batchOpt) === "close" && <span className="ml-1 rounded bg-neon-pink/20 px-1 text-[9px] text-neon-pink">寄り元</span>}
+                <span className="flex w-40 shrink-0 items-center gap-1 text-muted" title={scenePlanPreviewJa(it)}>
+                  <span className="truncate">{scenePlanLabel({ ...it, custom: "", bodyJa: "" }).replace(/^（|）$/g, "")}</span>
+                  {sceneItemGroup(it, batchOpt) === "refs" && <span className="shrink-0 rounded bg-neon-violet/20 px-1 text-[9px] text-neon-violet">参照</span>}
+                  {sceneItemGroup(it, batchOpt) === "close" && <span className="shrink-0 rounded bg-neon-pink/20 px-1 text-[9px] text-neon-pink">寄り元</span>}
                 </span>
                 <span className="w-10 shrink-0 text-right font-mono text-[10px] text-muted">{sceneItemCredits(it, knobs, batchOpt)}C</span>
                 <input
