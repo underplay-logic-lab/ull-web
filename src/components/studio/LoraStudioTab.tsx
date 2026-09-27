@@ -1043,12 +1043,29 @@ export function LoraStudioTab({
   // マルチアングルへ元画像を運び、作った画像を選んで戻す（2026-09-26、ホスト要望）。
   const [anglePickerOpen, setAnglePickerOpen] = useState(false);
   const openAnglePicker = onOpenMultiAngle ? () => setAnglePickerOpen(true) : undefined;
+  // 「小さすぎる切り出し」の注意からマルチアングルへ行ったとき、作った画像が戻ってきたらその切り出しを脇へ置く
+  // （2026-09-27、ホスト要望）。途中でやめて何も戻さなければ残す。除外は元に戻せる（smallCropExcluded）。
+  const pendingSmallCropIdsRef = useRef<string[]>([]);
+  const excludeImagesRef = useRef<((entries: { id: string; reason: string }[], run: number) => void) | null>(null);
+  const [smallCropExcluded, setSmallCropExcluded] = useState<string[]>([]);
   useEffect(() => {
     const onAdd = (e: Event) => {
       const files = (e as CustomEvent<{ files: File[]; source: string }>).detail?.files ?? [];
       if (files.length === 0) return;
       void addDatasetFilesChecked(files.map((file) => ({ file })));
-      setAddNotice(`マルチアングルで作った ${files.length} 枚をデータセットに追加しました。構図の判定とキャプションは通常どおり進みます。`);
+      const small = pendingSmallCropIdsRef.current;
+      pendingSmallCropIdsRef.current = [];
+      if (small.length > 0 && excludeImagesRef.current) {
+        excludeImagesRef.current(
+          small.map((id) => ({ id, reason: "小さすぎる切り出し（マルチアングルで作り直した）" })),
+          -Date.now(),
+        );
+        setSmallCropExcluded(small);
+      }
+      setAddNotice(
+        `マルチアングルで作った ${files.length} 枚をデータセットに追加しました。構図の判定とキャプションは通常どおり進みます。` +
+          (small.length > 0 ? ` 小さすぎる切り出し ${small.length} 枚は外しました（診断の下の［元に戻す］で戻せます）。` : ""),
+      );
     };
     window.addEventListener(LORA_ADD_EVENT, onAdd);
     return () => window.removeEventListener(LORA_ADD_EVENT, onAdd);
@@ -1492,6 +1509,9 @@ export function LoraStudioTab({
       return new Set([...prev].filter((id) => !set.has(id)));
     });
   }, []);
+  useEffect(() => {
+    excludeImagesRef.current = excludeImages;
+  }, [excludeImages]);
   const restoreExcluded = useCallback(
     (ids: string[]) => {
       const want = new Set(ids);
@@ -5530,12 +5550,40 @@ export function LoraStudioTab({
                 {openAnglePicker && (
                   <button
                     type="button"
-                    onClick={openAnglePicker}
+                    onClick={() => {
+                      pendingSmallCropIdsRef.current = small.map((i) => i.id);
+                      openAnglePicker();
+                    }}
                     className="inline-flex items-center gap-1 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-2.5 py-1 text-[10px] font-medium text-neon-violet hover:bg-neon-violet/20"
                   >
                     🎭 マルチアングルの「寄り」で作る
                   </button>
                 )}
+                {openAnglePicker && (
+                  <p className="w-full text-[10px] text-muted">
+                    マルチアングルで作った画像を戻すと、この {small.length} 枚は自動で外します（元に戻せます）。
+                  </p>
+                )}
+              </div>
+            );
+          })()}
+          {(() => {
+            const alive = new Set(excludedImages.map((e) => e.img.id));
+            const ids = smallCropExcluded.filter((id) => alive.has(id));
+            if (ids.length === 0) return null;
+            return (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2">
+                <p className="text-[11px] text-muted">小さすぎる切り出し {ids.length} 枚を外しました（マルチアングルで作り直したため）。</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    restoreExcluded(ids);
+                    setSmallCropExcluded([]);
+                  }}
+                  className="rounded-md border border-border px-2 py-0.5 text-[10px] text-foreground hover:bg-surface"
+                >
+                  元に戻す
+                </button>
               </div>
             );
           })()}
@@ -7149,7 +7197,10 @@ export function LoraStudioTab({
 
       <LoraAnglePicker
         open={anglePickerOpen}
-        items={images.map((i) => ({
+        items={images
+          // 小さすぎる切り出しは元にしない（粗さを引き継ぐだけ、2026-09-27）。
+          .filter((i) => !(i.cropKind && i.sizeVerdict === "tooSmall"))
+          .map((i) => ({
           // 切り出した画像も元にできる（2026-09-27、ホスト指摘「おまかせで増えた画像が対象にならない」）。
           // 顔の切り出しは顔で埋まった画なので、タグに関係なく顔アップ扱い。
           id: i.id,
@@ -7160,7 +7211,10 @@ export function LoraStudioTab({
             i.cropKind === "face" ||
             isTightCloseUp(compositionText({ caption: captions[i.id], tags: compositionTags[i.id] })),
         }))}
-        onClose={() => setAnglePickerOpen(false)}
+        onClose={() => {
+          setAnglePickerOpen(false);
+          pendingSmallCropIdsRef.current = [];
+        }}
         onConfirm={(files) => {
           setAnglePickerOpen(false);
           const rec = recommendAngleSelection(flowDiag);
