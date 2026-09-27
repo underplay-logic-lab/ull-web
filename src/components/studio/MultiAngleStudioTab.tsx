@@ -763,6 +763,8 @@ export function MultiAngleStudioTab() {
   // File は保存できないので再読み込みで消える（LoRA 側の画像も再読み込みで消えるので揃っている）。
   type LoraCandidate = { key: string; jobId: string; index: number; url: string; label: string };
   const [loraSources, setLoraSources] = useState<File[]>([]);
+  // 生成に回した（予約を含む）元画像。連携欄でグレーアウトし、一括生成の対象から外す（2026-09-27、ホスト要望）。
+  const [loraUsed, setLoraUsed] = useState<Set<File>>(new Set());
   const [loraMode, setLoraMode] = useState(false);
   const loraModeRef = useRef(false);
   // 連携中に出したジョブだけを候補にする（2026-09-27、ホスト指摘: 復元した前回の結果まで候補に入っていた）。
@@ -779,6 +781,7 @@ export function MultiAngleStudioTab() {
       setImage(h.files[0]);
       setImageError(null);
       setLoraSources(h.files);
+      setLoraUsed(new Set());
       if (h.loraAngleReturn) {
         loraModeRef.current = true;
         setLoraMode(true);
@@ -1040,23 +1043,39 @@ export function MultiAngleStudioTab() {
     setSelection((prev) => ({ ...prev, [axis]: ids }));
   }, []);
 
+  const markLoraUsed = (files: File[], used = true) => {
+    const hit = files.filter((f) => loraSources.includes(f));
+    if (hit.length === 0) return;
+    setLoraUsed((prev) => {
+      const next = new Set(prev);
+      for (const f of hit) {
+        if (used) next.add(f);
+        else next.delete(f);
+      }
+      return next;
+    });
+  };
+  const loraRemaining = loraSources.filter((f) => !loraUsed.has(f));
+
   const doGenerate = async () => {
     if (!image) return;
+    markLoraUsed([image]);
     await runGenerate({ image, subImages, selection, combos });
   };
 
-  // LoRA から受け取った全部の画像で、同じ構図を順番に生成する（2 枚目以降は無料の順番待ち）。
+  // LoRA から受け取った画像のうち、まだ生成していないものを同じ構図で順番に生成する（2 枚目以降は無料の順番待ち）。
   const generateAllLoraSources = () => {
-    if (loraSources.length === 0 || count === 0 || overCap || underMin) return;
+    if (loraRemaining.length === 0 || count === 0 || overCap || underMin) return;
     if (!user) return setLoginOpen(true);
-    const snaps = loraSources.map((f) => ({ image: f, subImages: [] as File[], selection, combos }));
+    const snaps = loraRemaining.map((f) => ({ image: f, subImages: [] as File[], selection, combos }));
+    if (!busy && insufficientCredits) return setChargeOpen(true);
+    markLoraUsed(loraRemaining);
     if (busy) {
       const next = [...queuedNextRef.current, ...snaps];
       queuedNextRef.current = next;
       setQueuedNext(next);
       return;
     }
-    if (insufficientCredits) return setChargeOpen(true);
     const [first, ...rest] = snaps;
     queuedNextRef.current = [...queuedNextRef.current, ...rest];
     setQueuedNext(queuedNextRef.current);
@@ -1119,6 +1138,7 @@ export function MultiAngleStudioTab() {
   const handleQueueWait = () => {
     if (!image) return;
     const snapshot = { image, subImages, selection, combos };
+    markLoraUsed([image]);
     const next = [...queuedNextRef.current, snapshot];
     queuedNextRef.current = next;
     setQueuedNext(next);
@@ -1126,6 +1146,8 @@ export function MultiAngleStudioTab() {
   };
 
   const handleCancelQueue = () => {
+    // 始まっていない予約の元画像は「未生成」に戻す。
+    markLoraUsed(queuedNextRef.current.map((q) => q.image), false);
     queuedNextRef.current = [];
     setQueuedNext([]);
   };
@@ -1138,6 +1160,7 @@ export function MultiAngleStudioTab() {
       setChargeOpen(true);
       return;
     }
+    markLoraUsed([image]);
     void runGenerate({ image, subImages, selection, combos }, { priority: true, continuation: true });
   };
 
@@ -1331,34 +1354,43 @@ export function MultiAngleStudioTab() {
           {loraSources.length > 0 && (
             <div className="flex flex-wrap items-center gap-2">
               <div className="flex flex-wrap gap-1.5">
-                {loraSources.map((f, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => setImage(f)}
-                    title="この画像をメイン参照にする"
-                    className={`h-12 w-12 overflow-hidden rounded-md border-2 ${image === f ? "border-neon-pink" : "border-transparent"}`}
-                  >
-                    <LoraSourceThumb file={f} />
-                  </button>
-                ))}
+                {loraSources.map((f, i) => {
+                  const used = loraUsed.has(f);
+                  return (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => setImage(f)}
+                      title={used ? "生成済み（もう一度使うこともできます）" : "この画像をメイン参照にする"}
+                      className={`relative h-12 w-12 overflow-hidden rounded-md border-2 ${image === f ? "border-neon-pink" : "border-transparent"} ${used ? "opacity-40 grayscale" : ""}`}
+                    >
+                      <LoraSourceThumb file={f} />
+                      {used && (
+                        <span className="absolute inset-x-0 bottom-0 bg-black/70 text-center text-[8px] font-semibold text-white">
+                          生成済み
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
-              {loraSources.length > 1 && (
+              {loraSources.length > 1 && loraRemaining.length > 0 && (
                 <button
                   type="button"
                   onClick={generateAllLoraSources}
                   disabled={count === 0 || overCap || underMin}
                   className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
                 >
-                  {loraSources.length} 枚すべてを同じ構図で生成（{count} 構図 × {loraSources.length} 枚・合計 {(cost * loraSources.length).toLocaleString()}C）
+                  未生成の {loraRemaining.length} 枚を同じ構図で生成（{count} 構図 × {loraRemaining.length} 枚・合計 {(cost * loraRemaining.length).toLocaleString()}C）
                 </button>
               )}
             </div>
           )}
           {loraSources.length > 1 && (
             <p className="text-[10px] leading-relaxed text-muted">
-              下で構図を選んでから押すと、1 枚ずつ順番に生成します（順番待ちなので追加料金はかかりません。クレジットは 1 枚ずつ始まるときに消費します）。
-              1 枚だけ作るなら、画像を選んで通常の生成ボタンを押してください。
+              <strong className="text-foreground/90">画像ごとに構図を変える:</strong> 画像をクリック → 下で構図を選ぶ → 下の生成ボタン。生成した画像は「生成済み」になります。
+              <br />
+              <strong className="text-foreground/90">残りをまとめて:</strong> 下で構図を選んでから「未生成の○枚を同じ構図で生成」。1 枚ずつ順番に作ります（追加料金なし）。
             </p>
           )}
           {loraCandidates.length > 0 && (
