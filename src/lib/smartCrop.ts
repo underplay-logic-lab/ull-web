@@ -73,6 +73,28 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+// 透過 PNG は白で下塗りしてから検出・切り出しに使う（2026-09-27）。透明部分は WebGL／canvas 上で黒になり、
+// 暗い服のキャラだと人物検出が失敗する。切り出した画像も白背景で揃う（学習側の白合成と同じ）。
+async function loadImageFlattened(src: string): Promise<HTMLImageElement> {
+  const raw = await loadImage(src);
+  const canvas = document.createElement("canvas");
+  canvas.width = raw.naturalWidth;
+  canvas.height = raw.naturalHeight;
+  const ctx = canvas.getContext("2d", { alpha: false });
+  if (!ctx) return raw;
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(raw, 0, 0);
+  const blob = await canvasToBlob(canvas);
+  const url = URL.createObjectURL(blob);
+  try {
+    return await loadImage(url);
+  } finally {
+    // デコード済みの画像は URL を消しても描画できる。
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+}
+
 function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
@@ -184,7 +206,7 @@ export async function runSmartCrop(file: File): Promise<SmartCropOutput[]> {
   const objectUrl = URL.createObjectURL(file);
   const stem = file.name.replace(/\.[^.]+$/, "");
   try {
-    const img = await loadImage(objectUrl);
+    const img = await loadImageFlattened(objectUrl);
     const w = img.naturalWidth;
     const h = img.naturalHeight;
     const { people } = await detectSmartCropLandmarks(img);
@@ -354,7 +376,7 @@ export async function deriveFramingSources(file: File): Promise<FramingSources> 
   const objectUrl = URL.createObjectURL(file);
   const stem = file.name.replace(/\.[^.]+$/, "");
   try {
-    const img = await loadImage(objectUrl);
+    const img = await loadImageFlattened(objectUrl);
     const w = img.naturalWidth;
     const h = img.naturalHeight;
     const { people } = await detectSmartCropLandmarks(img);

@@ -58,6 +58,9 @@ export async function normalizeAngleReferenceImage(file: File): Promise<Normaliz
     if (!ctx) {
       return { blob: file, filename: file.name || pickFilename(file.type, "reference.png") };
     }
+    // 透過は白で下塗りする（2026-09-27）。alpha:false のキャンバスは透明部分が黒になる（LoRA の縮小画像と同じ事故）。
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, w, h);
     ctx.drawImage(bitmap, 0, 0, w, h);
 
     const supportsWebp = canvas.toDataURL("image/webp").startsWith("data:image/webp");
