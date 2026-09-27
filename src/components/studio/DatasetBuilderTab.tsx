@@ -243,6 +243,8 @@ export function DatasetBuilderTab() {
   const { isWarm: gpuWarm, remainingMs: gpuWarmMs, markWarm: markGpuWarm } = useLocalWarmCountdown(30);
   // 実行前の一覧（review）。ここで日本語の内容を直してから投げる。
   const [review, setReview] = useState<ScenePlanItem[]>([]);
+  // 一覧で「先に作る」と印を付けた行（最初の 8 枚に回す、2026-09-27 ホスト要望）。
+  const [firstKeys, setFirstKeys] = useState<Set<string>>(new Set());
 
   // LoRA Studio 等から画像を受け取る（先頭がメイン、以降が参照）。
   useEffect(() => {
@@ -343,13 +345,14 @@ export function DatasetBuilderTab() {
     const plan = buildScenePlan(sel, safeCount);
     if (plan.length === 0) return;
     setReview(plan);
+    setFirstKeys(new Set());
     setErrorMessage(null);
     setPhase("review");
   };
   const handleConfirmReview = () => {
     if (!image || review.length === 0) return;
     const r: PersistedRun = {
-      plan: orderPlanForBatches(review, subCount),
+      plan: orderPlanForBatches(review, subCount, firstKeys),
       jobIds: [],
       confirmFirst,
       confirmed: !confirmFirst,
@@ -785,7 +788,7 @@ export function DatasetBuilderTab() {
                 className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-1.5 text-xs font-semibold text-white hover:opacity-90"
               >
                 {(() => {
-                  const b = planBatches(orderPlanForBatches(review, subCount), subCount);
+                  const b = planBatches(orderPlanForBatches(review, subCount, firstKeys), subCount);
                   const first = b[0]?.items ?? [];
                   return confirmFirst && review.length > SCENE_BATCH_SIZE
                     ? `この内容でまず ${first.length} 枚を作る（${scenePlanCredits(first, knobs, subCount).toLocaleString()} C）`
@@ -796,11 +799,26 @@ export function DatasetBuilderTab() {
           </div>
           <p className="text-[10px] leading-relaxed text-muted">
             各行の文を書き換えられます（日本語のまま。送るときに英訳します）。構図・向きは左の表示のとおり固定です。
-            行を消すと枚数が減ります。{subCount > 0 ? "「参照」の印の行だけ参照画像を付けて作ります（料金も参照付き）。実行はメインだけの行 → 参照付きの行の順です。" : ""}
+            行を消すと枚数が減ります。左のチェックで「先に作る」行を選ぶと、その行から最初の {SCENE_BATCH_SIZE} 枚に入ります
+            {firstKeys.size > 0 ? `（選択中 ${firstKeys.size} 枚）` : ""}。{subCount > 0 ? "「参照」の印の行だけ参照画像を付けて作ります（料金も参照付き）。実行はメインだけの行 → 参照付きの行の順です。" : ""}
           </p>
           <ol className="max-h-[420px] space-y-1 overflow-y-auto pr-1">
             {review.map((it, i) => (
-              <li key={it.key} className="flex items-center gap-2 text-[11px]">
+              <li key={it.key} className={`flex items-center gap-2 rounded-md text-[11px] ${firstKeys.has(it.key) ? "bg-neon-pink/10" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={firstKeys.has(it.key)}
+                  onChange={() =>
+                    setFirstKeys((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(it.key)) next.delete(it.key);
+                      else next.add(it.key);
+                      return next;
+                    })
+                  }
+                  title="先に作る"
+                  className="shrink-0"
+                />
                 <span className="w-6 shrink-0 text-right font-mono text-muted">{i + 1}</span>
                 <span className="w-28 shrink-0 truncate text-muted" title={scenePlanPreviewJa(it)}>
                   {scenePlanLabel({ ...it, custom: "", bodyJa: "" }).replace(/^（|）$/g, "")}

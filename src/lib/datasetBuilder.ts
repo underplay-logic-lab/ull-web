@@ -218,10 +218,13 @@ export type SceneBatch = { items: ScenePlanItem[]; useRefs: boolean };
  * 1 ジョブは参照の有無が揃っていなければならない（画像セットがジョブ単位）ので、メインだけの行 → 参照付きの行の順に
  * 並べ替えてから SCENE_BATCH_SIZE ずつに分ける。run.plan にはこの並びで保存する（結果の順と一致させる）。
  */
-export function orderPlanForBatches(plan: ScenePlanItem[], subCount: number): ScenePlanItem[] {
-  const main = plan.filter((it) => !sceneItemNeedsRefs(it, subCount));
-  const refs = plan.filter((it) => sceneItemNeedsRefs(it, subCount));
-  return [...main, ...refs];
+export function orderPlanForBatches(plan: ScenePlanItem[], subCount: number, firstKeys: Set<string> = new Set()): ScenePlanItem[] {
+  // 「先に作る」と印を付けた行を前へ（並びはそのまま）。印の付いた行が多いほうのグループを先に流す。
+  const prioritized = [...plan.filter((it) => firstKeys.has(it.key)), ...plan.filter((it) => !firstKeys.has(it.key))];
+  const main = prioritized.filter((it) => !sceneItemNeedsRefs(it, subCount));
+  const refs = prioritized.filter((it) => sceneItemNeedsRefs(it, subCount));
+  const refsFirst = refs.filter((it) => firstKeys.has(it.key)).length > main.filter((it) => firstKeys.has(it.key)).length;
+  return refsFirst ? [...refs, ...main] : [...main, ...refs];
 }
 
 export function planBatches(plan: ScenePlanItem[], subCount: number): SceneBatch[] {
