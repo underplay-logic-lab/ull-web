@@ -66,6 +66,7 @@ import { deriveFramingSources, type FramingSources } from "@/lib/smartCrop";
 import {
   BACK_VIEW_SPECS,
   CandidatePanel,
+  createGpuLock,
   FULL_BODY_SPECS,
   SIDE_VIEW_SPECS,
   type CandidatePick,
@@ -233,6 +234,9 @@ export function DatasetBuilderTab() {
   const effectiveMain = baseFull ?? image;
   const effectiveMainRef = useRef<File | null>(null);
   const derivedRef = useRef<FramingSources>({});
+  // タブ内の GPU ジョブは 1 本ずつ（候補づくり・本生成が同時に走ってコンテナが 2 台立たないように）。
+  const [gpuLock] = useState(() => createGpuLock());
+  const gpuReleaseRef = useRef<(() => void) | null>(null);
   const derivedUpperUrl = useObjectUrl(derived.upper ?? null);
   const derivedBustUrl = useObjectUrl(derived.bust ?? null);
   // メイン画像が変わったら、上半身・バストアップの元画像を自動で切り出す（無料・ブラウザ内）。
@@ -437,6 +441,8 @@ export function DatasetBuilderTab() {
       }
       setPhase("submitting");
       setErrorMessage(null);
+      // 候補づくりが動いていれば、終わるまで待ってから投げる（追加料金なし・温かいまま始まる）。
+      gpuReleaseRef.current = await gpuLock.acquire();
       try {
         const res = await startAngleJob({
           userId: user.id,
@@ -451,6 +457,8 @@ export function DatasetBuilderTab() {
         commitRun(next);
         setPhase("running");
       } catch (err) {
+        gpuReleaseRef.current?.();
+        gpuReleaseRef.current = null;
         console.error("[DatasetBuilderTab] start failed:", err);
         setErrorMessage(err instanceof Error ? err.message : "ジョブの作成に失敗しました。");
         setPhase(r.jobIds.length > 0 ? "paused" : "error");
@@ -461,7 +469,7 @@ export function DatasetBuilderTab() {
         }
       }
     },
-    [user, commitRun, perImage],
+    [user, commitRun, perImage, gpuLock],
   );
   const runOpt = useMemo(
     () => (run ? { subCount: run.subCount, closeMain: run.closeMain, derived: run.derived } : { subCount: 0, closeMain: {}, derived: {} }),
@@ -541,6 +549,8 @@ export function DatasetBuilderTab() {
           setJobs((prev) => ({ ...prev, [activeJobId]: next }));
           if (next.status === "pending" || next.status === "processing") sawInProgress = true;
           if (next.status === "completed" || next.status === "failed") {
+            gpuReleaseRef.current?.();
+            gpuReleaseRef.current = null;
             if (sawInProgress && next.status === "completed") markGpuWarm();
             const r = runRef.current;
             if (!r) return;
@@ -834,6 +844,7 @@ export function DatasetBuilderTab() {
               onCharge={() => setChargeOpen(true)}
               fileName="base_full.png"
               confirmed={baseFull}
+              gpuLock={gpuLock}
             />
           )}
           {effectiveMain && (viewsInPlan.has("back") || refBack) && (
@@ -856,6 +867,7 @@ export function DatasetBuilderTab() {
               onLogin={() => setLoginOpen(true)}
               onCharge={() => setChargeOpen(true)}
               fileName="ref_back.png"
+              gpuLock={gpuLock}
               confirmed={refBack}
               existingRefs={subImages}
               onPickLocal={(file) => {
@@ -885,6 +897,7 @@ export function DatasetBuilderTab() {
               onLogin={() => setLoginOpen(true)}
               onCharge={() => setChargeOpen(true)}
               fileName="ref_side.png"
+              gpuLock={gpuLock}
               confirmed={refSide}
               existingRefs={subImages}
               onPickLocal={(file) => {

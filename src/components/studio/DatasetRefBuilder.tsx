@@ -21,6 +21,30 @@ import { useObjectUrl } from "@/components/studio/MultiAngleStudioTab";
 import { broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 
 export type CandidateSpec = { instruction: string; label: string };
+
+/**
+ * タブ内で GPU ジョブを 1 本ずつ流すための鍵（2026-09-27）。候補づくりと本生成が同時に走ると、コンテナが 2 台
+ * 立ち上がって起動待ちも 2 回になる（並列は追加料金の対象、CLAUDE.md §6-7）。順番に流せば 2 本目は温かいまま始まる。
+ */
+export type GpuLock = { acquire: () => Promise<() => void> };
+
+class GpuLockImpl implements GpuLock {
+  private tail: Promise<void> = Promise.resolve();
+
+  acquire(): Promise<() => void> {
+    let release!: () => void;
+    const mine = new Promise<void>((r) => {
+      release = r;
+    });
+    const prev = this.tail;
+    this.tail = prev.then(() => mine);
+    return prev.then(() => release);
+  }
+}
+
+export function createGpuLock(): GpuLock {
+  return new GpuLockImpl();
+}
 export type CandidatePick = { jobId: string; index: number };
 
 const IDENTITY = "Keep the same character with the identical face, hairstyle, body shape and clothing as the reference.";
@@ -39,7 +63,7 @@ export const SIDE_VIEW_SPECS: CandidateSpec[] = Array.from({ length: CANDIDATE_C
   label: `真横の候補 ${i + 1}`,
 }));
 
-type Status = "idle" | "submitting" | "running" | "done" | "error";
+type Status = "idle" | "queued" | "submitting" | "running" | "done" | "error";
 const POLL_MS = 2_000;
 
 export async function candidateToFile(jobId: string, index: number, url: string, name: string): Promise<File> {
@@ -56,6 +80,8 @@ function useCandidateJob(storageKey: string) {
   const [job, setJob] = useState<AngleJob | null>(null);
   const [status, setStatus] = useState<Status>(() => (jobId ? "running" : "idle"));
   const [error, setError] = useState<string | null>(null);
+  // 鍵の解放関数。ジョブが終端に達したとき（ポーリング内）に呼ぶ。effect より前に宣言しておく。
+  const releaseRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!jobId || status !== "running") return;
@@ -68,18 +94,22 @@ function useCandidateJob(storageKey: string) {
           if (cancelled) return;
           errorStreak = 0;
           setJob(next);
-          if (next.status === "completed") {
-            setStatus("done");
-            return;
-          }
-          if (next.status === "failed") {
-            setError(next.errorMessage || "候補の生成に失敗しました。");
-            setStatus("error");
+          if (next.status === "completed" || next.status === "failed") {
+            releaseRef.current?.();
+            releaseRef.current = null;
+            if (next.status === "completed") {
+              setStatus("done");
+            } else {
+              setError(next.errorMessage || "候補の生成に失敗しました。");
+              setStatus("error");
+            }
             return;
           }
         } catch (err) {
           if (cancelled) return;
           if (err instanceof AngleJobNotFoundError) {
+            releaseRef.current?.();
+            releaseRef.current = null;
             setError("候補のジョブが見つかりませんでした。作り直してください。");
             setStatus("error");
             saveFormState(storageKey, { jobId: "" });
@@ -87,6 +117,8 @@ function useCandidateJob(storageKey: string) {
           }
           errorStreak += 1;
           if (errorStreak >= 8) {
+            releaseRef.current?.();
+            releaseRef.current = null;
             setError("進捗の取得に繰り返し失敗しました。");
             setStatus("error");
             return;
@@ -101,10 +133,12 @@ function useCandidateJob(storageKey: string) {
   }, [jobId, status, storageKey]);
 
   const start = useCallback(
-    async (user: User, image: File, specs: CandidateSpec[]) => {
-      setStatus("submitting");
+    async (user: User, image: File, specs: CandidateSpec[], lock?: GpuLock) => {
+      setStatus("queued");
       setError(null);
       setJob(null);
+      if (lock) releaseRef.current = await lock.acquire();
+      setStatus("submitting");
       try {
         const res = await startAngleJob({
           userId: user.id,
@@ -120,6 +154,8 @@ function useCandidateJob(storageKey: string) {
         setStatus("running");
         return true;
       } catch (err) {
+        releaseRef.current?.();
+        releaseRef.current = null;
         setError(err instanceof Error ? err.message : "候補の生成を始められませんでした。");
         setStatus("idle");
         const remaining = (err as AngleApiError)?.remainingCredits;
@@ -159,6 +195,7 @@ export function CandidatePanel({
   onPickLocal,
   existingRefs,
   confirmed,
+  gpuLock,
 }: {
   title: string;
   description: string;
@@ -181,12 +218,14 @@ export function CandidatePanel({
   existingRefs?: File[];
   /** 確定している画像（候補から選んだもの・手持ちのもののどちらも）。参照欄の何番目に入っているかも出す。 */
   confirmed?: File | null;
+  /** タブ共有の鍵。他のジョブが動いていれば終わるまで待ってから投げる。 */
+  gpuLock?: GpuLock;
 }) {
   const { job, status, error, start, reset } = useCandidateJob(storageKey);
   const [picking, setPicking] = useState<number | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
   const cost = specs.length * costPerImage;
-  const busy = status === "submitting" || status === "running";
+  const busy = status === "queued" || status === "submitting" || status === "running";
   const insufficient = Boolean(user) && credits !== null && credits < cost;
 
   const pick = useCallback(
@@ -220,7 +259,7 @@ export function CandidatePanel({
     if (!user) return onLogin();
     if (!image) return;
     if (insufficient) return onCharge();
-    void start(user, image, specs);
+    void start(user, image, specs, gpuLock);
   };
   const fileRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -313,8 +352,10 @@ export function CandidatePanel({
       {busy && (
         <p className="flex items-center gap-1.5 text-[10px] text-muted">
           <Loader2 size={10} className="animate-spin" />
-          {status === "submitting"
-            ? "画像を送っています…"
+          {status === "queued"
+            ? "他の生成が終わるのを待っています（終わり次第すぐ始まります・追加料金なし）"
+            : status === "submitting"
+              ? "画像を送っています…"
             : job?.status === "processing"
               ? `候補を作っています…（${job.completedAngles} / ${job.totalAngles} 枚）`
               : "生成準備中…GPUを起動しています（初回は1〜2分ほどかかります）"}
