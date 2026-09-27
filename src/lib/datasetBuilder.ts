@@ -105,11 +105,44 @@ export const SCENE_MAX_COUNT = 400;
 
 export type ScenePlanItem = {
   key: string;
-  /** ワーカーへ送る英語の指示（トリガー無し）。 */
-  instruction: string;
-  /** 一覧・ラベル用の日本語。 */
-  labelJa: string;
+  framingId: string;
+  viewId: string;
+  /** 「何をどこで」の英語（チップから組み立てた既定）。 */
+  bodyEn: string;
+  /** 同じ内容の日本語（実行前の一覧に出す）。 */
+  bodyJa: string;
+  /** ユーザーが一覧で書き換えた内容（日本語可・API 側で英訳）。あれば bodyEn の代わりに使う。 */
+  custom?: string;
 };
+
+const IDENTITY_EN = "Keep the same character with the identical face, hairstyle, body shape and clothing as the reference.";
+
+function chip(axis: SceneAxis, id: string): SceneChip {
+  return CHIPS_BY_AXIS[axis].find((c) => c.id === id) ?? CHIPS_BY_AXIS[axis][0];
+}
+
+/** ワーカーへ送る英語の指示（構図・向きを先頭に、本文、同一性の順）。本文が日本語なら API 側で英訳される。 */
+export function scenePlanInstruction(item: ScenePlanItem): string {
+  const framing = chip("framings", item.framingId);
+  const view = chip("views", item.viewId);
+  const body = (item.custom ?? "").trim() || item.bodyEn;
+  return `${framing.en}, ${view.en}. ${body.replace(/[。.]\s*$/, "")}. ${IDENTITY_EN}`;
+}
+
+/** 一覧・結果のラベル（日本語）。 */
+export function scenePlanLabel(item: ScenePlanItem): string {
+  const framing = chip("framings", item.framingId);
+  const view = chip("views", item.viewId);
+  const body = (item.custom ?? "").trim() || item.bodyJa;
+  return `${body}（${framing.label}・${view.label}）`;
+}
+
+/** 実行前の一覧に出す日本語の全文。 */
+export function scenePlanPreviewJa(item: ScenePlanItem): string {
+  const framing = chip("framings", item.framingId);
+  const view = chip("views", item.viewId);
+  return `${framing.label}・${view.label}で、${(item.custom ?? "").trim() || item.bodyJa}`;
+}
 
 function pick(axis: SceneAxis, ids: string[], custom: string[] = []): SceneChip[] {
   const set = new Set(ids);
@@ -149,19 +182,16 @@ export function buildScenePlan(sel: SceneSelection, count: number): ScenePlanIte
     const place = L[Math.floor(k / P.length) % L.length];
     const framing = F[(k + Math.floor(k / (P.length * L.length))) % F.length];
     const view = V[(Math.floor(k / F.length) + Math.floor(k / (P.length * L.length * F.length))) % V.length];
-    const parts = [
-      // 構図を先頭に（モデルは文頭の指示を優先しやすい）。
-      `${framing.en}, ${view.en}`,
-      `Make the character ${pose.en} ${place.en}`,
-      outfit ? `wearing ${outfit}` : "",
-      extra,
-      // 同一性の指示。参照が複数のときはワーカーが更に定型文を足す。
-      "Keep the same character with the identical face, hairstyle, body shape and clothing as the reference.",
-    ].filter(Boolean);
+    const bodyEn = [`Make the character ${pose.en} ${place.en}`, outfit ? `wearing ${outfit}` : "", extra]
+      .filter(Boolean)
+      .join(", ");
+    const bodyJa = [`${place.label}で${pose.label}`, outfit ? `服装: ${outfit}` : "", extra].filter(Boolean).join("、");
     items.push({
       key: `${i}:${pose.id}|${place.id}|${framing.id}|${view.id}`,
-      instruction: parts.join(". ").replace(/\.\./g, ".") + (parts[parts.length - 1].endsWith(".") ? "" : "."),
-      labelJa: [pose.label, place.label, framing.label, view.label].join("・"),
+      framingId: framing.id,
+      viewId: view.id,
+      bodyEn,
+      bodyJa,
     });
   }
   return items;

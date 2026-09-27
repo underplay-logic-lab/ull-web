@@ -29,6 +29,9 @@ import {
   SCENE_DEFAULT_COUNT,
   SCENE_MAX_COUNT,
   sceneCreditsPerImage,
+  scenePlanInstruction,
+  scenePlanLabel,
+  scenePlanPreviewJa,
   type SceneAxis,
   type ScenePlanItem,
   type SceneSelection,
@@ -49,6 +52,8 @@ import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
+import { useLocalWarmCountdown } from "@/hooks/useLocalWarmCountdown";
+import { WarmCountdownBanner } from "@/components/studio/QueueChoiceModal";
 
 const FORM_ID = "dataset-builder";
 const RUN_KEY = "dataset-builder-run";
@@ -67,7 +72,7 @@ type PersistedRun = {
   subCount: number;
 };
 
-type Phase = "idle" | "submitting" | "running" | "paused" | "done" | "error";
+type Phase = "idle" | "review" | "submitting" | "running" | "paused" | "done" | "error";
 
 const AXIS_TITLE: Record<SceneAxis, string> = {
   poses: "ポーズ",
@@ -230,6 +235,10 @@ export function DatasetBuilderTab() {
   const [jobs, setJobs] = useState<Record<string, AngleJob>>({});
   const [phase, setPhase] = useState<Phase>(() => (run && run.jobIds.length > 0 ? "running" : "idle"));
   const elapsedMs = useElapsedTimer(phase === "running" || phase === "submitting");
+  // GPU は最後のジョブの完了から 30 秒で止まる（CLAUDE.md §1）。その間に「続きを作る」を押せば起動待ちが無い。
+  const { isWarm: gpuWarm, remainingMs: gpuWarmMs, markWarm: markGpuWarm } = useLocalWarmCountdown(30);
+  // 実行前の一覧（review）。ここで日本語の内容を直してから投げる。
+  const [review, setReview] = useState<ScenePlanItem[]>([]);
 
   // LoRA Studio 等から画像を受け取る（先頭がメイン、以降が参照）。
   useEffect(() => {
@@ -296,7 +305,7 @@ export function DatasetBuilderTab() {
           subImages: subs,
           selection: { azimuths: [], elevations: [], distances: [] },
           mode: "standard",
-          scenes: items.map((it) => ({ instruction: it.instruction, label: it.labelJa })),
+          scenes: items.map((it) => ({ instruction: scenePlanInstruction(it), label: scenePlanLabel(it) })),
         });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
         const next: PersistedRun = { ...r, jobIds: [...r.jobIds, res.jobId] };
@@ -316,13 +325,20 @@ export function DatasetBuilderTab() {
     [user, commitRun, perImage],
   );
 
+  // 「作る」→ まず一覧（日本語）を出して直せるようにする（2026-09-27、ホスト指摘「どんなプロンプトで作られるか分からない」）。
   const handleStart = () => {
     if (!user) return setLoginOpen(true);
     if (!image) return;
     if (insufficientForFirst) return setChargeOpen(true);
     const plan = buildScenePlan(sel, safeCount);
     if (plan.length === 0) return;
-    const r: PersistedRun = { plan, jobIds: [], confirmFirst, confirmed: !confirmFirst, subCount };
+    setReview(plan);
+    setErrorMessage(null);
+    setPhase("review");
+  };
+  const handleConfirmReview = () => {
+    if (!image || review.length === 0) return;
+    const r: PersistedRun = { plan: review, jobIds: [], confirmFirst, confirmed: !confirmFirst, subCount };
     setJobs({});
     commitRun(r);
     void submitBatch(r, 0, image, subImages);
@@ -344,6 +360,8 @@ export function DatasetBuilderTab() {
     if (j && (j.status === "completed" || j.status === "failed")) return;
     let cancelled = false;
     let errorStreak = 0;
+    // 復元した「とっくに終わったジョブ」で warm 表示を始めないよう、このポーリング中に進行を見たときだけ warm にする。
+    let sawInProgress = false;
     (async () => {
       while (!cancelled) {
         try {
@@ -351,7 +369,9 @@ export function DatasetBuilderTab() {
           if (cancelled) return;
           errorStreak = 0;
           setJobs((prev) => ({ ...prev, [activeJobId]: next }));
+          if (next.status === "pending" || next.status === "processing") sawInProgress = true;
           if (next.status === "completed" || next.status === "failed") {
+            if (sawInProgress && next.status === "completed") markGpuWarm();
             const r = runRef.current;
             if (!r) return;
             const batches = chunkPlan(r.plan);
@@ -401,7 +421,7 @@ export function DatasetBuilderTab() {
     };
     // jobs は中で読むだけ（依存に入れると完了ごとに再起動する）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeJobId, phase, submitBatch]);
+  }, [activeJobId, phase, submitBatch, markGpuWarm]);
 
   // リロード直後: 過去のジョブの結果を読み直す（完了済みは 1 回で済む）。
   useEffect(() => {
@@ -662,6 +682,7 @@ export function DatasetBuilderTab() {
               </p>
             )}
 
+            {!busy && gpuWarm && phase === "paused" && <WarmCountdownBanner remainingMs={gpuWarmMs} />}
             {phase === "paused" && run && remainingCount > 0 ? (
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <button
@@ -685,7 +706,7 @@ export function DatasetBuilderTab() {
               <button
                 type="button"
                 onClick={handleStart}
-                disabled={!image || busy}
+                disabled={!image || busy || phase === "review"}
                 className={`mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold text-white transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
                   insufficientForFirst ? "bg-amber-600/80 hover:opacity-90" : "bg-gradient-to-r from-neon-pink to-neon-violet hover:opacity-90 glow-pink"
                 }`}
@@ -697,15 +718,70 @@ export function DatasetBuilderTab() {
                     ? "クレジットが足りません（チャージ）"
                     : busy
                       ? "生成中…"
-                      : confirmFirst && safeCount > SCENE_BATCH_SIZE
-                        ? `まず ${firstBatch} 枚を作る（${firstCost.toLocaleString()} C・全 ${safeCount} 枚で ${totalCost.toLocaleString()} C）`
-                        : `${safeCount} 枚の素材を作る（${totalCost.toLocaleString()} C）`}
+                      : phase === "review"
+                        ? "下の一覧を確認してください"
+                        : `${safeCount} 枚の内容を確認する（${totalCost.toLocaleString()} C）`}
               </button>
             )}
             {errorMessage && <p className="mt-2 text-[11px] text-red-400">{errorMessage}</p>}
           </div>
         </div>
       </div>
+
+      {/* 実行前の一覧（日本語で直せる） */}
+      {phase === "review" && review.length > 0 && (
+        <div className="space-y-3 rounded-xl border border-neon-pink/40 bg-neon-pink/5 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-medium text-foreground">
+              この {review.length} 枚を作ります（{SCENE_BATCH_SIZE} 枚ずつ・1 枚 {perImage}C）
+            </p>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => setPhase("idle")} className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground">
+                戻る
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmReview}
+                className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+              >
+                {confirmFirst && review.length > SCENE_BATCH_SIZE
+                  ? `この内容でまず ${Math.min(SCENE_BATCH_SIZE, review.length)} 枚を作る（${(Math.min(SCENE_BATCH_SIZE, review.length) * perImage).toLocaleString()} C）`
+                  : `この内容で ${review.length} 枚を作る（${(review.length * perImage).toLocaleString()} C）`}
+              </button>
+            </div>
+          </div>
+          <p className="text-[10px] leading-relaxed text-muted">
+            各行の文を書き換えられます（日本語のまま。送るときに英訳します）。構図・向きは括弧内のとおり固定です。
+            行を消すと枚数が減ります。
+          </p>
+          <ol className="max-h-[420px] space-y-1 overflow-y-auto pr-1">
+            {review.map((it, i) => (
+              <li key={it.key} className="flex items-center gap-2 text-[11px]">
+                <span className="w-6 shrink-0 text-right font-mono text-muted">{i + 1}</span>
+                <span className="w-24 shrink-0 truncate text-muted" title={scenePlanPreviewJa(it)}>
+                  {scenePlanLabel({ ...it, custom: "", bodyJa: "" }).replace(/^（|）$/g, "")}
+                </span>
+                <input
+                  value={it.custom ?? it.bodyJa}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setReview((prev) => prev.map((x, k) => (k === i ? { ...x, custom: v === x.bodyJa ? undefined : v } : x)));
+                  }}
+                  className={`flex-1 rounded-md border px-2 py-1 text-foreground ${it.custom ? "border-neon-pink/50 bg-neon-pink/5" : "border-border bg-surface"}`}
+                />
+                <button
+                  type="button"
+                  onClick={() => setReview((prev) => prev.filter((_, k) => k !== i))}
+                  aria-label="この行を消す"
+                  className="shrink-0 text-muted hover:text-red-400"
+                >
+                  <X size={12} />
+                </button>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
 
       {/* 結果 */}
       {results.length > 0 && (
