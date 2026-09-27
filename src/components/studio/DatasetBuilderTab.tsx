@@ -64,6 +64,7 @@ import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCre
 import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
 import { useLocalWarmCountdown } from "@/hooks/useLocalWarmCountdown";
 import { deriveFramingSources, type FramingSources } from "@/lib/smartCrop";
+import { fileStoreClear, fileStoreGet, fileStorePut } from "@/lib/fileStore";
 import {
   BACK_VIEW_SPECS,
   CandidatePanel,
@@ -76,6 +77,10 @@ import { WarmCountdownBanner } from "@/components/studio/QueueChoiceModal";
 
 const FORM_ID = "dataset-builder";
 const RUN_KEY = "dataset-builder-run";
+// 画像（メイン・参照・基準の全身）は IndexedDB に保存してリロード後に戻す（2026-09-28）。
+const FILES_PREFIX = "dataset-builder:";
+const FILES_META_KEY = "dataset-builder-files";
+type FilesMeta = { subCount: number; backIndex: number | null; sideIndex: number | null; hasBaseFull: boolean };
 const POLL_MS = 2_000;
 
 type PersistedForm = { sel: SceneSelection; count: number; confirmFirst: boolean };
@@ -299,6 +304,55 @@ export function DatasetBuilderTab() {
       });
     }
   }, [subImages, refBack, refSide]);
+  // --- 画像の保存と復元（リロード対策）------------------------------------------------
+  const restoredFilesRef = useRef(false);
+  const restoringRef = useRef(false);
+  useEffect(() => {
+    if (restoredFilesRef.current) return;
+    restoredFilesRef.current = true;
+    // LoRA 等から受け取った直後（image が既にある）は復元しない。
+    if (imageRef.current) return;
+    const meta = loadFormState<FilesMeta>(FILES_META_KEY);
+    if (!meta) return;
+    restoringRef.current = true;
+    (async () => {
+      const main = await fileStoreGet(`${FILES_PREFIX}main`);
+      if (!main || imageRef.current) {
+        restoringRef.current = false;
+        return;
+      }
+      const subs: File[] = [];
+      for (let i = 0; i < (meta.subCount ?? 0); i++) {
+        const f = await fileStoreGet(`${FILES_PREFIX}sub${i}`);
+        if (f) subs.push(f);
+      }
+      const base = meta.hasBaseFull ? await fileStoreGet(`${FILES_PREFIX}baseFull`) : null;
+      setImage(main);
+      setSubImages(subs);
+      if (base) setBaseFull(base);
+      if (meta.backIndex != null && subs[meta.backIndex]) setRefBack(subs[meta.backIndex]);
+      if (meta.sideIndex != null && subs[meta.sideIndex]) setRefSide(subs[meta.sideIndex]);
+      restoringRef.current = false;
+    })();
+  }, [setImage, setSubImages]);
+  useEffect(() => {
+    // 復元中と、何も入っていない状態では保存しない（空の状態で保存すると復元前に消してしまう）。
+    if (!restoredFilesRef.current || restoringRef.current) return;
+    if (!image && subImages.length === 0 && !baseFull) return;
+    const meta: FilesMeta = {
+      subCount: subImages.length,
+      backIndex: refBack ? subImages.indexOf(refBack) : null,
+      sideIndex: refSide ? subImages.indexOf(refSide) : null,
+      hasBaseFull: Boolean(baseFull),
+    };
+    saveFormState(FILES_META_KEY, meta);
+    void (async () => {
+      await fileStorePut(`${FILES_PREFIX}main`, image);
+      for (let i = 0; i < MAX_SUB_REFERENCE_IMAGES; i++) await fileStorePut(`${FILES_PREFIX}sub${i}`, subImages[i] ?? null);
+      await fileStorePut(`${FILES_PREFIX}baseFull`, baseFull);
+    })();
+  }, [image, subImages, baseFull, refBack, refSide]);
+
   const closeMain = useMemo<CloseMainMap>(
     () => ({
       upper: typeof closeChoice.upper === "number" ? closeChoice.upper : null,
@@ -747,7 +801,12 @@ export function DatasetBuilderTab() {
             file={image}
             previewUrl={imagePreview}
             onFileSelected={handleImageSelected}
-            onClear={() => setImage(null)}
+            onClear={() => {
+              setImage(null);
+              setBaseFull(null);
+              setPicks({});
+              void fileStoreClear(FILES_PREFIX);
+            }}
           />
           {imageError && <p className="text-[11px] text-red-400">{imageError}</p>}
           <SubReferenceSlots files={subImages} onAdd={handleAddSub} onRemove={(i) => setSubImages((p) => p.filter((_, k) => k !== i))} error={subError} />
