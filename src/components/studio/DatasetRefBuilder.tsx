@@ -17,6 +17,7 @@ import {
   type AngleJob,
 } from "@/lib/angleApi";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
+import { useObjectUrl } from "@/components/studio/MultiAngleStudioTab";
 import { broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 
 export type CandidateSpec = { instruction: string; label: string };
@@ -157,6 +158,7 @@ export function CandidatePanel({
   fileName,
   onPickLocal,
   existingRefs,
+  confirmed,
 }: {
   title: string;
   description: string;
@@ -177,6 +179,8 @@ export function CandidatePanel({
   /** 手持ちの画像で確定する（候補を作らない、2026-09-27 ホスト提案）。参照欄の画像を選ぶかファイルを選ぶ。 */
   onPickLocal?: (file: File) => void;
   existingRefs?: File[];
+  /** 確定している画像（候補から選んだもの・手持ちのもののどちらも）。参照欄の何番目に入っているかも出す。 */
+  confirmed?: File | null;
 }) {
   const { job, status, error, start, reset } = useCandidateJob(storageKey);
   const [picking, setPicking] = useState<number | null>(null);
@@ -220,6 +224,8 @@ export function CandidatePanel({
   };
   const fileRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
+  const confirmedUrl = useObjectUrl(confirmed ?? null);
+  const confirmedRefIndex = confirmed && existingRefs ? existingRefs.indexOf(confirmed) : -1;
 
   return (
     <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
@@ -275,7 +281,11 @@ export function CandidatePanel({
               type="button"
               onClick={() => onPickLocal(f)}
               title={f.name}
-              className="rounded-full border border-border px-2.5 py-1 text-[11px] text-muted hover:border-neon-violet/40 hover:text-foreground"
+              className={`rounded-full border px-2.5 py-1 text-[11px] ${
+                confirmed === f
+                  ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
+                  : "border-border text-muted hover:border-neon-violet/40 hover:text-foreground"
+              }`}
             >
               参照 {i + 1} を使う
             </button>
@@ -309,6 +319,18 @@ export function CandidatePanel({
               ? `候補を作っています…（${job.completedAngles} / ${job.totalAngles} 枚）`
               : "生成準備中…GPUを起動しています（初回は1〜2分ほどかかります）"}
         </p>
+      )}
+      {confirmed && (
+        <div className="flex items-center gap-2 rounded-md border border-neon-pink/40 bg-neon-pink/5 px-2 py-1">
+          {confirmedUrl && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={confirmedUrl} alt="" className="h-12 w-10 shrink-0 rounded bg-black/40 object-contain" />
+          )}
+          <p className="text-[10px] leading-relaxed text-foreground">
+            <span className="font-medium text-neon-pink">確定:</span> {confirmed.name}
+            {confirmedRefIndex >= 0 ? `（参照 ${confirmedRefIndex + 1} に入っています。この行で使われます）` : ""}
+          </p>
+        </div>
       )}
       {(error || pickError) && <p className="text-[10px] text-red-400">{error ?? pickError}</p>}
       {job && job.images.length > 0 && (

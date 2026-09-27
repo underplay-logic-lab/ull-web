@@ -818,6 +818,7 @@ export function DatasetBuilderTab() {
               onLogin={() => setLoginOpen(true)}
               onCharge={() => setChargeOpen(true)}
               fileName="base_full.png"
+              confirmed={baseFull}
             />
           )}
           {effectiveMain && (viewsInPlan.has("back") || refBack) && (
@@ -840,6 +841,7 @@ export function DatasetBuilderTab() {
               onLogin={() => setLoginOpen(true)}
               onCharge={() => setChargeOpen(true)}
               fileName="ref_back.png"
+              confirmed={refBack}
               existingRefs={subImages}
               onPickLocal={(file) => {
                 setPicks((p) => ({ ...p, back: null }));
@@ -868,6 +870,7 @@ export function DatasetBuilderTab() {
               onLogin={() => setLoginOpen(true)}
               onCharge={() => setChargeOpen(true)}
               fileName="ref_side.png"
+              confirmed={refSide}
               existingRefs={subImages}
               onPickLocal={(file) => {
                 setPicks((p) => ({ ...p, side: null }));
