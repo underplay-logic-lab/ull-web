@@ -367,6 +367,17 @@ export function DatasetBuilderTab() {
     commitRun(next);
     void submitBatch(next, next.jobIds.length, image, subImages);
   };
+  // 初期状態に戻す（2026-09-27、ホスト指摘「リロードしても前回の続きから抜け出せない」）。
+  // 保存した実行を消して、画像・指定はそのまま残す。生成済みの画像はサーバーに 14 日残るが、この画面からは消える。
+  const handleReset = () => {
+    commitRun(null);
+    setJobs({});
+    setRejected(new Set());
+    setReview([]);
+    setErrorMessage(null);
+    setNotice(null);
+    setPhase("idle");
+  };
 
   // --- ポーリング（今動いているジョブ 1 本だけ） ---------------------------------
   const activeJobId = run && run.jobIds.length > 0 ? run.jobIds[run.jobIds.length - 1] : null;
@@ -720,6 +731,13 @@ export function DatasetBuilderTab() {
                 >
                   ここで止める
                 </button>
+                <button
+                  type="button"
+                  onClick={handleReset}
+                  className="rounded-xl border border-border px-4 py-3 text-xs text-muted hover:text-foreground"
+                >
+                  新しく作る（この結果を消す）
+                </button>
                 {!image && <p className="w-full text-[10px] text-amber-400">続きを作るには、同じ画像をもう一度入れてください。</p>}
               </div>
             ) : (
@@ -818,6 +836,11 @@ export function DatasetBuilderTab() {
             <p className="text-xs font-medium text-foreground">
               できた素材 {results.length} 枚{plannedTotal > results.length ? `（予定 ${plannedTotal} 枚）` : ""}
               {rejected.size > 0 && <span className="ml-1 text-muted">・外した {rejected.size} 枚</span>}
+              {!busy && (
+                <button type="button" onClick={handleReset} className="ml-3 text-[11px] text-muted underline hover:text-foreground">
+                  新しく作る（この結果を消す）
+                </button>
+              )}
             </p>
             {/* 全部できてから（または「ここで止める」の後で）まとめて保存・LoRA へ（2026-09-27、ホスト指摘）。 */}
             {phase === "done" && (
