@@ -20,7 +20,8 @@ export type PreparedImage = {
   shrunkFrom?: number;
 };
 
-function verdictFor(shortEdge: number): ImageSizeVerdict {
+/** 短辺からの判定。切り出した画像にも同じ基準を使う（2026-09-27）。 */
+export function sizeVerdictFor(shortEdge: number): ImageSizeVerdict {
   if (shortEdge < MIN_SHORT_EDGE_ERROR) return "tooSmall";
   if (shortEdge < MIN_SHORT_EDGE_WARN) return "small";
   return "ok";
@@ -39,7 +40,7 @@ export async function prepareDatasetImage(file: File): Promise<PreparedImage> {
   }
   const { width, height } = bmp;
   const longEdge = Math.max(width, height);
-  const verdict = verdictFor(Math.min(width, height));
+  const verdict = sizeVerdictFor(Math.min(width, height));
 
   if (longEdge <= MAX_LONG_EDGE) {
     bmp.close();
@@ -68,5 +69,5 @@ export async function prepareDatasetImage(file: File): Promise<PreparedImage> {
   if (!blob) return { file, width, height, verdict };
   const shrunk = new File([blob], file.name, { type: "image/png", lastModified: file.lastModified });
   // 縮小後の短辺で判定し直す（縮小で下限を割ることは設計上ないが念のため）。
-  return { file: shrunk, width: w, height: h, verdict: verdictFor(Math.min(w, h)), shrunkFrom: longEdge };
+  return { file: shrunk, width: w, height: h, verdict: sizeVerdictFor(Math.min(w, h)), shrunkFrom: longEdge };
 }

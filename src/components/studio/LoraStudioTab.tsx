@@ -129,7 +129,7 @@ import { generateCaptionPrompt } from "@/lib/loraCaptionPrompt";
 import { generateDatasetCaptions, captionFileKey, tagDatasetComposition } from "@/lib/loraCaption";
 import { runSmartCrop, type SmartCropKind, type SmartCropOutput } from "@/lib/smartCrop";
 import { loraFlowStep, type LoraFlowTarget } from "@/lib/loraFlowStep";
-import { prepareDatasetImage, type ImageSizeVerdict } from "@/lib/datasetImagePrep";
+import { prepareDatasetImage, sizeVerdictFor, type ImageSizeVerdict } from "@/lib/datasetImagePrep";
 
 // 切り出し結果を捨てる閾値（2026-09-21、ホスト指摘「粗い画像を学習しちゃう
 // だけだろ？」）。出力は固定サイズへ引き伸ばされるので、切り出し元の領域が
@@ -817,7 +817,7 @@ export function LoraStudioTab({
     pro,
   ]);
 
-  const addDatasetFiles = useCallback((entries: { file: File; caption?: string; cropKind?: SmartCropKind; sizeVerdict?: ImageSizeVerdict }[]) => {
+  const addDatasetFiles = useCallback((entries: { file: File; caption?: string; cropKind?: SmartCropKind; sizeVerdict?: ImageSizeVerdict; original?: File }[]) => {
     // Deterministic, filename-derived id (no random UUID) so it's a stable
     // React key across every re-render / curation round-trip; a numeric
     // suffix disambiguates genuinely identical files.
@@ -890,7 +890,7 @@ export function LoraStudioTab({
           `不要な画像を削除してから追加してください。`,
       );
     }
-    for (const { file, caption, cropKind, sizeVerdict } of entries) {
+    for (const { file, caption, cropKind, sizeVerdict, original } of entries) {
       if (file.size > MAX_FILE_BYTES) continue;
       if (room <= 0) break;
       room--;
@@ -907,7 +907,7 @@ export function LoraStudioTab({
       }
       const id = base;
       used.add(id);
-      newImgs.push({ id, file, url: URL.createObjectURL(file), cropKind, sizeVerdict });
+      newImgs.push({ id, file, url: URL.createObjectURL(file), cropKind, sizeVerdict, original });
       if ((caption ?? "").trim()) {
         newCaps[id] = caption!.trim();
         // Brought by the user (.txt / ZIP) — not AI-generated.
@@ -1027,7 +1027,7 @@ export function LoraStudioTab({
       const results = await prepareWithProgress(entries.map((e) => e.file));
       const prepared = entries.map((e, i) => {
         const p = results[i];
-        return { ...e, file: p.file, sizeVerdict: p.verdict, shrunkFrom: p.shrunkFrom };
+        return { ...e, file: p.file, sizeVerdict: p.verdict, shrunkFrom: p.shrunkFrom, original: p.shrunkFrom ? e.file : undefined };
       });
       const shrunk = prepared.filter((p) => p.shrunkFrom).length;
       addDatasetFiles(prepared);
@@ -1206,7 +1206,7 @@ export function LoraStudioTab({
     for (let i = 0; i < candidates.length; i++) {
       const candidate = candidates[i];
       try {
-        const outputs = await runSmartCrop(candidate.file);
+        const outputs = await runSmartCrop(candidate.original ?? candidate.file);
         const keep = outputs.filter((o) => {
           if (kindSet && !kindSet.has(o.kind)) return false;
           // 拡大しすぎ（＝切り出し元が小さい）＝ボケた画像を学習させるだけ。
@@ -1236,7 +1236,8 @@ export function LoraStudioTab({
         const wanted = outputs.filter((o) => !kindSet || kindSet.has(o.kind));
         if (wanted.length === 0) noOutput += 1;
         kept += keep.length;
-        addDatasetFiles(keep.map((o) => ({ file: o.file, cropKind: o.kind })));
+        // 切り出しにも取り込みと同じサイズ判定を付ける（2026-09-27）。小さいものは「小さすぎる素材」の超解像の導線に乗る。
+        addDatasetFiles(keep.map((o) => ({ file: o.file, cropKind: o.kind, sizeVerdict: sizeVerdictFor(Math.min(o.width, o.height)) })));
       } catch (err) {
         failures.push(candidate.file.name);
         console.error("[LoraStudioTab] smart crop failed:", candidate.file.name, err);
@@ -3608,7 +3609,7 @@ export function LoraStudioTab({
         croppedSources.add(src.id);
         let outputs: SmartCropOutput[];
         try {
-          outputs = await runSmartCrop(src.file);
+          outputs = await runSmartCrop(src.original ?? src.file);
         } catch (err) {
           console.error("[LoraStudioTab] auto tidy crop failed:", src.file.name, err);
           continue;
@@ -3640,7 +3641,8 @@ export function LoraStudioTab({
             if (mm?.has(k)) mm.set(k, (mm.get(k) ?? 0) - each);
           }
         }
-        addDatasetFiles(keep.map((o) => ({ file: o.file, cropKind: o.kind })));
+        // 切り出しにも取り込みと同じサイズ判定を付ける（2026-09-27）。小さいものは「小さすぎる素材」の超解像の導線に乗る。
+        addDatasetFiles(keep.map((o) => ({ file: o.file, cropKind: o.kind, sizeVerdict: sizeVerdictFor(Math.min(o.width, o.height)) })));
         keep.forEach((o) => cropIds.push(cropIdOf(o.file)));
         setSmartCropProgress({ done: Math.min(wantTotal, made.face + made.upper), total: wantTotal });
         setAutoTidy((st) =>
@@ -4466,6 +4468,7 @@ export function LoraStudioTab({
         repeats: src?.repeats,
         cropKind: src?.cropKind,
         sizeVerdict: src?.sizeVerdict,
+        original: src?.original,
       };
     });
     // Keep the async-read refs consistent immediately (their sync effects only
@@ -4550,6 +4553,7 @@ export function LoraStudioTab({
         repeats: src?.repeats,
         cropKind: src?.cropKind,
         sizeVerdict: src?.sizeVerdict,
+        original: src?.original,
       };
     });
     const caps = kept.map((p) => p.caption.trim());
@@ -5284,6 +5288,16 @@ export function LoraStudioTab({
                        未満です。このまま学習すると、その画像だけ解像度が足りないまま学習され、仕上がりが甘くなります
                       （引き伸ばしはしません。ぼけた絵を学習するほうが害が大きいため）。
                     </p>
+                    {(() => {
+                      // 切り出しは元の絵の一部なので小さくなりがち（2026-09-27）。マルチアングルの「寄り」はモデルが描き直すので
+                      // 引き伸ばしの粗さが出ず、角度も増やせる。
+                      const n = tooSmallImages.filter((i) => i.cropKind).length;
+                      return n > 0 ? (
+                        <p className="text-[11px] leading-relaxed text-amber-400/90">
+                          うち {n} 枚は切り出した画像です。全身の画像からマルチアングルの「寄り（上半身）」で作ると、描き直すのでくっきりした上半身になり、角度も増やせます。
+                        </p>
+                      ) : null;
+                    })()}
                     {onOpenUpscale && (
                       <button
                         type="button"

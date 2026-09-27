@@ -393,6 +393,8 @@ export type DatasetImage = {
   /** 短辺が学習解像度に足りているか（取り込み時に計測）。 */
   sizeVerdict?: "ok" | "small" | "tooSmall";
   repeats?: number;
+  /** 取り込み時に縮小した画像の、縮小前の元ファイル（2026-09-27）。切り出しだけに使う（大きい元から切ると細部が残る）。 */
+  original?: File;
 };
 
 // 両ワーカー（modal_lora_worker.py / modal_sdxl_lora_worker.py）の
