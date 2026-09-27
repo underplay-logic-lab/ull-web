@@ -1389,7 +1389,7 @@ export function MultiAngleStudioTab() {
                       className={`relative aspect-square overflow-hidden rounded-md border-2 ${on ? "border-neon-pink" : "border-transparent opacity-70 hover:opacity-100"}`}
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={c.url} alt={c.label} className="h-full w-full object-cover" onError={refreshImageUrls} />
+                      <img src={c.url} alt={c.label} className="h-full w-full bg-black/40 object-contain" onError={refreshImageUrls} />
                       {on && <Check size={12} className="absolute right-1 top-1 rounded-full bg-neon-pink p-0.5 text-white" />}
                     </button>
                   );
