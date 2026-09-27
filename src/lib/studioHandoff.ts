@@ -106,10 +106,21 @@ export function takeStudioBatchHandoff(tab?: StudioHandoffTab): StudioBatchHando
 // LoRA Studio は hidden で残る（Studio.tsx）ので、非表示のままでもイベントを受け取れる。
 export const LORA_ADD_EVENT = "ull:lora-add";
 
+// LoRA Studio がまだ一度も開かれていない（マウント前）とイベントが届かないので、受け取るまで持っておく（2026-09-28）。
+let pendingLoraAdditions: { files: File[]; source: string } | null = null;
+
 export function sendLoraAdditions(files: File[], source: string): void {
   if (typeof window === "undefined" || files.length === 0) return;
+  pendingLoraAdditions = { files, source };
   window.dispatchEvent(new CustomEvent(LORA_ADD_EVENT, { detail: { files, source } }));
   window.dispatchEvent(new CustomEvent(STUDIO_TAB_EVENT, { detail: { tab: "lora" } }));
+}
+
+/** 受け取り側が呼ぶ。イベントで受け取れたときも、マウント時に拾うときも、ここで消す。 */
+export function takeLoraAdditions(): { files: File[]; source: string } | null {
+  const p = pendingLoraAdditions;
+  pendingLoraAdditions = null;
+  return p;
 }
 
 // --- 超解像の結果を LoRA Studio へ戻して差し替える（2026-09-24、ホスト要望）---

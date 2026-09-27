@@ -410,6 +410,8 @@ export function AngleLightbox({
   onSave,
   onUpscale,
   onImageError,
+  onToggleExclude,
+  isExcluded,
 }: {
   items: LightItem[];
   index: number;
@@ -419,6 +421,9 @@ export function AngleLightbox({
   onSave: (index: number) => void;
   onUpscale: (index: number) => void;
   onImageError: () => void;
+  /** 素材づくり（2026-09-28）: 拡大したまま「外す／戻す」。× は閉じるのままにし、別のボタンと x キーで切り替える。 */
+  onToggleExclude?: (index: number) => void;
+  isExcluded?: (index: number) => boolean;
 }) {
   const item = items[index];
 
@@ -427,10 +432,11 @@ export function AngleLightbox({
       if (e.key === "Escape") onClose();
       else if (e.key === "ArrowLeft") onIndexChange(Math.max(0, index - 1));
       else if (e.key === "ArrowRight") onIndexChange(Math.min(items.length - 1, index + 1));
+      else if ((e.key === "x" || e.key === "Delete") && onToggleExclude) onToggleExclude(index);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [items.length, index, onClose, onIndexChange]);
+  }, [items.length, index, onClose, onIndexChange, onToggleExclude]);
 
   useEffect(() => {
     const prev = document.body.style.overflow;
@@ -461,6 +467,20 @@ export function AngleLightbox({
           </span>
         </span>
         <div className="flex shrink-0 items-center gap-1.5">
+          {onToggleExclude && (
+            <button
+              type="button"
+              onClick={() => onToggleExclude(index)}
+              className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] transition-colors ${
+                isExcluded?.(index)
+                  ? "border-neon-pink/60 bg-neon-pink/20 text-neon-pink hover:bg-neon-pink/30"
+                  : "border-red-400/50 bg-red-500/10 text-red-300 hover:bg-red-500/20"
+              }`}
+              title="x キーでも切り替え"
+            >
+              {isExcluded?.(index) ? "戻す" : "この画像を外す"}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {

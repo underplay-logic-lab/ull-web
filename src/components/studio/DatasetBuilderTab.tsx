@@ -1350,7 +1350,7 @@ export function DatasetBuilderTab() {
             )}
           </div>
           <p className="text-[10px] text-muted">
-            クリックで拡大。右上の × で外す／戻す。外した画像は保存・LoRA の対象になりません（料金は生成した分にかかります）。
+            クリックで拡大（拡大中は「この画像を外す」か x キー）。サムネの右上の × でも外す／戻す。外した画像は保存・LoRA の対象になりません（料金は生成した分にかかります）。
           </p>
           <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
             {results.map((r, i) => {
@@ -1423,6 +1423,14 @@ export function DatasetBuilderTab() {
           onImageError={() => {
             const r = results[lightboxIndex];
             if (r) refreshResultUrl(r);
+          }}
+          onToggleExclude={(i) => {
+            const r = results[i];
+            if (r) toggleRejected(r.key);
+          }}
+          isExcluded={(i) => {
+            const r = results[i];
+            return Boolean(r && rejected.has(r.key));
           }}
         />
       )}

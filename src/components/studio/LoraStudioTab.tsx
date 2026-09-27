@@ -72,6 +72,7 @@ import {
   LORA_ADD_EVENT,
   STUDIO_TAB_EVENT,
   requestStudioBatchHandoff,
+  takeLoraAdditions,
   type LoraReplacement,
 } from "@/lib/studioHandoff";
 import { DatasetCurationUI, type CurationPair } from "@/components/studio/DatasetCurationUI";
@@ -436,6 +437,7 @@ export function LoraStudioTab({
   }, []);
 
   const [phase, setPhase] = useState<Phase>("form");
+
   // Locked the instant "学習を開始" is pressed — before phase flips to
   // "starting" there's an async window (caption passes, prompt synthesis) in
   // which the button must be inert and no form re-render can slip a stale
@@ -1075,9 +1077,10 @@ export function LoraStudioTab({
   const excludeImagesRef = useRef<((entries: { id: string; reason: string }[], run: number) => void) | null>(null);
   const [smallCropExcluded, setSmallCropExcluded] = useState<string[]>([]);
   useEffect(() => {
-    const onAdd = (e: Event) => {
-      const files = (e as CustomEvent<{ files: File[]; source: string }>).detail?.files ?? [];
+    const handle = (files: File[]) => {
       if (files.length === 0) return;
+      // 学習の結果画面（前回のダウンロード画面）にいると追加が見えないので、取り込み画面へ戻す（2026-09-28、ホスト指摘）。
+      if (phaseRef.current !== "form") setPhase("form");
       void addDatasetFilesChecked(files.map((file) => ({ file })));
       const small = pendingSmallCropIdsRef.current;
       pendingSmallCropIdsRef.current = [];
@@ -1089,11 +1092,19 @@ export function LoraStudioTab({
         setSmallCropExcluded(small);
       }
       setAddNotice(
-        `マルチアングルで作った ${files.length} 枚をデータセットに追加しました。構図の判定とキャプションは通常どおり進みます。` +
+        `他のタブで作った ${files.length} 枚をデータセットに追加しました。構図の判定とキャプションは通常どおり進みます。` +
           (small.length > 0 ? ` 小さすぎる切り出し ${small.length} 枚は外しました（診断の下の［元に戻す］で戻せます）。` : ""),
       );
     };
+    const onAdd = (e: Event) => {
+      const files = (e as CustomEvent<{ files: File[]; source: string }>).detail?.files ?? [];
+      takeLoraAdditions(); // イベントで受け取れたので保留分は消す
+      handle(files);
+    };
     window.addEventListener(LORA_ADD_EVENT, onAdd);
+    // マウント前に送られていた分（LoRA Studio を一度も開いていなかった）を拾う。
+    const pending = takeLoraAdditions();
+    if (pending) queueMicrotask(() => handle(pending.files));
     return () => window.removeEventListener(LORA_ADD_EVENT, onAdd);
   }, [addDatasetFilesChecked]);
 
