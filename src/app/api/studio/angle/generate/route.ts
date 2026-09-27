@@ -50,6 +50,32 @@ const VALID_IDS: Record<keyof AngleSelection, Set<string>> = {
   distances: new Set(DISTANCE_OPTIONS.map((o) => o.id)),
 };
 
+const MAX_SCENES_PER_JOB = 64;
+const MAX_SCENE_INSTRUCTION_CHARS = 500;
+const MAX_SCENE_LABEL_CHARS = 120;
+
+/** 素材づくりの文章指示。配列でなければ null（不正）、空配列は「未指定」として [] を返す。 */
+function sanitizeScenes(raw: unknown): { instruction: string; label: string }[] | null {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) return null;
+  if (raw.length > MAX_SCENES_PER_JOB) return null;
+  const out: { instruction: string; label: string }[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") return null;
+    const o = item as Record<string, unknown>;
+    // 制御文字を落とし、長さを抑える（プロンプト注入というより、長文でモデルを壊さないため）。
+    const instruction = String(o.instruction ?? "")
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, MAX_SCENE_INSTRUCTION_CHARS);
+    if (!instruction) return null;
+    const label = String(o.label ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, MAX_SCENE_LABEL_CHARS);
+    out.push({ instruction, label });
+  }
+  return out;
+}
+
 function sanitizeSelection(raw: unknown): AngleSelection {
   const obj = (raw ?? {}) as Record<string, unknown>;
   const pick = (axis: keyof AngleSelection): string[] => {
@@ -104,6 +130,8 @@ export async function POST(request: Request) {
   let selectionRaw: unknown;
   let seedRaw: unknown;
   let priorityRaw: unknown;
+  // 素材づくり（2026-09-27）: ポーズ・場面の文章指示。あれば selection の代わりに使う。
+  let scenesRaw: unknown;
 
   if (contentType.includes("application/json")) {
     let body: Record<string, unknown>;
@@ -145,6 +173,7 @@ export async function POST(request: Request) {
       typeof body.selection === "string" ? body.selection : JSON.stringify(body.selection ?? {});
     seedRaw = body.seed;
     priorityRaw = body.priority;
+    scenesRaw = body.scenes;
   } else {
     let formData: FormData;
     try {
@@ -207,11 +236,20 @@ export async function POST(request: Request) {
     selection = sanitizeSelection(selectionRaw);
   }
 
-  const combos = buildAngleCombos(selection);
+  // 素材づくり: 文章指示をサーバー側で検査してそのまま使う（角度 LoRA のトリガーは付けない）。
+  // 1 ジョブは 8 枚ずつに分けて投げる設計なので最低枚数の制限は掛けない（起動待ちの償却は連続実行で成り立つ）。
+  const scenes = sanitizeScenes(scenesRaw);
+  if (scenesRaw !== undefined && scenesRaw !== null && scenes === null) {
+    return NextResponse.json({ error: "ポーズ・場面の指定が不正です。" }, { status: 400 });
+  }
+  const rawPrompt = Boolean(scenes && scenes.length > 0);
+  const combos = rawPrompt
+    ? scenes!.map((sc) => ({ instruction: sc.instruction, labelJa: sc.label }))
+    : buildAngleCombos(selection);
   if (combos.length === 0) {
     return NextResponse.json({ error: "構図を1つ以上選択してください。" }, { status: 400 });
   }
-  if (combos.length < MIN_ANGLES) {
+  if (!rawPrompt && combos.length < MIN_ANGLES) {
     return NextResponse.json(
       { error: `1回のジョブは最低 ${MIN_ANGLES} 構図から生成できます。` },
       { status: 400 },
@@ -300,7 +338,7 @@ export async function POST(request: Request) {
       credits_cost: generationCost,
       // Multi-Reference のデバッグ用（既存 jsonb 列・マイグレーション不要）。
       // worker が生成中に vram_used_gb を書き込むので、それとマージされる。
-      metadata: { ref_image_count: imageBuffers.length, priority },
+      metadata: { ref_image_count: imageBuffers.length, priority, ...(rawPrompt ? { kind: "scene" } : {}) },
     })
     .select("id")
     .single();
@@ -328,6 +366,7 @@ export async function POST(request: Request) {
       labels: combos.map((c) => c.labelJa),
       mode,
       seed,
+      rawPrompt,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

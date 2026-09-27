@@ -1870,6 +1870,8 @@ class QwenImageEditWorker:
         negative_prompt = payload.get("negative_prompt") or DEFAULT_NEGATIVE_PROMPT
         seed = payload.get("seed")
         base_seed = None if seed is None or seed == "" else int(seed)
+        # 素材づくり（ポーズ・場面の文章指示、2026-09-27）: 角度 LoRA のトリガーを前置しない。
+        raw_prompt = bool(payload.get("raw_prompt"))
 
         # --- idempotency ガード（Modal クラッシュ由来リトライの無限ループ対策）---
         # ウォッチドッグ発火 → os._exit(1) → Modal が spawned 入力を再実行 → …
@@ -2065,7 +2067,7 @@ class QwenImageEditWorker:
                 if base_seed is not None:
                     generator = torch.Generator(device="cuda").manual_seed(base_seed + idx)
 
-                final_prompt = _apply_lora_trigger(instr, self._lora_loaded)
+                final_prompt = instr if raw_prompt else _apply_lora_trigger(instr, self._lora_loaded)
                 if multi_ref and ANGLE_MULTIREF_PROMPT_SUFFIX:
                     final_prompt = f"{final_prompt} {ANGLE_MULTIREF_PROMPT_SUFFIX}".strip()
                 if idx == 0:

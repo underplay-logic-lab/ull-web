@@ -13,11 +13,12 @@ import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { EditableText } from "@/components/EditableText";
 import { STUDIO_TAB_EVENT, type StudioHandoffTab } from "@/lib/studioHandoff";
+import { DatasetBuilderTab } from "@/components/studio/DatasetBuilderTab";
 
 // 2026-09-09: Wan Animate 2 / Cinematic Video タブは廃止。汎用の動画・特殊要望は
 // すべて「特化ワークフロー」で対応する方針（管理者がワークフローを登録）。
 // 2026-09-12: 動画超解像（v1・最小スコープ）を専用タブとして追加。
-type StudioTab = "image" | "custom" | "lora" | "angle" | "upscale" | "upscale_video" | "director";
+type StudioTab = "image" | "custom" | "lora" | "angle" | "dataset" | "upscale" | "upscale_video" | "director";
 
 // 2026-09-24: 特化ワークフローは admin だけに表示し、末尾へ寄せた（ホスト判断:
 // ComfyUI で作り込んだワークフローの展開先として用意したが、まだ効果的な
@@ -32,6 +33,8 @@ const STUDIO_TABS: { id: StudioTab; label: string; adminOnly?: boolean }[] = [
   { id: "upscale_video", label: "🎬 4K動画超解像" },
   { id: "upscale", label: "✨ 4K/8K超解像" },
   { id: "angle", label: "🎭 マルチアングル" },
+  // 2026-09-27: 1 枚の画像から LoRA 用の素材一式を作るタブ（角度だけ欲しい需要とは分ける、ホスト判断）。
+  { id: "dataset", label: "🧩 素材づくり" },
   { id: "lora", label: "🎨 LoRA Studio" },
   { id: "custom", label: "🔧 特化ワークフロー（admin）", adminOnly: true },
 ];
@@ -79,7 +82,7 @@ export function Studio() {
   useEffect(() => {
     const onSwitch = (e: Event) => {
       const tab = (e as CustomEvent<{ tab: StudioHandoffTab }>).detail?.tab;
-      if (tab === "upscale" || tab === "upscale_video" || tab === "lora" || tab === "angle") goTab(tab);
+      if (tab === "upscale" || tab === "upscale_video" || tab === "lora" || tab === "angle" || tab === "dataset") goTab(tab);
     };
     window.addEventListener(STUDIO_TAB_EVENT, onSwitch);
     return () => window.removeEventListener(STUDIO_TAB_EVENT, onSwitch);
@@ -129,6 +132,11 @@ export function Studio() {
               <EditableText
                 siteKey="studio_desc_angle"
                 fallback="キャラクター画像を1枚アップロードするだけ。向き・アングル・距離を選んで、複数の構図を一括生成・プレビューできます。"
+              />
+            ) : activeTab === "dataset" ? (
+              <EditableText
+                siteKey="studio_desc_dataset"
+                fallback="キャラクター画像を1枚入れて、ポーズ・場面・構図を選ぶだけ。同じキャラのまま枚数ぶんの学習素材を作り、そのまま LoRA Studio へ送れます。"
               />
             ) : activeTab === "upscale" ? (
               <EditableText
@@ -198,6 +206,8 @@ export function Studio() {
           <CustomWorkflowsTab />
         ) : shownTab === "angle" ? (
           <MultiAngleStudioTab />
+        ) : shownTab === "dataset" ? (
+          <DatasetBuilderTab />
         ) : shownTab === "upscale" ? (
           <UpscaleStudioTab />
         ) : shownTab === "upscale_video" ? (

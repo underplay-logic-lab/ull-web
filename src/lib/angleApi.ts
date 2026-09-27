@@ -55,6 +55,11 @@ export async function startAngleJob(params: {
   seed?: number;
   /** true: 実行中のジョブを待たず並列で今すぐ実行（追加料金）。既定 false = 順番待ち。 */
   priority?: boolean;
+  /**
+   * 素材づくり（2026-09-27）: 角度ではなくポーズ・場面の文章指示で生成する。指定すると selection は使わず、
+   * ワーカーは角度 LoRA のトリガーを付けない。
+   */
+  scenes?: { instruction: string; label: string }[];
 }): Promise<StartAngleJobResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -85,6 +90,7 @@ export async function startAngleJob(params: {
     body: JSON.stringify({
       storagePaths: [mainPath, ...subPaths],
       selection: params.selection,
+      ...(params.scenes && params.scenes.length > 0 ? { scenes: params.scenes } : {}),
       mode: params.mode,
       seed: params.seed,
       priority: params.priority ?? false,

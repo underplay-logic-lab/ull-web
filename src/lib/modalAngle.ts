@@ -15,6 +15,8 @@ export type SpawnAngleJobParams = {
   /** 2026-09-09: 単一モードに統一（"standard"）。payload 互換のため型は残置。 */
   mode: AngleMode;
   seed?: number | null;
+  /** 素材づくり（2026-09-27）: 角度 LoRA のトリガーを付けず、文章の指示をそのまま送る。 */
+  rawPrompt?: boolean;
 };
 
 // The dispatch endpoint only .spawn()s the GPU job and ACKs — it never runs
@@ -90,6 +92,7 @@ export async function spawnAngleJob(
     instructions: sanitized.map((p) => p.instruction),
     labels: sanitized.map((p) => p.label),
     num_inference_steps: angleModeSteps(),
+    ...(params.rawPrompt ? { raw_prompt: true } : {}),
     ...(typeof params.seed === "number" && Number.isFinite(params.seed)
       ? { seed: Math.trunc(params.seed) }
       : {}),

@@ -92,7 +92,7 @@ const POLL_MAX_CONSECUTIVE_ERRORS = 8;
 
 type PersistedForm = { mode: AngleMode; selection: AngleSelection };
 
-function useObjectUrl(file: File | null): string | null {
+export function useObjectUrl(file: File | null): string | null {
   const url = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
   useEffect(() => () => {
     if (url) URL.revokeObjectURL(url);
@@ -138,7 +138,7 @@ function sleep(ms: number) {
 }
 
 // --- 画像アップローダー -------------------------------------------------
-function ImageDropzone({
+export function ImageDropzone({
   file,
   previewUrl,
   onFileSelected,
@@ -244,7 +244,7 @@ function ImageDropzone({
 // メイン画像で見えない死角（上着の丈・背中のロゴ・髪の結び目・テクスチャ等）を
 // 補完するための追加参照。最大 MAX_SUB_REFERENCE_IMAGES 枚。省略時は従来どおり
 // 単一画像生成。
-function SubReferenceSlots({
+export function SubReferenceSlots({
   files,
   onAdd,
   onRemove,
@@ -529,7 +529,7 @@ function AngleLightbox({
   );
 }
 
-function InsufficientCreditsModal({
+export function InsufficientCreditsModal({
   open,
   onClose,
   credits,

@@ -7,7 +7,7 @@
 // 受け取る側はマウント時に 1 回だけ取り出して消す（再読み込みで二重に
 // 取り込まない）。Studio.tsx が `ull:studio-tab` を拾って goTab する。
 
-export type StudioHandoffTab = "upscale" | "upscale_video" | "lora" | "angle";
+export type StudioHandoffTab = "upscale" | "upscale_video" | "lora" | "angle" | "dataset";
 
 export type StudioHandoff = {
   kind: "image" | "video";
