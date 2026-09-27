@@ -471,6 +471,18 @@ export function DatasetBuilderTab() {
   const viewsInPlan = new Set(previewPlan.map((it) => it.viewId));
   const needsBaseFull = Boolean(image) && !baseFull && !deriving && derived.framing !== undefined && derived.framing !== "full";
   const busy = phase === "submitting" || phase === "running";
+  // 生成中や、まだ LoRA へ送っていない結果があるときは、離脱前にブラウザの確認を出す（2026-09-28）。
+  // 画像・参照は保存して復元するので対象外。
+  const hasUnsentResults = Boolean(run && run.jobIds.length > 0 && phase !== "idle");
+  useEffect(() => {
+    if (!busy && !hasUnsentResults) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [busy, hasUnsentResults]);
   const insufficientForFirst = Boolean(user) && !creditsLoading && (credits ?? 0) < firstCost;
 
   // --- ジョブ投入 ----------------------------------------------------------

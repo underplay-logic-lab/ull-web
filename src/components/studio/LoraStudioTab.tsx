@@ -251,6 +251,17 @@ export function LoraStudioTab({
   const { isAdmin, loading: adminLoading } = useIsAdmin(user);
 
   const [images, setImages] = useState<DatasetImage[]>([]);
+  // 取り込んだ画像はブラウザにしか無く、リロード・タブを閉じると消える。黙って消さず、離脱前にブラウザの確認を出す
+  // （2026-09-28、ホスト判断。データセット自体の保存は次の段階）。
+  useEffect(() => {
+    if (images.length === 0) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [images.length]);
   const [smartCropBusy, setSmartCropBusy] = useState(false);
   const [smartCropProgress, setSmartCropProgress] = useState<{ done: number; total: number } | null>(null);
   // 送信済みバイト（枚数カウンタは16並列ぶんまとめて動くので、止まって見える）。
