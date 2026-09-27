@@ -175,8 +175,18 @@ export function buildScenePlan(sel: SceneSelection, count: number): ScenePlanIte
   const extra = sel.extra.trim();
 
   const items: ScenePlanItem[] = [];
-  for (let i = 0; i < n; i++) {
-    const k = i % total;
+  // バストアップ × 後ろ＝後頭部のアップは LoRA 素材として価値が低いので既定で外す（2026-09-28、ホスト指摘）。
+  // 真横 × バストアップ（横顔）は残す。除外した分は次の組み合わせで埋める。
+  const skip = (framing: SceneChip, view: SceneChip) => framing.id === "bust" && view.id === "back";
+  for (let i = 0, k0 = 0; i < n; i++, k0++) {
+    let k = k0 % total;
+    for (let guard = 0; guard < total; guard++) {
+      const fr = F[(k + Math.floor(k / (P.length * L.length))) % F.length];
+      const vw = V[(Math.floor(k / F.length) + Math.floor(k / (P.length * L.length * F.length))) % V.length];
+      if (!skip(fr, vw)) break;
+      k0++;
+      k = k0 % total;
+    }
     // 隣り合う枚で違う軸が動くように、各軸を互いに素な歩幅で回す。
     const pose = P[k % P.length];
     const place = L[Math.floor(k / P.length) % L.length];
