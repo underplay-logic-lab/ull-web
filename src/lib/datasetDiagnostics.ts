@@ -447,6 +447,20 @@ export function captionBuckets(caption: string, axis: DiagnosticAxis): string[] 
     .map((b) => b.id);
 }
 
+/**
+ * 画面が顔で埋まるほど寄った画像か（マルチアングルの元画像の注意用、2026-09-27）。
+ * 診断の「顔アップ」枠は portrait / bust も含む（WD で区別できないため）が、肩が写っていれば回転は効く。
+ * 枠で判定すると、同じようなバストアップが upper body の有無（しきい値すれすれ）で付いたり付かなかったりした
+ * （ホスト報告）ので、close-up 系の語だけで見る。上半身・全身の語も付いていれば寄りではない。
+ */
+export function isTightCloseUp(text: string): boolean {
+  const tags = splitTags(text);
+  const tight = ["close-up", "closeup", "face shot", "head shot"];
+  if (!tags.some((t) => tight.some((k) => t.includes(k)))) return false;
+  const wider = [...DIAGNOSTIC_AXES.distance.buckets.filter((b) => b.id !== "closeup").flatMap((b) => b.keywords)];
+  return !tags.some((t) => wider.some((k) => t.includes(k)));
+}
+
 // 構図の細部（ポーズ・手の位置・脚）。服装・髪・表情は含めない（2026-09-25）。
 const POSE_DETAIL_TAGS = [
   "arms at sides", "hand on hip", "hands on hips", "arms crossed", "crossed arms", "arms behind back",

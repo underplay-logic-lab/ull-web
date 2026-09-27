@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabaseClient";
 import type { LoraCaptionCategory, LoraSubject, ResolvedCaptionMode } from "@/lib/loraCaptionSpec";
+import { wdCacheGet, wdCacheKeys, wdCachePut } from "@/lib/wdTagCache";
 
 // Client-side AI-vision auto-captioning for the LoRA Studio dataset.
 //
@@ -721,15 +722,43 @@ async function wdTagPost(token: string, body: Record<string, unknown>, signal?: 
   return data as Record<string, unknown>;
 }
 
-/** files の順にタグ文字列を返す（読めなかった画像は ""）。onBatch で届いた分から順に渡す。 */
-export async function tagDatasetComposition(
-  files: File[],
-  opts: {
-    onBatch?: (entries: { index: number; tags: string }[]) => void;
-    onProgress?: (done: number, total: number) => void;
-    signal?: AbortSignal;
-  } = {},
-): Promise<string[]> {
+type WdTagOpts = {
+  onBatch?: (entries: { index: number; tags: string }[]) => void;
+  onProgress?: (done: number, total: number) => void;
+  signal?: AbortSignal;
+};
+
+/** files の順にタグ文字列を返す（読めなかった画像は ""）。onBatch で届いた分から順に渡す。
+ *  判定済みの画像（中身のハッシュが同じ）はブラウザのキャッシュから即座に返す（wdTagCache.ts）。 */
+export async function tagDatasetComposition(files: File[], opts: WdTagOpts = {}): Promise<string[]> {
+  const out = new Array<string>(files.length).fill("");
+  if (files.length === 0) return out;
+  const keys = await wdCacheKeys(files);
+  const cached = await wdCacheGet(keys);
+  const hits = cached.flatMap((t, i) => (t ? [{ index: i, tags: t }] : []));
+  for (const h of hits) out[h.index] = h.tags;
+  if (hits.length) opts.onBatch?.(hits);
+  const missIdx = files.map((_, i) => i).filter((i) => !cached[i]);
+  opts.onProgress?.(hits.length, files.length);
+  if (missIdx.length === 0) return out;
+
+  const fresh = await tagUncached(
+    missIdx.map((i) => files[i]),
+    {
+      signal: opts.signal,
+      onBatch: (entries) => {
+        const mapped = entries.map((e) => ({ index: missIdx[e.index], tags: e.tags }));
+        void wdCachePut(mapped.flatMap((e) => (keys[e.index] ? [{ key: keys[e.index]!, tags: e.tags }] : [])));
+        opts.onBatch?.(mapped);
+      },
+      onProgress: (done, total) => opts.onProgress?.(hits.length + done, hits.length + total),
+    },
+  );
+  missIdx.forEach((i, k) => (out[i] = fresh[k]));
+  return out;
+}
+
+async function tagUncached(files: File[], opts: WdTagOpts): Promise<string[]> {
   const out = new Array<string>(files.length).fill("");
   if (files.length === 0) return out;
   const token = await accessToken();

@@ -114,6 +114,7 @@ import {
   DIAGNOSTIC_TARGETS,
   imageSubjects,
   identityTagsFromWd,
+  isTightCloseUp,
   peopleCountFromTags,
   soloGenderFromTags,
   subjectGender,
@@ -7106,10 +7107,12 @@ export function LoraStudioTab({
         open={anglePickerOpen}
         items={images
           .filter((i) => !i.cropKind)
-          .map((i) => {
-            const b = captionBuckets(compositionText({ caption: captions[i.id], tags: compositionTags[i.id] }), "distance");
-            return { id: i.id, url: i.url, file: i.file, closeUp: b.length > 0 && b.every((x) => x === "closeup") };
-          })}
+          .map((i) => ({
+            id: i.id,
+            url: i.url,
+            file: i.file,
+            closeUp: isTightCloseUp(compositionText({ caption: captions[i.id], tags: compositionTags[i.id] })),
+          }))}
         onClose={() => setAnglePickerOpen(false)}
         onConfirm={(files) => {
           setAnglePickerOpen(false);
