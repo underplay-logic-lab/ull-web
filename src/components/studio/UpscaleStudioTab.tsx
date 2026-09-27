@@ -49,6 +49,7 @@ import {
   getLoraReturnMap,
   sendLoraReplacements,
   setLoraReturnEntries,
+  STUDIO_TAB_EVENT,
   studioHandoffToFile,
   takeStudioBatchHandoff,
   takeStudioHandoff,
@@ -594,6 +595,8 @@ export function UpscaleStudioTab() {
   // 他タブからの「この画像たちを超解像へ」（LoRA の小さすぎる素材等）: マウント時に 1 回だけ
   // 取り出して「まとめて処理」に並べ、目標短辺に届く最小の倍率を初期値にする。
   const [batchNotice, setBatchNotice] = useState<string | null>(null);
+  // LoRA Studio から連携中か（「連携を終える」で LoRA へ戻る、2026-09-27）。
+  const [loraLinked, setLoraLinked] = useState(false);
   // LoRA Studio から来た画像 → 元画像の id。完了後に差し戻すために使う（File の同一性で引く）。
   const loraReturnRef = useRef<Map<File, string>>(new Map());
   // 送信したジョブ id → LoRA 側の元画像 id（完了後の差し戻しに使う）。
@@ -610,7 +613,17 @@ export function UpscaleStudioTab() {
     // 空振りする。1 回目の反映を捨てると取り込みごと消える）。effect 本体では同期
     // setState しない（react-hooks/set-state-in-effect）。
     const suggested = UPSCALE_MODELS.find((m) => m.key === handoff.suggestedModelKey);
+    const fromLora = Boolean(ids && ids.length);
     queueMicrotask(() => {
+      // LoRA からの連携は前回のまとめ結果を画面から外して始める（2026-09-27、ホスト指摘「前回の画像が出てる」）。
+      // まとめ処理には「最近の生成」が無いので開き直せないが、結果はその都度ダウンロードする運用（ホスト確認済み）。
+      if (fromLora) {
+        setBatchJobIds([]);
+        setBatchJobs({});
+        setBatchPhase("idle");
+        saveFormState(BATCH_JOB_KEY, { jobIds: [] });
+        setLoraLinked(true);
+      }
       setUiMode("batch");
       addBatchFiles(handoff.files);
       if (suggested) setModelKey(suggested.key);
@@ -1457,6 +1470,19 @@ export function UpscaleStudioTab() {
             </div>
           )}
           {batchNotice && <p className="-mt-2 text-[11px] text-neon-violet">{batchNotice}</p>}
+          {loraLinked && (
+            <button
+              type="button"
+              onClick={() => {
+                setLoraLinked(false);
+                setBatchNotice(null);
+                window.dispatchEvent(new CustomEvent(STUDIO_TAB_EVENT, { detail: { tab: "lora" } }));
+              }}
+              className="-mt-2 self-start text-[11px] text-muted underline hover:text-foreground"
+            >
+              連携を終えて LoRA Studio に戻る
+            </button>
+          )}
           {batchError && <p className="-mt-2 text-[11px] text-red-400">{batchError}</p>}
 
           {/* モデル選択 */}

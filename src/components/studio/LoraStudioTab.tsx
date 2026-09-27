@@ -70,6 +70,7 @@ import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import {
   LORA_REPLACE_EVENT,
   LORA_ADD_EVENT,
+  STUDIO_TAB_EVENT,
   requestStudioBatchHandoff,
   type LoraReplacement,
 } from "@/lib/studioHandoff";
@@ -1046,6 +1047,20 @@ export function LoraStudioTab({
   // 「小さすぎる切り出し」の注意からマルチアングルへ行ったとき、作った画像が戻ってきたらその切り出しを脇へ置く
   // （2026-09-27、ホスト要望）。途中でやめて何も戻さなければ残す。除外は元に戻せる（smallCropExcluded）。
   const pendingSmallCropIdsRef = useRef<string[]>([]);
+  // 他タブ（マルチアングル・超解像）へ送ったときの位置。戻ってきたらそこへ戻す（2026-09-27、ホスト指摘
+  // 「連携を終えると LoRA Studio のトップに移動する」）。Studio.tsx はタブ切替でタブの頭へスクロールするので、その後に戻す。
+  const returnScrollYRef = useRef<number | null>(null);
+  useEffect(() => {
+    const onTab = (e: Event) => {
+      if ((e as CustomEvent<{ tab: string }>).detail?.tab !== "lora") return;
+      const y = returnScrollYRef.current;
+      if (y === null) return;
+      returnScrollYRef.current = null;
+      window.setTimeout(() => window.scrollTo({ top: y, behavior: "smooth" }), 400);
+    };
+    window.addEventListener(STUDIO_TAB_EVENT, onTab);
+    return () => window.removeEventListener(STUDIO_TAB_EVENT, onTab);
+  }, []);
   const excludeImagesRef = useRef<((entries: { id: string; reason: string }[], run: number) => void) | null>(null);
   const [smallCropExcluded, setSmallCropExcluded] = useState<string[]>([]);
   useEffect(() => {
@@ -2132,7 +2147,8 @@ export function LoraStudioTab({
   const tooSmallImages = useMemo(() => images.filter((i) => i.sizeVerdict === "tooSmall"), [images]);
   // 該当画像を超解像タブの「まとめて処理」へそのまま入れる（2026-09-24、ホスト要望）。タブ切替は Studio.tsx が
   // STUDIO_TAB_EVENT で行う。取り込み欄の注意と、診断の下の「小さすぎる切り出し」の注意（2026-09-27）で共用。
-  const sendTooSmallToUpscale = (list: DatasetImage[]) =>
+  const sendTooSmallToUpscale = (list: DatasetImage[]) => {
+    returnScrollYRef.current = window.scrollY;
     requestStudioBatchHandoff(
       {
         files: list.map((i) => i.file),
@@ -2147,6 +2163,7 @@ export function LoraStudioTab({
       },
       "upscale",
     );
+  };
 
   // 手入力の追加欄は 2026-09-22 に廃止。被写体レジストリから作った分だけ。
   const effectiveEmbedTags = autoEmbedTags;
@@ -7218,6 +7235,7 @@ export function LoraStudioTab({
         onConfirm={(files) => {
           setAnglePickerOpen(false);
           const rec = recommendAngleSelection(flowDiag);
+          returnScrollYRef.current = window.scrollY;
           requestStudioBatchHandoff(
             {
               files,
