@@ -120,6 +120,10 @@ export async function makeThumbnail(file: File): Promise<Thumb | null> {
     canvas.height = h;
     const ctx = canvas.getContext("2d", { alpha: false });
     if (ctx) {
+      // 透過は白で下塗りする（2026-09-27）。alpha:false のキャンバスは透明部分が黒になり、AI キャプション・構図判定が
+      // 透過画像を全部「黒背景」と見ていた。学習側も白へ合成する（lora_worker_core.TRANSPARENT_BG）ので揃える。
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, w, h);
       ctx.drawImage(bitmap, 0, 0, w, h);
       let mimeType = "image/webp";
       let dataUrl = canvas.toDataURL(mimeType, CAPTION_QUALITY);

@@ -5,7 +5,7 @@
 
 const DB_NAME = "ull-wd-tags";
 const STORE = "tags";
-const WD_CACHE_VERSION = 1;
+const WD_CACHE_VERSION = 2; // v2: 透過を白で下塗りするようにした（v1 は黒背景で判定していた）
 const TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 type Row = { tags: string; at: number };
