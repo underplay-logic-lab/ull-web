@@ -7105,14 +7105,17 @@ export function LoraStudioTab({
 
       <LoraAnglePicker
         open={anglePickerOpen}
-        items={images
-          .filter((i) => !i.cropKind)
-          .map((i) => ({
-            id: i.id,
-            url: i.url,
-            file: i.file,
-            closeUp: isTightCloseUp(compositionText({ caption: captions[i.id], tags: compositionTags[i.id] })),
-          }))}
+        items={images.map((i) => ({
+          // 切り出した画像も元にできる（2026-09-27、ホスト指摘「おまかせで増えた画像が対象にならない」）。
+          // 顔の切り出しは顔で埋まった画なので、タグに関係なく顔アップ扱い。
+          id: i.id,
+          url: i.url,
+          file: i.file,
+          crop: Boolean(i.cropKind),
+          closeUp:
+            i.cropKind === "face" ||
+            isTightCloseUp(compositionText({ caption: captions[i.id], tags: compositionTags[i.id] })),
+        }))}
         onClose={() => setAnglePickerOpen(false)}
         onConfirm={(files) => {
           setAnglePickerOpen(false);

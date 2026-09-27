@@ -61,6 +61,7 @@ import {
   requestStudioBatchHandoff,
   requestStudioHandoff,
   sendLoraAdditions,
+  STUDIO_TAB_EVENT,
   takeStudioBatchHandoff,
 } from "@/lib/studioHandoff";
 import {
@@ -782,6 +783,8 @@ export function MultiAngleStudioTab() {
       setImageError(null);
       setLoraSources(h.files);
       setLoraUsed(new Set());
+      // 前回のプリセットのまま始めない（2026-09-27、ホスト指摘）。LoRA 素材には全方位を元の距離のまま作るのが基本。
+      if (h.loraAngleReturn) setSelection(ANGLE_PRESETS.find((p) => p.id === "turnaround8")?.selection ?? ANGLE_PRESETS[0].selection);
       if (h.loraAngleReturn) {
         loraModeRef.current = true;
         setLoraMode(true);
@@ -1343,6 +1346,8 @@ export function MultiAngleStudioTab() {
               onClick={() => {
                 loraModeRef.current = false;
                 setLoraMode(false);
+                // 連携を終えたら LoRA Studio へ戻す（2026-09-27、ホスト指摘「マルチアングルに取り残される」）。
+                window.dispatchEvent(new CustomEvent(STUDIO_TAB_EVENT, { detail: { tab: "lora" } }));
                 setLoraCandidates([]);
                 setLoraPicked(new Set());
               }}

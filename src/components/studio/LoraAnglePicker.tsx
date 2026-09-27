@@ -8,7 +8,7 @@ import { Check, X } from "lucide-react";
 // 「マルチアングルにどうぞ」で終わらず、選んだ画像がマルチアングルへ運ばれ、結果から選んで LoRA へ戻る導線）。
 
 // closeUp: 構図の判定が顔アップだけの画像。体のシルエットが無く、真横・背面への回転がほぼ効かない（2026-09-27）。
-export type AnglePickItem = { id: string; url: string; file: File; closeUp?: boolean };
+export type AnglePickItem = { id: string; url: string; file: File; closeUp?: boolean; crop?: boolean };
 
 const MAX_PICK = 12;
 
@@ -75,6 +75,11 @@ export function LoraAnglePicker({
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={it.url} alt={it.file.name} className={`h-full w-full bg-black/40 object-contain ${on ? "" : "opacity-80"}`} />
+                {it.crop && (
+                  <span className="absolute left-1 top-1 rounded bg-black/70 px-1 text-[9px] font-semibold text-white">
+                    切り出し
+                  </span>
+                )}
                 {it.closeUp && (
                   <span className="absolute bottom-1 left-1 rounded bg-amber-500/90 px-1 text-[9px] font-semibold text-black">
                     顔アップ
