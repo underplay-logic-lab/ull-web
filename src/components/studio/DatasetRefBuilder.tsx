@@ -155,6 +155,8 @@ export function CandidatePanel({
   onLogin,
   onCharge,
   fileName,
+  onPickLocal,
+  existingRefs,
 }: {
   title: string;
   description: string;
