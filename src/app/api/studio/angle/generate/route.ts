@@ -6,6 +6,7 @@ import { spawnAngleJob } from "@/lib/modalAngle";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { angleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import { downloadStudioUpload, deleteStudioUploads } from "@/lib/studioUploads.server";
+import { containsJapanese, translateToEnglish } from "@/lib/translate";
 import {
   angleCreditsPerAngle,
   anglePriorityParallelSurcharge,
@@ -243,6 +244,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "ポーズ・場面の指定が不正です。" }, { status: 400 });
   }
   const rawPrompt = Boolean(scenes && scenes.length > 0);
+  // 素材づくりの自由入力（場面・ポーズ・服装・追加指示）は日本語で書ける。指示に日本語が混ざっていれば
+  // 英訳してからワーカーへ（無料の翻訳。失敗時は原文のまま＝生成は止めない）。同じ文は 1 回だけ訳す。
+  if (rawPrompt) {
+    const uniq = [...new Set(scenes!.map((sc) => sc.instruction).filter((t) => containsJapanese(t)))];
+    const translated = new Map(await Promise.all(uniq.map(async (t) => [t, await translateToEnglish(t)] as const)));
+    for (const sc of scenes!) sc.instruction = translated.get(sc.instruction) ?? sc.instruction;
+  }
   const combos = rawPrompt
     ? scenes!.map((sc) => ({ instruction: sc.instruction, labelJa: sc.label }))
     : buildAngleCombos(selection);

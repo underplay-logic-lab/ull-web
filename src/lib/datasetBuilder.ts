@@ -60,9 +60,12 @@ export type SceneSelection = {
   places: string[];
   framings: string[];
   views: string[];
-  /** 服装の指定（任意・日本語可。そのまま英訳せず渡すので英語推奨と案内する）。 */
+  /** 自分で足したポーズ・場面（日本語可）。指示に入った日本語は API 側で英訳する（2026-09-27）。 */
+  customPoses: string[];
+  customPlaces: string[];
+  /** 服装の指定（任意・日本語可）。 */
   outfit: string;
-  /** 自由記述（任意）。 */
+  /** 自由記述（任意・日本語可）。 */
   extra: string;
 };
 
@@ -72,6 +75,8 @@ export const DEFAULT_SCENE_SELECTION: SceneSelection = {
   places: ["plain", "room", "street"],
   framings: ["full", "upper"],
   views: ["front", "three_quarter"],
+  customPoses: [],
+  customPlaces: [],
   outfit: "",
   extra: "",
 };
@@ -96,9 +101,14 @@ export type ScenePlanItem = {
   labelJa: string;
 };
 
-function pick(axis: SceneAxis, ids: string[]): SceneChip[] {
+function pick(axis: SceneAxis, ids: string[], custom: string[] = []): SceneChip[] {
   const set = new Set(ids);
-  return CHIPS_BY_AXIS[axis].filter((c) => set.has(c.id));
+  const fixed = CHIPS_BY_AXIS[axis].filter((c) => set.has(c.id));
+  const extra = custom
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .map((t) => ({ id: `custom:${t}`, label: t, en: t }));
+  return [...fixed, ...extra];
 }
 
 /**
@@ -109,8 +119,8 @@ function pick(axis: SceneAxis, ids: string[]): SceneChip[] {
 export function buildScenePlan(sel: SceneSelection, count: number): ScenePlanItem[] {
   const n = Math.max(0, Math.min(SCENE_MAX_COUNT, Math.trunc(count || 0)));
   if (n === 0) return [];
-  const poses = pick("poses", sel.poses);
-  const places = pick("places", sel.places);
+  const poses = pick("poses", sel.poses, sel.customPoses ?? []);
+  const places = pick("places", sel.places, sel.customPlaces ?? []);
   const framings = pick("framings", sel.framings);
   const views = pick("views", sel.views);
   const P = poses.length ? poses : [POSE_CHIPS[0]];

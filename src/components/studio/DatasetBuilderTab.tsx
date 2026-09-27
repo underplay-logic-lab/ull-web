@@ -79,14 +79,28 @@ function ChipGroup({
   onToggle,
   onAll,
   onClear,
+  custom,
+  onAddCustom,
+  onRemoveCustom,
 }: {
   axis: SceneAxis;
   selected: string[];
   onToggle: (id: string) => void;
   onAll: () => void;
   onClear: () => void;
+  /** 自分で足した項目（ポーズ・場面だけ）。日本語で書ける。 */
+  custom?: string[];
+  onAddCustom?: (text: string) => void;
+  onRemoveCustom?: (text: string) => void;
 }) {
   const set = new Set(selected);
+  const [draft, setDraft] = useState("");
+  const commitDraft = () => {
+    const t = draft.trim();
+    if (!t || !onAddCustom) return;
+    onAddCustom(t);
+    setDraft("");
+  };
   return (
     <div>
       <div className="mb-1.5 flex items-center justify-between">
@@ -115,7 +129,42 @@ function ChipGroup({
             {c.label}
           </button>
         ))}
+        {custom?.map((t) => (
+          <span
+            key={`custom:${t}`}
+            className="inline-flex items-center gap-1 rounded-full border border-neon-violet/50 bg-neon-violet/10 px-2.5 py-1 text-[11px] text-neon-violet"
+          >
+            {t}
+            <button type="button" onClick={() => onRemoveCustom?.(t)} aria-label="削除" className="hover:text-foreground">
+              ×
+            </button>
+          </span>
+        ))}
       </div>
+      {onAddCustom && (
+        <div className="mt-1.5 flex gap-1.5">
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                commitDraft();
+              }
+            }}
+            placeholder={axis === "places" ? "場面を追加（日本語OK・例: 桜並木の下）" : "ポーズを追加（日本語OK・例: 傘をさして立つ）"}
+            className="flex-1 rounded-lg border border-border bg-surface px-2 py-1 text-[11px] text-foreground"
+          />
+          <button
+            type="button"
+            onClick={commitDraft}
+            disabled={!draft.trim()}
+            className="rounded-lg border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-40"
+          >
+            追加
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -450,30 +499,41 @@ export function DatasetBuilderTab() {
                 onToggle={(id) => toggle(axis, id)}
                 onAll={() => setSel((p) => ({ ...p, [axis]: CHIPS_BY_AXIS[axis].map((c) => c.id) }))}
                 onClear={() => setSel((p) => ({ ...p, [axis]: [] }))}
+                {...(axis === "poses" || axis === "places"
+                  ? (() => {
+                      const key = axis === "poses" ? "customPoses" : "customPlaces";
+                      return {
+                        custom: sel[key] ?? [],
+                        onAddCustom: (t: string) =>
+                          setSel((p) => ((p[key] ?? []).includes(t) ? p : { ...p, [key]: [...(p[key] ?? []), t] })),
+                        onRemoveCustom: (t: string) => setSel((p) => ({ ...p, [key]: (p[key] ?? []).filter((x) => x !== t) })),
+                      };
+                    })()
+                  : {})}
               />
             ))}
             <div className="grid gap-2 sm:grid-cols-2">
               <label className="text-[11px] text-muted">
-                服装（任意・英語推奨）
+                服装（任意・日本語OK）
                 <input
                   value={sel.outfit}
                   onChange={(e) => setSel((p) => ({ ...p, outfit: e.target.value }))}
-                  placeholder="例: a red hoodie and jeans"
+                  placeholder="例: 赤いパーカーとジーンズ"
                   className="mt-1 w-full rounded-lg border border-border bg-surface px-2 py-1.5 text-xs text-foreground"
                 />
               </label>
               <label className="text-[11px] text-muted">
-                追加の指示（任意・英語推奨）
+                追加の指示（任意・日本語OK）
                 <input
                   value={sel.extra}
                   onChange={(e) => setSel((p) => ({ ...p, extra: e.target.value }))}
-                  placeholder="例: smiling, holding a coffee cup"
+                  placeholder="例: 笑顔でコーヒーを持っている"
                   className="mt-1 w-full rounded-lg border border-border bg-surface px-2 py-1.5 text-xs text-foreground"
                 />
               </label>
             </div>
             <p className="text-[11px] leading-relaxed text-muted/70">
-              選んだ組み合わせを順に回して枚数ぶん作ります。未選択の軸は既定（立つ・無地・全身・正面）になります。
+              選んだ組み合わせを順に回して枚数ぶん作ります。未選択の軸は既定（立つ・無地・全身・正面）になります。日本語の入力は送るときに英訳します。
             </p>
           </div>
 
