@@ -682,9 +682,9 @@ export function DatasetBuilderTab() {
           <p className="text-[11px] leading-relaxed text-muted/80">
             メインの画像からは分からない後ろ姿・真横があれば参照に足してください。参照は「真横・後ろ」の行にだけ使い、正面・斜めの行はメイン 1 枚で作ります（そのぶん速く・安く）。
           </p>
-          {image && (framingsInPlan.has("upper") || framingsInPlan.has("bust")) && (
+          {image && (
             <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
-              <p className="text-[11px] font-medium text-foreground">構図の元画像</p>
+              <p className="text-[11px] font-medium text-foreground">構図の元画像（全身はメイン画像から。上半身・バストアップは下の元から作ります）</p>
               <p className="text-[10px] leading-relaxed text-muted">
                 出来上がりは元画像の構図を保ちます。上半身・バストアップの行は、メイン画像から自動で切り出した寄りの画像を元に作ります
                 （無料・切り出しの解像度は仕上がりに影響しません）。参照に寄った画像があれば、そちらを選ぶこともできます。
@@ -694,9 +694,7 @@ export function DatasetBuilderTab() {
                   <Loader2 size={10} className="animate-spin" /> メイン画像から切り出しています…
                 </p>
               )}
-              {(["upper", "bust"] as CloseFraming[])
-                .filter((f) => framingsInPlan.has(f))
-                .map((f) => {
+              {(["upper", "bust"] as CloseFraming[]).map((f) => {
                   const auto = f === "upper" ? derived.upper : derived.bust;
                   const autoUrl = f === "upper" ? derivedUpperUrl : derivedBustUrl;
                   const choice = closeChoice[f];
@@ -710,7 +708,10 @@ export function DatasetBuilderTab() {
                       ) : (
                         <span className="h-12 w-10 shrink-0 rounded bg-black/20" />
                       )}
-                      <span className="w-20 shrink-0 text-[11px] text-muted">{f === "upper" ? "上半身の元" : "バストアップの元"}</span>
+                      <span className="w-24 shrink-0 text-[11px] text-muted">
+                        {f === "upper" ? "上半身の元" : "バストアップの元"}
+                        {!framingsInPlan.has(f) && <span className="block text-[9px] opacity-70">（構図で未選択）</span>}
+                      </span>
                       <button
                         type="button"
                         onClick={() => setCloseChoice((p) => ({ ...p, [f]: "auto" }))}
