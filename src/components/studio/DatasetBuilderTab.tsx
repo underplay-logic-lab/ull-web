@@ -1192,8 +1192,20 @@ export function DatasetBuilderTab() {
           </div>
           <p className="text-[10px] leading-relaxed text-muted">
             各行の文を書き換えられます（日本語のまま。送るときに英訳します）。構図・向きは左の表示のとおり固定です。
-            行を消すと枚数が減ります。左のチェックで「先に作る」行を選ぶと、選んだ行だけを先に作って止まります（最大 {SCENE_BATCH_SIZE} 枚。
-            全身・上半身・バストアップが混ざっていても全部入ります。元画像が違う行は別のジョブとして続けて流れます）。
+            行を消すと枚数が減ります。左のチェックで「先に作る」行を選ぶと、選んだ行だけを先に作って止まります（最大 {SCENE_BATCH_SIZE} 枚）。
+            {(() => {
+              const ordered = orderPlanForBatches(review, batchOpt, firstKeys);
+              const jobs = checkBatchCount(ordered.plan, batchOpt, ordered.prefixLen);
+              return jobs > 1 ? (
+                <span className="text-amber-400">
+                  {" "}
+                  選んだ行の元画像（メイン／切り出し／参照付き）が混ざっているため {jobs} 本のジョブに分かれ、確認までの時間が {jobs} 本ぶん延びます
+                  （1 本あたり送信と起動で 30〜45 秒。急ぐなら同じ種類でそろえるか、選ばずに先頭 {SCENE_BATCH_SIZE} 枚で）。
+                </span>
+              ) : (
+                <span> 選ばなければ先頭の {SCENE_BATCH_SIZE} 枚（同じ種類でまとまるので最速）になります。</span>
+              );
+            })()}
             {derivedFlags.upper || derivedFlags.bust ? "「切り出し」の行はメイン画像から自動で切り出した寄りの画像を元に作ります。" : ""}
             {closeMain.upper != null || closeMain.bust != null ? "「寄り元 N」の行は参照 N を元に作ります。" : ""}{subCount > 0 ? "「参照」の印の行だけ参照画像を付けて作ります（料金も参照付き）。実行はメインだけの行 → 寄り元の行 → 参照付きの行の順です。" : ""}
           </p>
