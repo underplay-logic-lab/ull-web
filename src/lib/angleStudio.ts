@@ -181,10 +181,15 @@ export const ELEVATION_OPTIONS: AngleAxisOption[] = [
 ];
 
 // --- 距離（Distance / フレーミング） --------------------------------------
+// 2026-09-27 実測で作り直し（docs/STATUS.md）。LoRA の model card の ×0.6 / ×1.0 / ×1.8 は元画像基準の倍率には
+// ならなかった: close-up＝全身の元→腰から上・バストの元→胸から上（顔で埋まる画にはならない）、medium は
+// バストの元でも全身近くまで引く、wide＝全身。距離の語を送らないと元の距離のまま向きだけ変わる。
+// そこで「そのまま（語なし）／寄り（close-up）／引き（wide）」の 3 択にし、wide と区別できない medium は外した
+// （保存済みの "medium" は API の sanitize で落ち、「そのまま」扱いになる）。
 export const DISTANCE_OPTIONS: AngleAxisOption[] = [
-  { id: "close_up", label: "顔アップ（×0.6）", en: CAMERA_DISTANCE.CLOSE_UP },
-  { id: "medium", label: "バストアップ（×1.0）", en: CAMERA_DISTANCE.MEDIUM },
-  { id: "wide", label: "全身（×1.8）", en: CAMERA_DISTANCE.WIDE },
+  { id: "keep", label: "そのまま（向きだけ変える）", en: "" },
+  { id: "close_up", label: "寄り（上半身）", en: CAMERA_DISTANCE.CLOSE_UP },
+  { id: "wide", label: "引き（全身）", en: CAMERA_DISTANCE.WIDE },
 ];
 
 export type AngleAxis = "azimuths" | "elevations" | "distances";
@@ -276,7 +281,8 @@ export function buildAngleCombos(selection: AngleSelection): AngleCombo[] {
       }
     }
   }
-  return combos;
+  // 「そのまま」だけで向き・仰角も未選択だと指示が空＝何も変わらない。構図として数えない（料金にも入らない）。
+  return combos.filter((c) => c.instruction);
 }
 
 export function angleSelectionCount(selection: AngleSelection): number {
@@ -300,10 +306,10 @@ const HARD_AZIMUTHS_FOR_CLOSEUP = new Set([
  */
 export function angleSelectionWarning(selection: AngleSelection): string | null {
   const d = selection.distances;
-  const closeUpOnly = d.includes("close_up") && !d.includes("medium") && !d.includes("wide");
+  const closeUpOnly = d.includes("close_up") && !d.includes("keep") && !d.includes("wide");
   const hasHardAzimuth = selection.azimuths.some((a) => HARD_AZIMUTHS_FOR_CLOSEUP.has(a));
   if (closeUpOnly && hasHardAzimuth) {
-    return "顔アップ（クローズアップ）だと真横・背面への回転はほぼ効きません。真横・背面は「バストアップ」か「全身」を選び、顔アップは正面〜斜め前に絞ってください。";
+    return "「寄り」だけだと真横・背面への回転が弱くなることがあります。真横・背面は「そのまま」か「引き」も選んでください。";
   }
 
   const e = selection.elevations;
@@ -348,31 +354,31 @@ export const ANGLE_PRESETS: AnglePreset[] = [
   {
     id: "turnaround3",
     label: "三面図",
-    hint: "正面・真横・真後ろ / 水平・ミディアム",
+    hint: "正面・真横・真後ろ / 水平・距離そのまま",
     selection: {
       azimuths: ["front", "right_profile", "back"],
       elevations: ["eye_level"],
-      distances: ["medium"],
+      distances: ["keep"],
     },
   },
   {
     id: "turnaround8",
     label: "8方向ターンアラウンド",
-    hint: "全方位 / 水平・バストアップ",
+    hint: "全方位 / 水平・距離そのまま",
     selection: {
       azimuths: allIds(AZIMUTH_OPTIONS),
       elevations: ["eye_level"],
-      distances: ["medium"],
+      distances: ["keep"],
     },
   },
   {
     id: "face_set",
-    label: "顔アップ集（LoRA向け）",
-    hint: "正面・斜め前 / 水平 / 顔アップ・バストアップ",
+    label: "上半身集（LoRA向け）",
+    hint: "正面・斜め前 / 水平 / そのまま・寄り",
     selection: {
       azimuths: ["front", "front_right", "front_left"],
       elevations: ["eye_level"],
-      distances: ["close_up", "medium"],
+      distances: ["keep", "close_up"],
     },
   },
   {
@@ -382,13 +388,13 @@ export const ANGLE_PRESETS: AnglePreset[] = [
     selection: {
       azimuths: ["front"],
       elevations: allIds(ELEVATION_OPTIONS),
-      distances: ["medium"],
+      distances: ["keep"],
     },
   },
   {
     id: "distance_set",
     label: "寄り引き3種",
-    hint: "正面 / クローズアップ・ミディアム・ワイド",
+    hint: "正面 / そのまま・寄り・引き",
     selection: {
       azimuths: ["front"],
       elevations: ["eye_level"],
