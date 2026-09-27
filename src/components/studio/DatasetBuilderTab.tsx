@@ -24,6 +24,7 @@ import {
   buildScenePlan,
   CHIPS_BY_AXIS,
   closeMainIndexFor,
+  sceneItemUsesCloseSource,
   orderPlanForBatches,
   planBatches,
   sceneItemCredits,
@@ -60,6 +61,7 @@ import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
 import { useLocalWarmCountdown } from "@/hooks/useLocalWarmCountdown";
+import { deriveFramingSources, type FramingSources } from "@/lib/smartCrop";
 import { WarmCountdownBanner } from "@/components/studio/QueueChoiceModal";
 
 const FORM_ID = "dataset-builder";
@@ -79,6 +81,8 @@ type PersistedRun = {
   subCount: number;
   /** 構図ごとの「寄りの元画像」（参照の何番目か）。無ければメイン画像で作る。 */
   closeMain: CloseMainMap;
+  /** メイン画像から自動で切り出した寄りの元を使う構図（リロード後は切り出し直す）。 */
+  derived: Partial<Record<CloseFraming, boolean>>;
 };
 
 type Phase = "idle" | "review" | "submitting" | "running" | "paused" | "done" | "error";
@@ -210,7 +214,50 @@ export function DatasetBuilderTab() {
   }, []);
   const [subError, setSubError] = useState<string | null>(null);
   // 上半身・バストアップの行の元にする参照（index）。文章では寄りにならないので、寄った画像を元にする（2026-09-27）。
-  const [closeMain, setCloseMain] = useState<CloseMainMap>({});
+  // 構図ごとの元画像の選び方: "auto"＝メインから自動で切り出し（既定）／"main"＝メインのまま／number＝参照 N。
+  const [closeChoice, setCloseChoice] = useState<Record<CloseFraming, "auto" | "main" | number>>({ upper: "auto", bust: "auto" });
+  const [derived, setDerived] = useState<FramingSources>({});
+  const [deriving, setDeriving] = useState(false);
+  const derivedRef = useRef<FramingSources>({});
+  const derivedUpperUrl = useObjectUrl(derived.upper ?? null);
+  const derivedBustUrl = useObjectUrl(derived.bust ?? null);
+  // メイン画像が変わったら、上半身・バストアップの元画像を自動で切り出す（無料・ブラウザ内）。
+  useEffect(() => {
+    let alive = true;
+    if (!image) {
+      derivedRef.current = {};
+      queueMicrotask(() => setDerived({}));
+      return;
+    }
+    // effect 本体では同期 setState しない（react-hooks/set-state-in-effect）。
+    queueMicrotask(() => setDeriving(true));
+    deriveFramingSources(image)
+      .then((src) => {
+        if (!alive) return;
+        derivedRef.current = src;
+        setDerived(src);
+      })
+      .finally(() => {
+        if (alive) setDeriving(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [image]);
+  const closeMain = useMemo<CloseMainMap>(
+    () => ({
+      upper: typeof closeChoice.upper === "number" ? closeChoice.upper : null,
+      bust: typeof closeChoice.bust === "number" ? closeChoice.bust : null,
+    }),
+    [closeChoice],
+  );
+  const derivedFlags = useMemo(
+    () => ({
+      upper: closeChoice.upper === "auto" && Boolean(derived.upper),
+      bust: closeChoice.bust === "auto" && Boolean(derived.bust),
+    }),
+    [closeChoice, derived],
+  );
   const [sel, setSel] = useState<SceneSelection>(() => ({ ...DEFAULT_SCENE_SELECTION, ...(savedForm?.sel ?? {}) }));
   const [count, setCount] = useState<number>(() => savedForm?.count ?? SCENE_DEFAULT_COUNT);
   const [confirmFirst, setConfirmFirst] = useState<boolean>(() => savedForm?.confirmFirst ?? true);
@@ -234,6 +281,7 @@ export function DatasetBuilderTab() {
           confirmed: Boolean(r.confirmed),
           subCount: Number(r.subCount ?? 0),
           closeMain: r.closeMain && typeof r.closeMain === "object" ? r.closeMain : {},
+          derived: r.derived && typeof r.derived === "object" ? r.derived : {},
         }
       : null;
   });
@@ -298,7 +346,7 @@ export function DatasetBuilderTab() {
   const perImage = sceneCreditsPerImage(knobs, 0);
   const perImageRefs = sceneCreditsPerImage(knobs, subCount);
   const safeCount = Math.max(1, Math.min(SCENE_MAX_COUNT, Math.trunc(count || 0)));
-  const batchOpt = useMemo(() => ({ subCount, closeMain }), [subCount, closeMain]);
+  const batchOpt = useMemo(() => ({ subCount, closeMain, derived: derivedFlags }), [subCount, closeMain, derivedFlags]);
   // 料金は行ごと（参照が要る向きだけ係数付き）。指定を変えるたびに計画を組み直して見積もる。
   const previewPlan = useMemo(() => orderPlanForBatches(buildScenePlan(sel, safeCount), batchOpt), [sel, safeCount, batchOpt]);
   const previewBatches = useMemo(() => planBatches(previewPlan, batchOpt), [previewPlan, batchOpt]);
@@ -314,16 +362,26 @@ export function DatasetBuilderTab() {
   const submitBatch = useCallback(
     async (r: PersistedRun, batchIndex: number, mainFile: File, subs: File[]) => {
       if (!user) return;
-      const opt = { subCount: r.subCount, closeMain: r.closeMain };
+      const opt = { subCount: r.subCount, closeMain: r.closeMain, derived: r.derived };
       const batch = planBatches(r.plan, opt)[batchIndex];
       const items = batch?.items;
       if (!items) return;
+      // 寄りの行は「寄りの元画像」（参照の指定 → 自動切り出し の順）をメインにして参照なし。
+      // 参照付きの行はメイン＋参照。それ以外はメインだけ。
+      let closeFile: File | null = null;
+      if (batch.group.startsWith("close")) {
+        const f = items[0].framingId as CloseFraming;
+        const closeIdx = closeMainIndexFor(items[0], opt);
+        closeFile = closeIdx !== null ? subs[closeIdx] : (derivedRef.current[f] ?? null);
+        if (!closeFile) {
+          setErrorMessage(`${f === "upper" ? "上半身" : "バストアップ"}の元画像がありません。画像を入れ直すか、参照から選んでください。`);
+          setPhase("paused");
+          return;
+        }
+      }
       setPhase("submitting");
       setErrorMessage(null);
       try {
-        // 寄りの行は「寄りの元画像」をメインにして参照なし。参照付きの行はメイン＋参照。それ以外はメインだけ。
-        const closeIdx = closeMainIndexFor(items[0], opt);
-        const closeFile = batch.group.startsWith("close") && closeIdx !== null ? subs[closeIdx] : null;
         const res = await startAngleJob({
           userId: user.id,
           image: closeFile ?? mainFile,
@@ -349,7 +407,10 @@ export function DatasetBuilderTab() {
     },
     [user, commitRun, perImage],
   );
-  const runOpt = useMemo(() => (run ? { subCount: run.subCount, closeMain: run.closeMain } : { subCount: 0, closeMain: {} }), [run]);
+  const runOpt = useMemo(
+    () => (run ? { subCount: run.subCount, closeMain: run.closeMain, derived: run.derived } : { subCount: 0, closeMain: {}, derived: {} }),
+    [run],
+  );
   const runBatches = useMemo(() => (run ? planBatches(run.plan, runOpt) : []), [run, runOpt]);
 
   // 「作る」→ まず一覧（日本語）を出して直せるようにする（2026-09-27、ホスト指摘「どんなプロンプトで作られるか分からない」）。
@@ -373,6 +434,7 @@ export function DatasetBuilderTab() {
       confirmed: !confirmFirst,
       subCount,
       closeMain,
+      derived: derivedFlags,
     };
     setJobs({});
     commitRun(r);
@@ -420,7 +482,7 @@ export function DatasetBuilderTab() {
             if (sawInProgress && next.status === "completed") markGpuWarm();
             const r = runRef.current;
             if (!r) return;
-            const batches = planBatches(r.plan, { subCount: r.subCount, closeMain: r.closeMain });
+            const batches = planBatches(r.plan, { subCount: r.subCount, closeMain: r.closeMain, derived: r.derived });
             const doneBatches = r.jobIds.length;
             if (next.status === "failed") {
               setErrorMessage(next.errorMessage || "生成に失敗しました。");
@@ -620,38 +682,66 @@ export function DatasetBuilderTab() {
           <p className="text-[11px] leading-relaxed text-muted/80">
             メインの画像からは分からない後ろ姿・真横があれば参照に足してください。参照は「真横・後ろ」の行にだけ使い、正面・斜めの行はメイン 1 枚で作ります（そのぶん速く・安く）。
           </p>
-          {subImages.length > 0 && (framingsInPlan.has("upper") || framingsInPlan.has("bust")) && (
+          {image && (framingsInPlan.has("upper") || framingsInPlan.has("bust")) && (
             <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
-              <p className="text-[11px] font-medium text-foreground">上半身・バストアップの行の元画像</p>
+              <p className="text-[11px] font-medium text-foreground">構図の元画像</p>
               <p className="text-[10px] leading-relaxed text-muted">
-                出来上がりは元画像の構図を保ちます（文章で「上半身」と指示しても全身になりやすい）。腰から上の画像は上半身用に、
-                胸から上の画像はバストアップ用に選んでください。バストアップの画像からは腰から上には広がりません。
+                出来上がりは元画像の構図を保ちます。上半身・バストアップの行は、メイン画像から自動で切り出した寄りの画像を元に作ります
+                （無料・切り出しの解像度は仕上がりに影響しません）。参照に寄った画像があれば、そちらを選ぶこともできます。
               </p>
+              {deriving && (
+                <p className="flex items-center gap-1.5 text-[10px] text-muted">
+                  <Loader2 size={10} className="animate-spin" /> メイン画像から切り出しています…
+                </p>
+              )}
               {(["upper", "bust"] as CloseFraming[])
                 .filter((f) => framingsInPlan.has(f))
-                .map((f) => (
-                  <div key={f} className="flex flex-wrap items-center gap-1.5">
-                    <span className="w-20 shrink-0 text-[11px] text-muted">{f === "upper" ? "上半身の元" : "バストアップの元"}</span>
-                    <button
-                      type="button"
-                      onClick={() => setCloseMain((p) => ({ ...p, [f]: null }))}
-                      className={`rounded-full border px-2.5 py-1 text-[11px] ${closeMain[f] == null ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink" : "border-border text-muted"}`}
-                    >
-                      メイン画像のまま
-                    </button>
-                    {subImages.map((file, i) => (
+                .map((f) => {
+                  const auto = f === "upper" ? derived.upper : derived.bust;
+                  const autoUrl = f === "upper" ? derivedUpperUrl : derivedBustUrl;
+                  const choice = closeChoice[f];
+                  const chip = (active: boolean) =>
+                    `rounded-full border px-2.5 py-1 text-[11px] ${active ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink" : "border-border text-muted"}`;
+                  return (
+                    <div key={f} className="flex flex-wrap items-center gap-1.5">
+                      {choice === "auto" && autoUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={autoUrl} alt="" className="h-12 w-10 shrink-0 rounded bg-black/40 object-contain" />
+                      ) : (
+                        <span className="h-12 w-10 shrink-0 rounded bg-black/20" />
+                      )}
+                      <span className="w-20 shrink-0 text-[11px] text-muted">{f === "upper" ? "上半身の元" : "バストアップの元"}</span>
                       <button
-                        key={i}
                         type="button"
-                        onClick={() => setCloseMain((p) => ({ ...p, [f]: i }))}
-                        className={`rounded-full border px-2.5 py-1 text-[11px] ${closeMain[f] === i ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink" : "border-border text-muted"}`}
-                        title={file.name}
+                        onClick={() => setCloseChoice((p) => ({ ...p, [f]: "auto" }))}
+                        disabled={!auto}
+                        title={auto ? "" : "メイン画像から切り出せませんでした（人物が検出できないか、既に寄っています）"}
+                        className={`${chip(choice === "auto")} disabled:opacity-40`}
                       >
-                        参照 {i + 1}
+                        自動で切り出し
                       </button>
-                    ))}
-                  </div>
-                ))}
+                      <button type="button" onClick={() => setCloseChoice((p) => ({ ...p, [f]: "main" }))} className={chip(choice === "main")}>
+                        メインのまま
+                      </button>
+                      {subImages.map((file, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => setCloseChoice((p) => ({ ...p, [f]: i }))}
+                          className={chip(choice === i)}
+                          title={file.name}
+                        >
+                          参照 {i + 1}
+                        </button>
+                      ))}
+                      {!auto && !deriving && choice === "auto" && (
+                        <span className="w-full text-[10px] text-amber-400">
+                          切り出せなかったので「メインのまま」で作ります。寄った画像を参照に入れて選ぶこともできます。
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
             </div>
           )}
           {notice && <p className="text-[11px] text-neon-violet">{notice}</p>}
@@ -857,7 +947,8 @@ export function DatasetBuilderTab() {
           <p className="text-[10px] leading-relaxed text-muted">
             各行の文を書き換えられます（日本語のまま。送るときに英訳します）。構図・向きは左の表示のとおり固定です。
             行を消すと枚数が減ります。左のチェックで「先に作る」行を選ぶと、その行から最初の {SCENE_BATCH_SIZE} 枚に入ります（最大 {SCENE_BATCH_SIZE} 枚）。
-            {closeMain.upper != null || closeMain.bust != null ? "「寄り元」の行は指定した参照を元に作ります。" : ""}{subCount > 0 ? "「参照」の印の行だけ参照画像を付けて作ります（料金も参照付き）。実行はメインだけの行 → 寄り元の行 → 参照付きの行の順です。" : ""}
+            {derivedFlags.upper || derivedFlags.bust ? "「切り出し」の行はメイン画像から自動で切り出した寄りの画像を元に作ります。" : ""}
+            {closeMain.upper != null || closeMain.bust != null ? "「寄り元 N」の行は参照 N を元に作ります。" : ""}{subCount > 0 ? "「参照」の印の行だけ参照画像を付けて作ります（料金も参照付き）。実行はメインだけの行 → 寄り元の行 → 参照付きの行の順です。" : ""}
           </p>
           <ol className="max-h-[420px] space-y-1 overflow-y-auto pr-1">
             {review.map((it, i) => (
@@ -881,9 +972,11 @@ export function DatasetBuilderTab() {
                 <span className="flex w-40 shrink-0 items-center gap-1 text-muted" title={scenePlanPreviewJa(it)}>
                   <span className="truncate">{scenePlanLabel({ ...it, custom: "", bodyJa: "" }).replace(/^（|）$/g, "")}</span>
                   {sceneItemGroup(it, batchOpt) === "refs" && <span className="shrink-0 rounded bg-neon-violet/20 px-1 text-[9px] text-neon-violet">参照</span>}
-                  {closeMainIndexFor(it, batchOpt) !== null && (
+                  {closeMainIndexFor(it, batchOpt) !== null ? (
                     <span className="shrink-0 rounded bg-neon-pink/20 px-1 text-[9px] text-neon-pink">寄り元 {(closeMainIndexFor(it, batchOpt) ?? 0) + 1}</span>
-                  )}
+                  ) : sceneItemUsesCloseSource(it, batchOpt) ? (
+                    <span className="shrink-0 rounded bg-neon-pink/20 px-1 text-[9px] text-neon-pink">切り出し</span>
+                  ) : null}
                 </span>
                 <span className="w-10 shrink-0 text-right font-mono text-[10px] text-muted">{sceneItemCredits(it, knobs, batchOpt)}C</span>
                 <input

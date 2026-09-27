@@ -6,15 +6,16 @@
 // （純関数・DOM非依存）に分離し、ここでは「画像を読み込む→検出する→
 // 矩形を計算する→キャンバスに描画してFileへ戻す」というI/Oの配線だけを担う。
 import {
+  SMART_CROP_OUTPUT_SIZE,
   clampBoxToImage,
   computeFaceCropBox,
   computeFullBodyCropBox,
   computeUpperBodyCropBox,
   cropOutputSize,
+  fitBoxToAspect,
   fullBodyOutputSize,
   type Box,
   type Point,
-  SMART_CROP_OUTPUT_SIZE,
 } from "@/lib/smartCropGeometry";
 import {
   detectSmartCropLandmarks,
@@ -330,6 +331,84 @@ export async function runSmartCrop(file: File): Promise<SmartCropOutput[]> {
 
     if (!outputs.length) return await fallbackAligned(img, stem);
     return outputs;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+// --- 素材づくり用: 1 枚から「構図の元画像」（上半身・バストアップ）を切り出す（2026-09-27） -------------------
+// 編集モデルは入力画像の構図を保つ（実測）ので、寄りの構図が欲しければ寄った元画像を渡す。これは学習素材ではなく
+// モデルに渡す元画像なので解像度は問わない（約 1MP に正規化して描き直される）。人物が取れなければ空を返す。
+export type FramingSources = { upper?: File; bust?: File };
+
+async function cropToFile(img: HTMLImageElement, box: Box, stem: string, tag: string, longEdge: number): Promise<File> {
+  const clamped = clampBoxToImage(box, img.naturalWidth, img.naturalHeight);
+  const scale = Math.min(1, longEdge / Math.max(clamped.width, clamped.height));
+  const outW = Math.max(64, Math.round(clamped.width * scale));
+  const outH = Math.max(64, Math.round(clamped.height * scale));
+  const canvas = await drawBoxToOutput(img, clamped, outW, outH);
+  return toFile(canvas, stem, tag);
+}
+
+export async function deriveFramingSources(file: File): Promise<FramingSources> {
+  const objectUrl = URL.createObjectURL(file);
+  const stem = file.name.replace(/\.[^.]+$/, "");
+  try {
+    const img = await loadImage(objectUrl);
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    const { people } = await detectSmartCropLandmarks(img);
+    const person = people[0];
+    if (!person?.pose) return {};
+    const pose = person.pose;
+    const lS0 = pose[POSE_LM.leftShoulder];
+    const rS0 = pose[POSE_LM.rightShoulder];
+    if (!isLandmarkVisible(lS0) || !isLandmarkVisible(rS0)) return {};
+    const lS = pt(lS0, w, h);
+    const rS = pt(rS0, w, h);
+    const shoulderY = Math.min(lS.y, rS.y);
+    const shoulderWidth = Math.hypot(lS.x - rS.x, lS.y - rS.y);
+    const cx = (lS.x + rS.x) / 2;
+    // 頭頂部: 顔の額があればそこから髪ぶん上、無ければ鼻〜肩の縦距離から（runSmartCrop と同じ考え方）。
+    let headTopY: number | null = null;
+    const forehead = person.face?.[FACE_LM.forehead];
+    if (forehead) headTopY = pt(forehead, w, h).y - shoulderWidth * 0.25;
+    const poseNose = pose[POSE_LM.nose];
+    if (headTopY === null) {
+      if (isLandmarkVisible(poseNose)) {
+        const n = pt(poseNose, w, h);
+        headTopY = n.y - Math.max(shoulderY - n.y, 1) * 1.6;
+      } else {
+        headTopY = shoulderY - shoulderWidth * 1.3;
+      }
+    }
+    const lH0 = pose[POSE_LM.leftHip];
+    const rH0 = pose[POSE_LM.rightHip];
+    const hipsOk = isLandmarkVisible(lH0) && isLandmarkVisible(rH0);
+    const midHipY = hipsOk ? (pt(lH0, w, h).y + pt(rH0, w, h).y) / 2 : null;
+    const out: FramingSources = {};
+    // 上半身（腰から上）: 腰が画像の中に写っているときだけ。既に寄っている元からは作らない。
+    if (midHipY !== null && midHipY < h * 0.98) {
+      const upperBox = computeUpperBodyCropBox({
+        headTop: { x: cx, y: headTopY },
+        leftShoulder: lS,
+        rightShoulder: rS,
+        midHip: { x: cx, y: midHipY },
+      });
+      out.upper = await cropToFile(img, upperBox, stem, "src_upper", 1024);
+    }
+    // バストアップ（胸から上）: 肩〜腰の 45%（腰が無ければ肩幅×0.9 下）を下端、横は肩幅×1.5、縦横比 4:5。
+    const chestY = midHipY !== null ? shoulderY + (midHipY - shoulderY) * 0.45 : shoulderY + shoulderWidth * 0.9;
+    if (chestY < h * 0.98 && chestY - headTopY > shoulderWidth * 0.8) {
+      const top = headTopY - (chestY - headTopY) * 0.12;
+      const width = shoulderWidth * 1.5;
+      const bustBox = fitBoxToAspect({ left: cx - width / 2, top, width, height: chestY - top }, 4, 5);
+      out.bust = await cropToFile(img, bustBox, stem, "src_bust", 1024);
+    }
+    return out;
+  } catch (err) {
+    console.warn("[deriveFramingSources] failed:", err);
+    return {};
   } finally {
     URL.revokeObjectURL(objectUrl);
   }

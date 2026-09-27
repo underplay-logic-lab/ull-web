@@ -222,7 +222,18 @@ export type CloseMainMap = Partial<Record<CloseFraming, number | null>>;
 /** ジョブの画像セットの種類。同じ種類の行だけ 1 ジョブにまとめる。 */
 export type SceneGroup = "main" | "close:upper" | "close:bust" | "refs";
 
-export type SceneBatchOptions = { subCount: number; closeMain: CloseMainMap };
+export type SceneBatchOptions = {
+  subCount: number;
+  closeMain: CloseMainMap;
+  /** メイン画像から自動で切り出した寄りの元があるか（構図ごと）。参照の指定が無いときに使う。 */
+  derived?: Partial<Record<CloseFraming, boolean>>;
+};
+
+/** この行が「寄りの元画像」（参照の指定 or 自動切り出し）から作られるか。 */
+export function sceneItemUsesCloseSource(item: ScenePlanItem, opt: SceneBatchOptions): boolean {
+  if (item.framingId !== "upper" && item.framingId !== "bust") return false;
+  return closeMainIndexFor(item, opt) !== null || Boolean(opt.derived?.[item.framingId]);
+}
 
 export function closeMainIndexFor(item: ScenePlanItem, opt: SceneBatchOptions): number | null {
   if (item.framingId !== "upper" && item.framingId !== "bust") return null;
@@ -232,7 +243,7 @@ export function closeMainIndexFor(item: ScenePlanItem, opt: SceneBatchOptions): 
 
 export function sceneItemGroup(item: ScenePlanItem, opt: SceneBatchOptions): SceneGroup {
   if (sceneItemNeedsRefs(item, opt.subCount)) return "refs";
-  if (closeMainIndexFor(item, opt) !== null) return item.framingId === "upper" ? "close:upper" : "close:bust";
+  if (sceneItemUsesCloseSource(item, opt)) return item.framingId === "upper" ? "close:upper" : "close:bust";
   return "main";
 }
 
