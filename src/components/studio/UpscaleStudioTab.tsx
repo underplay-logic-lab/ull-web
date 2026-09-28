@@ -662,7 +662,9 @@ export function UpscaleStudioTab() {
   );
   const batchTotalCredits = batchBreakdowns.reduce((sum, b) => sum + b.credits, 0);
   const batchInsufficientCredits =
-    Boolean(user) && !creditsLoading && batchTotalCredits > 0 && (credits ?? 0) < batchTotalCredits;
+    Boolean(user) &&
+    !creditsLoading &&
+    (credits ?? 0) < (batchTotalCredits > 0 ? batchTotalCredits : knobs.upscale_min_credits);
   const batchBusy = batchPhase === "submitting" || batchPhase === "running";
   const batchDoneCount = Object.values(batchJobs).filter(
     (j) => j.status === "completed" || j.status === "failed",
@@ -681,8 +683,8 @@ export function UpscaleStudioTab() {
 
   const handleBatchRun = useCallback(async () => {
     if (!user) return setLoginOpen(true);
+    if (!batchBusy && batchInsufficientCredits) return setChargeOpen(true);
     if (batchItems.length === 0) return;
-    if (batchInsufficientCredits) return setChargeOpen(true);
 
     setBatchPhase("submitting");
     setBatchError(null);
@@ -714,7 +716,7 @@ export function UpscaleStudioTab() {
       setBatchError(e.message || "バッチの作成に失敗しました。");
       if (e.message?.includes("クレジット")) setChargeOpen(true);
     }
-  }, [user, batchItems, batchInsufficientCredits, modelKey, modeId]);
+  }, [user, batchItems, batchBusy, batchInsufficientCredits, modelKey, modeId]);
 
   // job.resultUrl は署名前の生の値（Volume相対パスの場合あり）。実フェッチ
   // 直前に resolveUpscaleImageUrl で実URLへ解決する（CLAUDE.md §1）。
@@ -1595,7 +1597,7 @@ export function UpscaleStudioTab() {
             <button
               type="button"
               onClick={handleBatchRun}
-              disabled={(batchItems.length === 0 || batchBusy) && Boolean(user)}
+              disabled={(batchBusy || (batchItems.length === 0 && !batchInsufficientCredits)) && Boolean(user)}
               className={`mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold text-white transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
                 batchInsufficientCredits
                   ? "bg-amber-600/80 hover:opacity-90"
