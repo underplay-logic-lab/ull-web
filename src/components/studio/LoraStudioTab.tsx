@@ -221,7 +221,7 @@ import {
 } from "./LoraStudioTab.parts";
 import { RestorePrompt } from "@/components/studio/RestorePrompt";
 import { fileStoreClear, fileStoreGetMany, fileStorePutMany } from "@/lib/fileStore";
-import { loadFormState, saveFormState, studioFormStorageKey } from "@/lib/studioFormPersistence";
+import { loadFormState, studioFormStorageKey } from "@/lib/studioFormPersistence";
 
 // ---- データセットの保存と復元（2026-09-28、ホスト指摘）----
 // 画像は IndexedDB（fileStore）、キャプション・構図タグ・学習回数・除外・進み具合は localStorage の meta。
@@ -229,6 +229,8 @@ import { loadFormState, saveFormState, studioFormStorageKey } from "@/lib/studio
 // データセットを失う。復元は黙ってやらず「前回の続きを復元しますか？」（RestorePrompt）で選ばせる。
 const LORA_DATASET_FILE_PREFIX = "lora-dataset:";
 const LORA_DATASET_META_KEY = "lora-dataset-meta";
+// meta も画像と同じ接頭辞の下に置く（fileStoreClear(接頭辞) で一緒に消える）。画像の id は「名前::サイズ::日時」なので衝突しない。
+const LORA_DATASET_META_FILE_KEY = `${LORA_DATASET_FILE_PREFIX}__meta__`;
 // これを超えるデータセットは画像を保存しない（IndexedDB の割り当てはブラウザ次第。500 枚 × 数 MB を想定）。
 const LORA_DATASET_PERSIST_MAX_BYTES = 1.5 * 1024 * 1024 * 1024;
 type LoraDatasetMetaImage = {
@@ -1426,7 +1428,8 @@ export function LoraStudioTab({
   const datasetRestoreRef = useRef<LoraDatasetMeta | null>(null);
   datasetRestoreRef.current = datasetRestore;
   // 復元するか消去するか決まるまで保存しない（空の状態で保存すると、復元する前に消してしまう）。
-  const datasetPersistArmedRef = useRef(false);
+  // 復元するか決まるまで保存しない。state にして、決まった瞬間に保存の effect が走り直すようにする（2026-09-28）。
+  const [datasetPersistArmed, setDatasetPersistArmed] = useState(false);
   const savedFileIdsRef = useRef<Set<string>>(new Set());
   const [datasetPersistNote, setDatasetPersistNote] = useState<string | null>(null);
 
@@ -1441,20 +1444,38 @@ export function LoraStudioTab({
   }, []);
 
   // マウント時に 1 回: 残っていれば聞く。無ければすぐ保存を始める。
+  // meta は IndexedDB に置く（2026-09-28、ホスト報告「リロードしても戻らない」）。localStorage は端末のキャプション
+  // キャッシュ（最大 1,000 件の長文）と同居していて容量上限に当たると黙って保存に失敗するため。旧版の localStorage も読む。
   useEffect(() => {
-    const meta = loadFormState<LoraDatasetMeta>(LORA_DATASET_META_KEY);
-    const count = (meta?.images?.length ?? 0) + (meta?.excluded?.length ?? 0);
-    if (meta && meta.v === 1 && count > 0 && imagesRef.current.length === 0) {
-      setDatasetRestore(meta as LoraDatasetMeta);
-    } else {
-      datasetPersistArmedRef.current = true;
-    }
+    let cancelled = false;
+    void (async () => {
+      let meta: Partial<LoraDatasetMeta> | null = null;
+      const f = (await fileStoreGetMany([LORA_DATASET_META_FILE_KEY])).get(LORA_DATASET_META_FILE_KEY);
+      if (f) {
+        try {
+          meta = JSON.parse(await f.text()) as Partial<LoraDatasetMeta>;
+        } catch {
+          meta = null;
+        }
+      }
+      if (!meta) meta = loadFormState<LoraDatasetMeta>(LORA_DATASET_META_KEY);
+      if (cancelled) return;
+      const count = (meta?.images?.length ?? 0) + (meta?.excluded?.length ?? 0);
+      if (meta && meta.v === 1 && count > 0 && imagesRef.current.length === 0) {
+        setDatasetRestore(meta as LoraDatasetMeta);
+      } else {
+        setDatasetPersistArmed(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const discardDatasetRestore = useCallback(() => {
     setDatasetRestore(null);
     clearDatasetStore();
-    datasetPersistArmedRef.current = true;
+    setDatasetPersistArmed(true);
   }, [clearDatasetStore]);
 
   // 聞いている間に画像が入った（ドロップ・他のタブからの受け取り）＝新しく始めた。前回分は消す。
@@ -1527,6 +1548,9 @@ export function LoraStudioTab({
       setSettingsVisited(Boolean(meta.flags?.settingsVisited));
       // キャプションは meta から戻したので、端末キャッシュの再利用を聞き直さない。
       zombieDraftDecidedRef.current = true;
+      // リロードで直前の学習の画面に着地していても、復元したデータが見えるようにフォームへ戻す（ジョブは保持される）。
+      setPhase("form");
+      setSubmitting(false);
       setAddNotice(
         `前回の続きを復元しました（画像 ${newImgs.length} 枚` +
           (excluded.length ? `・脇に置いた画像 ${excluded.length} 枚` : "") +
@@ -1535,14 +1559,14 @@ export function LoraStudioTab({
       );
     } finally {
       setDatasetRestore(null);
-      datasetPersistArmedRef.current = true;
+      setDatasetPersistArmed(true);
       setDatasetRestoring(false);
     }
   }, []);
 
   // 保存（差分）。画像・キャプション・構図タグ・学習回数・除外・進み具合が変わるたび、少し待ってまとめて書く。
   useEffect(() => {
-    if (!datasetPersistArmedRef.current || phase !== "form") return;
+    if (!datasetPersistArmed || phase !== "form") return;
     const t = window.setTimeout(() => {
       const ids = new Set([...images.map((i) => i.id), ...excludedImages.map((e) => e.img.id)]);
       if (ids.size === 0) {
@@ -1588,12 +1612,12 @@ export function LoraStudioTab({
         })),
         flags: { analysisStarted, captionStarted, identityConfirmed, repeatsApplied, settingsVisited },
       };
-      saveFormState(LORA_DATASET_META_KEY, meta);
+      const metaFile = new File([JSON.stringify(meta)], "lora-dataset-meta.json", { type: "application/json" });
       const prev = savedFileIdsRef.current;
       const puts = [...ids].filter((id) => !prev.has(id)).map((id) => ({ key: LORA_DATASET_FILE_PREFIX + id, file: fileOf.get(id) ?? null }));
       const dels = [...prev].filter((id) => !ids.has(id)).map((id) => ({ key: LORA_DATASET_FILE_PREFIX + id, file: null }));
       savedFileIdsRef.current = ids;
-      void fileStorePutMany([...puts, ...dels]);
+      void fileStorePutMany([...puts, ...dels, { key: LORA_DATASET_META_FILE_KEY, file: metaFile }]);
     }, 800);
     return () => window.clearTimeout(t);
   }, [
@@ -1610,6 +1634,7 @@ export function LoraStudioTab({
     repeatsApplied,
     settingsVisited,
     clearDatasetStore,
+    datasetPersistArmed,
   ]);
   useEffect(() => {
     captionsRef.current = captions;
@@ -3836,10 +3861,9 @@ export function LoraStudioTab({
     if (!was || autoCap.running || phase !== "form" || captionSource !== "ai") return;
     setRepeatsApplied(false);
     setSettingsVisited(false);
-    // おまかせで整えた後は、学習回数の均しも自動でかける（2026-09-25、ホスト案の④）。
-    if (autoTidyRef.current?.phase === "done") {
-      setAutoTidy((s) => (s ? { ...s, repeatsPending: true } : s));
-    }
+    // 以前はおまかせの後に均しを自動でかけていた（2026-09-25 のホスト案④）が、2026-09-28 のホスト指摘で撤回:
+    // 「学習回数の枠と、おすすめ学習回数のボタンが光り、押したら学習設定へ進むだけが光る」形にする。
+    // 自動でかけると repeatsApplied が立って「学習設定へ進む」しか光らず、均しを押す場面が無かった。
     const t = window.setTimeout(scrollToNextFlow, 300);
     return () => window.clearTimeout(t);
   }, [autoCap.running, phase, captionSource, scrollToNextFlow]);
@@ -4114,7 +4138,7 @@ export function LoraStudioTab({
     log.push(
       captionSource === "manual"
         ? "構図の偏りを学習回数で均します。"
-        : "キャプションが出来たら、構図の偏りを学習回数で均します。",
+        : "キャプションが出来たら、学習回数の欄の「構図の偏りを均す」を押してください。",
     );
     const done: AutoTidyState = { ...st, phase: "done", log: [...st.log, ...log], repeatsPending: captionSource === "manual" };
     autoTidyRef.current = done;
@@ -5000,7 +5024,7 @@ export function LoraStudioTab({
     // 保存したデータセット（画像・キャプション・進み具合）も消す。完全リセットの意図はここまで含む。
     setDatasetRestore(null);
     clearDatasetStore();
-    datasetPersistArmedRef.current = true;
+    setDatasetPersistArmed(true);
     setPrimaryDescription("");
     setPrimaryFixedTags("");
     setPrimaryIdentityTags("");
@@ -5047,6 +5071,23 @@ export function LoraStudioTab({
   // "クレジット不足" card) is torn down completely and only the progress
   // panel renders. No form re-render can flash a stale credit warning while
   // a paid job is running (requirement: phase="tracking" full isolation).
+  const restorePromptEl = datasetRestore ? (
+        <RestorePrompt
+          summary={
+            `画像 ${datasetRestore.images.length} 枚` +
+            (() => {
+              const caps = datasetRestore.images.filter((m) => (m.caption ?? "").trim()).length;
+              return caps > 0 ? `・キャプション ${caps} 件` : "";
+            })() +
+            (datasetRestore.excluded.length > 0 ? `・脇に置いた画像 ${datasetRestore.excluded.length} 枚` : "")
+          }
+          savedAt={datasetRestore.savedAt}
+          busy={datasetRestoring}
+          onRestore={() => void restoreDataset()}
+          onDiscard={discardDatasetRestore}
+        />
+  ) : null;
+
   if (phase === "starting" || phase === "tracking") {
     return (
       <div
@@ -5054,6 +5095,8 @@ export function LoraStudioTab({
         data-source-file="src/components/studio/LoraStudioTab.tsx"
         className="scroll-mt-20 space-y-6"
       >
+        {/* リロードで学習の画面に着地したときも、前回のデータセットを戻せるようにする（2026-09-28）。復元するとフォームへ戻る。 */}
+        {phase === "tracking" && restorePromptEl}
         <div className="rounded-2xl border-gradient bg-surface/40 p-5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
@@ -5391,22 +5434,7 @@ export function LoraStudioTab({
         </div>
       )}
 
-      {datasetRestore && phase === "form" && (
-        <RestorePrompt
-          summary={
-            `画像 ${datasetRestore.images.length} 枚` +
-            (() => {
-              const caps = datasetRestore.images.filter((m) => (m.caption ?? "").trim()).length;
-              return caps > 0 ? `・キャプション ${caps} 件` : "";
-            })() +
-            (datasetRestore.excluded.length > 0 ? `・脇に置いた画像 ${datasetRestore.excluded.length} 枚` : "")
-          }
-          savedAt={datasetRestore.savedAt}
-          busy={datasetRestoring}
-          onRestore={() => void restoreDataset()}
-          onDiscard={discardDatasetRestore}
-        />
-      )}
+      {restorePromptEl}
       {datasetPersistNote && (
         <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-400">
           {datasetPersistNote}
