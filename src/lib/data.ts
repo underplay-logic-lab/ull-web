@@ -250,7 +250,18 @@ export const contactServices = [
   "決済・アカウントに関するご質問",
   "システムの不具合・バグ報告",
   "大口利用・エンタープライズプランのご相談",
-  "機能リクエスト（会員特典）",
-  "技術的なご相談（会員特典・スタンダード以上）",
   "その他",
 ];
+
+// 会員特典の問い合わせ（2026-09-28）。条件を満たす会員（解約予約中を除く）のフォームにだけ選択肢を出し、
+// /api/contact もサーバー側で同じ条件を確かめる（選択肢を細工して送られても通さない）。
+export const MEMBER_TIER_RANK: Record<string, number> = { entry: 1, standard: 2, pro: 3, master: 4, studio: 5 };
+export const memberContactServices: { label: string; minTier: keyof typeof MEMBER_TIER_RANK }[] = [
+  { label: "機能リクエスト（会員特典）", minTier: "entry" },
+  { label: "技術的なご相談（会員特典）", minTier: "standard" },
+];
+
+export function memberContactServicesFor(tier: string | null | undefined): string[] {
+  const rank = MEMBER_TIER_RANK[tier ?? ""] ?? 0;
+  return memberContactServices.filter((s) => rank >= MEMBER_TIER_RANK[s.minTier]).map((s) => s.label);
+}

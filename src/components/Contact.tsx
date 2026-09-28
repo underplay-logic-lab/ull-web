@@ -2,12 +2,18 @@
 
 import { useState, type FormEvent } from "react";
 import { Send, CheckCircle, Loader2, AlertCircle } from "lucide-react";
-import { contactServices } from "@/lib/data";
+import { contactServices, memberContactServicesFor } from "@/lib/data";
+import { useSupabaseUser } from "@/hooks/useSupabaseUser";
+import { useProfileCredits } from "@/hooks/useProfileCredits";
 import { supabase } from "@/lib/supabaseClient";
 
 type FormState = "idle" | "submitting" | "success" | "error";
 
 export function Contact() {
+  const { user } = useSupabaseUser();
+  const { tier, cancelAtPeriodEnd } = useProfileCredits(user);
+  // 会員特典の選択肢は条件を満たす会員だけに出す（解約予約中は特典停止＝チャージ優待と同じ扱い）。
+  const services = [...(cancelAtPeriodEnd ? [] : memberContactServicesFor(tier)), ...contactServices];
   const [formState, setFormState] = useState<FormState>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [formData, setFormData] = useState({
@@ -72,14 +78,14 @@ export function Contact() {
               お問い合わせ
             </h2>
             <p className="mt-4 leading-relaxed text-muted">
-              ご利用中のサービスに関するご質問、決済・アカウントのお困りごと、 不具合のご報告、リクエストまで、お気軽にお問い合わせください。
+              ご利用中のサービスに関するご質問、決済・アカウントのお困りごと、 不具合のご報告まで、お気軽にお問い合わせください。
             </p>
             <p className="mt-3 text-xs leading-relaxed text-muted">
               月額プランの会員は、機能リクエスト（全プラン）と技術的なご相談（スタンダード以上）を受け付けています。ログインした状態で送ると、上位のプランから優先して検討します。すべてのご要望への対応や、回答の期限をお約束するものではありません。
             </p>
 
             <ul className="mt-8 space-y-3">
-              {contactServices.map((service) => (
+              {services.map((service) => (
                 <li
                   key={service}
                   className="flex items-center gap-3 text-sm text-foreground/80"
@@ -214,7 +220,7 @@ export function Contact() {
                     className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
                   >
                     <option value="">選択してください</option>
-                    {contactServices.map((service) => (
+                    {services.map((service) => (
                       <option key={service} value={service}>
                         {service}
                       </option>

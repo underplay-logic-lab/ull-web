@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { Resend } from "resend";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { memberContactServices, memberContactServicesFor } from "@/lib/data";
 
 const TIER_LABEL: Record<string, string> = {
   entry: "エントリー",
@@ -82,6 +83,17 @@ export async function POST(request: Request) {
   // 会員特典（リクエスト・技術的なご相談は上位プランから優先して検討）: ログイン中なら送信者と今のプランを残す。
   // 解約予約中は特典が止まっている扱い（チャージ優待と同じ）。読めなくても問い合わせ自体は受け付ける。
   const member = await resolveMember(request);
+  // 会員特典の相談内容は、条件を満たす会員からだけ受け付ける（フォームは選択肢を出し分けているが、細工された送信も弾く）。
+  if (
+    service &&
+    memberContactServices.some((s) => s.label === service) &&
+    !memberContactServicesFor(member?.tier).includes(service)
+  ) {
+    return NextResponse.json(
+      { error: "この相談内容は月額プランの会員特典です（技術的なご相談はスタンダード以上）。ログインしてから送ってください。" },
+      { status: 403 },
+    );
+  }
   const subjectTag = member?.tier ? `【${TIER_LABEL[member.tier] ?? member.tier}会員】` : "";
 
   const baseRow = { name, email, company: company || null, service: service || null, message };
