@@ -228,6 +228,8 @@ import { loadFormState, studioFormStorageKey } from "@/lib/studioFormPersistence
 // 素材づくりが画像を復元するようになったので、LoRA 側だけ消えると「リロードしても消えない」と思い込んで
 // データセットを失う。復元は黙ってやらず「前回の続きを復元しますか？」（RestorePrompt）で選ばせる。
 const LORA_DATASET_FILE_PREFIX = "lora-dataset:";
+// キャプション完了後のスクロール先（学習回数の欄）。
+const REPEATS_PANEL_ID = "lora-repeats-panel";
 const LORA_DATASET_META_KEY = "lora-dataset-meta";
 // meta も画像と同じ接頭辞の下に置く（fileStoreClear(接頭辞) で一緒に消える）。画像の id は「名前::サイズ::日時」なので衝突しない。
 const LORA_DATASET_META_FILE_KEY = `${LORA_DATASET_FILE_PREFIX}__meta__`;
@@ -803,6 +805,8 @@ export function LoraStudioTab({
             next.steps = rp.steps;
           // 無い（stepsAuto 導入前の下書き）なら自動に戻す。凍結された古い steps を引き継がないため（2026-09-28）。
           next.stepsAuto = typeof rp.stepsAuto === "boolean" ? rp.stepsAuto : true;
+          // 無い（recipeAuto 導入前の下書き）なら推奨値に戻す。凍結された rank・optimizer を引き継がないため（2026-09-28）。
+          next.recipeAuto = typeof rp.recipeAuto === "boolean" ? rp.recipeAuto : true;
           if (typeof rp.optimizer === "string" && OPTIMIZERS.includes(rp.optimizer))
             next.optimizer = rp.optimizer;
           if (legacyRawYaml !== undefined) next.rawYaml = legacyRawYaml;
@@ -2517,17 +2521,33 @@ export function LoraStudioTab({
             optimizer: autoConfig.optimizer,
             learningRate: autoConfig.learningRate,
           }
-        : pro.stepsAuto
-          ? { ...pro, steps: autoConfig.steps }
-          : pro,
+        : {
+            ...pro,
+            ...(pro.recipeAuto
+              ? {
+                  rank: autoConfig.rank,
+                  alpha: autoConfig.alpha,
+                  alphaLinked: false,
+                  optimizer: autoConfig.optimizer,
+                  learningRate: autoConfig.learningRate,
+                  lrCustom: false,
+                }
+              : {}),
+            ...(pro.stepsAuto ? { steps: autoConfig.steps } : {}),
+          },
     [proPristine, pro, autoConfig],
   );
   /** 設定を1つ変える。未編集だった場合はオートの推奨値ごと確定させる（steps は直接変えたときだけ固定）。 */
   const updatePro = useCallback(
     (patch: Partial<ProConfig>) =>
       setPro((p) => {
-        const next = { ...(proPristine ? effPro : p), ...patch };
+        // 画面に見えている値（推奨値を含む）を起点にする。p だと推奨で上書き中の古い値に戻ってしまう。
+        const next = { ...(proPristine || p.recipeAuto || p.stepsAuto ? effPro : p), ...patch };
         if (patch.steps !== undefined && patch.stepsAuto === undefined) next.stepsAuto = false;
+        const touchesRecipe = ["rank", "alpha", "alphaLinked", "optimizer", "learningRate", "lrCustom"].some(
+          (k) => k in patch,
+        );
+        if (touchesRecipe && patch.recipeAuto === undefined) next.recipeAuto = false;
         return next;
       }),
     [proPristine, effPro],
@@ -3880,7 +3900,13 @@ export function LoraStudioTab({
     // 以前はおまかせの後に均しを自動でかけていた（2026-09-25 のホスト案④）が、2026-09-28 のホスト指摘で撤回:
     // 「学習回数の枠と、おすすめ学習回数のボタンが光り、押したら学習設定へ進むだけが光る」形にする。
     // 自動でかけると repeatsApplied が立って「学習設定へ進む」しか光らず、均しを押す場面が無かった。
-    const t = window.setTimeout(scrollToNextFlow, 300);
+    // 学習回数の欄の頭へ送る（2026-09-28、ホスト報告「光るようになったがスクロール先はおまかせ欄やデータセット確認のあたり」）。
+    // 欄は背が高く、scrollToNextFlow の中央寄せだと欄の上の要素が見える位置で止まっていた。欄が無ければ従来どおり。
+    const t = window.setTimeout(() => {
+      const el = document.getElementById(REPEATS_PANEL_ID);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      else scrollToNextFlow();
+    }, 300);
     return () => window.clearTimeout(t);
   }, [autoCap.running, phase, captionSource, scrollToNextFlow]);
 
@@ -6273,7 +6299,7 @@ export function LoraStudioTab({
               取り込み → クロップ → 診断 を見てから比率を決める操作なので、
               順番として最後でないと「これで終わりなのか」が分からなくなる。 */}
           {images.length > 0 && !hideManualTools && (
-            <div>
+            <div id={REPEATS_PANEL_ID} className="scroll-mt-24">
             <RepeatWeightPanel
               images={images}
               disabled={busy}
@@ -7236,6 +7262,27 @@ export function LoraStudioTab({
                 <div className="space-y-3">
                   {/* Rank — discrete choices only */}
                   <div>
+                    <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]">
+                      {effPro.recipeAuto ? (
+                        <span className="text-neon-violet">
+                          Rank・学習方式・学習率はモデルの推奨値です（{effPro.optimizer}・rank {effPro.rank}）
+                        </span>
+                      ) : (
+                        <>
+                          <span className="text-amber-400">
+                            Rank・学習方式・学習率は手動で固定中（推奨は {autoConfig.optimizer}・rank {autoConfig.rank}）
+                          </span>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => updatePro({ recipeAuto: true })}
+                            className="rounded-lg border border-neon-violet/40 px-2 py-0.5 text-neon-violet transition-colors hover:bg-neon-violet/10 disabled:opacity-50"
+                          >
+                            推奨値に戻す
+                          </button>
+                        </>
+                      )}
+                    </div>
                     <label className="mb-1 block text-[10px] text-muted">Rank（LoRA の表現力）</label>
                     <div className="flex flex-wrap gap-1.5">
                       {RANK_OPTIONS.map((r) => (
