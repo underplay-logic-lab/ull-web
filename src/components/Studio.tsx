@@ -10,6 +10,7 @@ import { MultiAngleStudioTab } from "@/components/studio/MultiAngleStudioTab";
 import { UpscaleStudioTab } from "@/components/studio/UpscaleStudioTab";
 import { UpscaleVideoStudioTab } from "@/components/studio/UpscaleVideoStudioTab";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
+import { claimStudioStorage } from "@/lib/studioStorageOwner";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { EditableText } from "@/components/EditableText";
 import { STUDIO_TAB_EVENT, type StudioHandoffTab } from "@/lib/studioHandoff";
@@ -54,7 +55,23 @@ function ImageGenMaintenancePlaceholder() {
 }
 
 export function Studio() {
-  const { user } = useSupabaseUser();
+  const { user, loading: userLoading } = useSupabaseUser();
+  // 別アカウントに切り替わっていたら、前のアカウントの作業状態（実行中ジョブ等）を消してから
+  // タブを出す（消したら読み直す）。タブはマウント時に保存分を読むので、判定が済むまで描画しない。
+  const [storageReady, setStorageReady] = useState(false);
+  useEffect(() => {
+    if (userLoading) return;
+    let cancelled = false;
+    (async () => {
+      const wiped = user ? await claimStudioStorage(user.id) : false;
+      if (cancelled) return;
+      if (wiped) window.location.reload();
+      else setStorageReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user, userLoading]);
   const { isAdmin } = useIsAdmin(user);
   const [activeTab, setActiveTab] = useState<StudioTab>(DEFAULT_TAB);
   const visibleTabs = STUDIO_TABS.filter((tab) => !tab.adminOnly || isAdmin);
@@ -191,6 +208,8 @@ export function Studio() {
           </div>
         </div>
 
+        {storageReady && (
+          <>
         {/* 一度開いた LoRA Studio は hidden で残す（state を捨てないため）。 */}
         {loraMounted && (
           <div className={shownTab === "lora" ? undefined : "hidden"}>
@@ -216,6 +235,8 @@ export function Studio() {
           <DirectorStudioTab />
         ) : shownTab === "lora" ? null : (
           <ImageGenMaintenancePlaceholder />
+        )}
+          </>
         )}
       </div>
     </section>

@@ -399,6 +399,14 @@ export type DirectorJobStatus = {
   queue: { queuePosition: number; avgExecutionSeconds: number; estimatedWaitSeconds: number } | null;
 };
 
+/** ジョブ行が見つからない（自動 purge 済み・別アカウントのジョブ等）。リトライしても直らないので呼び出し側で区別する。 */
+export class DirectorJobNotFoundError extends Error {
+  constructor() {
+    super("ジョブが見つかりません。");
+    this.name = "DirectorJobNotFoundError";
+  }
+}
+
 export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -408,6 +416,7 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
     headers: { Authorization: `Bearer ${accessToken}` },
     cache: "no-store",
   });
+  if (res.status === 404) throw new DirectorJobNotFoundError();
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || "ジョブ状態の取得に失敗しました。");
 

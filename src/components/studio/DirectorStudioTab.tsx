@@ -42,6 +42,7 @@ import {
 import { CINEMATIC_MODE_BY_ID, cinematicMegapixels, cinematicSafeDimensions } from "@/lib/cinematicPricing";
 import {
   pollDirectorJob,
+  DirectorJobNotFoundError,
   startDirectorJob,
   downloadDirectorVideo,
   listDirectorLoras,
@@ -742,6 +743,13 @@ export function DirectorStudioTab() {
           setPhase("running");
         } catch (err) {
           if (cancelled) return;
+          if (err instanceof DirectorJobNotFoundError) {
+            // 一時的な通信エラーと違いリトライしても直らない。すぐ諦めて案内し、古い参照は消す（CLAUDE.md §6-2）。
+            setPhase("error");
+            setErrorMessage("このジョブの記録が見つかりませんでした。お手数ですが新しく生成してください。");
+            saveFormState(JOB_KEY, { jobId: "" });
+            return;
+          }
           errorStreak += 1;
           console.warn("[DirectorStudioTab] poll error:", err);
           if (errorStreak >= POLL_MAX_CONSECUTIVE_ERRORS) {
