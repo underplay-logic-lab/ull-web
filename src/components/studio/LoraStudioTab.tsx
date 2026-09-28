@@ -558,6 +558,8 @@ export function LoraStudioTab({
 
   const pollCancelledRef = useRef(false);
   const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 完了後も成果物の R2 転送が終わるまで数回だけ取り直す（2026-09-28）。上限は転送の見込み（数分）の 2 倍以上。
+  const transferPollsRef = useRef(0);
   // Count of consecutive failed poll ticks. Reset to 0 on any 200; when it
   // reaches MAX_RETRY_COUNT the loop stops and `pollLost` is raised.
   const consecutiveErrorsRef = useRef(0);
@@ -2958,6 +2960,11 @@ export function LoraStudioTab({
             if (next.status === "failed_timeout" && typeof window !== "undefined") {
               localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
             }
+            // 完了直後は成果物が R2 へ転送中（1〜3 分）。r2_key が付くまで 10 秒おきに取り直す（最長 10 分）。
+            if (next.status === "completed" && next.artifactsTransferring && transferPollsRef.current < 60) {
+              transferPollsRef.current += 1;
+              if (!pollCancelledRef.current) pollTimeoutRef.current = setTimeout(tick, 10_000);
+            }
             return;
           }
           if (next.status === "processing") {
@@ -2967,6 +2974,7 @@ export function LoraStudioTab({
 
         if (!pollCancelledRef.current) pollTimeoutRef.current = setTimeout(tick, JOB_POLL_INTERVAL_MS);
       };
+      transferPollsRef.current = 0;
       pollTimeoutRef.current = setTimeout(tick, opts?.immediate ? 0 : JOB_POLL_INTERVAL_MS);
     },
     [refreshCredits],
@@ -3396,6 +3404,7 @@ export function LoraStudioTab({
         safetyStop: false,
         safetyKind: null,
         queue: null,
+        artifactsTransferring: false,
       });
       setPhase("tracking");
       // 送信ロックはここで解く。以前は成功経路で true のまま残り、完了後に

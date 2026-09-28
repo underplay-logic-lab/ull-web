@@ -636,6 +636,9 @@ export type LoraJobStatus = {
   queue:
     | { queuePosition: number; avgExecutionSeconds: number; estimatedWaitSeconds: number }
     | null;
+  // 完了直後、成果物がまだ Volume から R2 へ転送中（2026-09-28）。この間の 2 本以上の一括は旧経路の ZIP に落ちて
+  // 遅くなるので、画面は「転送中」を出して一括を止め、ポーリングは転送が終わるまで続ける。
+  artifactsTransferring: boolean;
 };
 
 // A pollLoraJob failure, tagged so the caller's polling loop can decide
@@ -697,8 +700,16 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
     eta_seconds?: unknown;
     loss?: unknown;
     logs?: unknown;
+    artifact_store?: unknown;
+    r2_publish?: unknown;
   };
   const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  // R2 のジョブで、まだ r2_key の無いチェックポイントがある＝転送中（publish 関数が metadata を書くまで 1〜3 分）。
+  const artifactsTransferring =
+    meta.artifact_store === "r2" &&
+    !meta.r2_publish &&
+    Array.isArray(meta.checkpoints) &&
+    (meta.checkpoints as Record<string, unknown>[]).some((c) => typeof c.filename === "string" && !c.r2_key);
   const logs: string[] | null = Array.isArray(meta.logs)
     ? (meta.logs as unknown[]).filter((l): l is string => typeof l === "string").slice(-60)
     : null;
@@ -730,6 +741,7 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
     loss: num(meta.loss),
     logs,
     checkpoints,
+    artifactsTransferring,
     refunded: typeof meta.refunded === "boolean" ? meta.refunded : null,
     customYaml: meta.custom_yaml === true,
     safetyStop: meta.safety_stop === true,

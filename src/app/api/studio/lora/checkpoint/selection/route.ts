@@ -118,6 +118,16 @@ export async function GET(request: Request): Promise<NextResponse> {
     }
   }
 
+  // R2 のジョブで転送が終わっていない（r2_publish 未記録・r2_key の無い項目がある）なら、旧経路の ZIP に落とさず
+  // 待ってもらう（2026-09-28、ホスト報告「完了直後に押したら ZIP で遅かった」）。転送は publish 関数で 1〜3 分。
+  const jobMeta = (job.metadata ?? {}) as { artifact_store?: unknown; r2_publish?: unknown };
+  if (jobMeta.artifact_store === "r2" && !jobMeta.r2_publish) {
+    return NextResponse.json(
+      { error: "成果物を保存先へ移しています（1〜3 分）。終わってから一括ダウンロードしてください。1 本ずつなら今すぐダウンロードできます。" },
+      { status: 409 },
+    );
+  }
+
   try {
     // Token carries the JOB OWNER's id — the worker resolves files at
     // loras/<owner_id>/<job_id>/, so signing with an admin requester's id 404s.

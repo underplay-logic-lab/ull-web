@@ -2307,6 +2307,15 @@ export function ProgressPanel({
         <p className="mt-1 text-[11px] text-muted">
           この LoRA はモデルライブラリに保存されました。
         </p>
+        {job.artifactsTransferring && (
+          <p className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-400">
+            <Loader2 size={12} className="mt-0.5 shrink-0 animate-spin" />
+            <span>
+              成果物を高速ダウンロード用の保存先へ移しています（1〜3 分）。終わると一括ダウンロードが使えるようになります。
+              1 本ずつのダウンロードは今すぐできますが、この間は速度が出ません。
+            </span>
+          </p>
+        )}
 
         {/* Completed jobs don't get the single 完成版 button — final (Step 3000)
             is already in the checkpoint list below (selection DL + per-row ⬇️).
@@ -2390,8 +2399,13 @@ export function ProgressPanel({
                 <button
                   type="button"
                   onClick={() => handleSelectionDownload(selectedFiles)}
-                  disabled={selectedCount === 0 || bulk.state === "preparing"}
-                  title="チェックを入れたチェックポイントをまとめてダウンロードします（ファイルごとに直通リンクで並列取得・解凍不要）。"
+                  // 転送中に 2 本以上を押すと旧経路の ZIP（遅い）に落ちるので止める（2026-09-28、ホスト報告）。
+                  disabled={selectedCount === 0 || bulk.state === "preparing" || (job.artifactsTransferring && selectedCount > 1)}
+                  title={
+                    job.artifactsTransferring && selectedCount > 1
+                      ? "成果物の転送が終わるまで一括ダウンロードは待ってください（1〜3 分）。"
+                      : "チェックを入れたチェックポイントをまとめてダウンロードします（ファイルごとに直通リンクで並列取得・解凍不要）。"
+                  }
                   className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-3 text-sm font-bold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {bulk.state === "preparing" ? (
