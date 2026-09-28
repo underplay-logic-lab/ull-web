@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Activity, DollarSign, FileText, HardDrive, Image, Sparkles, Workflow } from "lucide-react";
+import { Activity, DollarSign, FileText, HardDrive, Image, Inbox, Sparkles, Workflow } from "lucide-react";
 import { PresetsTab } from "./_components/PresetsTab";
 import { PricingTab } from "./_components/PricingTab";
 import { LogsTab } from "./_components/LogsTab";
@@ -9,6 +9,7 @@ import { CustomWorkflowsTab } from "./_components/CustomWorkflowsTab";
 import { SiteContentsTab } from "./_components/SiteContentsTab";
 import { ModalStorageTab } from "./_components/ModalStorageTab";
 import { GeneratedArtifactsTab } from "./_components/GeneratedArtifactsTab";
+import { InquiriesTab } from "./_components/InquiriesTab";
 
 type AdminTab =
   | "presets"
@@ -17,7 +18,8 @@ type AdminTab =
   | "custom-workflows"
   | "site-contents"
   | "modal-storage"
-  | "generated";
+  | "generated"
+  | "inquiries";
 
 const TABS: { id: AdminTab; label: string; icon: typeof Sparkles }[] = [
   { id: "presets", label: "プリセット管理", icon: Sparkles },
@@ -27,6 +29,7 @@ const TABS: { id: AdminTab; label: string; icon: typeof Sparkles }[] = [
   { id: "site-contents", label: "サイトコンテンツ管理", icon: FileText },
   { id: "generated", label: "生成物 & ストレージ", icon: Image },
   { id: "modal-storage", label: "Modal ストレージ & ノード管理", icon: HardDrive },
+  { id: "inquiries", label: "問い合わせ", icon: Inbox },
 ];
 
 export default function AdminPage() {
@@ -58,6 +61,7 @@ export default function AdminPage() {
 
       {activeTab === "presets" && <PresetsTab />}
       {activeTab === "pricing" && <PricingTab />}
+      {activeTab === "inquiries" && <InquiriesTab />}
       {activeTab === "logs" && <LogsTab />}
       {activeTab === "custom-workflows" && <CustomWorkflowsTab />}
       {activeTab === "site-contents" && <SiteContentsTab />}

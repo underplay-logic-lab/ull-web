@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { ArrowRight, Check, Loader2, Settings, Sparkles } from "lucide-react";
-import { pricingPlans, type PricingPlan } from "@/lib/data";
+import { ENTRY_FIRST_PURCHASE_OFF_JPY, pricingPlans, type PricingPlan } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
 import { ToastStack, type ToastData } from "@/components/Toast";
 import { CancellationWarningModal } from "@/components/CancellationWarningModal";
@@ -248,6 +248,13 @@ export function Pricing() {
                   </span>
                 )}
               </div>
+              {/* 初回購入のみエントリー初月 ¥600 引き（2026-09-28 ホスト判断。資格はチェックアウトで判定）。
+                  購入済みの人（会員）には出さない。会員でなくても過去に都度チャージを買っていれば対象外なので「初めての購入なら」と書く。 */}
+              {plan.id === "entry" && !isPaidMember && (
+                <p className="mt-1.5 inline-flex w-fit items-center gap-1 rounded-full bg-neon-pink/10 px-2.5 py-1 font-mono text-[11px] font-medium text-neon-pink">
+                  初めてのご購入なら初月 ¥{(plan.priceYen - ENTRY_FIRST_PURCHASE_OFF_JPY).toLocaleString()}
+                </p>
+              )}
               {plan.id === "topup" && topupDiscountPct > 0 && (
                 <p className="mt-1.5 inline-flex w-fit items-center gap-1 rounded-full bg-neon-pink/10 px-2.5 py-1 font-mono text-[11px] font-medium text-neon-pink">
                   会員ランク優待 {topupDiscountPct}%OFF 適用中
@@ -345,9 +352,13 @@ export function Pricing() {
         </a>
 
         <p className="mt-8 text-center text-xs text-muted">
-          安全な決済プラットフォーム（Polar.sh）により、クレジットカード、Apple Pay、Google
+          お支払いは決済代行（Polar.sh）の画面で行われ、カード情報が当サイトに渡ることはありません。クレジットカード、Apple Pay、Google
           Payに対応しています。価格はすべて税込表示です。
-          生成物の権利はユーザーに帰属しますが、商用利用の可否は使用した各AIモデル・LoRA固有のオープンソースライセンスに準じます。
+          生成した画像・動画は商用利用できます（LoRA Studio で学習した LoRA ファイルは、選んだベースモデルのライセンスに従います）。
+          <br />
+          ※機能リクエスト・技術的なご相談は、上位のプランから優先して検討します。すべてのご要望への対応や回答の期限をお約束するものではありません。技術的なご相談は ULL Studio の使い方・学習設定・プロンプトに関するものに限ります。
+          <br />
+          ※初月割引は、そのアカウントで初めてのご購入の場合に限り、月額エントリーの初回のお支払いに適用されます（2 か月目以降は通常価格）。
           <br />
           ※サブスクリプションを解約予約された場合、デイリーログインボーナスの付与は即日停止されます（保有クレジットは有効期限までご利用可能）。
           <br />

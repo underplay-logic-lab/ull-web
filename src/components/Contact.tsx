@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { Send, CheckCircle, Loader2, AlertCircle } from "lucide-react";
 import { contactServices } from "@/lib/data";
+import { supabase } from "@/lib/supabaseClient";
 
 type FormState = "idle" | "submitting" | "success" | "error";
 
@@ -24,9 +25,16 @@ export function Contact() {
     setErrorMessage(null);
 
     try {
+      // ログイン中ならトークンを付ける（サーバーが今のプランを問い合わせに付け、上位プランから優先して検討する）。
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       const res = await fetch("/api/contact", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
         body: JSON.stringify(formData),
       });
 
@@ -65,6 +73,9 @@ export function Contact() {
             </h2>
             <p className="mt-4 leading-relaxed text-muted">
               ご利用中のサービスに関するご質問、決済・アカウントのお困りごと、 不具合のご報告、リクエストまで、お気軽にお問い合わせください。
+            </p>
+            <p className="mt-3 text-xs leading-relaxed text-muted">
+              月額プランの会員は、機能リクエスト（全プラン）と技術的なご相談（スタンダード以上）を受け付けています。ログインした状態で送ると、上位のプランから優先して検討します。すべてのご要望への対応や、回答の期限をお約束するものではありません。
             </p>
 
             <ul className="mt-8 space-y-3">

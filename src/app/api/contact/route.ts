@@ -2,6 +2,35 @@ import { NextResponse } from "next/server";
 import { Resend } from "resend";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
+const TIER_LABEL: Record<string, string> = {
+  entry: "エントリー",
+  standard: "スタンダード",
+  pro: "プロ",
+  master: "マスター",
+  studio: "スタジオ",
+};
+
+async function resolveMember(request: Request): Promise<{ userId: string; tier: string | null } | null> {
+  const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+  if (!token) return null;
+  try {
+    const { data } = await supabaseAdmin.auth.getUser(token);
+    const userId = data?.user?.id;
+    if (!userId) return null;
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("subscription_tier, cancel_at_period_end")
+      .eq("id", userId)
+      .maybeSingle();
+    const tier = (profile?.subscription_tier as string | null) ?? null;
+    const active = tier && tier in TIER_LABEL && !profile?.cancel_at_period_end;
+    return { userId, tier: active ? tier : null };
+  } catch (err) {
+    console.error("[Contact Form] could not resolve member tier:", err);
+    return null;
+  }
+}
+
 type ContactPayload = {
   name?: string;
   email?: string;
@@ -50,20 +79,27 @@ export async function POST(request: Request) {
   // is the durable record of the inquiry. A Resend failure below (e.g. an
   // unverified sending domain) must never lose an inquiry the customer
   // already submitted, only the notification about it.
-  const { data: inquiryRow, error: insertError } = await supabaseAdmin
-    .from("contact_inquiries")
-    .insert({
-      name,
-      email,
-      company: company || null,
-      service: service || null,
-      message,
-    })
-    .select("id")
-    .single();
+  // 会員特典（リクエスト・技術的なご相談は上位プランから優先して検討）: ログイン中なら送信者と今のプランを残す。
+  // 解約予約中は特典が止まっている扱い（チャージ優待と同じ）。読めなくても問い合わせ自体は受け付ける。
+  const member = await resolveMember(request);
+  const subjectTag = member?.tier ? `【${TIER_LABEL[member.tier] ?? member.tier}会員】` : "";
 
-  if (insertError) {
-    console.error("[Contact Form] failed to persist inquiry:", insertError.message);
+  const baseRow = { name, email, company: company || null, service: service || null, message };
+  const insertInquiry = (row: Record<string, unknown>) =>
+    supabaseAdmin.from("contact_inquiries").insert(row).select("id").single();
+  let { data: inquiryRow, error: insertError } = await insertInquiry({
+    ...baseRow,
+    user_id: member?.userId ?? null,
+    member_tier: member?.tier ?? null,
+  });
+  // マイグレーション 20260891 の適用前（member_tier 列が無い）でも問い合わせを取りこぼさない。
+  if (insertError && /member_tier|user_id/.test(insertError.message)) {
+    console.warn("[Contact Form] member columns missing — saving without them:", insertError.message);
+    ({ data: inquiryRow, error: insertError } = await insertInquiry(baseRow));
+  }
+
+  if (insertError || !inquiryRow) {
+    console.error("[Contact Form] failed to persist inquiry:", insertError?.message ?? "no row returned");
     return NextResponse.json(
       { error: "送信に失敗しました。しばらくしてから再度お試しください。" },
       { status: 500 },
@@ -72,7 +108,7 @@ export async function POST(request: Request) {
 
   const resendApiKey = process.env.RESEND_API_KEY;
   const receiverEmail = process.env.CONTACT_RECEIVER_EMAIL;
-  const subject = service ? `【お問い合わせ】${service}` : "【お問い合わせ】UNDERPLAY LOGIC LAB";
+  const subject = subjectTag + (service ? `【お問い合わせ】${service}` : "【お問い合わせ】UNDERPLAY LOGIC LAB");
 
   // Best-effort from here on — the inquiry is already safely stored above,
   // so a notification failure must not turn into a user-facing error.
@@ -92,6 +128,7 @@ export async function POST(request: Request) {
           `メールアドレス: ${email}`,
           `会社名 / 組織名: ${company || "-"}`,
           `ご相談内容: ${service || "-"}`,
+          `プラン: ${member?.tier ? TIER_LABEL[member.tier] ?? member.tier : "なし"}`,
           "",
           "詳細:",
           message,
@@ -132,6 +169,7 @@ export async function POST(request: Request) {
             `**メール**: ${email}`,
             `**会社名**: ${company || "-"}`,
             `**相談内容**: ${service || "-"}`,
+            `**プラン**: ${member?.tier ? TIER_LABEL[member.tier] ?? member.tier : "なし"}`,
             "**詳細**:",
             message,
           ].join("\n"),

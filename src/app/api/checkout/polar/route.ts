@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { getPolarClient, polarProductConfig, topupDiscountForTier } from "@/lib/polar";
+import { ENTRY_FIRST_PURCHASE_DISCOUNT_ID, getPolarClient, polarProductConfig, topupDiscountForTier } from "@/lib/polar";
 import { POLAR_PRODUCT_IDS } from "@/lib/polarProducts";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { apiErrorResponse } from "@/lib/apiError";
@@ -85,6 +85,20 @@ export async function POST(request: Request) {
             `(see POLAR_TOPUP_DISCOUNT_BY_TIER) — charging full price.`,
         );
       }
+    }
+  }
+
+  // エントリーの初月割引（ENTRY_FIRST_PURCHASE_DISCOUNT_ID）: そのアカウントで過去に 1 件も注文が無いときだけ。
+  // 読めなかったら割引なしで進める（購入は止めない）。
+  if (config.tier === "entry") {
+    const { count, error: ordersError } = await supabaseAdmin
+      .from("polar_processed_orders")
+      .select("order_id", { count: "exact", head: true })
+      .eq("user_id", user.id);
+    if (ordersError) {
+      console.error(`${LOG_PREFIX} could not read past orders for ${user.id}:`, ordersError.message);
+    } else if ((count ?? 0) === 0) {
+      discountId = ENTRY_FIRST_PURCHASE_DISCOUNT_ID;
     }
   }
 

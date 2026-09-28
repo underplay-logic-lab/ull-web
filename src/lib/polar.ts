@@ -110,6 +110,16 @@ export const POLAR_TOPUP_DISCOUNT_BY_TIER: Partial<Record<PolarTier, string>> = 
   studio: "7ce887f0-6fc1-4599-8a45-2d93fca1743c",
 };
 
+// --- Entry subscription: first-purchase discount ----------------------------
+//
+// 2026-09-28 ホスト判断: 最初の購入が一番のハードルだが、無料クレジットを配ると捨てアカウントを呼ぶ。
+// そこで「そのアカウントの最初の購入」だけ、エントリーの初月を ¥600 引き（¥1,980 → ¥1,380）にする。
+// Polar の fixed ¥600・duration "once"（更新は通常価格）・エントリー商品限定。都度チャージは対象外。
+// 資格（過去の注文が無い）は checkout route が polar_processed_orders で判定する。
+// 作成: scripts/setup-polar-entry-first-month-discount.mjs
+// 値引き額の表示用の値は src/lib/data.ts の ENTRY_FIRST_PURCHASE_OFF_JPY（クライアントから読むのでそちらに置く）。
+export const ENTRY_FIRST_PURCHASE_DISCOUNT_ID = "7b39be43-9144-47e6-9952-9039f9ad4afa";
+
 export function topupDiscountForTier(tier: string | null | undefined): string | null {
   if (!tier) return null;
   return POLAR_TOPUP_DISCOUNT_BY_TIER[tier as PolarTier] ?? null;
