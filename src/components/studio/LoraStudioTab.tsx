@@ -2476,7 +2476,13 @@ export function LoraStudioTab({
     const { rank, alpha } = autoLoraRankAlpha(captionCategory);
     // SDXL は step の式が別（loraCredits.ts）。pricedArch はこの下で定義されるので同じ式をここで引く。
     const archForSteps = modelChoice === "__custom__" ? baseArchitecture : (loraPresetById(modelChoice)?.arch ?? "");
-    return { rank, alpha, steps: autoLoraSteps(images.length, archForSteps) };
+    // minimax_h3 は adamw 1e-4（constant）・rank 16/16（2026-09-28、kch3 v9→v11 の比較で確定）。prodigy＋cosine は
+    // 出現が早い代わりに場面の指示を無視した（v9: 雪ゼロ）。同じ 52 枚でも adamw は全域で雪・走りに従った（v11）。
+    // fal の公式レシピ（rank 16・lr 1e-4）とも一致。step の式は据え置き（v11 は 1000 で出現・3000 まで崩れず）。
+    if (archForSteps === "minimax_h3") {
+      return { rank: 16, alpha: 16, steps: autoLoraSteps(images.length, archForSteps), optimizer: "adamw", learningRate: 1e-4 };
+    }
+    return { rank, alpha, steps: autoLoraSteps(images.length, archForSteps), optimizer: DEFAULT_PRO.optimizer, learningRate: DEFAULT_PRO.learningRate };
   }, [captionCategory, images.length, modelChoice, baseArchitecture]);
 
   // エキスパートへ入った瞬間に alpha 16→32 / steps 2830→2000 のように値が
@@ -2502,7 +2508,15 @@ export function LoraStudioTab({
   const effPro: ProConfig = useMemo(
     () =>
       proPristine
-        ? { ...pro, rank: autoConfig.rank, alpha: autoConfig.alpha, alphaLinked: false, steps: autoConfig.steps }
+        ? {
+            ...pro,
+            rank: autoConfig.rank,
+            alpha: autoConfig.alpha,
+            alphaLinked: false,
+            steps: autoConfig.steps,
+            optimizer: autoConfig.optimizer,
+            learningRate: autoConfig.learningRate,
+          }
         : pro.stepsAuto
           ? { ...pro, steps: autoConfig.steps }
           : pro,
@@ -2682,9 +2696,11 @@ export function LoraStudioTab({
   // Alpha follows Rank unless the user explicitly unlinks it. Nullish (a
   // pre-existing `pro` object from before this flag existed, kept across a
   // dev Fast Refresh) counts as linked so the default is genuinely ON.
-  const alphaLinked = pro.alphaLinked ?? true;
+  const alphaLinked = effPro.alphaLinked ?? true;
   // When linked, Alpha is always exactly Rank regardless of what's stored.
-  const effectiveAlpha = alphaLinked ? pro.rank : pro.alpha;
+  // effPro を見る（2026-09-28）。pro を見ていたため、未編集のときは推奨の alpha ではなく既定の rank（32）が送られていた
+  // （minimax の推奨 rank 16 で alpha 32 になる）。
+  const effectiveAlpha = alphaLinked ? effPro.rank : effPro.alpha;
 
   // admin 用のモデルが下書きから戻った／admin 判定が外れた一般ユーザーは既定へ（2026-09-26）。
   useEffect(() => {

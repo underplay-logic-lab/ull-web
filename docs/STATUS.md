@@ -614,6 +614,11 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    → **v11 投入済み（`ad014529`、52 枚・adamw 1e-4・constant・rank 16・3,000 step・1,435C、Claude が API で投入）**。結果待ち。
    SDXL（WAI）も既定は prodigy＋cosine だが、雪・走るとも再現できているので**このまま**（ホスト判断 2026-09-28）。
    確認済み（ホスト）: 素材づくり→LoRA でモデル欄が光る。Stripe テストデータは削除済み。
+   **v11 の結果（2026-09-28 07:23 完了、約 29 分、s/it 0.29）**: **雪・走りとも全域で出た**（2500 だけ出ず、2750・3000 で戻る＝揺らぎ）。
+   **1000 で kocho 出現**。どれが最良かは決めにくい（adamw の性格どおり）。**原因は prodigy＋cosine の強さで確定、枚数ではない。**
+   → **minimax の既定を adamw 1e-4・constant・rank 16/16 に切替**（画面の推奨値 `autoConfig`、step 式は据え置き、push 済み）。
+   あわせて未編集時の alpha が推奨値ではなく既定 rank（32）で送られていた不具合を修正。worker の変更は無し。
+   成果物は API 投入のため LoRA Studio に出ない → Claude が R2 から `Downloads\kch3_v11` に保存した。
    完了直後の DL で出た 2 件も修正: ④ 「このサイトを離れますか」＝単体 DL が `window.location.assign` で beforeunload に
    当たっていた → 隠し iframe に統一（`aabe9cb`）／⑤ **完了直後は R2 転送中（v9 は 144.5 秒・5.6GB）で、その間に 2 本以上を
    一括すると旧経路の ZIP に落ちて遅い** → `artifactsTransferring`（artifact_store=r2 かつ r2_publish 未記録）で完了画面に
