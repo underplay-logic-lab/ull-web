@@ -48,7 +48,7 @@ import {
   type SceneSelection,
 } from "@/lib/datasetBuilder";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
-import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
+import { loadFormState, saveFormState, studioFormStorageKey } from "@/lib/studioFormPersistence";
 import { requestStudioHandoff, sendLoraAdditions, takeStudioBatchHandoff } from "@/lib/studioHandoff";
 import { VramBadge } from "@/components/studio/VramBadge";
 import {
@@ -75,6 +75,7 @@ import {
   type CandidatePick,
 } from "@/components/studio/DatasetRefBuilder";
 import { WarmCountdownBanner } from "@/components/studio/QueueChoiceModal";
+import { RestorePrompt } from "@/components/studio/RestorePrompt";
 
 const FORM_ID = "dataset-builder";
 const RUN_KEY = "dataset-builder-run";
@@ -318,8 +319,10 @@ export function DatasetBuilderTab() {
     }
   }, [subImages, refBack, refSide]);
   // --- 画像の保存と復元（リロード対策）------------------------------------------------
+  // 黙って復元せず「前回の続きを復元しますか？」で選ばせる（2026-09-28、ホスト指摘。LoRA Studio と同じ聞き方）。
   const restoredFilesRef = useRef(false);
   const restoringRef = useRef(false);
+  const [restorePending, setRestorePending] = useState<{ main: File; subs: File[]; base: File | null; meta: FilesMeta } | null>(null);
   useEffect(() => {
     if (restoredFilesRef.current) return;
     restoredFilesRef.current = true;
@@ -340,14 +343,37 @@ export function DatasetBuilderTab() {
         if (f) subs.push(f);
       }
       const base = meta.hasBaseFull ? await fileStoreGet(`${FILES_PREFIX}baseFull`) : null;
-      setImage(main);
-      setSubImages(subs);
-      if (base) setBaseFull(base);
-      if (meta.backIndex != null && subs[meta.backIndex]) setRefBack(subs[meta.backIndex]);
-      if (meta.sideIndex != null && subs[meta.sideIndex]) setRefSide(subs[meta.sideIndex]);
-      restoringRef.current = false;
+      // 読めたら聞く。restoringRef は決めるまで立てたまま（保存を止める）。
+      setRestorePending({ main, subs, base, meta: meta as FilesMeta });
     })();
   }, [setImage, setSubImages]);
+  const discardRestore = useCallback(() => {
+    setRestorePending(null);
+    restoringRef.current = false;
+    try {
+      window.localStorage.removeItem(studioFormStorageKey(FILES_META_KEY));
+    } catch {
+      /* storage disabled */
+    }
+    void fileStoreClear(FILES_PREFIX);
+  }, []);
+  const applyRestore = useCallback(() => {
+    const p = restorePending;
+    if (!p) return;
+    setRestorePending(null);
+    if (!imageRef.current) {
+      setImage(p.main);
+      setSubImages(p.subs);
+      if (p.base) setBaseFull(p.base);
+      if (p.meta.backIndex != null && p.subs[p.meta.backIndex]) setRefBack(p.subs[p.meta.backIndex]);
+      if (p.meta.sideIndex != null && p.subs[p.meta.sideIndex]) setRefSide(p.subs[p.meta.sideIndex]);
+    }
+    restoringRef.current = false;
+  }, [restorePending, setImage, setSubImages]);
+  // 聞いている間に画像が入った（ドロップ・LoRA からの受け取り）＝新しく始めた。前回分は消す。
+  useEffect(() => {
+    if (restorePending && image) queueMicrotask(discardRestore);
+  }, [restorePending, image, discardRestore]);
   useEffect(() => {
     // 復元中と、何も入っていない状態では保存しない（空の状態で保存すると復元前に消してしまう）。
     if (!restoredFilesRef.current || restoringRef.current) return;
@@ -854,6 +880,17 @@ export function DatasetBuilderTab() {
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
         {/* 左: 入力 */}
         <div className="space-y-4">
+          {restorePending && !image && (
+            <RestorePrompt
+              summary={
+                "メイン画像 1 枚" +
+                (restorePending.subs.length > 0 ? `・参照 ${restorePending.subs.length} 枚` : "") +
+                (restorePending.base ? "・基準の全身 1 枚" : "")
+              }
+              onRestore={applyRestore}
+              onDiscard={discardRestore}
+            />
+          )}
           <ImageDropzone
             file={image}
             previewUrl={imagePreview}

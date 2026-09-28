@@ -87,3 +87,60 @@ export async function fileStoreClear(prefix: string): Promise<void> {
     db.close();
   }
 }
+
+/** 複数ファイルを 1 トランザクションで保存する（LoRA Studio のデータセット用、2026-09-28）。null は削除。 */
+export async function fileStorePutMany(entries: { key: string; file: File | null }[]): Promise<void> {
+  if (entries.length === 0) return;
+  const db = await openDb();
+  if (!db) return;
+  try {
+    const tx = db.transaction(STORE, "readwrite");
+    const store = tx.objectStore(STORE);
+    for (const { key, file } of entries) {
+      if (file) {
+        store.put({ blob: file, name: file.name, type: file.type, lastModified: file.lastModified, at: Date.now() } satisfies Row, key);
+      } else {
+        store.delete(key);
+      }
+    }
+    await new Promise<void>((resolve) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    });
+  } catch {
+    // 保存できなくても動作は続ける
+  } finally {
+    db.close();
+  }
+}
+
+/** 複数キーをまとめて読む。無いキーは結果に入らない。 */
+export async function fileStoreGetMany(keys: string[]): Promise<Map<string, File>> {
+  const out = new Map<string, File>();
+  if (keys.length === 0) return out;
+  const db = await openDb();
+  if (!db) return out;
+  try {
+    const store = db.transaction(STORE, "readonly").objectStore(STORE);
+    await Promise.all(
+      keys.map(
+        (key) =>
+          new Promise<void>((resolve) => {
+            const req = store.get(key);
+            req.onsuccess = () => {
+              const row = req.result as Row | undefined;
+              if (row?.blob) out.set(key, new File([row.blob], row.name, { type: row.type, lastModified: row.lastModified }));
+              resolve();
+            };
+            req.onerror = () => resolve();
+          }),
+      ),
+    );
+  } catch {
+    // 読めなければ空のまま
+  } finally {
+    db.close();
+  }
+  return out;
+}

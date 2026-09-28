@@ -219,6 +219,41 @@ import {
   type ProConfig,
   type Phase,
 } from "./LoraStudioTab.parts";
+import { RestorePrompt } from "@/components/studio/RestorePrompt";
+import { fileStoreClear, fileStoreGetMany, fileStorePutMany } from "@/lib/fileStore";
+import { loadFormState, saveFormState, studioFormStorageKey } from "@/lib/studioFormPersistence";
+
+// ---- データセットの保存と復元（2026-09-28、ホスト指摘）----
+// 画像は IndexedDB（fileStore）、キャプション・構図タグ・学習回数・除外・進み具合は localStorage の meta。
+// 素材づくりが画像を復元するようになったので、LoRA 側だけ消えると「リロードしても消えない」と思い込んで
+// データセットを失う。復元は黙ってやらず「前回の続きを復元しますか？」（RestorePrompt）で選ばせる。
+const LORA_DATASET_FILE_PREFIX = "lora-dataset:";
+const LORA_DATASET_META_KEY = "lora-dataset-meta";
+// これを超えるデータセットは画像を保存しない（IndexedDB の割り当てはブラウザ次第。500 枚 × 数 MB を想定）。
+const LORA_DATASET_PERSIST_MAX_BYTES = 1.5 * 1024 * 1024 * 1024;
+type LoraDatasetMetaImage = {
+  id: string;
+  caption?: string;
+  captionJa?: string;
+  tags?: string;
+  repeats?: number;
+  cropKind?: SmartCropKind;
+  sizeVerdict?: ImageSizeVerdict;
+  userCaption?: boolean;
+};
+type LoraDatasetMeta = {
+  v: 1;
+  savedAt: number;
+  images: LoraDatasetMetaImage[];
+  excluded: (LoraDatasetMetaImage & { reason?: string; run?: number })[];
+  flags?: {
+    analysisStarted?: boolean;
+    captionStarted?: boolean;
+    identityConfirmed?: boolean;
+    repeatsApplied?: boolean;
+    settingsVisited?: boolean;
+  };
+};
 
 // 日本語のカンマ（、）も区切りとして扱う。
 const SPLIT_TAGS_RE = /\s*[,、]\s*/;
@@ -1382,6 +1417,198 @@ export function LoraStudioTab({
   const captionsJaRef = useRef<Record<string, string>>({});
   const compositionTagsRef = useRef<Record<string, string>>({});
   const userCaptionIdsRef = useRef<Set<string>>(new Set());
+
+  // ---- データセットの保存と復元（2026-09-28。定数と型はファイル冒頭）----
+  const [datasetRestore, setDatasetRestore] = useState<LoraDatasetMeta | null>(null);
+  const [datasetRestoring, setDatasetRestoring] = useState(false);
+  const datasetRestoreRef = useRef<LoraDatasetMeta | null>(null);
+  datasetRestoreRef.current = datasetRestore;
+  // 復元するか消去するか決まるまで保存しない（空の状態で保存すると、復元する前に消してしまう）。
+  const datasetPersistArmedRef = useRef(false);
+  const savedFileIdsRef = useRef<Set<string>>(new Set());
+  const [datasetPersistNote, setDatasetPersistNote] = useState<string | null>(null);
+
+  const clearDatasetStore = useCallback(() => {
+    try {
+      window.localStorage.removeItem(studioFormStorageKey(LORA_DATASET_META_KEY));
+    } catch {
+      /* storage disabled */
+    }
+    savedFileIdsRef.current = new Set();
+    void fileStoreClear(LORA_DATASET_FILE_PREFIX);
+  }, []);
+
+  // マウント時に 1 回: 残っていれば聞く。無ければすぐ保存を始める。
+  useEffect(() => {
+    const meta = loadFormState<LoraDatasetMeta>(LORA_DATASET_META_KEY);
+    const count = (meta?.images?.length ?? 0) + (meta?.excluded?.length ?? 0);
+    if (meta && meta.v === 1 && count > 0 && imagesRef.current.length === 0) {
+      setDatasetRestore(meta as LoraDatasetMeta);
+    } else {
+      datasetPersistArmedRef.current = true;
+    }
+  }, []);
+
+  const discardDatasetRestore = useCallback(() => {
+    setDatasetRestore(null);
+    clearDatasetStore();
+    datasetPersistArmedRef.current = true;
+  }, [clearDatasetStore]);
+
+  // 聞いている間に画像が入った（ドロップ・他のタブからの受け取り）＝新しく始めた。前回分は消す。
+  useEffect(() => {
+    if (datasetRestore && images.length > 0) queueMicrotask(discardDatasetRestore);
+  }, [datasetRestore, images.length, discardDatasetRestore]);
+
+  const restoreDataset = useCallback(async () => {
+    const meta = datasetRestoreRef.current;
+    if (!meta) return;
+    setDatasetRestoring(true);
+    try {
+      const allIds = [...meta.images.map((m) => m.id), ...meta.excluded.map((e) => e.id)];
+      const files = await fileStoreGetMany(allIds.map((id) => LORA_DATASET_FILE_PREFIX + id));
+      const newImgs: DatasetImage[] = [];
+      const caps: Record<string, string> = {};
+      const capsJa: Record<string, string> = {};
+      const tags: Record<string, string> = {};
+      const userIds = new Set<string>();
+      const restoredIds = new Set<string>();
+      let missing = 0;
+      for (const m of meta.images) {
+        const file = files.get(LORA_DATASET_FILE_PREFIX + m.id);
+        if (!file) {
+          missing++;
+          continue;
+        }
+        newImgs.push({ id: m.id, file, url: URL.createObjectURL(file), cropKind: m.cropKind, sizeVerdict: m.sizeVerdict, repeats: m.repeats });
+        if (m.caption?.trim()) {
+          caps[m.id] = m.caption;
+          captionAttemptedRef.current.add(m.id);
+          if (m.userCaption) userIds.add(m.id);
+          else restoredIds.add(m.id);
+        }
+        if (m.captionJa?.trim()) capsJa[m.id] = m.captionJa;
+        if (m.tags?.trim()) {
+          tags[m.id] = m.tags;
+          compositionAttemptedRef.current.add(m.id);
+        }
+      }
+      const excluded: ExcludedImage[] = [];
+      for (const e of meta.excluded) {
+        const file = files.get(LORA_DATASET_FILE_PREFIX + e.id);
+        if (!file) {
+          missing++;
+          continue;
+        }
+        excluded.push({
+          img: { id: e.id, file, url: URL.createObjectURL(file), cropKind: e.cropKind, sizeVerdict: e.sizeVerdict },
+          caption: e.caption ?? "",
+          captionJa: e.captionJa ?? "",
+          tags: e.tags ?? "",
+          userCaption: Boolean(e.userCaption),
+          reason: e.reason ?? "",
+          run: e.run ?? 0,
+        });
+      }
+      savedFileIdsRef.current = new Set([...newImgs.map((i) => i.id), ...excluded.map((x) => x.img.id)]);
+      setImages(newImgs);
+      setCaptions(caps);
+      setCaptionsJa(capsJa);
+      setCompositionTags(tags);
+      setUserCaptionIds(userIds);
+      setRestoredCaptionIds(restoredIds);
+      setExcludedImages(excluded);
+      setAnalysisStarted(Boolean(meta.flags?.analysisStarted));
+      setCaptionStarted(Boolean(meta.flags?.captionStarted));
+      setIdentityConfirmed(Boolean(meta.flags?.identityConfirmed));
+      setRepeatsApplied(Boolean(meta.flags?.repeatsApplied));
+      setSettingsVisited(Boolean(meta.flags?.settingsVisited));
+      // キャプションは meta から戻したので、端末キャッシュの再利用を聞き直さない。
+      zombieDraftDecidedRef.current = true;
+      setAddNotice(
+        `前回の続きを復元しました（画像 ${newImgs.length} 枚` +
+          (excluded.length ? `・脇に置いた画像 ${excluded.length} 枚` : "") +
+          (missing ? `・保存が見つからなかった ${missing} 枚は戻せませんでした` : "") +
+          "）。",
+      );
+    } finally {
+      setDatasetRestore(null);
+      datasetPersistArmedRef.current = true;
+      setDatasetRestoring(false);
+    }
+  }, []);
+
+  // 保存（差分）。画像・キャプション・構図タグ・学習回数・除外・進み具合が変わるたび、少し待ってまとめて書く。
+  useEffect(() => {
+    if (!datasetPersistArmedRef.current || phase !== "form") return;
+    const t = window.setTimeout(() => {
+      const ids = new Set([...images.map((i) => i.id), ...excludedImages.map((e) => e.img.id)]);
+      if (ids.size === 0) {
+        clearDatasetStore();
+        return;
+      }
+      const fileOf = new Map<string, File>([
+        ...images.map((i) => [i.id, i.file] as const),
+        ...excludedImages.map((e) => [e.img.id, e.img.file] as const),
+      ]);
+      const bytes = [...fileOf.values()].reduce((s, f) => s + f.size, 0);
+      if (bytes > LORA_DATASET_PERSIST_MAX_BYTES) {
+        setDatasetPersistNote(
+          `画像の合計が ${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB と大きいため、この端末には保存しません（リロードすると画像は消えます。キャプションは同じ画像を入れ直せば再利用できます）。`,
+        );
+        clearDatasetStore();
+        return;
+      }
+      setDatasetPersistNote(null);
+      const meta: LoraDatasetMeta = {
+        v: 1,
+        savedAt: Date.now(),
+        images: images.map((i) => ({
+          id: i.id,
+          caption: captions[i.id] || undefined,
+          captionJa: captionsJa[i.id] || undefined,
+          tags: compositionTags[i.id] || undefined,
+          repeats: i.repeats,
+          cropKind: i.cropKind,
+          sizeVerdict: i.sizeVerdict,
+          userCaption: userCaptionIds.has(i.id) || undefined,
+        })),
+        excluded: excludedImages.map((e) => ({
+          id: e.img.id,
+          caption: e.caption || undefined,
+          captionJa: e.captionJa || undefined,
+          tags: e.tags || undefined,
+          userCaption: e.userCaption || undefined,
+          reason: e.reason,
+          run: e.run,
+          cropKind: e.img.cropKind,
+          sizeVerdict: e.img.sizeVerdict,
+        })),
+        flags: { analysisStarted, captionStarted, identityConfirmed, repeatsApplied, settingsVisited },
+      };
+      saveFormState(LORA_DATASET_META_KEY, meta);
+      const prev = savedFileIdsRef.current;
+      const puts = [...ids].filter((id) => !prev.has(id)).map((id) => ({ key: LORA_DATASET_FILE_PREFIX + id, file: fileOf.get(id) ?? null }));
+      const dels = [...prev].filter((id) => !ids.has(id)).map((id) => ({ key: LORA_DATASET_FILE_PREFIX + id, file: null }));
+      savedFileIdsRef.current = ids;
+      void fileStorePutMany([...puts, ...dels]);
+    }, 800);
+    return () => window.clearTimeout(t);
+  }, [
+    phase,
+    images,
+    captions,
+    captionsJa,
+    compositionTags,
+    excludedImages,
+    userCaptionIds,
+    analysisStarted,
+    captionStarted,
+    identityConfirmed,
+    repeatsApplied,
+    settingsVisited,
+    clearDatasetStore,
+  ]);
   useEffect(() => {
     captionsRef.current = captions;
     captionsJaRef.current = captionsJa;
@@ -4761,6 +4988,10 @@ export function LoraStudioTab({
     // 導線の「最初はモデル選択」を戻す（2026-09-26、ホスト報告「初期なのにモデル選択が光らない」）。
     setBaseModelTouched(false);
     setReviewSettings(false);
+    // 保存したデータセット（画像・キャプション・進み具合）も消す。完全リセットの意図はここまで含む。
+    setDatasetRestore(null);
+    clearDatasetStore();
+    datasetPersistArmedRef.current = true;
     setPrimaryDescription("");
     setPrimaryFixedTags("");
     setPrimaryIdentityTags("");
@@ -5151,15 +5382,37 @@ export function LoraStudioTab({
         </div>
       )}
 
+      {datasetRestore && phase === "form" && (
+        <RestorePrompt
+          summary={
+            `画像 ${datasetRestore.images.length} 枚` +
+            (() => {
+              const caps = datasetRestore.images.filter((m) => (m.caption ?? "").trim()).length;
+              return caps > 0 ? `・キャプション ${caps} 件` : "";
+            })() +
+            (datasetRestore.excluded.length > 0 ? `・脇に置いた画像 ${datasetRestore.excluded.length} 枚` : "")
+          }
+          savedAt={datasetRestore.savedAt}
+          busy={datasetRestoring}
+          onRestore={() => void restoreDataset()}
+          onDiscard={discardDatasetRestore}
+        />
+      )}
+      {datasetPersistNote && (
+        <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-400">
+          {datasetPersistNote}
+        </p>
+      )}
+
       {/* Draft persistence — inputs auto-save to localStorage; this button is
           the only way to wipe them. */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="flex items-center gap-1.5 text-[11px] text-muted">
           <Check size={12} className="text-green-400" />
-          {/* 画像は保存していない（2026-09-25、ホスト指摘「語弊がある」）。キャプションは端末に残るので、同じ画像を
-              入れ直せば再利用される（captionFileKey のキャッシュ）。 */}
-          設定と入力欄は自動保存されます（リロードしても復元）。取り込んだ画像はリロードで消えます
-          （同じ画像を入れ直すと、作成済みのキャプションはそのまま使えます）
+          {/* 2026-09-28 から画像・キャプション・進み具合もこの端末に保存する（IndexedDB）。次に開いたときは
+              「前回の続きを復元しますか？」で選ぶ。保持期間の話は書かない（CLAUDE.md §6-2）。 */}
+          設定・入力欄・取り込んだ画像とキャプションはこの端末に自動保存されます。次に開いたとき、前回の続きを復元するか選べます
+          {datasetPersistNote ? "（今回は画像が大きすぎるため保存していません）" : ""}
         </p>
         <button
           type="button"
