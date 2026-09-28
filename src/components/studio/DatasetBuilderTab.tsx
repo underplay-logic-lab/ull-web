@@ -10,7 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
-import { Check, Download, ImagePlus, Loader2, Sparkles, Wand2, X, ZoomIn } from "lucide-react";
+import { Check, Download, ImagePlus, Loader2, Sparkles, Wand2, X, Zap, ZoomIn } from "lucide-react";
 import { MAX_SUB_REFERENCE_IMAGES } from "@/lib/angleStudio";
 import {
   AngleJobNotFoundError,
@@ -613,6 +613,8 @@ export function DatasetBuilderTab() {
   // 「作る」→ まず一覧（日本語）を出して直せるようにする（2026-09-27、ホスト指摘「どんなプロンプトで作られるか分からない」）。
   const handleStart = () => {
     if (!user) return setLoginOpen(true);
+    // 不足なら入力前でもチャージへ（全タブ共通、2026-09-28）。
+    if (!busy && insufficientForFirst) return setChargeOpen(true);
     if (!image) return;
     if (needsBaseFull) {
       setErrorMessage("メイン画像に全身が写っていません。先に「基準の全身を作る」で 1 枚選んでください。");
@@ -1219,16 +1221,16 @@ export function DatasetBuilderTab() {
               <button
                 type="button"
                 onClick={handleStart}
-                disabled={!image || busy || phase === "review"}
+                disabled={busy || (!insufficientForFirst && (!image || phase === "review"))}
                 className={`mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold text-white transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
                   insufficientForFirst ? "bg-amber-600/80 hover:opacity-90" : "bg-gradient-to-r from-neon-pink to-neon-violet hover:opacity-90 glow-pink"
                 }`}
               >
-                <Sparkles size={16} />
+                {user && insufficientForFirst && !busy ? <Zap size={16} /> : <Sparkles size={16} />}
                 {!user
                   ? "ログインして作る"
-                  : insufficientForFirst
-                    ? "クレジットが足りません（チャージ）"
+                  : insufficientForFirst && !busy
+                    ? "クレジットをチャージ"
                     : busy
                       ? "生成中…"
                       : phase === "review"

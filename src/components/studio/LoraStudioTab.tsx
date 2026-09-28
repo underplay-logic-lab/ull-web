@@ -7539,15 +7539,7 @@ export function LoraStudioTab({
               )}
             </div>
           )}
-          {insufficientCredits && !submitting && (
-            <a
-              href="#pricing"
-              className="flex items-center justify-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-400"
-            >
-              <Zap size={13} />
-              クレジットが不足しています — チャージする
-            </a>
-          )}
+          {/* 不足時の案内は下のメインボタン（「クレジットをチャージ」）だけにする（全タブ共通、2026-09-28）。 */}
 
           {heavyConfigWarn && phase === "form" && !submitting && (
             <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-400">

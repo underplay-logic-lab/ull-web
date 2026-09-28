@@ -645,8 +645,10 @@ export function UpscaleVideoStudioTab() {
   );
   const cost = breakdown.credits;
 
+  // 画像・動画を入れる前は料金が決まらないので、最低料金（1 回分の下限）に足りなければ不足とみなしてチャージへ案内する
+  // （全タブ共通: 不足ならメインのボタンが「クレジットをチャージ」になり、入力前でも押せる。2026-09-28）。
   const insufficientCredits =
-    Boolean(user) && !creditsLoading && cost > 0 && (credits ?? 0) < cost;
+    Boolean(user) && !creditsLoading && (credits ?? 0) < (cost > 0 ? cost : knobs.upscale_video_min_credits);
   const busy = phase === "submitting" || phase === "running";
   const canRun = Boolean(video) && cost > 0 && !videoError;
 
@@ -674,6 +676,7 @@ export function UpscaleVideoStudioTab() {
 
   const handleRun = () => {
     if (!user) return setLoginOpen(true);
+    if (!busy && insufficientCredits) return setChargeOpen(true);
     const snapshot = buildSnapshot();
     if (!snapshot) return;
     // 実行中に押した場合は「順番待ち」か「並列実行」かを選ばせる（CLAUDE.md
@@ -860,7 +863,7 @@ export function UpscaleVideoStudioTab() {
             <button
               type="button"
               onClick={handleRun}
-              disabled={!canRun && Boolean(user)}
+              disabled={!canRun && Boolean(user) && !(insufficientCredits && !busy)}
               className={`mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold text-white transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
                 insufficientCredits
                   ? "bg-amber-600/80 hover:opacity-90"
@@ -993,7 +996,7 @@ export function UpscaleVideoStudioTab() {
         open={chargeOpen}
         onClose={() => setChargeOpen(false)}
         credits={credits}
-        cost={cost || 20}
+        cost={cost || knobs.upscale_video_min_credits}
       />
       <QueueChoiceModal
         open={queueChoiceOpen}
