@@ -7186,8 +7186,9 @@ export function LoraStudioTab({
               {/* オートモード廃止後の説明（2026-09-22）。モード選択が無くなった
                   ので、ここが「自動で決まった値」であることを明示する。 */}
               <p className="text-[11px] leading-relaxed text-muted">
-                <strong className="text-foreground">学習設定は取り込んだ画像から自動で決まっています。</strong>
-                このままで問題ありません。変えたい場合だけ触ってください。
+                {/* 2026-09-28: 「このままで問題ありません」は言い過ぎ（ホスト指摘。素材は人それぞれで、実写は検証も少ない）。 */}
+                <strong className="text-foreground">取り込んだ画像とベースモデルから決めた推奨設定です。</strong>
+                まずはこのまま試し、結果を見て必要なら調整してください。
               </p>
               {isAdmin ? (
                 <label className="flex items-center gap-2 text-[11px] font-medium text-neon-pink">
