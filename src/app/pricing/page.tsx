@@ -9,6 +9,7 @@ import { directorCostBreakdownForDuration, directorQwenScriptSurcharge } from "@
 import { guiLoraPricingConfig, loraPriceBreakdown } from "@/lib/loraPricing";
 import { autoLoraRankAlpha, autoLoraSteps } from "@/lib/loraCredits";
 import { recommendedResolution, loraPresetById, type LoraBaseArchitecture } from "@/lib/loraModels";
+import { pricingPlans } from "@/lib/data";
 
 // 機能ごとの消費クレジット（2026-09-26、docs/pricing-decision-sheet.md §3）。数字はすべて公開 knob から
 // 各タブ・API と同じ関数で計算するので、admin で単価を変えても表が古くならない（約 1 分で反映）。
@@ -21,7 +22,14 @@ export const metadata: Metadata = {
   description: "ULL Studio の各機能で消費するクレジットの目安です。GPU を使った分だけの従量課金です。",
 };
 
-// 円は出さない（2026-09-28 ホスト判断: 都度チャージの最高単価で換算すると妙に高く見える。クレジットだけで足りる）。
+// 円は「最安プラン換算の下限」で出す（2026-09-28 ホスト判断: 以前は都度チャージ換算＝最も割高な単価で、妙に高く見えた）。
+// 1C あたりの円が最も安いプランをプラン定義から拾うので、価格改定しても追従する。
+const CHEAPEST_PLAN = pricingPlans.reduce((a, b) => (b.priceYen / b.credits < a.priceYen / a.credits ? b : a));
+const YEN_PER_CREDIT_MIN = CHEAPEST_PLAN.priceYen / CHEAPEST_PLAN.credits;
+
+function yenFrom(credits: number): string {
+  return `約 ¥${Math.round(credits * YEN_PER_CREDIT_MIN).toLocaleString("ja-JP")}〜`;
+}
 
 type Row = { label: string; note?: string; credits: number };
 
@@ -132,6 +140,8 @@ export default async function PricingPage() {
           下の表はよくある使い方の例です。実際の消費量は、各機能の画面で実行前に表示されます。
         </p>
         <p className="mt-2 text-xs leading-relaxed text-muted">
+          円は 1 クレジットあたりが最も安い{CHEAPEST_PLAN.name}（¥{CHEAPEST_PLAN.priceYen.toLocaleString("ja-JP")} /{" "}
+          {CHEAPEST_PLAN.credits.toLocaleString("ja-JP")}C）で換算した目安です。ほかのプランや都度チャージでは、これより高くなります。
           失敗した生成・学習のクレジットは返金されます。
         </p>
 
@@ -151,6 +161,9 @@ export default async function PricingPage() {
                         </td>
                         <td className="whitespace-nowrap px-4 py-2.5 text-right font-mono font-semibold text-neon-pink">
                           {r.credits.toLocaleString("ja-JP")} C
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-2.5 text-right text-xs text-muted">
+                          {yenFrom(r.credits)}
                         </td>
                       </tr>
                     ))}
