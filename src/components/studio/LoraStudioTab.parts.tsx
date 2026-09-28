@@ -2313,6 +2313,12 @@ export function ProgressPanel({
         <p className="mt-1 text-[11px] text-muted">
           この LoRA はモデルライブラリに保存されました。
         </p>
+        {/* 最終版だけ見て「うまくいかない」と判断されないように（2026-09-28、ホスト判断）。FAQ と同じ趣旨。 */}
+        <p className="mt-1.5 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-foreground">
+          <strong>最終版が最良とは限りません。</strong>
+          最も良い版は学習データやベースモデルによって変わるため、下の途中の保存も必ず見比べてください。
+          似せ方が強すぎる・指定した場面に従いにくいときは手前の版、似方が足りないときは後ろの版が合うことが多いです。
+        </p>
         {job.artifactsTransferring && (
           <p className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-400">
             <Loader2 size={12} className="mt-0.5 shrink-0 animate-spin" />
