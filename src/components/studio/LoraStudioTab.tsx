@@ -5968,6 +5968,11 @@ export function LoraStudioTab({
                   ? {
                       // 行き先を名前にする（2026-09-26、ホスト指摘「次へ進むだとどこへ行くのか分からない」）。
                       label: captionSource === "ai" && !captionStarted ? "キャプションを作る" : "学習設定へ進む",
+                      // おまかせの後は学習回数の欄（均す・学習設定へ進む）を隠すので、光らせる先が無くなっていた
+                      // （2026-09-28、ホスト報告「キャプション後にスクロールするが光らない」）。代わりにこのボタンを光らせる。
+                      highlight:
+                        hideManualTools &&
+                        (flow.targets.includes("goToSettings") || flow.targets.includes("suggestRepeats")),
                       onClick: () => {
                         setAutoTidyAccepted(true);
                         if (captionSource === "ai" && !captionStarted) {

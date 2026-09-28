@@ -52,7 +52,7 @@ export function AutoTidyPanel({
   /** 全部元に戻す（切り出した画像も消す）。 */
   onUndo: () => void;
   /** 整えた後に次にやること（2026-09-26、ホスト報告「何をすればよいか分からない」）。押すとその場所へ送る。 */
-  nextStep?: { label: string; onClick: () => void } | null;
+  nextStep?: { label: string; onClick: () => void; highlight?: boolean } | null;
   /** おまかせで直しきれなかった指摘（2026-09-26）。あれば「手作業で修正する」を出す。 */
   leftover?: { count: number; reason: string; fixLabel: string; onFix: () => void } | null;
   /** 補足（2026-09-26: 切り出した画像にキャプションが無い等）。 */
@@ -146,7 +146,9 @@ export function AutoTidyPanel({
                 <button
                   type="button"
                   onClick={nextStep.onClick}
-                  className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1 text-[11px] font-semibold text-white hover:opacity-90"
+                  className={`rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1 text-[11px] font-semibold text-white hover:opacity-90${
+                    nextStep.highlight ? " flow-next" : ""
+                  }`}
                 >
                   {leftover ? `このまま${nextStep.label}` : nextStep.label}
                 </button>
