@@ -611,6 +611,9 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    ＝**v10 が直ったのも単に 109 枚に増えたからで説明がつく**。正則化は保留。次の 1 本（未承認）: v9 の 52 枚を fal レシピ
    （adamw 1e-4・constant・rank 16・2,000 step・250 ごと）で。早い版で追随すれば設定が原因（既定を adamw へ）、
    似た時点で雪が消えれば枚数が原因（素材づくりの目標 100 枚前後・診断に「minimax は 100 枚前後から」）。
+   → **v11 投入済み（`ad014529`、52 枚・adamw 1e-4・constant・rank 16・3,000 step・1,435C、Claude が API で投入）**。結果待ち。
+   SDXL（WAI）も既定は prodigy＋cosine だが、雪・走るとも再現できているので**このまま**（ホスト判断 2026-09-28）。
+   確認済み（ホスト）: 素材づくり→LoRA でモデル欄が光る。Stripe テストデータは削除済み。
    完了直後の DL で出た 2 件も修正: ④ 「このサイトを離れますか」＝単体 DL が `window.location.assign` で beforeunload に
    当たっていた → 隠し iframe に統一（`aabe9cb`）／⑤ **完了直後は R2 転送中（v9 は 144.5 秒・5.6GB）で、その間に 2 本以上を
    一括すると旧経路の ZIP に落ちて遅い** → `artifactsTransferring`（artifact_store=r2 かつ r2_publish 未記録）で完了画面に
