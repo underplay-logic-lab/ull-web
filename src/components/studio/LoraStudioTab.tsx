@@ -51,6 +51,7 @@ import {
   isBlockedLoraModel,
   loraPresetById,
   isLoraPresetAvailable,
+  LORA_PUBLIC_PRESET_IDS,
   recommendedResolution,
   type LoraBaseArchitecture,
   type LoraResolution,
@@ -6036,6 +6037,8 @@ export function LoraStudioTab({
                 <optgroup key={g} label={LORA_PRESET_GROUP_LABELS[g]}>
                   {LORA_PRESETS.filter((p) => p.group === g && isLoraPresetAvailable(p.id, isAdmin)).map((p) => (
                     <option key={p.id} value={p.id}>
+                      {/* admin だけに見えているモデルは印を付ける（2026-09-28、ホスト要望）。一般ユーザーには出ない項目なので影響なし。 */}
+                      {LORA_PUBLIC_PRESET_IDS.has(p.id) ? "" : "🔒 admin限定 · "}
                       {p.label} — {p.note}
                     </option>
                   ))}
