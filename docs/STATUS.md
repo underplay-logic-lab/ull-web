@@ -620,7 +620,8 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    あわせて未編集時の alpha が推奨値ではなく既定 rank（32）で送られていた不具合を修正。worker の変更は無し。
    成果物は API 投入のため LoRA Studio に出ない → Claude が R2 から `Downloads\kch3_v11` に保存した。
    **ホスト判定: v11 は 3,000 が最良**（それ以上が正解の可能性も）。→ minimax の自動 step を **2000＋24×枚数** に（52 枚 → 3,248、
-   上限 5,000）。課金・cost-guard・サーバーの再計算は同じ `autoLoraSteps` を通るので自動で追従。
+   自動の上限 5,000 は撤廃して手動上限 20,000 に揃えた（ホスト指摘。500 枚でも minimax 14,000 step ≒ 1.6h で 12h の壁に遠い）。
+   課金・cost-guard・サーバーの再計算は同じ `autoLoraSteps` を通るので自動で追従。
    完了直後の DL で出た 2 件も修正: ④ 「このサイトを離れますか」＝単体 DL が `window.location.assign` で beforeunload に
    当たっていた → 隠し iframe に統一（`aabe9cb`）／⑤ **完了直後は R2 転送中（v9 は 144.5 秒・5.6GB）で、その間に 2 本以上を
    一括すると旧経路の ZIP に落ちて遅い** → `artifactsTransferring`（artifact_store=r2 かつ r2_publish 未記録）で完了画面に

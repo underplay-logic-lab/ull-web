@@ -57,7 +57,11 @@ export const LORA_AUTO_STEPS_MIN = 500;
 // 「式が暴走していないか」の異常値ガードでしかない。エキスパートの
 // スライダー上限を引き上げたからといって、オートが黙って 20,000 step の
 // 高額ジョブを組めるようになるべきではない（枚数上限は 500 枚）。
-export const LORA_AUTO_STEPS_MAX = 5000;
+// 2026-09-28: 5,000 → LORA_MAX_STEPS（ホスト指摘「500 枚まで受け付けるのに上限を設ける必要がある？」）。
+// 5,000 は根拠の無い保守的な仮値だった（CLAUDE.md §0）。実際の壁は 12h で、設定ごとに loraMaxSteps() が計算し
+// /api/studio/lora/train が収まらない設定を拒否する。500 枚でも minimax 14,000・他 arch 6,850・SDXL 3,850 step で、
+// どれも 12h に十分収まる。中間版は 5,000 step 超で間隔を広げて約 20 本に抑える（lora_worker_train.py）。
+export const LORA_AUTO_STEPS_MAX = LORA_MAX_STEPS;
 
 // 2026-09-23: SDXL（sd-scripts ワーカー）は別の式。実案件 WAI v7（220枚・LoCon 既定込み・
 // 3,000step）をホストが中間チェックポイントで見比べた結果、ベストは step 1,750 で、
@@ -72,7 +76,7 @@ export const LORA_AUTO_STEPS_PER_IMAGE_SDXL = 6.5;
 // 88 枚、倍率込みで実質約 104 枚）で、上の共通式の 1,906 step（prodigy 定数）は 1,000 付近の 1 点だけ当たって崩れ、
 // prodigy＋cosine で 3,000 step にすると、多い方（hitozuma 67 枚）は 2,250 から似て、少ない方（kocho 31 枚）が名前どおりに
 // 分かれたのは最終の 3,000 だけだった（docs/STATUS.md、LoRA 既定値の検証）。cosine は最後に歩幅が 0 になるので最終版が当たりに
-// なりやすい。88 枚で 3,000 を少し超える 1,000 + 24×枚数（53 枚 → 2,272、176 枚 → 5,000 で上限）。
+// なりやすい。当初は 1,000 + 24×枚数（2026-09-28 に基数を 2,000 へ・上限 5,000 は撤廃）。
 // 2026-09-28: adamw 1e-4 constant へ切り替えたのに合わせて 1000 → 2000。kch3 52 枚（v11）はホストが見比べて 3,000 が最良、
 // それ以上が正解の可能性もある。adamw は崩れにくく、詰めて最良を逃すより余裕めに回す方針（52 枚 → 3,248）。
 export const LORA_AUTO_STEPS_BASE_MINIMAX = 2000;
