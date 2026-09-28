@@ -7576,7 +7576,9 @@ export function LoraStudioTab({
                 (Boolean(user) && autoCap.running) ||
                 (Boolean(user) && !insufficientCredits && needsIdentityConfirm)
               }
-              className={`flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50${flowRing("submit")}`}
+              className={`flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${
+                user && insufficientCredits && !submitting ? "bg-amber-600/80" : "bg-gradient-to-r from-neon-pink to-neon-violet"
+              }${flowRing("submit")}`}
             >
               {submitting ? (
                 <>

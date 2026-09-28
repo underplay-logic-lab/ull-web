@@ -1151,6 +1151,8 @@ export function MultiAngleStudioTab() {
   };
 
   const handleGenerate = () => {
+    // 不足していれば入力が揃う前でもチャージへ案内する（新規アカウントは最低構図数の時点で足りない。2026-09-28）。
+    if (user && !busy && insufficientCredits) return setChargeOpen(true);
     if (missingInputs || !image) return;
     if (!user) return setLoginOpen(true);
     // 実行中に押した場合は「順番待ち」か「並列実行」かを選ばせる（warm な
@@ -1340,18 +1342,18 @@ export function MultiAngleStudioTab() {
         構図が多すぎます（最大 {angleCap}）
       </>
     );
+  } else if (insufficientCredits && !busy) {
+    buttonLabel = (
+      <>
+        <Zap size={16} />
+        クレジットをチャージ
+      </>
+    );
   } else if (underMin) {
     buttonLabel = (
       <>
         <AlertTriangle size={16} />
         最低 {MIN_ANGLES} 構図から生成できます
-      </>
-    );
-  } else if (insufficientCredits) {
-    buttonLabel = (
-      <>
-        <Zap size={16} />
-        クレジットが不足しています
       </>
     );
   } else {
@@ -1565,7 +1567,7 @@ export function MultiAngleStudioTab() {
             <button
               type="button"
               onClick={handleGenerate}
-              disabled={missingInputs}
+              disabled={missingInputs && !(insufficientCredits && !busy)}
               className={`mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold text-white transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
                 overCap || insufficientCredits
                   ? "bg-amber-600/80 hover:opacity-90"

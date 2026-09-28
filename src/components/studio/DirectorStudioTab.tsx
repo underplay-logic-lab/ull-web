@@ -547,6 +547,8 @@ export function DirectorStudioTab() {
   const loraSelectionIncomplete =
     (loraSource === "trained" && !loraId) || (loraSource === "upload" && !loraUploadedVolumePath);
 
+  // 不足していれば入力が揃う前でもチャージへ案内する（他タブと同じ。2026-09-28）。実行中は順番待ちを選べるので出さない。
+  const chargeFirst = insufficientCredits && !busy;
   const canRun =
     Boolean(image) &&
     cost > 0 &&
@@ -1253,11 +1255,18 @@ export function DirectorStudioTab() {
           ) : (
             <button
               type="button"
-              onClick={handleRun}
-              disabled={!canRun}
-              className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={chargeFirst ? () => setChargeOpen(true) : handleRun}
+              disabled={!canRun && !chargeFirst}
+              className={`mt-4 flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 ${
+                chargeFirst ? "bg-amber-600/80" : "bg-gradient-to-r from-neon-pink to-neon-violet"
+              }`}
             >
-              {phase === "submitting"
+              {chargeFirst ? (
+                <>
+                  <Zap size={16} />
+                  クレジットをチャージ
+                </>
+              ) : phase === "submitting"
                 ? "送信中..."
                 : phase === "running"
                   ? job?.status === "processing"
