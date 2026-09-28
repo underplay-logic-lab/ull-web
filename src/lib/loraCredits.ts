@@ -73,7 +73,9 @@ export const LORA_AUTO_STEPS_PER_IMAGE_SDXL = 6.5;
 // prodigy＋cosine で 3,000 step にすると、多い方（hitozuma 67 枚）は 2,250 から似て、少ない方（kocho 31 枚）が名前どおりに
 // 分かれたのは最終の 3,000 だけだった（docs/STATUS.md、LoRA 既定値の検証）。cosine は最後に歩幅が 0 になるので最終版が当たりに
 // なりやすい。88 枚で 3,000 を少し超える 1,000 + 24×枚数（53 枚 → 2,272、176 枚 → 5,000 で上限）。
-export const LORA_AUTO_STEPS_BASE_MINIMAX = 1000;
+// 2026-09-28: adamw 1e-4 constant へ切り替えたのに合わせて 1000 → 2000。kch3 52 枚（v11）はホストが見比べて 3,000 が最良、
+// それ以上が正解の可能性もある。adamw は崩れにくく、詰めて最良を逃すより余裕めに回す方針（52 枚 → 3,248）。
+export const LORA_AUTO_STEPS_BASE_MINIMAX = 2000;
 export const LORA_AUTO_STEPS_PER_IMAGE_MINIMAX = 24;
 
 export function autoLoraSteps(imageCount: number, arch?: string | null): number {
