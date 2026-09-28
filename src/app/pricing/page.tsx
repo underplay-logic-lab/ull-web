@@ -21,15 +21,9 @@ export const metadata: Metadata = {
   description: "ULL Studio の各機能で消費するクレジットの目安です。GPU を使った分だけの従量課金です。",
 };
 
-// 都度チャージ（¥1,000 / 300C）で換算した 1C あたりの円。月額プランならこれより安い。
-const TOPUP_YEN = 1000;
-const TOPUP_CREDITS = 300;
+// 円は出さない（2026-09-28 ホスト判断: 都度チャージの最高単価で換算すると妙に高く見える。クレジットだけで足りる）。
 
 type Row = { label: string; note?: string; credits: number };
-
-function yen(credits: number): string {
-  return `約 ¥${Math.round((credits * TOPUP_YEN) / TOPUP_CREDITS).toLocaleString("ja-JP")}`;
-}
 
 function loraRow(presetId: string, arch: LoraBaseArchitecture, images: number, knobs: PricingKnobs): Row {
   const steps = autoLoraSteps(images, arch);
@@ -138,7 +132,6 @@ export default async function PricingPage() {
           下の表はよくある使い方の例です。実際の消費量は、各機能の画面で実行前に表示されます。
         </p>
         <p className="mt-2 text-xs leading-relaxed text-muted">
-          円の目安は都度チャージ（¥{TOPUP_YEN.toLocaleString("ja-JP")} / {TOPUP_CREDITS}C）で換算しています。月額プランならこれより割安です。
           失敗した生成・学習のクレジットは返金されます。
         </p>
 
@@ -158,9 +151,6 @@ export default async function PricingPage() {
                         </td>
                         <td className="whitespace-nowrap px-4 py-2.5 text-right font-mono font-semibold text-neon-pink">
                           {r.credits.toLocaleString("ja-JP")} C
-                        </td>
-                        <td className="hidden whitespace-nowrap px-4 py-2.5 text-right text-xs text-muted sm:table-cell">
-                          {yen(r.credits)}
                         </td>
                       </tr>
                     ))}
