@@ -1258,9 +1258,6 @@ export function DirectorStudioTab() {
                   : "生成する"}
             </button>
           )}
-          {!user && (
-            <p className="mt-2 text-center text-[11px] text-muted">初回登録で10クレジットが付与されます。</p>
-          )}
           {!busy && gpuWarm && <WarmCountdownBanner remainingMs={gpuWarmMs} />}
           {busy && queuedNext.length === 0 && (
             // 2026-09-19: LoRAアップロードは生成ボタンを押す前の別操作

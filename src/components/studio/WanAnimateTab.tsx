@@ -581,7 +581,7 @@ export function WanAnimateTab() {
           <Sparkles size={14} className="mt-0.5 shrink-0 text-neon-violet" />
           {user
             ? `保有クレジットの範囲でいつでも生成できます（1生成につき${generationCost}クレジット消費）。`
-            : "Wan Animate 2 の利用には新規登録 / ログインが必要です。初回登録で10クレジットが付与されます。"}
+            : "Wan Animate 2 の利用には新規登録 / ログインが必要です。"}
         </p>
 
         <p className="-mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-400">

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
-import { ArrowRight, Check, Gift, Loader2, Settings, Sparkles } from "lucide-react";
+import { ArrowRight, Check, Loader2, Settings, Sparkles } from "lucide-react";
 import { pricingPlans, type PricingPlan } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
 import { ToastStack, type ToastData } from "@/components/Toast";
@@ -205,10 +205,6 @@ export function Pricing() {
             fallback="必要な分だけの都度チャージか、毎月クレジットが自動付与される月額プラン。"
             className="mx-auto mt-4 max-w-xl text-muted"
           />
-          <div className="mt-5 inline-flex items-center gap-2 rounded-full border border-neon-pink/30 bg-neon-pink/10 px-4 py-1.5 text-xs font-mono font-medium text-neon-pink">
-            <Gift size={14} />
-            新規アカウント登録で即時10クレジット無料進呈（クレカ登録不要）
-          </div>
           <p className="mt-4 text-xs text-muted">
             1 回あたりの消費クレジットは{" "}
             <Link href="/pricing" className="text-neon-pink hover:underline">

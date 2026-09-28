@@ -1423,7 +1423,7 @@ export function UpscaleStudioTab() {
           <ImagePlus size={14} className="mt-0.5 shrink-0 text-neon-violet" />
           {user
             ? "料金は出力の画素数で決まります。処理は数十秒。連続でかけるとウォームアップぶん速くなります。"
-            : "超解像スタジオの利用にはログインが必要です。初回登録で10クレジットが付与されます。"}
+            : "超解像スタジオの利用にはログインが必要です。"}
         </p>
       </div>
       </div>
@@ -1694,7 +1694,7 @@ export function UpscaleStudioTab() {
             <ImagePlus size={14} className="mt-0.5 shrink-0 text-neon-violet" />
             {user
               ? "同じ倍率でまとめて処理します。コールドスタートはバッチ全体で1回分だけなので、1枚ずつより割安です。"
-              : "超解像スタジオの利用にはログインが必要です。初回登録で10クレジットが付与されます。"}
+              : "超解像スタジオの利用にはログインが必要です。"}
           </p>
         </div>
       </div>

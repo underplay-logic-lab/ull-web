@@ -1589,7 +1589,7 @@ export function MultiAngleStudioTab() {
             <Sparkles size={14} className="mt-0.5 shrink-0 text-neon-violet" />
             {user
               ? `1 構図あたり ${perAngle} クレジット（${ANGLE_MODES[mode].label}）。生成は 1 構図完了するごとに下のギャラリーへ順次追加されます。`
-              : "Multi-Angle Studio の利用にはログインが必要です。初回登録で10クレジットが付与されます。"}
+              : "Multi-Angle Studio の利用にはログインが必要です。"}
           </p>
 
           {subRefCount > 0 && (

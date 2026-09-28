@@ -365,10 +365,6 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
             </button>
           </form>
         )}
-
-        <p className="mt-4 text-center text-xs text-muted">
-          ログインすると10クレジットが付与されます。
-        </p>
       </div>
     </div>,
     document.body,

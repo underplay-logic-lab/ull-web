@@ -963,7 +963,7 @@ export function UpscaleVideoStudioTab() {
             <Film size={14} className="mt-0.5 shrink-0 text-neon-violet" />
             {user
               ? "料金はフレーム数（尺 × fps）で決まります。短い素材ほど割安です。"
-              : "超解像スタジオの利用にはログインが必要です。初回登録で10クレジットが付与されます。"}
+              : "超解像スタジオの利用にはログインが必要です。"}
           </p>
         </div>
       </div>
