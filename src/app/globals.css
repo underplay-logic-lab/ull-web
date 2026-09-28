@@ -115,6 +115,12 @@ body {
   }
 }
 
+/* 「済んだので使える」印。flow-next（次にやること）と違い、scrollToNextFlow の行き先にはならない。 */
+.flow-done {
+  border-radius: 0.75rem;
+  box-shadow: 0 0 0 2px rgba(255, 42, 133, 0.45);
+}
+
 @keyframes float {
   0%,
   100% {

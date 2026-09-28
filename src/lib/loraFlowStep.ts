@@ -61,6 +61,12 @@ export type LoraFlowInput = {
    * 無い。これが無いと LoRA 名が光る場面が存在しなくなる。
    */
   baseModelTouched: boolean;
+  /**
+   * 他のタブ（素材づくり・マルチアングル）から画像が届いて、空だったデータセットが始まったか（2026-09-28）。
+   * 前回の下書き（モデル・LoRA 名・トリガー）が残ったまま新しい素材が入ると、名前が埋まっているせいで
+   * モデル選択を飛ばして「取り込み完了」が光った（ホスト報告）。この時だけ、触るまでモデル選択を先に光らせる。
+   */
+  reviewBaseModel?: boolean;
   /** LoRA 名が入っているか。 */
   loraNameFilled: boolean;
   /** 短辺が足りない（超解像へ誘導する）画像の枚数。解析開始と同時に光らせる（2026-09-24）。 */
@@ -115,6 +121,14 @@ export type LoraFlowInput = {
  */
 export function loraFlowStep(v: LoraFlowInput): LoraFlowState {
   if (v.yamlMode || v.busy) return { targets: [], hint: "" };
+
+  // 他のタブから新しいデータセットが始まったときは、前回の設定が残っていてもモデル選択から確認してもらう。
+  if (v.reviewBaseModel && !v.baseModelTouched) {
+    return {
+      targets: ["baseModel"],
+      hint: "他のタブから素材が届きました。前回の設定（モデル・LoRA 名・トリガーワード）が残っているので、まずベースモデルから確認してください（このままでよければ欄をクリック）",
+    };
+  }
 
   // --- ここから先は「必須の未完了」を上から順に1つだけ ---
   // ベースモデルは常に既定値が入っているので「未選択」を検出できない。

@@ -301,6 +301,7 @@ export function buildFormDraft(v: {
       learningRate: v.pro.learningRate,
       lrCustom: v.pro.lrCustom,
       steps: v.pro.steps,
+      stepsAuto: v.pro.stepsAuto,
       optimizer: v.pro.optimizer,
       useRawYaml: v.pro.useRawYaml,
       rawYaml: v.pro.rawYaml,
@@ -412,6 +413,10 @@ export type ProConfig = {
   // true once the user switches the LR dropdown to "カスタム".
   lrCustom: boolean;
   steps: number;
+  // true の間は steps を枚数から自動で決め続ける（画面は自動値を見せる）。ユーザーが Steps を直接変えたときだけ false。
+  // 以前は rank 等を 1 つ触ると steps まで凍結され、下書きに保存されて次回の別データセットにも古い値
+  // （例: 1 枚のときの 862）が付いて回った（2026-09-28、ホスト報告）。
+  stepsAuto: boolean;
   optimizer: string;
   useRawYaml: boolean;
   rawYaml: string;
@@ -430,6 +435,7 @@ export const DEFAULT_PRO: ProConfig = {
   learningRate: 1e-4,
   lrCustom: false,
   steps: 2000,
+  stepsAuto: true,
   optimizer: "prodigy",
   useRawYaml: false,
   rawYaml: "",

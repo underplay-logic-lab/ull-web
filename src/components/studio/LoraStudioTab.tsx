@@ -761,6 +761,8 @@ export function LoraStudioTab({
           if (typeof rp.lrCustom === "boolean") next.lrCustom = rp.lrCustom;
           if (typeof rp.steps === "number" && rp.steps >= STEPS_MIN && rp.steps <= STEPS_MAX)
             next.steps = rp.steps;
+          // 無い（stepsAuto 導入前の下書き）なら自動に戻す。凍結された古い steps を引き継がないため（2026-09-28）。
+          next.stepsAuto = typeof rp.stepsAuto === "boolean" ? rp.stepsAuto : true;
           if (typeof rp.optimizer === "string" && OPTIMIZERS.includes(rp.optimizer))
             next.optimizer = rp.optimizer;
           if (legacyRawYaml !== undefined) next.rawYaml = legacyRawYaml;
@@ -1081,6 +1083,14 @@ export function LoraStudioTab({
       if (files.length === 0) return;
       // 学習の結果画面（前回のダウンロード画面）にいると追加が見えないので、取り込み画面へ戻す（2026-09-28、ホスト指摘）。
       if (phaseRef.current !== "form") setPhase("form");
+      // 空だったデータセットが他のタブの画像で始まった＝新しい LoRA。前回の下書き（モデル・名前・トリガー）が残っていても
+      // モデル選択から確認してもらい、そこへスクロールする（2026-09-28、ホスト報告「素材づくりから送ると構図の抽出が光る」）。
+      // Studio.tsx がタブ切替でタブの頭へ smooth スクロールするので、その後に送る。
+      const freshDataset = imagesRef.current.length === 0;
+      if (freshDataset) {
+        setReviewSettings(true);
+        window.setTimeout(() => scrollToNextFlowRef.current?.(), 700);
+      }
       void addDatasetFilesChecked(files.map((file) => ({ file })));
       const small = pendingSmallCropIdsRef.current;
       pendingSmallCropIdsRef.current = [];
@@ -1092,7 +1102,9 @@ export function LoraStudioTab({
         setSmallCropExcluded(small);
       }
       setAddNotice(
-        `他のタブで作った ${files.length} 枚をデータセットに追加しました。構図の判定とキャプションは通常どおり進みます。` +
+        (freshDataset
+          ? `他のタブで作った ${files.length} 枚で新しいデータセットを始めました。まず右のベースモデル・LoRA 名・トリガーワードを確認してから「取り込み完了」を押してください。`
+          : `他のタブで作った ${files.length} 枚をデータセットに追加しました。構図の判定とキャプションは通常どおり進みます。`) +
           (small.length > 0 ? ` 小さすぎる切り出し ${small.length} 枚は外しました（診断の下の［元に戻す］で戻せます）。` : ""),
       );
     };
@@ -1345,6 +1357,10 @@ export function LoraStudioTab({
   const [identityConfirmed, setIdentityConfirmed] = useState(false);
   // ベースモデルの選択欄を触ったか（導線の表示だけに使う。loraFlowStep 参照）。
   const [baseModelTouched, setBaseModelTouched] = useState(false);
+  // 他のタブから届いた画像で空のデータセットが始まった → 前回の設定が残っていてもモデル選択から確認（loraFlowStep の reviewBaseModel）。
+  const [reviewSettings, setReviewSettings] = useState(false);
+  // handle()（受け取りの effect）から「次に光る場所」へ送るための参照。scrollToNextFlow はずっと下で定義される。
+  const scrollToNextFlowRef = useRef<(() => void) | null>(null);
   // 「解析を開始」が押されたか（2026-09-22）。取り込みの途中で特徴抽出や
   // キャプション解析が走らないようにするための、ユーザーからの明示的な合図。
   // タイマーでは「取り込みが終わった」を判定できないため。
@@ -2226,16 +2242,25 @@ export function LoraStudioTab({
     pro.learningRate === DEFAULT_PRO.learningRate &&
     !pro.lrCustom &&
     pro.optimizer === DEFAULT_PRO.optimizer;
+  // steps は stepsAuto の間、他の項目を触った後も枚数から自動で決め続ける（2026-09-28、ホスト報告
+  // 「49 枚なのに 862 step と出る」。rank 等を 1 つ触った瞬間に steps まで凍結され、下書き経由で次のデータセットにも残った）。
   const effPro: ProConfig = useMemo(
     () =>
       proPristine
         ? { ...pro, rank: autoConfig.rank, alpha: autoConfig.alpha, alphaLinked: false, steps: autoConfig.steps }
-        : pro,
+        : pro.stepsAuto
+          ? { ...pro, steps: autoConfig.steps }
+          : pro,
     [proPristine, pro, autoConfig],
   );
-  /** 設定を1つ変える。未編集だった場合はオートの推奨値ごと確定させる。 */
+  /** 設定を1つ変える。未編集だった場合はオートの推奨値ごと確定させる（steps は直接変えたときだけ固定）。 */
   const updatePro = useCallback(
-    (patch: Partial<ProConfig>) => setPro((p) => ({ ...(proPristine ? effPro : p), ...patch })),
+    (patch: Partial<ProConfig>) =>
+      setPro((p) => {
+        const next = { ...(proPristine ? effPro : p), ...patch };
+        if (patch.steps !== undefined && patch.stepsAuto === undefined) next.stepsAuto = false;
+        return next;
+      }),
     [proPristine, effPro],
   );
   // Live YAML syntax check for the raw-YAML editor — drives the badge below
@@ -3484,6 +3509,7 @@ export function LoraStudioTab({
         yamlMode: false,
         busy: phase !== "form" || submitting,
         baseModelTouched,
+        reviewBaseModel: reviewSettings,
         loraNameFilled: Boolean(effectiveLoraName.trim()),
         tooSmallCount: tooSmallImages.length,
         triggerFilled: Boolean(effectiveTrigger.trim()),
@@ -3519,6 +3545,7 @@ export function LoraStudioTab({
       phase,
       submitting,
       baseModelTouched,
+      reviewSettings,
       effectiveLoraName,
       effectiveTrigger,
       allSubjects,
@@ -3550,6 +3577,7 @@ export function LoraStudioTab({
     const el = document.querySelector(".flow-next") ?? document.getElementById(DIAGNOSTICS_PANEL_ID);
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, []);
+  scrollToNextFlowRef.current = scrollToNextFlow;
   // 特徴を確定したら、次に光っている場所（構図の診断・キャプション作成など）へ送る（2026-09-25、ホスト報告
   // 「確定しても自動スクロールしない」）。診断欄への自動スクロールは 1 データセットにつき 1 回なので、キャプションの
   // 作り方を途中で「AI に作らせる」に変えて確定が必要になったときは、そちらが既に済んでいて動かなかった。
@@ -4731,6 +4759,7 @@ export function LoraStudioTab({
     setTriggerWord("");
     // 導線の「最初はモデル選択」を戻す（2026-09-26、ホスト報告「初期なのにモデル選択が光らない」）。
     setBaseModelTouched(false);
+    setReviewSettings(false);
     setPrimaryDescription("");
     setPrimaryFixedTags("");
     setPrimaryIdentityTags("");
@@ -5169,7 +5198,9 @@ export function LoraStudioTab({
                 disabled={busy || datasetZipBusy}
                 title="画像と、作成したキャプション（.txt）を 1 つの ZIP にまとめて保存します。"
                 className={`inline-flex items-center gap-1.5 rounded-lg border border-neon-pink/50 bg-neon-pink/10 px-2.5 py-1 text-[11px] font-semibold text-neon-pink transition-colors hover:bg-neon-pink/20 disabled:cursor-not-allowed disabled:opacity-50${
-                  captionStarted && pendingCaptionCount === 0 && !autoCap.running ? " flow-next" : ""
+                  // 「次にやること」の flow-next は使わない。scrollToNextFlow が DOM で最初の .flow-next へ送るので、
+                  // キャプション完了後にここ（画面の上）へ飛び、学習回数を飛ばしていた（2026-09-28、ホスト報告）。
+                  captionStarted && pendingCaptionCount === 0 && !autoCap.running ? " flow-done" : ""
                 }`}
               >
                 {datasetZipBusy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
@@ -5990,6 +6021,11 @@ export function LoraStudioTab({
               onChange={(e) => {
                 setBaseModelTouched(true);
                 handleModelChange(e.target.value);
+              }}
+              // 他のタブから届いた素材で始めたとき、前回のモデルのままでよいなら「欄をクリック」で確認済みにする
+              // （select は同じ値を選び直しても onChange が来ない）。初回の導線（名前・トリガーが空）はこれまでどおり。
+              onFocus={() => {
+                if (reviewSettings) setBaseModelTouched(true);
               }}
               disabled={busy}
               className={fieldCls}
@@ -6952,7 +6988,16 @@ export function LoraStudioTab({
 
                   {/* Steps — slider + clamped number input + quick picks */}
                   <div>
-                    <label className="mb-1 block text-[10px] text-muted">Steps（学習ステップ数）</label>
+                    <label className="mb-1 block text-[10px] text-muted">
+                      Steps（学習ステップ数）
+                      {effPro.stepsAuto ? (
+                        <span className="ml-1.5 text-neon-violet">
+                          — 枚数から自動（{images.length} 枚 → {autoConfig.steps.toLocaleString()}）
+                        </span>
+                      ) : (
+                        <span className="ml-1.5 text-amber-400">— 手動で固定中（枚数から自動なら {autoConfig.steps.toLocaleString()}）</span>
+                      )}
+                    </label>
                     <div className="flex w-full items-center gap-2">
                       <input
                         type="range"
@@ -6983,6 +7028,19 @@ export function LoraStudioTab({
                       />
                     </div>
                     <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        disabled={busy || effPro.stepsAuto}
+                        onClick={() => updatePro({ stepsAuto: true })}
+                        title="枚数が変わるたびに step も追従します。"
+                        className={`rounded-lg border px-2.5 py-1 text-[10px] font-medium transition-colors disabled:opacity-50 ${
+                          effPro.stepsAuto
+                            ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
+                            : "border-border bg-background/60 text-muted hover:border-neon-violet/40"
+                        }`}
+                      >
+                        自動（枚数から）
+                      </button>
                       {STEPS_QUICK.map((s) => (
                         <button
                           key={s.value}
@@ -6990,7 +7048,7 @@ export function LoraStudioTab({
                           disabled={busy}
                           onClick={() => updatePro({ steps: s.value })}
                           className={`rounded-lg border px-2.5 py-1 text-[10px] font-medium transition-colors disabled:opacity-50 ${
-                            effPro.steps === s.value
+                            !effPro.stepsAuto && effPro.steps === s.value
                               ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
                               : "border-border bg-background/60 text-muted hover:border-neon-violet/40"
                           }`}
