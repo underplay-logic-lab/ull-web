@@ -793,9 +793,12 @@ async function freshAccessToken(): Promise<string> {
 // Chrome/Edge drop the download with only a console warning. `location.assign`
 // has no such budget. The `download` attribute was cross-origin-ignored
 // anyway, so nothing is lost. Range-aware, so a dropped connection resumes.
+// 1 本のダウンロードも隠し iframe で始める（2026-09-28、ホスト報告「サイトを移動しますか、と出た」）。
+// 以前は window.location.assign(url) だったため、データセットを開いたまま（beforeunload の確認が有効）だと
+// ブラウザが「このサイトを離れますか？」を出していた。実際は Content-Disposition: attachment なので画面は
+// 離れないが、応答が届くまでブラウザはそれを知らない。iframe の遷移なら最上位の beforeunload は動かない。
 function triggerBrowserDownload(url: string): void {
-  if (typeof window === "undefined") return;
-  window.location.assign(url);
+  triggerMultiDownload([url]);
 }
 
 function mapDownloadError(status: number, error?: string): Error {
