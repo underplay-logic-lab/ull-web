@@ -603,6 +603,14 @@ B. **2026-09-29〜30 に入れた分（すべて push 済み・実機未確認�
    （Modal の実行 id を保存して取り消し・返金あり/なし。今後のジョブから有効）／ログアウト時に作業状態を残す/消す・アカウントごとに退避／
    支援＝上限なし・決済後に「ひとこと」（Polar で寄付を確認・メール通知）／**サイトの文言はコードに一本化**（DB は読まない。
    site_contents はリンク先・画像・セクション表示の 8 行だけ。管理画面で文言は編集できない）。
+A2. **ログイン時に supabase.co を見せない（ホスト希望 2026-09-30、ローンチ前・無料で）**:
+   現状は既に PKCE（`/auth/callback` でコード交換）だが、Google ログインは途中で `xxxx.supabase.co` を経由し、確認・再設定メールの
+   リンクも supabase.co を指す。Cloudflare 中継は不可（Google の戻り先・GoTrue の外部 URL が supabase.co のまま、壊れやすい）、
+   公式カスタムドメインは Pro $25＋アドオン。**やること**: ① Google は Google Identity Services のボタン＋`signInWithIdToken`
+   （nonce 付き）に。`NEXT_PUBLIC_GOOGLE_CLIENT_ID` があるときだけ新方式・無ければ今の OAuth（設定前に push しても壊れない）。
+   ホスト作業: Google Cloud の OAuth クライアントに承認済み JS 生成元 `https://www.ullstudio.com`（と localhost）を追加、
+   Supabase の Google プロバイダの Client ID と同じか確認。② メール: `/auth/confirm?token_hash=…&type=…` で `verifyOtp` する受け口を作り、
+   Supabase のメールテンプレート（確認・再設定）のリンクを差し替え（文面は Claude が用意、差し替えはホストがダッシュボードで）。
 C. **ローンチ前にやる（了承済み）**: 説明の整理（要点 1 行＋「詳しく ▸」、使わない項目は畳む、スマホは既定で閉じる。素材づくり→LoRA の順。
    試行中に「要る/要らない」を拾ってから）。**ローンチ後**: 紹介・操作動画（Remotion＋Playwright）、クライアント向け限定お試し（Qwen Image 2.1、
    非商用のため限定公開→ワークフロー納品）、スタートアップ支援・Alibaba への商用ライセンス申請（ホスト）。
