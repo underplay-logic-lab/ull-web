@@ -72,6 +72,7 @@ import {
   WarmCountdownBanner,
 } from "@/components/studio/QueueChoiceModal";
 import { LoginModal } from "@/components/LoginModal";
+import { ZoomableImage } from "@/components/studio/ZoomableImage";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
@@ -452,6 +453,7 @@ function AxisGroup({
 }
 
 // --- 結果ライトボックス（最小構成） ----------------------------------
+// 画像は ZoomableImage でさらにズームできる（2026-09-29）。
 export type LightItem = { url: string; label: string };
 
 export function AngleLightbox({
@@ -564,15 +566,7 @@ export function AngleLightbox({
       </div>
 
       <div className="relative flex-1 overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        <div className="absolute inset-0 flex items-center justify-center p-4">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={item.url}
-            alt={item.label}
-            className="max-h-full max-w-full select-none object-contain"
-            onError={onImageError}
-          />
-        </div>
+        <ZoomableImage src={item.url} alt={item.label} onError={onImageError} />
         {items.length > 1 && (
           <>
             <button
