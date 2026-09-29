@@ -1765,7 +1765,9 @@ export function DatasetBuilderTab() {
         <div id="dataset-results" className="scroll-mt-24 rounded-xl border border-neon-pink/40 bg-neon-pink/5 p-4">
           <p className="flex items-center gap-2 text-xs font-medium text-foreground">
             <Loader2 size={14} className="animate-spin text-neon-pink" />
-            生成中です。できた画像から順にここへ並びます（予定 {plannedTotal} 枚）。
+            {run && run.confirmFirst && !run.confirmed
+              ? `生成中です。まず ${Math.min(run.prefixLen, plannedTotal)} 枚を作って止まります（全体の予定は ${plannedTotal} 枚）。できた画像から順にここへ並びます。`
+              : `生成中です。できた画像から順にここへ並びます（全 ${plannedTotal} 枚）。`}
           </p>
         </div>
       )}
