@@ -6,7 +6,7 @@
 // 候補は素材づくりと同じジョブ（angle_jobs・scene 経路・メイン 1 枚・1 枚 14C）。
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, GitBranch, Loader2, RefreshCw, Sparkles, ZoomIn } from "lucide-react";
+import { Check, Loader2, RefreshCw, Sparkles, ZoomIn } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
 import {
   AngleJobNotFoundError,
@@ -277,7 +277,6 @@ export function CandidatePanel({
   const { job, status, error, start, reset } = useCandidateJob(storageKey);
   // 選び中の候補（"jobId:index"）と、派生の元を取りに行っている候補。
   const [picking, setPicking] = useState<string | null>(null);
-  const [deriving, setDeriving] = useState<string | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
   // 完了直後の URL は Volume を指していて、R2 へ移ると 404 になる（R2 の署名も 15 分で切れる）。表示が切れたら
   // 取り直す（2 回まで、CLAUDE.md §6-11）。候補ジョブの URL はポーリング終了後は更新されないので、ここで上書きする。
@@ -357,31 +356,16 @@ export function CandidatePanel({
   }, [picked, hasPickedFile, job, history, pick]);
 
   /**
-   * 作り直す（ボタン 1 回で次の候補を作り始める）。base を渡すと、その候補をメイン画像にして同じ指示で作る
-   * ＝気に入った候補に近いバリエーション（2026-09-29 ホスト案「一番良いのを元に追加で作れると当たりやすい」）。
-   * 今の候補は「前の候補」へ移して、あとからも選べるようにする。
+   * 作り直す（ボタン 1 回で次の候補を作り始める）。今の候補は「前の候補」へ移して、あとからも選べるようにする。
+   * 候補をメインにして同じ指示で作る「これを元に」は、選んだ候補とほぼ同じ絵が返るだけだったので廃止（2026-09-29 ホスト）。
    */
-  const regenerate = async (base?: { job: AngleJob; index: number }) => {
+  const regenerate = () => {
     if (!user) return onLogin();
     if (!image || busy) return;
     if (insufficient) return onCharge();
-    let src: File = image;
-    if (base) {
-      const key = `${base.job.id}:${base.index}`;
-      setDeriving(key);
-      setPickError(null);
-      try {
-        src = await candidateToFile(base.job.id, base.index, urlOf(base.job, base.index), `candidate_base_${base.index + 1}.png`);
-      } catch (err) {
-        setPickError(`元にする候補の取得に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
-        return;
-      } finally {
-        setDeriving(null);
-      }
-    }
     pushHistory(job);
     reset();
-    void start(user, src, specs, gpuLock, aspect, subImages);
+    void start(user, image, specs, gpuLock, aspect, subImages);
   };
 
   const onStart = () => {
@@ -469,21 +453,11 @@ export function CandidatePanel({
               >
                 <ZoomIn size={11} />
               </span>
-              {(picking === key || deriving === key) && (
+              {picking === key && (
                 <span className="absolute inset-0 flex items-center justify-center bg-black/40 text-white">
                   <Loader2 size={14} className="animate-spin" />
                 </span>
               )}
-            </button>
-            <button
-              type="button"
-              onClick={() => void regenerate({ job: j, index: i })}
-              disabled={busy || deriving !== null || !image}
-              title={`この候補をメイン画像にして、似た候補を ${specs.length} 枚作ります（${cost} C）`}
-              className="inline-flex items-center justify-center gap-0.5 rounded border border-border px-1 py-0.5 text-[10px] text-muted hover:border-neon-violet/40 hover:text-foreground disabled:opacity-40"
-            >
-              <GitBranch size={10} />
-              これを元に
             </button>
           </div>
         );
@@ -511,8 +485,7 @@ export function CandidatePanel({
         ) : status === "done" ? (
           <button
             type="button"
-            onClick={() => void regenerate()}
-            disabled={deriving !== null}
+            onClick={regenerate}
             title="元の画像からもう一度候補を作ります。今の候補は下の「前の候補」に残ります"
             className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-40"
           >
@@ -644,8 +617,8 @@ export function CandidatePanel({
       {job && job.images.length > 0 && renderGrid(job)}
       {status === "done" && !picked && (
         <p className="text-[10px] text-amber-400">
-          気に入った 1 枚をクリックして選んでください（左上の虫眼鏡で拡大）。惜しい候補があれば「これを元に」で似た候補を、
-          無ければ「作り直す」で元の画像からもう一度作れます。
+          気に入った 1 枚をクリックして選んでください（左上の虫眼鏡で拡大）。無ければ「作り直す」でもう一度作れます
+          （今の候補は「前の候補」に残り、あとからも選べます）。
         </p>
       )}
       {history.length > 0 && (
