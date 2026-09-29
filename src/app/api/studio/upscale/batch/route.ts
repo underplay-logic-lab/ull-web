@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
+import { rememberUpscaleCall } from "@/lib/modalCallRecord.server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
@@ -299,12 +300,14 @@ export async function POST(request: Request) {
   }));
 
   try {
-    await spawnUpscaleBatchJob({
+    const { callId: modalCallId } = await spawnUpscaleBatchJob({
       batchId,
       userId: user.id,
       maxAllowedTime: estimatedSeconds,
       items,
     });
+    // admin の中止ボタンが Modal の実行まで止められるよう、実行 id を残す（best-effort）。
+    await rememberUpscaleCall({ batchId }, modalCallId);
     // 2026-09-13 実障害で判明: 即座に削除すると Modal worker が署名付きURLを
     // fetch する前にオブジェクトが消えるレース条件になる（upscale/generate
     // route.ts の同種修正コメント参照）。削除はせず studio_uploads/（Modal

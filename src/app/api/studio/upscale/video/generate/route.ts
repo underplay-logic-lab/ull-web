@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rememberUpscaleCall } from "@/lib/modalCallRecord.server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
@@ -245,7 +246,7 @@ export async function POST(request: Request) {
 
   // --- dispatch to Modal ---------------------------------------------
   try {
-    await spawnUpscaleVideoJob({
+    const { callId: modalCallId } = await spawnUpscaleVideoJob({
       jobId,
       userId: user.id,
       creditsCost,
@@ -259,6 +260,8 @@ export async function POST(request: Request) {
         batch_size: 5,
       },
     });
+    // admin の中止ボタンが Modal の実行まで止められるよう、実行 id を残す（best-effort）。
+    await rememberUpscaleCall({ jobId }, modalCallId);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[studio/upscale/video/generate] dispatch failed:", message);

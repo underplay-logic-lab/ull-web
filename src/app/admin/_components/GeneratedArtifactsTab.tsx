@@ -187,13 +187,48 @@ function RecentGenerations() {
     [load],
   );
 
+  // マルチアングル系（マルチアングル・素材づくり・候補づくり）と動画（Director・特化 WF）の中止（2026-09-29）。
+  // DB を failed で閉じ、起動時の実行 id があれば Modal の実行も取り消す（/api/admin/jobs/abort）。
+  const abortOther = useCallback(
+    async (row: Generation, refund: boolean) => {
+      const refundNote =
+        row.kind === "angle" ? "未完了の構図ぶんを返金" : "全額返金";
+      if (!window.confirm(`このジョブを中止します（管理者操作・${refund ? refundNote : "返金なし"}）。
+起動時の実行 id が残っていれば GPU ごと止めます。
+
+よろしいですか？`)) return;
+      setAborting(row.id);
+      setError(null);
+      try {
+        const res = await fetch("/api/admin/jobs/abort", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: row.kind, jobId: row.id, refund }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json?.error ?? "中止に失敗しました。");
+        window.alert(
+          (json.closed ? "中止しました。" : "既に終わっていたので、何もしませんでした。") +
+            (json.refunded ? ` ${json.refunded}C を返金しました。` : "") +
+            (json.cancelled ? " GPU の実行も止めました。" : json.closed && !json.hadCallId ? "（実行 id が無い古いジョブのため、GPU 側は止めていません）" : ""),
+        );
+        await load();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "中止に失敗しました。");
+      } finally {
+        setAborting(null);
+      }
+    },
+    [load],
+  );
+
   // 超解像の中止（2026-09-25）。バッチなら残り（まだ始まっていない画像）を全部、単発ならその 1 件を
   // failed＋全額返金で閉じる。今まさに処理中の 1 枚は完走させる（/api/admin/upscale/abort）。
   const abortUpscale = useCallback(
-    async (row: Generation) => {
-      const what = row.batchId ? "このバッチの残り（まだ始まっていない画像）" : "このジョブ";
-      if (!window.confirm(`${what}を中止して、全額返金します（管理者操作）。
-今まさに処理中の 1 枚は完走させます。
+    async (row: Generation, refund: boolean) => {
+      const what = row.batchId ? "このバッチの残り" : "このジョブ";
+      if (!window.confirm(`${what}を中止します（管理者操作・${refund ? "全額返金" : "返金なし"}）。
+起動時の実行 id が残っていれば、処理中の分も GPU ごと止めます（無い古いジョブは処理中の 1 枚を完走させます）。
 
 よろしいですか？`)) return;
       setAborting(row.id);
@@ -202,12 +237,13 @@ function RecentGenerations() {
         const res = await fetch("/api/admin/upscale/abort", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ jobId: row.id }),
+          body: JSON.stringify({ jobId: row.id, refund }),
         });
         const json = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(json?.error ?? "中止に失敗しました。");
         window.alert(
           `${json.closed ?? 0} 件を中止し、${json.refunded ?? 0}C を返金しました。` +
+            (json.cancelled ? `（GPU の実行を ${json.cancelled} 件止めました）` : "") +
             (json.running ? `（処理中の ${json.running} 件は完走させます）` : ""),
         );
         await load();
@@ -344,20 +380,50 @@ function RecentGenerations() {
                         </button>
                       )}
                       {r.kind === "upscale" && (r.status === "pending" || r.status === "processing") && (
-                        <button
-                          type="button"
-                          onClick={() => void abortUpscale(r)}
-                          disabled={aborting === r.id}
-                          className="ml-1.5 rounded border border-red-400/40 px-1 text-[10px] text-red-300 transition-colors hover:bg-red-400/10 disabled:opacity-50"
-                          title={
-                            r.batchId
-                              ? "このバッチのまだ始まっていない画像を全部中止して返金（処理中の 1 枚は完走）"
-                              : "このジョブを中止して返金（処理中なら 15 分以上止まっているときだけ閉じる）"
-                          }
-                        >
-                          {aborting === r.id ? "中止中…" : r.batchId ? "バッチを中止（返金）" : "中止（返金）"}
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => void abortUpscale(r, true)}
+                            disabled={aborting === r.id}
+                            className="ml-1.5 rounded border border-red-400/40 px-1 text-[10px] text-red-300 transition-colors hover:bg-red-400/10 disabled:opacity-50"
+                            title={r.batchId ? "このバッチの残りを中止して全額返金" : "このジョブを中止して全額返金"}
+                          >
+                            {aborting === r.id ? "中止中…" : r.batchId ? "バッチを中止（返金）" : "中止（返金）"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void abortUpscale(r, false)}
+                            disabled={aborting === r.id}
+                            className="ml-1 rounded border border-border px-1 text-[10px] text-muted transition-colors hover:bg-surface-hover disabled:opacity-50"
+                            title="返金せずに中止"
+                          >
+                            返金なし
+                          </button>
+                        </>
                       )}
+                      {(r.kind === "angle" || r.kind === "video") &&
+                        (r.status === "pending" || r.status === "queued" || r.status === "processing") && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void abortOther(r, true)}
+                              disabled={aborting === r.id}
+                              className="ml-1.5 rounded border border-red-400/40 px-1 text-[10px] text-red-300 transition-colors hover:bg-red-400/10 disabled:opacity-50"
+                              title={r.kind === "angle" ? "中止して未完了の構図ぶんを返金" : "中止して全額返金"}
+                            >
+                              {aborting === r.id ? "中止中…" : "中止（返金）"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void abortOther(r, false)}
+                              disabled={aborting === r.id}
+                              className="ml-1 rounded border border-border px-1 text-[10px] text-muted transition-colors hover:bg-surface-hover disabled:opacity-50"
+                              title="返金せずに中止"
+                            >
+                              返金なし
+                            </button>
+                          </>
+                        )}
                     </td>
                   </tr>
                 );

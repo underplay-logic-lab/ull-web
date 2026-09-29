@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rememberUpscaleCall } from "@/lib/modalCallRecord.server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
@@ -262,7 +263,7 @@ export async function POST(request: Request) {
 
   // --- dispatch to Modal ---------------------------------------------
   try {
-    await spawnUpscaleJob({
+    const { callId: modalCallId } = await spawnUpscaleJob({
       jobId,
       userId: user.id,
       creditsCost,
@@ -276,6 +277,8 @@ export async function POST(request: Request) {
         batch_size: 1,
       },
     });
+    // admin の中止ボタンが Modal の実行まで止められるよう、実行 id を残す（best-effort）。
+    await rememberUpscaleCall({ jobId }, modalCallId);
     // 2026-09-13 実障害で判明: ここで即座に削除すると、Modal worker が
     // コールドスタート等でまだ署名付きURLを fetch していないタイミングで
     // オブジェクトが消え、「HTTPError: 400 Client Error」でジョブが失敗する

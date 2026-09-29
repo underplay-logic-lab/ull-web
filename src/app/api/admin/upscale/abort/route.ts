@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/adminApiGuard";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { cancelLoraTrainingCall } from "@/lib/modalLoraTrain";
 
 // admin「最近の生成物」— 超解像の中止（2026-09-25、STATUS 000000 ②）。
 // バッチ（まとめて処理）を途中で止めると、残りが pending のまま・クレジットも引き落とし済みのまま残っていた
@@ -13,6 +14,9 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 //
 // 状態は 'failed'（upscale_jobs の CHECK に cancelled が無い）、metadata.refunded = true。
 // generation_logs のトリガーが「始まっていない＝実行 0・原価 0」「返金済み＝売上 0」で記録する。
+//
+// 2026-09-29: 起動時に Modal の実行 id（metadata.modal_call_id）を残すようにしたので、id があれば処理中の 1 枚も
+// 含めて閉じ、その実行を取り消す（GPU を止める）。refund=false なら返金せずに閉じる（既定は従来どおり返金）。
 const STALE_PROCESSING_MS = 15 * 60 * 1000;
 const ABORT_MESSAGE = "管理者が中止しました（返金済み）。";
 
@@ -30,13 +34,14 @@ export async function POST(request: Request) {
   const { user, response } = await requireAdmin();
   if (!user) return response;
 
-  let body: { jobId?: unknown };
+  let body: { jobId?: unknown; refund?: unknown };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "リクエストが不正です。" }, { status: 400 });
   }
   const jobId = typeof body.jobId === "string" ? body.jobId : "";
+  const refund = body.refund !== false;
   if (!jobId) return NextResponse.json({ error: "jobId が必要です。" }, { status: 400 });
 
   const cols = "id, user_id, status, credits_cost, batch_id, processing_started_at, metadata";
@@ -58,10 +63,15 @@ export async function POST(request: Request) {
   }
 
   const now = Date.now();
+  const callIds = new Set(
+    rows.map((r) => r.metadata?.modal_call_id).filter((v): v is string => typeof v === "string" && v.startsWith("fc-")),
+  );
   const targets = rows.filter((r) => {
     if (r.metadata?.refunded === true) return false;
     if (r.status === "pending") return true;
     if (r.status !== "processing") return false;
+    // 実行 id があれば Modal ごと止めるので、処理中の 1 枚も閉じてよい。
+    if (callIds.size > 0) return true;
     const started = r.processing_started_at ? Date.parse(r.processing_started_at) : NaN;
     return !Number.isFinite(started) || now - started >= STALE_PROCESSING_MS;
   });
@@ -75,8 +85,8 @@ export async function POST(request: Request) {
       .from("upscale_jobs")
       .update({
         status: "failed",
-        error_message: ABORT_MESSAGE,
-        metadata: { ...(r.metadata ?? {}), refunded: true, aborted_by_admin: true },
+        error_message: refund ? ABORT_MESSAGE : "管理者が中止しました。",
+        metadata: { ...(r.metadata ?? {}), ...(refund ? { refunded: true } : {}), aborted_by_admin: true },
       })
       .eq("id", r.id)
       .eq("status", r.status)
@@ -87,7 +97,7 @@ export async function POST(request: Request) {
     }
     if (!updated?.length) continue;
     closed += 1;
-    refundByUser.set(r.user_id, (refundByUser.get(r.user_id) ?? 0) + (r.credits_cost ?? 0));
+    if (refund) refundByUser.set(r.user_id, (refundByUser.get(r.user_id) ?? 0) + (r.credits_cost ?? 0));
   }
 
   let refunded = 0;
@@ -103,9 +113,14 @@ export async function POST(request: Request) {
     refunded += amount;
   }
 
+  let cancelled = 0;
+  if (closed > 0) {
+    for (const id of callIds) if (await cancelLoraTrainingCall(id)) cancelled += 1;
+  }
+
   console.log(
-    `[admin/upscale/abort] job ${jobId} batch=${first.batch_id ?? "-"}: closed ${closed}, refunded ${refunded}C, ` +
+    `[admin/upscale/abort] cancelled calls ${cancelled}/${callIds.size}; job ${jobId} batch=${first.batch_id ?? "-"}: closed ${closed}, refunded ${refunded}C, ` +
       `left running ${running} (by ${user.email})`,
   );
-  return NextResponse.json({ ok: true, closed, refunded, running });
+  return NextResponse.json({ ok: true, closed, refunded, running: callIds.size > 0 ? 0 : running, cancelled });
 }

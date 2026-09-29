@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rememberAngleCall } from "@/lib/modalCallRecord.server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
@@ -446,7 +447,7 @@ export async function POST(request: Request) {
   // --- dispatch to Modal ---------------------------------------------
   try {
     const imagesBase64 = imageBuffers.map((b) => b.toString("base64"));
-    await spawnAngleJob({
+    const { callId: modalCallId } = await spawnAngleJob({
       jobId,
       userId: user.id,
       creditsCost: generationCost,
@@ -460,6 +461,8 @@ export async function POST(request: Request) {
       ...(useSets ? { imageSets: jobImageSets!, instructionSets: instructionSets! } : {}),
       ...(aspectRaw === "portrait" ? { outputSize: { width: 832, height: 1248 } } : {}),
     });
+    // admin の中止ボタンが Modal の実行まで止められるよう、実行 id を残す（best-effort）。
+    await rememberAngleCall(jobId, modalCallId);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[studio/angle/generate] dispatch failed:", message);
