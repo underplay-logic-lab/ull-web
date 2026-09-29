@@ -110,6 +110,8 @@ type PersistedForm = {
   hairNote?: string;
   /** 作り方（2026-09-29）: careful＝基準の全身像・真横・後ろ姿を先に作る（既定）／quick＝顔アップのまますぐ作る。 */
   precision?: "careful" | "quick";
+  /** 真横の候補に顔の大きく写った画像を添えるか（既定 true）。 */
+  sideFaceOn?: boolean;
 };
 /** 進行中／完了した「1 回の指定」。File は保存できないので、リロード後は結果の表示と LoRA への送りだけできる。 */
 type PersistedRun = {
@@ -484,6 +486,7 @@ export function DatasetBuilderTab() {
   const [routeOverride, setRouteOverride] = useState<MainRoute | "auto">(() => savedForm?.routeOverride ?? "auto");
   const [sendOriginal, setSendOriginal] = useState<boolean>(() => savedForm?.sendOriginal ?? true);
   const [hairNote, setHairNote] = useState<string>(() => savedForm?.hairNote ?? "");
+  const [sideFaceOn, setSideFaceOn] = useState<boolean>(() => savedForm?.sideFaceOn ?? true);
 
   useEffect(() => {
     saveFormState(FORM_ID, {
@@ -496,8 +499,9 @@ export function DatasetBuilderTab() {
       sendOriginal,
       hairNote,
       precision,
+      sideFaceOn,
     } satisfies PersistedForm);
-  }, [sel, count, confirmFirst, bodyDesign, routeOverride, mainFraming, sendOriginal, hairNote, precision]);
+  }, [sel, count, confirmFirst, bodyDesign, routeOverride, mainFraming, sendOriginal, hairNote, precision, sideFaceOn]);
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
@@ -615,7 +619,9 @@ export function DatasetBuilderTab() {
   const sideSpecs = useMemo(() => sideViewSpecs(hairNote), [hairNote]);
   // 真横の候補に顔の大きく写った画像を添える（横顔が似る、2026-09-29 ホスト実走・全ルートで添える方針）。
   // 顔アップ・上半身から始めた（基準の全身像がある）ときは元の画像、全身から始めたときは自動で切り出したバストアップ。
-  const sideFaceRef = activeBaseFull && image ? image : (derived.bust ?? null);
+  // 添えられる画像（sideFaceAvailable）があっても、添えるかは使う人が選ぶ（既定オン、2026-09-29 ホスト）。
+  const sideFaceAvailable = activeBaseFull && image ? image : (derived.bust ?? null);
+  const sideFaceRef = sideFaceOn ? sideFaceAvailable : null;
   const backSpecs = useMemo(() => backViewSpecs(hairNote, backUsesSide), [hairNote, backUsesSide]);
   const baseFullSpecs = useMemo(
     () => (mainRoute === "face" || mainRoute === "upper" ? bodyDesignSpecs(bodyDesign, mainRoute) : FULL_BODY_SPECS),
@@ -1231,7 +1237,7 @@ export function DatasetBuilderTab() {
           {precision === "careful" && effectiveMain && (viewsInPlan.has("side") || refSide) && (
             <CandidatePanel
               title={refSide ? "真横の参照（確定済み）" : "真横の参照を作る"}
-              description="真横向きの画像は、ここで選んだ真横を参照にして作ります。候補はカメラを横へ回して作り（右 2 枚・左 2 枚）、顔の大きく写った画像（元の顔アップ・上半身、全身から始めたときは自動で切り出したバストアップ）も見せて顔を寄せます。顔がいちばんイメージに近い 1 枚を選んでください（後ろ姿はこの真横の髪に揃えます）。後ろ髪の長さや結び方を決めたいときは上の「後ろ髪の指定」に書いてください。手持ちの真横があれば、下の「持っているなら」の行にドロップするか「ファイルを選ぶ」で指定してください（参照欄に入れてある場合は「参照 N を使う」で選べます。指定しないと真横として扱われません）。選ぶと参照欄に入ります。"
+              description="真横向きの画像は、ここで選んだ真横を参照にして作ります。候補はカメラを横へ回して作ります（右 2 枚・左 2 枚）。下のチェックで、顔の大きく写った画像（元の顔アップ・上半身、全身から始めたときは自動で切り出したバストアップ）も添えて顔を寄せられます。顔がいちばんイメージに近い 1 枚を選んでください（後ろ姿はこの真横の髪に揃えます）。後ろ髪の長さや結び方を決めたいときは上の「後ろ髪の指定」に書いてください。手持ちの真横があれば、下の「持っているなら」の行にドロップするか「ファイルを選ぶ」で指定してください（参照欄に入れてある場合は「参照 N を使う」で選べます。指定しないと真横として扱われません）。選ぶと参照欄に入ります。"
               user={user}
               image={effectiveMain}
               specs={sideSpecs}
@@ -1258,7 +1264,14 @@ export function DatasetBuilderTab() {
                 if (!subImages.includes(file)) putRef(refSide, file);
                 setRefSide(file);
               }}
-            />
+            >
+              {!refSide && sideFaceAvailable && (
+                <label className="flex items-center gap-1.5 text-[10px] text-muted">
+                  <input type="checkbox" checked={sideFaceOn} onChange={(e) => setSideFaceOn(e.target.checked)} />
+                  顔の大きく写った画像も添える（横顔が似やすい・4 枚 {4 * perImageWithRef} C。外すと {4 * perImage} C）
+                </label>
+              )}
+            </CandidatePanel>
           )}
           {precision === "careful" && effectiveMain && (viewsInPlan.has("back") || refBack) && (
             <CandidatePanel

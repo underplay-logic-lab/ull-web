@@ -86,6 +86,11 @@ export function BodyDesignForm({
       <ChipRow label="靴" chips={BODY_SHOES_CHIPS} value={design.shoesId ?? ""} onSelect={(id) => set({ shoesId: id })} />
       <ChipRow label="体型" chips={BODY_BUILD_CHIPS} value={design.buildId} onSelect={(id) => set({ buildId: id })} />
       <ChipRow label="背丈" chips={BODY_HEIGHT_CHIPS} value={design.heightId} onSelect={(id) => set({ heightId: id })} />
+      <p className="text-[10px] leading-relaxed text-muted/80">
+        {route === "face"
+          ? "体型・背丈の「おまかせ」は、顔や肩の雰囲気からモデルが想像します（候補ごとに多少ばらつくので、気に入った体つきの候補を選んでください）。"
+          : "体型・背丈の「おまかせ」は、写っている上半身から推測します。"}
+      </p>
     </div>
   );
 }
