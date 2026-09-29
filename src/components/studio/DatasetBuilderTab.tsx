@@ -112,6 +112,8 @@ type PersistedForm = {
   precision?: "careful" | "quick";
   /** 真横の候補に顔の大きく写った画像を添えるか（既定 true）。 */
   sideFaceOn?: boolean;
+  /** 全身から始めたとき体つきを調整するか（2026-09-29）。 */
+  adjustBody?: boolean;
 };
 /** 進行中／完了した「1 回の指定」。File は保存できないので、リロード後は結果の表示と LoRA への送りだけできる。 */
 type PersistedRun = {
@@ -487,6 +489,7 @@ export function DatasetBuilderTab() {
   const [sendOriginal, setSendOriginal] = useState<boolean>(() => savedForm?.sendOriginal ?? true);
   const [hairNote, setHairNote] = useState<string>(() => savedForm?.hairNote ?? "");
   const [sideFaceOn, setSideFaceOn] = useState<boolean>(() => savedForm?.sideFaceOn ?? true);
+  const [adjustBody, setAdjustBody] = useState<boolean>(() => savedForm?.adjustBody ?? false);
 
   useEffect(() => {
     saveFormState(FORM_ID, {
@@ -500,8 +503,9 @@ export function DatasetBuilderTab() {
       hairNote,
       precision,
       sideFaceOn,
+      adjustBody,
     } satisfies PersistedForm);
-  }, [sel, count, confirmFirst, bodyDesign, routeOverride, mainFraming, sendOriginal, hairNote, precision, sideFaceOn]);
+  }, [sel, count, confirmFirst, bodyDesign, routeOverride, mainFraming, sendOriginal, hairNote, precision, sideFaceOn, adjustBody]);
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
@@ -607,10 +611,17 @@ export function DatasetBuilderTab() {
   const viewsInPlan = new Set(previewPlan.map((it) => it.viewId));
   // 経路（2026-09-29）: 顔アップ→体の設計が必須／上半身→下の服は任意／全身→そのまま。手動で切り替えられる。
   const mainRoute = image ? mainRouteOf(mainFraming, routeOverride) : null;
+  // 全身から始めても「体つきを調整する」なら、調整した基準の全身像を候補から選ぶ（2026-09-29）。
+  const fullAdjust = mainRoute === "full" && adjustBody;
   const needsBaseFull =
-    precision === "careful" && Boolean(image) && !baseFull && !deriving && mainRoute !== null && mainRoute !== "full";
-  // かんたんで顔アップ（上半身）のときは、体の設計を本生成の全部の画像に添える。
-  const quickBody = precision === "quick" && (mainRoute === "face" || mainRoute === "upper");
+    precision === "careful" &&
+    Boolean(image) &&
+    !baseFull &&
+    !deriving &&
+    mainRoute !== null &&
+    (mainRoute !== "full" || adjustBody);
+  // かんたんで顔アップ（上半身・体つきの調整）のときは、体の設計を本生成の全部の画像に添える。
+  const quickBody = precision === "quick" && (mainRoute === "face" || mainRoute === "upper" || fullAdjust);
   const quickBlocked = quickBody && mainRoute ? bodyDesignBlockedReason(bodyDesign, mainRoute) : null;
   // 真横 → 後ろ姿の順（2026-09-29）。一覧に真横があれば、後ろ姿は確定した真横を添えて作る（髪を真横に揃える）。
   const sideInPlan = viewsInPlan.has("side");
@@ -620,12 +631,16 @@ export function DatasetBuilderTab() {
   // 真横の候補に顔の大きく写った画像を添える（横顔が似る、2026-09-29 ホスト実走・全ルートで添える方針）。
   // 顔アップ・上半身から始めた（基準の全身像がある）ときは元の画像、全身から始めたときは自動で切り出したバストアップ。
   // 添えられる画像（sideFaceAvailable）があっても、添えるかは使う人が選ぶ（既定オン、2026-09-29 ホスト）。
-  const sideFaceAvailable = activeBaseFull && image ? image : (derived.bust ?? null);
+  // 全身から始めた（体つきの調整を含む）ときは顔が小さいので、切り出したバストアップを添える。
+  const sideFaceAvailable = mainRoute !== "full" && activeBaseFull && image ? image : (derived.bust ?? null);
   const sideFaceRef = sideFaceOn ? sideFaceAvailable : null;
   const backSpecs = useMemo(() => backViewSpecs(hairNote, backUsesSide), [hairNote, backUsesSide]);
   const baseFullSpecs = useMemo(
-    () => (mainRoute === "face" || mainRoute === "upper" ? bodyDesignSpecs(bodyDesign, mainRoute) : FULL_BODY_SPECS),
-    [mainRoute, bodyDesign],
+    () =>
+      mainRoute === "face" || mainRoute === "upper" || (mainRoute === "full" && adjustBody)
+        ? bodyDesignSpecs(bodyDesign, mainRoute)
+        : FULL_BODY_SPECS,
+    [mainRoute, bodyDesign, adjustBody],
   );
   const baseFullBlocked = mainRoute ? bodyDesignBlockedReason(bodyDesign, mainRoute) : null;
   const busy = phase === "submitting" || phase === "running";
@@ -1086,6 +1101,20 @@ export function DatasetBuilderTab() {
                   ? "基準の全身像・真横・後ろ姿を先に候補から選んで確定し、それを元に作ります。顔や体つきが揃いやすく、仕上がりの精度が上がります（候補づくりの料金がかかります）。"
                   : "基準の全身像・真横・後ろ姿を作らず、メイン画像のまますぐ作ります。手早く安く済みますが、顔や体つきは画像ごとに多少ぶれます。"}
               </p>
+              {mainRoute === "full" && (
+                <label className="flex items-center gap-1.5 text-[11px] text-muted">
+                  <input
+                    type="checkbox"
+                    checked={adjustBody}
+                    onChange={(e) => {
+                      setAdjustBody(e.target.checked);
+                      setBaseFull(null);
+                      setPicks((p) => ({ ...p, full: undefined }));
+                    }}
+                  />
+                  体つきを調整する（胸の大きさ・体型・背丈など。顔・髪・服は元のまま）
+                </label>
+              )}
               {quickBody && mainRoute && (
                 <BodyDesignForm design={bodyDesign} onChange={setBodyDesign} route={mainRoute} />
               )}
@@ -1186,6 +1215,8 @@ export function DatasetBuilderTab() {
               description={
                 baseFull
                   ? "これから作る素材の全身の画像はこの全身像を元に、上半身・バストアップの画像はこの全身像から自動で切り出した寄りの画像を元に作ります。別の候補に替えることもできます。"
+                  : fullAdjust
+                    ? "体つきを変えたい項目を指定して全身の候補を作り、いちばんイメージに合う 1 枚を選んでください。顔・髪・服は元の画像のまま保ちます。選んだ全身像が以後に作る全部の画像の元になります。"
                   : mainRoute === "face"
                     ? "顔だけの画像なので、まず体と服を決めて全身の候補を作り、気に入った 1 枚を選んでください。候補ごとに顔の雰囲気が少しずつ違うので、いちばんイメージに合う顔を選ぶのがコツです。選んだ全身像が、以後に作る全部の画像の元になります。"
                     : "メイン画像に足元まで写っていないので、まず全身の候補を作って 1 枚選んでください。体つき・服装はここで確定し、選んだ全身像が以後に作る全部の画像の元になります。"
@@ -1210,7 +1241,7 @@ export function DatasetBuilderTab() {
               confirmed={baseFull}
               gpuLock={gpuLock}
             >
-              {!baseFull && (mainRoute === "face" || mainRoute === "upper") && (
+              {!baseFull && (mainRoute === "face" || mainRoute === "upper" || fullAdjust) && mainRoute && (
                 <BodyDesignForm design={bodyDesign} onChange={setBodyDesign} route={mainRoute} />
               )}
             </CandidatePanel>

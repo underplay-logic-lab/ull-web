@@ -533,9 +533,32 @@ export type BodyDesign = {
   shoesId?: string;
   buildId: string;
   heightId: string;
+  /** 体の特徴の自由入力（任意・日本語可、2026-09-29）。例: 胸は控えめ・なで肩・脚が長い。 */
+  featuresText?: string;
 };
 
-export const EMPTY_BODY_DESIGN: BodyDesign = { outfitId: "", outfitText: "", shoesId: "", buildId: "", heightId: "" };
+export const EMPTY_BODY_DESIGN: BodyDesign = {
+  outfitId: "",
+  outfitText: "",
+  shoesId: "",
+  buildId: "",
+  heightId: "",
+  featuresText: "",
+};
+
+/** 体型・背丈・体の特徴の英文（無ければ ""）。 */
+function bodyShapeEn(design: BodyDesign): string {
+  const build = BODY_BUILD_CHIPS.find((c) => c.id === design.buildId)?.en || undefined;
+  const height = BODY_HEIGHT_CHIPS.find((c) => c.id === design.heightId)?.en || undefined;
+  const body = [build, height].filter(Boolean).join(", ");
+  const features = (design.featuresText ?? "").trim();
+  return [body ? `The character has a ${body}.` : "", features ? `Body details: ${features}.` : ""].filter(Boolean).join(" ");
+}
+
+/** 全身から始めて体つきを調整するとき、何か 1 つでも指定があるか。 */
+export function bodyDesignHasAdjustment(design: BodyDesign): boolean {
+  return Boolean(bodyShapeEn(design) || bodyOutfitEn(design));
+}
 
 function bodyOutfitEn(design: BodyDesign): string {
   const text = design.outfitText.trim();
@@ -549,24 +572,30 @@ function bodyOutfitEn(design: BodyDesign): string {
 /** 候補を作れない理由（無ければ null）。顔アップは服装が必須（上半身は下の服が元画像に無いだけなので任意）。 */
 export function bodyDesignBlockedReason(design: BodyDesign, route: MainRoute): string | null {
   if (route === "face" && !bodyOutfitEn(design)) return "先に服装を選ぶか入力してください（顔だけの画像なので、体と服をここで決めます）。";
+  if (route === "full" && !bodyDesignHasAdjustment(design)) return "変えたい項目（体型・背丈・体の特徴・服）を 1 つ以上指定してください。";
   return null;
 }
 
-/** 基準の全身の候補の指示（4 枚分）。route が full なら使わない。 */
+/**
+ * 基準の全身の候補の指示（4 枚分）。full は「全身から始めて体つきを調整する」とき（2026-09-29）: 顔・髪・服は元のまま、
+ * 指定した体型・背丈・体の特徴（と服を指定したときは服）だけ変える。
+ */
 export function bodyDesignSpecs(design: BodyDesign, route: MainRoute, count = 4): { instruction: string; label: string }[] {
   const outfit = bodyOutfitEn(design);
-  const build = BODY_BUILD_CHIPS.find((c) => c.id === design.buildId)?.en || undefined;
-  const height = BODY_HEIGHT_CHIPS.find((c) => c.id === design.heightId)?.en || undefined;
+  const shape = bodyShapeEn(design);
   const base = "A full body shot showing the whole body from head to feet, standing upright, facing the viewer, against a plain white background.";
-  const body = [build, height].filter(Boolean).join(", ");
   let rest: string;
   if (route === "face") {
-    rest = `The character is wearing ${outfit}.${body ? ` ${body[0].toUpperCase()}${body.slice(1)}.` : ""} Keep the identical face and hairstyle as the reference.`;
-  } else {
+    rest = `The character is wearing ${outfit}.${shape ? ` ${shape}` : ""} Keep the identical face and hairstyle as the reference.`;
+  } else if (route === "upper") {
     // 上半身: 写っている服は引き継ぎ、写っていない下半身だけ指定を使う。
     rest = `Keep the same character with the identical face, hairstyle and the clothing visible in the reference.${
       outfit ? ` For the parts not visible in the reference, the character is wearing ${outfit}.` : ""
-    }${body ? ` ${body[0].toUpperCase()}${body.slice(1)}.` : ""}`;
+    }${shape ? ` ${shape}` : ""}`;
+  } else {
+    rest = `Keep the same character with the identical face and hairstyle as the reference.${
+      outfit ? ` The character is now wearing ${outfit}.` : " Keep the same clothing as the reference."
+    }${shape ? ` Change only the body as follows: ${shape}` : ""}`;
   }
   return Array.from({ length: count }, (_, i) => ({ instruction: `${base} ${rest}`, label: `全身の候補 ${i + 1}` }));
 }
@@ -577,12 +606,10 @@ export function bodyDesignSpecs(design: BodyDesign, route: MainRoute, count = 4)
  */
 export function bodyDesignSentence(design: BodyDesign): string {
   const outfit = bodyOutfitEn(design);
-  const build = BODY_BUILD_CHIPS.find((c) => c.id === design.buildId)?.en || undefined;
-  const height = BODY_HEIGHT_CHIPS.find((c) => c.id === design.heightId)?.en || undefined;
-  const body = [build, height].filter(Boolean).join(", ");
+  const shape = bodyShapeEn(design);
   return [
     outfit ? `Unless another outfit is specified above, the character is wearing ${outfit}.` : "",
-    body ? `The character has a ${body}.` : "",
+    shape,
   ]
     .filter(Boolean)
     .join(" ");

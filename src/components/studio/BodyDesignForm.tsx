@@ -64,7 +64,11 @@ export function BodyDesignForm({
       }`}
     >
       <p className="text-[10px] font-medium text-foreground">
-        {route === "face" ? "体と服を決める（服装は必須）" : "写っていない部分の服（任意）"}
+        {route === "face"
+          ? "体と服を決める（服装は必須）"
+          : route === "upper"
+            ? "写っていない部分の服と体つき（任意）"
+            : "体つきの調整（変えたい項目だけ指定。服は変えるときだけ）"}
       </p>
       <ChipRow
         label="服装"
@@ -86,10 +90,23 @@ export function BodyDesignForm({
       <ChipRow label="靴" chips={BODY_SHOES_CHIPS} value={design.shoesId ?? ""} onSelect={(id) => set({ shoesId: id })} />
       <ChipRow label="体型" chips={BODY_BUILD_CHIPS} value={design.buildId} onSelect={(id) => set({ buildId: id })} />
       <ChipRow label="背丈" chips={BODY_HEIGHT_CHIPS} value={design.heightId} onSelect={(id) => set({ heightId: id })} />
+      <div className="flex items-center gap-1">
+        <span className="w-12 shrink-0 text-[10px] text-muted">体の特徴</span>
+        <input
+          type="text"
+          value={design.featuresText ?? ""}
+          onChange={(e) => set({ featuresText: e.target.value })}
+          placeholder="任意・日本語可。例: 胸は控えめ、なで肩、脚が長い"
+          className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] text-foreground placeholder:text-muted/60"
+          maxLength={200}
+        />
+      </div>
       <p className="text-[10px] leading-relaxed text-muted/80">
         {route === "face"
           ? "体型・背丈の「おまかせ」は、顔や肩の雰囲気からモデルが想像します（候補ごとに多少ばらつくので、気に入った体つきの候補を選んでください）。"
-          : "体型・背丈の「おまかせ」は、写っている上半身から推測します。"}
+          : route === "upper"
+            ? "体型・背丈の「おまかせ」は、写っている上半身から推測します。"
+            : "「おまかせ」の項目は元の画像のままです。顔・髪・ポーズの雰囲気は元のまま保ち、指定した体つきだけを変えます。"}
       </p>
     </div>
   );
