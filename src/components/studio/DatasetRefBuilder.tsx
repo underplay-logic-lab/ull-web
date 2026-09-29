@@ -292,6 +292,15 @@ export function CandidatePanel({
   };
   const cost = specs.length * costPerImage;
   const busy = status === "queued" || status === "submitting" || status === "running";
+  // 進行中の経過秒（表示用）。
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!busy) return;
+    const t0 = Date.now();
+    queueMicrotask(() => setElapsed(0));
+    const id = window.setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 1000);
+    return () => window.clearInterval(id);
+  }, [busy]);
   const insufficient = Boolean(user) && credits !== null && credits < cost;
 
   // 前の候補（2026-09-29、ホスト要望「作り直しても前の候補から選べるように」）。作り直すたびに今の候補をここへ移す。
@@ -543,16 +552,46 @@ export function CandidatePanel({
         </div>
       )}
       {busy && (
-        <p className="flex items-center gap-1.5 text-[10px] text-muted">
-          <Loader2 size={10} className="animate-spin" />
-          {status === "queued"
-            ? "他の生成が終わるのを待っています（終わり次第すぐ始まります・追加料金なし）"
-            : status === "submitting"
-              ? "画像を送っています…"
-            : job?.status === "processing"
-              ? `候補を作っています…（${job.completedAngles} / ${job.totalAngles} 枚）`
-              : "生成準備中…GPUを起動しています（初回は1〜2分ほどかかります）"}
-        </p>
+        // 候補づくりの進行中表示（2026-09-29 ホスト指摘「作っているのが目立たなすぎる」）。枠・進捗バー・枚数ぶんの
+        // 仮の枠で、作っている最中だと一目で分かるようにする。できた候補は仮の枠に順に入る。
+        <div className="space-y-2 rounded-lg border border-neon-pink/50 bg-neon-pink/10 px-3 py-2.5">
+          <p className="flex items-center gap-2 text-xs font-semibold text-foreground">
+            <Loader2 size={16} className="animate-spin text-neon-pink" />
+            {status === "queued"
+              ? "順番待ち中：他の生成が終わり次第すぐ始まります（追加料金なし）"
+              : status === "submitting"
+                ? "画像を送っています…"
+                : job?.status === "processing"
+                  ? `候補を作っています…（${job.completedAngles} / ${job.totalAngles} 枚）`
+                  : "生成準備中…GPUを起動しています（初回は1〜2分ほどかかります）"}
+            <span className="ml-auto font-mono text-[11px] font-normal text-muted">{elapsed}秒</span>
+          </p>
+          <div className="h-1.5 overflow-hidden rounded-full bg-black/30">
+            <div
+              className={`h-full rounded-full bg-gradient-to-r from-neon-pink to-neon-violet transition-all duration-500 ${
+                job?.status === "processing" ? "" : "w-1/3 animate-pulse"
+              }`}
+              style={job?.status === "processing" && job.totalAngles > 0 ? { width: `${Math.max(4, (job.completedAngles / job.totalAngles) * 100)}%` } : undefined}
+            />
+          </div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {specs.map((sp, i) => {
+              const url = job?.images[i];
+              return (
+                <div key={i} className="relative aspect-[4/5] overflow-hidden rounded-md border border-border bg-black/30">
+                  {url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={url} alt={sp.label} className="h-full w-full object-contain" />
+                  ) : (
+                    <div className="flex h-full w-full animate-pulse items-center justify-center bg-gradient-to-br from-neon-violet/10 to-neon-pink/10">
+                      <Sparkles size={14} className="text-neon-violet/60" />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
       )}
       {confirmed && (
         <div className="flex items-center gap-2 rounded-md border border-neon-pink/40 bg-neon-pink/5 px-2 py-1">
