@@ -1046,7 +1046,7 @@ export function DatasetBuilderTab() {
               <p className="text-[10px] leading-relaxed text-muted">
                 全身の画像は{baseFull ? "確定した基準の全身像" : "メイン画像"}を、上半身・バストアップの画像は下の画像を基準に作ります。
                 上半身・バストアップの基準は、{baseFull ? "基準の全身像" : "メイン画像"}から自動で切り出します（無料・切り出しの解像度は仕上がりに影響しません）。
-                寄りで写った手持ちの画像（上半身・バストアップの写真など）を参照欄に入れていれば、それを基準に選ぶこともできます。
+                寄りで写った手持ちの画像（上半身・バストアップの写真など）を参照欄に入れていれば、それを基準に生成することもできます。
               </p>
               {deriving && (
                 <p className="flex items-center gap-1.5 text-[10px] text-muted">
@@ -1123,7 +1123,7 @@ export function DatasetBuilderTab() {
               title={baseFull ? "基準の全身像（確定済み）" : "基準の全身像を作る"}
               description={
                 baseFull
-                  ? "これから作る全身の画像はこの全身像を元に、上半身・バストアップの画像はこの全身像から自動で切り出した寄りの画像を元に作ります。別の候補に替えることもできます。"
+                  ? "これから作る素材の全身の画像はこの全身像を元に、上半身・バストアップの画像はこの全身像から自動で切り出した寄りの画像を元に作ります。別の候補に替えることもできます。"
                   : mainRoute === "face"
                     ? "顔だけの画像なので、まず体と服を決めて全身の候補を作り、気に入った 1 枚を選んでください。候補ごとに顔の雰囲気が少しずつ違うので、いちばんイメージに合う顔を選ぶのがコツです。選んだ全身像が、以後に作る全部の画像の元になります。"
                     : "メイン画像に足元まで写っていないので、まず全身の候補を作って 1 枚選んでください。体つき・服装はここで確定し、選んだ全身像が以後に作る全部の画像の元になります。"
@@ -1153,10 +1153,29 @@ export function DatasetBuilderTab() {
               )}
             </CandidatePanel>
           )}
+          {effectiveMain && (viewsInPlan.has("side") || viewsInPlan.has("back") || refSide || refBack) && (
+            // 後ろ髪の指定は真横・後ろ姿の両方の候補に使う（真横を先に作り、後ろ姿は選んだ真横に揃えるので、真横の前に決める）。
+            <label className="flex flex-col gap-1 rounded-lg border border-border bg-background/40 px-3 py-2 text-[10px] text-muted">
+              <span>
+                <span className="font-medium text-foreground">後ろ髪の指定</span>（任意・日本語可。真横と後ろ姿の候補に使います）
+              </span>
+              <input
+                type="text"
+                value={hairNote}
+                onChange={(e) => setHairNote(e.target.value)}
+                placeholder="例: 腰までのストレート／襟足は刈り上げ／低い位置で一つ結び"
+                maxLength={120}
+                className="min-w-0 rounded border border-border bg-background px-2 py-1 text-[11px] text-foreground placeholder:text-muted/60"
+              />
+              <span className="text-muted/80">
+                後ろ姿は選んだ真横の髪に揃えるので、後ろ髪を変えたいときはここを直して真横から作り直してください。
+              </span>
+            </label>
+          )}
           {effectiveMain && (viewsInPlan.has("side") || refSide) && (
             <CandidatePanel
               title={refSide ? "真横の参照（確定済み）" : "真横の参照を作る"}
-              description="真横向きの画像は、ここで選んだ真横を参照にして作ります。顔がいちばんイメージに近い 1 枚を選んでください（後ろ姿はこの真横の髪に揃えます）。後ろ髪の長さや結び方を決めたいときは下の欄に書いてください。手持ちの真横を参照欄に入れた場合は、下の「参照 N を使う」で指定してください（指定しないと真横として扱われません）。選ぶと参照欄に入ります。"
+              description="真横向きの画像は、ここで選んだ真横を参照にして作ります。顔がいちばんイメージに近い 1 枚を選んでください（後ろ姿はこの真横の髪に揃えます）。後ろ髪の長さや結び方を決めたいときは下の欄に書いてください。手持ちの真横があれば、下の「持っているなら」の行にドロップするか「ファイルを選ぶ」で指定してください（参照欄に入れてある場合は「参照 N を使う」で選べます。指定しないと真横として扱われません）。選ぶと参照欄に入ります。"
               user={user}
               image={effectiveMain}
               specs={sideSpecs}
@@ -1181,29 +1200,15 @@ export function DatasetBuilderTab() {
                 if (!subImages.includes(file)) putRef(refSide, file);
                 setRefSide(file);
               }}
-            >
-              {!refSide && (
-                <label className="flex flex-wrap items-center gap-1 text-[10px] text-muted">
-                  後ろ髪の指定（任意・日本語可）
-                  <input
-                    type="text"
-                    value={hairNote}
-                    onChange={(e) => setHairNote(e.target.value)}
-                    placeholder="例: 腰までのストレート／襟足は刈り上げ／低い位置で一つ結び"
-                    maxLength={120}
-                    className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] text-foreground placeholder:text-muted/60"
-                  />
-                </label>
-              )}
-            </CandidatePanel>
+            />
           )}
           {effectiveMain && (viewsInPlan.has("back") || refBack) && (
             <CandidatePanel
               title={refBack ? "後ろ姿の参照（確定済み）" : "後ろ姿の参照を作る"}
               description={
                 backUsesSide
-                  ? "後ろ向きの画像は、ここで選んだ後ろ姿を参照にして作ります。候補は確定した真横を一緒に見せて、後ろ髪の長さ・形を真横に揃えます。手持ちの後ろ姿を参照欄に入れた場合は、下の「参照 N を使う」で指定してください（指定しないと後ろ姿として扱われません）。選ぶと参照欄に入ります。"
-                  : "後ろ向きの画像は、ここで選んだ後ろ姿を参照にして作ります（選ばないと毎回ちがう背中になります）。手持ちの後ろ姿を参照欄に入れた場合は、下の「参照 N を使う」で指定してください（指定しないと後ろ姿として扱われません）。無ければ候補を作って選びます。選ぶと参照欄に入ります。"
+                  ? "後ろ向きの画像は、ここで選んだ後ろ姿を参照にして作ります。候補は確定した真横を一緒に見せて、後ろ髪の長さ・形を真横に揃えます。手持ちの後ろ姿があれば、下の「持っているなら」の行にドロップするか「ファイルを選ぶ」で指定してください（参照欄に入れてある場合は「参照 N を使う」で選べます。指定しないと後ろ姿として扱われません）。選ぶと参照欄に入ります。"
+                  : "後ろ向きの画像は、ここで選んだ後ろ姿を参照にして作ります（選ばないと毎回ちがう背中になります）。手持ちの後ろ姿があれば、下の「持っているなら」の行にドロップするか「ファイルを選ぶ」で指定してください（参照欄に入れてある場合は「参照 N を使う」で選べます。指定しないと後ろ姿として扱われません）。無ければ候補を作って選びます。選ぶと参照欄に入ります。"
               }
               user={user}
               image={effectiveMain}
