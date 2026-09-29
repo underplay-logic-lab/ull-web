@@ -65,18 +65,18 @@ export const VIEW_CHIPS: SceneChip[] = [
 
 // 表情・服装（2026-09-28、ホスト指摘「全部スーツで似た画像ばかり」）。LoRA でも服装・表情の幅があると、
 // 服やスーツを「人物の一部」として覚え込まず、プロンプトで変えやすくなる。
-// 表情は感情の単語を使わず、顔のパーツの形だけで指示する（2026-09-30、3 回目）。
-// 経緯: 強い表現（照れ・怒り・悲しみ）→ 真っ赤・アニメ調・別人。「少し〜」「赤面なし」に弱めても、shy/blush/pout 等の
-// 単語そのものがアニメの誇張表情を連想させ、否定（no blushing）も効かなかった。形の指示＋ネガティブプロンプト
-// （sceneNegativePrompt）で抑える。id は保存済みの選択と互換。
+// 表情（2026-09-30、4 回目）: 赤面・涙・誇張・険しい目・アニメ調はネガティブプロンプト（sceneNegativePrompt）で止まる
+// と分かった（ホスト実走: アニメ調ゼロ）。形だけの指示（3 回目）はほぼ真顔・口をとがらせる＝キス顔になったので、
+// 本文は感情が伝わる中間の言い方に戻す（最初の強い言い方＝teary・laughing out loud・blushing までは戻さない）。
+// id は保存済みの選択と互換。
 export const EXPRESSION_CHIPS: SceneChip[] = [
   { id: "neutral", label: "真顔", en: "with a calm neutral expression" },
-  { id: "smile", label: "微笑み", en: "with the corners of the mouth slightly raised in a soft closed-mouth smile" },
-  { id: "laugh", label: "歯を見せて笑う", en: "with a natural open-mouth smile showing a little of the upper teeth" },
-  { id: "surprised", label: "少し驚き", en: "with the eyebrows slightly raised, the eyes a little wider than usual and the mouth slightly open" },
-  { id: "shy", label: "少しはにかむ", en: "with the head tilted slightly down, the eyes looking slightly to the side and a small closed-mouth smile" },
-  { id: "angry", label: "少し口をとがらせる", en: "with the lips pushed slightly forward, while the eyebrows and eyes stay relaxed and neutral" },
-  { id: "sad", label: "少し寂しげ", en: "with the corners of the mouth slightly lowered and the eyelids slightly lowered, the eyebrows relaxed" },
+  { id: "smile", label: "微笑み", en: "smiling gently" },
+  { id: "laugh", label: "明るく笑う", en: "laughing happily with a bright smile" },
+  { id: "surprised", label: "驚き", en: "with a surprised expression" },
+  { id: "shy", label: "はにかむ", en: "with a bashful, shy smile, glancing slightly away" },
+  { id: "angry", label: "むっとする", en: "with a slightly annoyed, sulky expression" },
+  { id: "sad", label: "悲しげ", en: "with a sad expression" },
 ];
 
 /** 元画像の画風（2026-09-30）。photo のときはアニメ・イラスト調をネガティブに入れる（実写がアニメ調に転ぶ対策）。 */
