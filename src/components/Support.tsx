@@ -18,6 +18,8 @@ const MAX_JPY = 1_000_000;
 export function Support() {
   const [selected, setSelected] = useState<number>(1000);
   const [custom, setCustom] = useState<string>("");
+  // 範囲の案内は打ち終わってから（欄を離れたとき）だけ出す。打っている途中の「1」「10」で出ると 100 が弾かれて見える（2026-09-29）。
+  const [customTouched, setCustomTouched] = useState(false);
   const [useCustom, setUseCustom] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -212,10 +214,16 @@ export function Support() {
                 inputMode="numeric"
                 placeholder="他の金額"
                 value={custom}
-                onFocus={() => setUseCustom(true)}
+                onFocus={() => {
+                  setUseCustom(true);
+                  setCustomTouched(false);
+                }}
+                onBlur={() => setCustomTouched(true)}
                 onChange={(e) => {
                   setUseCustom(true);
-                  setCustom(e.target.value.replace(/[^0-9]/g, "").slice(0, 7));
+                  // 全角数字（日本語入力のまま打った「１００」）も半角にして受け付ける。
+                  const half = e.target.value.replace(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xfee0));
+                  setCustom(half.replace(/[^0-9]/g, "").slice(0, 7));
                 }}
                 className="w-24 bg-transparent text-foreground outline-none placeholder:text-muted/70"
                 aria-label="支援金額（円）"
@@ -232,9 +240,11 @@ export function Support() {
             {busy ? <Loader2 size={16} className="animate-spin" /> : <Heart size={16} />}
             {amountValid ? `¥${amount.toLocaleString()} を支援する` : "金額を選んでください"}
           </button>
-          {useCustom && custom && !amountValid && (
+          {useCustom && custom && customTouched && !amountValid && (
             <p className="mt-2 text-xs text-red-300">
-              ¥{MIN_JPY.toLocaleString()} 〜 ¥{MAX_JPY.toLocaleString()} の範囲で入力してください。
+              {amount > MAX_JPY
+                ? `一度にご支援いただけるのは ¥${MAX_JPY.toLocaleString()} までです。`
+                : `¥${MIN_JPY.toLocaleString()} 以上で入力してください。`}
             </p>
           )}
           {error && <p className="mt-2 text-xs text-red-300">{error}</p>}

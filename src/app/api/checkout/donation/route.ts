@@ -19,6 +19,7 @@ const LOG_PREFIX = "[checkout/donation]";
 const SUCCESS_URL = "https://www.ullstudio.com/?donation=thanks&checkout_id={CHECKOUT_ID}#support";
 const RETURN_URL = "https://www.ullstudio.com/#support";
 const DONATION_MIN_JPY = 100;
+// 上限は Polar の制約ではなく、誤入力で桁違いの決済にならないための安全装置（2026-09-29 ホスト確認）。
 const DONATION_MAX_JPY = 1_000_000;
 
 export async function POST(request: Request) {
@@ -31,7 +32,12 @@ export async function POST(request: Request) {
   const amount = typeof body.amount === "number" ? Math.round(body.amount) : NaN;
   if (!Number.isFinite(amount) || amount < DONATION_MIN_JPY || amount > DONATION_MAX_JPY) {
     return NextResponse.json(
-      { error: `金額は ¥${DONATION_MIN_JPY.toLocaleString()} 〜 ¥${DONATION_MAX_JPY.toLocaleString()} で指定してください。` },
+      {
+        error:
+          amount > DONATION_MAX_JPY
+            ? `一度にご支援いただけるのは ¥${DONATION_MAX_JPY.toLocaleString()} までです。`
+            : `¥${DONATION_MIN_JPY.toLocaleString()} 以上で指定してください。`,
+      },
       { status: 400 },
     );
   }
