@@ -13,7 +13,6 @@ import { supabase } from "@/lib/supabaseClient";
 
 const PRESETS = [500, 1000, 3000] as const;
 const MIN_JPY = 100;
-const MAX_JPY = 1_000_000;
 
 export function Support() {
   const [selected, setSelected] = useState<number>(1000);
@@ -85,7 +84,8 @@ export function Support() {
   };
 
   const amount = useCustom ? Number.parseInt(custom.replace(/[^0-9]/g, ""), 10) : selected;
-  const amountValid = Number.isFinite(amount) && amount >= MIN_JPY && amount <= MAX_JPY;
+  // 上限は設けない（決済画面で金額を確認してから払うので、誤入力の安全装置は要らない。2026-09-29 ホスト）。
+  const amountValid = Number.isFinite(amount) && amount >= MIN_JPY;
 
   const submit = async () => {
     if (!amountValid || busy) return;
@@ -150,7 +150,7 @@ export function Support() {
                 <>
                   <p className="text-sm font-medium text-foreground">ひとこと添えませんか？（任意）</p>
                   <p className="text-[11px] leading-relaxed text-muted">
-                    「こうなったらいいな」「この設定が欲しい」など、何でもどうぞ。次に作るものを決めるとき、ちゃんと読んでいます。
+                    「こうなったらいいな」「この設定が欲しい」など、何でもどうぞ。次に作るものを決めるときの参考にします。
                   </p>
                   <textarea
                     value={note}
@@ -223,7 +223,7 @@ export function Support() {
                   setUseCustom(true);
                   // 全角数字（日本語入力のまま打った「１００」）も半角にして受け付ける。
                   const half = e.target.value.replace(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xfee0));
-                  setCustom(half.replace(/[^0-9]/g, "").slice(0, 7));
+                  setCustom(half.replace(/[^0-9]/g, "").slice(0, 10));
                 }}
                 className="w-24 bg-transparent text-foreground outline-none placeholder:text-muted/70"
                 aria-label="支援金額（円）"
@@ -242,9 +242,7 @@ export function Support() {
           </button>
           {useCustom && custom && customTouched && !amountValid && (
             <p className="mt-2 text-xs text-red-300">
-              {amount > MAX_JPY
-                ? `一度にご支援いただけるのは ¥${MAX_JPY.toLocaleString()} までです。`
-                : `¥${MIN_JPY.toLocaleString()} 以上で入力してください。`}
+              ¥{MIN_JPY.toLocaleString()} 以上で入力してください。
             </p>
           )}
           {error && <p className="mt-2 text-xs text-red-300">{error}</p>}
@@ -262,7 +260,7 @@ export function Support() {
               <EditableText
                 as="span"
                 siteKey="support_note_copy"
-                fallback="「要望を送るのは、ちょっと気が引ける」という方へ。ご支援に “こうなったらいいな” をひとこと添えてください。次に作るものを決めるとき、ちゃんと読んでいます。"
+                fallback="「要望を送るのは、ちょっと気が引ける」という方へ。ご支援に “こうなったらいいな” をひとこと添えてください。次に作るものを決めるときの参考にします。"
               />
               <span className="mt-1 block text-[11px] text-muted">支援の決済が終わると、ひとことを書く欄が出ます。</span>
             </span>

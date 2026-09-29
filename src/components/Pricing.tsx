@@ -50,7 +50,8 @@ export function Pricing() {
       url.searchParams.delete("purchase");
       window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
     }
-    const targetId = window.location.hash === "#pricing" ? "pricing" : window.location.hash === "#studio" ? "studio" : "";
+    // 支援（寄付）の決済から戻る #support も合わせ直す（2026-09-29: 上の区画の読み込みでずれ、お礼とひとことの欄が画面外だった）。
+    const targetId = (["pricing", "studio", "support", "contact"] as const).find((id) => window.location.hash === `#${id}`) ?? "";
     if (!targetId) return;
     let userMoved = false;
     const stop = () => {
