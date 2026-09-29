@@ -767,6 +767,16 @@ export function MultiAngleStudioTab() {
   const [phase, setPhase] = useState<Phase>(resumedJobId ? "running" : "idle");
   const [jobId, setJobId] = useState<string | null>(resumedJobId);
   const [job, setJob] = useState<AngleJob | null>(null);
+  // 前の結果（2026-09-29、ホスト指摘「予約した 2 件目が始まると 1 件目の画像が消え、終わるまで戻れない」）。
+  // 次の生成が始まるとき直前の完了分をここへ移し、進行中の表示とは別枠で見せる（拡大・保存・超解像へ）。
+  // 「今回の生成」一覧の「表示」も、生成中はここへ出す（進行中の表示は差し替えない）。
+  const [peek, setPeek] = useState<AngleJob | null>(null);
+  const [peekLight, setPeekLight] = useState<number | null>(null);
+  const [peekUrls, setPeekUrls] = useState<Record<number, string>>({});
+  const jobRef = useRef<AngleJob | null>(null);
+  useEffect(() => {
+    jobRef.current = job;
+  }, [job]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // reroll: 別ジョブを1構図で投げ、完了したら該当セルの URL を差し替える。
@@ -824,13 +834,35 @@ export function MultiAngleStudioTab() {
     };
   }, [user, phase]);
 
+  useEffect(() => {
+    if (!user || !jobId) return;
+    let alive = true;
+    listAngleJobs()
+      .then((rows) => {
+        if (alive) setHistory(rows);
+      })
+      .catch((err) => console.warn("[MultiAngleStudioTab] history fetch failed:", err));
+    return () => {
+      alive = false;
+    };
+  }, [user, jobId]);
+
   const sessionHistory = useMemo(
     () => sessionIds.map((id) => history.find((h) => h.id === id)).filter((h): h is AngleJobSummary => Boolean(h)),
     [sessionIds, history],
   );
 
   const handleShowHistory = (id: string) => {
-    if (busy || id === jobId) return;
+    if (id === jobId) return;
+    if (busy) {
+      pollAngleJob(id)
+        .then((j) => {
+          setPeek(j);
+          setPeekUrls({});
+        })
+        .catch(() => setErrorMessage("前の結果を読み込めませんでした。"));
+      return;
+    }
     setErrorMessage(null);
     setSubmittedCombos([]);
     setJob(null);
@@ -912,6 +944,11 @@ export function MultiAngleStudioTab() {
       opts: { priority?: boolean; continuation?: boolean } = {},
     ) => {
       if (!user) return;
+      const prev = jobRef.current;
+      if (opts.continuation && prev && prev.status === "completed" && prev.images.length > 0) {
+        setPeek(prev);
+        setPeekUrls({});
+      }
       setPhase("submitting");
       setErrorMessage(null);
       setJob(null);
@@ -1917,11 +1954,75 @@ export function MultiAngleStudioTab() {
         />
       )}
 
+      {peek && peek.id !== jobId && peek.images.length > 0 && (
+        <div className="mt-8 border-t border-border pt-6">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-muted">
+              前の結果
+              <span className="ml-2 text-muted/60">
+                {peek.images.length} 構図 ・ クリックで拡大（保存・超解像へ）
+              </span>
+            </p>
+            <button type="button" onClick={() => setPeek(null)} className="text-[11px] text-muted hover:text-foreground">
+              閉じる
+            </button>
+          </div>
+          <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
+            {peek.images.map((u, i) => (
+              <button
+                key={`${peek.id}:${i}`}
+                type="button"
+                onClick={() => setPeekLight(i)}
+                className="relative aspect-square cursor-zoom-in overflow-hidden rounded-lg border border-border bg-black/40"
+                title={peek.labels[i] ?? ""}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={peekUrls[i] ?? u}
+                  alt={peek.labels[i] ?? ""}
+                  className="h-full w-full object-contain"
+                  onError={() => {
+                    if (peekUrls[i]) return;
+                    void freshAngleImageUrl(peek.id, i, u).then((f) => setPeekUrls((p) => ({ ...p, [i]: f })));
+                  }}
+                />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {peek && peekLight != null && peek.images[peekLight] && (
+        <AngleLightbox
+          items={peek.images.map((u, k) => ({ url: peekUrls[k] ?? u, label: peek.labels[k] ?? "" }))}
+          index={peekLight}
+          onIndexChange={setPeekLight}
+          onClose={() => setPeekLight(null)}
+          onSave={(i) => {
+            setSaveError(null);
+            void freshAngleImageUrl(peek.id, i, peek.images[i])
+              .then((url) => downloadAngleImage(url, `${String(i + 1).padStart(2, "0")}_angle.png`))
+              .catch(() => setSaveError("保存に失敗しました。時間をおいてもう一度お試しください。"));
+          }}
+          onUpscale={(i) =>
+            void freshAngleImageUrl(peek.id, i, peek.images[i]).then((url) =>
+              requestStudioHandoff(
+                { kind: "image", url, filename: `${String(i + 1).padStart(2, "0")}_angle.png`, source: "マルチアングル" },
+                "upscale",
+              ),
+            )
+          }
+          onImageError={() => {
+            const i = peekLight;
+            void freshAngleImageUrl(peek.id, i, peek.images[i]).then((f) => setPeekUrls((p) => ({ ...p, [i]: f })));
+          }}
+        />
+      )}
+
       {user && sessionHistory.length > 1 && (
         <div className="mt-8 border-t border-border pt-6">
           <p className="text-xs font-medium text-muted">
             今回の生成
-            <span className="ml-2 text-muted/60">続けて出した生成はここから表示し直せます。改めて生成した結果が完了すると一覧は消去されます。</span>
+            <span className="ml-2 text-muted/60">続けて出した生成はここから表示し直せます（生成中は「前の結果」の枠に出します）。改めて生成した結果が完了すると一覧は消去されます。</span>
           </p>
           <ul className="mt-3 divide-y divide-border rounded-lg border border-border bg-surface/40">
             {sessionHistory.map((h) => {
@@ -1940,7 +2041,7 @@ export function MultiAngleStudioTab() {
                   <button
                     type="button"
                     onClick={() => handleShowHistory(h.id)}
-                    disabled={busy || current}
+                    disabled={current || (busy && peek?.id === h.id)}
                     className="shrink-0 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-foreground transition-colors hover:border-neon-pink/50 hover:bg-surface-hover disabled:opacity-50"
                   >
                     {current ? "表示中" : "表示"}
