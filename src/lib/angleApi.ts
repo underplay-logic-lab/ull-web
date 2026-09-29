@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
+import type { SubRefScope } from "@/lib/angleStudio";
 import { normalizeAngleReferenceImage } from "@/lib/angleImage";
 import { uploadStudioAsset } from "@/lib/studioUploads";
 import type { AngleMode, AngleSelection } from "@/lib/angleStudio";
@@ -65,8 +66,8 @@ export async function startAngleJob(params: {
    * 以降が参照。同じ File は 1 回だけアップロードする。指定時は image / subImages は使わない。
    */
   imageSets?: File[][];
-  /** マルチアングル（2026-09-29）: subImages と同じ並びで、true＝全構図に使う／false＝真横・後ろだけ。 */
-  subAll?: boolean[];
+  /** マルチアングル（2026-09-29）: subImages と同じ並びの使い道（真横・後ろだけ／後ろ以外／全構図）。 */
+  subScopes?: SubRefScope[];
   /** 出力を縦長（832×1248）にする（2026-09-29、顔アップ→全身の候補）。 */
   aspect?: "portrait";
 }): Promise<StartAngleJobResult> {
@@ -125,7 +126,7 @@ export async function startAngleJob(params: {
       selection: params.selection,
       ...(params.scenes && params.scenes.length > 0 ? { scenes: params.scenes } : {}),
       ...(imageSetIdx ? { imageSets: imageSetIdx } : {}),
-      ...(params.subAll && params.subAll.length > 0 ? { subRefAll: params.subAll } : {}),
+      ...(params.subScopes && params.subScopes.length > 0 ? { subRefScopes: params.subScopes } : {}),
       ...(params.aspect ? { aspect: params.aspect } : {}),
       mode: params.mode,
       seed: params.seed,

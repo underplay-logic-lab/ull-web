@@ -329,9 +329,8 @@ export function isAngleSelectionEmpty(selection: AngleSelection): boolean {
 }
 
 // 参照の使い分け（2026-09-29、素材づくりから展開）: サブ参照は既定では元画像に写っていない側（真横・後ろ寄り）を
-// 補うためのもので、正面・斜め前はメイン 1 枚で足りる。ただし顔のアップ・衣装の細部のように「どの向きでも保ちたい」
-// 参照もあるので、1 枚ごとに「全構図に使う」を選べる（ホスト判断 2026-09-29、案 A）。
-// API はこの判定で行ごとの画像セット（0＝メイン＋全構図用／1＝メイン＋全部）を組み、料金も構図ごとに足し合わせる。
+// 補うためのもので、正面・斜め前はメイン 1 枚で足りる。1 枚ごとに使い道（SubRefScope）を選べる。
+// API はこの判定で構図ごとの画像セット（メイン＋その構図で使うサブ）を組み、料金も構図ごとに足し合わせる。
 // フロントの表示も同じ関数を通す。
 export const ANGLE_AZIMUTHS_NEED_SUB_REFS: ReadonlySet<string> = new Set([
   "right_profile",
@@ -341,31 +340,55 @@ export const ANGLE_AZIMUTHS_NEED_SUB_REFS: ReadonlySet<string> = new Set([
   "left_profile",
 ]);
 
-/** サブ参照の内訳: total＝全部の枚数、allAngles＝そのうち「全構図に使う」の枚数。 */
-export type AngleSubRefUse = { total: number; allAngles: number };
+/**
+ * サブ参照 1 枚ごとの使い道（2026-09-29 ホスト判断で 3 択）。
+ *   sides  … 真横・後ろ寄りだけ（既定。背面ラフ等、死角を補う画像）
+ *   noback … 後ろ寄り以外（顔アップ向け。顔の写らない斜め後ろ・真後ろには使わない）
+ *   all    … 全構図（衣装の細部等、どこから見ても写るもの）
+ */
+export type SubRefScope = "sides" | "noback" | "all";
+export const SUB_REF_SCOPES: readonly SubRefScope[] = ["sides", "noback", "all"];
+export const SUB_REF_SCOPE_LABEL: Record<SubRefScope, string> = {
+  sides: "真横・後ろだけ",
+  noback: "後ろ以外",
+  all: "全構図",
+};
+const BACK_AZIMUTHS: ReadonlySet<string> = new Set(["back_right", "back", "back_left"]);
 
-/** この構図で「真横・後ろだけ」のサブ参照も使うか（向きを変えない構図・正面〜斜め前は使わない）。 */
+/** この構図が真横・後ろ寄りか（「真横・後ろだけ」のサブ参照を使う構図。向きを変えない構図・正面〜斜め前は使わない）。 */
 export function angleComboUsesSubRefs(combo: Pick<AngleCombo, "selection">): boolean {
   return combo.selection.azimuths.some((a) => ANGLE_AZIMUTHS_NEED_SUB_REFS.has(a));
 }
 
+/** この構図でサブ参照（使い道 scope）を使うか。 */
+export function subRefScopeApplies(scope: SubRefScope, combo: Pick<AngleCombo, "selection">): boolean {
+  if (scope === "all") return true;
+  if (scope === "sides") return angleComboUsesSubRefs(combo);
+  return !combo.selection.azimuths.some((a) => BACK_AZIMUTHS.has(a));
+}
+
+/** 構図 combo で使うサブ参照の添字（0 始まり、scopes と同じ並び）。 */
+export function angleComboSubRefIndexes(combo: Pick<AngleCombo, "selection">, scopes: readonly SubRefScope[]): number[] {
+  return scopes.map((sc, i) => (subRefScopeApplies(sc, combo) ? i : -1)).filter((i) => i >= 0);
+}
+
 /** この構図で使うサブ参照の枚数。 */
-export function angleComboSubRefCount(combo: Pick<AngleCombo, "selection">, use: AngleSubRefUse): number {
-  return angleComboUsesSubRefs(combo) ? use.total : Math.min(use.allAngles, use.total);
+export function angleComboSubRefCount(combo: Pick<AngleCombo, "selection">, scopes: readonly SubRefScope[]): number {
+  return angleComboSubRefIndexes(combo, scopes).length;
 }
 
 /** 構図ごとに使うサブ参照の枚数を見て単価を足し合わせたジョブの料金。 */
 export function angleCombosCredits(
   combos: Pick<AngleCombo, "selection">[],
-  use: AngleSubRefUse,
+  scopes: readonly SubRefScope[],
   knobs: PricingKnobs = DEFAULT_KNOBS,
 ): number {
-  return combos.reduce((t, c) => t + angleCreditsPerAngle(knobs, angleComboSubRefCount(c, use)), 0);
+  return combos.reduce((t, c) => t + angleCreditsPerAngle(knobs, angleComboSubRefCount(c, scopes)), 0);
 }
 
 /** 構図ごとに使うサブ参照の枚数を見たジョブ全体の生成時間の目安（秒）。 */
-export function angleCombosEstimatedSeconds(combos: Pick<AngleCombo, "selection">[], use: AngleSubRefUse): number {
-  return combos.reduce((t, c) => t + angleSecondsPerAngle(angleComboSubRefCount(c, use)), 0);
+export function angleCombosEstimatedSeconds(combos: Pick<AngleCombo, "selection">[], scopes: readonly SubRefScope[]): number {
+  return combos.reduce((t, c) => t + angleSecondsPerAngle(angleComboSubRefCount(c, scopes)), 0);
 }
 
 // 実行中のジョブを待たず並列で今すぐ実行する場合の追加料金（既定の「順番待ち」

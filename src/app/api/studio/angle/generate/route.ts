@@ -8,8 +8,9 @@ import { angleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import { downloadStudioUpload, deleteStudioUploads } from "@/lib/studioUploads.server";
 import { containsJapanese, translateToEnglish } from "@/lib/translate";
 import {
-  angleComboUsesSubRefs,
+  angleComboSubRefIndexes,
   angleCreditsPerAngle,
+  type SubRefScope,
   anglePriorityParallelSurcharge,
   buildAngleCombos,
   MAX_ANGLES,
@@ -156,8 +157,10 @@ export async function POST(request: Request) {
   let scenesRaw: unknown;
   // 行ごとの画像セット（2026-09-28）: storagePaths/images の index のリスト。scenes[i].set がセットの index。
   let imageSetsRaw: unknown;
-  // マルチアングル（2026-09-29）: サブ参照ごとに「全構図に使う」か（storagePaths[1..] と同じ並び）。
+  // マルチアングル（2026-09-29）: サブ参照ごとの使い道（storagePaths[1..] と同じ並び）。
+  // subRefScopes（"sides"|"noback"|"all"）。旧 subRefAll（true＝全構図）も受ける。
   let subRefAllRaw: unknown;
+  let subRefScopesRaw: unknown;
   // 出力の縦横（2026-09-29）: "portrait" なら 832×1248（~1MP、料金・時間は従来どおり）。顔アップ→全身の候補用。
   let aspectRaw: unknown;
 
@@ -204,6 +207,7 @@ export async function POST(request: Request) {
     scenesRaw = body.scenes;
     imageSetsRaw = body.imageSets;
     subRefAllRaw = body.subRefAll;
+    subRefScopesRaw = body.subRefScopes;
     aspectRaw = body.aspect;
   } else {
     let formData: FormData;
@@ -310,22 +314,34 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  // マルチアングルの参照の使い分け（2026-09-29）: サブ参照があれば、真横・後ろ寄りの構図は
-  // セット 1（メイン＋サブ全部）、ほかはセット 0（メイン＋「全構図に使う」のサブ）で作る。
-  // 料金も構図ごと（angleCombosCredits と同じ）。
+  // マルチアングルの参照の使い分け（2026-09-29）: サブ参照があれば、構図ごとに「メイン＋その構図で使うサブ」
+  // （使い道 SubRefScope で決まる）のセットを組む。同じ組み合わせは 1 セットにまとめる。料金も構図ごと
+  // （angleCombosCredits と同じ）。
   const angleSets = !rawPrompt && imageBuffers.length > 1;
-  const subRefAll = Array.isArray(subRefAllRaw) ? subRefAllRaw.map((v) => v === true) : [];
-  const allAngleSubIdx = imageBuffers.map((_, i) => i).filter((i) => i > 0 && subRefAll[i - 1] === true);
-  const jobImageSets: number[][] | null = sceneSets
-    ? imageSets!
-    : angleSets
-      ? [[0, ...allAngleSubIdx], imageBuffers.map((_, i) => i)]
-      : null;
-  const instructionSets: number[] | null = sceneSets
-    ? sceneInstructionSets
-    : angleSets
-      ? buildAngleCombos(selection).map((c) => (angleComboUsesSubRefs(c) ? 1 : 0))
-      : null;
+  const subCountForScopes = Math.max(0, imageBuffers.length - 1);
+  const scopesFromBody: SubRefScope[] = Array.from({ length: subCountForScopes }, (_, i) => {
+    const v = Array.isArray(subRefScopesRaw) ? subRefScopesRaw[i] : undefined;
+    if (v === "sides" || v === "noback" || v === "all") return v;
+    return Array.isArray(subRefAllRaw) && subRefAllRaw[i] === true ? "all" : "sides";
+  });
+  let jobImageSets: number[][] | null = sceneSets ? imageSets! : null;
+  let instructionSets: number[] | null = sceneSets ? sceneInstructionSets : null;
+  if (angleSets) {
+    const setKeys = new Map<string, number>();
+    const sets: number[][] = [];
+    instructionSets = buildAngleCombos(selection).map((c) => {
+      const idx = [0, ...angleComboSubRefIndexes(c, scopesFromBody).map((i) => i + 1)];
+      const key = idx.join(",");
+      let k = setKeys.get(key);
+      if (k === undefined) {
+        k = sets.length;
+        sets.push(idx);
+        setKeys.set(key, k);
+      }
+      return k;
+    });
+    jobImageSets = sets;
+  }
   const useSets = jobImageSets !== null && instructionSets !== null;
   // Multi-Reference: サブ参照ありは 1 構図あたりの生成時間が伸びる（B300 実測
   // ~3.0x @ サブ3枚）。構図数の上限は設けず（原価の歯止めは枚数連動の課金 +

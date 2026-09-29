@@ -25,6 +25,9 @@ import {
   ANGLE_PRESETS,
   angleCombosCredits,
   angleCombosEstimatedSeconds,
+  SUB_REF_SCOPES,
+  SUB_REF_SCOPE_LABEL,
+  type SubRefScope,
   angleComboUsesSubRefs,
   angleCreditsPerAngle,
   anglePriorityParallelSurcharge,
@@ -270,8 +273,8 @@ export function SubReferenceSlots({
   onAdd,
   onRemove,
   error,
-  allAngles,
-  onToggleAllAngles,
+  scopes,
+  onCycleScope,
   onZoom,
 }: {
   files: File[];
@@ -279,8 +282,9 @@ export function SubReferenceSlots({
   onRemove: (index: number) => void;
   error: string | null;
   /** マルチアングル（2026-09-29）: 1 枚ごとの使い道。true＝全構図に使う／false＝真横・後ろだけ。渡さなければ切替を出さない。 */
-  allAngles?: boolean[];
-  onToggleAllAngles?: (index: number) => void;
+  /** マルチアングル（2026-09-29）: 1 枚ごとの使い道。渡さなければ切替を出さない。押すたびに 3 択を順に切り替える。 */
+  scopes?: SubRefScope[];
+  onCycleScope?: (index: number) => void;
   /** 渡すと各サムネの左上に拡大ボタンを出す（2026-09-29）。 */
   onZoom?: (index: number, url: string) => void;
 }) {
@@ -346,18 +350,18 @@ export function SubReferenceSlots({
               </button>
             )}
           </div>
-          {allAngles && onToggleAllAngles && (
+          {scopes && onCycleScope && (
             <button
               type="button"
-              onClick={() => onToggleAllAngles(i)}
-              title="顔のアップ・衣装の細部など、どの向きでも保ちたいものは「全構図」に"
+              onClick={() => onCycleScope(i)}
+              title="押すたびに切替: 真横・後ろだけ（背面ラフ等）→ 後ろ以外（顔アップ等）→ 全構図（衣装の細部等）"
               className={`rounded-md border px-1 py-0.5 text-[10px] leading-tight transition-colors ${
-                allAngles[i]
+                (scopes[i] ?? "sides") !== "sides"
                   ? "border-neon-violet/60 bg-neon-violet/15 text-foreground"
                   : "border-border text-muted hover:text-foreground"
               }`}
             >
-              {allAngles[i] ? "全構図に使う" : "真横・後ろだけ"}
+              {SUB_REF_SCOPE_LABEL[scopes[i] ?? "sides"]} ▾
             </button>
           )}
           </div>
@@ -383,8 +387,8 @@ export function SubReferenceSlots({
       {files.length > 0 && (
         <p className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted/80">
           <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-          {allAngles
-            ? "サブ参照は既定で真横・後ろ寄りの構図にだけ使います（死角のデザイン・丈・テクスチャの補完）。顔のアップや衣装の細部など、どの向きでも保ちたい画像は下の切替で「全構図に使う」にしてください。"
+          {scopes
+            ? "サブ参照は既定で真横・後ろ寄りの構図にだけ使います（死角のデザイン・丈・テクスチャの補完）。顔のアップは「後ろ以外」、衣装の細部などどの向きでも保ちたい画像は「全構図」に、サムネ下の切替で変えてください。"
             : "サブ参照を追加すると、背面・真横の生成で死角のデザイン・丈・テクスチャをそのまま維持します。"}
         </p>
       )}
@@ -719,7 +723,7 @@ export function MultiAngleStudioTab() {
   // メイン画像と同じく File なので永続化しない。
   const [subImages, setSubImages] = useState<File[]>([]);
   // サブ参照 1 枚ごとの使い道（subImages と同じ並び）。true＝全構図／false＝真横・後ろだけ（既定）。
-  const [subAll, setSubAll] = useState<boolean[]>([]);
+  const [subScopes, setSubScopes] = useState<SubRefScope[]>([]);
   const [subImageError, setSubImageError] = useState<string | null>(null);
 
   const handleAddSubImage = useCallback((file: File) => {
@@ -739,16 +743,18 @@ export function MultiAngleStudioTab() {
     setSubImages((prev) =>
       prev.length >= MAX_SUB_REFERENCE_IMAGES ? prev : [...prev, file],
     );
-    setSubAll((prev) => (prev.length >= MAX_SUB_REFERENCE_IMAGES ? prev : [...prev, false]));
+    setSubScopes((prev) => (prev.length >= MAX_SUB_REFERENCE_IMAGES ? prev : [...prev, "sides"]));
   }, []);
 
   const handleRemoveSubImage = useCallback((index: number) => {
     setSubImageError(null);
     setSubImages((prev) => prev.filter((_, i) => i !== index));
-    setSubAll((prev) => prev.filter((_, i) => i !== index));
+    setSubScopes((prev) => prev.filter((_, i) => i !== index));
   }, []);
-  const handleToggleSubAll = useCallback((index: number) => {
-    setSubAll((prev) => prev.map((v, i) => (i === index ? !v : v)));
+  const handleCycleSubScope = useCallback((index: number) => {
+    setSubScopes((prev) =>
+      prev.map((v, i) => (i === index ? SUB_REF_SCOPES[(SUB_REF_SCOPES.indexOf(v) + 1) % SUB_REF_SCOPES.length] : v)),
+    );
   }, []);
 
   // 2026-09-09: turbo/pro を廃止し単一モードに統一。
@@ -794,7 +800,7 @@ export function MultiAngleStudioTab() {
   type QueuedSnapshot = {
     image: File;
     subImages: File[];
-    subAll: boolean[];
+    subScopes: SubRefScope[];
     selection: AngleSelection;
     combos: AngleCombo[];
   };
@@ -938,7 +944,7 @@ export function MultiAngleStudioTab() {
   // （user 以外の依存は state setter / import で常に安定）。
   const runGenerate = useCallback(
     async (
-      snapshot: { image: File; subImages: File[]; subAll: boolean[]; selection: AngleSelection; combos: AngleCombo[] },
+      snapshot: { image: File; subImages: File[]; subScopes: SubRefScope[]; selection: AngleSelection; combos: AngleCombo[] },
       // continuation: 順番待ち／並列で「今回の生成」に続けて出す（一覧に足す）。
       // false = 改めて生成（一覧を新しいジョブ 1 件に置き換える）。
       opts: { priority?: boolean; continuation?: boolean } = {},
@@ -959,7 +965,7 @@ export function MultiAngleStudioTab() {
           userId: user.id,
           image: snapshot.image,
           subImages: snapshot.subImages,
-          subAll: snapshot.subAll,
+          subScopes: snapshot.subScopes,
           selection: snapshot.selection,
           mode,
           priority: opts.priority,
@@ -1160,7 +1166,7 @@ export function MultiAngleStudioTab() {
   // サブ参照は真横・後ろ寄りの構図にだけ付く（angleComboUsesSubRefs）。料金・時間は構図ごとに足す（API と同じ関数）。
   const perAngleBase = angleCreditsPerAngle(knobs);
   const perAngle = angleCreditsPerAngle(knobs, subRefCount);
-  const subRefUse = { total: subRefCount, allAngles: subAll.filter(Boolean).length };
+  const subRefUse = subScopes;
   const refCombosCount = subRefCount > 0 ? combos.filter(angleComboUsesSubRefs).length : 0;
   const cost = angleCombosCredits(combos, subRefUse, knobs);
   const angleCap = MAX_ANGLES;
@@ -1200,14 +1206,14 @@ export function MultiAngleStudioTab() {
   const doGenerate = async () => {
     if (!image) return;
     markLoraUsed([image]);
-    await runGenerate({ image, subImages, subAll, selection, combos });
+    await runGenerate({ image, subImages, subScopes, selection, combos });
   };
 
   // LoRA から受け取った画像のうち、まだ生成していないものを同じ構図で順番に生成する（2 枚目以降は無料の順番待ち）。
   const generateAllLoraSources = () => {
     if (loraRemaining.length === 0 || count === 0 || overCap || underMin) return;
     if (!user) return setLoginOpen(true);
-    const snaps = loraRemaining.map((f) => ({ image: f, subImages: [] as File[], subAll: [] as boolean[], selection, combos }));
+    const snaps = loraRemaining.map((f) => ({ image: f, subImages: [] as File[], subScopes: [] as SubRefScope[], selection, combos }));
     if (!busy && insufficientCredits) return setChargeOpen(true);
     markLoraUsed(loraRemaining);
     if (busy) {
@@ -1279,7 +1285,7 @@ export function MultiAngleStudioTab() {
 
   const handleQueueWait = () => {
     if (!image) return;
-    const snapshot = { image, subImages, subAll, selection, combos };
+    const snapshot = { image, subImages, subScopes, selection, combos };
     markLoraUsed([image]);
     const next = [...queuedNextRef.current, snapshot];
     queuedNextRef.current = next;
@@ -1303,7 +1309,7 @@ export function MultiAngleStudioTab() {
       return;
     }
     markLoraUsed([image]);
-    void runGenerate({ image, subImages, subAll, selection, combos }, { priority: true, continuation: true });
+    void runGenerate({ image, subImages, subScopes, selection, combos }, { priority: true, continuation: true });
   };
 
   const handleReroll = async (index: number) => {
@@ -1313,7 +1319,7 @@ export function MultiAngleStudioTab() {
     try {
       // seed を渡さない = worker が generator なしで実行 → 毎回別の結果。
       // サブ参照画像も再送して Multi-Reference の整合性を保つ。
-      const res = await startAngleJob({ userId: user.id, image, subImages, subAll, selection: combo.selection, mode });
+      const res = await startAngleJob({ userId: user.id, image, subImages, subScopes, selection: combo.selection, mode });
       broadcastCreditsUpdate(user.id, res.remainingCredits);
       setReroll({ index, jobId: res.jobId });
     } catch (err) {
@@ -1611,8 +1617,8 @@ export function MultiAngleStudioTab() {
             onAdd={handleAddSubImage}
             onRemove={handleRemoveSubImage}
             error={subImageError}
-            allAngles={subAll}
-            onToggleAllAngles={handleToggleSubAll}
+            scopes={subScopes}
+            onCycleScope={handleCycleSubScope}
             onZoom={(i, url) => setLocalPreview({ url, label: `サブ参照 ${i + 1}` })}
           />
 
@@ -1696,8 +1702,8 @@ export function MultiAngleStudioTab() {
             <p className="-mt-2 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-300">
               <AlertTriangle size={13} className="mt-0.5 shrink-0" />
               サブ参照 1 枚ごとに、生成時間・消費クレジットが上がります（全部使う構図で {perAngleBase} → {perAngle} クレジット/構図）。
-              「真横・後ろだけ」の画像は真横・後ろ寄りの構図（この選択では {count} 構図のうち {refCombosCount} 構図）にだけ使い、
-              「全構図に使う」の画像はすべての構図に使います。合計 {cost} クレジット・生成におよそ {estMinutes} 分です。
+              「真横・後ろだけ」は真横・後ろ寄りの構図（この選択では {count} 構図のうち {refCombosCount} 構図）、「後ろ以外」は
+              斜め後ろ・真後ろ以外の構図、「全構図」はすべての構図に使います。合計 {cost} クレジット・生成におよそ {estMinutes} 分です。
               サブ参照を使う構図は、出力の縦横比がサブ参照画像に寄ります。
             </p>
           )}
