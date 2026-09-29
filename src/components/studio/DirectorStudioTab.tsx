@@ -1,5 +1,7 @@
 "use client";
 
+import { PrevResultPanel } from "@/components/studio/PrevResultPanel";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DIRECTOR_LORA_ENABLED } from "@/lib/featureFlags";
 import { createPortal } from "react-dom";
@@ -401,6 +403,12 @@ export function DirectorStudioTab() {
   const [phase, setPhase] = useState<Phase>(resumedJobId ? "running" : "idle");
   const [jobId, setJobId] = useState<string | null>(resumedJobId);
   const [job, setJob] = useState<DirectorJobStatus | null>(null);
+  // 前の結果（2026-09-29）: 予約した次の生成が始まっても直前の完了分を別枠で見せる（PrevResultPanel）。
+  const [peekId, setPeekId] = useState<string | null>(null);
+  const jobRefForPeek = useRef<typeof job>(null);
+  useEffect(() => {
+    jobRefForPeek.current = job;
+  }, [job]);
   // 完了後の videoUrl は読んだ時点の署名付き URL で、R2 への移動や期限切れで無効になる
   // （2026-09-24）。保存・超解像への受け渡し・再生失敗のときはジョブを読み直して取り直す。
   const freshVideoUrl = useCallback(async (): Promise<string | null> => {
@@ -490,7 +498,11 @@ export function DirectorStudioTab() {
   const busy = phase === "submitting" || phase === "running";
 
   const handleShowSession = (id: string) => {
-    if (busy || id === jobId) return;
+    if (id === jobId) return;
+    if (busy) {
+      setPeekId(id);
+      return;
+    }
     setErrorMessage(null);
     setJob(null);
     setJobId(id);
@@ -644,6 +656,8 @@ export function DirectorStudioTab() {
   const runGenerate = useCallback(
     async (snapshot: QueuedSnapshot, opts: { priority?: boolean; continuation?: boolean } = {}) => {
       if (!user) return;
+      const prevJob = jobRefForPeek.current;
+      if (opts.continuation && prevJob && prevJob.status === "completed") setPeekId(prevJob.jobId);
       setPhase("submitting");
       setErrorMessage(null);
       setJob(null);
@@ -1362,6 +1376,15 @@ export function DirectorStudioTab() {
           </div>
         )}
 
+      {peekId && peekId !== jobId && (
+        <PrevResultPanel
+          key={peekId}
+          kind="video"
+          resolveUrl={async () => (await pollDirectorJob(peekId)).videoUrl}
+          onDownload={(url) => downloadDirectorVideo(url, "ull_cinematic_director.mp4")}
+          onClose={() => setPeekId(null)}
+        />
+      )}
         {user && sessionJobs.length > 1 && (
           <StudioSessionList entries={sessionJobs} currentId={jobId} busy={busy} onShow={handleShowSession} />
         )}

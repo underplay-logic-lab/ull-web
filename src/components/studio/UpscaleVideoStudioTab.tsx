@@ -1,5 +1,7 @@
 "use client";
 
+import { PrevResultPanel } from "@/components/studio/PrevResultPanel";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -371,6 +373,12 @@ export function UpscaleVideoStudioTab() {
   const [phase, setPhase] = useState<Phase>(resumedJobId ? "running" : "idle");
   const [jobId, setJobId] = useState<string | null>(resumedJobId);
   const [job, setJob] = useState<UpscaleJob | null>(null);
+  // 前の結果（2026-09-29）: 予約した次の生成が始まっても直前の完了分を別枠で見せる（PrevResultPanel）。
+  const [peekId, setPeekId] = useState<string | null>(null);
+  const jobRefForPeek = useRef<typeof job>(null);
+  useEffect(() => {
+    jobRefForPeek.current = job;
+  }, [job]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   // 「今回の生成」（2026-09-23 ホスト方針）: 順番待ち・並列で続けて出したジョブだけを
   // 並べ、改めて生成するときは確認のうえ空にする。自動 DL は廃止（一覧から戻れる）。
@@ -487,6 +495,8 @@ export function UpscaleVideoStudioTab() {
   const runGenerate = useCallback(
     async (snapshot: QueuedSnapshot, opts: { priority?: boolean; continuation?: boolean } = {}) => {
       if (!user) return;
+      const prevJob = jobRefForPeek.current;
+      if (opts.continuation && prevJob && prevJob.status === "completed") setPeekId(prevJob.id);
       setPhase("submitting");
       setErrorMessage(null);
       setJob(null);
@@ -654,7 +664,11 @@ export function UpscaleVideoStudioTab() {
   const canRun = Boolean(video) && cost > 0 && !videoError;
 
   const handleShowSession = (id: string) => {
-    if (busy || id === jobId) return;
+    if (id === jobId) return;
+    if (busy) {
+      setPeekId(id);
+      return;
+    }
     setErrorMessage(null);
     setJob(null);
     setResultBeforeUrl(null);
@@ -969,6 +983,26 @@ export function UpscaleVideoStudioTab() {
         </div>
       </div>
 
+      {peekId && peekId !== jobId && (
+        <PrevResultPanel
+          key={peekId}
+          kind="video"
+          resolveUrl={async () => {
+            const j = await pollUpscaleJob(peekId);
+            return j.resultUrl ? resolveUpscaleVideoUrl(j.id, j.resultUrl) : null;
+          }}
+          onDownload={async (url) => {
+            const j = await pollUpscaleJob(peekId);
+            const name = `upscale_${peekId.slice(0, 8)}.mp4`;
+            if (j.resultUrl && isUpscaleResultVolumePath(j.resultUrl)) {
+              downloadViaBrowser(await fetchUpscaleVideoResultUrl(j.id, name));
+            } else {
+              downloadViaBrowser(withDownloadName(url, name));
+            }
+          }}
+          onClose={() => setPeekId(null)}
+        />
+      )}
       {user && sessionJobs.length > 1 && (
         <StudioSessionList entries={sessionJobs} currentId={jobId} busy={busy} onShow={handleShowSession} />
       )}

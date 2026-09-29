@@ -1,5 +1,7 @@
 "use client";
 
+import { PrevResultPanel } from "@/components/studio/PrevResultPanel";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import JSZip from "jszip";
@@ -450,6 +452,12 @@ export function UpscaleStudioTab() {
   const [phase, setPhase] = useState<Phase>(resumedJobId ? "running" : "idle");
   const [jobId, setJobId] = useState<string | null>(resumedJobId);
   const [job, setJob] = useState<UpscaleJob | null>(null);
+  // 前の結果（2026-09-29）: 予約した次の生成が始まっても直前の完了分を別枠で見せる（PrevResultPanel）。
+  const [peekId, setPeekId] = useState<string | null>(null);
+  const jobRefForPeek = useRef<typeof job>(null);
+  useEffect(() => {
+    jobRefForPeek.current = job;
+  }, [job]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [resultBeforeUrl, setResultBeforeUrl] = useState<string | null>(null);
   // 「今回の生成」（2026-09-23 ホスト方針）: 順番待ち・並列で続けて出したジョブだけを
@@ -682,42 +690,69 @@ export function UpscaleStudioTab() {
   const batchAllPending =
     batchJobIds.length > 0 && batchJobIds.every((id) => (batchJobs[id]?.status ?? "pending") === "pending");
 
+  // まとめて処理の予約（2026-09-29、ホスト方針「どんな状態でも予約できるように」）。実行中に画像を足して押すと、
+  // 今のまとめが終わってから続けて流す（順番待ち・無料）。結果は同じ一覧に積み足すので前の結果は消えない。
+  type BatchSnapshot = { items: BatchItem[]; modelKey: string; modeId: UpscaleModeId };
+  const [batchQueue, setBatchQueue] = useState<BatchSnapshot[]>([]);
+  const batchQueueRef = useRef<BatchSnapshot[]>([]);
+  const setBatchQueueBoth = useCallback((next: BatchSnapshot[]) => {
+    batchQueueRef.current = next;
+    setBatchQueue(next);
+  }, []);
+
+  const startBatch = useCallback(
+    async (snap: BatchSnapshot, append: boolean) => {
+      if (!user) return;
+      setBatchPhase("submitting");
+      setBatchError(null);
+      if (!append) setBatchJobs({});
+      try {
+        const res = await startUpscaleBatchJob({
+          userId: user.id,
+          images: snap.items.map((it) => it.file),
+          modelKey: snap.modelKey,
+          modeId: snap.modeId,
+        });
+        broadcastCreditsUpdate(user.id, res.remainingCredits);
+        const loraMap: Record<string, string> = append ? { ...getLoraReturnMap() } : {};
+        snap.items.forEach((it, i) => {
+          const loraId = loraReturnRef.current.get(it.file);
+          if (loraId && res.jobIds[i]) loraMap[res.jobIds[i]] = loraId;
+        });
+        setLoraReturnEntries(loraMap);
+        setBatchLoraMap(getLoraReturnMap());
+        if (!append) setBatchItems([]);
+        setBatchJobIds((prev) => (append ? [...prev, ...res.jobIds] : res.jobIds));
+        setBatchPhase("running");
+      } catch (err) {
+        const e = err as UpscaleApiError;
+        console.error("[UpscaleStudioTab] batch start failed:", e);
+        const remaining = e.remainingCredits;
+        if (typeof remaining === "number") broadcastCreditsUpdate(user.id, remaining);
+        setBatchPhase("error");
+        setBatchError(e.message || "バッチの作成に失敗しました。");
+        if (e.message?.includes("クレジット")) setChargeOpen(true);
+      }
+    },
+    [user],
+  );
+  const startBatchRef = useRef(startBatch);
+  useEffect(() => {
+    startBatchRef.current = startBatch;
+  }, [startBatch]);
+
   const handleBatchRun = useCallback(async () => {
     if (!user) return setLoginOpen(true);
-    if (!batchBusy && batchInsufficientCredits) return setChargeOpen(true);
+    if (batchInsufficientCredits) return setChargeOpen(true);
     if (batchItems.length === 0) return;
-
-    setBatchPhase("submitting");
-    setBatchError(null);
-    setBatchJobs({});
-    try {
-      const res = await startUpscaleBatchJob({
-        userId: user.id,
-        images: batchItems.map((it) => it.file),
-        modelKey,
-        modeId,
-      });
-      broadcastCreditsUpdate(user.id, res.remainingCredits);
-      const loraMap: Record<string, string> = {};
-      batchItems.forEach((it, i) => {
-        const loraId = loraReturnRef.current.get(it.file);
-        if (loraId && res.jobIds[i]) loraMap[res.jobIds[i]] = loraId;
-      });
-      setLoraReturnEntries(loraMap);
-      setBatchLoraMap(getLoraReturnMap());
+    const snap: BatchSnapshot = { items: batchItems, modelKey, modeId };
+    if (batchBusy) {
+      setBatchQueueBoth([...batchQueueRef.current, snap]);
       setBatchItems([]);
-      setBatchJobIds(res.jobIds);
-      setBatchPhase("running");
-    } catch (err) {
-      const e = err as UpscaleApiError;
-      console.error("[UpscaleStudioTab] batch start failed:", e);
-      const remaining = e.remainingCredits;
-      if (typeof remaining === "number") broadcastCreditsUpdate(user.id, remaining);
-      setBatchPhase("error");
-      setBatchError(e.message || "バッチの作成に失敗しました。");
-      if (e.message?.includes("クレジット")) setChargeOpen(true);
+      return;
     }
-  }, [user, batchItems, batchBusy, batchInsufficientCredits, modelKey, modeId]);
+    await startBatch(snap, false);
+  }, [user, batchItems, batchBusy, batchInsufficientCredits, modelKey, modeId, startBatch, setBatchQueueBoth]);
 
   // job.resultUrl は署名前の生の値（Volume相対パスの場合あり）。実フェッチ
   // 直前に resolveUpscaleImageUrl で実URLへ解決する（CLAUDE.md §1）。
@@ -848,6 +883,13 @@ export function UpscaleStudioTab() {
 
           const allDone = results.every((j) => j.status === "completed" || j.status === "failed");
           if (allDone) {
+            const [nextBatch, ...restBatches] = batchQueueRef.current;
+            if (nextBatch) {
+              batchQueueRef.current = restBatches;
+              setBatchQueue(restBatches);
+              void startBatchRef.current(nextBatch, true);
+              return;
+            }
             setBatchPhase("done");
             // JOB_KEY と同じく完了後もクリアしない — リロード時に最後のバッチの
             // 結果をそのまま再表示する（Multi-Angle/LoRAタブと同じ挙動）。
@@ -888,6 +930,8 @@ export function UpscaleStudioTab() {
   const runGenerate = useCallback(
     async (snapshot: QueuedSnapshot, opts: { priority?: boolean; continuation?: boolean } = {}) => {
       if (!user) return;
+      const prevJob = jobRefForPeek.current;
+      if (opts.continuation && prevJob && prevJob.status === "completed") setPeekId(prevJob.id);
       setPhase("submitting");
       setErrorMessage(null);
       setJob(null);
@@ -1062,7 +1106,11 @@ export function UpscaleStudioTab() {
   const canRun = Boolean(image) && cost > 0;
 
   const handleShowSession = (id: string) => {
-    if (busy || id === jobId) return;
+    if (id === jobId) return;
+    if (busy) {
+      setPeekId(id);
+      return;
+    }
     setErrorMessage(null);
     setJob(null);
     setResultBeforeUrl(null);
@@ -1595,18 +1643,25 @@ export function UpscaleStudioTab() {
             <button
               type="button"
               onClick={handleBatchRun}
-              disabled={(batchBusy || (batchItems.length === 0 && !batchInsufficientCredits)) && Boolean(user)}
+              disabled={batchItems.length === 0 && !batchInsufficientCredits && Boolean(user)}
               className={`mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold text-white transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
                 batchInsufficientCredits
                   ? "bg-amber-600/80 hover:opacity-90"
                   : "bg-gradient-to-r from-neon-pink to-neon-violet hover:opacity-90 glow-pink"
               }`}
             >
-              {batchBusy ? (
-                <>
-                  <Loader2 size={16} className="animate-spin" />
-                  {batchPhase === "submitting" ? "送信中…" : batchAllPending ? "GPU起動中…" : "処理中…"}
-                </>
+              {batchBusy && batchItems.length > 0 ? (
+                <QueueNextButtonLabel
+                  status={batchPhase === "submitting" ? "送信中" : batchAllPending ? "GPU 起動中" : `処理中 ${batchDoneCount}/${batchJobIds.length}`}
+                />
+              ) : batchBusy ? (
+                <span className="flex flex-col items-center leading-tight">
+                  <span className="inline-flex items-center gap-1.5">
+                    <Loader2 size={16} className="animate-spin" />
+                    {batchPhase === "submitting" ? "送信中…" : batchAllPending ? "GPU起動中…" : `処理中… ${batchDoneCount}/${batchJobIds.length}`}
+                  </span>
+                  <span className="mt-0.5 text-[10px] font-normal opacity-80">画像を追加すると、次のまとめを予約できます（順番待ち・無料）</span>
+                </span>
               ) : !user ? (
                 <>
                   <LogIn size={16} />
@@ -1630,7 +1685,11 @@ export function UpscaleStudioTab() {
             <p className="flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-xs leading-relaxed text-neon-violet">
               <Sparkles size={14} className="mt-0.5 shrink-0" />
               バックグラウンドで処理中です。タブを閉じたり再読み込みしても継続し、次に開いたときに結果が表示されます。
+              画像を追加してボタンを押すと、終わってから続けて処理します（予約した分は再読み込みで消えます）。
             </p>
+          )}
+          {batchQueue.length > 0 && (
+            <QueuedNextBanner count={batchQueue.length} onCancel={() => setBatchQueueBoth([])} />
           )}
 
           {batchPhase === "error" && batchError && (
@@ -1703,6 +1762,18 @@ export function UpscaleStudioTab() {
       </div>
       )}
 
+      {peekId && peekId !== jobId && (
+        <PrevResultPanel
+          key={peekId}
+          kind="image"
+          resolveUrl={async () => {
+            const j = await pollUpscaleJob(peekId);
+            return j.resultUrl ? resolveUpscaleImageUrl(j.id, j.resultUrl) : null;
+          }}
+          onDownload={(url) => downloadUpscaleImage(url, `upscale_${peekId.slice(0, 8)}.png`)}
+          onClose={() => setPeekId(null)}
+        />
+      )}
       {user && sessionJobs.length > 1 && (
         <StudioSessionList entries={sessionJobs} currentId={jobId} busy={busy} onShow={handleShowSession} />
       )}

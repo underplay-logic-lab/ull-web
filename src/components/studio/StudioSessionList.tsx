@@ -54,7 +54,9 @@ export function StudioSessionList({
     <div className="mt-8 border-t border-border pt-6">
       <p className="text-xs font-medium text-muted">
         今回の生成
-        <span className="ml-2 text-muted/60">続けて出した生成はここから表示し直せます。改めて生成した結果が完了すると一覧は消去されます。</span>
+        <span className="ml-2 text-muted/60">
+          続けて出した生成はここから表示し直せます{busy ? "（生成中は「前の結果」の枠に出します）" : ""}。改めて生成した結果が完了すると一覧は消去されます。
+        </span>
       </p>
       <ul className="mt-3 divide-y divide-border rounded-lg border border-border bg-surface/40">
         {entries.map((e) => {
@@ -68,7 +70,7 @@ export function StudioSessionList({
               <button
                 type="button"
                 onClick={() => onShow(e.id)}
-                disabled={busy || current}
+                disabled={current}
                 className="shrink-0 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-foreground transition-colors hover:border-neon-pink/50 hover:bg-surface-hover disabled:opacity-50"
               >
                 {current ? "表示中" : "表示"}
