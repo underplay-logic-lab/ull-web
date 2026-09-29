@@ -28,7 +28,7 @@ const CARDS = [
     titleKey: "trust_youtube_title",
     titleFallback: "YouTube — 実演",
     descKey: "trust_youtube_desc",
-    descFallback: "スマホから3秒で生成するプレイ動画。編集なしのノーカット実演。",
+    descFallback: "操作から仕上がりまで、編集なしのノーカットで実演。",
     cta: "動画を見る",
     accent: "text-neon-pink",
   },

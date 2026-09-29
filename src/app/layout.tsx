@@ -23,7 +23,7 @@ const jetbrainsMono = JetBrains_Mono({
 // ローンチ向けに ULL Studio の説明へ（2026-09-26）。旧値は「UNDERPLAY LOGIC LAB — AI Generation & Automation」
 // ＋ツール配布サイトの説明で、キーワードに基盤名（ComfyUI / Stable Diffusion）も出ていた（CLAUDE.md §2）。
 // siteConfig は法務ページの表記にも使うので触らない。
-const SITE_TITLE = "ULL Studio — スマホで動く、データセンター級 GPU の AI 映像・画像スタジオ";
+const SITE_TITLE = "ULL Studio — ブラウザだけで使える、データセンター級 GPU の AI 映像・画像スタジオ";
 const SITE_DESCRIPTION =
   "動画生成・マルチアングル・4K/8K 超解像・LoRA 学習を、ブラウザだけで。環境構築は不要、GPU を使った分だけの従量課金。";
 

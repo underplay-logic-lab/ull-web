@@ -14,7 +14,9 @@ const legalLinks = [
 ];
 
 export function Footer() {
+  // 公開年から今年まで（年が変わったら「2026–2027」。公開年＝いつからあるかを示す、2026-09-30 ホスト）。
   const year = new Date().getFullYear();
+  const years = year > 2026 ? `2026–${year}` : "2026";
 
   return (
     <footer data-source-file="src/components/Footer.tsx" className="border-t border-border bg-surface/30">
@@ -49,7 +51,7 @@ export function Footer() {
         <EditableText
           as="p"
           siteKey="footer_copyright"
-          fallback={`© ${year} ULL Studio. Powered by Underplay Logic Engine.`}
+          fallback={`© ${years} ULL Studio. Powered by Underplay Logic Engine.`}
           className="mt-2 text-center text-xs text-muted sm:text-left"
         />
         </div>

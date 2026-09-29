@@ -136,7 +136,7 @@ export function Studio() {
           <EditableText
             as="h2"
             siteKey="studio_title"
-            fallback="AI Generation Studio"
+            fallback="AI動画・画像生成スタジオ"
             className="text-3xl font-bold tracking-tight sm:text-4xl"
           />
           <EditableText

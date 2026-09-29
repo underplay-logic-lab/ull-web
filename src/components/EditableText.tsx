@@ -1,90 +1,22 @@
 "use client";
 
-import { useLayoutEffect, useRef, type FocusEvent, type FormEvent, type KeyboardEvent } from "react";
-import { useSiteContentEditor } from "@/components/SiteContentEditorProvider";
-
 type EditableTag = "span" | "p" | "h1" | "h2" | "h3" | "div";
 
 type EditableTextProps = {
-  // site_contents.key this text is bound to.
+  // 以前は site_contents の key。今は識別用に残しているだけで、表示には使わない。
   siteKey: string;
-  // Shown until the DB value loads, and forever if it never does.
+  // 表示する文言（これがそのまま出る）。
   fallback: string;
   as?: EditableTag;
   className?: string;
 };
 
-// Renders plain text bound to site_contents everywhere; when the admin's
-// inline Visual Editor is ON (see SiteContentEditorProvider/AdminEditBar)
-// it becomes contentEditable, tracking keystrokes into the shared draft
-// state instead of writing to the DB directly — publishing happens once,
-// in bulk, from the "💾 変更を本番公開" bar.
-export function EditableText({ siteKey, fallback, as = "span", className }: EditableTextProps) {
-  const { editMode, publishing, getValue, setDraft } = useSiteContentEditor();
-  const value = getValue(siteKey, fallback);
+// サイトの文言（2026-09-30 ホスト判断でコードに一本化）。
+// 以前は管理画面の編集モードで site_contents（DB）に上書きでき、表示は「DB の値 → 無ければ fallback」だったが、
+// DB とコードが 22 件食い違い、どちらが表示されているか分からなくなっていた。文言はこのコードの fallback だけを
+// 表示し、DB は読まない。直すときはソースを直す（ローカルでは SourceTextEditor でクリック編集できる）。
+// リンク先（EditableLink）・画像（EditableMedia）・セクションの表示と並び順（HomeSections）は従来どおり DB。
+export function EditableText({ fallback, as = "span", className }: EditableTextProps) {
   const Tag = as;
-
-  const elRef = useRef<HTMLElement | null>(null);
-  // Latest typed text, updated silently on every keystroke (no setState, so
-  // no re-render). Only committed to the shared draft state on blur — see
-  // handleBlur. Keeping the element uncontrolled while it's focused is what
-  // stops React from re-writing the DOM's text node mid-keystroke, which is
-  // what threw the caret to the start and reversed the typed characters.
-  const draftRef = useRef(value);
-
-  // Pushes an externally-changed value (initial load, discard, publish)
-  // into the DOM — but never while the user is actively editing it.
-  useLayoutEffect(() => {
-    const el = elRef.current;
-    if (!el) return;
-    draftRef.current = value;
-    if (document.activeElement === el) return;
-    if (el.textContent !== value) el.textContent = value;
-  }, [value]);
-
-  if (!editMode) {
-    return <Tag className={className}>{value}</Tag>;
-  }
-
-  const handleInput = (e: FormEvent<HTMLElement>) => {
-    draftRef.current = e.currentTarget.textContent ?? "";
-  };
-
-  const handleBlur = (_e: FocusEvent<HTMLElement>) => {
-    setDraft(siteKey, draftRef.current);
-  };
-
-  const handleKeyDown = (e: KeyboardEvent<HTMLElement>) => {
-    // Keep these single-line — contentEditable's default Enter behavior
-    // inserts <div>/<br> that a plain TEXT column can't round-trip cleanly.
-    if (e.key === "Enter") e.preventDefault();
-  };
-
-  return (
-    <Tag
-      ref={(node: HTMLElement | null) => {
-        elRef.current = node;
-        // 2026-09-19バグ修正: !editMode -> editMode の切り替わりで、この
-        // callback refが「新規アタッチ」される瞬間、useLayoutEffectは
-        // 依存配列 [value] が（editMode切り替え前後で）変化していない
-        // ために再実行されず、要素の子テキストが空のまま（!editMode側の
-        // JSXは {value} を子に持つが、editMode側は子を持たないため、React
-        // の再調整でテキストノードが除去される）取り残されるバグがあった。
-        // ここでref接続の瞬間に直接同期することで、useLayoutEffectの
-        // 依存配列判定に頼らず確実にテキストを反映する。
-        if (node && node.textContent !== value) node.textContent = value;
-      }}
-      // 新設のSourceTextEditor（ローカルdev専用、ソースファイル直接書き換え
-      // 版の編集）が、既にDB連携済みのこの要素を誤って対象にしないための
-      // 目印。
-      data-cms-managed="true"
-      className={`${className ?? ""} cursor-text rounded border border-dashed border-transparent transition-colors hover:border-neon-pink/60 hover:bg-neon-pink/5 focus:border-neon-pink focus:bg-neon-pink/5 focus:outline-none`}
-      contentEditable={!publishing}
-      suppressContentEditableWarning
-      onInput={handleInput}
-      onBlur={handleBlur}
-      onKeyDown={handleKeyDown}
-      onClick={(e) => e.preventDefault()}
-    />
-  );
+  return <Tag className={className}>{fallback}</Tag>;
 }

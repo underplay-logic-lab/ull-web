@@ -44,7 +44,7 @@ export function Hero() {
           <br />
           <EditableText
             siteKey="hero_ii_title_line3"
-            fallback="画像生成の「いいとこどり」を、この1画面に。"
+            fallback="動画・画像生成の「いいとこどり」を、この1画面に。"
             className="inline-block text-gradient"
           />
         </h1>
@@ -66,7 +66,7 @@ export function Hero() {
         <p className="mx-auto mt-8 max-w-2xl text-base leading-relaxed text-muted sm:text-lg">
           <EditableText
             siteKey="hero_ii_subtitle"
-            fallback="スマホから世界最高峰のGPUパワーを1クリックで解放する、次世代クリエイティブスタジオ。"
+            fallback="高価なPCなしで、世界最高峰のGPUパワーを使える次世代クリエイティブスタジオ。待機時間の課金なし、生成した分だけ。"
           />
         </p>
 
@@ -103,7 +103,7 @@ export function Hero() {
             { value: "¥0", label: "維持費" },
             { value: "0円", label: "待機中コスト" },
             { value: "従量課金", label: "使った分だけ" },
-            { value: "スマホ可", label: "必要な端末" },
+            { value: "ブラウザだけ", label: "必要な端末" },
           ].map((stat) => (
             <div key={stat.label}>
               <div className="font-mono text-2xl font-bold text-gradient">

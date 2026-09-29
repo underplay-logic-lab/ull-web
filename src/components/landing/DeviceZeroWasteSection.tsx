@@ -131,7 +131,7 @@ export function DeviceZeroWasteSection() {
           <EditableText
             as="h2"
             siteKey="dzw_title"
-            fallback="スマホで動く、モンスターGPU。"
+            fallback="手元のPCを選ばない、モンスターGPU。"
             className="text-3xl font-bold tracking-tight sm:text-4xl"
           />
           <EditableText

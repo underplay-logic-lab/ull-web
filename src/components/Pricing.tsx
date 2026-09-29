@@ -225,7 +225,7 @@ export function Pricing() {
           <EditableText
             as="h2"
             siteKey="pricing_title"
-            fallback="料金プラン"
+            fallback="シンプルで明快な料金プラン"
             className="text-3xl font-bold tracking-tight sm:text-4xl"
           />
           <EditableText
