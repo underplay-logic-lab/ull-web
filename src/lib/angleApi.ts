@@ -67,6 +67,8 @@ export async function startAngleJob(params: {
   imageSets?: File[][];
   /** マルチアングル（2026-09-29）: subImages と同じ並びで、true＝全構図に使う／false＝真横・後ろだけ。 */
   subAll?: boolean[];
+  /** 出力を縦長（832×1248）にする（2026-09-29、顔アップ→全身の候補）。 */
+  aspect?: "portrait";
 }): Promise<StartAngleJobResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -124,6 +126,7 @@ export async function startAngleJob(params: {
       ...(params.scenes && params.scenes.length > 0 ? { scenes: params.scenes } : {}),
       ...(imageSetIdx ? { imageSets: imageSetIdx } : {}),
       ...(params.subAll && params.subAll.length > 0 ? { subRefAll: params.subAll } : {}),
+      ...(params.aspect ? { aspect: params.aspect } : {}),
       mode: params.mode,
       seed: params.seed,
       priority: params.priority ?? false,

@@ -46,7 +46,14 @@ import {
   type SceneAxis,
   type ScenePlanItem,
   type SceneSelection,
+  EMPTY_BODY_DESIGN,
+  bodyDesignBlockedReason,
+  bodyDesignSpecs,
+  mainRouteOf,
+  type BodyDesign,
+  type MainRoute,
 } from "@/lib/datasetBuilder";
+import { BodyDesignForm } from "@/components/studio/BodyDesignForm";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState, studioFormStorageKey } from "@/lib/studioFormPersistence";
 import { requestStudioHandoff, sendLoraAdditions, takeStudioBatchHandoff } from "@/lib/studioHandoff";
@@ -85,7 +92,18 @@ const FILES_META_KEY = "dataset-builder-files";
 type FilesMeta = { subCount: number; backIndex: number | null; sideIndex: number | null; hasBaseFull: boolean };
 const POLL_MS = 2_000;
 
-type PersistedForm = { sel: SceneSelection; count: number; confirmFirst: boolean };
+type PersistedForm = {
+  sel: SceneSelection;
+  count: number;
+  confirmFirst: boolean;
+  /** 体の設計（顔アップ→全身、2026-09-29）。 */
+  body?: BodyDesign;
+  routeOverride?: MainRoute | "auto";
+  /** 取り込んだメイン画像の写り方（基準の全身を選んだ後は再判定できないので覚えておく）。 */
+  mainFraming?: string;
+  /** 顔アップの元画像も LoRA へ送るか（既定 true）。 */
+  sendOriginal?: boolean;
+};
 /** 進行中／完了した「1 回の指定」。File は保存できないので、リロード後は結果の表示と LoRA への送りだけできる。 */
 type PersistedRun = {
   plan: ScenePlanItem[];
@@ -241,6 +259,8 @@ export function DatasetBuilderTab() {
   // 構図ごとの元画像の選び方: "auto"＝メインから自動で切り出し（既定）／"main"＝メインのまま／number＝参照 N。
   const [closeChoice, setCloseChoice] = useState<Record<CloseFraming, "auto" | "main" | number>>({ upper: "auto", bust: "auto" });
   const [derived, setDerived] = useState<FramingSources>({});
+  // 取り込んだメイン画像そのものの写り方（derived は基準の全身を選ぶとそちらの判定になる）。経路の判定に使う。
+  const [mainFraming, setMainFraming] = useState<string | undefined>(() => savedForm?.mainFraming);
   const [deriving, setDeriving] = useState(false);
   // 基準の全身（元が寄っているとき、候補から選んだ 1 枚）。以後の「メインだけ」の行と切り出しの元になる。
   const [baseFull, setBaseFull] = useState<File | null>(null);
@@ -263,11 +283,13 @@ export function DatasetBuilderTab() {
     }
     // effect 本体では同期 setState しない（react-hooks/set-state-in-effect）。
     queueMicrotask(() => setDeriving(true));
+    const isOriginal = effectiveMain === image;
     deriveFramingSources(effectiveMain)
       .then((src) => {
         if (!alive) return;
         derivedRef.current = src;
         setDerived(src);
+        if (isOriginal) setMainFraming(src.framing);
       })
       .finally(() => {
         if (alive) setDeriving(false);
@@ -275,7 +297,7 @@ export function DatasetBuilderTab() {
     return () => {
       alive = false;
     };
-  }, [effectiveMain]);
+  }, [effectiveMain, image]);
   // 参照づくりの選択（候補ジョブと index）。File はリロードで消えるので、パネル側が候補から取り直す。
   const PICKS_KEY = "dataset-builder-picks";
   const [picks, setPicks] = useState<{ full?: CandidatePick | null; back?: CandidatePick | null; side?: CandidatePick | null }>(
@@ -409,9 +431,12 @@ export function DatasetBuilderTab() {
   const [sel, setSel] = useState<SceneSelection>(() => ({ ...DEFAULT_SCENE_SELECTION, ...(savedForm?.sel ?? {}) }));
   const [count, setCount] = useState<number>(() => savedForm?.count ?? SCENE_DEFAULT_COUNT);
   const [confirmFirst, setConfirmFirst] = useState<boolean>(() => savedForm?.confirmFirst ?? true);
+  const [bodyDesign, setBodyDesign] = useState<BodyDesign>(() => ({ ...EMPTY_BODY_DESIGN, ...(savedForm?.body ?? {}) }));
+  const [routeOverride, setRouteOverride] = useState<MainRoute | "auto">(() => savedForm?.routeOverride ?? "auto");
+  const [sendOriginal, setSendOriginal] = useState<boolean>(() => savedForm?.sendOriginal ?? true);
   useEffect(() => {
-    saveFormState(FORM_ID, { sel, count, confirmFirst } satisfies PersistedForm);
-  }, [sel, count, confirmFirst]);
+    saveFormState(FORM_ID, { sel, count, confirmFirst, body: bodyDesign, routeOverride, mainFraming, sendOriginal } satisfies PersistedForm);
+  }, [sel, count, confirmFirst, bodyDesign, routeOverride, mainFraming, sendOriginal]);
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
@@ -472,9 +497,11 @@ export function DatasetBuilderTab() {
       }
       setImageError(null);
       setImage(file);
-      // 新しいメインなら基準の全身と選んだ参照はやり直し。
+      // 新しいメインなら基準の全身と選んだ参照はやり直し。写り方も判定し直す（手動の切り替えも戻す）。
       setBaseFull(null);
       setPicks({});
+      setMainFraming(undefined);
+      setRouteOverride("auto");
     },
     [setImage],
   );
@@ -512,7 +539,14 @@ export function DatasetBuilderTab() {
   const refRows = previewPlan.filter((it) => sceneItemGroup(it, batchOpt) === "refs").length;
   const framingsInPlan = new Set(previewPlan.map((it) => it.framingId));
   const viewsInPlan = new Set(previewPlan.map((it) => it.viewId));
-  const needsBaseFull = Boolean(image) && !baseFull && !deriving && derived.framing !== undefined && derived.framing !== "full";
+  // 経路（2026-09-29）: 顔アップ→体の設計が必須／上半身→下の服は任意／全身→そのまま。手動で切り替えられる。
+  const mainRoute = image ? mainRouteOf(mainFraming, routeOverride) : null;
+  const needsBaseFull = Boolean(image) && !baseFull && !deriving && mainRoute !== null && mainRoute !== "full";
+  const baseFullSpecs = useMemo(
+    () => (mainRoute === "face" || mainRoute === "upper" ? bodyDesignSpecs(bodyDesign, mainRoute) : FULL_BODY_SPECS),
+    [mainRoute, bodyDesign],
+  );
+  const baseFullBlocked = mainRoute ? bodyDesignBlockedReason(bodyDesign, mainRoute) : null;
   const busy = phase === "submitting" || phase === "running";
   // 生成中や、まだ LoRA へ送っていない結果があるときは、離脱前にブラウザの確認を出す（2026-09-28）。
   // 画像・参照は保存して復元するので対象外。
@@ -861,6 +895,8 @@ export function DatasetBuilderTab() {
           return new File([blob], fileName(c, n), { type: blob.type || "image/png" });
         }),
       );
+      // 顔アップから作ったときは元の顔アップも送る（顔の細部は元画像から学ばせる、2026-09-29）。
+      if (mainRoute === "face" && sendOriginal && image) files.push(image);
       sendLoraAdditions(files, `素材づくりで作った ${files.length} 枚`);
     } catch (err) {
       setErrorMessage(`LoRA Studio への送信に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
@@ -901,9 +937,38 @@ export function DatasetBuilderTab() {
               setImage(null);
               setBaseFull(null);
               setPicks({});
+              setMainFraming(undefined);
+              setRouteOverride("auto");
               void fileStoreClear(FILES_PREFIX);
             }}
           />
+          {image && (
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted">
+              <span>
+                写り方:{" "}
+                <span className="text-foreground">
+                  {mainRoute === "face" ? "顔アップ" : mainRoute === "upper" ? "上半身" : mainRoute === "full" ? "全身" : "判定中…"}
+                </span>
+                {routeOverride === "auto" ? "（自動判定）" : "（手動）"}
+              </span>
+              <select
+                value={routeOverride}
+                onChange={(e) => {
+                  setRouteOverride(e.target.value as MainRoute | "auto");
+                  setBaseFull(null);
+                  setPicks((p) => ({ ...p, full: undefined }));
+                }}
+                className="rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-foreground"
+                aria-label="写り方の判定を変える"
+              >
+                <option value="auto">自動判定</option>
+                <option value="full">全身</option>
+                <option value="upper">上半身</option>
+                <option value="face">顔アップ</option>
+              </select>
+              <span className="text-[10px] text-muted/80">判定がちがうときは変えてください。</span>
+            </div>
+          )}
           {imageError && <p className="text-[11px] text-red-400">{imageError}</p>}
           <SubReferenceSlots files={subImages} onAdd={handleAddSub} onRemove={(i) => setSubImages((p) => p.filter((_, k) => k !== i))} error={subError} />
           <p className="text-[11px] leading-relaxed text-muted/80">
@@ -986,11 +1051,15 @@ export function DatasetBuilderTab() {
               description={
                 baseFull
                   ? "この全身を元に、全身の行と切り出し（上半身・バストアップ）を作ります。別の候補に替えることもできます。"
-                  : "メイン画像に足元まで写っていないので、まず全身の候補を作って 1 枚選んでください。体つき・服装はここで確定し、以後の全部の行の元になります。"
+                  : mainRoute === "face"
+                    ? "顔だけの画像なので、まず体と服を決めて全身の候補を作り、気に入った 1 枚を選んでください。候補ごとに顔の雰囲気が少しずつ違うので、いちばんイメージに合う顔を選ぶのがコツです。選んだ全身が以後の全部の行の元になります。"
+                    : "メイン画像に足元まで写っていないので、まず全身の候補を作って 1 枚選んでください。体つき・服装はここで確定し、以後の全部の行の元になります。"
               }
               user={user}
               image={image}
-              specs={FULL_BODY_SPECS}
+              specs={baseFullSpecs}
+              aspect="portrait"
+              blockedReason={baseFull ? null : baseFullBlocked}
               costPerImage={perImage}
               credits={credits}
               storageKey="dataset-builder-cand-full"
@@ -1005,7 +1074,11 @@ export function DatasetBuilderTab() {
               fileName="base_full.png"
               confirmed={baseFull}
               gpuLock={gpuLock}
-            />
+            >
+              {!baseFull && (mainRoute === "face" || mainRoute === "upper") && (
+                <BodyDesignForm design={bodyDesign} onChange={setBodyDesign} route={mainRoute} />
+              )}
+            </CandidatePanel>
           )}
           {effectiveMain && (viewsInPlan.has("back") || refBack) && (
             <CandidatePanel
@@ -1382,8 +1455,14 @@ export function DatasetBuilderTab() {
                   className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
                 >
                   {sending ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
-                  {kept.length} 枚を LoRA Studio に追加
+                  {kept.length + (mainRoute === "face" && sendOriginal && image ? 1 : 0)} 枚を LoRA Studio に追加
                 </button>
+                )}
+                {phase === "done" && mainRoute === "face" && image && (
+                  <label className="inline-flex items-center gap-1 text-[11px] text-muted">
+                    <input type="checkbox" checked={sendOriginal} onChange={(e) => setSendOriginal(e.target.checked)} />
+                    元の顔アップも一緒に送る（顔の細部を学ばせるため推奨）
+                  </label>
                 )}
               </div>
             )}

@@ -158,6 +158,8 @@ export async function POST(request: Request) {
   let imageSetsRaw: unknown;
   // マルチアングル（2026-09-29）: サブ参照ごとに「全構図に使う」か（storagePaths[1..] と同じ並び）。
   let subRefAllRaw: unknown;
+  // 出力の縦横（2026-09-29）: "portrait" なら 832×1248（~1MP、料金・時間は従来どおり）。顔アップ→全身の候補用。
+  let aspectRaw: unknown;
 
   if (contentType.includes("application/json")) {
     let body: Record<string, unknown>;
@@ -202,6 +204,7 @@ export async function POST(request: Request) {
     scenesRaw = body.scenes;
     imageSetsRaw = body.imageSets;
     subRefAllRaw = body.subRefAll;
+    aspectRaw = body.aspect;
   } else {
     let formData: FormData;
     try {
@@ -439,6 +442,7 @@ export async function POST(request: Request) {
       seed,
       rawPrompt,
       ...(useSets ? { imageSets: jobImageSets!, instructionSets: instructionSets! } : {}),
+      ...(aspectRaw === "portrait" ? { outputSize: { width: 832, height: 1248 } } : {}),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

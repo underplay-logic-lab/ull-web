@@ -376,3 +376,84 @@ export function sceneCreditsPerImage(knobs: PricingKnobs = DEFAULT_KNOBS, subIma
 export function sceneTotalCredits(count: number, knobs: PricingKnobs = DEFAULT_KNOBS, subImageCount = 0): number {
   return Math.max(0, Math.trunc(count || 0)) * sceneCreditsPerImage(knobs, subImageCount);
 }
+
+// --- 体の設計（顔アップ→全身、2026-09-29） -------------------------------------------------------
+// 顔アップだけの画像から全身を作ると、体つき・服装はモデルの想像まかせで候補ごとにばらばらになる（実測: 服の指定なしだと
+// 下はジーンズ／裸足／ミニ丈と毎回ちがう。指定すると 8/8 で揃った）。そこで基準の全身を作る前に服・体型・背丈を決める。
+// 顔の似方は候補ごとにばらつくので、候補から気に入った顔を選んでもらう（選んだ全身がそのキャラの正解になる）。
+
+/** 取り込んだ画像の写り方による経路。face＝顔アップ（体の設計が必須）、upper＝上半身（下の服は任意）、full＝全身（不要）。 */
+export type MainRoute = "face" | "upper" | "full";
+
+export const BODY_OUTFIT_CHIPS: SceneChip[] = [
+  { id: "casual", label: "Tシャツとジーンズ", en: "a plain t-shirt, blue jeans and white sneakers" },
+  { id: "blazer", label: "ブレザー制服", en: "a navy blazer over a white shirt, a pleated skirt or slacks, and black loafers" },
+  { id: "sailor", label: "セーラー服", en: "a Japanese sailor school uniform with a pleated skirt and loafers" },
+  { id: "suit", label: "スーツ", en: "a formal business suit with leather shoes" },
+  { id: "dress", label: "ワンピース", en: "a simple knee-length dress and flat shoes" },
+  { id: "hoodie", label: "パーカー", en: "a hoodie, casual pants and sneakers" },
+];
+
+export const BODY_BUILD_CHIPS: SceneChip[] = [
+  { id: "slim", label: "細身", en: "slim build" },
+  { id: "average", label: "標準", en: "average build" },
+  { id: "athletic", label: "がっしり", en: "athletic, sturdy build" },
+  { id: "curvy", label: "ふくよか", en: "curvy, full-figured build" },
+];
+
+export const BODY_HEIGHT_CHIPS: SceneChip[] = [
+  { id: "petite", label: "小柄", en: "petite, short height" },
+  { id: "average", label: "平均", en: "average height" },
+  { id: "tall", label: "長身", en: "tall" },
+];
+
+export type BodyDesign = {
+  /** 服装チップの id（空＝未選択）。outfitText があればそちらを優先。 */
+  outfitId: string;
+  /** 服装の自由入力（日本語可、API 側で英訳）。 */
+  outfitText: string;
+  buildId: string;
+  heightId: string;
+};
+
+export const EMPTY_BODY_DESIGN: BodyDesign = { outfitId: "", outfitText: "", buildId: "average", heightId: "average" };
+
+function bodyOutfitEn(design: BodyDesign): string {
+  const text = design.outfitText.trim();
+  if (text) return text;
+  return BODY_OUTFIT_CHIPS.find((c) => c.id === design.outfitId)?.en ?? "";
+}
+
+/** 候補を作れない理由（無ければ null）。顔アップは服装が必須（上半身は下の服が元画像に無いだけなので任意）。 */
+export function bodyDesignBlockedReason(design: BodyDesign, route: MainRoute): string | null {
+  if (route === "face" && !bodyOutfitEn(design)) return "先に服装を選ぶか入力してください（顔だけの画像なので、体と服をここで決めます）。";
+  return null;
+}
+
+/** 基準の全身の候補の指示（4 枚分）。route が full なら使わない。 */
+export function bodyDesignSpecs(design: BodyDesign, route: MainRoute, count = 4): { instruction: string; label: string }[] {
+  const outfit = bodyOutfitEn(design);
+  const build = BODY_BUILD_CHIPS.find((c) => c.id === design.buildId)?.en;
+  const height = BODY_HEIGHT_CHIPS.find((c) => c.id === design.heightId)?.en;
+  const base = "A full body shot showing the whole body from head to feet, standing upright, facing the viewer, against a plain white background.";
+  const body = [build, height].filter(Boolean).join(", ");
+  let rest: string;
+  if (route === "face") {
+    rest = `The character is wearing ${outfit}.${body ? ` ${body[0].toUpperCase()}${body.slice(1)}.` : ""} Keep the identical face and hairstyle as the reference.`;
+  } else {
+    // 上半身: 写っている服は引き継ぎ、写っていない下半身だけ指定を使う。
+    rest = `Keep the same character with the identical face, hairstyle and the clothing visible in the reference.${
+      outfit ? ` For the parts not visible in the reference, the character is wearing ${outfit}.` : ""
+    }${body ? ` ${body[0].toUpperCase()}${body.slice(1)}.` : ""}`;
+  }
+  return Array.from({ length: count }, (_, i) => ({ instruction: `${base} ${rest}`, label: `全身の候補 ${i + 1}` }));
+}
+
+/** smartCrop の framing から経路を決める（手動の指定があればそちら）。 */
+export function mainRouteOf(framing: string | undefined, override: MainRoute | "auto"): MainRoute | null {
+  if (override !== "auto") return override;
+  if (framing === undefined) return null;
+  if (framing === "full") return "full";
+  if (framing === "upper") return "upper";
+  return "face";
+}

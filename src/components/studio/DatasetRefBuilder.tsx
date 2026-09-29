@@ -5,7 +5,7 @@
 // 生成した画像を次の参照に使うのはここだけ（まとめて生成では確定した参照だけを毎回使う）。
 // 候補は素材づくりと同じジョブ（angle_jobs・scene 経路・メイン 1 枚・1 枚 14C）。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, Loader2, RefreshCw, Sparkles, ZoomIn } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
 import {
@@ -140,7 +140,7 @@ function useCandidateJob(storageKey: string) {
   }, [jobId, status, storageKey]);
 
   const start = useCallback(
-    async (user: User, image: File, specs: CandidateSpec[], lock?: GpuLock) => {
+    async (user: User, image: File, specs: CandidateSpec[], lock?: GpuLock, aspect?: "portrait") => {
       setStatus("queued");
       setError(null);
       setJob(null);
@@ -154,6 +154,7 @@ function useCandidateJob(storageKey: string) {
           selection: { azimuths: [], elevations: [], distances: [] },
           mode: "standard",
           scenes: specs,
+          ...(aspect ? { aspect } : {}),
         });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
         saveFormState(storageKey, { jobId: res.jobId });
@@ -203,6 +204,9 @@ export function CandidatePanel({
   existingRefs,
   confirmed,
   gpuLock,
+  aspect,
+  blockedReason,
+  children,
 }: {
   title: string;
   description: string;
@@ -227,6 +231,12 @@ export function CandidatePanel({
   confirmed?: File | null;
   /** タブ共有の鍵。他のジョブが動いていれば終わるまで待ってから投げる。 */
   gpuLock?: GpuLock;
+  /** 候補を縦長（832×1248）で出す（顔アップ→全身、2026-09-29）。 */
+  aspect?: "portrait";
+  /** これがあると候補を作れない（理由を出す）。顔アップのとき体の設計が済むまで等。 */
+  blockedReason?: string | null;
+  /** 説明の下に出す欄（体の設計など）。 */
+  children?: ReactNode;
 }) {
   const { job, status, error, start, reset } = useCandidateJob(storageKey);
   const [picking, setPicking] = useState<number | null>(null);
@@ -265,8 +275,9 @@ export function CandidatePanel({
   const onStart = () => {
     if (!user) return onLogin();
     if (!image) return;
+    if (blockedReason) return;
     if (insufficient) return onCharge();
-    void start(user, image, specs, gpuLock);
+    void start(user, image, specs, gpuLock, aspect);
   };
   const fileRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -283,7 +294,8 @@ export function CandidatePanel({
           <button
             type="button"
             onClick={onStart}
-            disabled={!image}
+            disabled={!image || Boolean(blockedReason)}
+            title={blockedReason ?? undefined}
             className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white disabled:opacity-50 ${
               insufficient ? "bg-amber-600/80" : "bg-gradient-to-r from-neon-pink to-neon-violet hover:opacity-90"
             }`}
@@ -305,6 +317,10 @@ export function CandidatePanel({
         ) : null}
       </div>
       <p className="text-[10px] leading-relaxed text-muted">{description}</p>
+      {children}
+      {blockedReason && (status === "idle" || status === "error") && (
+        <p className="text-[10px] leading-relaxed text-amber-300">{blockedReason}</p>
+      )}
       {onPickLocal && (
         <div
           onDragOver={(e) => {

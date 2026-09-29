@@ -1872,6 +1872,17 @@ class QwenImageEditWorker:
         base_seed = None if seed is None or seed == "" else int(seed)
         # 素材づくり（ポーズ・場面の文章指示、2026-09-27）: 角度 LoRA のトリガーを前置しない。
         raw_prompt = bool(payload.get("raw_prompt"))
+        # 出力サイズの指定（2026-09-29、顔アップ→全身の候補を縦長で出す）。無ければ入力の縦横比で ~1MP（従来どおり）。
+        # 画素数は従来と同程度に限る（課金・所要時間の見積もりが ~1MP 前提のため）。
+        out_w = out_h = None
+        _size = payload.get("output_size")
+        if isinstance(_size, dict):
+            try:
+                _w, _h = int(_size.get("width") or 0), int(_size.get("height") or 0)
+                if _w % 16 == 0 and _h % 16 == 0 and 256 <= _w <= 2048 and 256 <= _h <= 2048 and _w * _h <= 1_150_000:
+                    out_w, out_h = _w, _h
+            except (TypeError, ValueError):
+                pass
 
         # --- idempotency ガード（Modal クラッシュ由来リトライの無限ループ対策）---
         # ウォッチドッグ発火 → os._exit(1) → Modal が spawned 入力を再実行 → …
@@ -2115,6 +2126,9 @@ class QwenImageEditWorker:
                     num_images_per_prompt=1,
                     generator=generator,
                 )
+                if out_w and out_h:
+                    call_kwargs["width"] = out_w
+                    call_kwargs["height"] = out_h
                 if self._supports_step_cb:
                     call_kwargs["callback_on_step_end"] = _heartbeat
 
@@ -2436,8 +2450,14 @@ def scene(
     sub_paths: str = "",
     seed: int = 42,
     out_dir: str = "./angle_scene",
+    height: int = 0,
+    width: int = 0,
+    both: bool = False,
 ):
     """ポーズ・場面・衣装の文章指示の試験（2026-09-27）。角度 LoRA のトリガーを付けずに送る。
+
+    --height/--width: 出力サイズ（0 なら入力の縦横比で ~1MP）。--both: サブ参照なし→ありを同じ実行で両方作る
+    （出力は scene_*.png ＝なし、scene_ref_*.png ＝あり。2026-09-29 顔アップ→全身の比較用）。
 
     modal run modal_angle_worker.py::scene --image-path ./main.png \
         --sub-paths "./back.png || ./bust.png" \
@@ -2458,15 +2478,60 @@ def scene(
         raise SystemExit("pass at least one instruction in --instructions")
 
     ensure_qwen_edit_cached.remote()
-    result = QwenImageEditWorker().run_edit.remote(
-        primary,
-        instr_list,
-        seed=seed,
-        images=[primary, *subs] if subs else None,
-        raw_prompt=True,
-    )
+    worker = QwenImageEditWorker()
     dst = pathlib.Path(out_dir).expanduser()
     dst.mkdir(parents=True, exist_ok=True)
-    for i, b64 in enumerate(result["images"]):
-        (dst / f"scene_{i:02d}.png").write_bytes(base64.b64decode(b64))
-    print(f"[scene] {result['count']} image(s) in {result['elapsed_time']}s (seed={result.get('seed')}) -> {dst}", flush=True)
+    runs = [("scene", None), ("scene_ref", [primary, *subs])] if (both and subs) else [
+        ("scene", [primary, *subs] if subs else None)
+    ]
+    for tag, images in runs:
+        result = worker.run_edit.remote(
+            primary,
+            instr_list,
+            seed=seed,
+            images=images,
+            raw_prompt=True,
+            height=height or None,
+            width=width or None,
+        )
+        for i, b64 in enumerate(result["images"]):
+            (dst / f"{tag}_{i:02d}.png").write_bytes(base64.b64decode(b64))
+        print(f"[scene] {tag}: {result['count']} image(s) in {result['elapsed_time']}s (seed={result.get('seed')}) -> {dst}", flush=True)
+
+
+@app.local_entrypoint()
+def edits(spec_path: str, out_dir: str = "./angle_edits", seed: int = 42):
+    """複数の編集を同じ warm コンテナで順に流す試験用（2026-09-29、顔アップ→全身の顔の描き直し検証）。
+
+    spec_path の JSON: [{"tag": "fix0", "image": "a.png", "subs": ["b.png"], "instructions": ["..."],
+                         "height": 0, "width": 0}, ...]。出力は <out_dir>/<tag>_NN.png。
+    """
+    import json as _json
+
+    spec = _json.loads(pathlib.Path(spec_path).expanduser().read_text(encoding="utf-8"))
+
+    def _b64(p: str) -> str:
+        fp = pathlib.Path(p).expanduser()
+        if not fp.is_file():
+            raise SystemExit(f"not a file: {fp}")
+        return base64.b64encode(fp.read_bytes()).decode("ascii")
+
+    ensure_qwen_edit_cached.remote()
+    worker = QwenImageEditWorker()
+    dst = pathlib.Path(out_dir).expanduser()
+    dst.mkdir(parents=True, exist_ok=True)
+    for item in spec:
+        primary = _b64(item["image"])
+        subs = [_b64(p) for p in item.get("subs", [])]
+        result = worker.run_edit.remote(
+            primary,
+            list(item["instructions"]),
+            seed=seed,
+            images=[primary, *subs] if subs else None,
+            raw_prompt=True,
+            height=item.get("height") or None,
+            width=item.get("width") or None,
+        )
+        for i, b64 in enumerate(result["images"]):
+            (dst / f"{item['tag']}_{i:02d}.png").write_bytes(base64.b64decode(b64))
+        print(f"[edits] {item['tag']}: {result['count']} image(s) in {result['elapsed_time']}s", flush=True)
