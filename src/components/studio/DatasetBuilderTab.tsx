@@ -1624,7 +1624,6 @@ export function DatasetBuilderTab() {
             a.click();
             a.remove();
           }}
-          onUpscale={() => undefined}
           onImageError={() => undefined}
         />
       )}

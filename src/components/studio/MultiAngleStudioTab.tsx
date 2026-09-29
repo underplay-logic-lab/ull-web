@@ -473,7 +473,8 @@ export function AngleLightbox({
   onClose: () => void;
   /** 保存・超解像への受け渡しは親が URL を取り直して行う（2026-09-24）。 */
   onSave: (index: number) => void;
-  onUpscale: (index: number) => void;
+  /** 渡さないと「超解像へ」を出さない（手元のファイルの拡大表示など、受け渡せないもの）。 */
+  onUpscale?: (index: number) => void;
   onImageError: () => void;
   /** 素材づくり（2026-09-28）: 拡大したまま「外す／戻す」。× は閉じるのままにし、別のボタンと x キーで切り替える。 */
   onToggleExclude?: (index: number) => void;
@@ -535,6 +536,7 @@ export function AngleLightbox({
               {isExcluded?.(index) ? "戻す" : "この画像を外す"}
             </button>
           )}
+          {onUpscale && (
           <button
             type="button"
             onClick={() => {
@@ -546,6 +548,7 @@ export function AngleLightbox({
             <Sparkles size={12} />
             超解像へ
           </button>
+          )}
           <button
             type="button"
             onClick={() => onSave(index)}
@@ -1904,7 +1907,6 @@ export function MultiAngleStudioTab() {
             a.click();
             a.remove();
           }}
-          onUpscale={() => undefined}
           onImageError={() => undefined}
         />
       )}

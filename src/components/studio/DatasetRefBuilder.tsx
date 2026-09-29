@@ -20,6 +20,7 @@ import {
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { AngleLightbox, useObjectUrl, type LightItem } from "@/components/studio/MultiAngleStudioTab";
 import { broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
+import { requestStudioHandoff } from "@/lib/studioHandoff";
 
 export type CandidateSpec = { instruction: string; label: string };
 
@@ -409,6 +410,17 @@ export function CandidatePanel({
       setPickError(`保存に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
+  // 超解像へ（候補のときだけ。押した時点で URL を取り直して渡す、CLAUDE.md §6-11）。
+  const upscaleLight = async (i: number) => {
+    const j = light?.job;
+    if (!j) return;
+    try {
+      const url = await freshAngleImageUrl(j.id, i, urlOf(j, i));
+      requestStudioHandoff({ kind: "image", url, filename: `candidate_${i + 1}.png`, source: "参照づくりの候補" }, "upscale");
+    } catch (err) {
+      setPickError(`超解像への受け渡しに失敗しました: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
   const openLight = (j: AngleJob, i: number) =>
     setLight({ items: j.images.map((_, k) => ({ url: urlOf(j, k), label: j.labels[k] ?? "" })), index: i, job: j });
 
@@ -651,7 +663,7 @@ export function CandidatePanel({
           onIndexChange={(i) => setLight((l) => (l ? { ...l, index: i } : l))}
           onClose={() => setLight(null)}
           onSave={(i) => void saveLight(i)}
-          onUpscale={() => undefined}
+          onUpscale={light.job ? (i) => void upscaleLight(i) : undefined}
           onImageError={() => {
             // 候補の拡大表示なら、その候補の URL を取り直して拡大側も差し替える。
             const j = light.job;
