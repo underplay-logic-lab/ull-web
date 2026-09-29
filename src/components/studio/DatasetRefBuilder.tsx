@@ -143,7 +143,7 @@ function useCandidateJob(storageKey: string) {
   }, [jobId, status, storageKey]);
 
   const start = useCallback(
-    async (user: User, image: File, specs: CandidateSpec[], lock?: GpuLock, aspect?: "portrait", subImages: File[] = []) => {
+    async (user: User, image: File, specs: CandidateSpec[], lock?: GpuLock, aspect?: "portrait") => {
       setStatus("queued");
       setError(null);
       setJob(null);
@@ -153,7 +153,7 @@ function useCandidateJob(storageKey: string) {
         const res = await startAngleJob({
           userId: user.id,
           image,
-          subImages,
+          subImages: [],
           selection: { azimuths: [], elevations: [], distances: [] },
           mode: "standard",
           scenes: specs,
@@ -195,7 +195,6 @@ export function CandidatePanel({
   image,
   specs,
   costPerImage,
-  costPerImageWithRef,
   credits,
   storageKey,
   picked,
@@ -219,8 +218,6 @@ export function CandidatePanel({
   image: File | null;
   specs: CandidateSpec[];
   costPerImage: number;
-  /** 参照 1 枚を添えたときの 1 枚の単価（「これを元に」で元の画像を添えるとき）。 */
-  costPerImageWithRef?: number;
   credits: number | null;
   storageKey: string;
   picked: CandidatePick | null;
@@ -267,12 +264,6 @@ export function CandidatePanel({
   const cost = specs.length * costPerImage;
   const busy = status === "queued" || status === "submitting" || status === "running";
   const insufficient = Boolean(user) && credits !== null && credits < cost;
-
-  // 「これを元に」で元の画像（顔アップ等）もサブ参照に添えるか（2026-09-29）。派生を重ねても顔を元に引き戻すため。
-  // 効くかは未検証なので、同じ候補から「添えない／添える」を両方作って見比べられるよう切り替え式にする。
-  const [anchorOriginal, setAnchorOriginal] = useState(false);
-  const anchorCost = specs.length * (costPerImageWithRef ?? costPerImage);
-  const deriveCost = anchorOriginal ? anchorCost : cost;
 
   // 前の候補（2026-09-29、ホスト要望「作り直しても前の候補から選べるように」）。作り直すたびに今の候補をここへ移す。
   // ジョブ id だけ保存し、リロード後は一度だけ読み直す。
@@ -346,22 +337,9 @@ export function CandidatePanel({
         setDeriving(null);
       }
     }
-    const anchor = Boolean(base) && anchorOriginal;
-    if (anchor && user && credits !== null && credits < anchorCost) return onCharge();
     pushHistory(job);
     reset();
-    if (anchor) {
-      // 体・服・ポーズ・構図は 1 枚目（選んだ候補）、顔と髪型は 2 枚目（元の画像）に合わせる。
-      const anchored = specs.map((sp) => ({
-        ...sp,
-        instruction: `${sp.instruction} Keep the body, outfit, pose and framing of image 1, but the face and hairstyle must be identical to the person in image 2.`,
-        label: `${sp.label}（元の顔を参照）`,
-      }));
-      // 参照を添えると出力の縦横比が参照側（正方形の顔アップ等）に寄るので、全身の候補は縦長に固定する。
-      void start(user, src, anchored, gpuLock, aspect ?? "portrait", [image]);
-    } else {
-      void start(user, src, specs, gpuLock, aspect);
-    }
+    void start(user, src, specs, gpuLock, aspect);
   };
 
   const onStart = () => {
@@ -435,7 +413,7 @@ export function CandidatePanel({
               type="button"
               onClick={() => void regenerate({ job: j, index: i })}
               disabled={busy || deriving !== null || !image}
-              title={`この候補をメイン画像にして、似た候補を ${specs.length} 枚作ります（${deriveCost} C）${anchorOriginal ? "。元の画像も参照に添えます" : ""}`}
+              title={`この候補をメイン画像にして、似た候補を ${specs.length} 枚作ります（${cost} C）`}
               className="inline-flex items-center justify-center gap-0.5 rounded border border-border px-1 py-0.5 text-[10px] text-muted hover:border-neon-violet/40 hover:text-foreground disabled:opacity-40"
             >
               <GitBranch size={10} />
@@ -573,12 +551,6 @@ export function CandidatePanel({
           気に入った 1 枚をクリックして選んでください（左上の虫眼鏡で拡大）。惜しい候補があれば「これを元に」で似た候補を、
           無ければ「作り直す」で元の画像からもう一度作れます。
         </p>
-      )}
-      {((job && job.images.length > 0) || history.length > 0) && (
-        <label className="flex items-center gap-1.5 text-[10px] text-muted">
-          <input type="checkbox" checked={anchorOriginal} onChange={(e) => setAnchorOriginal(e.target.checked)} />
-          「これを元に」で元の画像も参照に添える（顔を元に寄せる・{specs.length} 枚 {anchorCost} C。添えないと {cost} C）
-        </label>
       )}
       {history.length > 0 && (
         <div className="space-y-1.5 border-t border-border/60 pt-2">
