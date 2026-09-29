@@ -1584,6 +1584,10 @@ export function DatasetBuilderTab() {
                   新しく作る（この結果を消す）
                 </button>
                 {!image && <p className="w-full text-[10px] text-amber-400">続きを作るには、同じ画像をもう一度入れてください。</p>}
+                <p className="w-full text-[10px] leading-relaxed text-muted">
+                  「続きを作る」は、止めた時点の一覧の文章のまま作ります。表情・服装・場面などの設定を変えた場合は、
+                  必要な結果を保存してから「新しく作る」で作り直してください（基準の全身像・真横・後ろ姿は残ります）。
+                </p>
               </div>
             ) : (
               <button
