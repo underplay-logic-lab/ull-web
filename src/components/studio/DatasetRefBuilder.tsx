@@ -491,11 +491,11 @@ export function CandidatePanel({
           <button
             type="button"
             onClick={regenerate}
-            title="元の画像からもう一度候補を作ります。今の候補は下の「前の候補」に残ります"
+            title="今の候補は残したまま、追加で候補を作ります（今の候補は下の「前の候補」に移ります）"
             className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-40"
           >
             <RefreshCw size={11} />
-            作り直す（{cost} C）
+            追加で {specs.length} 枚作る（{cost} C）
           </button>
         ) : null}
       </div>
@@ -622,8 +622,8 @@ export function CandidatePanel({
       {job && job.images.length > 0 && renderGrid(job)}
       {status === "done" && !picked && (
         <p className="text-[10px] text-amber-400">
-          気に入った 1 枚をクリックして選んでください（左上の虫眼鏡で拡大）。無ければ「作り直す」でもう一度作れます
-          （今の候補は「前の候補」に残り、あとからも選べます）。
+          気に入った 1 枚をクリックして選んでください（左上の虫眼鏡で拡大）。無ければ「追加で {specs.length} 枚作る」で
+          候補を増やせます（今の候補は「前の候補」に残り、あとからも選べます）。
         </p>
       )}
       {history.length > 0 && (

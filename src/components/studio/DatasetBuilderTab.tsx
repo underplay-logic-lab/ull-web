@@ -1333,7 +1333,7 @@ export function DatasetBuilderTab() {
                 className="min-w-0 rounded border border-border bg-background px-2 py-1 text-[11px] text-foreground placeholder:text-muted/60"
               />
               <span className="text-muted/80">
-                後ろ姿は選んだ真横の髪に揃えるので、後ろ髪を変えたいときはここを直して真横から作り直してください。
+                後ろ姿は選んだ真横の髪に揃えるので、後ろ髪を変えたいときはここを直して、真横の候補を追加で作ってください。
               </span>
             </label>
           )}
