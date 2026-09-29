@@ -66,52 +66,29 @@ export const SIDE_VIEW_SPECS: CandidateSpec[] = Array.from({ length: CANDIDATE_C
   label: `真横の候補 ${i + 1}`,
 }));
 
-// 真横 → 後ろ姿の順（2026-09-29 ホスト判断）。同じ指示の 4 枚はほぼ同じ絵になる（編集モデルは元画像に忠実で、
-// 正面に写っていない後ろ髪は毎回同じ無難な答えで埋める）。そこで真横は後ろ髪を「正面からの相対」で 4 通りに振って
-// 選んでもらう（短髪・男性でも破綻しないよう長さは決め打ちしない）。後ろ髪の正解を知っているなら hairNote で指定。
+// 真横 → 後ろ姿の順（2026-09-29 ホスト判断）。真横は正面の髪型をそのまま保つ指示に固定する。後ろ髪を相対で
+// 振る案（少し長め・短め等）は、髪を描き直すついでに顔まで別人になった（ホスト実走＋B300 比較: 前髪・お団子が
+// 付くなど髪型ごと変わる）。角度 LoRA（<sks> right side view）とも比べたが、顔の近さはこの文章の指示が同等以上
+// だった（ホスト目視 2/2 vs 1/4）。後ろ髪の正解を知っているときだけ hairNote で足す。
 // 後ろ姿は確定した真横をサブ参照に添えて、髪の長さ・形を真横に揃える。
-const SIDE_BASE =
-  "A full body shot in profile view from the side, standing upright, against a plain white background. The outfit must be consistent with the reference. Keep the same character with the identical face, body shape and clothing as the reference, and keep the hair color, bangs and parting visible from the front.";
-const HAIR_VARIANTS: { en: string; ja: string }[] = [
-  { en: "The hair at the back is exactly as long as it appears from the front.", ja: "正面どおり" },
-  { en: "The hair at the back is a little longer than it appears from the front.", ja: "後ろ髪 少し長め" },
-  { en: "The hair at the back is a little shorter than it appears from the front.", ja: "後ろ髪 少し短め" },
-  { en: "The hair at the back has a slightly different volume and flow of the hair ends.", ja: "毛先・ボリューム違い" },
-];
+const SIDE_INSTRUCTION = `A full body shot in profile view from the side, standing upright, against a plain white background. The hairstyle and the outfit must be consistent with the reference. ${IDENTITY}`;
 
 export function sideViewSpecs(hairNote: string): CandidateSpec[] {
   const note = hairNote.trim();
-  if (note) {
-    return Array.from({ length: CANDIDATE_COUNT }, (_, i) => ({
-      instruction: `${SIDE_BASE} The hair at the back: ${note}.`,
-      label: `真横の候補 ${i + 1}（後ろ髪の指定どおり）`,
-    }));
-  }
-  return HAIR_VARIANTS.slice(0, CANDIDATE_COUNT).map((v, i) => ({
-    instruction: `${SIDE_BASE} ${v.en}`,
-    label: `真横の候補 ${i + 1}（${v.ja}）`,
+  return Array.from({ length: CANDIDATE_COUNT }, (_, i) => ({
+    instruction: note ? `${SIDE_INSTRUCTION} The hair at the back: ${note}.` : SIDE_INSTRUCTION,
+    label: `真横の候補 ${i + 1}${note ? "（後ろ髪の指定どおり）" : ""}`,
   }));
 }
 
-/** 後ろ姿。withSide＝確定した真横を 2 枚目の参照に添える（髪を真横に揃える）。無ければ真横と同じ相対の振り方。 */
+/** 後ろ姿。withSide＝確定した真横を 2 枚目の参照に添える（髪を真横に揃える）。 */
 export function backViewSpecs(hairNote: string, withSide: boolean): CandidateSpec[] {
-  const base = `A full body shot seen directly from behind (back view), standing upright, against a plain white background. The outfit must be consistent with the reference. ${IDENTITY}`;
+  const base = `A full body shot seen directly from behind (back view), standing upright, against a plain white background. The hairstyle and the outfit must be consistent with the reference. ${IDENTITY}`;
   const note = hairNote.trim();
-  if (withSide) {
-    return Array.from({ length: CANDIDATE_COUNT }, (_, i) => ({
-      instruction: `${base} The length and shape of the hair at the back must match image 2 (the side view of the same character).${note ? ` The hair at the back: ${note}.` : ""}`,
-      label: `後ろ姿の候補 ${i + 1}（真横に揃える）`,
-    }));
-  }
-  if (note) {
-    return Array.from({ length: CANDIDATE_COUNT }, (_, i) => ({
-      instruction: `${base} The hair at the back: ${note}.`,
-      label: `後ろ姿の候補 ${i + 1}（後ろ髪の指定どおり）`,
-    }));
-  }
-  return HAIR_VARIANTS.slice(0, CANDIDATE_COUNT).map((v, i) => ({
-    instruction: `${base} ${v.en}`,
-    label: `後ろ姿の候補 ${i + 1}（${v.ja}）`,
+  const side = withSide ? " The length and shape of the hair at the back must match image 2 (the side view of the same character)." : "";
+  return Array.from({ length: CANDIDATE_COUNT }, (_, i) => ({
+    instruction: `${base}${side}${note ? ` The hair at the back: ${note}.` : ""}`,
+    label: `後ろ姿の候補 ${i + 1}${withSide ? "（真横に揃える）" : note ? "（後ろ髪の指定どおり）" : ""}`,
   }));
 }
 

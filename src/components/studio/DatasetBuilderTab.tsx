@@ -1149,7 +1149,7 @@ export function DatasetBuilderTab() {
           {effectiveMain && (viewsInPlan.has("side") || refSide) && (
             <CandidatePanel
               title={refSide ? "真横の参照（確定済み）" : "真横の参照を作る"}
-              description="真横の行は、ここで選んだ真横を参照にして作ります。候補は後ろ髪を「正面どおり・少し長め・少し短め・毛先違い」に振るので、イメージに合う 1 枚を選んでください（後ろ姿はこの真横に揃えます）。手持ちの真横があればそれでも構いません。選ぶと参照欄に入ります。"
+              description="真横の行は、ここで選んだ真横を参照にして作ります。顔がいちばんイメージに近い 1 枚を選んでください（後ろ姿はこの真横の髪に揃えます）。後ろ髪の長さや結び方を決めたいときは下の欄に書いてください。手持ちの真横があればそれでも構いません。選ぶと参照欄に入ります。"
               user={user}
               image={effectiveMain}
               specs={sideSpecs}
