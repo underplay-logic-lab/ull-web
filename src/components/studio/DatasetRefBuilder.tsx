@@ -49,7 +49,8 @@ export function createGpuLock(): GpuLock {
 }
 export type CandidatePick = { jobId: string; index: number };
 
-const IDENTITY = "Keep the same character with the identical face, hairstyle, body shape and clothing as the reference.";
+const IDENTITY =
+  "Keep the same character with the identical face, hairstyle, body shape and clothing as the reference. Keep the same art style, rendering and level of realism as the reference (if the reference is a photo, keep it a photorealistic photo).";
 const CANDIDATE_COUNT = 4;
 /** 前の候補を何回分残すか。 */
 const HISTORY_MAX = 6;

@@ -65,14 +65,16 @@ export const VIEW_CHIPS: SceneChip[] = [
 
 // 表情・服装（2026-09-28、ホスト指摘「全部スーツで似た画像ばかり」）。LoRA でも服装・表情の幅があると、
 // 服やスーツを「人物の一部」として覚え込まず、プロンプトで変えやすくなる。
+// 表情は控えめな言い方にする（2026-09-29 ホスト実走: 照れ＝顔が真っ赤、悲しみ＝アニメ調、怒り＝別人、笑顔も人が変わる）。
+// 強い表現ほど顔ごと作り替えるので「少しだけ」に寄せ、顔立ちは変えない旨を添える（IDENTITY_EN 側）。id は保存済みの選択と互換。
 export const EXPRESSION_CHIPS: SceneChip[] = [
   { id: "neutral", label: "真顔", en: "with a calm neutral expression" },
-  { id: "smile", label: "笑顔", en: "smiling warmly" },
-  { id: "laugh", label: "大笑い", en: "laughing out loud" },
-  { id: "surprised", label: "驚き", en: "with a surprised expression" },
-  { id: "shy", label: "照れ", en: "blushing shyly" },
-  { id: "angry", label: "怒り", en: "with an angry expression" },
-  { id: "sad", label: "悲しみ", en: "with a sad, teary expression" },
+  { id: "smile", label: "微笑み", en: "with a gentle, soft smile" },
+  { id: "laugh", label: "歯を見せて笑う", en: "with a natural smile showing a little teeth" },
+  { id: "surprised", label: "少し驚き", en: "with a slightly surprised expression" },
+  { id: "shy", label: "少し照れ", en: "with a slightly shy expression and a faint natural blush" },
+  { id: "angry", label: "少しむっと", en: "with a slightly displeased, pouting expression" },
+  { id: "sad", label: "少し寂しげ", en: "with a slightly wistful expression" },
 ];
 
 export const OUTFIT_CHIPS: SceneChip[] = [
@@ -162,7 +164,9 @@ export type ScenePlanItem = {
   custom?: string;
 };
 
-const IDENTITY_EN = "Keep the same character with the identical face, hairstyle, body shape and clothing as the reference.";
+// 顔立ちを保つ＋表情は控えめに＋画風を保つ（2026-09-29: 表情指定で別人・アニメ調に転んだ対策）。
+const IDENTITY_EN =
+  "Keep the same character with the identical face, hairstyle, body shape and clothing as the reference. Any change of expression must be subtle and must not alter the facial features. Keep the same art style, rendering and level of realism as the reference (if the reference is a photo, keep it a photorealistic photo).";
 
 function chip(axis: SceneAxis, id: string): SceneChip {
   return CHIPS_BY_AXIS[axis].find((c) => c.id === id) ?? CHIPS_BY_AXIS[axis][0];
