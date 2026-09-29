@@ -145,11 +145,14 @@ export function ImageDropzone({
   previewUrl,
   onFileSelected,
   onClear,
+  onZoom,
 }: {
   file: File | null;
   previewUrl: string | null;
   onFileSelected: (file: File) => void;
   onClear: () => void;
+  /** 渡すと左上に拡大ボタンを出す（2026-09-29）。 */
+  onZoom?: () => void;
 }) {
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -222,6 +225,20 @@ export function ImageDropzone({
             >
               <X size={14} />
             </button>
+            {onZoom && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onZoom();
+                }}
+                aria-label="拡大"
+                title="拡大"
+                className="absolute left-2 top-2 z-10 cursor-zoom-in rounded-full bg-black/60 p-1.5 text-white transition-colors hover:bg-black/80"
+              >
+                <ZoomIn size={14} />
+              </button>
+            )}
             <span className="relative z-10 mt-auto max-w-full truncate rounded-md bg-black/60 px-2 py-1 text-[11px] text-white">
               {file?.name}
             </span>
@@ -253,6 +270,7 @@ export function SubReferenceSlots({
   error,
   allAngles,
   onToggleAllAngles,
+  onZoom,
 }: {
   files: File[];
   onAdd: (file: File) => void;
@@ -261,6 +279,8 @@ export function SubReferenceSlots({
   /** マルチアングル（2026-09-29）: 1 枚ごとの使い道。true＝全構図に使う／false＝真横・後ろだけ。渡さなければ切替を出さない。 */
   allAngles?: boolean[];
   onToggleAllAngles?: (index: number) => void;
+  /** 渡すと各サムネの左上に拡大ボタンを出す（2026-09-29）。 */
+  onZoom?: (index: number, url: string) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const previews = useMemo(() => files.map((f) => URL.createObjectURL(f)), [files]);
@@ -312,6 +332,17 @@ export function SubReferenceSlots({
             >
               <X size={12} />
             </button>
+            {onZoom && (
+              <button
+                type="button"
+                onClick={() => onZoom(i, previews[i])}
+                aria-label={`サブ参照 ${i + 1} を拡大`}
+                title="拡大"
+                className="absolute left-1 top-1 cursor-zoom-in rounded-full bg-black/60 p-1 text-white transition-colors hover:bg-black/80"
+              >
+                <ZoomIn size={12} />
+              </button>
+            )}
           </div>
           {allAngles && onToggleAllAngles && (
             <button

@@ -386,12 +386,23 @@ export function sceneTotalCredits(count: number, knobs: PricingKnobs = DEFAULT_K
 export type MainRoute = "face" | "upper" | "full";
 
 export const BODY_OUTFIT_CHIPS: SceneChip[] = [
-  { id: "casual", label: "Tシャツとジーンズ", en: "a plain t-shirt, blue jeans and white sneakers" },
-  { id: "blazer", label: "ブレザー制服", en: "a navy blazer over a white shirt, a pleated skirt or slacks, and black loafers" },
-  { id: "sailor", label: "セーラー服", en: "a Japanese sailor school uniform with a pleated skirt and loafers" },
-  { id: "suit", label: "スーツ", en: "a formal business suit with leather shoes" },
-  { id: "dress", label: "ワンピース", en: "a simple knee-length dress and flat shoes" },
-  { id: "hoodie", label: "パーカー", en: "a hoodie, casual pants and sneakers" },
+  { id: "casual", label: "Tシャツとジーンズ", en: "a plain t-shirt and blue jeans" },
+  { id: "blazer", label: "ブレザー制服", en: "a navy blazer over a white shirt and a pleated skirt or slacks" },
+  { id: "sailor", label: "セーラー服", en: "a Japanese sailor school uniform with a pleated skirt" },
+  { id: "suit", label: "スーツ", en: "a formal business suit" },
+  { id: "dress", label: "ワンピース", en: "a simple knee-length dress" },
+  { id: "hoodie", label: "パーカー", en: "a hoodie and casual pants" },
+];
+
+// 靴は服と別に選ぶ（2026-09-29 ホスト指摘）。足元まで写す全身では靴も毎回ちがうと揃わない。
+export const BODY_SHOES_CHIPS: SceneChip[] = [
+  { id: "sneakers", label: "スニーカー", en: "white sneakers" },
+  { id: "loafers", label: "ローファー", en: "black loafers" },
+  { id: "leather", label: "革靴", en: "black leather shoes" },
+  { id: "pumps", label: "パンプス", en: "low-heeled pumps" },
+  { id: "boots", label: "ブーツ", en: "ankle boots" },
+  { id: "sandals", label: "サンダル", en: "sandals" },
+  { id: "barefoot", label: "裸足", en: "barefoot" },
 ];
 
 export const BODY_BUILD_CHIPS: SceneChip[] = [
@@ -412,16 +423,21 @@ export type BodyDesign = {
   outfitId: string;
   /** 服装の自由入力（日本語可、API 側で英訳）。 */
   outfitText: string;
+  /** 靴（空＝指定なし。服の自由入力に書いてあればそれでもよい）。 */
+  shoesId?: string;
   buildId: string;
   heightId: string;
 };
 
-export const EMPTY_BODY_DESIGN: BodyDesign = { outfitId: "", outfitText: "", buildId: "average", heightId: "average" };
+export const EMPTY_BODY_DESIGN: BodyDesign = { outfitId: "", outfitText: "", shoesId: "", buildId: "average", heightId: "average" };
 
 function bodyOutfitEn(design: BodyDesign): string {
   const text = design.outfitText.trim();
-  if (text) return text;
-  return BODY_OUTFIT_CHIPS.find((c) => c.id === design.outfitId)?.en ?? "";
+  const clothes = text || (BODY_OUTFIT_CHIPS.find((c) => c.id === design.outfitId)?.en ?? "");
+  if (!clothes) return "";
+  const shoes = BODY_SHOES_CHIPS.find((c) => c.id === design.shoesId);
+  if (!shoes) return clothes;
+  return shoes.id === "barefoot" ? `${clothes}, barefoot` : `${clothes} and ${shoes.en}`;
 }
 
 /** 候補を作れない理由（無ければ null）。顔アップは服装が必須（上半身は下の服が元画像に無いだけなので任意）。 */

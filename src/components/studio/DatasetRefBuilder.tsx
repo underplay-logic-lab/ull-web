@@ -11,6 +11,7 @@ import type { User } from "@supabase/supabase-js";
 import {
   AngleJobNotFoundError,
   fetchAngleImageBlob,
+  freshAngleImageUrl,
   pollAngleJob,
   startAngleJob,
   type AngleApiError,
@@ -241,6 +242,19 @@ export function CandidatePanel({
   const { job, status, error, start, reset } = useCandidateJob(storageKey);
   const [picking, setPicking] = useState<number | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
+  // 完了直後の URL は Volume を指していて、R2 へ移ると 404 になる（R2 の署名も 15 分で切れる）。表示が切れたら
+  // 取り直す（2 回まで、CLAUDE.md §6-11）。候補ジョブの URL はポーリング終了後は更新されないので、ここで上書きする。
+  const [freshUrls, setFreshUrls] = useState<Record<string, string>>({});
+  const [reloads, setReloads] = useState<Record<string, number>>({});
+  const urlOf = (i: number) => (job ? (freshUrls[`${job.id}:${i}`] ?? job.images[i]) : "");
+  const refreshUrl = (i: number) => {
+    if (!job) return;
+    const key = `${job.id}:${i}`;
+    const n = reloads[key] ?? 0;
+    if (n >= 2) return;
+    setReloads((p) => ({ ...p, [key]: n + 1 }));
+    void freshAngleImageUrl(job.id, i, job.images[i]).then((u) => setFreshUrls((p) => ({ ...p, [key]: u })));
+  };
   const cost = specs.length * costPerImage;
   const busy = status === "queued" || status === "submitting" || status === "running";
   const insufficient = Boolean(user) && credits !== null && credits < cost;
@@ -420,7 +434,12 @@ export function CandidatePanel({
                 className={`relative aspect-[4/5] overflow-hidden rounded-md border-2 ${on ? "border-neon-pink" : "border-transparent hover:border-border"}`}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={url} alt={job.labels[i] ?? ""} className="h-full w-full bg-black/40 object-contain" />
+                <img
+                  src={urlOf(i)}
+                  alt={job.labels[i] ?? ""}
+                  className="h-full w-full bg-black/40 object-contain"
+                  onError={() => refreshUrl(i)}
+                />
                 {on && (
                   <span className="absolute right-1 top-1 rounded-full bg-neon-pink p-0.5 text-white">
                     <Check size={11} />
@@ -432,13 +451,13 @@ export function CandidatePanel({
                   title="拡大"
                   onClick={(e) => {
                     e.stopPropagation();
-                    setLight({ items: job.images.map((u, k) => ({ url: u, label: job.labels[k] ?? "" })), index: i });
+                    setLight({ items: job.images.map((_, k) => ({ url: urlOf(k), label: job.labels[k] ?? "" })), index: i });
                   }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
                       e.stopPropagation();
-                      setLight({ items: job.images.map((u, k) => ({ url: u, label: job.labels[k] ?? "" })), index: i });
+                      setLight({ items: job.images.map((_, k) => ({ url: urlOf(k), label: job.labels[k] ?? "" })), index: i });
                     }
                   }}
                   className="absolute left-1 top-1 cursor-zoom-in rounded-full bg-black/60 p-1 text-white opacity-80 hover:opacity-100"
@@ -464,7 +483,18 @@ export function CandidatePanel({
           onClose={() => setLight(null)}
           onSave={(i) => downloadBlobUrl(light.items[i].url, `${light.items[i].label || "image"}.png`)}
           onUpscale={() => undefined}
-          onImageError={() => undefined}
+          onImageError={() => {
+            // 候補の拡大表示なら、その候補の URL を取り直して拡大側も差し替える。
+            if (!job || light.items.length !== job.images.length) return;
+            const i = light.index;
+            const key = `${job.id}:${i}`;
+            if ((reloads[key] ?? 0) >= 2) return;
+            setReloads((p) => ({ ...p, [key]: (p[key] ?? 0) + 1 }));
+            void freshAngleImageUrl(job.id, i, job.images[i]).then((u) => {
+              setFreshUrls((p) => ({ ...p, [key]: u }));
+              setLight((l) => (l ? { ...l, items: l.items.map((it, k) => (k === i ? { ...it, url: u } : it)) } : l));
+            });
+          }}
         />
       )}
     </div>

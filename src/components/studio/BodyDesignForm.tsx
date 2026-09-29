@@ -7,6 +7,7 @@ import {
   BODY_BUILD_CHIPS,
   BODY_HEIGHT_CHIPS,
   BODY_OUTFIT_CHIPS,
+  BODY_SHOES_CHIPS,
   type BodyDesign,
   type MainRoute,
   type SceneChip,
@@ -76,11 +77,12 @@ export function BodyDesignForm({
           type="text"
           value={design.outfitText}
           onChange={(e) => set({ outfitText: e.target.value })}
-          placeholder="例: 白いブラウスと紺のプリーツスカート、黒のローファー（上下と靴まで書くと揃います）"
+          placeholder="例: 白いブラウスと紺のプリーツスカート（上下まで書くと揃います）"
           className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] text-foreground placeholder:text-muted/60"
           maxLength={200}
         />
       </div>
+      <ChipRow label="靴" chips={BODY_SHOES_CHIPS} value={design.shoesId ?? ""} onSelect={(id) => set({ shoesId: id })} />
       <ChipRow label="体型" chips={BODY_BUILD_CHIPS} value={design.buildId} onSelect={(id) => set({ buildId: id })} />
       <ChipRow label="背丈" chips={BODY_HEIGHT_CHIPS} value={design.heightId} onSelect={(id) => set({ heightId: id })} />
     </div>

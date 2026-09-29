@@ -932,6 +932,7 @@ export function DatasetBuilderTab() {
           <ImageDropzone
             file={image}
             previewUrl={imagePreview}
+            onZoom={() => imagePreview && setLocalPreview({ url: imagePreview, label: image?.name ?? "メイン画像" })}
             onFileSelected={handleImageSelected}
             onClear={() => {
               setImage(null);
@@ -970,7 +971,13 @@ export function DatasetBuilderTab() {
             </div>
           )}
           {imageError && <p className="text-[11px] text-red-400">{imageError}</p>}
-          <SubReferenceSlots files={subImages} onAdd={handleAddSub} onRemove={(i) => setSubImages((p) => p.filter((_, k) => k !== i))} error={subError} />
+          <SubReferenceSlots
+            files={subImages}
+            onAdd={handleAddSub}
+            onRemove={(i) => setSubImages((p) => p.filter((_, k) => k !== i))}
+            error={subError}
+            onZoom={(i, url) => setLocalPreview({ url, label: `参照 ${i + 1}` })}
+          />
           <p className="text-[11px] leading-relaxed text-muted/80">
             メインの画像からは分からない後ろ姿・真横があれば参照に足してください。参照は「真横・後ろ」の行にだけ使い、正面・斜めの行はメイン 1 枚で作ります（そのぶん速く・安く）。
           </p>
