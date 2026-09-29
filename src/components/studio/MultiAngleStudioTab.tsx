@@ -777,6 +777,8 @@ export function MultiAngleStudioTab() {
 
   const [zipping, setZipping] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  // 入力画像（メイン・サブ参照）の拡大表示（2026-09-29）。
+  const [localPreview, setLocalPreview] = useState<LightItem | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
   const [regenConfirmOpen, setRegenConfirmOpen] = useState(false);
@@ -1564,6 +1566,7 @@ export function MultiAngleStudioTab() {
             <ImageDropzone
               file={image}
               previewUrl={imagePreview}
+              onZoom={() => imagePreview && setLocalPreview({ url: imagePreview, label: image?.name ?? "メイン画像" })}
               onFileSelected={handleImageSelected}
               onClear={() => {
                 setImage(null);
@@ -1582,6 +1585,7 @@ export function MultiAngleStudioTab() {
             error={subImageError}
             allAngles={subAll}
             onToggleAllAngles={handleToggleSubAll}
+            onZoom={(i, url) => setLocalPreview({ url, label: `サブ参照 ${i + 1}` })}
           />
 
 
@@ -1890,6 +1894,25 @@ export function MultiAngleStudioTab() {
             ※必要な画像はダウンロードして保存してください。
           </p>
         </div>
+      )}
+
+      {localPreview && (
+        <AngleLightbox
+          items={[localPreview]}
+          index={0}
+          onIndexChange={() => undefined}
+          onClose={() => setLocalPreview(null)}
+          onSave={() => {
+            const a = document.createElement("a");
+            a.href = localPreview.url;
+            a.download = `${localPreview.label}.png`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+          }}
+          onUpscale={() => undefined}
+          onImageError={() => undefined}
+        />
       )}
 
       {lightboxIndex != null && lightItems[lightboxIndex] && (
