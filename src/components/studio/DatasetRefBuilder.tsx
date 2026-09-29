@@ -6,7 +6,7 @@
 // 候補は素材づくりと同じジョブ（angle_jobs・scene 経路・メイン 1 枚・1 枚 14C）。
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Loader2, RefreshCw, Sparkles, ZoomIn } from "lucide-react";
+import { Check, GitBranch, Loader2, RefreshCw, Sparkles, ZoomIn } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
 import {
   AngleJobNotFoundError,
@@ -50,6 +50,8 @@ export type CandidatePick = { jobId: string; index: number };
 
 const IDENTITY = "Keep the same character with the identical face, hairstyle, body shape and clothing as the reference.";
 const CANDIDATE_COUNT = 4;
+/** 前の候補を何回分残すか。 */
+const HISTORY_MAX = 6;
 
 export const FULL_BODY_SPECS: CandidateSpec[] = Array.from({ length: CANDIDATE_COUNT }, (_, i) => ({
   instruction: `A full body shot showing the whole body from head to feet, standing upright, facing the viewer, against a plain white background. ${IDENTITY}`,
@@ -240,51 +242,105 @@ export function CandidatePanel({
   children?: ReactNode;
 }) {
   const { job, status, error, start, reset } = useCandidateJob(storageKey);
-  const [picking, setPicking] = useState<number | null>(null);
+  // 選び中の候補（"jobId:index"）と、派生の元を取りに行っている候補。
+  const [picking, setPicking] = useState<string | null>(null);
+  const [deriving, setDeriving] = useState<string | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
   // 完了直後の URL は Volume を指していて、R2 へ移ると 404 になる（R2 の署名も 15 分で切れる）。表示が切れたら
   // 取り直す（2 回まで、CLAUDE.md §6-11）。候補ジョブの URL はポーリング終了後は更新されないので、ここで上書きする。
   const [freshUrls, setFreshUrls] = useState<Record<string, string>>({});
   const [reloads, setReloads] = useState<Record<string, number>>({});
-  const urlOf = (i: number) => (job ? (freshUrls[`${job.id}:${i}`] ?? job.images[i]) : "");
-  const refreshUrl = (i: number) => {
-    if (!job) return;
-    const key = `${job.id}:${i}`;
+  const urlOf = (j: AngleJob, i: number) => freshUrls[`${j.id}:${i}`] ?? j.images[i];
+  const refreshUrl = (j: AngleJob, i: number, onFresh?: (u: string) => void) => {
+    const key = `${j.id}:${i}`;
     const n = reloads[key] ?? 0;
     if (n >= 2) return;
     setReloads((p) => ({ ...p, [key]: n + 1 }));
-    void freshAngleImageUrl(job.id, i, job.images[i]).then((u) => setFreshUrls((p) => ({ ...p, [key]: u })));
+    void freshAngleImageUrl(j.id, i, j.images[i]).then((u) => {
+      setFreshUrls((p) => ({ ...p, [key]: u }));
+      onFresh?.(u);
+    });
   };
   const cost = specs.length * costPerImage;
   const busy = status === "queued" || status === "submitting" || status === "running";
   const insufficient = Boolean(user) && credits !== null && credits < cost;
 
+  // 前の候補（2026-09-29、ホスト要望「作り直しても前の候補から選べるように」）。作り直すたびに今の候補をここへ移す。
+  // ジョブ id だけ保存し、リロード後は一度だけ読み直す。
+  const histKey = `${storageKey}-hist`;
+  const [history, setHistory] = useState<AngleJob[]>([]);
+  useEffect(() => {
+    const ids = loadFormState<{ ids: string[] }>(histKey)?.ids ?? [];
+    if (ids.length === 0) return;
+    let alive = true;
+    void Promise.all(ids.map((id) => pollAngleJob(id).catch(() => null))).then((jobs) => {
+      if (alive) setHistory(jobs.filter((j): j is AngleJob => Boolean(j && j.status === "completed" && j.images.length > 0)));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [histKey]);
+  const pushHistory = (j: AngleJob | null) => {
+    if (!j || j.status !== "completed" || j.images.length === 0) return;
+    const next = [j, ...history.filter((x) => x.id !== j.id)].slice(0, HISTORY_MAX);
+    setHistory(next);
+    saveFormState(histKey, { ids: next.map((x) => x.id) });
+  };
+
   const pick = useCallback(
-    async (index: number) => {
-      if (!job) return;
-      setPicking(index);
+    async (j: AngleJob, index: number) => {
+      setPicking(`${j.id}:${index}`);
       setPickError(null);
       try {
-        const file = await candidateToFile(job.id, index, job.images[index], fileName);
-        onPick({ jobId: job.id, index }, file);
+        const file = await candidateToFile(j.id, index, j.images[index], fileName);
+        onPick({ jobId: j.id, index }, file);
       } catch (err) {
         setPickError(`候補の取得に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
       } finally {
         setPicking(null);
       }
     },
-    [job, fileName, onPick],
+    [fileName, onPick],
   );
 
-  // リロード後: 選んでいた候補の File を取り直す（1 回だけ）。
+  // リロード後: 選んでいた候補の File を取り直す（1 回だけ）。今の候補か前の候補のどちらかにある。
   const restoredRef = useRef(false);
   useEffect(() => {
-    if (restoredRef.current || hasPickedFile || !picked || !job || job.id !== picked.jobId) return;
-    if (!job.images[picked.index]) return;
+    if (restoredRef.current || hasPickedFile || !picked) return;
+    const src = [job, ...history].find((j) => j && j.id === picked.jobId);
+    if (!src || !src.images[picked.index]) return;
     restoredRef.current = true;
     // effect 本体では同期 setState しない（react-hooks/set-state-in-effect）。
-    queueMicrotask(() => void pick(picked.index));
-  }, [picked, hasPickedFile, job, pick]);
+    queueMicrotask(() => void pick(src, picked.index));
+  }, [picked, hasPickedFile, job, history, pick]);
+
+  /**
+   * 作り直す（ボタン 1 回で次の候補を作り始める）。base を渡すと、その候補をメイン画像にして同じ指示で作る
+   * ＝気に入った候補に近いバリエーション（2026-09-29 ホスト案「一番良いのを元に追加で作れると当たりやすい」）。
+   * 今の候補は「前の候補」へ移して、あとからも選べるようにする。
+   */
+  const regenerate = async (base?: { job: AngleJob; index: number }) => {
+    if (!user) return onLogin();
+    if (!image || busy) return;
+    if (insufficient) return onCharge();
+    let src: File = image;
+    if (base) {
+      const key = `${base.job.id}:${base.index}`;
+      setDeriving(key);
+      setPickError(null);
+      try {
+        src = await candidateToFile(base.job.id, base.index, urlOf(base.job, base.index), `candidate_base_${base.index + 1}.png`);
+      } catch (err) {
+        setPickError(`元にする候補の取得に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      } finally {
+        setDeriving(null);
+      }
+    }
+    pushHistory(job);
+    reset();
+    void start(user, src, specs, gpuLock, aspect);
+  };
 
   const onStart = () => {
     if (!user) return onLogin();
@@ -297,8 +353,77 @@ export function CandidatePanel({
   const [dragOver, setDragOver] = useState(false);
   const confirmedUrl = useObjectUrl(confirmed ?? null);
   const confirmedRefIndex = confirmed && existingRefs ? existingRefs.indexOf(confirmed) : -1;
-  // 拡大表示（候補 / 確定した画像）。
-  const [light, setLight] = useState<{ items: LightItem[]; index: number } | null>(null);
+  // 拡大表示（候補 / 確定した画像）。候補のときは jobId を持ち、切れた URL を取り直す。
+  const [light, setLight] = useState<{ items: LightItem[]; index: number; job?: AngleJob } | null>(null);
+  const openLight = (j: AngleJob, i: number) =>
+    setLight({ items: j.images.map((_, k) => ({ url: urlOf(j, k), label: j.labels[k] ?? "" })), index: i, job: j });
+
+  const renderGrid = (j: AngleJob) => (
+    <div className="grid grid-cols-4 gap-1.5">
+      {j.images.map((_, i) => {
+        const key = `${j.id}:${i}`;
+        const on = picked?.jobId === j.id && picked.index === i;
+        return (
+          <div key={key} className="flex flex-col gap-1">
+            <button
+              type="button"
+              onClick={() => void pick(j, i)}
+              disabled={picking !== null}
+              title={on ? "この候補を使っています" : "この候補を使う"}
+              className={`relative aspect-[4/5] overflow-hidden rounded-md border-2 ${on ? "border-neon-pink" : "border-transparent hover:border-border"}`}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={urlOf(j, i)}
+                alt={j.labels[i] ?? ""}
+                className="h-full w-full bg-black/40 object-contain"
+                onError={() => refreshUrl(j, i)}
+              />
+              {on && (
+                <span className="absolute right-1 top-1 rounded-full bg-neon-pink p-0.5 text-white">
+                  <Check size={11} />
+                </span>
+              )}
+              <span
+                role="button"
+                tabIndex={0}
+                title="拡大"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openLight(j, i);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openLight(j, i);
+                  }
+                }}
+                className="absolute left-1 top-1 cursor-zoom-in rounded-full bg-black/60 p-1 text-white opacity-80 hover:opacity-100"
+              >
+                <ZoomIn size={11} />
+              </span>
+              {(picking === key || deriving === key) && (
+                <span className="absolute inset-0 flex items-center justify-center bg-black/40 text-white">
+                  <Loader2 size={14} className="animate-spin" />
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => void regenerate({ job: j, index: i })}
+              disabled={busy || deriving !== null || !image}
+              title={`この候補をメイン画像にして、似た候補を ${specs.length} 枚作ります（${cost} C）`}
+              className="inline-flex items-center justify-center gap-0.5 rounded border border-border px-1 py-0.5 text-[10px] text-muted hover:border-neon-violet/40 hover:text-foreground disabled:opacity-40"
+            >
+              <GitBranch size={10} />
+              これを元に
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
 
   return (
     <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
@@ -320,10 +445,10 @@ export function CandidatePanel({
         ) : status === "done" ? (
           <button
             type="button"
-            onClick={() => {
-              reset();
-            }}
-            className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-[11px] text-muted hover:text-foreground"
+            onClick={() => void regenerate()}
+            disabled={deriving !== null}
+            title="元の画像からもう一度候補を作ります。今の候補は下の「前の候補」に残ります"
+            className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-40"
           >
             <RefreshCw size={11} />
             作り直す（{cost} C）
@@ -420,61 +545,21 @@ export function CandidatePanel({
         </div>
       )}
       {(error || pickError) && <p className="text-[10px] text-red-400">{error ?? pickError}</p>}
-      {job && job.images.length > 0 && (
-        <div className="grid grid-cols-4 gap-1.5">
-          {job.images.map((url, i) => {
-            const on = picked?.jobId === job.id && picked.index === i;
-            return (
-              <button
-                key={`${job.id}:${i}`}
-                type="button"
-                onClick={() => void pick(i)}
-                disabled={picking !== null}
-                title={on ? "この候補を使っています" : "この候補を使う"}
-                className={`relative aspect-[4/5] overflow-hidden rounded-md border-2 ${on ? "border-neon-pink" : "border-transparent hover:border-border"}`}
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={urlOf(i)}
-                  alt={job.labels[i] ?? ""}
-                  className="h-full w-full bg-black/40 object-contain"
-                  onError={() => refreshUrl(i)}
-                />
-                {on && (
-                  <span className="absolute right-1 top-1 rounded-full bg-neon-pink p-0.5 text-white">
-                    <Check size={11} />
-                  </span>
-                )}
-                <span
-                  role="button"
-                  tabIndex={0}
-                  title="拡大"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setLight({ items: job.images.map((_, k) => ({ url: urlOf(k), label: job.labels[k] ?? "" })), index: i });
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setLight({ items: job.images.map((_, k) => ({ url: urlOf(k), label: job.labels[k] ?? "" })), index: i });
-                    }
-                  }}
-                  className="absolute left-1 top-1 cursor-zoom-in rounded-full bg-black/60 p-1 text-white opacity-80 hover:opacity-100"
-                >
-                  <ZoomIn size={11} />
-                </span>
-                {picking === i && (
-                  <span className="absolute inset-0 flex items-center justify-center bg-black/40 text-white">
-                    <Loader2 size={14} className="animate-spin" />
-                  </span>
-                )}
-              </button>
-            );
-          })}
+      {job && job.images.length > 0 && renderGrid(job)}
+      {status === "done" && !picked && (
+        <p className="text-[10px] text-amber-400">
+          気に入った 1 枚をクリックして選んでください（左上の虫眼鏡で拡大）。惜しい候補があれば「これを元に」で似た候補を、
+          無ければ「作り直す」で元の画像からもう一度作れます。
+        </p>
+      )}
+      {history.length > 0 && (
+        <div className="space-y-1.5 border-t border-border/60 pt-2">
+          <p className="text-[10px] text-muted">前の候補（ここからも選べます・新しい順）</p>
+          {history.map((h) => (
+            <div key={h.id}>{renderGrid(h)}</div>
+          ))}
         </div>
       )}
-      {status === "done" && !picked && <p className="text-[10px] text-amber-400">気に入った 1 枚をクリックして選んでください（左上の虫眼鏡で拡大）。無ければ「作り直す」。</p>}
       {light && light.items[light.index] && (
         <AngleLightbox
           items={light.items}
@@ -485,15 +570,12 @@ export function CandidatePanel({
           onUpscale={() => undefined}
           onImageError={() => {
             // 候補の拡大表示なら、その候補の URL を取り直して拡大側も差し替える。
-            if (!job || light.items.length !== job.images.length) return;
+            const j = light.job;
+            if (!j) return;
             const i = light.index;
-            const key = `${job.id}:${i}`;
-            if ((reloads[key] ?? 0) >= 2) return;
-            setReloads((p) => ({ ...p, [key]: (p[key] ?? 0) + 1 }));
-            void freshAngleImageUrl(job.id, i, job.images[i]).then((u) => {
-              setFreshUrls((p) => ({ ...p, [key]: u }));
-              setLight((l) => (l ? { ...l, items: l.items.map((it, k) => (k === i ? { ...it, url: u } : it)) } : l));
-            });
+            refreshUrl(j, i, (u) =>
+              setLight((l) => (l ? { ...l, items: l.items.map((it, k) => (k === i ? { ...it, url: u } : it)) } : l)),
+            );
           }}
         />
       )}
