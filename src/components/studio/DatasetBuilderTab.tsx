@@ -710,7 +710,7 @@ export function DatasetBuilderTab() {
     if (!busy && insufficientForFirst) return setChargeOpen(true);
     if (!image) return;
     if (needsBaseFull) {
-      setErrorMessage("メイン画像に全身が写っていません。先に「基準の全身を作る」で 1 枚選んでください。");
+      setErrorMessage("メイン画像に全身が写っていません。先に「基準の全身像を作る」で 1 枚選んでください。");
       return;
     }
     if (insufficientForFirst) return setChargeOpen(true);
@@ -982,7 +982,7 @@ export function DatasetBuilderTab() {
               summary={
                 "メイン画像 1 枚" +
                 (restorePending.subs.length > 0 ? `・参照 ${restorePending.subs.length} 枚` : "") +
-                (restorePending.base ? "・基準の全身 1 枚" : "")
+                (restorePending.base ? "・基準の全身像 1 枚" : "")
               }
               onRestore={applyRestore}
               onDiscard={discardRestore}
@@ -1044,13 +1044,13 @@ export function DatasetBuilderTab() {
             <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
               <p className="text-[11px] font-medium text-foreground">素材づくりの基準にする画像</p>
               <p className="text-[10px] leading-relaxed text-muted">
-                全身の画像は{baseFull ? "確定した基準の全身" : "メイン画像"}を、上半身・バストアップの画像は下の画像を基準に作ります。
-                上半身・バストアップの基準は、{baseFull ? "基準の全身" : "メイン画像"}から自動で切り出します（無料・切り出しの解像度は仕上がりに影響しません）。
-                参照画像のほうが基準に向いていれば、そちらを使うこともできます。
+                全身の画像は{baseFull ? "確定した基準の全身像" : "メイン画像"}を、上半身・バストアップの画像は下の画像を基準に作ります。
+                上半身・バストアップの基準は、{baseFull ? "基準の全身像" : "メイン画像"}から自動で切り出します（無料・切り出しの解像度は仕上がりに影響しません）。
+                寄りで写った手持ちの画像（上半身・バストアップの写真など）を参照欄に入れていれば、それを基準に選ぶこともできます。
               </p>
               {deriving && (
                 <p className="flex items-center gap-1.5 text-[10px] text-muted">
-                  <Loader2 size={10} className="animate-spin" /> {baseFull ? "基準の全身" : "メイン画像"}から切り出しています…
+                  <Loader2 size={10} className="animate-spin" /> {baseFull ? "基準の全身像" : "メイン画像"}から切り出しています…
                 </p>
               )}
               {(["upper", "bust"] as CloseFraming[]).map((f) => {
@@ -1082,15 +1082,21 @@ export function DatasetBuilderTab() {
                         type="button"
                         onClick={() => setCloseChoice((p) => ({ ...p, [f]: "auto" }))}
                         disabled={!auto}
-                        title={auto ? "" : "メイン画像から切り出せませんでした（人物が検出できないか、既に寄っています）"}
+                        title={auto ? "" : `${baseFull ? "基準の全身像" : "メイン画像"}から切り出せませんでした（人物が検出できないか、既に寄っています）`}
                         className={`${chip(choice === "auto")} disabled:opacity-40`}
                       >
-                        自動で切り出し
+                        自動で切り出し（おすすめ）
                       </button>
-                      <button type="button" onClick={() => setCloseChoice((p) => ({ ...p, [f]: "main" }))} className={chip(choice === "main")}>
-                        メインのまま
+                      <button
+                        type="button"
+                        onClick={() => setCloseChoice((p) => ({ ...p, [f]: "main" }))}
+                        className={chip(choice === "main")}
+                        title="切り出さずにそのまま元にして、文章で寄りを指示します（全身のまま出やすい）"
+                      >
+                        {baseFull ? "基準の全身像のまま" : "メイン画像のまま"}
                       </button>
-                      {subImages.map((file, i) => (
+                      {/* 手持ちの寄りの画像だけを選択肢に出す。確定した真横・後ろ姿も参照欄に入るが、寄りの基準には向かないので出さない。 */}
+                      {subImages.map((file, i) => file === refSide || file === refBack ? null : (
                         <button
                           key={i}
                           type="button"
@@ -1098,12 +1104,12 @@ export function DatasetBuilderTab() {
                           className={chip(choice === i)}
                           title={file.name}
                         >
-                          参照 {i + 1}
+                          手持ちの画像（参照 {i + 1}）
                         </button>
                       ))}
                       {!auto && !deriving && choice === "auto" && (
                         <span className="w-full text-[10px] text-amber-400">
-                          切り出せなかったので「メインのまま」で作ります{derived.reason ? `（${derived.reason}）` : ""}。寄った画像を参照に入れて選ぶこともできます。
+                          切り出せなかったので{baseFull ? "基準の全身像" : "メイン画像"}のまま作ります{derived.reason ? `（${derived.reason}）` : ""}。寄りで写った手持ちの画像を参照欄に入れて選ぶこともできます。
                         </span>
                       )}
                     </div>
@@ -1114,12 +1120,12 @@ export function DatasetBuilderTab() {
           {/* 参照づくり（段階 1・3）: 全身が無ければ基準の全身を、真横・後ろの行があれば参照を、候補から選んで確定する。 */}
           {image && (needsBaseFull || baseFull) && (
             <CandidatePanel
-              title={baseFull ? "基準の全身（確定済み）" : "基準の全身を作る"}
+              title={baseFull ? "基準の全身像（確定済み）" : "基準の全身像を作る"}
               description={
                 baseFull
-                  ? "これから作る全身の画像はこの全身を元に、上半身・バストアップの画像はこの全身から自動で切り出した寄りの画像を元に作ります。別の候補に替えることもできます。"
+                  ? "これから作る全身の画像はこの全身像を元に、上半身・バストアップの画像はこの全身像から自動で切り出した寄りの画像を元に作ります。別の候補に替えることもできます。"
                   : mainRoute === "face"
-                    ? "顔だけの画像なので、まず体と服を決めて全身の候補を作り、気に入った 1 枚を選んでください。候補ごとに顔の雰囲気が少しずつ違うので、いちばんイメージに合う顔を選ぶのがコツです。選んだ全身が以後の全部の行の元になります。"
+                    ? "顔だけの画像なので、まず体と服を決めて全身の候補を作り、気に入った 1 枚を選んでください。候補ごとに顔の雰囲気が少しずつ違うので、いちばんイメージに合う顔を選ぶのがコツです。選んだ全身像が、以後に作る全部の画像の元になります。"
                     : "メイン画像に足元まで写っていないので、まず全身の候補を作って 1 枚選んでください。体つき・服装はここで確定し、以後の全部の行の元になります。"
               }
               user={user}
