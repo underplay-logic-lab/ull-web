@@ -811,8 +811,19 @@ export function DatasetBuilderTab() {
   const runBatches = useMemo(() => (run ? planBatches(run.plan, runOpt, run.prefixLen) : []), [run, runOpt]);
 
   // 一覧や進捗の位置へスクロールする（2026-09-28、ホスト指摘「押した場所に取り残される」）。
-  const scrollToId = (id: string) =>
-    window.setTimeout(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+  // 画面の組み替え（一覧が消えて結果欄が出る等）を待ってから飛ぶ。見つからなければ少し待って取り直す（最大 ~2 秒）。
+  const scrollToId = (id: string) => {
+    let tries = 0;
+    const go = () => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      if (++tries < 12) window.setTimeout(go, 160);
+    };
+    window.setTimeout(go, 120);
+  };
   // 「作る」→ まず一覧（日本語）を出して直せるようにする（2026-09-27、ホスト指摘「どんなプロンプトで作られるか分からない」）。
   const handleStart = () => {
     if (!user) return setLoginOpen(true);
