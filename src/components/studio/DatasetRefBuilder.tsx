@@ -100,14 +100,17 @@ export async function candidateToFile(jobId: string, index: number, url: string,
   return new File([blob], name, { type: blob.type || "image/png" });
 }
 
-function downloadBlobUrl(url: string, name: string) {
+// 保存（2026-09-29 修正）: 別オリジン（保管先）の URL に download を付けても無視され、別タブで開くだけだった。
+// 画像を取得して blob の URL にしてから保存する（CLAUDE.md §6-11: 押した時点で URL を取り直す）。
+function downloadBlob(blob: Blob, name: string) {
+  const u = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url;
+  a.href = u;
   a.download = name;
-  a.target = "_blank";
   document.body.appendChild(a);
   a.click();
   a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(u), 10_000);
 }
 
 /** 候補ジョブ 1 本を回す。jobId は storageKey に保存し、リロード後も候補を出し直す。 */
@@ -393,6 +396,19 @@ export function CandidatePanel({
   const confirmedRefIndex = confirmed && existingRefs ? existingRefs.indexOf(confirmed) : -1;
   // 拡大表示（候補 / 確定した画像）。候補のときは jobId を持ち、切れた URL を取り直す。
   const [light, setLight] = useState<{ items: LightItem[]; index: number; job?: AngleJob } | null>(null);
+  const saveLight = async (i: number) => {
+    if (!light) return;
+    const item = light.items[i];
+    const name = `${(item.label || "image").replace(/[\\/:*?"<>|]/g, "_")}.png`;
+    try {
+      const blob = light.job
+        ? await fetchAngleImageBlob(light.job.id, i, urlOf(light.job, i))
+        : await (await fetch(item.url)).blob();
+      downloadBlob(blob, name);
+    } catch (err) {
+      setPickError(`保存に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
   const openLight = (j: AngleJob, i: number) =>
     setLight({ items: j.images.map((_, k) => ({ url: urlOf(j, k), label: j.labels[k] ?? "" })), index: i, job: j });
 
@@ -634,7 +650,7 @@ export function CandidatePanel({
           index={light.index}
           onIndexChange={(i) => setLight((l) => (l ? { ...l, index: i } : l))}
           onClose={() => setLight(null)}
-          onSave={(i) => downloadBlobUrl(light.items[i].url, `${light.items[i].label || "image"}.png`)}
+          onSave={(i) => void saveLight(i)}
           onUpscale={() => undefined}
           onImageError={() => {
             // 候補の拡大表示なら、その候補の URL を取り直して拡大側も差し替える。
