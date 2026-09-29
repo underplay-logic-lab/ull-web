@@ -101,7 +101,16 @@ export type SceneSelection = {
   outfit: string;
   /** 自由記述（任意・日本語可）。 */
   extra: string;
+  /**
+   * 構図・向きの枚数指定（2026-09-29、ホスト指摘「後ろは 2 枚・全身は 10 枚のように決めたい。今は均等」）。
+   * チップ id → 枚数。無い・0 は自動（指定の残りを自動のチップで均等に分ける）。
+   */
+  counts?: Partial<Record<CountAxis, Record<string, number>>>;
 };
+
+/** 枚数を指定できる軸。 */
+export type CountAxis = "framings" | "views";
+export const COUNT_AXES: readonly CountAxis[] = ["framings", "views"];
 
 // LoRA 素材の既定: 立つ・歩く・座る × 無地・部屋・街 × 全身・上半身 × 正面・斜め。
 export const DEFAULT_SCENE_SELECTION: SceneSelection = {
@@ -187,6 +196,55 @@ function pick(axis: SceneAxis, ids: string[], custom: string[] = []): SceneChip[
  * 組み合わせが count に足りなければ先頭から繰り返す（ワーカーは seed + index で散らすので同じ絵にはならない）。
  * 未選択の軸は既定（ポーズ=立つ／場所=無地／構図=全身／向き=正面）で埋める。
  */
+/**
+ * 枚数指定つきの配分（長さ n の並び）。指定したチップはその枚数（合計が n を超えたら比率で縮める）、残りを自動の
+ * チップで均等に。自動のチップが無ければ残りは全チップに均等（指定は「最低これだけ」扱い）。並びは各チップが
+ * 全体に散らばるように（最初の確認 8 枚にもなるべく全部が入るように）先頭から比率どおりに埋める。
+ */
+function quotaSequence(chips: SceneChip[], counts: Record<string, number> | undefined, n: number): SceneChip[] {
+  const want = chips.map((c) => Math.max(0, Math.trunc(counts?.[c.id] ?? 0)));
+  let target = [...want];
+  const fixedSum = want.reduce((a, b) => a + b, 0);
+  if (fixedSum > n) {
+    target = want.map((w) => Math.floor((w * n) / fixedSum));
+    let rest = n - target.reduce((a, b) => a + b, 0);
+    for (let i = 0; rest > 0; i = (i + 1) % chips.length) {
+      if (want[i] > 0) {
+        target[i]++;
+        rest--;
+      }
+    }
+  } else {
+    const auto = chips.map((_, i) => i).filter((i) => want[i] === 0);
+    const pool = auto.length > 0 ? auto : chips.map((_, i) => i);
+    let rest = n - fixedSum;
+    for (let j = 0; rest > 0; j++, rest--) target[pool[j % pool.length]]++;
+  }
+  const seq: SceneChip[] = [];
+  const done = chips.map(() => 0);
+  for (let i = 0; i < n; i++) {
+    let best = -1;
+    let bestGap = -Infinity;
+    for (let c = 0; c < chips.length; c++) {
+      if (done[c] >= target[c]) continue;
+      const gap = (target[c] * (i + 1)) / n - done[c];
+      if (gap > bestGap) {
+        bestGap = gap;
+        best = c;
+      }
+    }
+    if (best < 0) break;
+    done[best]++;
+    seq.push(chips[best]);
+  }
+  return seq;
+}
+
+function hasCounts(sel: SceneSelection, axis: CountAxis, chips: SceneChip[]): boolean {
+  const c = sel.counts?.[axis];
+  return Boolean(c) && chips.some((x) => (c?.[x.id] ?? 0) > 0);
+}
+
 export function buildScenePlan(sel: SceneSelection, count: number): ScenePlanItem[] {
   const n = Math.max(0, Math.min(SCENE_MAX_COUNT, Math.trunc(count || 0)));
   if (n === 0) return [];
@@ -210,6 +268,54 @@ export function buildScenePlan(sel: SceneSelection, count: number): ScenePlanIte
   // バストアップ × 後ろ＝後頭部のアップは LoRA 素材として価値が低いので既定で外す（2026-09-28、ホスト指摘）。
   // 真横 × バストアップ（横顔）は残す。除外した分は次の組み合わせで埋める。
   const skip = (framing: SceneChip, view: SceneChip) => framing.id === "bust" && view.id === "back";
+  const pushItem = (i: number, pose: SceneChip, place: SceneChip, framing: SceneChip, view: SceneChip) => {
+    const expr = E[i % E.length];
+    const outfitChip = O[Math.floor(i / E.length) % O.length];
+    const outfitEn = outfitText ? `wearing ${outfitText}` : outfitChip.en;
+    const outfitJa = outfitText ? `服装: ${outfitText}` : outfitChip.id === "same" ? "" : `服装: ${outfitChip.label}`;
+    const exprEn = view.id === "back" ? "" : expr.en;
+    const exprJa = view.id === "back" ? "" : `表情: ${expr.label}`;
+    const bodyEn = [`Make the character ${pose.en} ${place.en}`, exprEn, outfitEn, extra].filter(Boolean).join(", ");
+    const bodyJa = [`${place.label}で${pose.label}`, exprJa, outfitJa, extra].filter(Boolean).join("、");
+    items.push({
+      key: `${i}:${pose.id}|${place.id}|${framing.id}|${view.id}|${expr.id}|${outfitChip.id}`,
+      framingId: framing.id,
+      viewId: view.id,
+      bodyEn,
+      bodyJa,
+    });
+  };
+
+  // 枚数指定があるとき（構図・向きのどちらか）: 軸ごとに枚数どおりの並びを作り、向きは「足りていない順」に
+  // 割り当てる（バストアップ×後ろは避ける）。ポーズ・場面は行ごとに回す。
+  if (hasCounts(sel, "framings", F) || hasCounts(sel, "views", V)) {
+    const fSeq = quotaSequence(F, sel.counts?.framings, n);
+    const vSeq = quotaSequence(V, sel.counts?.views, n);
+    const vTarget = new Map<string, number>();
+    for (const v of vSeq) vTarget.set(v.id, (vTarget.get(v.id) ?? 0) + 1);
+    const vDone = new Map<string, number>();
+    for (let i = 0; i < fSeq.length; i++) {
+      const framing = fSeq[i];
+      let view: SceneChip | undefined;
+      let bestGap = -Infinity;
+      for (const v of V) {
+        const t = vTarget.get(v.id) ?? 0;
+        const d = vDone.get(v.id) ?? 0;
+        if (d >= t || skip(framing, v)) continue;
+        const gap = (t * (i + 1)) / n - d;
+        if (gap > bestGap) {
+          bestGap = gap;
+          view = v;
+        }
+      }
+      // 残りが「後ろ」だけでバストアップに当たったら、使える向きのうち指定の多いものに振り替える（1 枚だけずれる）。
+      if (!view) view = V.filter((v) => !skip(framing, v)).sort((a, b) => (vTarget.get(b.id) ?? 0) - (vTarget.get(a.id) ?? 0))[0] ?? V[0];
+      vDone.set(view.id, (vDone.get(view.id) ?? 0) + 1);
+      pushItem(i, P[i % P.length], L[Math.floor(i / P.length) % L.length], framing, view);
+    }
+    return items;
+  }
+
   for (let i = 0, k0 = 0; i < n; i++, k0++) {
     let k = k0 % total;
     for (let guard = 0; guard < total; guard++) {
@@ -224,24 +330,9 @@ export function buildScenePlan(sel: SceneSelection, count: number): ScenePlanIte
     const place = L[Math.floor(k / P.length) % L.length];
     const framing = F[(k + Math.floor(k / (P.length * L.length))) % F.length];
     const view = V[(Math.floor(k / F.length) + Math.floor(k / (P.length * L.length * F.length))) % V.length];
-    // 表情・服装は行ごとに順に回す（構図・向きの組み合わせとは独立に散らす）。
-    const expr = E[i % E.length];
-    const outfitChip = O[Math.floor(i / E.length) % O.length];
-    // 自由入力の服装があればそれを優先（チップの「元の服装のまま」以外を上書き）。
-    const outfitEn = outfitText ? `wearing ${outfitText}` : outfitChip.en;
-    const outfitJa = outfitText ? `服装: ${outfitText}` : outfitChip.id === "same" ? "" : `服装: ${outfitChip.label}`;
-    // 後ろ向きでは表情が見えないので付けない。
-    const exprEn = view.id === "back" ? "" : expr.en;
-    const exprJa = view.id === "back" ? "" : `表情: ${expr.label}`;
-    const bodyEn = [`Make the character ${pose.en} ${place.en}`, exprEn, outfitEn, extra].filter(Boolean).join(", ");
-    const bodyJa = [`${place.label}で${pose.label}`, exprJa, outfitJa, extra].filter(Boolean).join("、");
-    items.push({
-      key: `${i}:${pose.id}|${place.id}|${framing.id}|${view.id}|${expr.id}|${outfitChip.id}`,
-      framingId: framing.id,
-      viewId: view.id,
-      bodyEn,
-      bodyJa,
-    });
+    // 表情・服装は行ごとに順に回す（構図・向きの組み合わせとは独立に散らす）。自由入力の服装があればそれを優先。
+    // 後ろ向きでは表情が見えないので付けない（pushItem 内）。
+    pushItem(i, pose, place, framing, view);
   }
   return items;
 }

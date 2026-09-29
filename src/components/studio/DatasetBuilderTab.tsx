@@ -145,6 +145,8 @@ function ChipGroup({
   custom,
   onAddCustom,
   onRemoveCustom,
+  counts,
+  onCount,
 }: {
   axis: SceneAxis;
   selected: string[];
@@ -155,6 +157,9 @@ function ChipGroup({
   custom?: string[];
   onAddCustom?: (text: string) => void;
   onRemoveCustom?: (text: string) => void;
+  /** 構図・向きだけ: 選んだチップの枚数（空欄＝自動）。 */
+  counts?: Record<string, number>;
+  onCount?: (id: string, n: number) => void;
 }) {
   const set = new Set(selected);
   const [draft, setDraft] = useState("");
@@ -179,18 +184,33 @@ function ChipGroup({
       </div>
       <div className="flex flex-wrap gap-1.5">
         {CHIPS_BY_AXIS[axis].map((c) => (
-          <button
-            key={c.id}
-            type="button"
-            onClick={() => onToggle(c.id)}
-            className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
-              set.has(c.id)
-                ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
-                : "border-border bg-background text-muted hover:border-neon-violet/40 hover:text-foreground"
-            }`}
-          >
-            {c.label}
-          </button>
+          <span key={c.id} className="inline-flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => onToggle(c.id)}
+              className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+                set.has(c.id)
+                  ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
+                  : "border-border bg-background text-muted hover:border-neon-violet/40 hover:text-foreground"
+              }`}
+            >
+              {c.label}
+            </button>
+            {onCount && set.has(c.id) && (
+              <input
+                type="number"
+                min={0}
+                max={SCENE_MAX_COUNT}
+                inputMode="numeric"
+                value={counts?.[c.id] ? String(counts[c.id]) : ""}
+                onChange={(e) => onCount(c.id, Math.max(0, Math.trunc(Number(e.target.value) || 0)))}
+                placeholder="自動"
+                aria-label={`${c.label}の枚数（空欄で自動）`}
+                title="枚数（空欄なら残りを自動で均等に）"
+                className="w-11 rounded border border-border bg-surface px-1 py-0.5 text-center text-[11px] text-foreground placeholder:text-muted/50"
+              />
+            )}
+          </span>
         ))}
         {custom?.map((t) => (
           <span
@@ -1161,6 +1181,13 @@ export function DatasetBuilderTab() {
                 onToggle={(id) => toggle(axis, id)}
                 onAll={() => setSel((p) => ({ ...p, [axis]: CHIPS_BY_AXIS[axis].map((c) => c.id) }))}
                 onClear={() => setSel((p) => ({ ...p, [axis]: [] }))}
+                {...(axis === "framings" || axis === "views"
+                  ? {
+                      counts: sel.counts?.[axis],
+                      onCount: (id: string, n: number) =>
+                        setSel((p) => ({ ...p, counts: { ...p.counts, [axis]: { ...(p.counts?.[axis] ?? {}), [id]: n } } })),
+                    }
+                  : {})}
                 {...(axis === "poses" || axis === "places"
                   ? (() => {
                       const key = axis === "poses" ? "customPoses" : "customPlaces";
