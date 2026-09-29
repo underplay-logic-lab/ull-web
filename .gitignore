@@ -75,3 +75,18 @@ angle_test_tuned2/
 
 # Claude Code personal settings
 .claude/settings.local.json
+
+# 作業用のメディア・データセットを誤ってコミットしない（2026-09-29、スクショ・テスト画像が公開リポジトリに入っていた）。
+# 画像・動画はリポジトリ直下だけ（public/ のサンプルは対象外）。アーカイブと重みはどこでも。
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.gif
+/*.heic
+/*.mp4
+/*.mov
+/*.webm
+*.zip
+*.safetensors
+*.ckpt
