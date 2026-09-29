@@ -854,7 +854,8 @@ export function DatasetBuilderTab() {
     setJobs({});
     commitRun(r);
     void submitBatch(r, 0, image, subImages);
-    scrollToId("dataset-progress");
+    // 画像が並ぶ「できた素材」の欄へ（2026-09-29 ホスト指摘: 進捗へ飛ぶと画像は別の場所に出て見失う）。
+    scrollToId("dataset-results");
   };
 
   const handleContinue = () => {
@@ -863,7 +864,7 @@ export function DatasetBuilderTab() {
     const next = { ...r, confirmed: true };
     commitRun(next);
     void submitBatch(next, next.jobIds.length, image, subImages);
-    scrollToId("dataset-progress");
+    scrollToId("dataset-results");
   };
   // 初期状態に戻す（2026-09-27、ホスト指摘「リロードしても前回の続きから抜け出せない」）。
   // 保存した実行を消して、画像・指定はそのまま残す。生成済みの画像はサーバーに 14 日残るが、この画面からは消える。
@@ -1717,9 +1718,17 @@ export function DatasetBuilderTab() {
         </div>
       )}
 
-      {/* 結果 */}
+      {/* 結果（生成が始まったら、1 枚目ができる前から枠を出してスクロール先にする） */}
+      {results.length === 0 && run && busy && (
+        <div id="dataset-results" className="scroll-mt-24 rounded-xl border border-neon-pink/40 bg-neon-pink/5 p-4">
+          <p className="flex items-center gap-2 text-xs font-medium text-foreground">
+            <Loader2 size={14} className="animate-spin text-neon-pink" />
+            生成中です。できた画像から順にここへ並びます（予定 {plannedTotal} 枚）。
+          </p>
+        </div>
+      )}
       {results.length > 0 && (
-        <div className="space-y-3 rounded-xl border border-border bg-background p-4">
+        <div id="dataset-results" className="scroll-mt-24 space-y-3 rounded-xl border border-border bg-background p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs font-medium text-foreground">
               できた素材 {results.length} 枚{plannedTotal > results.length ? `（予定 ${plannedTotal} 枚）` : ""}
