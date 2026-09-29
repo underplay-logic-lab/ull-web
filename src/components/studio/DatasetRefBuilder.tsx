@@ -67,19 +67,24 @@ export const SIDE_VIEW_SPECS: CandidateSpec[] = Array.from({ length: CANDIDATE_C
   label: `真横の候補 ${i + 1}`,
 }));
 
-// 真横 → 後ろ姿の順（2026-09-29 ホスト判断）。真横は正面の髪型をそのまま保つ指示に固定する。後ろ髪を相対で
-// 振る案（少し長め・短め等）は、髪を描き直すついでに顔まで別人になった（ホスト実走＋B300 比較: 前髪・お団子が
-// 付くなど髪型ごと変わる）。角度 LoRA（<sks> right side view）とも比べたが、顔の近さはこの文章の指示が同等以上
-// だった（ホスト目視 2/2 vs 1/4）。後ろ髪の正解を知っているときだけ hairNote で足す。
+// 真横 → 後ろ姿の順（2026-09-29 ホスト判断）。後ろ髪を相対で振る案（少し長め・短め等）は、髪を描き直すついでに
+// 顔まで別人になったので廃止。後ろ髪の正解を知っているときだけ hairNote で足す。
 // 後ろ姿は確定した真横をサブ参照に添えて、髪の長さ・形を真横に揃える。
-const SIDE_INSTRUCTION = `A full body shot in profile view from the side, standing upright, against a plain white background. The hairstyle and the outfit must be consistent with the reference. ${IDENTITY}`;
 
+/**
+ * 真横の候補（2026-09-29 ホスト判断で角度 LoRA に）。ホストの実走で、マルチアングルの角度 LoRA（<sks> right/left side view）
+ * ＋顔アップの参照が横顔でいちばん似た。右 2 枚・左 2 枚。顔アップは呼び出し側がサブ参照に添える。
+ * <sks> を文頭に置くと raw_prompt でも角度 LoRA が効く（worker は LoRA を常時読み込み済み）。
+ */
 export function sideViewSpecs(hairNote: string): CandidateSpec[] {
   const note = hairNote.trim();
-  return Array.from({ length: CANDIDATE_COUNT }, (_, i) => ({
-    instruction: note ? `${SIDE_INSTRUCTION} The hair at the back: ${note}.` : SIDE_INSTRUCTION,
-    label: `真横の候補 ${i + 1}${note ? "（後ろ髪の指定どおり）" : ""}`,
-  }));
+  const tail = note ? ` The hair at the back: ${note}.` : "";
+  return [
+    { instruction: `<sks> right side view eye-level shot${tail}`, label: "真横の候補 1（右）" },
+    { instruction: `<sks> right side view eye-level shot${tail}`, label: "真横の候補 2（右）" },
+    { instruction: `<sks> left side view eye-level shot${tail}`, label: "真横の候補 3（左）" },
+    { instruction: `<sks> left side view eye-level shot${tail}`, label: "真横の候補 4（左）" },
+  ];
 }
 
 /** 後ろ姿。withSide＝確定した真横を 2 枚目の参照に添える（髪を真横に揃える）。 */

@@ -52,6 +52,7 @@ import {
   bodyDesignBlockedReason,
   bodyDesignSpecs,
   mainRouteOf,
+  bodyDesignSentence,
   type BodyDesign,
   type MainRoute,
 } from "@/lib/datasetBuilder";
@@ -107,6 +108,8 @@ type PersistedForm = {
   sendOriginal?: boolean;
   /** 後ろ髪の指定（任意・日本語可、真横・後ろ姿の候補に使う）。 */
   hairNote?: string;
+  /** 作り方（2026-09-29）: careful＝基準の全身像・真横・後ろ姿を先に作る（既定）／quick＝顔アップのまますぐ作る。 */
+  precision?: "careful" | "quick";
 };
 /** 進行中／完了した「1 回の指定」。File は保存できないので、リロード後は結果の表示と LoRA への送りだけできる。 */
 type PersistedRun = {
@@ -306,7 +309,11 @@ export function DatasetBuilderTab() {
   const [deriving, setDeriving] = useState(false);
   // 基準の全身（元が寄っているとき、候補から選んだ 1 枚）。以後の「メインだけ」の行と切り出しの元になる。
   const [baseFull, setBaseFull] = useState<File | null>(null);
-  const effectiveMain = baseFull ?? image;
+  // 作り方（2026-09-29）: careful＝こだわり（既定）／quick＝かんたん。かんたんでは基準の全身像を使わない
+  // （確定済みでも無視してメイン画像のまま作る）。
+  const [precision, setPrecision] = useState<"careful" | "quick">(() => savedForm?.precision ?? "careful");
+  const activeBaseFull = precision === "careful" ? baseFull : null;
+  const effectiveMain = activeBaseFull ?? image;
   const effectiveMainRef = useRef<File | null>(null);
   const derivedRef = useRef<FramingSources>({});
   // タブ内の GPU ジョブは 1 本ずつ（候補づくり・本生成が同時に走ってコンテナが 2 台立たないように）。
@@ -477,6 +484,7 @@ export function DatasetBuilderTab() {
   const [routeOverride, setRouteOverride] = useState<MainRoute | "auto">(() => savedForm?.routeOverride ?? "auto");
   const [sendOriginal, setSendOriginal] = useState<boolean>(() => savedForm?.sendOriginal ?? true);
   const [hairNote, setHairNote] = useState<string>(() => savedForm?.hairNote ?? "");
+
   useEffect(() => {
     saveFormState(FORM_ID, {
       sel,
@@ -487,8 +495,9 @@ export function DatasetBuilderTab() {
       mainFraming,
       sendOriginal,
       hairNote,
+      precision,
     } satisfies PersistedForm);
-  }, [sel, count, confirmFirst, bodyDesign, routeOverride, mainFraming, sendOriginal, hairNote]);
+  }, [sel, count, confirmFirst, bodyDesign, routeOverride, mainFraming, sendOriginal, hairNote, precision]);
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
@@ -594,12 +603,18 @@ export function DatasetBuilderTab() {
   const viewsInPlan = new Set(previewPlan.map((it) => it.viewId));
   // 経路（2026-09-29）: 顔アップ→体の設計が必須／上半身→下の服は任意／全身→そのまま。手動で切り替えられる。
   const mainRoute = image ? mainRouteOf(mainFraming, routeOverride) : null;
-  const needsBaseFull = Boolean(image) && !baseFull && !deriving && mainRoute !== null && mainRoute !== "full";
+  const needsBaseFull =
+    precision === "careful" && Boolean(image) && !baseFull && !deriving && mainRoute !== null && mainRoute !== "full";
+  // かんたんで顔アップ（上半身）のときは、体の設計を本生成の全部の画像に添える。
+  const quickBody = precision === "quick" && (mainRoute === "face" || mainRoute === "upper");
+  const quickBlocked = quickBody && mainRoute ? bodyDesignBlockedReason(bodyDesign, mainRoute) : null;
   // 真横 → 後ろ姿の順（2026-09-29）。一覧に真横があれば、後ろ姿は確定した真横を添えて作る（髪を真横に揃える）。
   const sideInPlan = viewsInPlan.has("side");
   const backUsesSide = Boolean(refSide) || sideInPlan;
   const backBlocked = backUsesSide && !refSide ? "先に上の「真横の参照」を確定してください（後ろ髪を真横に揃えるため）。" : null;
   const sideSpecs = useMemo(() => sideViewSpecs(hairNote), [hairNote]);
+  // 顔アップから始めたときは、真横の候補に元の顔アップを添える（横顔が似る、2026-09-29 ホスト実走）。
+  const sideFaceRef = mainRoute === "face" && activeBaseFull && image ? image : null;
   const backSpecs = useMemo(() => backViewSpecs(hairNote, backUsesSide), [hairNote, backUsesSide]);
   const baseFullSpecs = useMemo(
     () => (mainRoute === "face" || mainRoute === "upper" ? bodyDesignSpecs(bodyDesign, mainRoute) : FULL_BODY_SPECS),
@@ -653,8 +668,9 @@ export function DatasetBuilderTab() {
         sets.push(files);
         return sets.length - 1;
       };
+      const bodyTail = quickBody ? bodyDesignSentence(bodyDesign) : "";
       const scenes = items.map((it) => ({
-        instruction: scenePlanInstruction(it),
+        instruction: bodyTail ? `${scenePlanInstruction(it)} ${bodyTail}` : scenePlanInstruction(it),
         label: scenePlanLabel(it),
         set: setIndex([sourceOf(it), ...refsOf(it)]),
       }));
@@ -689,7 +705,7 @@ export function DatasetBuilderTab() {
         }
       }
     },
-    [user, commitRun, perImage, gpuLock],
+    [user, commitRun, perImage, gpuLock, quickBody, bodyDesign],
   );
   const runOpt = useMemo(
     () =>
@@ -710,7 +726,11 @@ export function DatasetBuilderTab() {
     if (!busy && insufficientForFirst) return setChargeOpen(true);
     if (!image) return;
     if (needsBaseFull) {
-      setErrorMessage("メイン画像に全身が写っていません。先に「基準の全身像を作る」で 1 枚選んでください。");
+      setErrorMessage("メイン画像に全身が写っていません。先に「基準の全身像を作る」で 1 枚選んでください（手早く済ませるなら作り方を「かんたん」に）。");
+      return;
+    }
+    if (quickBlocked) {
+      setErrorMessage(quickBlocked);
       return;
     }
     if (insufficientForFirst) return setChargeOpen(true);
@@ -1029,6 +1049,41 @@ export function DatasetBuilderTab() {
               <span className="text-[10px] text-muted/80">判定がちがうときは変えてください。</span>
             </div>
           )}
+          {image && (
+            // 作り方（2026-09-29 ホスト判断）: 品質重視なので「こだわり」が既定。手早く済ませたい人は「かんたん」。
+            <div className="space-y-1.5 rounded-lg border border-border bg-background/40 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                <span className="text-muted">作り方:</span>
+                {(
+                  [
+                    ["careful", "こだわり（おすすめ）"],
+                    ["quick", "かんたん"],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setPrecision(id)}
+                    className={`rounded-full border px-2.5 py-1 ${
+                      precision === id
+                        ? "border-neon-pink/50 bg-neon-pink/10 text-neon-pink"
+                        : "border-border text-muted hover:text-foreground"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] leading-relaxed text-muted">
+                {precision === "careful"
+                  ? "基準の全身像・真横・後ろ姿を先に候補から選んで確定し、それを元に作ります。顔や体つきが揃いやすく、仕上がりの精度が上がります（候補づくりの料金がかかります）。"
+                  : "基準の全身像・真横・後ろ姿を作らず、メイン画像のまますぐ作ります。手早く安く済みますが、顔や体つきは画像ごとに多少ぶれます。"}
+              </p>
+              {quickBody && mainRoute && (
+                <BodyDesignForm design={bodyDesign} onChange={setBodyDesign} route={mainRoute} />
+              )}
+            </div>
+          )}
           {imageError && <p className="text-[11px] text-red-400">{imageError}</p>}
           <SubReferenceSlots
             files={subImages}
@@ -1044,13 +1099,13 @@ export function DatasetBuilderTab() {
             <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
               <p className="text-[11px] font-medium text-foreground">素材づくりの基準にする画像</p>
               <p className="text-[10px] leading-relaxed text-muted">
-                全身の画像は{baseFull ? "確定した基準の全身像" : "メイン画像"}を、上半身・バストアップの画像は下の画像を基準に作ります。
-                上半身・バストアップの基準は、{baseFull ? "基準の全身像" : "メイン画像"}から自動で切り出します（無料・切り出しの解像度は仕上がりに影響しません）。
+                全身の画像は{activeBaseFull ? "確定した基準の全身像" : "メイン画像"}を、上半身・バストアップの画像は下の画像を基準に作ります。
+                上半身・バストアップの基準は、{activeBaseFull ? "基準の全身像" : "メイン画像"}から自動で切り出します（無料・切り出しの解像度は仕上がりに影響しません）。
                 寄りで写った手持ちの画像（上半身・バストアップの写真など）を参照欄に入れていれば、それを基準に生成することもできます。
               </p>
               {deriving && (
                 <p className="flex items-center gap-1.5 text-[10px] text-muted">
-                  <Loader2 size={10} className="animate-spin" /> {baseFull ? "基準の全身像" : "メイン画像"}から切り出しています…
+                  <Loader2 size={10} className="animate-spin" /> {activeBaseFull ? "基準の全身像" : "メイン画像"}から切り出しています…
                 </p>
               )}
               {(["upper", "bust"] as CloseFraming[]).map((f) => {
@@ -1082,7 +1137,7 @@ export function DatasetBuilderTab() {
                         type="button"
                         onClick={() => setCloseChoice((p) => ({ ...p, [f]: "auto" }))}
                         disabled={!auto}
-                        title={auto ? "" : `${baseFull ? "基準の全身像" : "メイン画像"}から切り出せませんでした（人物が検出できないか、既に寄っています）`}
+                        title={auto ? "" : `${activeBaseFull ? "基準の全身像" : "メイン画像"}から切り出せませんでした（人物が検出できないか、既に寄っています）`}
                         className={`${chip(choice === "auto")} disabled:opacity-40`}
                       >
                         自動で切り出し（おすすめ）
@@ -1093,7 +1148,7 @@ export function DatasetBuilderTab() {
                         className={chip(choice === "main")}
                         title="切り出さずにそのまま元にして、文章で寄りを指示します（全身のまま出やすい）"
                       >
-                        {baseFull ? "基準の全身像のまま" : "メイン画像のまま"}
+                        {activeBaseFull ? "基準の全身像のまま" : "メイン画像のまま"}
                       </button>
                       {/* 手持ちの寄りの画像だけを選択肢に出す。確定した真横・後ろ姿も参照欄に入るが、寄りの基準には向かないので出さない。 */}
                       {subImages.map((file, i) => file === refSide || file === refBack ? null : (
@@ -1109,7 +1164,7 @@ export function DatasetBuilderTab() {
                       ))}
                       {!auto && !deriving && choice === "auto" && (
                         <span className="w-full text-[10px] text-amber-400">
-                          切り出せなかったので{baseFull ? "基準の全身像" : "メイン画像"}のまま作ります{derived.reason ? `（${derived.reason}）` : ""}。寄りで写った手持ちの画像を参照欄に入れて選ぶこともできます。
+                          切り出せなかったので{activeBaseFull ? "基準の全身像" : "メイン画像"}のまま作ります{derived.reason ? `（${derived.reason}）` : ""}。寄りで写った手持ちの画像を参照欄に入れて選ぶこともできます。
                         </span>
                       )}
                     </div>
@@ -1118,7 +1173,7 @@ export function DatasetBuilderTab() {
             </div>
           )}
           {/* 参照づくり（段階 1・3）: 全身が無ければ基準の全身を、真横・後ろの行があれば参照を、候補から選んで確定する。 */}
-          {image && (needsBaseFull || baseFull) && (
+          {precision === "careful" && image && (needsBaseFull || baseFull) && (
             <CandidatePanel
               title={baseFull ? "基準の全身像（確定済み）" : "基準の全身像を作る"}
               description={
@@ -1153,7 +1208,7 @@ export function DatasetBuilderTab() {
               )}
             </CandidatePanel>
           )}
-          {effectiveMain && (viewsInPlan.has("side") || viewsInPlan.has("back") || refSide || refBack) && (
+          {precision === "careful" && effectiveMain && (viewsInPlan.has("side") || viewsInPlan.has("back") || refSide || refBack) && (
             // 後ろ髪の指定は真横・後ろ姿の両方の候補に使う（真横を先に作り、後ろ姿は選んだ真横に揃えるので、真横の前に決める）。
             <label className="flex flex-col gap-1 rounded-lg border border-border bg-background/40 px-3 py-2 text-[10px] text-muted">
               <span>
@@ -1172,14 +1227,16 @@ export function DatasetBuilderTab() {
               </span>
             </label>
           )}
-          {effectiveMain && (viewsInPlan.has("side") || refSide) && (
+          {precision === "careful" && effectiveMain && (viewsInPlan.has("side") || refSide) && (
             <CandidatePanel
               title={refSide ? "真横の参照（確定済み）" : "真横の参照を作る"}
-              description="真横向きの画像は、ここで選んだ真横を参照にして作ります。顔がいちばんイメージに近い 1 枚を選んでください（後ろ姿はこの真横の髪に揃えます）。後ろ髪の長さや結び方を決めたいときは上の「後ろ髪の指定」に書いてください。手持ちの真横があれば、下の「持っているなら」の行にドロップするか「ファイルを選ぶ」で指定してください（参照欄に入れてある場合は「参照 N を使う」で選べます。指定しないと真横として扱われません）。選ぶと参照欄に入ります。"
+              description="真横向きの画像は、ここで選んだ真横を参照にして作ります。候補はカメラを横へ回して作り（右 2 枚・左 2 枚）、顔アップから始めたときは顔アップも見せて顔を寄せます。顔がいちばんイメージに近い 1 枚を選んでください（後ろ姿はこの真横の髪に揃えます）。後ろ髪の長さや結び方を決めたいときは上の「後ろ髪の指定」に書いてください。手持ちの真横があれば、下の「持っているなら」の行にドロップするか「ファイルを選ぶ」で指定してください（参照欄に入れてある場合は「参照 N を使う」で選べます。指定しないと真横として扱われません）。選ぶと参照欄に入ります。"
               user={user}
               image={effectiveMain}
               specs={sideSpecs}
-              costPerImage={perImage}
+              subImages={sideFaceRef ? [sideFaceRef] : undefined}
+              aspect="portrait"
+              costPerImage={sideFaceRef ? perImageWithRef : perImage}
               credits={credits}
               storageKey="dataset-builder-cand-side"
               picked={picks.side ?? null}
@@ -1202,7 +1259,7 @@ export function DatasetBuilderTab() {
               }}
             />
           )}
-          {effectiveMain && (viewsInPlan.has("back") || refBack) && (
+          {precision === "careful" && effectiveMain && (viewsInPlan.has("back") || refBack) && (
             <CandidatePanel
               title={refBack ? "後ろ姿の参照（確定済み）" : "後ろ姿の参照を作る"}
               description={

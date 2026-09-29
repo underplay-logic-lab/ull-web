@@ -565,6 +565,23 @@ export function bodyDesignSpecs(design: BodyDesign, route: MainRoute, count = 4)
   return Array.from({ length: count }, (_, i) => ({ instruction: `${base} ${rest}`, label: `全身の候補 ${i + 1}` }));
 }
 
+/**
+ * かんたん（基準の全身像を作らない）ときに本生成の各画像へ足す体の指示（2026-09-29）。顔アップだけだと体と服が
+ * 画像ごとにでたらめになるので、体の設計を毎回添える。行ごとの服装チップ（「元の服装のまま」以外）があればそちらが優先。
+ */
+export function bodyDesignSentence(design: BodyDesign): string {
+  const outfit = bodyOutfitEn(design);
+  const build = BODY_BUILD_CHIPS.find((c) => c.id === design.buildId)?.en;
+  const height = BODY_HEIGHT_CHIPS.find((c) => c.id === design.heightId)?.en;
+  const body = [build, height].filter(Boolean).join(", ");
+  return [
+    outfit ? `Unless another outfit is specified above, the character is wearing ${outfit}.` : "",
+    body ? `The character has a ${body}.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 /** smartCrop の framing から経路を決める（手動の指定があればそちら）。 */
 export function mainRouteOf(framing: string | undefined, override: MainRoute | "auto"): MainRoute | null {
   if (override !== "auto") return override;
