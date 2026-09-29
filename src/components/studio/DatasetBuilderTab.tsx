@@ -613,8 +613,9 @@ export function DatasetBuilderTab() {
   const backUsesSide = Boolean(refSide) || sideInPlan;
   const backBlocked = backUsesSide && !refSide ? "先に上の「真横の参照」を確定してください（後ろ髪を真横に揃えるため）。" : null;
   const sideSpecs = useMemo(() => sideViewSpecs(hairNote), [hairNote]);
-  // 顔アップから始めたときは、真横の候補に元の顔アップを添える（横顔が似る、2026-09-29 ホスト実走）。
-  const sideFaceRef = mainRoute === "face" && activeBaseFull && image ? image : null;
+  // 真横の候補に顔の大きく写った画像を添える（横顔が似る、2026-09-29 ホスト実走・全ルートで添える方針）。
+  // 顔アップ・上半身から始めた（基準の全身像がある）ときは元の画像、全身から始めたときは自動で切り出したバストアップ。
+  const sideFaceRef = activeBaseFull && image ? image : (derived.bust ?? null);
   const backSpecs = useMemo(() => backViewSpecs(hairNote, backUsesSide), [hairNote, backUsesSide]);
   const baseFullSpecs = useMemo(
     () => (mainRoute === "face" || mainRoute === "upper" ? bodyDesignSpecs(bodyDesign, mainRoute) : FULL_BODY_SPECS),
@@ -1230,7 +1231,7 @@ export function DatasetBuilderTab() {
           {precision === "careful" && effectiveMain && (viewsInPlan.has("side") || refSide) && (
             <CandidatePanel
               title={refSide ? "真横の参照（確定済み）" : "真横の参照を作る"}
-              description="真横向きの画像は、ここで選んだ真横を参照にして作ります。候補はカメラを横へ回して作り（右 2 枚・左 2 枚）、顔アップから始めたときは顔アップも見せて顔を寄せます。顔がいちばんイメージに近い 1 枚を選んでください（後ろ姿はこの真横の髪に揃えます）。後ろ髪の長さや結び方を決めたいときは上の「後ろ髪の指定」に書いてください。手持ちの真横があれば、下の「持っているなら」の行にドロップするか「ファイルを選ぶ」で指定してください（参照欄に入れてある場合は「参照 N を使う」で選べます。指定しないと真横として扱われません）。選ぶと参照欄に入ります。"
+              description="真横向きの画像は、ここで選んだ真横を参照にして作ります。候補はカメラを横へ回して作り（右 2 枚・左 2 枚）、顔の大きく写った画像（元の顔アップ・上半身、全身から始めたときは自動で切り出したバストアップ）も見せて顔を寄せます。顔がいちばんイメージに近い 1 枚を選んでください（後ろ姿はこの真横の髪に揃えます）。後ろ髪の長さや結び方を決めたいときは上の「後ろ髪の指定」に書いてください。手持ちの真横があれば、下の「持っているなら」の行にドロップするか「ファイルを選ぶ」で指定してください（参照欄に入れてある場合は「参照 N を使う」で選べます。指定しないと真横として扱われません）。選ぶと参照欄に入ります。"
               user={user}
               image={effectiveMain}
               specs={sideSpecs}

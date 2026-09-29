@@ -505,14 +505,20 @@ export const BODY_SHOES_CHIPS: SceneChip[] = [
   { id: "barefoot", label: "裸足", en: "barefoot" },
 ];
 
+// 体型・背丈は「おまかせ」（id ""＝指定しない。元画像から推測させる）が既定（2026-09-29 ホスト「選択肢は多い方が良い」）。
 export const BODY_BUILD_CHIPS: SceneChip[] = [
+  { id: "", label: "おまかせ", en: "" },
+  { id: "skinny", label: "痩せ型", en: "very slim, slender build" },
   { id: "slim", label: "細身", en: "slim build" },
   { id: "average", label: "標準", en: "average build" },
+  { id: "muscular", label: "筋肉質", en: "muscular, toned build" },
   { id: "athletic", label: "がっしり", en: "athletic, sturdy build" },
+  { id: "chubby", label: "ぽっちゃり", en: "slightly chubby, soft build" },
   { id: "curvy", label: "ふくよか", en: "curvy, full-figured build" },
 ];
 
 export const BODY_HEIGHT_CHIPS: SceneChip[] = [
+  { id: "", label: "おまかせ", en: "" },
   { id: "petite", label: "小柄", en: "petite, short height" },
   { id: "average", label: "平均", en: "average height" },
   { id: "tall", label: "長身", en: "tall" },
@@ -529,7 +535,7 @@ export type BodyDesign = {
   heightId: string;
 };
 
-export const EMPTY_BODY_DESIGN: BodyDesign = { outfitId: "", outfitText: "", shoesId: "", buildId: "average", heightId: "average" };
+export const EMPTY_BODY_DESIGN: BodyDesign = { outfitId: "", outfitText: "", shoesId: "", buildId: "", heightId: "" };
 
 function bodyOutfitEn(design: BodyDesign): string {
   const text = design.outfitText.trim();
@@ -549,8 +555,8 @@ export function bodyDesignBlockedReason(design: BodyDesign, route: MainRoute): s
 /** 基準の全身の候補の指示（4 枚分）。route が full なら使わない。 */
 export function bodyDesignSpecs(design: BodyDesign, route: MainRoute, count = 4): { instruction: string; label: string }[] {
   const outfit = bodyOutfitEn(design);
-  const build = BODY_BUILD_CHIPS.find((c) => c.id === design.buildId)?.en;
-  const height = BODY_HEIGHT_CHIPS.find((c) => c.id === design.heightId)?.en;
+  const build = BODY_BUILD_CHIPS.find((c) => c.id === design.buildId)?.en || undefined;
+  const height = BODY_HEIGHT_CHIPS.find((c) => c.id === design.heightId)?.en || undefined;
   const base = "A full body shot showing the whole body from head to feet, standing upright, facing the viewer, against a plain white background.";
   const body = [build, height].filter(Boolean).join(", ");
   let rest: string;
@@ -571,8 +577,8 @@ export function bodyDesignSpecs(design: BodyDesign, route: MainRoute, count = 4)
  */
 export function bodyDesignSentence(design: BodyDesign): string {
   const outfit = bodyOutfitEn(design);
-  const build = BODY_BUILD_CHIPS.find((c) => c.id === design.buildId)?.en;
-  const height = BODY_HEIGHT_CHIPS.find((c) => c.id === design.heightId)?.en;
+  const build = BODY_BUILD_CHIPS.find((c) => c.id === design.buildId)?.en || undefined;
+  const height = BODY_HEIGHT_CHIPS.find((c) => c.id === design.heightId)?.en || undefined;
   const body = [build, height].filter(Boolean).join(", ");
   return [
     outfit ? `Unless another outfit is specified above, the character is wearing ${outfit}.` : "",

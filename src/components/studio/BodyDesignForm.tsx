@@ -32,6 +32,7 @@ function ChipRow({
           key={c.id}
           type="button"
           onClick={() => onSelect(value === c.id ? "" : c.id)}
+          title={c.id === "" ? "指定しない（元の画像から推測させます）" : undefined}
           className={`rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
             value === c.id
               ? "border-neon-violet/60 bg-neon-violet/20 text-foreground"
