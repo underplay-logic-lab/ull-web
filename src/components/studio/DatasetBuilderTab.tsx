@@ -1042,14 +1042,15 @@ export function DatasetBuilderTab() {
           </p>
           {image && (
             <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
-              <p className="text-[11px] font-medium text-foreground">構図の元画像（全身はメイン画像から。上半身・バストアップは下の元から作ります）</p>
+              <p className="text-[11px] font-medium text-foreground">素材づくりの基準にする画像</p>
               <p className="text-[10px] leading-relaxed text-muted">
-                出来上がりは元画像の構図を保ちます。上半身・バストアップの画像は、メイン画像から自動で切り出した寄りの画像を元に作ります
-                （無料・切り出しの解像度は仕上がりに影響しません）。参照に寄った画像があれば、そちらを選ぶこともできます。
+                全身の画像は{baseFull ? "確定した基準の全身" : "メイン画像"}を、上半身・バストアップの画像は下の画像を基準に作ります。
+                上半身・バストアップの基準は、{baseFull ? "基準の全身" : "メイン画像"}から自動で切り出します（無料・切り出しの解像度は仕上がりに影響しません）。
+                参照画像のほうが基準に向いていれば、そちらを使うこともできます。
               </p>
               {deriving && (
                 <p className="flex items-center gap-1.5 text-[10px] text-muted">
-                  <Loader2 size={10} className="animate-spin" /> メイン画像から切り出しています…
+                  <Loader2 size={10} className="animate-spin" /> {baseFull ? "基準の全身" : "メイン画像"}から切り出しています…
                 </p>
               )}
               {(["upper", "bust"] as CloseFraming[]).map((f) => {
