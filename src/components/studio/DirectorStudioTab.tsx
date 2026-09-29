@@ -813,7 +813,6 @@ export function DirectorStudioTab() {
           <div className="flex items-center gap-2 rounded-xl border border-border bg-background p-1">
             <button
               type="button"
-              disabled={busy}
               onClick={() => setUiMode("scenes")}
               className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                 uiMode === "scenes" ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
@@ -823,7 +822,6 @@ export function DirectorStudioTab() {
             </button>
             <button
               type="button"
-              disabled={busy}
               onClick={() => setUiMode("prompt")}
               className={`flex flex-1 items-center justify-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                 uiMode === "prompt" ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
@@ -834,7 +832,6 @@ export function DirectorStudioTab() {
             </button>
             <button
               type="button"
-              disabled={busy}
               onClick={() => setUiMode("advanced")}
               className={`flex flex-1 items-center justify-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                 uiMode === "advanced" ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
@@ -1072,7 +1069,6 @@ export function DirectorStudioTab() {
                 <button
                   key={m}
                   type="button"
-                  disabled={busy}
                   onClick={() => setQualityMode(m)}
                   className={`rounded-xl border px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                     selected
@@ -1099,7 +1095,6 @@ export function DirectorStudioTab() {
           <div className="grid grid-cols-3 gap-1.5">
             <button
               type="button"
-              disabled={busy}
               onClick={() => selectLoraSource("none")}
               className={`rounded-lg px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                 loraSource === "none" ? "bg-neon-violet/15 text-foreground" : "bg-surface text-muted hover:text-foreground"
@@ -1109,7 +1104,7 @@ export function DirectorStudioTab() {
             </button>
             <button
               type="button"
-              disabled={busy || loraOptions.length === 0}
+              disabled={loraOptions.length === 0}
               onClick={() => selectLoraSource("trained")}
               title={loraOptions.length === 0 ? "LoRA Studio で学習済みの LoRA がありません" : undefined}
               className={`rounded-lg px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
@@ -1120,7 +1115,6 @@ export function DirectorStudioTab() {
             </button>
             <button
               type="button"
-              disabled={busy}
               onClick={() => selectLoraSource("upload")}
               className={`rounded-lg px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                 loraSource === "upload" ? "bg-neon-violet/15 text-foreground" : "bg-surface text-muted hover:text-foreground"
@@ -1135,7 +1129,6 @@ export function DirectorStudioTab() {
               <select
                 value={loraId}
                 onChange={(e) => setLoraId(e.target.value)}
-                disabled={busy}
                 className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <option value="">選択してください</option>
@@ -1154,7 +1147,7 @@ export function DirectorStudioTab() {
               <input
                 type="file"
                 accept=".safetensors"
-                disabled={busy || loraUploading}
+                disabled={loraUploading}
                 onChange={(e) => {
                   setLoraUploadFile(e.target.files?.[0] ?? null);
                   // 別のファイルを選び直したら、前回のアップロード済み状態は
@@ -1175,7 +1168,7 @@ export function DirectorStudioTab() {
                 <button
                   type="button"
                   onClick={() => void handleUploadLora()}
-                  disabled={busy || loraUploading}
+                  disabled={loraUploading}
                   className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-neon-violet/40 bg-neon-violet/10 px-3 py-2 text-xs font-medium text-neon-violet transition-colors hover:bg-neon-violet/20 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {loraUploading
