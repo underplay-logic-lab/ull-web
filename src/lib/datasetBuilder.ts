@@ -102,28 +102,38 @@ export type SceneSelection = {
   /** 自由記述（任意・日本語可）。 */
   extra: string;
   /**
-   * 構図・向きの枚数指定（2026-09-29、ホスト指摘「後ろは 2 枚・全身は 10 枚のように決めたい。今は均等」）。
-   * チップ id → 枚数。無い・0 は自動（指定の残りを自動のチップで均等に分ける）。
+   * 構図・向きの比率（%、2026-09-29 ホスト判断「後ろは少し・全身は少なめ。均等ではなく、どの素材も同じような比率で」）。
+   * チップ id → %。選んでいないチップは無視し、選んだチップの値で割り振る（合計が 100 でなくても比で扱う）。
+   * 空欄（0・無し）のチップは、100% の残りを均等に分ける。
    */
-  counts?: Partial<Record<CountAxis, Record<string, number>>>;
+  ratios?: Partial<Record<RatioAxis, Record<string, number>>>;
 };
 
-/** 枚数を指定できる軸。 */
-export type CountAxis = "framings" | "views";
-export const COUNT_AXES: readonly CountAxis[] = ["framings", "views"];
+/** 比率を指定できる軸。 */
+export type RatioAxis = "framings" | "views";
+
+/**
+ * 既定の比率（2026-09-29）。人物 LoRA は顔が本題なので寄りを厚く（診断の目安: 寄り 30%・上半身 30%・全身 15% 以上）、
+ * 後ろ姿は顔が写らないので少なく。48 枚なら 全身 12・上半身 18・バスト 18／正面 20・斜め 20・真横 6・後ろ 2。
+ */
+export const DEFAULT_SCENE_RATIOS: Record<RatioAxis, Record<string, number>> = {
+  framings: { full: 25, upper: 38, bust: 37 },
+  views: { front: 42, three_quarter: 41, side: 13, back: 4 },
+};
 
 // LoRA 素材の既定: 立つ・歩く・座る × 無地・部屋・街 × 全身・上半身 × 正面・斜め。
 export const DEFAULT_SCENE_SELECTION: SceneSelection = {
   poses: ["standing", "walking", "sitting_chair"],
   places: ["plain", "room", "street"],
-  framings: ["full", "upper"],
-  views: ["front", "three_quarter"],
+  framings: ["full", "upper", "bust"],
+  views: ["front", "three_quarter", "side", "back"],
   expressions: ["smile", "neutral"],
   outfits: ["same", "casual"],
   customPoses: [],
   customPlaces: [],
   outfit: "",
   extra: "",
+  ratios: DEFAULT_SCENE_RATIOS,
 };
 
 export const CHIPS_BY_AXIS: Record<SceneAxis, SceneChip[]> = {
@@ -196,29 +206,33 @@ function pick(axis: SceneAxis, ids: string[], custom: string[] = []): SceneChip[
  * 組み合わせが count に足りなければ先頭から繰り返す（ワーカーは seed + index で散らすので同じ絵にはならない）。
  * 未選択の軸は既定（ポーズ=立つ／場所=無地／構図=全身／向き=正面）で埋める。
  */
+/** 選んだチップの実効の比率（合計 1）。空欄は 100% の残りを均等に、全部 0 なら均等。 */
+export function effectiveRatios(chips: SceneChip[], ratios: Record<string, number> | undefined): number[] {
+  const set = chips.map((c) => Math.max(0, Number(ratios?.[c.id] ?? 0) || 0));
+  const empty = set.filter((v) => v === 0).length;
+  const left = Math.max(0, 100 - set.reduce((a, b) => a + b, 0));
+  const w = set.map((v) => (v > 0 ? v : empty > 0 ? left / empty : 0));
+  const sum = w.reduce((a, b) => a + b, 0);
+  return sum > 0 ? w.map((x) => x / sum) : chips.map(() => 1 / chips.length);
+}
+
 /**
- * 枚数指定つきの配分（長さ n の並び）。指定したチップはその枚数（合計が n を超えたら比率で縮める）、残りを自動の
- * チップで均等に。自動のチップが無ければ残りは全チップに均等（指定は「最低これだけ」扱い）。並びは各チップが
+ * 比率つきの配分（長さ n の並び）。最大剰余で枚数に丸め、選んだチップは n が足りる限り最低 1 枚。並びは各チップが
  * 全体に散らばるように（最初の確認 8 枚にもなるべく全部が入るように）先頭から比率どおりに埋める。
  */
-function quotaSequence(chips: SceneChip[], counts: Record<string, number> | undefined, n: number): SceneChip[] {
-  const want = chips.map((c) => Math.max(0, Math.trunc(counts?.[c.id] ?? 0)));
-  let target = [...want];
-  const fixedSum = want.reduce((a, b) => a + b, 0);
-  if (fixedSum > n) {
-    target = want.map((w) => Math.floor((w * n) / fixedSum));
-    let rest = n - target.reduce((a, b) => a + b, 0);
-    for (let i = 0; rest > 0; i = (i + 1) % chips.length) {
-      if (want[i] > 0) {
-        target[i]++;
-        rest--;
-      }
+function quotaSequence(chips: SceneChip[], ratios: Record<string, number> | undefined, n: number): SceneChip[] {
+  const r = effectiveRatios(chips, ratios);
+  const exact = r.map((x) => x * n);
+  const target = exact.map(Math.floor);
+  const order = exact.map((x, i) => [x - Math.floor(x), i] as const).sort((a, b) => b[0] - a[0]);
+  for (let rest = n - target.reduce((a, b) => a + b, 0), j = 0; rest > 0; rest--, j++) target[order[j % order.length][1]]++;
+  if (n >= chips.length) {
+    for (let i = 0; i < chips.length; i++) {
+      if (target[i] > 0) continue;
+      const donor = target.indexOf(Math.max(...target));
+      target[donor]--;
+      target[i]++;
     }
-  } else {
-    const auto = chips.map((_, i) => i).filter((i) => want[i] === 0);
-    const pool = auto.length > 0 ? auto : chips.map((_, i) => i);
-    let rest = n - fixedSum;
-    for (let j = 0; rest > 0; j++, rest--) target[pool[j % pool.length]]++;
   }
   const seq: SceneChip[] = [];
   const done = chips.map(() => 0);
@@ -238,11 +252,6 @@ function quotaSequence(chips: SceneChip[], counts: Record<string, number> | unde
     seq.push(chips[best]);
   }
   return seq;
-}
-
-function hasCounts(sel: SceneSelection, axis: CountAxis, chips: SceneChip[]): boolean {
-  const c = sel.counts?.[axis];
-  return Boolean(c) && chips.some((x) => (c?.[x.id] ?? 0) > 0);
 }
 
 export function buildScenePlan(sel: SceneSelection, count: number): ScenePlanItem[] {
@@ -286,11 +295,11 @@ export function buildScenePlan(sel: SceneSelection, count: number): ScenePlanIte
     });
   };
 
-  // 枚数指定があるとき（構図・向きのどちらか）: 軸ごとに枚数どおりの並びを作り、向きは「足りていない順」に
-  // 割り当てる（バストアップ×後ろは避ける）。ポーズ・場面は行ごとに回す。
-  if (hasCounts(sel, "framings", F) || hasCounts(sel, "views", V)) {
-    const fSeq = quotaSequence(F, sel.counts?.framings, n);
-    const vSeq = quotaSequence(V, sel.counts?.views, n);
+  // 比率（既定あり）: 軸ごとに比率どおりの並びを作り、向きは「足りていない順」に割り当てる（バストアップ×後ろは避ける）。
+  // ポーズ・場面は行ごとに回す。比率が無い（古い保存）ときは従来の均等な組み合わせ。
+  if (sel.ratios) {
+    const fSeq = quotaSequence(F, sel.ratios.framings, n);
+    const vSeq = quotaSequence(V, sel.ratios.views, n);
     const vTarget = new Map<string, number>();
     for (const v of vSeq) vTarget.set(v.id, (vTarget.get(v.id) ?? 0) + 1);
     const vDone = new Map<string, number>();

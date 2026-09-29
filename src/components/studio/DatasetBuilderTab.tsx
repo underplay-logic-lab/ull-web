@@ -46,6 +46,8 @@ import {
   type SceneAxis,
   type ScenePlanItem,
   type SceneSelection,
+  DEFAULT_SCENE_RATIOS,
+  effectiveRatios,
   EMPTY_BODY_DESIGN,
   bodyDesignBlockedReason,
   bodyDesignSpecs,
@@ -145,8 +147,9 @@ function ChipGroup({
   custom,
   onAddCustom,
   onRemoveCustom,
-  counts,
-  onCount,
+  ratios,
+  onRatio,
+  onResetRatios,
 }: {
   axis: SceneAxis;
   selected: string[];
@@ -157,11 +160,14 @@ function ChipGroup({
   custom?: string[];
   onAddCustom?: (text: string) => void;
   onRemoveCustom?: (text: string) => void;
-  /** 構図・向きだけ: 選んだチップの枚数（空欄＝自動）。 */
-  counts?: Record<string, number>;
-  onCount?: (id: string, n: number) => void;
+  /** 構図・向きだけ: チップの比率（%、空欄＝残りを均等に）。 */
+  ratios?: Record<string, number>;
+  onRatio?: (id: string, pct: number) => void;
+  onResetRatios?: () => void;
 }) {
   const set = new Set(selected);
+  const chosen = CHIPS_BY_AXIS[axis].filter((c) => set.has(c.id));
+  const eff = ratios ? effectiveRatios(chosen, ratios) : [];
   const [draft, setDraft] = useState("");
   const commitDraft = () => {
     const t = draft.trim();
@@ -180,8 +186,19 @@ function ChipGroup({
           <button type="button" onClick={onClear} className="hover:text-foreground">
             解除
           </button>
+          {onResetRatios && (
+            <button type="button" onClick={onResetRatios} className="hover:text-foreground" title="比率を既定に戻す">
+              比率を既定に
+            </button>
+          )}
         </span>
       </div>
+      {onRatio && chosen.length > 1 && (
+        <p className="mb-1 text-[10px] text-muted/80">
+          実際の割合: {chosen.map((c, i) => `${c.label} ${Math.round(eff[i] * 100)}%`).join("・")}
+          （合計が 100% でなくても比で割り振ります）
+        </p>
+      )}
       <div className="flex flex-wrap gap-1.5">
         {CHIPS_BY_AXIS[axis].map((c) => (
           <span key={c.id} className="inline-flex items-center gap-0.5">
@@ -196,19 +213,22 @@ function ChipGroup({
             >
               {c.label}
             </button>
-            {onCount && set.has(c.id) && (
-              <input
-                type="number"
-                min={0}
-                max={SCENE_MAX_COUNT}
-                inputMode="numeric"
-                value={counts?.[c.id] ? String(counts[c.id]) : ""}
-                onChange={(e) => onCount(c.id, Math.max(0, Math.trunc(Number(e.target.value) || 0)))}
-                placeholder="自動"
-                aria-label={`${c.label}の枚数（空欄で自動）`}
-                title="枚数（空欄なら残りを自動で均等に）"
-                className="w-11 rounded border border-border bg-surface px-1 py-0.5 text-center text-[11px] text-foreground placeholder:text-muted/50"
-              />
+            {onRatio && set.has(c.id) && (
+              <span className="inline-flex items-center text-[10px] text-muted">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  inputMode="numeric"
+                  value={ratios?.[c.id] ? String(ratios[c.id]) : ""}
+                  onChange={(e) => onRatio(c.id, Math.max(0, Math.min(100, Math.trunc(Number(e.target.value) || 0))))}
+                  placeholder="自動"
+                  aria-label={`${c.label}の比率（%、空欄で残りを均等に）`}
+                  title="比率（%）。空欄なら 100% の残りを均等に分けます"
+                  className="w-10 rounded border border-border bg-surface px-1 py-0.5 text-center text-[11px] text-foreground placeholder:text-muted/50"
+                />
+                %
+              </span>
             )}
           </span>
         ))}
@@ -1183,9 +1203,14 @@ export function DatasetBuilderTab() {
                 onClear={() => setSel((p) => ({ ...p, [axis]: [] }))}
                 {...(axis === "framings" || axis === "views"
                   ? {
-                      counts: sel.counts?.[axis],
-                      onCount: (id: string, n: number) =>
-                        setSel((p) => ({ ...p, counts: { ...p.counts, [axis]: { ...(p.counts?.[axis] ?? {}), [id]: n } } })),
+                      ratios: (sel.ratios ?? DEFAULT_SCENE_RATIOS)[axis],
+                      onRatio: (id: string, pct: number) =>
+                        setSel((p) => {
+                          const cur = p.ratios ?? DEFAULT_SCENE_RATIOS;
+                          return { ...p, ratios: { ...cur, [axis]: { ...(cur[axis] ?? {}), [id]: pct } } };
+                        }),
+                      onResetRatios: () =>
+                        setSel((p) => ({ ...p, ratios: { ...(p.ratios ?? DEFAULT_SCENE_RATIOS), [axis]: DEFAULT_SCENE_RATIOS[axis] } })),
                     }
                   : {})}
                 {...(axis === "poses" || axis === "places"
