@@ -161,7 +161,7 @@ export function Support() {
             寄付は返金・クレジット付与の対象外です。
           </p>
 
-          {/* 要望・リクエストはお問い合わせへ（2026-09-24 ホスト要望） */}
+          {/* 要望・リクエストはお問い合わせへ（2026-09-24 ホスト要望）。受け付けは会員特典（2026-09-29、誰でも送れる印象を消す）。 */}
           <a
             href="#contact"
             className="mt-5 flex flex-col items-center justify-between gap-3 rounded-xl border border-neon-violet/30 bg-neon-violet/5 px-5 py-4 text-left transition-colors hover:bg-neon-violet/10 sm:flex-row"
@@ -171,7 +171,7 @@ export function Support() {
               <EditableText
                 as="span"
                 siteKey="support_request_copy"
-                fallback="「こんな機能が欲しい」「この設定を増やしてほしい」などの要望・リクエストはお問い合わせからお送りください。ご支援と合わせて、次に作る機能の優先度を決める材料にします。"
+                fallback="「こんな機能が欲しい」「この設定を増やしてほしい」といった機能リクエストは、月額プランの会員特典としてお問い合わせから受け付けています（上位のプランから優先して検討します）。ご支援は、次に作る機能を決める材料にします。"
               />
             </span>
             <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-neon-violet/40 px-4 py-2 text-xs font-semibold text-neon-violet">
