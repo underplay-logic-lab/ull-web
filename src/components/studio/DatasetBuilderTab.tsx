@@ -1517,8 +1517,8 @@ export function DatasetBuilderTab() {
             </div>
             {confirmFirst && safeCount > SCENE_BATCH_SIZE && (
               <p className="mt-1.5 text-[10px] text-muted">
-                まず {firstBatch} 枚（{firstCost.toLocaleString()} C）を作って止まります（一覧で「先に作る」を選べばその行になります）。良ければ「続きを作る」で残りを作ります。クレジットは作る分ずつ消費します。
-                真横・後ろの行は参照 1 枚付き（後ろ姿・真横を確定していれば）で、1 枚あたり 10 秒ほど長くかかります。
+                まず {firstBatch} 枚（{firstCost.toLocaleString()} C）を作って止まるので、仕上がりを確認してから「続きを作る」で残りを作れます（クレジットは作る分ずつ消費します）。
+                最初の {firstBatch} 枚に入れたい画像は、次に出る一覧で「先に作る」にチェックを入れて選べます。真横・後ろ向きの画像は参照付きで作るので、1 枚あたり 10 秒ほど長くかかります。
               </p>
             )}
 
@@ -1648,7 +1648,7 @@ export function DatasetBuilderTab() {
           </div>
           <p className="text-[10px] leading-relaxed text-muted">
             各行の文を書き換えられます（日本語のまま。送るときに英訳します）。構図・向きは左の表示のとおり固定です。
-            行を消すと枚数が減ります。左のチェックで「先に作る」行を選ぶと、選んだ行だけを先に作って止まります（最大 {SCENE_BATCH_SIZE} 枚）。
+            行を消すと枚数が減ります。左の「先に作る」にチェックを入れた画像は、最初の確認分（最大 {SCENE_BATCH_SIZE} 枚）に入ります。
             {(() => {
               const ordered = orderPlanForBatches(review, batchOpt, firstKeys);
               const jobs = checkBatchCount(ordered.plan, batchOpt, ordered.prefixLen);
@@ -1658,8 +1658,8 @@ export function DatasetBuilderTab() {
                 <span> 全身・上半身・バストアップ・真横・後ろが混ざっていても 1 つのジョブで作ります。選ばなければ先頭の {SCENE_BATCH_SIZE} 枚です。</span>
               );
             })()}
-            {derivedFlags.upper || derivedFlags.bust ? "「切り出し」の行はメイン画像から自動で切り出した寄りの画像を元に作ります。" : ""}
-            {closeMain.upper != null || closeMain.bust != null ? "「寄り元 N」の行は参照 N を元に作ります。" : ""}{subCount > 0 ? "「参照」の印の行だけ参照画像を付けて作ります（料金も参照付き）。実行はメインだけの行 → 寄り元の行 → 参照付きの行の順です。" : ""}
+            {derivedFlags.upper || derivedFlags.bust ? `「切り出し」の行は${activeBaseFull ? "基準の全身像" : "メイン画像"}から自動で切り出した寄りの画像を元に作ります。` : ""}
+            {closeMain.upper != null || closeMain.bust != null ? "「寄り元 N」の行は手持ちの画像（参照 N）を元に作ります。" : ""}{subCount > 0 ? "「参照」の印の行だけ参照画像を付けて作ります（料金も参照付き）。実行はメインだけの行 → 寄り元の行 → 参照付きの行の順です。" : ""}
           </p>
           <ol className="max-h-[420px] space-y-1 overflow-y-auto pr-1">
             {review.map((it, i) => (
