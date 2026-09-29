@@ -71,10 +71,12 @@ export const EXPRESSION_CHIPS: SceneChip[] = [
   { id: "neutral", label: "真顔", en: "with a calm neutral expression" },
   { id: "smile", label: "微笑み", en: "with a gentle, soft smile" },
   { id: "laugh", label: "歯を見せて笑う", en: "with a natural smile showing a little teeth" },
-  { id: "surprised", label: "少し驚き", en: "with a slightly surprised expression" },
-  { id: "shy", label: "少し照れ", en: "with a slightly shy expression and a faint natural blush" },
-  { id: "angry", label: "少しむっと", en: "with a slightly displeased, pouting expression" },
-  { id: "sad", label: "少し寂しげ", en: "with a slightly wistful expression" },
+  { id: "surprised", label: "少し驚き", en: "with slightly raised eyebrows, mildly surprised" },
+  // 照れは赤面の語を使わない（blush がアニメの照れ顔・画風ごと引っ張った、2026-09-29 ホスト 2 回目）。仕草で表す。
+  { id: "shy", label: "少しはにかむ", en: "looking slightly away with a shy, gentle smile, no blushing, natural skin tone" },
+  // 怒りは頬を膨らませる等の誇張を避け、唇を軽く結ぶ程度に（2 回目でもまだ強かった）。
+  { id: "angry", label: "少し口をとがらせる", en: "with lips lightly pressed together in a subtle pout, eyes calm" },
+  { id: "sad", label: "少し寂しげ", en: "with a slightly wistful look in the eyes, no tears" },
 ];
 
 export const OUTFIT_CHIPS: SceneChip[] = [
