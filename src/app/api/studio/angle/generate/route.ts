@@ -8,6 +8,7 @@ import { angleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import { downloadStudioUpload, deleteStudioUploads } from "@/lib/studioUploads.server";
 import { containsJapanese, translateToEnglish } from "@/lib/translate";
 import {
+  angleComboUsesSubRefs,
   angleCreditsPerAngle,
   anglePriorityParallelSurcharge,
   buildAngleCombos,
@@ -274,8 +275,8 @@ export async function POST(request: Request) {
   }
   const rawPrompt = Boolean(scenes && scenes.length > 0);
   // 行ごとのセット index（無ければ全行 0 番＝全画像）。
-  const useSets = rawPrompt && imageSets !== null && imageSets.length > 0;
-  const instructionSets = useSets
+  const sceneSets = rawPrompt && imageSets !== null && imageSets.length > 0;
+  const sceneInstructionSets = sceneSets
     ? scenes!.map((sc) => (typeof sc.set === "number" && sc.set >= 0 && sc.set < imageSets!.length ? sc.set : 0))
     : null;
   // 素材づくりの自由入力（場面・ポーズ・服装・追加指示）は日本語で書ける。指示に日本語が混ざっていれば
@@ -303,6 +304,20 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+  // マルチアングルの参照の使い分け（2026-09-29）: サブ参照があれば、真横・後ろ寄りの構図だけ
+  // セット 1（メイン＋サブ）、ほかはセット 0（メインだけ）で作る。料金も構図ごと（angleCombosCredits と同じ）。
+  const angleSets = !rawPrompt && imageBuffers.length > 1;
+  const jobImageSets: number[][] | null = sceneSets
+    ? imageSets!
+    : angleSets
+      ? [[0], imageBuffers.map((_, i) => i)]
+      : null;
+  const instructionSets: number[] | null = sceneSets
+    ? sceneInstructionSets
+    : angleSets
+      ? buildAngleCombos(selection).map((c) => (angleComboUsesSubRefs(c) ? 1 : 0))
+      : null;
+  const useSets = jobImageSets !== null && instructionSets !== null;
   // Multi-Reference: サブ参照ありは 1 構図あたりの生成時間が伸びる（B300 実測
   // ~3.0x @ サブ3枚）。構図数の上限は設けず（原価の歯止めは枚数連動の課金 +
   // ジョブ単位にスケールする Modal timeout + ワーカーの二重ウォッチドッグ）、
@@ -322,7 +337,7 @@ export async function POST(request: Request) {
   const knobs = await getPricingKnobs();
   // 行ごとのセットなら、行ごとの参照枚数（セットの枚数 − 1）で単価を出して合計する。
   const baseCost = useSets
-    ? instructionSets!.reduce((t, si) => t + angleCreditsPerAngle(knobs, Math.max(0, imageSets![si].length - 1)), 0)
+    ? instructionSets!.reduce((t, si) => t + angleCreditsPerAngle(knobs, Math.max(0, jobImageSets![si].length - 1)), 0)
     : combos.length * angleCreditsPerAngle(knobs, subImageCount);
   // 「実行中でも並列で今すぐ実行」を選んだ場合の上乗せ（順番待ち=無料の既定に
   // 対するオプトイン。通常料金 × 率 + 固定分。フロントと同じ関数・同じ baseCost）。
@@ -384,10 +399,10 @@ export async function POST(request: Request) {
       // Multi-Reference のデバッグ用（既存 jsonb 列・マイグレーション不要）。
       // worker が生成中に vram_used_gb を書き込むので、それとマージされる。
       metadata: {
-        ref_image_count: useSets ? Math.max(...imageSets!.map((s) => s.length)) : imageBuffers.length,
+        ref_image_count: useSets ? Math.max(...jobImageSets!.map((s) => s.length)) : imageBuffers.length,
         priority,
         ...(rawPrompt ? { kind: "scene" } : {}),
-        ...(useSets ? { image_sets: imageSets!.length } : {}),
+        ...(useSets ? { image_sets: jobImageSets!.length } : {}),
       },
     })
     .select("id")
@@ -417,7 +432,7 @@ export async function POST(request: Request) {
       mode,
       seed,
       rawPrompt,
-      ...(useSets ? { imageSets: imageSets!, instructionSets: instructionSets! } : {}),
+      ...(useSets ? { imageSets: jobImageSets!, instructionSets: instructionSets! } : {}),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

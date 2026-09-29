@@ -23,8 +23,10 @@ import {
 import {
   ANGLE_MODES,
   ANGLE_PRESETS,
+  angleCombosCredits,
+  angleCombosEstimatedSeconds,
+  angleComboUsesSubRefs,
   angleCreditsPerAngle,
-  angleEstimatedSeconds,
   anglePriorityParallelSurcharge,
   AZIMUTH_OPTIONS,
   angleSelectionWarning,
@@ -1059,12 +1061,14 @@ export function MultiAngleStudioTab() {
   const count = combos.length;
   // Multi-Reference: サブ参照ぶんの生成時間増（B300 実測 ~3.0x @ 3枚）を単価へ反映。
   const subRefCount = subImages.length;
+  // サブ参照は真横・後ろ寄りの構図にだけ付く（angleComboUsesSubRefs）。料金・時間は構図ごとに足す（API と同じ関数）。
   const perAngleBase = angleCreditsPerAngle(knobs);
   const perAngle = angleCreditsPerAngle(knobs, subRefCount);
-  const cost = count * perAngle;
+  const refCombosCount = subRefCount > 0 ? combos.filter(angleComboUsesSubRefs).length : 0;
+  const cost = angleCombosCredits(combos, subRefCount, knobs);
   const angleCap = MAX_ANGLES;
   const overCap = count > angleCap;
-  const estMinutes = Math.round(angleEstimatedSeconds(count, subRefCount) / 60);
+  const estMinutes = Math.round(angleCombosEstimatedSeconds(combos, subRefCount) / 60);
   const underMin = count > 0 && count < MIN_ANGLES;
 
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
@@ -1208,7 +1212,7 @@ export function MultiAngleStudioTab() {
   const handleReroll = async (index: number) => {
     const combo = submittedCombos[index];
     if (!image || !user || !combo || reroll) return;
-    if (!creditsLoading && (credits ?? 0) < perAngle) return setChargeOpen(true);
+    if (!creditsLoading && (credits ?? 0) < angleCombosCredits([combo], subImages.length, knobs)) return setChargeOpen(true);
     try {
       // seed を渡さない = worker が generator なしで実行 → 毎回別の結果。
       // サブ参照画像も再送して Multi-Reference の整合性を保つ。
@@ -1590,17 +1594,17 @@ export function MultiAngleStudioTab() {
           <p className="-mt-2 flex items-start gap-2 text-xs leading-relaxed text-muted">
             <Sparkles size={14} className="mt-0.5 shrink-0 text-neon-violet" />
             {user
-              ? `1 構図あたり ${perAngle} クレジット（${ANGLE_MODES[mode].label}）。生成は 1 構図完了するごとに下のギャラリーへ順次追加されます。`
+              ? `1 構図あたり ${perAngleBase} クレジット（${ANGLE_MODES[mode].label}）。生成は 1 構図完了するごとに下のギャラリーへ順次追加されます。`
               : "Multi-Angle Studio の利用にはログインが必要です。"}
           </p>
 
           {subRefCount > 0 && (
             <p className="-mt-2 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-300">
               <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-              サブ参照 {subRefCount} 枚ぶん、1 構図の生成時間・消費クレジットが約
-              {(perAngle / perAngleBase).toFixed(1)} 倍（{perAngleBase} → {perAngle} クレジット/構図）。
-              この選択（{count} 構図）だと生成におよそ {estMinutes} 分かかります。
-              出力の縦横比はサブ参照画像に寄ります。
+              サブ参照は真横・後ろ寄りの構図にだけ使います（正面・斜め前はメイン画像だけで作ります）。
+              サブ参照を使う構図は、生成時間・消費クレジットが約 {(perAngle / perAngleBase).toFixed(1)} 倍
+              （{perAngleBase} → {perAngle} クレジット/構図）。この選択（{count} 構図のうち {refCombosCount} 構図がサブ参照あり）だと
+              合計 {cost} クレジット・生成におよそ {estMinutes} 分です。サブ参照を使う構図は、出力の縦横比がサブ参照画像に寄ります。
             </p>
           )}
 

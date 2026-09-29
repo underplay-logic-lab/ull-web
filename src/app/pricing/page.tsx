@@ -74,11 +74,12 @@ function buildSections(knobs: PricingKnobs) {
     },
     {
       title: "🎭 マルチアングル",
-      lead: `1 構図あたり ${perAngle}C。別の角度の参考画像（サブ参照）を足すと、1 枚ごとに 1 構図の単価が上がります。`,
+      lead: `1 構図あたり ${perAngle}C。別の角度の参考画像（サブ参照）を足すと、それを使う真横・後ろ寄りの構図だけ、1 枚ごとに単価が上がります。`,
       rows: [
         { label: "3 構図", credits: perAngle * 3 },
         { label: "6 構図（正面・斜め・真横・背面・アオリ・フカン）", credits: perAngle * 6 },
-        { label: "6 構図・サブ参照画像 1 枚", credits: angleCreditsPerAngle(knobs, 1) * 6 },
+        // 6 構図のうちサブ参照を使うのは真横・背面の 2 構図（angleComboUsesSubRefs）。
+        { label: "6 構図・サブ参照画像 1 枚", credits: perAngle * 4 + angleCreditsPerAngle(knobs, 1) * 2 },
       ] as Row[],
     },
     {

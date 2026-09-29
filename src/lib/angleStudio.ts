@@ -328,12 +328,38 @@ export function isAngleSelectionEmpty(selection: AngleSelection): boolean {
   );
 }
 
-export function angleGenerationCost(
-  selection: AngleSelection,
+// 参照の使い分け（2026-09-29、素材づくりから展開）: サブ参照は元画像に写っていない側（真横・後ろ寄り）を
+// 補うためのもので、正面・斜め前はメイン 1 枚で足りる。そこで真横・後ろ寄りの構図にだけサブ参照を付け、
+// それ以外はメインだけで作る（1 構図の時間・単価がサブ参照ぶん上がらない）。API はこの判定で行ごとの
+// 画像セットを組み、料金も構図ごとに足し合わせる。フロントの表示も同じ関数を通す。
+export const ANGLE_AZIMUTHS_NEED_SUB_REFS: ReadonlySet<string> = new Set([
+  "right_profile",
+  "back_right",
+  "back",
+  "back_left",
+  "left_profile",
+]);
+
+/** この構図でサブ参照を使うか（向きを変えない構図・正面〜斜め前は使わない）。 */
+export function angleComboUsesSubRefs(combo: Pick<AngleCombo, "selection">): boolean {
+  return combo.selection.azimuths.some((a) => ANGLE_AZIMUTHS_NEED_SUB_REFS.has(a));
+}
+
+/** 構図ごとに参照の有無を見て単価を足し合わせたジョブの料金。 */
+export function angleCombosCredits(
+  combos: Pick<AngleCombo, "selection">[],
+  subImageCount: number,
   knobs: PricingKnobs = DEFAULT_KNOBS,
-  subImageCount = 0,
 ): number {
-  return angleSelectionCount(selection) * angleCreditsPerAngle(knobs, subImageCount);
+  return combos.reduce(
+    (t, c) => t + angleCreditsPerAngle(knobs, angleComboUsesSubRefs(c) ? subImageCount : 0),
+    0,
+  );
+}
+
+/** 構図ごとに参照の有無を見たジョブ全体の生成時間の目安（秒）。 */
+export function angleCombosEstimatedSeconds(combos: Pick<AngleCombo, "selection">[], subImageCount: number): number {
+  return combos.reduce((t, c) => t + angleSecondsPerAngle(angleComboUsesSubRefs(c) ? subImageCount : 0), 0);
 }
 
 // 実行中のジョブを待たず並列で今すぐ実行する場合の追加料金（既定の「順番待ち」
