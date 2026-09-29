@@ -70,6 +70,8 @@ export async function startAngleJob(params: {
   subScopes?: SubRefScope[];
   /** 出力を縦長（832×1248）にする（2026-09-29、顔アップ→全身の候補）。 */
   aspect?: "portrait";
+  /** ネガティブプロンプト（2026-09-30、素材づくり）。 */
+  negativePrompt?: string;
 }): Promise<StartAngleJobResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -128,6 +130,7 @@ export async function startAngleJob(params: {
       ...(imageSetIdx ? { imageSets: imageSetIdx } : {}),
       ...(params.subScopes && params.subScopes.length > 0 ? { subRefScopes: params.subScopes } : {}),
       ...(params.aspect ? { aspect: params.aspect } : {}),
+      ...(params.negativePrompt ? { negativePrompt: params.negativePrompt } : {}),
       mode: params.mode,
       seed: params.seed,
       priority: params.priority ?? false,

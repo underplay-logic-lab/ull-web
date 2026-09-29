@@ -164,6 +164,8 @@ export async function POST(request: Request) {
   let subRefScopesRaw: unknown;
   // 出力の縦横（2026-09-29）: "portrait" なら 832×1248（~1MP、料金・時間は従来どおり）。顔アップ→全身の候補用。
   let aspectRaw: unknown;
+  // ネガティブプロンプト（2026-09-30、素材づくり）。制御文字を落として 600 文字まで。
+  let negativeRaw: unknown;
 
   if (contentType.includes("application/json")) {
     let body: Record<string, unknown>;
@@ -210,6 +212,7 @@ export async function POST(request: Request) {
     subRefAllRaw = body.subRefAll;
     subRefScopesRaw = body.subRefScopes;
     aspectRaw = body.aspect;
+    negativeRaw = body.negativePrompt;
   } else {
     let formData: FormData;
     try {
@@ -460,6 +463,9 @@ export async function POST(request: Request) {
       rawPrompt,
       ...(useSets ? { imageSets: jobImageSets!, instructionSets: instructionSets! } : {}),
       ...(aspectRaw === "portrait" ? { outputSize: { width: 832, height: 1248 } } : {}),
+      ...(typeof negativeRaw === "string" && negativeRaw.trim()
+        ? { negativePrompt: negativeRaw.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 600) }
+        : {}),
     });
     // admin の中止ボタンが Modal の実行まで止められるよう、実行 id を残す（best-effort）。
     await rememberAngleCall(jobId, modalCallId);

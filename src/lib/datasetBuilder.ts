@@ -65,19 +65,33 @@ export const VIEW_CHIPS: SceneChip[] = [
 
 // 表情・服装（2026-09-28、ホスト指摘「全部スーツで似た画像ばかり」）。LoRA でも服装・表情の幅があると、
 // 服やスーツを「人物の一部」として覚え込まず、プロンプトで変えやすくなる。
-// 表情は控えめな言い方にする（2026-09-29 ホスト実走: 照れ＝顔が真っ赤、悲しみ＝アニメ調、怒り＝別人、笑顔も人が変わる）。
-// 強い表現ほど顔ごと作り替えるので「少しだけ」に寄せ、顔立ちは変えない旨を添える（IDENTITY_EN 側）。id は保存済みの選択と互換。
+// 表情は感情の単語を使わず、顔のパーツの形だけで指示する（2026-09-30、3 回目）。
+// 経緯: 強い表現（照れ・怒り・悲しみ）→ 真っ赤・アニメ調・別人。「少し〜」「赤面なし」に弱めても、shy/blush/pout 等の
+// 単語そのものがアニメの誇張表情を連想させ、否定（no blushing）も効かなかった。形の指示＋ネガティブプロンプト
+// （sceneNegativePrompt）で抑える。id は保存済みの選択と互換。
 export const EXPRESSION_CHIPS: SceneChip[] = [
   { id: "neutral", label: "真顔", en: "with a calm neutral expression" },
-  { id: "smile", label: "微笑み", en: "with a gentle, soft smile" },
-  { id: "laugh", label: "歯を見せて笑う", en: "with a natural smile showing a little teeth" },
-  { id: "surprised", label: "少し驚き", en: "with slightly raised eyebrows, mildly surprised" },
-  // 照れは赤面の語を使わない（blush がアニメの照れ顔・画風ごと引っ張った、2026-09-29 ホスト 2 回目）。仕草で表す。
-  { id: "shy", label: "少しはにかむ", en: "looking slightly away with a shy, gentle smile, no blushing, natural skin tone" },
-  // 怒りは頬を膨らませる等の誇張を避け、唇を軽く結ぶ程度に（2 回目でもまだ強かった）。
-  { id: "angry", label: "少し口をとがらせる", en: "with lips lightly pressed together in a subtle pout, eyes calm" },
-  { id: "sad", label: "少し寂しげ", en: "with a slightly wistful look in the eyes, no tears" },
+  { id: "smile", label: "微笑み", en: "with the corners of the mouth slightly raised in a soft closed-mouth smile" },
+  { id: "laugh", label: "歯を見せて笑う", en: "with a natural open-mouth smile showing a little of the upper teeth" },
+  { id: "surprised", label: "少し驚き", en: "with the eyebrows slightly raised, the eyes a little wider than usual and the mouth slightly open" },
+  { id: "shy", label: "少しはにかむ", en: "with the head tilted slightly down, the eyes looking slightly to the side and a small closed-mouth smile" },
+  { id: "angry", label: "少し口をとがらせる", en: "with the lips pushed slightly forward, while the eyebrows and eyes stay relaxed and neutral" },
+  { id: "sad", label: "少し寂しげ", en: "with the corners of the mouth slightly lowered and the eyelids slightly lowered, the eyebrows relaxed" },
 ];
+
+/** 元画像の画風（2026-09-30）。photo のときはアニメ・イラスト調をネガティブに入れる（実写がアニメ調に転ぶ対策）。 */
+export type SourceStyle = "auto" | "photo" | "illust";
+
+/**
+ * 素材づくりの本生成に付けるネガティブプロンプト（2026-09-30）。本文の「〜なし」はこの種のモデルでは効かないので、
+ * 避けたいものはネガティブ側へ。赤面・涙・誇張した表情・険しい目は常に、画風は選んだときだけ。
+ */
+export function sceneNegativePrompt(style: SourceStyle): string {
+  const base = "blush, flushed red cheeks, red face, tears, crying, exaggerated facial expression, glaring eyes, furrowed brows, angry eyes";
+  if (style === "photo") return `${base}, anime, cartoon, illustration, drawing, manga, 3d render, cgi, doll-like skin`;
+  if (style === "illust") return `${base}, photorealistic, photograph, real person`;
+  return base;
+}
 
 export const OUTFIT_CHIPS: SceneChip[] = [
   { id: "same", label: "元の服装のまま", en: "" },

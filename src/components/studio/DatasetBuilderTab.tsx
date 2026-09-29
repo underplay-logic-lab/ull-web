@@ -53,6 +53,8 @@ import {
   bodyDesignSpecs,
   mainRouteOf,
   bodyDesignSentence,
+  sceneNegativePrompt,
+  type SourceStyle,
   type BodyDesign,
   type MainRoute,
 } from "@/lib/datasetBuilder";
@@ -173,6 +175,8 @@ type PersistedForm = {
   sideFaceChoice?: SideFaceChoice;
   /** 全身から始めたとき体つきを調整するか（2026-09-29）。 */
   adjustBody?: boolean;
+  /** 元画像の画風（2026-09-30）。実写ならアニメ・イラスト調をネガティブに入れる。 */
+  sourceStyle?: SourceStyle;
 };
 /** 進行中／完了した「1 回の指定」。File は保存できないので、リロード後は結果の表示と LoRA への送りだけできる。 */
 type PersistedRun = {
@@ -549,6 +553,7 @@ export function DatasetBuilderTab() {
   const [hairNote, setHairNote] = useState<string>(() => savedForm?.hairNote ?? "");
   const [sideFaceChoice, setSideFaceChoice] = useState<SideFaceChoice>(() => savedForm?.sideFaceChoice ?? "auto");
   const [adjustBody, setAdjustBody] = useState<boolean>(() => savedForm?.adjustBody ?? false);
+  const [sourceStyle, setSourceStyle] = useState<SourceStyle>(() => savedForm?.sourceStyle ?? "auto");
 
   useEffect(() => {
     saveFormState(FORM_ID, {
@@ -563,8 +568,9 @@ export function DatasetBuilderTab() {
       precision,
       sideFaceChoice,
       adjustBody,
+      sourceStyle,
     } satisfies PersistedForm);
-  }, [sel, count, confirmFirst, bodyDesign, routeOverride, mainFraming, sendOriginal, hairNote, precision, sideFaceChoice, adjustBody]);
+  }, [sel, count, confirmFirst, bodyDesign, routeOverride, mainFraming, sendOriginal, hairNote, precision, sideFaceChoice, adjustBody, sourceStyle]);
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
@@ -781,6 +787,7 @@ export function DatasetBuilderTab() {
           mode: "standard",
           scenes,
           imageSets: sets,
+          negativePrompt: sceneNegativePrompt(sourceStyle),
         });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
         const next: PersistedRun = { ...r, jobIds: [...r.jobIds, res.jobId] };
@@ -799,7 +806,7 @@ export function DatasetBuilderTab() {
         }
       }
     },
-    [user, commitRun, perImage, gpuLock, quickBody, bodyDesign],
+    [user, commitRun, perImage, gpuLock, quickBody, bodyDesign, sourceStyle],
   );
   const runOpt = useMemo(
     () =>
@@ -1179,6 +1186,30 @@ export function DatasetBuilderTab() {
                     {label}
                   </button>
                 ))}
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                <span className="text-muted">元画像の画風:</span>
+                {(
+                  [
+                    ["auto", "おまかせ"],
+                    ["photo", "実写"],
+                    ["illust", "イラスト・アニメ"],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setSourceStyle(id)}
+                    className={`rounded-full border px-2.5 py-1 ${
+                      sourceStyle === id
+                        ? "border-neon-violet/60 bg-neon-violet/15 text-foreground"
+                        : "border-border text-muted hover:text-foreground"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+                <span className="text-[10px] text-muted/80">実写を選ぶと、アニメ調に転ぶのを抑えます。</span>
               </div>
               <p className="text-[10px] leading-relaxed text-muted">
                 {precision === "careful"
