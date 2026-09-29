@@ -56,8 +56,8 @@ function ImageGenMaintenancePlaceholder() {
 
 export function Studio() {
   const { user, loading: userLoading } = useSupabaseUser();
-  // 別アカウントに切り替わっていたら、前のアカウントの作業状態（実行中ジョブ等）を消してから
-  // タブを出す（消したら読み直す）。タブはマウント時に保存分を読むので、判定が済むまで描画しない。
+  // 別アカウントに切り替わっていたら、前のアカウントの作業状態（実行中ジョブ等）を退避し、今のアカウントの
+  // 退避分を戻してからタブを出す（入れ替えたら読み直す）。タブはマウント時に保存分を読むので、判定が済むまで描画しない。
   const [storageReady, setStorageReady] = useState(false);
   useEffect(() => {
     if (userLoading) return;

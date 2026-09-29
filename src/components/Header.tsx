@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { Menu, X, LogIn, LogOut, Settings, UserCircle2 } from "lucide-react";
 import { navLinks, siteConfig } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
+import { LogoutModal } from "@/components/LogoutModal";
 import { BrandLink } from "@/components/BrandLink";
 import { CreditsBadge } from "@/components/CreditsBadge";
 import { MemberRankBadge } from "@/components/MemberRankBadge";
@@ -16,6 +17,7 @@ import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { supabase } from "@/lib/supabaseClient";
 import { openPolarPortal } from "@/lib/polarPortal";
+import { clearStudioStorage } from "@/lib/studioStorageOwner";
 
 const PAID_TIER_LABEL: Record<string, string> = {
   entry: "Entry",
@@ -118,8 +120,20 @@ export function Header() {
     // On success openPolarPortal navigates away.
   };
 
-  const handleLogout = () => {
-    supabase.auth.signOut();
+  const [logoutOpen, setLogoutOpen] = useState(false);
+  const [logoutBusy, setLogoutBusy] = useState(false);
+  const handleLogout = () => setLogoutOpen(true);
+  const doLogout = async (clear: boolean) => {
+    setLogoutBusy(true);
+    try {
+      if (clear) await clearStudioStorage(user?.id ?? null);
+      await supabase.auth.signOut();
+    } finally {
+      setLogoutBusy(false);
+      setLogoutOpen(false);
+    }
+    // 消した場合、マウント済みのタブが古い状態を持ったままなので読み直す。
+    if (clear) window.location.reload();
   };
 
   // Re-clicking a nav link for the section already in view is a no-op for
@@ -318,6 +332,7 @@ export function Header() {
       )}
 
       <LoginModal open={loginOpen} onClose={() => setLoginOpen(false)} />
+      <LogoutModal open={logoutOpen} onClose={() => setLogoutOpen(false)} onLogout={doLogout} loading={logoutBusy} />
       <CancellationWarningModal
         open={cancelModalOpen}
         onClose={() => {
