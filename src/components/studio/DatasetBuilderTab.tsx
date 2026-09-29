@@ -76,11 +76,11 @@ import { useLocalWarmCountdown } from "@/hooks/useLocalWarmCountdown";
 import { deriveFramingSources, type FramingSources } from "@/lib/smartCrop";
 import { fileStoreClear, fileStoreGet, fileStorePut } from "@/lib/fileStore";
 import {
-  BACK_VIEW_SPECS,
+  backViewSpecs,
   CandidatePanel,
   createGpuLock,
   FULL_BODY_SPECS,
-  SIDE_VIEW_SPECS,
+  sideViewSpecs,
   type CandidatePick,
 } from "@/components/studio/DatasetRefBuilder";
 import { WarmCountdownBanner } from "@/components/studio/QueueChoiceModal";
@@ -105,6 +105,8 @@ type PersistedForm = {
   mainFraming?: string;
   /** 顔アップの元画像も LoRA へ送るか（既定 true）。 */
   sendOriginal?: boolean;
+  /** 後ろ髪の指定（任意・日本語可、真横・後ろ姿の候補に使う）。 */
+  hairNote?: string;
 };
 /** 進行中／完了した「1 回の指定」。File は保存できないので、リロード後は結果の表示と LoRA への送りだけできる。 */
 type PersistedRun = {
@@ -474,9 +476,19 @@ export function DatasetBuilderTab() {
   const [bodyDesign, setBodyDesign] = useState<BodyDesign>(() => ({ ...EMPTY_BODY_DESIGN, ...(savedForm?.body ?? {}) }));
   const [routeOverride, setRouteOverride] = useState<MainRoute | "auto">(() => savedForm?.routeOverride ?? "auto");
   const [sendOriginal, setSendOriginal] = useState<boolean>(() => savedForm?.sendOriginal ?? true);
+  const [hairNote, setHairNote] = useState<string>(() => savedForm?.hairNote ?? "");
   useEffect(() => {
-    saveFormState(FORM_ID, { sel, count, confirmFirst, body: bodyDesign, routeOverride, mainFraming, sendOriginal } satisfies PersistedForm);
-  }, [sel, count, confirmFirst, bodyDesign, routeOverride, mainFraming, sendOriginal]);
+    saveFormState(FORM_ID, {
+      sel,
+      count,
+      confirmFirst,
+      body: bodyDesign,
+      routeOverride,
+      mainFraming,
+      sendOriginal,
+      hairNote,
+    } satisfies PersistedForm);
+  }, [sel, count, confirmFirst, bodyDesign, routeOverride, mainFraming, sendOriginal, hairNote]);
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
@@ -565,6 +577,7 @@ export function DatasetBuilderTab() {
 
   const subCount = subImages.length;
   const perImage = sceneCreditsPerImage(knobs, 0);
+  const perImageWithRef = sceneCreditsPerImage(knobs, 1);
   const safeCount = Math.max(1, Math.min(SCENE_MAX_COUNT, Math.trunc(count || 0)));
   const batchOpt = useMemo(
     () => ({ subCount, closeMain, derived: derivedFlags, hasBackRef: Boolean(refBack), hasSideRef: Boolean(refSide) }),
@@ -582,6 +595,12 @@ export function DatasetBuilderTab() {
   // 経路（2026-09-29）: 顔アップ→体の設計が必須／上半身→下の服は任意／全身→そのまま。手動で切り替えられる。
   const mainRoute = image ? mainRouteOf(mainFraming, routeOverride) : null;
   const needsBaseFull = Boolean(image) && !baseFull && !deriving && mainRoute !== null && mainRoute !== "full";
+  // 真横 → 後ろ姿の順（2026-09-29）。一覧に真横があれば、後ろ姿は確定した真横を添えて作る（髪を真横に揃える）。
+  const sideInPlan = viewsInPlan.has("side");
+  const backUsesSide = Boolean(refSide) || sideInPlan;
+  const backBlocked = backUsesSide && !refSide ? "先に上の「真横の参照」を確定してください（後ろ髪を真横に揃えるため）。" : null;
+  const sideSpecs = useMemo(() => sideViewSpecs(hairNote), [hairNote]);
+  const backSpecs = useMemo(() => backViewSpecs(hairNote, backUsesSide), [hairNote, backUsesSide]);
   const baseFullSpecs = useMemo(
     () => (mainRoute === "face" || mainRoute === "upper" ? bodyDesignSpecs(bodyDesign, mainRoute) : FULL_BODY_SPECS),
     [mainRoute, bodyDesign],
@@ -1127,43 +1146,13 @@ export function DatasetBuilderTab() {
               )}
             </CandidatePanel>
           )}
-          {effectiveMain && (viewsInPlan.has("back") || refBack) && (
-            <CandidatePanel
-              title={refBack ? "後ろ姿の参照（確定済み）" : "後ろ姿の参照を作る"}
-              description="後ろ向きの行は、ここで選んだ後ろ姿を参照にして作ります（選ばないと毎回ちがう背中になります）。手持ちの後ろ姿があればそれを、無ければ候補を作って選びます。選ぶと参照欄に入ります。"
-              user={user}
-              image={effectiveMain}
-              specs={BACK_VIEW_SPECS}
-              costPerImage={perImage}
-              credits={credits}
-              storageKey="dataset-builder-cand-back"
-              picked={picks.back ?? null}
-              hasPickedFile={Boolean(refBack)}
-              onPick={(pick, file) => {
-                setPicks((p) => ({ ...p, back: pick }));
-                putRef(refBack, file);
-                setRefBack(file);
-              }}
-              onLogin={() => setLoginOpen(true)}
-              onCharge={() => setChargeOpen(true)}
-              fileName="ref_back.png"
-              gpuLock={gpuLock}
-              confirmed={refBack}
-              existingRefs={subImages}
-              onPickLocal={(file) => {
-                setPicks((p) => ({ ...p, back: null }));
-                if (!subImages.includes(file)) putRef(refBack, file);
-                setRefBack(file);
-              }}
-            />
-          )}
           {effectiveMain && (viewsInPlan.has("side") || refSide) && (
             <CandidatePanel
               title={refSide ? "真横の参照（確定済み）" : "真横の参照を作る"}
-              description="真横の行は、ここで選んだ真横を参照にして作ります。手持ちの真横があればそれを、無ければ候補を作って選びます。選ぶと参照欄に入ります。"
+              description="真横の行は、ここで選んだ真横を参照にして作ります。候補は後ろ髪を「正面どおり・少し長め・少し短め・毛先違い」に振るので、イメージに合う 1 枚を選んでください（後ろ姿はこの真横に揃えます）。手持ちの真横があればそれでも構いません。選ぶと参照欄に入ります。"
               user={user}
               image={effectiveMain}
-              specs={SIDE_VIEW_SPECS}
+              specs={sideSpecs}
               costPerImage={perImage}
               credits={credits}
               storageKey="dataset-builder-cand-side"
@@ -1184,6 +1173,56 @@ export function DatasetBuilderTab() {
                 setPicks((p) => ({ ...p, side: null }));
                 if (!subImages.includes(file)) putRef(refSide, file);
                 setRefSide(file);
+              }}
+            >
+              {!refSide && (
+                <label className="flex flex-wrap items-center gap-1 text-[10px] text-muted">
+                  後ろ髪の指定（任意・日本語可）
+                  <input
+                    type="text"
+                    value={hairNote}
+                    onChange={(e) => setHairNote(e.target.value)}
+                    placeholder="例: 腰までのストレート／襟足は刈り上げ／低い位置で一つ結び"
+                    maxLength={120}
+                    className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] text-foreground placeholder:text-muted/60"
+                  />
+                </label>
+              )}
+            </CandidatePanel>
+          )}
+          {effectiveMain && (viewsInPlan.has("back") || refBack) && (
+            <CandidatePanel
+              title={refBack ? "後ろ姿の参照（確定済み）" : "後ろ姿の参照を作る"}
+              description={
+                backUsesSide
+                  ? "後ろ向きの行は、ここで選んだ後ろ姿を参照にして作ります。候補は確定した真横を一緒に見せて、後ろ髪の長さ・形を真横に揃えます。手持ちの後ろ姿があればそれでも構いません。選ぶと参照欄に入ります。"
+                  : "後ろ向きの行は、ここで選んだ後ろ姿を参照にして作ります（選ばないと毎回ちがう背中になります）。手持ちの後ろ姿があればそれを、無ければ候補を作って選びます。選ぶと参照欄に入ります。"
+              }
+              user={user}
+              image={effectiveMain}
+              specs={backSpecs}
+              subImages={backUsesSide && refSide ? [refSide] : undefined}
+              blockedReason={refBack ? null : backBlocked}
+              costPerImage={backUsesSide ? perImageWithRef : perImage}
+              credits={credits}
+              storageKey="dataset-builder-cand-back"
+              picked={picks.back ?? null}
+              hasPickedFile={Boolean(refBack)}
+              onPick={(pick, file) => {
+                setPicks((p) => ({ ...p, back: pick }));
+                putRef(refBack, file);
+                setRefBack(file);
+              }}
+              onLogin={() => setLoginOpen(true)}
+              onCharge={() => setChargeOpen(true)}
+              fileName="ref_back.png"
+              gpuLock={gpuLock}
+              confirmed={refBack}
+              existingRefs={subImages}
+              onPickLocal={(file) => {
+                setPicks((p) => ({ ...p, back: null }));
+                if (!subImages.includes(file)) putRef(refBack, file);
+                setRefBack(file);
               }}
             />
           )}

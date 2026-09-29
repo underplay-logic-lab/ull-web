@@ -66,6 +66,55 @@ export const SIDE_VIEW_SPECS: CandidateSpec[] = Array.from({ length: CANDIDATE_C
   label: `真横の候補 ${i + 1}`,
 }));
 
+// 真横 → 後ろ姿の順（2026-09-29 ホスト判断）。同じ指示の 4 枚はほぼ同じ絵になる（編集モデルは元画像に忠実で、
+// 正面に写っていない後ろ髪は毎回同じ無難な答えで埋める）。そこで真横は後ろ髪を「正面からの相対」で 4 通りに振って
+// 選んでもらう（短髪・男性でも破綻しないよう長さは決め打ちしない）。後ろ髪の正解を知っているなら hairNote で指定。
+// 後ろ姿は確定した真横をサブ参照に添えて、髪の長さ・形を真横に揃える。
+const SIDE_BASE =
+  "A full body shot in profile view from the side, standing upright, against a plain white background. The outfit must be consistent with the reference. Keep the same character with the identical face, body shape and clothing as the reference, and keep the hair color, bangs and parting visible from the front.";
+const HAIR_VARIANTS: { en: string; ja: string }[] = [
+  { en: "The hair at the back is exactly as long as it appears from the front.", ja: "正面どおり" },
+  { en: "The hair at the back is a little longer than it appears from the front.", ja: "後ろ髪 少し長め" },
+  { en: "The hair at the back is a little shorter than it appears from the front.", ja: "後ろ髪 少し短め" },
+  { en: "The hair at the back has a slightly different volume and flow of the hair ends.", ja: "毛先・ボリューム違い" },
+];
+
+export function sideViewSpecs(hairNote: string): CandidateSpec[] {
+  const note = hairNote.trim();
+  if (note) {
+    return Array.from({ length: CANDIDATE_COUNT }, (_, i) => ({
+      instruction: `${SIDE_BASE} The hair at the back: ${note}.`,
+      label: `真横の候補 ${i + 1}（後ろ髪の指定どおり）`,
+    }));
+  }
+  return HAIR_VARIANTS.slice(0, CANDIDATE_COUNT).map((v, i) => ({
+    instruction: `${SIDE_BASE} ${v.en}`,
+    label: `真横の候補 ${i + 1}（${v.ja}）`,
+  }));
+}
+
+/** 後ろ姿。withSide＝確定した真横を 2 枚目の参照に添える（髪を真横に揃える）。無ければ真横と同じ相対の振り方。 */
+export function backViewSpecs(hairNote: string, withSide: boolean): CandidateSpec[] {
+  const base = `A full body shot seen directly from behind (back view), standing upright, against a plain white background. The outfit must be consistent with the reference. ${IDENTITY}`;
+  const note = hairNote.trim();
+  if (withSide) {
+    return Array.from({ length: CANDIDATE_COUNT }, (_, i) => ({
+      instruction: `${base} The length and shape of the hair at the back must match image 2 (the side view of the same character).${note ? ` The hair at the back: ${note}.` : ""}`,
+      label: `後ろ姿の候補 ${i + 1}（真横に揃える）`,
+    }));
+  }
+  if (note) {
+    return Array.from({ length: CANDIDATE_COUNT }, (_, i) => ({
+      instruction: `${base} The hair at the back: ${note}.`,
+      label: `後ろ姿の候補 ${i + 1}（後ろ髪の指定どおり）`,
+    }));
+  }
+  return HAIR_VARIANTS.slice(0, CANDIDATE_COUNT).map((v, i) => ({
+    instruction: `${base} ${v.en}`,
+    label: `後ろ姿の候補 ${i + 1}（${v.ja}）`,
+  }));
+}
+
 type Status = "idle" | "queued" | "submitting" | "running" | "done" | "error";
 const POLL_MS = 2_000;
 
@@ -143,7 +192,7 @@ function useCandidateJob(storageKey: string) {
   }, [jobId, status, storageKey]);
 
   const start = useCallback(
-    async (user: User, image: File, specs: CandidateSpec[], lock?: GpuLock, aspect?: "portrait") => {
+    async (user: User, image: File, specs: CandidateSpec[], lock?: GpuLock, aspect?: "portrait", subImages: File[] = []) => {
       setStatus("queued");
       setError(null);
       setJob(null);
@@ -153,7 +202,7 @@ function useCandidateJob(storageKey: string) {
         const res = await startAngleJob({
           userId: user.id,
           image,
-          subImages: [],
+          subImages,
           selection: { azimuths: [], elevations: [], distances: [] },
           mode: "standard",
           scenes: specs,
@@ -210,6 +259,7 @@ export function CandidatePanel({
   aspect,
   blockedReason,
   children,
+  subImages,
 }: {
   title: string;
   description: string;
@@ -240,6 +290,8 @@ export function CandidatePanel({
   blockedReason?: string | null;
   /** 説明の下に出す欄（体の設計など）。 */
   children?: ReactNode;
+  /** 候補づくりに毎回添える参照（後ろ姿に確定した真横、2026-09-29）。料金は親が参照込みの単価で渡す。 */
+  subImages?: File[];
 }) {
   const { job, status, error, start, reset } = useCandidateJob(storageKey);
   // 選び中の候補（"jobId:index"）と、派生の元を取りに行っている候補。
@@ -339,7 +391,7 @@ export function CandidatePanel({
     }
     pushHistory(job);
     reset();
-    void start(user, src, specs, gpuLock, aspect);
+    void start(user, src, specs, gpuLock, aspect, subImages);
   };
 
   const onStart = () => {
@@ -347,7 +399,7 @@ export function CandidatePanel({
     if (!image) return;
     if (blockedReason) return;
     if (insufficient) return onCharge();
-    void start(user, image, specs, gpuLock, aspect);
+    void start(user, image, specs, gpuLock, aspect, subImages);
   };
   const fileRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
