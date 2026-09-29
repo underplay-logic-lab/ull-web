@@ -40,7 +40,7 @@ export function LogoutModal({ open, onClose, onLogout, loading = false }: Logout
         </p>
         <p className="mt-2 text-xs leading-relaxed text-muted">
           残すと、次にこのアカウントでログインしたときに続きから始められます。ほかの人も使う端末では「消す」を選んでください。
-          生成した結果はアカウントに保存されているので、どちらを選んでも消えません。
+          消すと、各タブの直近の結果（生成中のものを含む）はこの端末で表示し直せなくなります。必要な結果は先に保存してください。
         </p>
         <div className="mt-6 flex flex-col gap-2">
           <button
