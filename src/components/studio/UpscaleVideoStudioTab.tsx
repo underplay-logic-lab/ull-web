@@ -57,6 +57,7 @@ import { useLocalWarmCountdown } from "@/hooks/useLocalWarmCountdown";
 import {
   QueueChoiceModal,
   QueuedNextBanner,
+  QueueNextButtonLabel,
   WarmCountdownBanner,
 } from "@/components/studio/QueueChoiceModal";
 
@@ -876,10 +877,7 @@ export function UpscaleVideoStudioTab() {
                   送信中…
                 </>
               ) : phase === "running" ? (
-                <>
-                  <Loader2 size={16} className="animate-spin" />
-                  {job?.status === "pending" ? "GPU起動中…" : "処理中…"}
-                </>
+                <QueueNextButtonLabel status={job?.status === "pending" ? "GPU 起動中" : "処理中"} />
               ) : !user ? (
                 <>
                   <LogIn size={16} />

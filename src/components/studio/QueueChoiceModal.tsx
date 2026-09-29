@@ -1,7 +1,7 @@
 "use client";
 
 import { createPortal } from "react-dom";
-import { Flame, X } from "lucide-react";
+import { Flame, Loader2, Plus, X } from "lucide-react";
 import { formatWarmCountdown } from "@/hooks/useLocalWarmCountdown";
 
 // scaledown_window=30 系（Multi-Angle / 超解像・超解像動画 / Cinematic
@@ -114,5 +114,25 @@ export function QueuedNextBanner({ onCancel, count }: { onCancel: () => void; co
         {count != null && count > 1 ? "予約をすべて取り消す" : "予約を取り消す"}
       </button>
     </p>
+  );
+}
+
+/**
+ * 生成中のメインボタンの中身（2026-09-29、ホスト指摘「2 つ目を出せるとは思えない表示で、誰にも使われない」）。
+ * 生成中もボタンは押せて、押すと「順番待ち（無料）／並列実行」を選べる。以前はスピナー付きの「生成中…」だけで
+ * 押せないボタンに見えていたので、「次の生成を予約」を主役にし、今の状態は小さく添える。
+ */
+export function QueueNextButtonLabel({ status }: { status: string }) {
+  return (
+    <span className="flex flex-col items-center leading-tight">
+      <span className="inline-flex items-center gap-1.5">
+        <Plus size={16} />
+        次の生成を予約する（順番待ちは無料）
+      </span>
+      <span className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-normal opacity-80">
+        <Loader2 size={10} className="animate-spin" />
+        いま: {status}
+      </span>
+    </span>
   );
 }

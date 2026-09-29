@@ -69,6 +69,7 @@ import {
 import {
   QueueChoiceModal,
   QueuedNextBanner,
+  QueueNextButtonLabel,
   WarmCountdownBanner,
 } from "@/components/studio/QueueChoiceModal";
 import { LoginModal } from "@/components/LoginModal";
@@ -1379,18 +1380,11 @@ export function MultiAngleStudioTab() {
       </>
     );
   } else if (phase === "running") {
-    buttonLabel =
-      job?.status === "pending" ? (
-        <>
-          <Loader2 size={16} className="animate-spin" />
-          GPU起動中...
-        </>
-      ) : (
-        <>
-          <Loader2 size={16} className="animate-spin" />
-          生成中 {job ? `${job.completedAngles}/${job.totalAngles}` : ""}
-        </>
-      );
+    buttonLabel = (
+      <QueueNextButtonLabel
+        status={job?.status === "pending" ? "GPU 起動中" : `生成中 ${job ? `${job.completedAngles}/${job.totalAngles}` : ""}`}
+      />
+    );
   } else if (!user) {
     buttonLabel = (
       <>

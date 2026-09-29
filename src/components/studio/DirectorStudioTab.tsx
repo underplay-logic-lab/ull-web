@@ -71,6 +71,7 @@ import { useLocalWarmCountdown } from "@/hooks/useLocalWarmCountdown";
 import {
   QueueChoiceModal,
   QueuedNextBanner,
+  QueueNextButtonLabel,
   WarmCountdownBanner,
 } from "@/components/studio/QueueChoiceModal";
 
@@ -1266,13 +1267,15 @@ export function DirectorStudioTab() {
                   <Zap size={16} />
                   クレジットをチャージ
                 </>
-              ) : phase === "submitting"
-                ? "送信中..."
-                : phase === "running"
-                  ? job?.status === "processing"
-                    ? `生成中... ${formatElapsedSeconds(elapsedMs)}`
-                    : "生成準備中（GPU起動中）..."
-                  : "生成する"}
+              ) : phase === "submitting" ? (
+                "送信中..."
+              ) : phase === "running" ? (
+                <QueueNextButtonLabel
+                  status={job?.status === "processing" ? `生成中 ${formatElapsedSeconds(elapsedMs)}` : "生成準備中（GPU 起動中）"}
+                />
+              ) : (
+                "生成する"
+              )}
             </button>
           )}
           {!busy && gpuWarm && <WarmCountdownBanner remainingMs={gpuWarmMs} />}
