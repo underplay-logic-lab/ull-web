@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowRight, Heart, Loader2, MessageSquare } from "lucide-react";
+import { Heart, Loader2, MessageSquare } from "lucide-react";
 import { EditableText } from "@/components/EditableText";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -22,21 +22,65 @@ export function Support() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [thanks, setThanks] = useState(false);
+  // 支援者からのひとこと（2026-09-29）: 決済から戻ったときだけ書ける。checkout_id で寄付を確かめて受け付ける。
+  const [checkoutId, setCheckoutId] = useState<string | null>(null);
+  const [note, setNote] = useState("");
+  const [noteName, setNoteName] = useState("");
+  const [noteBusy, setNoteBusy] = useState(false);
+  const [noteSent, setNoteSent] = useState(false);
+  const [noteError, setNoteError] = useState<string | null>(null);
 
-  // Polar から ?donation=thanks で戻ってきたときだけお礼を出す。
+  // Polar から ?donation=thanks で戻ってきたときだけお礼を出す。checkout_id は再読み込みでも書けるよう
+  // sessionStorage に残す（URL からは消す）。
   useEffect(() => {
     try {
       const url = new URL(window.location.href);
       if (url.searchParams.get("donation") === "thanks") {
+        const id = url.searchParams.get("checkout_id");
         // 同期 setState を避ける（react-hooks/set-state-in-effect）。
-        void Promise.resolve().then(() => setThanks(true));
+        void Promise.resolve().then(() => {
+          setThanks(true);
+          if (id && !id.includes("{")) {
+            setCheckoutId(id);
+            try {
+              window.sessionStorage.setItem("ull_support_checkout", id);
+            } catch {
+              // ignore
+            }
+          }
+        });
         url.searchParams.delete("donation");
+        url.searchParams.delete("checkout_id");
         window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash || "#support"}`);
+      } else {
+        const saved = window.sessionStorage.getItem("ull_support_checkout");
+        if (saved) void Promise.resolve().then(() => setCheckoutId(saved));
       }
     } catch {
       // ignore
     }
   }, []);
+
+  const sendNote = async () => {
+    if (!checkoutId || !note.trim() || noteBusy) return;
+    setNoteBusy(true);
+    setNoteError(null);
+    try {
+      const res = await fetch("/api/support/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ checkoutId, message: note, name: noteName }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || "送信に失敗しました。");
+      setNoteSent(true);
+      setNote("");
+    } catch (err) {
+      setNoteError(err instanceof Error ? err.message : "送信に失敗しました。");
+    } finally {
+      setNoteBusy(false);
+    }
+  };
 
   const amount = useCustom ? Number.parseInt(custom.replace(/[^0-9]/g, ""), 10) : selected;
   const amountValid = Number.isFinite(amount) && amount >= MIN_JPY && amount <= MAX_JPY;
@@ -95,6 +139,46 @@ export function Support() {
             <p className="mx-auto mt-5 max-w-md rounded-xl border border-neon-pink/40 bg-neon-pink/10 px-4 py-3 text-sm text-neon-pink">
               ご支援ありがとうございます。維持費と機能追加に大切に使わせていただきます。
             </p>
+          )}
+          {checkoutId && (
+            <div className="mx-auto mt-4 max-w-md space-y-2 rounded-xl border border-neon-violet/40 bg-neon-violet/5 px-4 py-3 text-left">
+              {noteSent ? (
+                <p className="text-sm text-neon-violet">ひとこと、確かに受け取りました。ありがとうございます。</p>
+              ) : (
+                <>
+                  <p className="text-sm font-medium text-foreground">ひとこと添えませんか？（任意）</p>
+                  <p className="text-[11px] leading-relaxed text-muted">
+                    「こうなったらいいな」「この設定が欲しい」など、何でもどうぞ。次に作るものを決めるとき、ちゃんと読んでいます。
+                  </p>
+                  <textarea
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    rows={4}
+                    maxLength={2000}
+                    placeholder="例: LoRA の学習設定をもう少し細かく選べるとうれしいです"
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted/60"
+                  />
+                  <input
+                    type="text"
+                    value={noteName}
+                    onChange={(e) => setNoteName(e.target.value)}
+                    maxLength={50}
+                    placeholder="お名前（任意・ニックネーム可）"
+                    className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground placeholder:text-muted/60"
+                  />
+                  {noteError && <p className="text-xs text-red-300">{noteError}</p>}
+                  <button
+                    type="button"
+                    onClick={() => void sendNote()}
+                    disabled={noteBusy || !note.trim()}
+                    className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    {noteBusy ? <Loader2 size={14} className="animate-spin" /> : <MessageSquare size={14} />}
+                    ひとことを送る
+                  </button>
+                </>
+              )}
+            </div>
           )}
 
           <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
@@ -161,24 +245,18 @@ export function Support() {
             寄付は返金・クレジット付与の対象外です。
           </p>
 
-          {/* 要望・リクエストはお問い合わせへ（2026-09-24 ホスト要望）。受け付けは会員特典（2026-09-29、誰でも送れる印象を消す）。 */}
-          <a
-            href="#contact"
-            className="mt-5 flex flex-col items-center justify-between gap-3 rounded-xl border border-neon-violet/30 bg-neon-violet/5 px-5 py-4 text-left transition-colors hover:bg-neon-violet/10 sm:flex-row"
-          >
-            <span className="flex items-start gap-2 text-sm leading-relaxed text-foreground/90">
-              <MessageSquare size={16} className="mt-0.5 shrink-0 text-neon-violet" />
+          {/* 支援とひとことをセットに（2026-09-29 ホスト案）。会員特典の機能リクエストとは別枠のゆるい窓口。 */}
+          <div className="mt-5 flex items-start gap-2 rounded-xl border border-neon-violet/30 bg-neon-violet/5 px-5 py-4 text-left text-sm leading-relaxed text-foreground/90">
+            <MessageSquare size={16} className="mt-0.5 shrink-0 text-neon-violet" />
+            <span>
               <EditableText
                 as="span"
-                siteKey="support_request_copy"
-                fallback="「こんな機能が欲しい」「この設定を増やしてほしい」といった機能リクエストは、月額プランの会員特典としてお問い合わせから受け付けています（上位のプランから優先して検討します）。ご支援は、次に作る機能を決める材料にします。"
+                siteKey="support_note_copy"
+                fallback="「要望を送るのは、ちょっと気が引ける」という方へ。ご支援に “こうなったらいいな” をひとこと添えてください。次に作るものを決めるとき、ちゃんと読んでいます。"
               />
+              <span className="mt-1 block text-[11px] text-muted">支援の決済が終わると、ひとことを書く欄が出ます。</span>
             </span>
-            <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-neon-violet/40 px-4 py-2 text-xs font-semibold text-neon-violet">
-              お問い合わせへ
-              <ArrowRight size={14} />
-            </span>
-          </a>
+          </div>
         </div>
       </div>
     </section>

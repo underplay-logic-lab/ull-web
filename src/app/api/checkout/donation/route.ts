@@ -15,7 +15,8 @@ import { apiErrorResponse } from "@/lib/apiError";
 export const maxDuration = 30;
 
 const LOG_PREFIX = "[checkout/donation]";
-const SUCCESS_URL = "https://www.ullstudio.com/?donation=thanks#support";
+// checkout_id は支援者からのひとこと（/api/support/message）で「本当に寄付したか」を確かめるのに使う（2026-09-29）。
+const SUCCESS_URL = "https://www.ullstudio.com/?donation=thanks&checkout_id={CHECKOUT_ID}#support";
 const RETURN_URL = "https://www.ullstudio.com/#support";
 const DONATION_MIN_JPY = 100;
 const DONATION_MAX_JPY = 1_000_000;
