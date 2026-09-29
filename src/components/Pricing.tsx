@@ -233,6 +233,12 @@ export function Pricing() {
             fallback="必要な分だけの都度チャージか、毎月クレジットが自動付与される月額プラン。"
             className="mx-auto mt-4 max-w-xl text-muted"
           />
+          <EditableText
+            as="p"
+            siteKey="pricing_request_line"
+            fallback="「こうしたい」が、次の機能になる。会員の方の機能リクエストは、上位プランから優先して検討します。"
+            className="mx-auto mt-2 max-w-xl text-sm text-neon-violet"
+          />
           <p className="mt-4 text-xs text-muted">
             1 回あたりの消費クレジットは{" "}
             <Link href="/pricing" className="text-neon-pink hover:underline">

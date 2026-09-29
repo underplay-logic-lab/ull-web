@@ -49,6 +49,20 @@ export function Hero() {
           />
         </h1>
 
+        {/* こだわりを形にする・使う人の声で育つ（2026-09-29 ホスト）。リクエストは会員限定なので呼びかけにはしない。 */}
+        <EditableText
+          as="p"
+          siteKey="hero_kodawari_line"
+          fallback="そのこだわり、妥協せずに形にする。"
+          className="mx-auto mt-6 max-w-2xl text-lg font-semibold text-foreground sm:text-xl"
+        />
+        <EditableText
+          as="p"
+          siteKey="hero_kodawari_sub"
+          fallback="使う人の「こうしたい」で、スタジオは育っていきます。"
+          className="mx-auto mt-2 max-w-2xl text-sm text-muted"
+        />
+
         <p className="mx-auto mt-8 max-w-2xl text-base leading-relaxed text-muted sm:text-lg">
           <EditableText
             siteKey="hero_ii_subtitle"

@@ -139,6 +139,12 @@ export function Studio() {
             fallback="AI Generation Studio"
             className="text-3xl font-bold tracking-tight sm:text-4xl"
           />
+          <EditableText
+            as="p"
+            siteKey="studio_tagline"
+            fallback="あなたのこだわりで、育っていくスタジオ。"
+            className="mt-3 text-sm font-medium text-gradient"
+          />
           <p className="mx-auto mt-4 max-w-xl text-muted">
             {activeTab === "custom" ? (
               <EditableText
