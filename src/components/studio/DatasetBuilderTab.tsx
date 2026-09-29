@@ -565,6 +565,7 @@ export function DatasetBuilderTab() {
 
   const subCount = subImages.length;
   const perImage = sceneCreditsPerImage(knobs, 0);
+  const perImageWithRef = sceneCreditsPerImage(knobs, 1);
   const safeCount = Math.max(1, Math.min(SCENE_MAX_COUNT, Math.trunc(count || 0)));
   const batchOpt = useMemo(
     () => ({ subCount, closeMain, derived: derivedFlags, hasBackRef: Boolean(refBack), hasSideRef: Boolean(refSide) }),
@@ -1108,6 +1109,7 @@ export function DatasetBuilderTab() {
               aspect="portrait"
               blockedReason={baseFull ? null : baseFullBlocked}
               costPerImage={perImage}
+              costPerImageWithRef={perImageWithRef}
               credits={credits}
               storageKey="dataset-builder-cand-full"
               picked={picks.full ?? null}
@@ -1135,6 +1137,7 @@ export function DatasetBuilderTab() {
               image={effectiveMain}
               specs={BACK_VIEW_SPECS}
               costPerImage={perImage}
+              costPerImageWithRef={perImageWithRef}
               credits={credits}
               storageKey="dataset-builder-cand-back"
               picked={picks.back ?? null}
@@ -1165,6 +1168,7 @@ export function DatasetBuilderTab() {
               image={effectiveMain}
               specs={SIDE_VIEW_SPECS}
               costPerImage={perImage}
+              costPerImageWithRef={perImageWithRef}
               credits={credits}
               storageKey="dataset-builder-cand-side"
               picked={picks.side ?? null}
