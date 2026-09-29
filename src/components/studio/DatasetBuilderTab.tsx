@@ -95,6 +95,62 @@ const FILES_META_KEY = "dataset-builder-files";
 type FilesMeta = { subCount: number; backIndex: number | null; sideIndex: number | null; hasBaseFull: boolean };
 const POLL_MS = 2_000;
 
+type SideFaceChoice = "auto" | "none" | "orig" | "bust" | number;
+
+/** 真横の候補に添える顔の画像をサムネから選ぶ（2026-09-29）。選ばれた File に枠を付ける。 */
+function SideFacePicker({
+  options,
+  selected,
+  onSelect,
+  costWith,
+  costWithout,
+}: {
+  options: { key: Exclude<SideFaceChoice, "auto">; label: string; file: File | null }[];
+  selected: File | null;
+  onSelect: (key: Exclude<SideFaceChoice, "auto">) => void;
+  costWith: number;
+  costWithout: number;
+}) {
+  if (options.length <= 1) return null;
+  return (
+    <div className="space-y-1">
+      <p className="text-[10px] text-muted">
+        <span className="font-medium text-foreground">横顔を寄せるために添える画像</span>
+        （任意。顔が大きく写った画像を添えると横顔が似やすくなります・4 枚 {costWith} C／添えないと {costWithout} C）
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {options.map((o) => {
+          const on = o.file === null ? selected === null : selected === o.file;
+          return (
+            <button
+              key={String(o.key)}
+              type="button"
+              onClick={() => onSelect(o.key)}
+              title={o.label}
+              className={`flex w-20 flex-col items-center gap-0.5 rounded-md border-2 p-0.5 text-[9px] leading-tight ${
+                on ? "border-neon-pink text-foreground" : "border-transparent text-muted hover:border-border"
+              }`}
+            >
+              {o.file ? <FileThumb file={o.file} /> : <span className="flex h-16 w-full items-center justify-center rounded bg-black/20">なし</span>}
+              <span className="line-clamp-2 text-center">{o.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function FileThumb({ file }: { file: File }) {
+  const url = useObjectUrl(file);
+  return url ? (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={url} alt="" className="h-16 w-full rounded bg-black/40 object-contain" />
+  ) : (
+    <span className="h-16 w-full rounded bg-black/20" />
+  );
+}
+
 type PersistedForm = {
   sel: SceneSelection;
   count: number;
@@ -110,8 +166,11 @@ type PersistedForm = {
   hairNote?: string;
   /** 作り方（2026-09-29）: careful＝基準の全身像・真横・後ろ姿を先に作る（既定）／quick＝顔アップのまますぐ作る。 */
   precision?: "careful" | "quick";
-  /** 真横の候補に顔の大きく写った画像を添えるか（既定 true）。 */
-  sideFaceOn?: boolean;
+  /**
+   * 真横の候補に添える顔の画像（2026-09-29）。auto＝元の画像（顔アップ・上半身から始めたとき）／切り出したバストアップ
+   * （全身から始めたとき）、none＝添えない、orig＝元の画像、bust＝切り出したバストアップ、数値＝参照欄の N 番目。
+   */
+  sideFaceChoice?: SideFaceChoice;
   /** 全身から始めたとき体つきを調整するか（2026-09-29）。 */
   adjustBody?: boolean;
 };
@@ -488,7 +547,7 @@ export function DatasetBuilderTab() {
   const [routeOverride, setRouteOverride] = useState<MainRoute | "auto">(() => savedForm?.routeOverride ?? "auto");
   const [sendOriginal, setSendOriginal] = useState<boolean>(() => savedForm?.sendOriginal ?? true);
   const [hairNote, setHairNote] = useState<string>(() => savedForm?.hairNote ?? "");
-  const [sideFaceOn, setSideFaceOn] = useState<boolean>(() => savedForm?.sideFaceOn ?? true);
+  const [sideFaceChoice, setSideFaceChoice] = useState<SideFaceChoice>(() => savedForm?.sideFaceChoice ?? "auto");
   const [adjustBody, setAdjustBody] = useState<boolean>(() => savedForm?.adjustBody ?? false);
 
   useEffect(() => {
@@ -502,10 +561,10 @@ export function DatasetBuilderTab() {
       sendOriginal,
       hairNote,
       precision,
-      sideFaceOn,
+      sideFaceChoice,
       adjustBody,
     } satisfies PersistedForm);
-  }, [sel, count, confirmFirst, bodyDesign, routeOverride, mainFraming, sendOriginal, hairNote, precision, sideFaceOn, adjustBody]);
+  }, [sel, count, confirmFirst, bodyDesign, routeOverride, mainFraming, sendOriginal, hairNote, precision, sideFaceChoice, adjustBody]);
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
@@ -630,10 +689,23 @@ export function DatasetBuilderTab() {
   const sideSpecs = useMemo(() => sideViewSpecs(hairNote), [hairNote]);
   // 真横の候補に顔の大きく写った画像を添える（横顔が似る、2026-09-29 ホスト実走・全ルートで添える方針）。
   // 顔アップ・上半身から始めた（基準の全身像がある）ときは元の画像、全身から始めたときは自動で切り出したバストアップ。
-  // 添えられる画像（sideFaceAvailable）があっても、添えるかは使う人が選ぶ（既定オン、2026-09-29 ホスト）。
+  // 真横の候補に添える顔の画像は、サムネを並べて使う人が選ぶ（2026-09-29 ホスト「どれを参照にするか分からない」）。
+  // 既定（auto）は下の sideFaceAvailable（元の画像、全身から始めたときは切り出したバストアップ）。
   // 全身から始めた（体つきの調整を含む）ときは顔が小さいので、切り出したバストアップを添える。
   const sideFaceAvailable = mainRoute !== "full" && activeBaseFull && image ? image : (derived.bust ?? null);
-  const sideFaceRef = sideFaceOn ? sideFaceAvailable : null;
+  // 選べる画像: 元の画像（基準の全身像と違うときだけ意味がある）、切り出したバストアップ、参照欄の手持ち（確定した真横・後ろ姿は除く）。
+  const sideFaceOrig = activeBaseFull && image ? image : null;
+  const sideFaceBust = derived.bust ?? null;
+  const sideFaceRef: File | null =
+    sideFaceChoice === "none"
+      ? null
+      : sideFaceChoice === "orig"
+        ? sideFaceOrig
+        : sideFaceChoice === "bust"
+          ? sideFaceBust
+          : typeof sideFaceChoice === "number"
+            ? (subImages[sideFaceChoice] ?? null)
+            : sideFaceAvailable;
   const backSpecs = useMemo(() => backViewSpecs(hairNote, backUsesSide), [hairNote, backUsesSide]);
   const baseFullSpecs = useMemo(
     () =>
@@ -1268,7 +1340,7 @@ export function DatasetBuilderTab() {
           {precision === "careful" && effectiveMain && (viewsInPlan.has("side") || refSide) && (
             <CandidatePanel
               title={refSide ? "真横の参照（確定済み）" : "真横の参照を作る"}
-              description="真横向きの画像は、ここで選んだ真横を参照にして作ります。候補はカメラを横へ回して作ります（右 2 枚・左 2 枚）。下のチェックで、顔の大きく写った画像（元の顔アップ・上半身、全身から始めたときは自動で切り出したバストアップ）も添えて顔を寄せられます。顔がいちばんイメージに近い 1 枚を選んでください（後ろ姿はこの真横の髪に揃えます）。後ろ髪の長さや結び方を決めたいときは上の「後ろ髪の指定」に書いてください。手持ちの真横があれば、下の「持っているなら」の行にドロップするか「ファイルを選ぶ」で指定してください（参照欄に入れてある場合は「参照 N を使う」で選べます。指定しないと真横として扱われません）。選ぶと参照欄に入ります。"
+              description="真横向きの画像は、ここで選んだ真横を参照にして作ります。候補はカメラを横へ回して作ります（右 2 枚・左 2 枚）。下で、顔の大きく写った画像を選んで添えると横顔が似やすくなります。顔がいちばんイメージに近い 1 枚を選んでください（後ろ姿はこの真横の髪に揃えます）。後ろ髪の長さや結び方を決めたいときは上の「後ろ髪の指定」に書いてください。手持ちの真横があれば、下の「持っているなら」の行にドロップするか「ファイルを選ぶ」で指定してください（参照欄に入れてある場合は「参照 N を使う」で選べます。指定しないと真横として扱われません）。選ぶと参照欄に入ります。"
               user={user}
               image={effectiveMain}
               specs={sideSpecs}
@@ -1296,11 +1368,21 @@ export function DatasetBuilderTab() {
                 setRefSide(file);
               }}
             >
-              {!refSide && sideFaceAvailable && (
-                <label className="flex items-center gap-1.5 text-[10px] text-muted">
-                  <input type="checkbox" checked={sideFaceOn} onChange={(e) => setSideFaceOn(e.target.checked)} />
-                  顔の大きく写った画像も添える（横顔が似やすい・4 枚 {4 * perImageWithRef} C。外すと {4 * perImage} C）
-                </label>
+              {!refSide && (
+                <SideFacePicker
+                  options={[
+                    { key: "none", label: "添えない", file: null },
+                    ...(sideFaceOrig ? [{ key: "orig" as const, label: "元の画像", file: sideFaceOrig }] : []),
+                    ...(sideFaceBust ? [{ key: "bust" as const, label: "自動で切り出したバストアップ", file: sideFaceBust }] : []),
+                    ...subImages
+                      .map((f, i) => ({ key: i, label: `手持ちの画像（参照 ${i + 1}）`, file: f }))
+                      .filter((o) => o.file !== refSide && o.file !== refBack),
+                  ]}
+                  selected={sideFaceRef}
+                  onSelect={(k) => setSideFaceChoice(k)}
+                  costWith={4 * perImageWithRef}
+                  costWithout={4 * perImage}
+                />
               )}
             </CandidatePanel>
           )}
