@@ -4,6 +4,7 @@ import { ENTRY_FIRST_PURCHASE_DISCOUNT_ID, getPolarClient, polarProductConfig, t
 import { POLAR_PRODUCT_IDS } from "@/lib/polarProducts";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { apiErrorResponse } from "@/lib/apiError";
+import { isEntryFirstPurchaseEligible } from "@/lib/entryFirstPurchase.server";
 
 const LOG_PREFIX = "[checkout/polar]";
 
@@ -90,16 +91,8 @@ export async function POST(request: Request) {
 
   // エントリーの初月割引（ENTRY_FIRST_PURCHASE_DISCOUNT_ID）: そのアカウントで過去に 1 件も注文が無いときだけ。
   // 読めなかったら割引なしで進める（購入は止めない）。
-  if (config.tier === "entry") {
-    const { count, error: ordersError } = await supabaseAdmin
-      .from("polar_processed_orders")
-      .select("order_id", { count: "exact", head: true })
-      .eq("user_id", user.id);
-    if (ordersError) {
-      console.error(`${LOG_PREFIX} could not read past orders for ${user.id}:`, ordersError.message);
-    } else if ((count ?? 0) === 0) {
-      discountId = ENTRY_FIRST_PURCHASE_DISCOUNT_ID;
-    }
+  if (config.tier === "entry" && (await isEntryFirstPurchaseEligible(user.id)) === true) {
+    discountId = ENTRY_FIRST_PURCHASE_DISCOUNT_ID;
   }
 
   try {

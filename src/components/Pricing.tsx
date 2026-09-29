@@ -75,6 +75,34 @@ export function Pricing() {
   const currentTier: SubscriptionTier = tier ?? "free";
   const isPaidMember = Boolean(user) && currentTier !== "free";
 
+  // 初月割引のバッジはチェックアウトと同じ判定（過去の注文が 0 件）で出す。未ログインは新規の見込みとして出す。
+  // ログイン中は判定が返るまで出さない（過去に都度チャージを買った人に一瞬見せない）。
+  const [entryEligibleUserId, setEntryEligibleUserId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        if (!session) return;
+        const res = await fetch("/api/checkout/entry-eligibility", {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+          cache: "no-store",
+        });
+        const data = (await res.json()) as { eligible?: boolean };
+        if (!cancelled && res.ok && data.eligible === true) setEntryEligibleUserId(user.id);
+      } catch {
+        // 読めなければ出さない
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+  const showEntryFirstPurchase = !user || entryEligibleUserId === user.id;
+
   // The top-up's effective price for this viewer. A signed-in active paid
   // member sees their standing discount — the same one /api/checkout/polar
   // applies via a Polar Discount. A reserved cancellation suspends the perk
@@ -249,8 +277,8 @@ export function Pricing() {
                 )}
               </div>
               {/* 初回購入のみエントリー初月 ¥600 引き（2026-09-28 ホスト判断。資格はチェックアウトで判定）。
-                  購入済みの人（会員）には出さない。会員でなくても過去に都度チャージを買っていれば対象外なので「初めての購入なら」と書く。 */}
-              {plan.id === "entry" && !isPaidMember && (
+                  過去に注文がある人（会員・都度チャージを買った人）には出さない。未ログインは新規の見込みとして出す。 */}
+              {plan.id === "entry" && showEntryFirstPurchase && (
                 <p className="mt-1.5 inline-flex w-fit items-center gap-1 rounded-full bg-neon-pink/10 px-2.5 py-1 font-mono text-[11px] font-medium text-neon-pink">
                   初めてのご購入なら初月 ¥{(plan.priceYen - ENTRY_FIRST_PURCHASE_OFF_JPY).toLocaleString()}
                 </p>
