@@ -156,6 +156,8 @@ export async function POST(request: Request) {
   let scenesRaw: unknown;
   // 行ごとの画像セット（2026-09-28）: storagePaths/images の index のリスト。scenes[i].set がセットの index。
   let imageSetsRaw: unknown;
+  // マルチアングル（2026-09-29）: サブ参照ごとに「全構図に使う」か（storagePaths[1..] と同じ並び）。
+  let subRefAllRaw: unknown;
 
   if (contentType.includes("application/json")) {
     let body: Record<string, unknown>;
@@ -199,6 +201,7 @@ export async function POST(request: Request) {
     priorityRaw = body.priority;
     scenesRaw = body.scenes;
     imageSetsRaw = body.imageSets;
+    subRefAllRaw = body.subRefAll;
   } else {
     let formData: FormData;
     try {
@@ -304,13 +307,16 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  // マルチアングルの参照の使い分け（2026-09-29）: サブ参照があれば、真横・後ろ寄りの構図だけ
-  // セット 1（メイン＋サブ）、ほかはセット 0（メインだけ）で作る。料金も構図ごと（angleCombosCredits と同じ）。
+  // マルチアングルの参照の使い分け（2026-09-29）: サブ参照があれば、真横・後ろ寄りの構図は
+  // セット 1（メイン＋サブ全部）、ほかはセット 0（メイン＋「全構図に使う」のサブ）で作る。
+  // 料金も構図ごと（angleCombosCredits と同じ）。
   const angleSets = !rawPrompt && imageBuffers.length > 1;
+  const subRefAll = Array.isArray(subRefAllRaw) ? subRefAllRaw.map((v) => v === true) : [];
+  const allAngleSubIdx = imageBuffers.map((_, i) => i).filter((i) => i > 0 && subRefAll[i - 1] === true);
   const jobImageSets: number[][] | null = sceneSets
     ? imageSets!
     : angleSets
-      ? [[0], imageBuffers.map((_, i) => i)]
+      ? [[0, ...allAngleSubIdx], imageBuffers.map((_, i) => i)]
       : null;
   const instructionSets: number[] | null = sceneSets
     ? sceneInstructionSets

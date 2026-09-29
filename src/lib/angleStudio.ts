@@ -328,10 +328,11 @@ export function isAngleSelectionEmpty(selection: AngleSelection): boolean {
   );
 }
 
-// 参照の使い分け（2026-09-29、素材づくりから展開）: サブ参照は元画像に写っていない側（真横・後ろ寄り）を
-// 補うためのもので、正面・斜め前はメイン 1 枚で足りる。そこで真横・後ろ寄りの構図にだけサブ参照を付け、
-// それ以外はメインだけで作る（1 構図の時間・単価がサブ参照ぶん上がらない）。API はこの判定で行ごとの
-// 画像セットを組み、料金も構図ごとに足し合わせる。フロントの表示も同じ関数を通す。
+// 参照の使い分け（2026-09-29、素材づくりから展開）: サブ参照は既定では元画像に写っていない側（真横・後ろ寄り）を
+// 補うためのもので、正面・斜め前はメイン 1 枚で足りる。ただし顔のアップ・衣装の細部のように「どの向きでも保ちたい」
+// 参照もあるので、1 枚ごとに「全構図に使う」を選べる（ホスト判断 2026-09-29、案 A）。
+// API はこの判定で行ごとの画像セット（0＝メイン＋全構図用／1＝メイン＋全部）を組み、料金も構図ごとに足し合わせる。
+// フロントの表示も同じ関数を通す。
 export const ANGLE_AZIMUTHS_NEED_SUB_REFS: ReadonlySet<string> = new Set([
   "right_profile",
   "back_right",
@@ -340,26 +341,31 @@ export const ANGLE_AZIMUTHS_NEED_SUB_REFS: ReadonlySet<string> = new Set([
   "left_profile",
 ]);
 
-/** この構図でサブ参照を使うか（向きを変えない構図・正面〜斜め前は使わない）。 */
+/** サブ参照の内訳: total＝全部の枚数、allAngles＝そのうち「全構図に使う」の枚数。 */
+export type AngleSubRefUse = { total: number; allAngles: number };
+
+/** この構図で「真横・後ろだけ」のサブ参照も使うか（向きを変えない構図・正面〜斜め前は使わない）。 */
 export function angleComboUsesSubRefs(combo: Pick<AngleCombo, "selection">): boolean {
   return combo.selection.azimuths.some((a) => ANGLE_AZIMUTHS_NEED_SUB_REFS.has(a));
 }
 
-/** 構図ごとに参照の有無を見て単価を足し合わせたジョブの料金。 */
-export function angleCombosCredits(
-  combos: Pick<AngleCombo, "selection">[],
-  subImageCount: number,
-  knobs: PricingKnobs = DEFAULT_KNOBS,
-): number {
-  return combos.reduce(
-    (t, c) => t + angleCreditsPerAngle(knobs, angleComboUsesSubRefs(c) ? subImageCount : 0),
-    0,
-  );
+/** この構図で使うサブ参照の枚数。 */
+export function angleComboSubRefCount(combo: Pick<AngleCombo, "selection">, use: AngleSubRefUse): number {
+  return angleComboUsesSubRefs(combo) ? use.total : Math.min(use.allAngles, use.total);
 }
 
-/** 構図ごとに参照の有無を見たジョブ全体の生成時間の目安（秒）。 */
-export function angleCombosEstimatedSeconds(combos: Pick<AngleCombo, "selection">[], subImageCount: number): number {
-  return combos.reduce((t, c) => t + angleSecondsPerAngle(angleComboUsesSubRefs(c) ? subImageCount : 0), 0);
+/** 構図ごとに使うサブ参照の枚数を見て単価を足し合わせたジョブの料金。 */
+export function angleCombosCredits(
+  combos: Pick<AngleCombo, "selection">[],
+  use: AngleSubRefUse,
+  knobs: PricingKnobs = DEFAULT_KNOBS,
+): number {
+  return combos.reduce((t, c) => t + angleCreditsPerAngle(knobs, angleComboSubRefCount(c, use)), 0);
+}
+
+/** 構図ごとに使うサブ参照の枚数を見たジョブ全体の生成時間の目安（秒）。 */
+export function angleCombosEstimatedSeconds(combos: Pick<AngleCombo, "selection">[], use: AngleSubRefUse): number {
+  return combos.reduce((t, c) => t + angleSecondsPerAngle(angleComboSubRefCount(c, use)), 0);
 }
 
 // 実行中のジョブを待たず並列で今すぐ実行する場合の追加料金（既定の「順番待ち」

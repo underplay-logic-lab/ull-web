@@ -65,6 +65,8 @@ export async function startAngleJob(params: {
    * 以降が参照。同じ File は 1 回だけアップロードする。指定時は image / subImages は使わない。
    */
   imageSets?: File[][];
+  /** マルチアングル（2026-09-29）: subImages と同じ並びで、true＝全構図に使う／false＝真横・後ろだけ。 */
+  subAll?: boolean[];
 }): Promise<StartAngleJobResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -121,6 +123,7 @@ export async function startAngleJob(params: {
       selection: params.selection,
       ...(params.scenes && params.scenes.length > 0 ? { scenes: params.scenes } : {}),
       ...(imageSetIdx ? { imageSets: imageSetIdx } : {}),
+      ...(params.subAll && params.subAll.length > 0 ? { subRefAll: params.subAll } : {}),
       mode: params.mode,
       seed: params.seed,
       priority: params.priority ?? false,
