@@ -618,6 +618,9 @@ A2. **ログイン時に supabase.co を見せない（ホスト希望 2026-09-3
    **残りはホスト作業**: Google Cloud の JS 生成元追加 → Vercel に `NEXT_PUBLIC_GOOGLE_CLIENT_ID` → 再デプロイ／メールテンプレート 2 本の
    リンクを `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email&next=/`（確認）・`…&type=recovery&next=/reset-password`
    （再設定）へ差し替え。旧 `/auth/callback` は残してあるので順不同で壊れない。
+   → テンプレート差し替え済み（ホスト、2026-09-30）。再設定メールで `/?authError=1` になった（メールの事前スキャンで 1 回きりの
+   トークンを GET で消費した疑い）ため、`/auth/confirm` をボタンを押して初めて `verifyOtp` するページに変更（未確認）。
+   失敗時はその場に Supabase のエラー文も出るので、まだ落ちるならその文で切り分ける。Site URL は apex のまま（www へ揃えるか要確認）。
 C. **ローンチ前にやる（了承済み）**: 説明の整理（要点 1 行＋「詳しく ▸」、使わない項目は畳む、スマホは既定で閉じる。素材づくり→LoRA の順。
    試行中に「要る/要らない」を拾ってから）。**ローンチ後**: 紹介・操作動画（Remotion＋Playwright）、クライアント向け限定お試し（Qwen Image 2.1、
    非商用のため限定公開→ワークフロー納品）、スタートアップ支援・Alibaba への商用ライセンス申請（ホスト）。
