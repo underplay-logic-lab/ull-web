@@ -10,7 +10,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { Polar } from "@polar-sh/sdk";
+import { createPolar } from "@polar-sh/sdk/2026-10";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -26,7 +26,8 @@ if (!accessToken) {
   process.exit(1);
 }
 
-const polar = new Polar({ accessToken, server: env.POLAR_SERVER || "production" });
+// SDK 1.0（API 2026-10）: フィールドは snake_case、一覧は iterList で 1 件ずつ。
+const polar = createPolar({ accessToken, environment: env.POLAR_SERVER || "production", timeout: 30 });
 
 // tier -> expected percent-off, matched against the discount name
 const MATCHERS = [
@@ -36,12 +37,10 @@ const MATCHERS = [
   { tier: "master", pct: 50, re: /master|マスター/i },
 ];
 
-const percentOf = (d) => (typeof d.basisPoints === "number" ? d.basisPoints / 100 : null);
+const percentOf = (d) => (typeof d.basis_points === "number" ? d.basis_points / 100 : null);
 
 const all = [];
-for await (const page of await polar.discounts.list({ limit: 100 })) {
-  all.push(...page.result.items);
-}
+for await (const item of polar.discounts.iterList({ limit: 100 })) all.push(item);
 
 console.log(`\n=== ${all.length} Polar discounts ===\n`);
 for (const d of all) {

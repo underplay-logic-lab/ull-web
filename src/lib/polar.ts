@@ -1,43 +1,35 @@
 import "server-only";
-import { HTTPClient, Polar } from "@polar-sh/sdk";
+import { createPolar } from "@polar-sh/sdk/2026-10";
 import { POLAR_PRODUCT_IDS } from "@/lib/polarProducts";
 
 // "production" unless explicitly overridden — POLAR_SERVER is only meant
 // for pointing this at Polar's sandbox during local/staging testing.
-const server = (process.env.POLAR_SERVER as "production" | "sandbox" | undefined) ?? "production";
+const environment = (process.env.POLAR_SERVER as "production" | "sandbox" | undefined) ?? "production";
 
-// 2026-09-14: Polar が日付ベースのAPIバージョニングを導入
-// （Current/Deprecated/Next の3本立て、四半期ごとにローテーション）。
-// Polar-Version ヘッダーを送らないリクエストは常に「Current」扱いになり、
-// 2026-10-01 の次回ローテーションで黙って 2026-10 契約に切り替わる
-// （このプロジェクトが使っている @polar-sh/sdk 0.49.0 は 2026-04 契約向けに
-// 生成されたもの — SDK_METADATA.openapiDocVersion で確認済み）。SDKOptions
-// にはヘッダー直指定の口が無いため、addHook("beforeRequest", ...) という
-// SDK公式の拡張ポイント（Speakeasy生成SDKの標準機能）でリクエストごとに
-// ヘッダーを注入する。決済まわりのコードなので、契約を意図せず変えないよう
-// 明示的に固定しておく。次のローテーション（2027-01）前に 2026-10 への
-// 動作確認・移行を検討すること。
-const POLAR_API_VERSION = "2026-04";
+// Polar の API は日付ベースで版を切る（四半期ごとに Current/Deprecated/Next が回る）。
+// 2026-09-30: SDK 1.0（版ごとの import）＋ API 2026-10 へ移行。`@polar-sh/sdk/2026-10` から作った
+// クライアントは Polar-Version ヘッダーを自動で付けるので、ローテーションで契約が黙って変わることはない。
+// 次の版へ上げるときは import パスと下の定数（SDK を通さない fetch 用）と、Polar 管理画面の
+// Webhook の API version を一緒に変える。2026-10 は 2027-01 に Deprecated、その次のローテーション（2027-04 頃）で使えなくなる見込み。
+// フィールド名は SDK 1.0 から API どおりの snake_case（SDK は camelCase に変換しない）。
+export const POLAR_API_VERSION = "2026-10";
 
-let client: Polar | null = null;
+type PolarClient = ReturnType<typeof createPolar>;
+let client: PolarClient | null = null;
 
 // Lazy init: `next build` imports this module during route/page-data
 // collection with no runtime env, so the token must NOT be required at module
 // evaluation (a top-level throw crashed `next build` with "Failed to collect
 // configuration for /api/checkout/polar"). It's only actually needed when a
 // checkout / portal request calls Polar — check it there.
-export function getPolarClient(): Polar {
+export function getPolarClient(): PolarClient {
   if (client) return client;
   const accessToken = process.env.POLAR_ACCESS_TOKEN;
   if (!accessToken) {
     throw new Error("Missing POLAR_ACCESS_TOKEN environment variable.");
   }
-  const httpClient = new HTTPClient();
-  httpClient.addHook("beforeRequest", (req) => {
-    req.headers.set("Polar-Version", POLAR_API_VERSION);
-    return req;
-  });
-  client = new Polar({ accessToken, server, httpClient });
+  // SDK 1.0 の既定タイムアウトは 5 秒と短い（決済画面の作成で超えると購入が止まる）ので余裕を持たせる。
+  client = createPolar({ accessToken, environment, timeout: 30 });
   return client;
 }
 

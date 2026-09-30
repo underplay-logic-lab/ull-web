@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { ENTRY_FIRST_PURCHASE_DISCOUNT_ID, getPolarClient, polarProductConfig, topupDiscountForTier } from "@/lib/polar";
+import {
+  ENTRY_FIRST_PURCHASE_DISCOUNT_ID,
+  POLAR_API_VERSION,
+  getPolarClient,
+  polarProductConfig,
+  topupDiscountForTier,
+} from "@/lib/polar";
 import { POLAR_PRODUCT_IDS } from "@/lib/polarProducts";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { apiErrorResponse } from "@/lib/apiError";
@@ -100,16 +106,16 @@ export async function POST(request: Request) {
     const createCheckout = (withDiscount: boolean) =>
       polar.checkouts.create({
         products: [productId],
-        successUrl: SUCCESS_URL,
-        returnUrl: RETURN_URL,
+        success_url: SUCCESS_URL,
+        return_url: RETURN_URL,
         // Render the hosted Polar checkout in Japanese.
         locale: "ja",
-        customerEmail: user.email ?? undefined,
+        customer_email: user.email ?? undefined,
         // Links the Polar customer to the Supabase user id so /api/portal/polar
         // can mint a customer-portal session straight from external_customer_id
         // without us persisting a Polar customer id.
-        externalCustomerId: user.id,
-        ...(withDiscount && discountId ? { discountId } : {}),
+        external_customer_id: user.id,
+        ...(withDiscount && discountId ? { discount_id: discountId } : {}),
         // Copied by Polar onto the resulting order *and* (for subscription
         // products) the subscription — this is how the webhook
         // (src/app/api/webhooks/polar/route.ts) knows which Supabase user to
@@ -183,7 +189,7 @@ async function polarRest(path: string, init: RequestInit = {}): Promise<Response
   if (!token) throw new Error("Missing POLAR_ACCESS_TOKEN environment variable.");
   return fetch(`${POLAR_API_BASE}${path}`, {
     ...init,
-    headers: { Authorization: `Bearer ${token}`, "Polar-Version": "2026-04", ...(init.headers ?? {}) },
+    headers: { Authorization: `Bearer ${token}`, "Polar-Version": POLAR_API_VERSION, ...(init.headers ?? {}) },
   });
 }
 

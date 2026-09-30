@@ -52,23 +52,17 @@ export async function POST(request: Request) {
     // subscription for this person. Doing this instead of an
     // external_customer_id session avoids the case where an early checkout
     // created the customer without an external id.
-    let customer: { id: string; externalId?: string | null } | undefined;
-    for await (const page of await polar.customers.list({ email: user.email, limit: 1 })) {
-      customer = page.result.items[0];
-      break;
-    }
+    const page = await polar.customers.list({ email: user.email, limit: 1 });
+    const customer = page.items[0];
 
     if (!customer) return notFound();
 
     // Persist the Supabase user id onto the Polar customer so future lookups
     // (and webhook correlation) can use it directly. Best effort — a failure
     // here must not block the portal.
-    if (!customer.externalId) {
+    if (!customer.external_id) {
       try {
-        await polar.customers.update({
-          id: customer.id,
-          customerUpdate: { externalId: user.id },
-        });
+        await polar.customers.update(customer.id, { external_id: user.id });
       } catch (linkErr) {
         console.warn(
           `${LOG_PREFIX} could not link external id onto customer ${customer.id}:`,
@@ -78,11 +72,11 @@ export async function POST(request: Request) {
     }
 
     const session = await polar.customerSessions.create({
-      customerId: customer.id,
-      returnUrl: RETURN_URL,
+      customer_id: customer.id,
+      return_url: RETURN_URL,
     });
 
-    return NextResponse.json({ url: session.customerPortalUrl });
+    return NextResponse.json({ url: session.customer_portal_url });
   } catch (err) {
     return apiErrorResponse(err, "create_customer_session", 502, LOG_PREFIX);
   }

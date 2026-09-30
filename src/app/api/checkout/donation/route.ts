@@ -55,11 +55,11 @@ export async function POST(request: Request) {
     const checkout = await polar.checkouts.create({
       products: [POLAR_DONATION_PRODUCT_ID],
       amount,
-      successUrl: SUCCESS_URL,
-      returnUrl: RETURN_URL,
+      success_url: SUCCESS_URL,
+      return_url: RETURN_URL,
       locale: "ja",
-      ...(email ? { customerEmail: email } : {}),
-      ...(userId ? { externalCustomerId: userId } : {}),
+      ...(email ? { customer_email: email } : {}),
+      ...(userId ? { external_customer_id: userId } : {}),
       metadata: { kind: "donation", ...(userId ? { userId } : {}) },
     });
     let checkoutUrl = checkout.url;

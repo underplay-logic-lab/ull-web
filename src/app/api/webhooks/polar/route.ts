@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { validateEvent, WebhookVerificationError } from "@polar-sh/sdk/webhooks";
+import { webhooks } from "@polar-sh/sdk/2026-10";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { polarProductConfig, tierForPolarProduct } from "@/lib/polar";
@@ -8,7 +8,9 @@ import { apiErrorResponse } from "@/lib/apiError";
 
 const LOG_PREFIX = "[webhooks/polar]";
 
-type PolarEvent = ReturnType<typeof validateEvent>;
+// SDK 1.0 / API 2026-10: payload fields are snake_case (the SDK no longer camelCases them).
+// The payload shape follows the webhook endpoint's own "API version" in the Polar dashboard.
+type PolarEvent = Awaited<ReturnType<typeof webhooks.validateEvent>>;
 type OrderData = Extract<PolarEvent, { type: "order.paid" }>["data"];
 type SubscriptionData = Extract<PolarEvent, { type: "subscription.canceled" }>["data"];
 
@@ -41,11 +43,16 @@ export async function POST(request: Request) {
 
   let event: PolarEvent;
   try {
-    event = validateEvent(rawBody, headers, secret);
+    event = await webhooks.validateEvent(rawBody, headers, secret);
   } catch (err) {
-    if (err instanceof WebhookVerificationError) {
+    if (err instanceof webhooks.PolarWebhookVerificationError) {
       console.error(`${LOG_PREFIX} signature verification failed:`, err.message);
       return NextResponse.json({ error: "Invalid signature.", step: "verify" }, { status: 403 });
+    }
+    // Correctly signed but an event type this SDK version doesn't know — ack it so
+    // Polar doesn't keep retrying (we only act on the handful of types below anyway).
+    if (err instanceof webhooks.PolarWebhookUnknownTypeError) {
+      return NextResponse.json({ ok: true, ignored: err.eventType });
     }
     console.error(`${LOG_PREFIX} failed to parse event:`, err);
     return apiErrorResponse(err, "parse_event", 400, LOG_PREFIX);
@@ -91,15 +98,15 @@ export async function POST(request: Request) {
 
 async function handleOrderPaid(order: OrderData) {
   const userId = metadataUserId(order.metadata) ?? metadataUserId(order.subscription?.metadata);
-  // Prefer the order's own productId; fall back to the subscription's for
+  // Prefer the order's own product_id; fall back to the subscription's for
   // renewal orders where Polar may only carry it on the subscription.
-  const productId = order.productId ?? order.subscription?.productId ?? null;
+  const productId = order.product_id ?? order.subscription?.product_id ?? null;
   const config = polarProductConfig(productId);
 
   // 寄付（/api/checkout/donation）: クレジット付与も tier 変更もしない。ログだけ。
   if (productId === POLAR_DONATION_PRODUCT_ID) {
     console.log(
-      `${LOG_PREFIX} donation received: order ${order.id} amount=${order.totalAmount ?? "?"} ` +
+      `${LOG_PREFIX} donation received: order ${order.id} amount=${order.total_amount ?? "?"} ` +
         `${order.currency ?? ""} user=${userId ?? "anonymous"}`,
     );
     return NextResponse.json({ ok: true, skipped: "donation", orderId: order.id });
@@ -216,7 +223,7 @@ async function handleSubscriptionRevoked(subscription: SubscriptionData) {
     return NextResponse.json({ ok: true, skipped: "no_user_id" });
   }
 
-  const revokedTier = tierForPolarProduct(subscription.productId);
+  const revokedTier = tierForPolarProduct(subscription.product_id);
 
   // Only drop to free if the profile's current tier is the one this
   // subscription granted. A plan switch that Polar models as revoke-old +

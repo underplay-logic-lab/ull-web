@@ -41,14 +41,14 @@ export async function POST(request: Request) {
   let customerName: string | null = null;
   let amount = 0;
   try {
-    const checkout = await getPolarClient().checkouts.get({ id: checkoutId });
+    const checkout = await getPolarClient().checkouts.get(checkoutId);
     const paid = checkout.status === "succeeded" || checkout.status === "confirmed";
-    if (!paid || checkout.productId !== POLAR_DONATION_PRODUCT_ID) {
+    if (!paid || checkout.product_id !== POLAR_DONATION_PRODUCT_ID) {
       return NextResponse.json({ error: "支援の決済が確認できませんでした。" }, { status: 403 });
     }
-    customerEmail = checkout.customerEmail ?? null;
-    customerName = checkout.customerName ?? null;
-    amount = checkout.totalAmount ?? checkout.amount ?? 0;
+    customerEmail = checkout.customer_email ?? null;
+    customerName = checkout.customer_name ?? null;
+    amount = checkout.total_amount ?? checkout.amount ?? 0;
   } catch (err) {
     return apiErrorResponse(err, "verify_checkout", 403, LOG_PREFIX);
   }

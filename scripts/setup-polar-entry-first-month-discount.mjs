@@ -1,3 +1,5 @@
+// 注意（2026-09-30）: @polar-sh/sdk 0.x 時代の 1 回きりのスクリプト（実行済み）。SDK 1.0 へ上げたので、このままでは動かない。
+// 再実行が要るときは scripts/list-polar-products.mjs に倣って createPolar（@polar-sh/sdk/2026-10）と snake_case に直すこと。
 // One-shot: create the "first purchase → Entry first month ¥600 off" discount in Polar.
 //
 //   node scripts/setup-polar-entry-first-month-discount.mjs            # dry run

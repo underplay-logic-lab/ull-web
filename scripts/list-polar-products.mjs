@@ -10,7 +10,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { Polar } from "@polar-sh/sdk";
+import { createPolar } from "@polar-sh/sdk/2026-10";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -26,7 +26,8 @@ if (!accessToken) {
   process.exit(1);
 }
 
-const polar = new Polar({ accessToken, server: env.POLAR_SERVER || "production" });
+// SDK 1.0（API 2026-10）: フィールドは snake_case、一覧は iterList で 1 件ずつ。
+const polar = createPolar({ accessToken, environment: env.POLAR_SERVER || "production", timeout: 30 });
 
 // name pattern -> our tier key + whether it must be a recurring product
 const MATCHERS = [
@@ -41,22 +42,20 @@ const priceInfo = (p) =>
   (p.prices || [])
     .map(
       (pr) =>
-        `${pr.amountType}${pr.priceAmount != null ? ` ${pr.priceAmount} ${pr.priceCurrency || ""}` : ""}` +
-        `${pr.recurringInterval ? `/${pr.recurringInterval}` : ""}`,
+        `${pr.amount_type}${pr.price_amount != null ? ` ${pr.price_amount} ${pr.price_currency || ""}` : ""}` +
+        `${pr.recurring_interval ? `/${pr.recurring_interval}` : ""}`,
     )
     .join(", ") || "(no prices)";
 
 const all = [];
-for await (const page of await polar.products.list({ limit: 100 })) {
-  all.push(...page.result.items);
-}
+for await (const item of polar.products.iterList({ limit: 100 })) all.push(item);
 
 console.log(`\n=== ${all.length} Polar products ===\n`);
 for (const p of all) {
   console.log(
     [
-      p.isArchived ? "[ARCHIVED]" : "[active]  ",
-      p.isRecurring ? "recurring" : "one-time ",
+      p.is_archived ? "[ARCHIVED]" : "[active]  ",
+      p.is_recurring ? "recurring" : "one-time ",
       p.id,
       JSON.stringify(p.name),
       "| " + priceInfo(p),
@@ -66,10 +65,10 @@ for (const p of all) {
 
 console.log("\n=== auto-matched (active, newest wins) ===\n");
 const active = all
-  .filter((p) => !p.isArchived)
-  .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  .filter((p) => !p.is_archived)
+  .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
 for (const m of MATCHERS) {
-  const hit = active.find((p) => p.isRecurring === m.recurring && m.re.test(p.name));
+  const hit = active.find((p) => p.is_recurring === m.recurring && m.re.test(p.name));
   console.log(`${m.tier.padEnd(9)} -> ${hit ? hit.id : "NOT FOUND"}`);
 }
