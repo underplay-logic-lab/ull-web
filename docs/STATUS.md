@@ -601,7 +601,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    Google Search Console 登録済み（2026-10-01、ドメイン `ullstudio.com`・DNS の TXT で確認＝**消さない**、トップは登録済み・再登録をリクエスト）。
    Google Analytics / 広告は、少額で広告を試す段階まで入れない（ホストと合意）。AdSense は合わないので使わない。
    **バックアップ（2026-10-01）**: Supabase Free は自動バックアップ無し → `scripts/backup-supabase.mjs` で public 全テーブル＋auth.users を
-   `D:\web\_backups`（gitignore 済み・Google ドライブで同期）へ毎日。タスクスケジューラ「ULL Supabase Backup」毎日 3:00（逃したら次のログオン時）、
+   `D:\web\_backups`（gitignore 済み・Google ドライブで同期）へ毎日。タスクスケジューラ「ULL Supabase Backup」毎日 23:00（逃したら次のログオン時）、
    30 日保持・1 回 ~46MB。戻すときは migrations → データ投入。Pro（$25/月・7 日の自動バックアップ）はお客さんが増えたら検討。
    **セキュリティ（同日・Security Advisor）**: SECURITY DEFINER 関数が anon で実行でき、誰でもクレジットを足せた → migration 20260894 で
    service_role だけに（適用済み・anon は 401 を確認・サーバー経路と新規登録のトリガーは動作確認済み）。search_path 固定、gpu_warm_status の全開ポリシー削除。
