@@ -5,12 +5,22 @@ import { activateDevice } from "@/lib/license/issue.server";
 
 // 納品ツールの初回認証（ツールから直接呼ばれる。ログイン不要）。キー＋HWID → 署名付きライセンス（トークン）。
 // キーは 100 bit の乱数なので総当たりは現実的でない。応答は「キーが違う」と「商品が違う」を区別しない。
+// offline: true … ネットにつながらない PC の代わりにスマホで認証する（/license/offline ページから）。
+//   その PC はこの先もオンライン確認ができないので、手動発行と同じく再確認なし（rck=null）のライセンスを返す。
 export async function POST(request: Request) {
-  const body = (await request.json().catch(() => null)) as { key?: unknown; hwid?: unknown; product?: unknown } | null;
+  const body = (await request.json().catch(() => null)) as
+    | { key?: unknown; hwid?: unknown; product?: unknown; offline?: unknown }
+    | null;
   const hwid = normalizeHwid(body?.hwid);
   const key = typeof body?.key === "string" ? body.key : "";
   const product = typeof body?.product === "string" ? body.product : "";
-  if (!hwid || !key.trim() || !product) {
+  if (!hwid || !product) {
+    return NextResponse.json(
+      { code: "bad_request", error: "PC の情報が読み取れませんでした。ツールの画面の QR コードを読み直してください。" },
+      { status: 400 },
+    );
+  }
+  if (!key.trim()) {
     return NextResponse.json({ code: "bad_request", error: "ライセンスキーを入力してください。" }, { status: 400 });
   }
 
@@ -24,7 +34,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ code: "invalid_key", error: "ライセンスキーが正しくありません。" }, { status: 404 });
   }
 
-  const result = await activateDevice(lic, hwid, "online");
+  const result = await activateDevice(lic, hwid, body?.offline === true ? "manual" : "online");
   if (!result.ok) return NextResponse.json({ code: result.code, error: result.error }, { status: result.status });
   return NextResponse.json({ token: result.token });
 }

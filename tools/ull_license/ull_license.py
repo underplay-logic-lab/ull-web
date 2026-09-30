@@ -7,9 +7,11 @@
   1. admin が発行したライセンスキーを初回起動時に入力 → ULL Studio がこの PC（HWID）用の署名付きライセンスを返す
   2. ライセンスはツールの隣に ``<product>.license`` として保存。以後は同梱の公開鍵で署名を確かめるだけなのでオフラインで動く
   3. 30 日ごとにオンラインで再確認を試みる（停止・PC の解除を反映）。つながらなければ今のライセンスのまま動く
-  4. ネットに出られない PC は「HWID をコピー」→ 開発者へ送る → 届いたライセンスファイルを「読み込む」
+  4. ネットに出られない PC は「スマホで認証する」→ QR をスマホで読んでキーを入力 → 受け取ったライセンスファイルを PC で「読み込む」
+     （それでも困ったら「困ったときは」で HWID を添えて開発者へ → admin の手動発行）
 
-依存は標準ライブラリだけ（Ed25519 の検証も純 Python。Nuitka のビルドに追加パッケージが要らない）。
+依存は標準ライブラリだけ（Ed25519 の検証も純 Python）。QR コードの表示だけは ``qrcode`` パッケージ（BSD）があれば使い、
+無ければ URL を文字で出す。使うツールは requirements に ``qrcode`` を足し、Nuitka に ``--include-package=qrcode`` を付ける。
 """
 from __future__ import annotations
 
@@ -187,6 +189,38 @@ def format_hwid(hwid: str) -> str:
     return "-".join(hwid[i : i + 8] for i in range(0, len(hwid), 8)).upper()
 
 
+def offline_activation_url(api_base: str, product: str, hwid: str) -> str:
+    """スマホで開く認証ページ（ULL Studio の /license/offline）。QR コードの中身。"""
+    return f"{api_base.rstrip('/')}/license/offline?p={product}&h={hwid}"
+
+
+def _draw_qr(parent, text: str) -> bool:
+    """QR コードを Tk の Canvas に描く。qrcode パッケージが無ければ False（呼び出し側で URL を出す）。
+
+    qrcode（BSD）は行列を作るのに使うだけで、画像ライブラリは使わない。ツールの requirements に
+    ``qrcode`` を足し、Nuitka では ``--include-package=qrcode`` を付ける。
+    """
+    try:
+        import qrcode
+    except Exception:
+        return False
+    import tkinter as tk
+
+    qr = qrcode.QRCode(border=3, error_correction=qrcode.constants.ERROR_CORRECT_M)
+    qr.add_data(text)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    cell = max(3, 200 // len(matrix))
+    size = cell * len(matrix)
+    canvas = tk.Canvas(parent, width=size, height=size, bg="#ffffff", highlightthickness=0)
+    for y, row in enumerate(matrix):
+        for x, on in enumerate(row):
+            if on:
+                canvas.create_rectangle(x * cell, y * cell, (x + 1) * cell, (y + 1) * cell, fill="#000000", width=0)
+    canvas.pack(pady=(4, 10))
+    return True
+
+
 # ---------------------------------------------------------------------------
 # 通信
 # ---------------------------------------------------------------------------
@@ -354,7 +388,7 @@ def _show_dialog(*, product, public_key_b64, app_name, path, hwid, notice, suppo
         except LicenseServerError as e:
             set_status(e.args[0])
         except Exception:
-            set_status("認証サーバーにつながりませんでした。ネット接続を確認するか、下の「HWID をコピー」から開発者へ連絡してください。")
+            set_status("認証サーバーにつながりませんでした。ネット接続を確認するか、「スマホで認証する」をお使いください。")
 
     def load_file():
         name = filedialog.askopenfilename(
@@ -368,31 +402,57 @@ def _show_dialog(*, product, public_key_b64, app_name, path, hwid, notice, suppo
         padx=20, pady=(10, 4), fill="x"
     )
 
+    # --- ネットにつながらない PC: QR コード → スマホで認証 → ライセンスファイルを PC に移して読み込む（2026-09-30） ---
     label("ネットにつながらない PC の場合", fg=muted, font=("Yu Gothic UI", 9)).pack(anchor="w", padx=20, pady=(14, 2))
-    hw = tk.Frame(root, bg=panel)
-    hw.pack(padx=20, fill="x")
-    shown = format_hwid(hwid)
-    hw_entry = tk.Entry(hw, font=("Consolas", 9), bg=panel, fg="#00ffcc", relief="flat", readonlybackground=panel)
-    hw_entry.insert(0, shown)
-    hw_entry.config(state="readonly")
-    hw_entry.pack(side="left", fill="x", expand=True, padx=6, pady=4)
+    offline_url = offline_activation_url(api_base, product, hwid)
+    offline = tk.Frame(root, bg=panel)
 
-    def copy_hwid():
-        root.clipboard_clear()
-        root.clipboard_append(shown)
-        root.update()
-        set_status("HWID をコピーしました。開発者へ送り、届いたライセンスファイルを「読み込む」から選んでください。", error=False)
+    def toggle_offline():
+        if offline.winfo_ismapped():
+            offline.pack_forget()
+            return
+        offline.pack(padx=20, fill="x", after=offline_btn)
 
-    tk.Button(hw, text="HWID をコピー", command=copy_hwid, bg="#333333", fg="#ffffff", relief="flat").pack(side="right", padx=4, pady=4)
+    offline_btn = tk.Button(root, text="スマホで認証する（QR コードを表示）", command=toggle_offline, bg="#2c2c2c", fg=fg, relief="flat", pady=4)
+    offline_btn.pack(padx=20, fill="x")
+
+    tk.Label(
+        offline,
+        text=(
+            "1. スマホのカメラでこの QR コードを読み取る\n"
+            "2. 開いたページでライセンスキーを入力 → ライセンスファイルがスマホに保存される\n"
+            "3. そのファイルを USB ケーブル・USB メモリ・クラウド等で PC に移す\n"
+            "4. 下の「ライセンスファイルを読み込む」で選ぶ"
+        ),
+        bg=panel, fg=fg, font=("Yu Gothic UI", 9), justify="left",
+    ).pack(anchor="w", padx=10, pady=(8, 4))
+    if not _draw_qr(offline, offline_url):
+        # QR を作れない環境（qrcode パッケージ無し）では URL を出す。
+        url_entry = tk.Entry(offline, font=("Consolas", 8), bg=panel, fg="#00ffcc", relief="flat", readonlybackground=panel)
+        url_entry.insert(0, offline_url)
+        url_entry.config(state="readonly")
+        url_entry.pack(fill="x", padx=10, pady=(0, 8))
 
     row = tk.Frame(root, bg=bg)
-    row.pack(padx=20, pady=(8, 16), fill="x")
+    row.pack(padx=20, pady=(10, 4), fill="x")
     tk.Button(row, text="ライセンスファイルを読み込む", command=load_file, bg="#2c2c2c", fg=fg, relief="flat").pack(side="left")
-    if support_url:
-        tk.Button(row, text=support_label, command=lambda: webbrowser.open(support_url), bg="#06c755", fg="#ffffff", relief="flat").pack(
-            side="left", padx=8
-        )
     tk.Button(row, text="閉じる", command=root.destroy, bg="#2c2c2c", fg=muted, relief="flat").pack(side="right")
+
+    # --- それでも困ったとき: HWID を添えて開発者へ（admin の「手動発行」で対応） ---
+    if support_url:
+        shown = format_hwid(hwid)
+
+        def contact():
+            root.clipboard_clear()
+            root.clipboard_append(shown)
+            root.update()
+            set_status("HWID をコピーしました。問い合わせのメッセージに貼り付けて送ってください。", error=False)
+            webbrowser.open(support_url)
+
+        tk.Button(
+            root, text=f"困ったときは: {support_label}（HWID をコピーして開きます）", command=contact,
+            bg=bg, fg=muted, activebackground=bg, relief="flat", font=("Yu Gothic UI", 8), cursor="hand2",
+        ).pack(padx=20, pady=(2, 14), anchor="w")
 
     root.protocol("WM_DELETE_WINDOW", root.destroy)
     root.mainloop()
