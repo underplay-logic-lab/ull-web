@@ -23,6 +23,7 @@ import {
 } from "@/lib/angleApi";
 import {
   buildScenePlan,
+  rebodyScenePlan,
   CHIPS_BY_AXIS,
   checkBatchCount,
   closeMainIndexFor,
@@ -884,6 +885,19 @@ export function DatasetBuilderTab() {
     void submitBatch(next, next.jobIds.length, image, subImages);
     scrollToId("dataset-results");
   };
+  // 止めている間に残りの行を直す（2026-09-30、ホスト指摘「リセットして作り直すと先に LoRA へ送らないと消える」）。
+  // バッチは plan を先頭から順に切るので、投げ済みのジョブが受け持つ先頭 done 行は触らず、その後ろだけ差し替える。
+  const updateRemaining = (fn: (rest: ScenePlanItem[]) => ScenePlanItem[]) => {
+    const r = runRef.current;
+    if (!r) return;
+    const rOpt = { subCount: r.subCount, closeMain: r.closeMain, derived: r.derived, hasBackRef: r.hasBackRef, hasSideRef: r.hasSideRef };
+    const done = planBatches(r.plan, rOpt, r.prefixLen)
+      .slice(0, r.jobIds.length)
+      .reduce((t, b) => t + b.items.length, 0);
+    const rest = fn(r.plan.slice(done));
+    if (rest.length === 0) return;
+    commitRun({ ...r, plan: [...r.plan.slice(0, done), ...rest] });
+  };
   // 初期状態に戻す（2026-09-27、ホスト指摘「リロードしても前回の続きから抜け出せない」）。
   // 保存した実行を消して、画像・指定はそのまま残す。生成済みの画像はサーバーに 14 日残るが、この画面からは消える。
   const handleReset = () => {
@@ -1628,8 +1642,7 @@ export function DatasetBuilderTab() {
                 </button>
                 {!image && <p className="w-full text-[10px] text-amber-400">続きを作るには、同じ画像をもう一度入れてください。</p>}
                 <p className="w-full text-[10px] leading-relaxed text-muted">
-                  「続きを作る」は、止めた時点の一覧の文章のまま作ります。表情・服装・場面などの設定を変えた場合は、
-                  必要な結果を保存してから「新しく作る」で作り直してください（基準の全身像・真横・後ろ姿は残ります）。
+                  残りの内容は、下の「これから作る分」で直せます（できた画像はそのまま残ります）。
                 </p>
               </div>
             ) : (
@@ -1751,6 +1764,56 @@ export function DatasetBuilderTab() {
                   onClick={() => setReview((prev) => prev.filter((_, k) => k !== i))}
                   aria-label="この行を消す"
                   className="shrink-0 text-muted hover:text-red-400"
+                >
+                  <X size={12} />
+                </button>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {/* 止めている間の「これから作る分」（直してから続きを作れる） */}
+      {phase === "paused" && run && remainingItems.length > 0 && (
+        <div id="dataset-remaining" className="scroll-mt-24 space-y-3 rounded-xl border border-border bg-background p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-medium text-foreground">
+              これから作る分 {remainingItems.length} 枚（{remainingCost.toLocaleString()} C）
+            </p>
+            <button
+              type="button"
+              onClick={() => updateRemaining((rest) => rebodyScenePlan(rest, sel, run.plan.length))}
+              className="rounded-lg border border-border px-3 py-1.5 text-xs text-foreground hover:bg-surface"
+            >
+              今の設定で文章を作り直す
+            </button>
+          </div>
+          <p className="text-[10px] leading-relaxed text-muted">
+            各行の文を書き換えたり、行を消したりできます。左の設定（ポーズ・場面・表情・服装など）を変えたときは
+            「今の設定で文章を作り直す」で残りの分に反映できます。構図・向きはそのままです。
+          </p>
+          <ol className="max-h-[420px] space-y-1 overflow-y-auto pr-1">
+            {remainingItems.map((it, i) => (
+              <li key={it.key} className="flex items-center gap-2 text-[11px]">
+                <span className="w-6 shrink-0 text-right font-mono text-muted">{i + 1}</span>
+                <span className="w-40 shrink-0 truncate text-muted" title={scenePlanPreviewJa(it)}>
+                  {scenePlanLabel({ ...it, custom: "", bodyJa: "" }).replace(/^（|）$/g, "")}
+                </span>
+                <span className="w-10 shrink-0 text-right font-mono text-[10px] text-muted">{sceneItemCredits(it, knobs, runOpt)}C</span>
+                <input
+                  value={it.custom ?? it.bodyJa}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    updateRemaining((rest) => rest.map((x, k) => (k === i ? { ...x, custom: v === x.bodyJa ? undefined : v } : x)));
+                  }}
+                  className={`flex-1 rounded-md border px-2 py-1 text-foreground ${it.custom ? "border-neon-pink/50 bg-neon-pink/5" : "border-border bg-surface"}`}
+                />
+                <button
+                  type="button"
+                  onClick={() => updateRemaining((rest) => rest.filter((_, k) => k !== i))}
+                  disabled={remainingItems.length <= 1}
+                  aria-label="この行を消す"
+                  className="shrink-0 text-muted hover:text-red-400 disabled:opacity-30"
                 >
                   <X size={12} />
                 </button>

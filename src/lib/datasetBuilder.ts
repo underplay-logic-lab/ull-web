@@ -391,6 +391,24 @@ export type CloseMainMap = Partial<Record<CloseFraming, number | null>>;
 /** ジョブの画像セットの種類。同じ種類の行だけ 1 ジョブにまとめる。 */
 export type SceneGroup = "main" | "close:upper" | "close:bust" | "refs" | "mixed";
 
+/**
+ * 途中で止めている間に設定（ポーズ・場面・表情・服装・追記）を変えたとき、残りの行の本文だけ今の設定で作り直す。
+ * 構図・向きは行ごとにそのまま（全体の比率を崩さない）。後ろ向きの行には表情の入らない本文を当てる（2026-09-30）。
+ */
+export function rebodyScenePlan(rest: ScenePlanItem[], sel: SceneSelection, total: number): ScenePlanItem[] {
+  const fresh = buildScenePlan(sel, Math.max(total, rest.length));
+  const used = new Set<number>();
+  return rest.map((it) => {
+    const back = it.viewId === "back";
+    let k = fresh.findIndex((f, i) => !used.has(i) && (f.viewId === "back") === back);
+    if (k < 0) k = fresh.findIndex((_, i) => !used.has(i));
+    if (k < 0) return it;
+    used.add(k);
+    const f = fresh[k];
+    return { ...it, key: `${it.key.split("~")[0]}~${f.key}`, bodyEn: f.bodyEn, bodyJa: f.bodyJa, custom: undefined };
+  });
+}
+
 export type SceneBatchOptions = {
   subCount: number;
   closeMain: CloseMainMap;
