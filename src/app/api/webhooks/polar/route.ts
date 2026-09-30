@@ -5,6 +5,7 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { polarProductConfig, tierForPolarProduct } from "@/lib/polar";
 import { POLAR_DONATION_PRODUCT_ID } from "@/lib/polarProducts";
 import { apiErrorResponse } from "@/lib/apiError";
+import { Resend } from "resend";
 
 const LOG_PREFIX = "[webhooks/polar]";
 
@@ -194,7 +195,79 @@ async function handleSubscriptionCanceled(subscription: SubscriptionData) {
     return apiErrorResponse(error, "flag_cancellation", 500, LOG_PREFIX);
   }
 
+  await recordCancellationFeedback(subscription, userId);
+
   return NextResponse.json({ ok: true, userId, cancelAtPeriodEnd: true });
+}
+
+// 解約時アンケート（Polar のポータルで聞かれる理由・コメント）を問い合わせと同じ窓口に残す（2026-09-30 ホスト:
+// 「メッセージがあったなら知っておくべき」）。回答が無ければ何もしない。保存先は contact_inquiries（admin の
+// 「問い合わせ」タブ）＋メール通知。Webhook の再送で二重にならないよう subscription id で 1 件に限る。
+// best-effort: ここで失敗しても解約の処理自体は成功扱い（Polar に再送させない）。
+const CANCELLATION_REASON_JA: Record<string, string> = {
+  customer_service: "サポート対応",
+  low_quality: "品質が低い",
+  missing_features: "欲しい機能が無い",
+  switched_service: "他のサービスに乗り換えた",
+  too_complex: "使い方が難しい",
+  too_expensive: "高すぎる",
+  unused: "使わなくなった",
+  other: "その他",
+};
+
+async function recordCancellationFeedback(subscription: SubscriptionData, userId: string) {
+  const reason = subscription.customer_cancellation_reason ?? null;
+  const comment = subscription.customer_cancellation_comment?.trim() || null;
+  if (!reason && !comment) return;
+
+  try {
+    const tag = `polar_subscription_cancel:${subscription.id}`;
+    const { count } = await supabaseAdmin
+      .from("contact_inquiries")
+      .select("id", { count: "exact", head: true })
+      .eq("company", tag);
+    if ((count ?? 0) > 0) return;
+
+    const email = subscription.customer?.email ?? null;
+    const name = subscription.customer?.name || email || "（会員）";
+    const tier = tierForPolarProduct(subscription.product_id) ?? subscription.product_id;
+    const reasonJa = reason ? (CANCELLATION_REASON_JA[reason] ?? reason) : "（未回答）";
+    const body = [`プラン: ${tier}`, `理由: ${reasonJa}`, `コメント: ${comment ?? "（なし）"}`, `ユーザー: ${userId}`].join("\n");
+
+    const { data: row, error } = await supabaseAdmin
+      .from("contact_inquiries")
+      .insert({
+        name,
+        email: email ?? "（メールなし）",
+        company: tag,
+        service: "解約時のアンケート",
+        message: body,
+      })
+      .select("id")
+      .single();
+    if (error || !row) {
+      console.error(`${LOG_PREFIX} cancellation feedback insert failed:`, error?.message ?? "no row returned");
+      return;
+    }
+
+    const resendApiKey = process.env.RESEND_API_KEY;
+    const receiverEmail = process.env.CONTACT_RECEIVER_EMAIL;
+    if (!resendApiKey || !receiverEmail) return;
+    const { error: sendError } = await new Resend(resendApiKey).emails.send({
+      from: `ULL Studio お問い合わせ <${receiverEmail}>`,
+      to: receiverEmail,
+      ...(email ? { replyTo: email } : {}),
+      subject: `【解約時のアンケート】${reasonJa}`,
+      text: [`お名前: ${name}`, `メールアドレス: ${email ?? "-"}`, body].join("\n"),
+    });
+    if (sendError) {
+      console.error(`${LOG_PREFIX} cancellation feedback mail failed (saved):`, sendError);
+      return;
+    }
+    await supabaseAdmin.from("contact_inquiries").update({ email_sent: true }).eq("id", row.id);
+  } catch (err) {
+    console.error(`${LOG_PREFIX} cancellation feedback failed (ignored):`, err);
+  }
 }
 
 async function handleSubscriptionUncanceled(subscription: SubscriptionData) {
@@ -222,6 +295,9 @@ async function handleSubscriptionRevoked(subscription: SubscriptionData) {
     console.error(`${LOG_PREFIX} subscription ${subscription.id} revoked but has no metadata.userId.`);
     return NextResponse.json({ ok: true, skipped: "no_user_id" });
   }
+
+  // 即時解約だと canceled を経ずに revoked だけ来ることがある。アンケートは subscription id で 1 件に限るので二重にはならない。
+  await recordCancellationFeedback(subscription, userId);
 
   const revokedTier = tierForPolarProduct(subscription.product_id);
 
