@@ -2500,6 +2500,59 @@ def scene(
 
 
 @app.local_entrypoint()
+def bfs(
+    face: str,
+    targets: str,
+    out_dir: str = "./angle_bfs",
+    seed: int = 42,
+    lora_file: str = "bfs_head_v5_2511_merged_version_rank_16_fp16.safetensors",
+    scale: float = 1.0,
+):
+    """頭部差し替え LoRA（BFS, MIT）の試験用（2026-09-30、素材づくりの同一性: 表情を変えると別人になる件）。
+
+    Multi-Angle LoRA の代わりに Alissonerdx/BFS-Best-Face-Swap を載せたコンテナで、各 target（生成済みの素材）の
+    頭部を face（元の顔アップ）の人物に差し替える。本番のデプロイには触れない（modal run の一時アプリ）。
+    targets はカンマ区切りのパス。入力順は BFS の Qwen Edit ガイドどおり Picture 1 = 体（target）/ Picture 2 = 頭（face）。
+    """
+    prompt = (
+        "head_swap: start with Picture 1 as the base image, keeping its lighting, environment, and background. "
+        "remove the head from Picture 1 completely and replace it with the head from Picture 2, strictly preserving "
+        "the hair, eye color, and nose structure of Picture 2. copy the eye direction, head rotation, and "
+        "micro-expressions from Picture 1."
+    )
+
+    def _b64(p: str) -> str:
+        fp = pathlib.Path(p).expanduser()
+        if not fp.is_file():
+            raise SystemExit(f"not a file: {fp}")
+        return base64.b64encode(fp.read_bytes()).decode("ascii")
+
+    face_b64 = _b64(face)
+    ensure_qwen_edit_cached.remote()
+    worker = QwenImageEditWorker.with_options(
+        secrets=[
+            modal.Secret.from_dict(
+                {
+                    "ANGLE_LORA_REPO": "Alissonerdx/BFS-Best-Face-Swap",
+                    "ANGLE_LORA_FILENAME": lora_file,
+                    "ANGLE_LORA_TRIGGER": "",
+                    "ANGLE_LORA_SCALE": str(scale),
+                }
+            )
+        ]
+    )()
+    dst = pathlib.Path(out_dir).expanduser()
+    dst.mkdir(parents=True, exist_ok=True)
+    for t in [s.strip() for s in targets.split(",") if s.strip()]:
+        body = _b64(t)
+        result = worker.run_edit.remote(body, [prompt], seed=seed, images=[body, face_b64], raw_prompt=True)
+        name = pathlib.Path(t).stem
+        for i, b64 in enumerate(result["images"]):
+            (dst / f"{name}_bfs{'' if i == 0 else f'_{i}'}.png").write_bytes(base64.b64decode(b64))
+        print(f"[bfs] {name}: {result['count']} image(s) in {result['elapsed_time']}s", flush=True)
+
+
+@app.local_entrypoint()
 def edits(spec_path: str, out_dir: str = "./angle_edits", seed: int = 42):
     """複数の編集を同じ warm コンテナで順に流す試験用（2026-09-29、顔アップ→全身の顔の描き直し検証）。
 
