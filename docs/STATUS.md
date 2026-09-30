@@ -630,7 +630,11 @@ D. **納品ツールのライセンス（2026-09-30 着手、ホスト要望）*
    （migration 20260892）、API `/api/license/{activate,refresh}`、ツール側の正本 `tools/ull_license/ull_license.py`（純 Python・標準ライブラリのみ）。
    FramePicker（`D:\tool\Underplay-FramePicker`、git 管理外）は組み込み済み・旧 Victor-Shield は `main.py.bak-victor-shield`。
    同時に **ComfyUI の URL 欄**を追加（既定 `http://127.0.0.1:8188`＝従来どおり。Google Colab は公開 URL を貼る。問い合わせ対応 2026-09-30、
-   ダミーサーバーで送信確認済み・実 Colab は未確認）。readme に Colab の手順あり。新版は再ビルドして渡す。
+   ダミーサーバーで送信確認済み・実 Colab は未確認）。readme に Colab の手順あり。
+   **ビルドはフォルダ版（standalone）に変更**（onefile はセキュリティソフトに止められた実績）: `build.bat` で `dist\Underplay-FramePicker\` と
+   ZIP まで自動（Defender の検査中ロック対策で片付け失敗・移動は無視/コピー）。v1.1.0 ビルド済み、exe の起動・認証はホスト確認待ち。
+   発行後に**台数・期限を admin で変更可**。期限切れのツールはオンラインなら延長後の期限を受け取る（オフラインなら止まって案内）。
+   マイグレーション・`LICENSE_SIGNING_KEY` はホスト対応済み（2026-09-30）。
    **残（ホスト）**: migration 20260892 の適用／Vercel に `LICENSE_SIGNING_KEY`（`.env.local` と同じ値・Sensitive）→ 再デプロイ →
    admin で自分宛てに発行して FramePicker（ソース実行 or 再ビルド）で認証を通す。**鍵は作り直さない**（配布済みが全部無効になる）。
    **次**: ① ULL Studio 上で使うツール（許可制の Studio タブ。メタデータクリーナー → 背景透過）、②と同じ台帳で利用権を管理。

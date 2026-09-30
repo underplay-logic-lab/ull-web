@@ -218,7 +218,7 @@ def _post(api_base: str, path: str, body: dict, app_name: str) -> dict:
 # ---------------------------------------------------------------------------
 # 本体
 # ---------------------------------------------------------------------------
-def _check_payload(payload: Optional[dict], product: str, hwid: str) -> Optional[str]:
+def _check_payload(payload: Optional[dict], product: str, hwid: str, ignore_exp: bool = False) -> Optional[str]:
     """使えないなら理由（日本語）、使えるなら None。"""
     if payload is None:
         return "ライセンスファイルが正しくありません。"
@@ -227,7 +227,7 @@ def _check_payload(payload: Optional[dict], product: str, hwid: str) -> Optional
     if payload.get("hwid") != hwid:
         return "このライセンスは別の PC 用です。"
     exp = payload.get("exp")
-    if isinstance(exp, (int, float)) and time.time() >= exp:
+    if not ignore_exp and isinstance(exp, (int, float)) and time.time() >= exp:
         return "ライセンスの期限が切れています。"
     return None
 
@@ -254,26 +254,28 @@ def ensure_license(
         token = path.read_text(encoding="utf-8", errors="ignore").strip()
         payload = parse_token(token, public_key_b64)
         reason = _check_payload(payload, product, hwid)
+        # 期限切れでも、admin が期限を延ばしていればオンラインで新しいライセンスを受け取れる（2026-09-30）。
+        expired = payload is not None and reason is not None and _check_payload(payload, product, hwid, ignore_exp=True) is None
+        rck = payload.get("rck") if payload else None
+        recheck_due = reason is None and isinstance(rck, (int, float)) and time.time() >= rck
+        if expired or recheck_due:
+            try:
+                res = _post(api_base, "/api/license/refresh", {"token": token}, app_name)
+                fresh = parse_token(res.get("token", ""), public_key_b64)
+                if _check_payload(fresh, product, hwid) is None:
+                    path.write_text(res["token"] + "\n", encoding="utf-8")
+                    return fresh
+            except LicenseServerError as e:
+                if e.status in (400, 403, 404):
+                    _safe_unlink(path)
+                    reason = e.args[0]
+            except Exception:
+                if expired:
+                    reason = "ライセンスの期限が切れています。延長済みの場合は、ネットにつないでから起動し直してください。"
+                # 再確認だけならつながらなくても今のライセンスのまま動かす
         if reason is None:
-            rck = payload.get("rck")
-            if isinstance(rck, (int, float)) and time.time() >= rck:
-                try:
-                    res = _post(api_base, "/api/license/refresh", {"token": token}, app_name)
-                    fresh = parse_token(res.get("token", ""), public_key_b64)
-                    if _check_payload(fresh, product, hwid) is None:
-                        path.write_text(res["token"] + "\n", encoding="utf-8")
-                        return fresh
-                except LicenseServerError as e:
-                    if e.status in (400, 403, 404):
-                        _safe_unlink(path)
-                        notice = e.args[0]
-                        payload = None
-                except Exception:
-                    pass  # つながらない: 今のライセンスのまま動かす
-            if payload is not None:
-                return payload
-        else:
-            notice = reason
+            return payload
+        notice = reason
 
     payload = _show_dialog(
         product=product,

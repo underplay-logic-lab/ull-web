@@ -9,7 +9,8 @@ import { isLicenseProduct } from "@/lib/license/products";
 //   GET   … 一覧（端末つき）＋ツールに埋め込む公開鍵
 //   POST  … { action: "create", ... } 発行（キーの原文はこの応答で一度だけ返す）
 //           { action: "manual", licenseId, hwid } 手動発行（オフラインの相手用。ライセンスファイルの中身を返す）
-//   PATCH … { licenseId, revoked } 停止/再開、{ activationId, revoked } 端末の解除/戻す
+//   PATCH … { licenseId, revoked } 停止/再開、{ activationId, revoked } 端末の解除/戻す、
+//           { licenseId, maxDevices?, expiresAt? } 台数・期限の変更（expiresAt は "" で無期限）
 
 export async function GET() {
   const { user, response } = await requireAdmin();
@@ -106,8 +107,25 @@ export async function PATCH(request: Request) {
   const { user, response } = await requireAdmin();
   if (!user) return response;
   const body = (await request.json().catch(() => null)) as
-    | { licenseId?: unknown; activationId?: unknown; revoked?: unknown }
+    | { licenseId?: unknown; activationId?: unknown; revoked?: unknown; maxDevices?: unknown; expiresAt?: unknown }
     | null;
+
+  // 台数・期限の変更（発行後）。台数を今の認証台数より減らしても既存の PC は外さない（新しい認証だけ止まる）。
+  // 期限の延長は、ツールが期限切れ時にオンラインで確かめて新しいライセンスを受け取る（オフラインのままなら古い期限で止まる）。
+  if (typeof body?.licenseId === "string" && (body.maxDevices !== undefined || body.expiresAt !== undefined)) {
+    const update: { max_devices?: number; expires_at?: string | null } = {};
+    if (body.maxDevices !== undefined) update.max_devices = Math.max(1, Math.min(50, Math.trunc(Number(body.maxDevices) || 1)));
+    if (body.expiresAt !== undefined) {
+      const raw = typeof body.expiresAt === "string" ? body.expiresAt.trim() : "";
+      const d = raw ? new Date(raw) : null;
+      if (d && Number.isNaN(d.getTime())) return NextResponse.json({ error: "期限の日付が正しくありません。" }, { status: 400 });
+      update.expires_at = d ? d.toISOString() : null;
+    }
+    const { error } = await supabaseAdmin.from("licenses").update(update).eq("id", body.licenseId);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true });
+  }
+
   if (typeof body?.revoked !== "boolean") return NextResponse.json({ error: "revoked が必要です。" }, { status: 400 });
   const revokedAt = body.revoked ? new Date().toISOString() : null;
 

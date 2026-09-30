@@ -45,6 +45,63 @@ function downloadText(name: string, text: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// 期限（ISO）→ 日本時間の日付（yyyy-mm-dd）。発行フォームと同じく「その日の終わり」まで有効という扱い。
+function jstDate(iso: string | null): string {
+  if (!iso) return "";
+  return new Date(new Date(iso).getTime() + 9 * 3600_000).toISOString().slice(0, 10);
+}
+
+// 発行後の台数・期限の変更（2026-09-30 ホスト要望）。台数を減らしても認証済みの PC は外れない（新しい認証だけ止まる）。
+function LimitsEditor({ lic, onSave }: { lic: License; onSave: (maxDevices: number, expiresAt: string) => Promise<void> }) {
+  const [devices, setDevices] = useState(lic.max_devices);
+  const [date, setDate] = useState(jstDate(lic.expires_at));
+  const [saving, setSaving] = useState(false);
+  const dirty = devices !== lic.max_devices || date !== jstDate(lic.expires_at);
+  const activeCount = lic.license_activations.filter((a) => !a.revoked_at).length;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted">
+      <span>台数</span>
+      <input
+        type="number"
+        min={1}
+        max={50}
+        value={devices}
+        onChange={(e) => setDevices(Number(e.target.value) || 1)}
+        className="w-16 rounded-md border border-border bg-background px-2 py-1 text-foreground"
+      />
+      <span>期限</span>
+      <input
+        type="date"
+        value={date}
+        onChange={(e) => setDate(e.target.value)}
+        className="rounded-md border border-border bg-background px-2 py-1 text-foreground"
+      />
+      {date && (
+        <button type="button" onClick={() => setDate("")} className="hover:text-foreground">
+          無期限にする
+        </button>
+      )}
+      {dirty && (
+        <button
+          type="button"
+          disabled={saving}
+          onClick={async () => {
+            setSaving(true);
+            await onSave(devices, date ? `${date}T23:59:59+09:00` : "");
+            setSaving(false);
+          }}
+          className="rounded-full border border-neon-pink/50 px-3 py-0.5 text-neon-pink hover:bg-neon-pink/10 disabled:opacity-50"
+        >
+          変更を保存
+        </button>
+      )}
+      {devices < activeCount && (
+        <span className="text-amber-400">認証済みの PC（{activeCount} 台）は外れません。減らすなら下の「解除」も必要です。</span>
+      )}
+    </div>
+  );
+}
+
 export function LicensesTab() {
   const [rows, setRows] = useState<License[]>([]);
   const [publicKey, setPublicKey] = useState<string | null>(null);
@@ -281,6 +338,7 @@ export function LicensesTab() {
                 </p>
               )}
               <p className="mt-1 text-[11px] text-muted">発行 {fmt(lic.created_at)}</p>
+              <LimitsEditor lic={lic} onSave={(maxDevices, expiresAt) => patch({ licenseId: lic.id, maxDevices, expiresAt })} />
 
               {lic.license_activations.length > 0 && (
                 <ul className="mt-3 space-y-1">
