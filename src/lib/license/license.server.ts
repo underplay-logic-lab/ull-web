@@ -19,8 +19,8 @@ import { createHash, createPrivateKey, createPublicKey, randomBytes, sign, verif
 // Python 側の検証は tools/ull_license/ull_license.py（純 Python の Ed25519）。形式を変えるときは両方を直す。
 
 export const TOKEN_PREFIX = "ULL1.";
-export const RECHECK_DAYS = 7;
-export const HARD_CHECK_DAYS = 30;
+export const RECHECK_DAYS = 1;
+export const HARD_CHECK_DAYS = 7;
 export const TRANSFER_COOLDOWN_DAYS = 30;
 
 export type LicensePayload = {
