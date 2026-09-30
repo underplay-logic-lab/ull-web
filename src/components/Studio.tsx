@@ -145,7 +145,33 @@ export function Studio() {
             fallback="あなたのこだわりで、育っていくスタジオ。"
             className="mt-3 text-sm font-medium text-gradient"
           />
-          <p className="mx-auto mt-4 max-w-xl text-muted">
+          {user && (
+            <div className="mt-5 flex justify-center">
+              <CreditsBadge user={user} className="inline-flex" />
+            </div>
+          )}
+
+          <div ref={tabsRef} className="mt-8 flex flex-wrap items-center justify-center gap-2 scroll-mt-20">
+            {visibleTabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => goTab(tab.id)}
+                className={`rounded-full border px-4 py-1.5 text-xs font-mono font-medium transition-colors ${
+                  tab.adminOnly ? "ml-3 opacity-70 " : ""
+                }${
+                  shownTab === tab.id
+                    ? "border-neon-pink/40 bg-neon-pink/10 text-neon-pink"
+                    : "border-border bg-surface/40 text-muted hover:border-neon-violet/40 hover:text-foreground"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* タブごとの説明はタブの下に（2026-09-30 ホスト指摘: 切り替えるとタブの頭へスクロールするので、上にあると見えない）。 */}
+          <p className="mx-auto mt-5 max-w-xl text-muted">
             {activeTab === "custom" ? (
               <EditableText
                 siteKey="studio_desc_custom"
@@ -188,30 +214,6 @@ export function Studio() {
               />
             )}
           </p>
-          {user && (
-            <div className="mt-5 flex justify-center">
-              <CreditsBadge user={user} className="inline-flex" />
-            </div>
-          )}
-
-          <div ref={tabsRef} className="mt-8 flex flex-wrap items-center justify-center gap-2 scroll-mt-20">
-            {visibleTabs.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => goTab(tab.id)}
-                className={`rounded-full border px-4 py-1.5 text-xs font-mono font-medium transition-colors ${
-                  tab.adminOnly ? "ml-3 opacity-70 " : ""
-                }${
-                  shownTab === tab.id
-                    ? "border-neon-pink/40 bg-neon-pink/10 text-neon-pink"
-                    : "border-border bg-surface/40 text-muted hover:border-neon-violet/40 hover:text-foreground"
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
         </div>
 
         {storageReady && (
