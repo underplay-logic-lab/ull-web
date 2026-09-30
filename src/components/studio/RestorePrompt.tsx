@@ -33,7 +33,7 @@ export function RestorePrompt({
             <p className="text-sm font-semibold text-foreground">前回の続きを復元しますか？</p>
             <p className="mt-0.5 text-[11px] text-muted">
               この端末に {summary} が残っています{whenLabel ? `（最終保存 ${whenLabel}）` : ""}。
-              復元しない場合は消去して、新しく始めます。
+              続きから作るとき・同じ画像で作り直すときも、まず「復元する」を押してください。
             </p>
           </div>
         </div>
@@ -47,13 +47,19 @@ export function RestorePrompt({
             {busy ? <Loader2 size={12} className="animate-spin" /> : null}
             復元する
           </button>
+          {/* 2026-09-30 事故: 「新しく作る」（結果欄の、基準や参照は残すボタン）と取り違えて押し、画像も参照も全部消えた。
+              名前で区別し、押したら確認を出す。 */}
           <button
             type="button"
-            onClick={onDiscard}
+            onClick={() => {
+              if (window.confirm(`この端末に残っている ${summary} をすべて消して、最初からやり直します。元に戻せません。よろしいですか？`)) {
+                onDiscard();
+              }
+            }}
             disabled={busy}
             className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:text-foreground disabled:opacity-50"
           >
-            消去して新しく始める
+            復元しないで全部消す
           </button>
         </div>
       </div>
