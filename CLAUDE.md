@@ -197,6 +197,8 @@ Supabase のマイグレーションファイル（`supabase/migrations/*.sql`�
 
 **`public` にテーブルを新設するマイグレーションには、同じファイルに明示 `GRANT` を必ず書く**（2026-10-30 から Supabase が新規テーブルへの Data API 権限を自動付与しなくなる。書き忘れると permission denied で API から見えない）。`service_role` には常に `select, insert, update, delete`、クライアント（supabase-js）から触るなら `authenticated` にも、未ログインで読むなら `anon` に `select`。付与は最小限にし、行単位の制御は従来どおり RLS で行う。既存テーブル（`20260858` まで）は影響なし。
 
+**`public` に `SECURITY DEFINER` 関数を作ったら、同じファイルで `revoke all on function … from public, anon, authenticated;` → `grant execute … to service_role;` を書く**（既定で誰でも実行でき、2026-10-01 に「anon キーだけでクレジットを足せる」穴が見つかった。`20260894`）。
+
 ---
 
 ## 5. モデル ＆ OSS ライセンス方針（商用リリース前提・必須）
