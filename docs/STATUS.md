@@ -571,7 +571,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 
 ---
 
-## 次の一手（優先度順、2026-09-24 に棚卸し）
+## 次の一手（2026-10-01 ローンチ後に整理）
 
 **済んでいること（蒸し返さない。2026-09-24 に Claude が古い版のこの節を読んで誤報告したので明記）**
 - ローンチ価格の「決めること 7 点」は **2026-09-23 に回答済み**（`docs/pricing-decision-sheet.md` §4、knob 反映済み）。
@@ -584,34 +584,44 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 
 **残り**
 
-**★ 2026-10-01 ローンチ確定（ホスト）**: 顔アップ 1 枚 → 素材づくり（こだわり・表情は真顔固定・寄りの行に元の顔アップを添える）
-→ 45 枚 → LoRA（minimax 既定・3,080 step・約 30 分・1,449C）→ 動画。**1,000 step〜final までほぼ同一人物**、プロンプト追従も完璧
-（表情も動画側で指示どおり出た＝真顔の素材で学習して表情は動画モデルに任せる方針が有効）。同日の最終点検: 主要ページ・admin API・
-転送 OK、特商法に定期購入の条件と有効期限を追加（`7de6e02`）。**同日 Discord で既存のお客さん（ComfyUI の依頼主たち）へ告知済み**
-（「やりたいことが叶う・要望で育てるサイト」として。料金など細かい話はしない方針）。
+**▶ ULL再開はここから（2026-10-01 夜に整理。まずこの「上位 3 つ」を提示する）**
 
-**▶ ULL再開はここから（2026-10-01 ローンチ後の並び。まずこれを提示する）**
-1. ~~新規ユーザー目線で一周~~ → 済（2026-10-01: Google 新規登録＝初回割引表示 OK、メール新規登録＝確認メール→`/auth/confirm`→ログイン OK。
-   Supabase の Confirm email は**有効**＝メール登録 1 件で Resend を 1 通使う） ／ 2. Discord の要望・不具合への対応（最優先で拾う）
-3. 広く告知する前に: 説明の整理（要点 1 行＋詳しく、反応で分かりにくい所から）・admin に GPU 待ちの見張り・紹介/操作動画
-4. 素材づくりの続き（必要になったら）: 斜めの顔の参照の効果確認・全身の行の同一性・超こだわりモード（表情違いの顔アップ＋BFS・別料金）
-5. 納品ツール: ULL 上の許可制ツール（メタデータクリーナー→背景透過）→ ブラウザ版 FramePicker。FramePicker の Colab 連携は問い合わせ主が確認
-   ※アクセス解析: Cloudflare Web Analytics（`2aa103e`、本番のみ・Cookie なし・自動挿入は効かず手動スニペット）。見るのは Cloudflare
-   → Web Analytics。Traffic の「一意の訪問者」は IP 単位でボット込みなので人数の目安にしない。登録数は Supabase の Users。
-   Google Search Console 登録済み（2026-10-01、ドメイン `ullstudio.com`・DNS の TXT で確認＝**消さない**、トップは登録済み・再登録をリクエスト）。
-   Google Analytics / 広告は、少額で広告を試す段階まで入れない（ホストと合意）。AdSense は合わないので使わない。
-   **バックアップ（2026-10-01）**: Supabase Free は自動バックアップ無し → `scripts/backup-supabase.mjs` で public 全テーブル＋auth.users を
-   `D:\web\_backups`（gitignore 済み・Google ドライブで同期）へ毎日。タスクスケジューラ「ULL Supabase Backup」毎日 23:00（逃したら次のログオン時）、
-   30 日保持・1 回 ~46MB。戻すときは migrations → データ投入。Pro（$25/月・7 日の自動バックアップ）はお客さんが増えたら検討。
-   **セキュリティ（同日・Security Advisor）**: SECURITY DEFINER 関数が anon で実行でき、誰でもクレジットを足せた → migration 20260894 で
-   service_role だけに（適用済み・anon は 401 を確認・サーバー経路と新規登録のトリガーは動作確認済み）。search_path 固定、gpu_warm_status の全開ポリシー削除。
-   **今後 `public` に SECURITY DEFINER 関数を作るときは、同じマイグレーションで anon/authenticated から EXECUTE を revoke する。**
-   リンクのカード（OGP/X）追加（`ffd56e9`・`aed051b`）: 画像は `src/app/opengraph-image.tsx` で自動生成。作例画像にするなら同じ場所に
-   `opengraph-image.png`（1200×630）を置いて tsx を消す。任意: UptimeRobot 等で死活監視（ホストの登録だけ）・利用者増で Sentry。
-6. 片付け: JS バンドルの GPU 型番（knob の説明文）・RunPod の死にコードと管理画面の常時起動の確認・Supabase Site URL を www に
+**★ 2026-10-01 にローンチした**（天赦日×一粒万倍日）。顔アップ 1 枚 → 素材づくり → 45 枚 → LoRA（minimax 既定・約 30 分）→ 動画で、
+1,000 step〜final までほぼ同一人物・プロンプト追従も完璧。Discord の既存のお客さん（ComfyUI の依頼主たち）へ告知済み
+（「やりたいことが叶う・要望で育てるサイト」。料金など細かい話はしない）。新規登録（Google・メール）・パスワード再設定・決済は確認済み。
+
+**上位 3 つ**
+1. **Discord の反応を拾う**（要望・不具合が来ていれば最優先）。訪問は Cloudflare → Web Analytics、登録は Supabase の Users で見る
+2. **広く告知する前の整備**: 説明の整理（要点 1 行＋「詳しく ▸」、反応で分かりにくい所から）・admin に GPU 待ちの見張り
+   （created_at → processing_started_at が 1〜2 分より伸びたら Modal 10 台が埋まり始め）・紹介/操作動画（Remotion＋Playwright）
+3. **2026-09-30〜10-01 に入れて、まだ実機で見ていないもの**を使いながら確認: 素材づくりの「これから作る分」の編集とボタン移動・
+   斜めの顔の参照・寄りの行への元の顔アップ（効果は確認済み、構図が寄りすぎないか）・LoRA Studio の光り方（名前入力でモデル欄の光が消える／
+   おまかせ後に診断へジャンプして光る／キャプション前の ZIP ボタン名）・復元画面の「復元しないで全部消す」確認
+
+**その次**
+4. 素材づくり（必要になったら）: 全身の行の同一性・超こだわりモード（表情違いの顔アップ＋BFS 強度 1.0・別料金）・斜めの左右（反転の技）
+5. 納品ツール: ULL 上の許可制ツール（メタデータクリーナー → 背景透過）→ ブラウザ版 FramePicker。FramePicker の Colab 連携は問い合わせ主が確認
+6. 片付け: JS バンドルの GPU 型番（knob の説明文）・RunPod の死にコードと管理画面の常時起動・Supabase Site URL を www に・
+   UptimeRobot 等の死活監視（任意）・利用者が増えたら Supabase Pro／Modal Team／Resend Pro
 7. 期限: Polar API の次の版（2027-04 頃）
 
-**▶ ULL再開はここから（2026-09-30 未明に更新。まずこの A〜C を提示する。下の「2026-09-28 夜」の節は経緯）**
+**ローンチ日に整えた運用（参照用。蒸し返さない）**
+- **アクセス解析**: Cloudflare Web Analytics（`2aa103e`、本番のみ・Cookie なし・手動スニペット）。Traffic の「一意の訪問者」は IP 単位で
+  ボット込みなので人数の目安にしない。Google Search Console 登録済み（ドメイン `ullstudio.com`・DNS の TXT で確認＝**消さない**）。
+  Google Analytics／広告は少額で広告を試す段階まで入れない。AdSense は使わない。
+- **リンクのカード（OGP/X）**: `src/app/opengraph-image.tsx` で自動生成。作例画像にするなら `opengraph-image.png`（1200×630）を置いて tsx を消す。
+- **バックアップ**: Supabase Free は自動バックアップ無し → `scripts/backup-supabase.mjs` で public 全テーブル＋auth.users を `D:\web\_backups`
+  （gitignore 済み・Google ドライブで同期）へ。タスクスケジューラ「ULL Supabase Backup」毎日 23:00（逃したら次のログオン時）、30 日保持・
+  1 回 ~46MB（Supabase の月 5GB の通信枠の約 3 割を使う）。戻すときは migrations → データ投入。
+- **セキュリティ**: SECURITY DEFINER 関数が anon で実行でき誰でもクレジットを足せた → migration 20260894 で service_role だけに（適用・確認済み）。
+  今後 SECURITY DEFINER 関数を作るときは同じマイグレーションで revoke（CLAUDE.md §4 に明記）。公開 JS に秘密の値が無いことも確認済み。
+- **同時利用の上限**: Modal 同時 GPU 10 台（Team は月 $250 で 50 台）・Resend 100 通/日（メール登録と再設定だけ。Google ログインは使わない）。
+- **法定表記**: 特商法に定期購入の条件・クレジット 180 日の有効期限を追加（`7de6e02`）。プライバシーポリシーにアクセス解析・Resend を追記。
+- **納品ツールのライセンス**（D）: オンライン専用・試用 7 日・自分で移し替え（30 日に 1 回）・確認は 1 日ごと・7 日確認できなければ停止。
+  FramePicker v1.1.0 は `D:\tool\Underplay-FramePicker\dist\` の ZIP、平丸さんのお客様へ送付済み。
+- やめたもの: スタートアップ支援・無料枠の申請（資金調達が前提）。Alibaba への Qwen Image 2.1 の許諾メールは「返事が来たら儲けもの」で任意。
+
+**▶（経緯）2026-09-30 未明の分（ローンチ前の A〜C。済んだものが多い）**
 
 A. **本題: 顔アップ 1 枚 → 素材づくり → LoRA（minimax）→ 動画、を通したらローンチ**（まず知り合いへ告知、その後 X/note/YouTube）。
    テスト画像は実写の顔アップ `D:\web\Jugger_00312_.png`（git 追跡外）。素材づくりは「こだわり」で基準の全身像・真横・後ろ姿を確定済み
