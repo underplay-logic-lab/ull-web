@@ -28,10 +28,30 @@ const SITE_TITLE = "ULL Studio — ブラウザだけで使える、データセ
 const SITE_DESCRIPTION =
   "動画生成・マルチアングル・4K/8K 超解像・LoRA 学習を、ブラウザだけで。環境構築は不要、GPU を使った分だけの従量課金。";
 
+// リンクのカード（OGP / X）: 2026-10-01 ローンチ日に追加（それまで og:* が 1 つも無く、Discord 等で画像が出なかった）。
+// 画像は src/app/opengraph-image.tsx（X は twitter-image.tsx）。
+const OG_TITLE = "ULL Studio — やりたいことが叶う、AI 映像・画像スタジオ";
+const OG_DESCRIPTION =
+  "画像 1 枚から、LoRA の学習素材づくり・LoRA 学習・そのキャラでの動画生成まで。マルチアングル・超解像も。環境構築なし、ブラウザだけで。";
+
 export const metadata: Metadata = {
+  metadataBase: new URL("https://www.ullstudio.com"),
   title: SITE_TITLE,
   description: SITE_DESCRIPTION,
   keywords: ["AI動画生成", "マルチアングル", "超解像", "LoRA学習", "ULL Studio"],
+  openGraph: {
+    type: "website",
+    url: "/",
+    siteName: "ULL Studio",
+    locale: "ja_JP",
+    title: OG_TITLE,
+    description: OG_DESCRIPTION,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: OG_TITLE,
+    description: OG_DESCRIPTION,
+  },
 };
 
 const SITE_URL = "https://www.ullstudio.com";
