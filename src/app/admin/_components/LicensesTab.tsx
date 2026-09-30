@@ -218,8 +218,53 @@ export function LicensesTab() {
         <p className="mt-2">
           停止・端末の解除は、ツールがオンラインで再確認したとき（30 日ごと）に効きます。手動発行のファイルは再確認しないので、期限で縛ってください。
         </p>
+        <details className="mt-3 rounded-lg border border-border bg-background/60 p-3">
+          <summary className="cursor-pointer text-foreground">手順（発行のしかた・新しいツールの追加）</summary>
+          <div className="mt-2 space-y-3">
+            <div>
+              <p className="font-medium text-foreground">■ 相手に渡す（通常）</p>
+              <ol className="mt-1 list-decimal space-y-0.5 pl-5">
+                <li>下の「新しく発行する」で、ツール・名義（管理用の呼び名）・台数・期限を入れて「発行する」。</li>
+                <li>表示されたキー（ULL-XXXXX-…）を控える。<span className="text-amber-400">キーはこの時だけ表示され、あとから見られません。</span></li>
+                <li>ツールの ZIP（build.bat で作る dist\〇〇-v版.zip）とキーを相手に送る。exe は全員同じもので良い。</li>
+                <li>相手が初回起動でキーを入力 →「認証する」。認証するとこの一覧のそのライセンスに PC が 1 台追加される。</li>
+              </ol>
+            </div>
+            <div>
+              <p className="font-medium text-foreground">■ 相手の PC がネットにつながらないとき</p>
+              <ol className="mt-1 list-decimal space-y-0.5 pl-5">
+                <li>相手に、認証画面の「HWID をコピー」で出る文字列を送ってもらう。</li>
+                <li>その人のライセンスの「手動発行」欄に貼り付けて「ライセンスファイルを作る」→ 〇〇.license がダウンロードされる。</li>
+                <li>そのファイルを相手に送り、認証画面の「ライセンスファイルを読み込む」で選んでもらう。</li>
+              </ol>
+            </div>
+            <div>
+              <p className="font-medium text-foreground">■ 発行したあと</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                <li>台数・期限はライセンスごとに変えられる（延長は、相手のツールがネットにつながったときに反映）。</li>
+                <li>PC を入れ替えたいときは「この PC を解除」で枠を空ける。止めたいときは「停止する」。</li>
+                <li>停止・解除は、相手のツールがネットにつながって確認したとき（30 日ごと）に効く。ずっとオフラインの PC は止められない。</li>
+              </ul>
+            </div>
+            <div>
+              <p className="font-medium text-foreground">■ どのツールのキーか（ツール ID でつながる）</p>
+              <p className="mt-1">
+                「ツール」の選択肢には ID が付いている（例: Underplay FramePicker = framepicker）。キーはその ID のツール専用として記録され、
+                ツールは認証のときに自分の ID を送る。ID が一致したときだけ認証される（別のツールのキーは「キーが正しくありません」）。
+              </p>
+            </div>
+            <div>
+              <p className="font-medium text-foreground">■ 新しいツールを追加するとき（開発側）</p>
+              <ol className="mt-1 list-decimal space-y-0.5 pl-5">
+                <li>ULL Studio の src/lib/license/products.ts にツールの ID と名前を足して push（この画面の「ツール」に出る）。</li>
+                <li>ツールのフォルダに tools/ull_license/ull_license.py をコピーし、main.py で ensure_license(product=同じ ID, public_key_b64=下の公開鍵, …) を呼ぶ。</li>
+                <li>FramePicker の build.bat をコピーして名前・版を直し、ビルド。詳しくは D:\tool\Underplay-FramePicker\exe化（まとめ）.txt。</li>
+              </ol>
+            </div>
+          </div>
+        </details>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span>ツールに埋め込む公開鍵:</span>
+          <span>ツールに埋め込む公開鍵（全ツール共通）:</span>
           {publicKey ? (
             <>
               <code className="rounded bg-background px-2 py-0.5 font-mono text-[11px] text-foreground">{publicKey}</code>
@@ -243,7 +288,7 @@ export function LicensesTab() {
             <select value={product} onChange={(e) => setProduct(e.target.value)} className={`${input} mt-1`}>
               {LICENSE_PRODUCTS.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.label}
+                  {p.label}（ID: {p.id}）
                 </option>
               ))}
             </select>
