@@ -65,7 +65,7 @@ export function AutoTidyPanel({
       ? `足りない構図を切り出しています…（${state.cropDone}/${state.cropTotal || "?"} 枚）`
       : state.phase === "waitingTags"
         ? "切り出した画像の構図を判定しています…（1 分ほど）"
-        : "整えました。上の診断で結果を確認してください。";
+        : "整えました。「データセット構成の診断」で結果を確認してください。";
 
   return (
     <div id={AUTO_TIDY_PANEL_ID} className="scroll-mt-24 rounded-xl border border-neon-pink/40 bg-neon-pink/5">

@@ -6402,7 +6402,12 @@ export function LoraStudioTab({
             <label className="mb-1 block text-[11px] font-medium text-muted">LoRA 名</label>
             <input
               value={yamlMode ? (yamlIdentity?.name ?? "") : loraName}
-              onChange={(e) => setLoraName(e.target.value)}
+              onChange={(e) => {
+                setLoraName(e.target.value);
+                // 名前を書き始めた＝モデルはこのままでよい（2026-09-30 ホスト報告: 既定の minimax のまま選び直さないと
+                // モデル欄が光り続け、「このまま進む」も一番上のモデル欄へ飛んでいた）。
+                setBaseModelTouched(true);
+              }}
               placeholder={yamlMode ? "生YAML の config.name" : "yukipas_h3"}
               disabled={busy || yamlMode}
               className={`${fieldCls} font-mono ${
@@ -6510,7 +6515,10 @@ export function LoraStudioTab({
               const triggerInput = (
                 <input
                   value={triggerWord}
-                  onChange={(e) => setTriggerWord(e.target.value)}
+                  onChange={(e) => {
+                    setTriggerWord(e.target.value);
+                    setBaseModelTouched(true);
+                  }}
                   placeholder={multiSubject ? "1人目のtrigger word（例: yukipas）" : "yukipas（空欄なら LoRA 名から自動）"}
                   disabled={busy}
                   className={`${fieldCls} font-mono${flowRing("trigger")}`}
