@@ -1487,7 +1487,8 @@ export function DatasetBuilderTab() {
           <div id="dataset-scene" className="grid scroll-mt-24 gap-4 rounded-xl border border-border bg-background p-4">
             {/* 止めている間の「これから作る分」から「シーン設定」の名前で参照する（2026-09-30 ホスト指摘）。 */}
             <p className="text-sm font-medium text-foreground">シーン設定</p>
-            {(["poses", "places", "framings", "views", "expressions", "outfits"] as SceneAxis[]).map((axis) => (
+            {/* 表情は真顔に固定したので選ばせない（2026-09-30、datasetBuilder.ts の buildScenePlan）。 */}
+            {(["poses", "places", "framings", "views", "outfits"] as SceneAxis[]).map((axis) => (
               <ChipGroup
                 key={axis}
                 axis={axis}
@@ -1541,9 +1542,9 @@ export function DatasetBuilderTab() {
               </label>
             </div>
             <p className="text-[11px] leading-relaxed text-muted/70">
-              選んだ組み合わせを順に回して枚数ぶん作ります。未選択の軸は既定（立つ・無地・全身・正面・真顔・元の服装）になります。
-              表情・服装は 1 枚ごとに順に変わります（後ろ向きの画像に表情は付けません）。表情を大きく変えるほど顔立ちが変わりやすいので、
-              LoRA の素材には「真顔・微笑み」がおすすめです（顔の一貫性のほうが大事なため）。日本語の入力は送るときに英訳します。
+              選んだ組み合わせを順に回して枚数ぶん作ります。未選択の軸は既定（立つ・無地・全身・正面・元の服装）になります。
+              服装は 1 枚ごとに順に変わります。表情はすべて真顔で作ります（表情を変えると顔立ちが変わりやすく、LoRA の素材では同じ人に見えることを優先するため）。
+              日本語の入力は送るときに英訳します。
             </p>
             {/* 止めている間: 設定を変えたらここから一覧へ戻れるように（2026-09-30 ホスト指摘「行き来の距離が長い」）。 */}
             {phase === "paused" && run && remainingItems.length > 0 && (
@@ -1813,7 +1814,7 @@ export function DatasetBuilderTab() {
             </div>
           </div>
           <p className="text-[10px] leading-relaxed text-muted">
-            1 行ずつ直すときは、各行の文を書き換えるか × で消してください。まとめて変えるときは、シーン設定（ポーズ・場面・表情・服装など）を
+            1 行ずつ直すときは、各行の文を書き換えるか × で消してください。まとめて変えるときは、シーン設定（ポーズ・場面・服装など）を
             変えてから「文章を作り直す」を押すと、この一覧に反映されます。構図・向きは変わりません。できた画像はそのまま残ります。
           </p>
           <ol className="max-h-[420px] space-y-1 overflow-y-auto pr-1">

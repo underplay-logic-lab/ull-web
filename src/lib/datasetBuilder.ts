@@ -145,7 +145,7 @@ export const DEFAULT_SCENE_SELECTION: SceneSelection = {
   places: ["plain", "room", "street"],
   framings: ["full", "upper", "bust"],
   views: ["front", "three_quarter", "side", "back"],
-  expressions: ["smile", "neutral"],
+  expressions: ["neutral"],
   outfits: ["same", "casual"],
   customPoses: [],
   customPlaces: [],
@@ -281,13 +281,14 @@ export function buildScenePlan(sel: SceneSelection, count: number): ScenePlanIte
   const places = pick("places", sel.places, sel.customPlaces ?? []);
   const framings = pick("framings", sel.framings);
   const views = pick("views", sel.views);
-  const expressions = pick("expressions", sel.expressions ?? []);
+  // 表情は真顔に固定（2026-09-30 ホスト判断）。元の人物の「正しい表情」の見本が無いまま表情を変えると別人になり、
+  // LoRA の素材としては害になる。保存済みの選択（sel.expressions）に他の表情が残っていても使わない。
   const outfits = pick("outfits", sel.outfits ?? []);
   const P = poses.length ? poses : [POSE_CHIPS[0]];
   const L = places.length ? places : [PLACE_CHIPS[0]];
   const F = framings.length ? framings : [FRAMING_CHIPS[0]];
   const V = views.length ? views : [VIEW_CHIPS[0]];
-  const E = expressions.length ? expressions : [EXPRESSION_CHIPS[0]];
+  const E = [EXPRESSION_CHIPS[0]];
   const O = outfits.length ? outfits : [OUTFIT_CHIPS[0]];
   const total = P.length * L.length * F.length * V.length;
   const outfitText = sel.outfit.trim();
