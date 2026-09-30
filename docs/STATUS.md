@@ -600,6 +600,12 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    → Web Analytics。Traffic の「一意の訪問者」は IP 単位でボット込みなので人数の目安にしない。登録数は Supabase の Users。
    Google Search Console 登録済み（2026-10-01、ドメイン `ullstudio.com`・DNS の TXT で確認＝**消さない**、トップは登録済み・再登録をリクエスト）。
    Google Analytics / 広告は、少額で広告を試す段階まで入れない（ホストと合意）。AdSense は合わないので使わない。
+   **バックアップ（2026-10-01）**: Supabase Free は自動バックアップ無し → `scripts/backup-supabase.mjs` で public 全テーブル＋auth.users を
+   `D:\web\_backups`（gitignore 済み・Google ドライブで同期）へ毎日。タスクスケジューラ「ULL Supabase Backup」毎日 3:00（逃したら次のログオン時）、
+   30 日保持・1 回 ~46MB。戻すときは migrations → データ投入。Pro（$25/月・7 日の自動バックアップ）はお客さんが増えたら検討。
+   **セキュリティ（同日・Security Advisor）**: SECURITY DEFINER 関数が anon で実行でき、誰でもクレジットを足せた → migration 20260894 で
+   service_role だけに（適用済み・anon は 401 を確認・サーバー経路と新規登録のトリガーは動作確認済み）。search_path 固定、gpu_warm_status の全開ポリシー削除。
+   **今後 `public` に SECURITY DEFINER 関数を作るときは、同じマイグレーションで anon/authenticated から EXECUTE を revoke する。**
    リンクのカード（OGP/X）追加（`ffd56e9`・`aed051b`）: 画像は `src/app/opengraph-image.tsx` で自動生成。作例画像にするなら同じ場所に
    `opengraph-image.png`（1200×630）を置いて tsx を消す。任意: UptimeRobot 等で死活監視（ホストの登録だけ）・利用者増で Sentry。
 6. 片付け: JS バンドルの GPU 型番（knob の説明文）・RunPod の死にコードと管理画面の常時起動の確認・Supabase Site URL を www に

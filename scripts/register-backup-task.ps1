@@ -1,4 +1,4 @@
-# Supabase の毎日バックアップ（scripts/backup-supabase.mjs）を Windows のタスクスケジューラに登録する（2026-10-01）。
+﻿# Supabase の毎日バックアップ（scripts/backup-supabase.mjs）を Windows のタスクスケジューラに登録する（2026-10-01）。
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\register-backup-task.ps1 -BackupDir "G:\マイドライブ\ULL-backups"
 #
@@ -17,7 +17,8 @@ New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
 $log = Join-Path $BackupDir "backup.log"
 
 $cmd = "`"$node`" `"$repo\scripts\backup-supabase.mjs`" `"$BackupDir`" >> `"$log`" 2>&1"
-$action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c $cmd" -WorkingDirectory $repo
+# cmd /c は「先頭と末尾の引用符」を外すので、コマンド全体をもう一段引用符で包む（包まないと node のパスが壊れて失敗する）。
+$action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$cmd`"" -WorkingDirectory $repo
 $trigger = New-ScheduledTaskTrigger -Daily -At $Time
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName "ULL Supabase Backup" -Action $action -Trigger $trigger -Settings $settings -Description "ULL Studio の Supabase を毎日バックアップ（scripts/backup-supabase.mjs）" -Force | Out-Null

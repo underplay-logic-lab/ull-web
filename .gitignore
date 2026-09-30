@@ -90,3 +90,8 @@ angle_test_tuned2/
 *.zip
 *.safetensors
 *.ckpt
+
+# Supabase の毎日バックアップ（利用者のメールアドレス等を含む。絶対に git に載せない）・作業の取り戻し用
+/_backups/
+/_recover_*/
+
