@@ -32,6 +32,7 @@ import {
   planBatches,
   sceneItemCredits,
   sceneItemGroup,
+  sceneItemUsesFaceRef,
   scenePlanCredits,
   type CloseFraming,
   type CloseMainMap,
@@ -202,6 +203,8 @@ type PersistedRun = {
   hasSideRef: boolean;
   /** 斜めの顔の参照が確定していたか（斜めの行に付ける。2026-09-30）。 */
   hasDiagRef?: boolean;
+  /** 寄りの行（後ろ以外）に元の顔アップを添えるか（構図ごと。2026-09-30）。 */
+  faceRefFor?: Partial<Record<CloseFraming, boolean>>;
 };
 
 /** run の行ごとの参照・切り出しの設定（料金・バッチ分けに使う）。 */
@@ -213,6 +216,7 @@ function runBatchOpt(r: PersistedRun): SceneBatchOptions {
     hasBackRef: r.hasBackRef,
     hasSideRef: r.hasSideRef,
     hasDiagRef: Boolean(r.hasDiagRef),
+    faceRefFor: r.faceRefFor ?? {},
   };
 }
 
@@ -446,6 +450,8 @@ export function DatasetBuilderTab() {
   const refBackRef = useRef<File | null>(null);
   const refSideRef = useRef<File | null>(null);
   const refDiagRef = useRef<File | null>(null);
+  // 寄りの行に添える顔アップ（下の faceRefFile）。submitBatch から読む。
+  const faceRefFileRef = useRef<File | null>(null);
   useEffect(() => {
     refBackRef.current = refBack;
     refSideRef.current = refSide;
@@ -623,6 +629,7 @@ export function DatasetBuilderTab() {
           hasBackRef: Boolean(r.hasBackRef),
           hasSideRef: Boolean(r.hasSideRef),
           hasDiagRef: Boolean(r.hasDiagRef),
+          faceRefFor: r.faceRefFor && typeof r.faceRefFor === "object" ? r.faceRefFor : {},
         }
       : null;
   });
@@ -693,6 +700,26 @@ export function DatasetBuilderTab() {
   const perImage = sceneCreditsPerImage(knobs, 0);
   const perImageWithRef = sceneCreditsPerImage(knobs, 1);
   const safeCount = Math.max(1, Math.min(SCENE_MAX_COUNT, Math.trunc(count || 0)));
+  // 寄りの行（後ろ以外）に添える元の顔アップ（2026-09-30 ホスト判断「アップのときは後ろ以外常に参照」、こだわりのみ）。
+  // 顔アップ・上半身から始めた（基準の全身像がある）ときは元の画像、全身から始めたときは切り出したバストアップ。
+  // 寄りの元画像そのものが顔アップのとき（全身始まりのバスト行など）は重複なので付けない。
+  const faceRefFile: File | null = (() => {
+    if (precision !== "careful" || !image) return null;
+    const route = mainRouteOf(mainFraming, routeOverride);
+    return route !== "full" && activeBaseFull ? image : (derived.bust ?? null);
+  })();
+  useEffect(() => {
+    faceRefFileRef.current = faceRefFile;
+  }, [faceRefFile]);
+  const faceRefFor = useMemo<Partial<Record<CloseFraming, boolean>>>(() => {
+    if (!faceRefFile) return {};
+    const sourceOf = (f: CloseFraming): File | null => {
+      const idx = closeMain[f];
+      if (typeof idx === "number" && subImages[idx]) return subImages[idx];
+      return derived[f] ?? effectiveMain;
+    };
+    return { upper: sourceOf("upper") !== faceRefFile, bust: sourceOf("bust") !== faceRefFile };
+  }, [faceRefFile, closeMain, subImages, derived, effectiveMain]);
   const batchOpt = useMemo(
     () => ({
       subCount,
@@ -701,8 +728,9 @@ export function DatasetBuilderTab() {
       hasBackRef: Boolean(refBack),
       hasSideRef: Boolean(refSide),
       hasDiagRef: Boolean(refDiag),
+      faceRefFor,
     }),
-    [subCount, closeMain, derivedFlags, refBack, refSide, refDiag],
+    [subCount, closeMain, derivedFlags, refBack, refSide, refDiag, faceRefFor],
   );
   // 料金は行ごと（参照が要る向きだけ係数付き）。指定を変えるたびに計画を組み直して見積もる。
   const previewOrdered = useMemo(() => orderPlanForBatches(buildScenePlan(sel, safeCount), batchOpt), [sel, safeCount, batchOpt]);
@@ -795,17 +823,27 @@ export function DatasetBuilderTab() {
         }
         return main;
       };
+      const diag = r.hasDiagRef ? refDiagRef.current : null;
+      const face = faceRefFileRef.current;
       const refsOf = (it: ScenePlanItem): File[] => {
         if (it.viewId === "back") return refBackRef.current ? [refBackRef.current] : subs;
-        if (it.viewId === "side") return refSideRef.current ? [refSideRef.current] : subs;
+        let refs: File[] = [];
+        if (it.viewId === "side") refs = refSideRef.current ? [refSideRef.current] : subs;
         // 斜めの行: 確定した斜めの顔（run を作った時点で確定していたときだけ。料金の見積もりと揃える）。
-        if (it.viewId === "three_quarter" && r.hasDiagRef && refDiagRef.current) return [refDiagRef.current];
-        return [];
+        else if (it.viewId === "three_quarter" && diag) refs = [diag];
+        // 寄りの行（後ろ以外）: 元の顔アップも添える（2026-09-30）。
+        if (sceneItemUsesFaceRef(it, opt) && face && !refs.includes(face) && face !== sourceOf(it)) refs = [...refs, face];
+        return refs;
       };
-      const diagTail = (it: ScenePlanItem) =>
-        it.viewId === "three_quarter" && r.hasDiagRef && refDiagRef.current
-          ? " The face must be the same person as in image 2, which shows the same face at this angle."
-          : "";
+      // 添えた顔の参照を指示で名指しする（image 1 は元の画像、参照は image 2 から）。
+      const faceTail = (refs: File[]) => {
+        let t = "";
+        const di = diag ? refs.indexOf(diag) : -1;
+        if (di >= 0) t += ` The face must be the same person as in image ${di + 2}, which shows the same face at this angle.`;
+        const fi = face ? refs.indexOf(face) : -1;
+        if (fi >= 0) t += ` The face must closely match the close-up face in image ${fi + 2} (the same person).`;
+        return t;
+      };
       const sets: File[][] = [];
       const setIndex = (files: File[]) => {
         const found = sets.findIndex((st) => st.length === files.length && st.every((f, k) => f === files[k]));
@@ -814,11 +852,14 @@ export function DatasetBuilderTab() {
         return sets.length - 1;
       };
       const bodyTail = quickBody ? bodyDesignSentence(bodyDesign) : "";
-      const scenes = items.map((it) => ({
-        instruction: (bodyTail ? `${scenePlanInstruction(it)} ${bodyTail}` : scenePlanInstruction(it)) + diagTail(it),
-        label: scenePlanLabel(it),
-        set: setIndex([sourceOf(it), ...refsOf(it)]),
-      }));
+      const scenes = items.map((it) => {
+        const refs = refsOf(it);
+        return {
+          instruction: (bodyTail ? `${scenePlanInstruction(it)} ${bodyTail}` : scenePlanInstruction(it)) + faceTail(refs),
+          label: scenePlanLabel(it),
+          set: setIndex([sourceOf(it), ...refs]),
+        };
+      });
       setPhase("submitting");
       setErrorMessage(null);
       // 候補づくりが動いていれば、終わるまで待ってから投げる（追加料金なし・温かいまま始まる）。
@@ -914,6 +955,7 @@ export function DatasetBuilderTab() {
       hasBackRef: Boolean(refBack),
       hasSideRef: Boolean(refSide),
       hasDiagRef: Boolean(refDiag),
+      faceRefFor,
     };
     setJobs({});
     commitRun(r);

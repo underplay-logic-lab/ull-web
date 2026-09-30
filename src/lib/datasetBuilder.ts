@@ -423,14 +423,30 @@ export type SceneBatchOptions = {
    * 真顔でも向きが変わると別人になる対策。顔が大きい段階で向きを変えると崩れにくい）。
    */
   hasDiagRef?: boolean;
+  /**
+   * 寄り（上半身・バストアップ）の行に元の顔アップを添えるか（構図ごと。2026-09-30 ホスト判断「アップのときは後ろ以外
+   * 常に参照」）。寄りの元画像そのものが顔アップのとき（全身始まりのバスト等）は重複なので false。
+   */
+  faceRefFor?: Partial<Record<CloseFraming, boolean>>;
 };
 
-/** この行に付ける参照の枚数。後ろ→後ろ姿 1 枚、真横→真横 1 枚、斜め→斜めの顔 1 枚（確定時のみ）。専用の参照が無ければ従来どおり。 */
+/** 寄りの行に顔アップを添えるか（後ろ以外）。 */
+export function sceneItemUsesFaceRef(item: ScenePlanItem, opt: SceneBatchOptions): boolean {
+  if (item.viewId === "back") return false;
+  if (item.framingId !== "upper" && item.framingId !== "bust") return false;
+  return Boolean(opt.faceRefFor?.[item.framingId]);
+}
+
+/**
+ * この行に付ける参照の枚数。後ろ→後ろ姿 1 枚、真横→真横 1 枚、斜め→斜めの顔 1 枚（確定時のみ）、
+ * 寄りの行（後ろ以外）→ さらに元の顔アップ 1 枚。専用の参照が無ければ従来どおり。
+ */
 export function sceneItemRefCount(item: ScenePlanItem, opt: SceneBatchOptions): number {
+  const face = sceneItemUsesFaceRef(item, opt) ? 1 : 0;
   if (item.viewId === "back") return opt.hasBackRef ? 1 : opt.subCount;
-  if (item.viewId === "side") return opt.hasSideRef ? 1 : opt.subCount;
-  if (item.viewId === "three_quarter") return opt.hasDiagRef ? 1 : 0;
-  return 0;
+  if (item.viewId === "side") return (opt.hasSideRef ? 1 : opt.subCount) + face;
+  if (item.viewId === "three_quarter") return (opt.hasDiagRef ? 1 : 0) + face;
+  return face;
 }
 
 /** この行が「寄りの元画像」（参照の指定 or 自動切り出し）から作られるか。 */
@@ -448,6 +464,7 @@ export function closeMainIndexFor(item: ScenePlanItem, opt: SceneBatchOptions): 
 export function sceneItemGroup(item: ScenePlanItem, opt: SceneBatchOptions): SceneGroup {
   if (sceneItemNeedsRefs(item, opt.subCount)) return "refs";
   if (item.viewId === "three_quarter" && opt.hasDiagRef) return "refs";
+  if (sceneItemUsesFaceRef(item, opt)) return "refs";
   if (sceneItemUsesCloseSource(item, opt)) return item.framingId === "upper" ? "close:upper" : "close:bust";
   return "main";
 }
