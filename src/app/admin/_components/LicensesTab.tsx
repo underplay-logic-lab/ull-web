@@ -232,9 +232,13 @@ export function LicensesTab() {
             </div>
             <div>
               <p className="font-medium text-foreground">■ 相手の PC がネットにつながらないとき</p>
+              <p className="mt-1">
+                基本は相手が自分で済ませる: 認証画面の「スマホで認証する」→ QR をスマホで読む → キーを入力 → ライセンスファイルがスマホに保存 →
+                PC に移して「ライセンスファイルを読み込む」。こちらの作業は不要（一覧には「手動」として PC が増える）。
+              </p>
+              <p className="mt-2">それでも困って連絡が来たとき（認証画面の「困ったときは」から HWID が届く）:</p>
               <ol className="mt-1 list-decimal space-y-0.5 pl-5">
-                <li>相手に、認証画面の「HWID をコピー」で出る文字列を送ってもらう。</li>
-                <li>その人のライセンスの「手動発行」欄に貼り付けて「ライセンスファイルを作る」→ 〇〇.license がダウンロードされる。</li>
+                <li>その人のライセンスの「手動発行」欄に HWID を貼り付けて「ライセンスファイルを作る」→ 〇〇.license がダウンロードされる。</li>
                 <li>そのファイルを相手に送り、認証画面の「ライセンスファイルを読み込む」で選んでもらう。</li>
               </ol>
             </div>
@@ -257,7 +261,7 @@ export function LicensesTab() {
               <p className="font-medium text-foreground">■ 新しいツールを追加するとき（開発側）</p>
               <ol className="mt-1 list-decimal space-y-0.5 pl-5">
                 <li>ULL Studio の src/lib/license/products.ts にツールの ID と名前を足して push（この画面の「ツール」に出る）。</li>
-                <li>ツールのフォルダに tools/ull_license/ull_license.py をコピーし、main.py で ensure_license(product=同じ ID, public_key_b64=下の公開鍵, …) を呼ぶ。</li>
+                <li>ツールのフォルダに tools/ull_license/ull_license.py をコピーし、main.py で ensure_license(product=同じ ID, public_key_b64=下の公開鍵, …) を呼ぶ。QR 表示のため requirements に qrcode を足す。</li>
                 <li>FramePicker の build.bat をコピーして名前・版を直し、ビルド。詳しくは D:\tool\Underplay-FramePicker\exe化（まとめ）.txt。</li>
               </ol>
             </div>
