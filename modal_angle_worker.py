@@ -2505,14 +2505,17 @@ def bfs(
     targets: str,
     out_dir: str = "./angle_bfs",
     seed: int = 42,
-    lora_file: str = "bfs_head_v5_2511_merged_version_rank_16_fp16.safetensors",
-    scale: float = 1.0,
+    lora_file: str = "bfs_head_v5_2511_original.safetensors",
+    scales: str = "1.0",
 ):
     """頭部差し替え LoRA（BFS, MIT）の試験用（2026-09-30、素材づくりの同一性: 表情を変えると別人になる件）。
 
     Multi-Angle LoRA の代わりに Alissonerdx/BFS-Best-Face-Swap を載せたコンテナで、各 target（生成済みの素材）の
     頭部を face（元の顔アップ）の人物に差し替える。本番のデプロイには触れない（modal run の一時アプリ）。
     targets はカンマ区切りのパス。入力順は BFS の Qwen Edit ガイドどおり Picture 1 = 体（target）/ Picture 2 = 頭（face）。
+    出力サイズは各 target と同じにする（指定しないと 1024² になり縦長が横に潰れる、2026-09-30 の初回で踏んだ）。
+    scales はカンマ区切りの LoRA 強度（強度ごとに融合し直すのでコンテナを分ける）。
+    `merged_*` の BFS ファイルは ComfyUI 形式（diff/diff_b）で diffusers に載らない。`original` を使う。
     """
     prompt = (
         "head_swap: start with Picture 1 as the base image, keeping its lighting, environment, and background. "
@@ -2527,29 +2530,40 @@ def bfs(
             raise SystemExit(f"not a file: {fp}")
         return base64.b64encode(fp.read_bytes()).decode("ascii")
 
+    def _png_size(p: str) -> tuple[int, int]:
+        head = pathlib.Path(p).expanduser().read_bytes()[:24]
+        if head[:8] != b"\x89PNG\r\n\x1a\n":
+            raise SystemExit(f"PNG only: {p}")
+        return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
     face_b64 = _b64(face)
     ensure_qwen_edit_cached.remote()
-    worker = QwenImageEditWorker.with_options(
-        secrets=[
-            modal.Secret.from_dict(
-                {
-                    "ANGLE_LORA_REPO": "Alissonerdx/BFS-Best-Face-Swap",
-                    "ANGLE_LORA_FILENAME": lora_file,
-                    "ANGLE_LORA_TRIGGER": "",
-                    "ANGLE_LORA_SCALE": str(scale),
-                }
-            )
-        ]
-    )()
     dst = pathlib.Path(out_dir).expanduser()
     dst.mkdir(parents=True, exist_ok=True)
-    for t in [s.strip() for s in targets.split(",") if s.strip()]:
-        body = _b64(t)
-        result = worker.run_edit.remote(body, [prompt], seed=seed, images=[body, face_b64], raw_prompt=True)
-        name = pathlib.Path(t).stem
-        for i, b64 in enumerate(result["images"]):
-            (dst / f"{name}_bfs{'' if i == 0 else f'_{i}'}.png").write_bytes(base64.b64decode(b64))
-        print(f"[bfs] {name}: {result['count']} image(s) in {result['elapsed_time']}s", flush=True)
+    paths = [s.strip() for s in targets.split(",") if s.strip()]
+    for scale in [float(s) for s in scales.split(",") if s.strip()]:
+        worker = QwenImageEditWorker.with_options(
+            secrets=[
+                modal.Secret.from_dict(
+                    {
+                        "ANGLE_LORA_REPO": "Alissonerdx/BFS-Best-Face-Swap",
+                        "ANGLE_LORA_FILENAME": lora_file,
+                        "ANGLE_LORA_TRIGGER": "",
+                        "ANGLE_LORA_SCALE": str(scale),
+                    }
+                )
+            ]
+        )()
+        for t in paths:
+            body = _b64(t)
+            w, h = _png_size(t)
+            result = worker.run_edit.remote(
+                body, [prompt], seed=seed, images=[body, face_b64], raw_prompt=True, height=h, width=w
+            )
+            name = pathlib.Path(t).stem
+            for i, b64 in enumerate(result["images"]):
+                (dst / f"{name}_bfs{scale:g}{'' if i == 0 else f'_{i}'}.png").write_bytes(base64.b64decode(b64))
+            print(f"[bfs] scale={scale:g} {name} {w}x{h}: {result['count']} image(s) in {result['elapsed_time']}s", flush=True)
 
 
 @app.local_entrypoint()
