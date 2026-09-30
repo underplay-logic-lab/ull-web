@@ -596,6 +596,8 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 3. 広く告知する前に: 説明の整理（要点 1 行＋詳しく、反応で分かりにくい所から）・admin に GPU 待ちの見張り・紹介/操作動画
 4. 素材づくりの続き（必要になったら）: 斜めの顔の参照の効果確認・全身の行の同一性・超こだわりモード（表情違いの顔アップ＋BFS・別料金）
 5. 納品ツール: ULL 上の許可制ツール（メタデータクリーナー→背景透過）→ ブラウザ版 FramePicker。FramePicker の Colab 連携は問い合わせ主が確認
+   ※アクセス解析: Cloudflare Web Analytics（`2aa103e`、本番のみ・Cookie なし・自動挿入は効かず手動スニペット）。見るのは Cloudflare
+   → Web Analytics。Traffic の「一意の訪問者」は IP 単位でボット込みなので人数の目安にしない。登録数は Supabase の Users。
 6. 片付け: JS バンドルの GPU 型番（knob の説明文）・RunPod の死にコードと管理画面の常時起動の確認・Supabase Site URL を www に
 7. 期限: Polar API の次の版（2027-04 頃）
 
