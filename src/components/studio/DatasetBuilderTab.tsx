@@ -1485,6 +1485,8 @@ export function DatasetBuilderTab() {
         {/* 右: 指定 */}
         <div className="space-y-4">
           <div className="grid gap-4 rounded-xl border border-border bg-background p-4">
+            {/* 止めている間の「これから作る分」から「シーン設定」の名前で参照する（2026-09-30 ホスト指摘）。 */}
+            <p className="text-sm font-medium text-foreground">シーン設定</p>
             {(["poses", "places", "framings", "views", "expressions", "outfits"] as SceneAxis[]).map((axis) => (
               <ChipGroup
                 key={axis}
@@ -1785,12 +1787,12 @@ export function DatasetBuilderTab() {
               onClick={() => updateRemaining((rest) => rebodyScenePlan(rest, sel, run.plan.length))}
               className="rounded-lg border border-border px-3 py-1.5 text-xs text-foreground hover:bg-surface"
             >
-              今の設定で文章を作り直す
+              文章を作り直す（先にシーン設定を変えてください）
             </button>
           </div>
           <p className="text-[10px] leading-relaxed text-muted">
-            各行の文を書き換えたり、行を消したりできます。左の設定（ポーズ・場面・表情・服装など）を変えたときは
-            「今の設定で文章を作り直す」で残りの分に反映できます。構図・向きはそのままです。
+            1 行ずつ直すときは、各行の文を書き換えるか × で消してください。まとめて変えるときは、シーン設定（ポーズ・場面・表情・服装など）を
+            変えてから「文章を作り直す」を押すと、この一覧に反映されます。構図・向きは変わりません。できた画像はそのまま残ります。
           </p>
           <ol className="max-h-[420px] space-y-1 overflow-y-auto pr-1">
             {remainingItems.map((it, i) => (
