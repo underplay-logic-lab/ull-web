@@ -88,6 +88,18 @@ export function sideViewSpecs(hairNote: string): CandidateSpec[] {
   ];
 }
 
+/**
+ * 斜めの顔（2026-09-30）。顔の大きく写った画像（元の顔アップ／切り出したバストアップ）から、角度 LoRA で向きだけ変える。
+ * 顔が大きい段階で向きを変えると同一性が崩れにくい（B300 実機: 8 枚とも「ダメではない」、ホスト目視）。
+ * 距離の語は付けない（構図＝顔アップのまま）。左右はモデルの癖で同じ向きになりやすいので、4 枚から選んでもらう。
+ */
+export const DIAG_FACE_SPECS: CandidateSpec[] = [
+  { instruction: "<sks> front-right quarter view eye-level shot", label: "斜めの顔の候補 1" },
+  { instruction: "<sks> front-right quarter view eye-level shot", label: "斜めの顔の候補 2" },
+  { instruction: "<sks> front-left quarter view eye-level shot", label: "斜めの顔の候補 3" },
+  { instruction: "<sks> front-left quarter view eye-level shot", label: "斜めの顔の候補 4" },
+];
+
 /** 後ろ姿。withSide＝確定した真横を 2 枚目の参照に添える（髪を真横に揃える）。 */
 export function backViewSpecs(hairNote: string, withSide: boolean): CandidateSpec[] {
   const base = `A full body shot seen directly from behind (back view), standing upright, against a plain white background. The hairstyle and the outfit must be consistent with the reference. ${IDENTITY}`;

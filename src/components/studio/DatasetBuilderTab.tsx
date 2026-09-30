@@ -45,6 +45,7 @@ import {
   scenePlanLabel,
   scenePlanPreviewJa,
   type SceneAxis,
+  type SceneBatchOptions,
   type ScenePlanItem,
   type SceneSelection,
   DEFAULT_SCENE_RATIOS,
@@ -83,6 +84,7 @@ import {
   backViewSpecs,
   CandidatePanel,
   createGpuLock,
+  DIAG_FACE_SPECS,
   FULL_BODY_SPECS,
   sideViewSpecs,
   type CandidatePick,
@@ -95,7 +97,7 @@ const RUN_KEY = "dataset-builder-run";
 // 画像（メイン・参照・基準の全身）は IndexedDB に保存してリロード後に戻す（2026-09-28）。
 const FILES_PREFIX = "dataset-builder:";
 const FILES_META_KEY = "dataset-builder-files";
-type FilesMeta = { subCount: number; backIndex: number | null; sideIndex: number | null; hasBaseFull: boolean };
+type FilesMeta = { subCount: number; backIndex: number | null; sideIndex: number | null; hasBaseFull: boolean; hasDiag?: boolean };
 const POLL_MS = 2_000;
 
 type SideFaceChoice = "auto" | "none" | "orig" | "bust" | number;
@@ -198,7 +200,21 @@ type PersistedRun = {
   /** 後ろ姿・真横の参照が確定していたか（行ごとの参照枚数＝料金の計算に使う）。 */
   hasBackRef: boolean;
   hasSideRef: boolean;
+  /** 斜めの顔の参照が確定していたか（斜めの行に付ける。2026-09-30）。 */
+  hasDiagRef?: boolean;
 };
+
+/** run の行ごとの参照・切り出しの設定（料金・バッチ分けに使う）。 */
+function runBatchOpt(r: PersistedRun): SceneBatchOptions {
+  return {
+    subCount: r.subCount,
+    closeMain: r.closeMain,
+    derived: r.derived,
+    hasBackRef: r.hasBackRef,
+    hasSideRef: r.hasSideRef,
+    hasDiagRef: Boolean(r.hasDiagRef),
+  };
+}
 
 type Phase = "idle" | "review" | "submitting" | "running" | "paused" | "done" | "error";
 
@@ -417,21 +433,24 @@ export function DatasetBuilderTab() {
   }, [effectiveMain, image]);
   // 参照づくりの選択（候補ジョブと index）。File はリロードで消えるので、パネル側が候補から取り直す。
   const PICKS_KEY = "dataset-builder-picks";
-  const [picks, setPicks] = useState<{ full?: CandidatePick | null; back?: CandidatePick | null; side?: CandidatePick | null }>(
-    () => loadFormState<{ full?: CandidatePick | null; back?: CandidatePick | null; side?: CandidatePick | null }>(PICKS_KEY) ?? {},
-  );
+  type Picks = { full?: CandidatePick | null; back?: CandidatePick | null; side?: CandidatePick | null; diag?: CandidatePick | null };
+  const [picks, setPicks] = useState<Picks>(() => loadFormState<Picks>(PICKS_KEY) ?? {});
   useEffect(() => {
     saveFormState(PICKS_KEY, picks);
   }, [picks]);
   const [refBack, setRefBack] = useState<File | null>(null);
   const [refSide, setRefSide] = useState<File | null>(null);
+  // 斜めの顔の参照（2026-09-30）。参照欄（最大 3 枠）とは別に持つ（真横・後ろ姿・手持ちの参照と枠を取り合わないため）。
+  const [refDiag, setRefDiag] = useState<File | null>(null);
   // submitBatch（useCallback）から今の参照を読むための ref。
   const refBackRef = useRef<File | null>(null);
   const refSideRef = useRef<File | null>(null);
+  const refDiagRef = useRef<File | null>(null);
   useEffect(() => {
     refBackRef.current = refBack;
     refSideRef.current = refSide;
-  }, [refBack, refSide]);
+    refDiagRef.current = refDiag;
+  }, [refBack, refSide, refDiag]);
   // 選んだ参照は参照欄に入れる（真横・後ろの行で使われる）。差し替えは前の分を外す。
   const putRef = useCallback(
     (prev: File | null, next: File) => {
@@ -461,7 +480,13 @@ export function DatasetBuilderTab() {
   // 黙って復元せず「前回の続きを復元しますか？」で選ばせる（2026-09-28、ホスト指摘。LoRA Studio と同じ聞き方）。
   const restoredFilesRef = useRef(false);
   const restoringRef = useRef(false);
-  const [restorePending, setRestorePending] = useState<{ main: File; subs: File[]; base: File | null; meta: FilesMeta } | null>(null);
+  const [restorePending, setRestorePending] = useState<{
+    main: File;
+    subs: File[];
+    base: File | null;
+    diag: File | null;
+    meta: FilesMeta;
+  } | null>(null);
   useEffect(() => {
     if (restoredFilesRef.current) return;
     restoredFilesRef.current = true;
@@ -482,8 +507,9 @@ export function DatasetBuilderTab() {
         if (f) subs.push(f);
       }
       const base = meta.hasBaseFull ? await fileStoreGet(`${FILES_PREFIX}baseFull`) : null;
+      const diag = meta.hasDiag ? await fileStoreGet(`${FILES_PREFIX}diag`) : null;
       // 読めたら聞く。restoringRef は決めるまで立てたまま（保存を止める）。
-      setRestorePending({ main, subs, base, meta: meta as FilesMeta });
+      setRestorePending({ main, subs, base, diag, meta: meta as FilesMeta });
     })();
   }, [setImage, setSubImages]);
   const discardRestore = useCallback(() => {
@@ -506,6 +532,7 @@ export function DatasetBuilderTab() {
       if (p.base) setBaseFull(p.base);
       if (p.meta.backIndex != null && p.subs[p.meta.backIndex]) setRefBack(p.subs[p.meta.backIndex]);
       if (p.meta.sideIndex != null && p.subs[p.meta.sideIndex]) setRefSide(p.subs[p.meta.sideIndex]);
+      if (p.diag) setRefDiag(p.diag);
     }
     restoringRef.current = false;
   }, [restorePending, setImage, setSubImages]);
@@ -522,14 +549,16 @@ export function DatasetBuilderTab() {
       backIndex: refBack ? subImages.indexOf(refBack) : null,
       sideIndex: refSide ? subImages.indexOf(refSide) : null,
       hasBaseFull: Boolean(baseFull),
+      hasDiag: Boolean(refDiag),
     };
     saveFormState(FILES_META_KEY, meta);
     void (async () => {
       await fileStorePut(`${FILES_PREFIX}main`, image);
       for (let i = 0; i < MAX_SUB_REFERENCE_IMAGES; i++) await fileStorePut(`${FILES_PREFIX}sub${i}`, subImages[i] ?? null);
       await fileStorePut(`${FILES_PREFIX}baseFull`, baseFull);
+      await fileStorePut(`${FILES_PREFIX}diag`, refDiag);
     })();
-  }, [image, subImages, baseFull, refBack, refSide]);
+  }, [image, subImages, baseFull, refBack, refSide, refDiag]);
 
   const closeMain = useMemo<CloseMainMap>(
     () => ({
@@ -593,6 +622,7 @@ export function DatasetBuilderTab() {
           prefixLen: typeof r.prefixLen === "number" ? r.prefixLen : 8,
           hasBackRef: Boolean(r.hasBackRef),
           hasSideRef: Boolean(r.hasSideRef),
+          hasDiagRef: Boolean(r.hasDiagRef),
         }
       : null;
   });
@@ -634,6 +664,7 @@ export function DatasetBuilderTab() {
       setImage(file);
       // 新しいメインなら基準の全身と選んだ参照はやり直し。写り方も判定し直す（手動の切り替えも戻す）。
       setBaseFull(null);
+      setRefDiag(null);
       setPicks({});
       setMainFraming(undefined);
       setRouteOverride("auto");
@@ -663,8 +694,15 @@ export function DatasetBuilderTab() {
   const perImageWithRef = sceneCreditsPerImage(knobs, 1);
   const safeCount = Math.max(1, Math.min(SCENE_MAX_COUNT, Math.trunc(count || 0)));
   const batchOpt = useMemo(
-    () => ({ subCount, closeMain, derived: derivedFlags, hasBackRef: Boolean(refBack), hasSideRef: Boolean(refSide) }),
-    [subCount, closeMain, derivedFlags, refBack, refSide],
+    () => ({
+      subCount,
+      closeMain,
+      derived: derivedFlags,
+      hasBackRef: Boolean(refBack),
+      hasSideRef: Boolean(refSide),
+      hasDiagRef: Boolean(refDiag),
+    }),
+    [subCount, closeMain, derivedFlags, refBack, refSide, refDiag],
   );
   // 料金は行ごと（参照が要る向きだけ係数付き）。指定を変えるたびに計画を組み直して見積もる。
   const previewOrdered = useMemo(() => orderPlanForBatches(buildScenePlan(sel, safeCount), batchOpt), [sel, safeCount, batchOpt]);
@@ -741,7 +779,7 @@ export function DatasetBuilderTab() {
   const submitBatch = useCallback(
     async (r: PersistedRun, batchIndex: number, mainFile: File, subs: File[]) => {
       if (!user) return;
-      const opt = { subCount: r.subCount, closeMain: r.closeMain, derived: r.derived, hasBackRef: r.hasBackRef, hasSideRef: r.hasSideRef };
+      const opt = runBatchOpt(r);
       const batch = planBatches(r.plan, opt, r.prefixLen)[batchIndex];
       const items = batch?.items;
       if (!items) return;
@@ -760,8 +798,14 @@ export function DatasetBuilderTab() {
       const refsOf = (it: ScenePlanItem): File[] => {
         if (it.viewId === "back") return refBackRef.current ? [refBackRef.current] : subs;
         if (it.viewId === "side") return refSideRef.current ? [refSideRef.current] : subs;
+        // 斜めの行: 確定した斜めの顔（run を作った時点で確定していたときだけ。料金の見積もりと揃える）。
+        if (it.viewId === "three_quarter" && r.hasDiagRef && refDiagRef.current) return [refDiagRef.current];
         return [];
       };
+      const diagTail = (it: ScenePlanItem) =>
+        it.viewId === "three_quarter" && r.hasDiagRef && refDiagRef.current
+          ? " The face must be the same person as in image 2, which shows the same face at this angle."
+          : "";
       const sets: File[][] = [];
       const setIndex = (files: File[]) => {
         const found = sets.findIndex((st) => st.length === files.length && st.every((f, k) => f === files[k]));
@@ -771,7 +815,7 @@ export function DatasetBuilderTab() {
       };
       const bodyTail = quickBody ? bodyDesignSentence(bodyDesign) : "";
       const scenes = items.map((it) => ({
-        instruction: bodyTail ? `${scenePlanInstruction(it)} ${bodyTail}` : scenePlanInstruction(it),
+        instruction: (bodyTail ? `${scenePlanInstruction(it)} ${bodyTail}` : scenePlanInstruction(it)) + diagTail(it),
         label: scenePlanLabel(it),
         set: setIndex([sourceOf(it), ...refsOf(it)]),
       }));
@@ -812,7 +856,7 @@ export function DatasetBuilderTab() {
   const runOpt = useMemo(
     () =>
       run
-        ? { subCount: run.subCount, closeMain: run.closeMain, derived: run.derived, hasBackRef: run.hasBackRef, hasSideRef: run.hasSideRef }
+        ? runBatchOpt(run)
         : { subCount: 0, closeMain: {}, derived: {} },
     [run],
   );
@@ -869,6 +913,7 @@ export function DatasetBuilderTab() {
       prefixLen: ordered.prefixLen,
       hasBackRef: Boolean(refBack),
       hasSideRef: Boolean(refSide),
+      hasDiagRef: Boolean(refDiag),
     };
     setJobs({});
     commitRun(r);
@@ -890,7 +935,7 @@ export function DatasetBuilderTab() {
   const updateRemaining = (fn: (rest: ScenePlanItem[]) => ScenePlanItem[]) => {
     const r = runRef.current;
     if (!r) return;
-    const rOpt = { subCount: r.subCount, closeMain: r.closeMain, derived: r.derived, hasBackRef: r.hasBackRef, hasSideRef: r.hasSideRef };
+    const rOpt = runBatchOpt(r);
     const done = planBatches(r.plan, rOpt, r.prefixLen)
       .slice(0, r.jobIds.length)
       .reduce((t, b) => t + b.items.length, 0);
@@ -934,7 +979,7 @@ export function DatasetBuilderTab() {
             if (sawInProgress && next.status === "completed") markGpuWarm();
             const r = runRef.current;
             if (!r) return;
-            const rOpt = { subCount: r.subCount, closeMain: r.closeMain, derived: r.derived, hasBackRef: r.hasBackRef, hasSideRef: r.hasSideRef };
+            const rOpt = runBatchOpt(r);
             const batches = planBatches(r.plan, rOpt, r.prefixLen);
             const doneBatches = r.jobIds.length;
             if (next.status === "failed") {
@@ -1143,6 +1188,7 @@ export function DatasetBuilderTab() {
             onClear={() => {
               setImage(null);
               setBaseFull(null);
+              setRefDiag(null);
               setPicks({});
               setMainFraming(undefined);
               setRouteOverride("auto");
@@ -1440,6 +1486,49 @@ export function DatasetBuilderTab() {
                   costWith={4 * perImageWithRef}
                   costWithout={4 * perImage}
                 />
+              )}
+            </CandidatePanel>
+          )}
+          {precision === "careful" && (sideFaceAvailable || refDiag) && (viewsInPlan.has("three_quarter") || refDiag) && (
+            // 斜めの顔（2026-09-30）: 顔の大きく写った画像で向きだけ変えて確定し、斜めの行に添える。
+            // 真顔でも向きが変わると別人になりやすい対策（顔が大きい段階で向きを変えると崩れにくい）。
+            <CandidatePanel
+              title={refDiag ? "斜めの顔の参照（確定済み）" : "斜めの顔の参照を作る"}
+              description="斜め向きの画像は、ここで選んだ「斜めを向いた顔」を参照にして作ります（顔が小さい全身・上半身で向きを変えると別人になりやすいため、顔が大きく写った画像で先に向きだけ変えておきます）。元にするのは顔アップ（全身から始めたときは自動で切り出したバストアップ）です。候補 4 枚から、元の人にいちばん近い 1 枚を選んでください。左右どちら向きでも構いません。手持ちの斜めの顔があれば、下の「持っているなら」の行で指定できます。"
+              user={user}
+              image={sideFaceAvailable}
+              specs={DIAG_FACE_SPECS}
+              costPerImage={perImage}
+              credits={credits}
+              storageKey="dataset-builder-cand-diag"
+              picked={picks.diag ?? null}
+              hasPickedFile={Boolean(refDiag)}
+              onPick={(pick, file) => {
+                setPicks((p) => ({ ...p, diag: pick }));
+                setRefDiag(file);
+              }}
+              onLogin={() => setLoginOpen(true)}
+              onCharge={() => setChargeOpen(true)}
+              fileName="ref_diag_face.png"
+              gpuLock={gpuLock}
+              confirmed={refDiag}
+              existingRefs={subImages}
+              onPickLocal={(file) => {
+                setPicks((p) => ({ ...p, diag: null }));
+                setRefDiag(file);
+              }}
+            >
+              {refDiag && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRefDiag(null);
+                    setPicks((p) => ({ ...p, diag: null }));
+                  }}
+                  className="self-start text-[10px] text-muted underline hover:text-foreground"
+                >
+                  斜めの顔の参照を外す（斜めの行を参照なしで作る）
+                </button>
               )}
             </CandidatePanel>
           )}
