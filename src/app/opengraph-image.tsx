@@ -13,6 +13,7 @@ const TITLE = "ULL Studio";
 const LINE1 = "やりたいことが叶う、AI 映像・画像スタジオ";
 const LINE2 = "画像 1 枚から、自分だけの LoRA と動画まで。ブラウザだけで。";
 const FALLBACK_LINE = "AI video & image studio in your browser";
+const URL_LINE = "www.ullstudio.com";
 
 async function loadJapaneseFont(text: string): Promise<ArrayBuffer | null> {
   try {
@@ -30,7 +31,8 @@ async function loadJapaneseFont(text: string): Promise<ArrayBuffer | null> {
 }
 
 export default async function OpengraphImage() {
-  const font = await loadJapaneseFont(TITLE + LINE1 + LINE2);
+  // 画像に出す文字は全部渡す（渡し漏れた文字は別の書体で描かれて太さがちぐはぐになる）。
+  const font = await loadJapaneseFont(TITLE + LINE1 + LINE2 + URL_LINE);
   return new ImageResponse(
     (
       <div
@@ -61,7 +63,7 @@ export default async function OpengraphImage() {
         </div>
         <div style={{ display: "flex", marginTop: 28, fontSize: 46, fontWeight: 700 }}>{font ? LINE1 : FALLBACK_LINE}</div>
         {font && <div style={{ display: "flex", marginTop: 18, fontSize: 30, color: "#b4b4bc" }}>{LINE2}</div>}
-        <div style={{ display: "flex", marginTop: 56, fontSize: 26, color: "#8b8b95" }}>www.ullstudio.com</div>
+        <div style={{ display: "flex", marginTop: 56, fontSize: 26, color: "#8b8b95" }}>{URL_LINE}</div>
       </div>
     ),
     {
