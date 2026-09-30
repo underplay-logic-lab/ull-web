@@ -181,8 +181,9 @@ export type ScenePlanItem = {
 };
 
 // 顔立ちを保つ＋表情は控えめに＋画風を保つ（2026-09-29: 表情指定で別人・アニメ調に転んだ対策）。
+// 2026-09-30: 40 枚中 2 枚が男性になった（ホスト報告）ので、性別・年齢も保つよう明記。
 const IDENTITY_EN =
-  "Keep the same character with the identical face, hairstyle, body shape and clothing as the reference. Any change of expression must be subtle and must not alter the facial features. Keep the same art style, rendering and level of realism as the reference (if the reference is a photo, keep it a photorealistic photo).";
+  "Keep the same character (the same gender and age) with the identical face, hairstyle, body shape and clothing as the reference. Any change of expression must be subtle and must not alter the facial features. Keep the same art style, rendering and level of realism as the reference (if the reference is a photo, keep it a photorealistic photo).";
 
 function chip(axis: SceneAxis, id: string): SceneChip {
   return CHIPS_BY_AXIS[axis].find((c) => c.id === id) ?? CHIPS_BY_AXIS[axis][0];
