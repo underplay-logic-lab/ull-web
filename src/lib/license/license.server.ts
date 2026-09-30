@@ -21,7 +21,7 @@ export type LicensePayload = {
   /** license_activations.id */
   aid: string;
   product: string;
-  /** 表示用の名義（ツール画面に「〇〇様」と出す） */
+  /** 管理用の名義（admin で誰に発行したかを見分ける呼び名。今はツール画面には出していない） */
   licensee: string;
   /** ツールが送った HWID（sha256 hex） */
   hwid: string;

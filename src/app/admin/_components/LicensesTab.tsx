@@ -192,8 +192,8 @@ export function LicensesTab() {
             </select>
           </label>
           <label className="text-xs text-muted">
-            名義（ツール画面に「〇〇 様」と出ます）
-            <input value={licensee} onChange={(e) => setLicensee(e.target.value)} className={`${input} mt-1`} placeholder="例: 山田 太郎" />
+            名義（管理用の呼び名・本名でなくてよい。ツール画面には出ませんが、ライセンスファイルには含まれます）
+            <input value={licensee} onChange={(e) => setLicensee(e.target.value)} className={`${input} mt-1`} placeholder="例: 平丸さんのお客様 A" />
           </label>
           <label className="text-xs text-muted">
             連絡先（任意・メールや LINE 名）
