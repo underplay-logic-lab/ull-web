@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 
 export default function PrivacyPage() {
   return (
-    <LegalPage title="プライバシーポリシー" updatedAt="2026年9月26日">
+    <LegalPage title="プライバシーポリシー" updatedAt="2026年10月1日">
       <LegalSection heading="1. 基本方針">
         <p>
           ULL Studio（運営：Underplay Logic Lab）（以下「当サイト」といいます）は、ユーザーの個人情報の重要性を認識し、適切に取得・利用・管理することをお約束します。本ポリシーは、当サイトが提供するサービスにおける個人情報の取り扱いについて定めるものです。
@@ -43,13 +43,13 @@ export default function PrivacyPage() {
 
       <LegalSection heading="4. 第三者提供">
         <p>
-          当サイトは、法令に基づく場合を除き、ユーザーの同意なく個人情報を第三者に提供することはありません。ただし、決済処理（Polar.sh等）、認証（Google等）、不正アクセス対策（Cloudflare Turnstile等）、通知（Discord Webhook等）、生成・学習の計算処理（クラウドGPU事業者）、データの保管（クラウドストレージ・データベース事業者）、AIによる解析・翻訳（Google Gemini API等。アップロードされた画像の特徴抽出や文章の翻訳に利用します）のために必要な範囲で、業務委託先・連携先に情報を提供する場合があります。
+          当サイトは、法令に基づく場合を除き、ユーザーの同意なく個人情報を第三者に提供することはありません。ただし、決済処理（Polar.sh等）、認証（Google等）、不正アクセス対策（Cloudflare Turnstile等）、通知・メール送信（Discord Webhook、Resend等）、アクセス解析（Cloudflare Web Analytics。Cookieを使わず、個人を特定しない形で閲覧状況を集計します）、生成・学習の計算処理（クラウドGPU事業者）、データの保管（クラウドストレージ・データベース事業者）、AIによる解析・翻訳（Google Gemini API等。アップロードされた画像の特徴抽出や文章の翻訳に利用します）のために必要な範囲で、業務委託先・連携先に情報を提供する場合があります。
         </p>
       </LegalSection>
 
       <LegalSection heading="5. Cookie等の利用">
         <p>
-          当サイトは、サービス向上のためにCookieおよび類似の技術を利用する場合があります。ブラウザの設定によりCookieを無効化することが可能ですが、その場合、一部機能がご利用いただけないことがあります。
+          当サイトは、サービス向上のためにCookieおよび類似の技術を利用する場合があります。ブラウザの設定によりCookieを無効化することが可能ですが、その場合、一部機能がご利用いただけないことがあります。なお、アクセス解析（Cloudflare Web Analytics）はCookieを使用しません。
         </p>
       </LegalSection>
 

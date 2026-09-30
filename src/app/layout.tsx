@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Header } from "@/components/Header";
@@ -34,6 +35,11 @@ export const metadata: Metadata = {
 };
 
 const SITE_URL = "https://www.ullstudio.com";
+
+// アクセス解析: Cloudflare Web Analytics（2026-10-01 ローンチ日に導入）。Cookie を使わず個人を特定しないので同意バナーは不要。
+// 自動挿入（RUM）は効かなかったので手動のスニペット。token は公開用の値。本番（Vercel production）だけで読み込む。
+const CF_ANALYTICS_TOKEN = "2bbe6029740b474288d719f4120aa173";
+const ENABLE_ANALYTICS = process.env.VERCEL_ENV === "production";
 
 // 価格（offers）は料金ページを作り直すまで含めない（[[launch-checklist-ai-seo]]）。機能一覧は
 // public/llms.txt と揃える。基盤モデル名・GPU 型番は書かない（CLAUDE.md §2）。
@@ -102,6 +108,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           <LiveInspector />
           <SourceTextEditor />
         </SiteContentEditorProvider>
+        {ENABLE_ANALYTICS && (
+          <Script
+            src="https://static.cloudflareinsights.com/beacon.min.js"
+            strategy="afterInteractive"
+            data-cf-beacon={JSON.stringify({ token: CF_ANALYTICS_TOKEN })}
+          />
+        )}
       </body>
     </html>
   );
