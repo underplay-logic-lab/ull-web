@@ -600,6 +600,8 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    → Web Analytics。Traffic の「一意の訪問者」は IP 単位でボット込みなので人数の目安にしない。登録数は Supabase の Users。
    Google Search Console 登録済み（2026-10-01、ドメイン `ullstudio.com`・DNS の TXT で確認＝**消さない**、トップは登録済み・再登録をリクエスト）。
    Google Analytics / 広告は、少額で広告を試す段階まで入れない（ホストと合意）。AdSense は合わないので使わない。
+   リンクのカード（OGP/X）追加（`ffd56e9`・`aed051b`）: 画像は `src/app/opengraph-image.tsx` で自動生成。作例画像にするなら同じ場所に
+   `opengraph-image.png`（1200×630）を置いて tsx を消す。任意: UptimeRobot 等で死活監視（ホストの登録だけ）・利用者増で Sentry。
 6. 片付け: JS バンドルの GPU 型番（knob の説明文）・RunPod の死にコードと管理画面の常時起動の確認・Supabase Site URL を www に
 7. 期限: Polar API の次の版（2027-04 頃）
 
