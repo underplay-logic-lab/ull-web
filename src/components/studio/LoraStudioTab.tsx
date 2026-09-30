@@ -317,6 +317,8 @@ export function LoraStudioTab({
   const [excludedImages, setExcludedImages] = useState<ExcludedImage[]>([]);
   const [autoTidy, setAutoTidy] = useState<AutoTidyState | null>(null);
   const autoTidyRef = useRef<AutoTidyState | null>(null);
+  // おまかせが終わった直後に診断の欄を光らせる（見終わったら消す。2026-09-30）。
+  const [diagReviewGlow, setDiagReviewGlow] = useState(false);
   const smartCropWarmedRef = useRef(false);
   // English caption per image id. Filled by the AI-vision auto-caption pass on
   // drop, or straight from a .txt / ZIP the user brought.
@@ -4185,9 +4187,11 @@ export function LoraStudioTab({
     const done: AutoTidyState = { ...st, phase: "done", log: [...st.log, ...log], repeatsPending: captionSource === "manual" };
     autoTidyRef.current = done;
     setAutoTidy(done);
-    // 結果と「次へ進む」が見えるよう、おまかせの欄へ送る（2026-09-26。以前は次の手順へ直接飛んで、何をしたか見えなかった）。
+    // 結果を確かめられるよう、診断の欄へ送って光らせる（2026-09-30 ホスト指摘「診断まで書くならジャンプして光らせて」。
+    // 2026-09-26 はおまかせの欄へ送っていた）。診断を見たら、すぐ下のおまかせの欄の「次へ」で進む。
+    setDiagReviewGlow(true);
     window.setTimeout(
-      () => document.getElementById(AUTO_TIDY_PANEL_ID)?.scrollIntoView({ behavior: "smooth", block: "center" }),
+      () => document.getElementById(DIAGNOSTICS_PANEL_ID)?.scrollIntoView({ behavior: "smooth", block: "start" }),
       400,
     );
   }, [autoTidy, autoTidyWaitExpired, composition.running, images, compositionTags, multiSubjectCropIds, flowDiag, pickDupFirst, duoPoolFor, trimPoolFor, excludeImages, captionSource, scrollToNextFlow]);
@@ -4207,6 +4211,7 @@ export function LoraStudioTab({
   const undoAutoTidy = useCallback(() => {
     const st = autoTidyRef.current;
     if (!st) return;
+    setDiagReviewGlow(false);
     const cropSet = new Set(st.cropIds);
     st.cropIds.forEach((id) => removeImage(id));
     const mine = excludedImages.filter((e) => e.run === st.run);
@@ -5537,7 +5542,10 @@ export function LoraStudioTab({
                 }`}
               >
                 {datasetZipBusy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
-                📦 キャプション付きデータセットを保存（ZIP）
+                {/* キャプションがまだ無いのに「キャプション付き」と出ていた（admin は作る前から押せる。2026-09-30 ホスト指摘）。 */}
+                {captionStarted && pendingCaptionCount === 0 && !autoCap.running
+                  ? "📦 キャプション付きデータセットを保存（ZIP）"
+                  : "📦 画像を ZIP で保存（キャプションはまだありません）"}
               </button>
             )}
           </div>
@@ -5903,13 +5911,20 @@ export function LoraStudioTab({
               知らせるのが目的で、オートモードでのクレーム防止が本題。
               src/lib/datasetDiagnostics.ts のヘッダに動機と実データの検証あり。 */}
           {diagnosticItems.length > 0 && (
-            <div id={DIAGNOSTICS_PANEL_ID} className={`scroll-mt-24 rounded-xl${flowRing("diagnostics")}`}>
+            <div
+              id={DIAGNOSTICS_PANEL_ID}
+              className={`scroll-mt-24 rounded-xl${flowRing("diagnostics") || (diagReviewGlow ? " flow-next" : "")}`}
+              onClickCapture={() => diagReviewGlow && setDiagReviewGlow(false)}
+            >
             <DatasetDiagnosticsPanel
               // 未解析が残っていないなら「解析中」と出す意味が無い（旗が
               // 立ちっぱなしでも診断が固まらないようにする二重の保険）。
               provisional={composition.running}
               provisionalProgress={{ done: composition.done, total: composition.total }}
-              onProceed={() => window.setTimeout(scrollToNextFlow, 50)}
+              onProceed={() => {
+                setDiagReviewGlow(false);
+                window.setTimeout(scrollToNextFlow, 120);
+              }}
               // 判定が止まっているのに「判定中」と出し続けない（2026-09-22、ホスト報告）。
               // 読めなかった画像は自動では再試行しないので、件数とやり直しの導線を出す。
               stalledCount={!composition.running ? untaggedImages.length : 0}
