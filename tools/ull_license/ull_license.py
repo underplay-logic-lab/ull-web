@@ -448,6 +448,11 @@ def _show_dialog(*, product, public_key_b64, app_name, path, hwid, notice, suppo
         bg=bg, fg=muted, activebackground=bg, relief="flat", font=("Yu Gothic UI", 8), cursor="hand2",
     ).pack(padx=20, pady=(2, 14), anchor="w")
 
+    # 最初から「長いメッセージが出たときの幅」で開く（中身の最小幅だとタイトルバーの文字が途切れ、
+    # メッセージが出るたびに窓が広がる。2026-09-30 ホスト指摘）。status の wraplength 440 + 左右 20 の余白。
+    root.update_idletasks()
+    root.minsize(max(root.winfo_reqwidth(), int(root.winfo_fpixels("1i") / 96 * 480)), 0)
+
     root.protocol("WM_DELETE_WINDOW", root.destroy)
     root.mainloop()
     return result.get("payload")
