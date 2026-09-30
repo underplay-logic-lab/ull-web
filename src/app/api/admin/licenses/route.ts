@@ -6,9 +6,10 @@ import { activateDevice } from "@/lib/license/issue.server";
 import { isLicenseProduct } from "@/lib/license/products";
 
 // admin「ライセンス」（2026-09-30）。納品ツールのライセンス台帳。
-//   GET   … 一覧（端末つき）＋ツールに埋め込む公開鍵
+//   GET   … 一覧（端末つき）＋試用の一覧＋ツールに埋め込む公開鍵
 //   POST  … { action: "create", ... } 発行（キーの原文はこの応答で一度だけ返す）
-//           { action: "manual", licenseId, hwid } 手動発行（オフラインの相手用。ライセンスファイルの中身を返す）
+//           { action: "manual", licenseId, hwid } 手動発行（非常用: 通信が止められる環境など。ライセンスファイルの中身を返す）
+//           { action: "reset_trial", trialId } 試用の記録を消してやり直せるようにする
 //   PATCH … { licenseId, revoked } 停止/再開、{ activationId, revoked } 端末の解除/戻す、
 //           { licenseId, maxDevices?, expiresAt? } 台数・期限の変更（expiresAt は "" で無期限）
 
@@ -19,11 +20,17 @@ export async function GET() {
   const { data, error } = await supabaseAdmin
     .from("licenses")
     .select(
-      "id, product, licensee, contact, note, key_hint, max_devices, expires_at, revoked_at, created_at, license_activations(id, hwid, method, activated_at, last_seen_at, revoked_at)",
+      "id, product, licensee, contact, note, key_hint, max_devices, expires_at, revoked_at, last_transfer_at, created_at, license_activations(id, hwid, method, activated_at, last_seen_at, revoked_at)",
     )
     .order("created_at", { ascending: false })
     .limit(500);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  const { data: trials } = await supabaseAdmin
+    .from("license_trials")
+    .select("id, product, hwid, started_at, expires_at, last_seen_at")
+    .order("started_at", { ascending: false })
+    .limit(500);
 
   let publicKey: string | null = null;
   let keyError: string | null = null;
@@ -32,7 +39,7 @@ export async function GET() {
   } catch (e) {
     keyError = e instanceof Error ? e.message : String(e);
   }
-  return NextResponse.json({ licenses: data ?? [], publicKey, keyError });
+  return NextResponse.json({ licenses: data ?? [], trials: trials ?? [], publicKey, keyError });
 }
 
 type PostBody =
@@ -45,7 +52,8 @@ type PostBody =
       maxDevices?: unknown;
       expiresAt?: unknown;
     }
-  | { action: "manual"; licenseId?: unknown; hwid?: unknown };
+  | { action: "manual"; licenseId?: unknown; hwid?: unknown }
+  | { action: "reset_trial"; trialId?: unknown };
 
 const str = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 
@@ -98,6 +106,14 @@ export async function POST(request: Request) {
     const result = await activateDevice(lic, hwid, "manual");
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
     return NextResponse.json({ token: result.token, product: lic.product });
+  }
+
+  // 試用をやり直せるようにする（記録を消す。例: 試用中に PC が壊れた人への救済）。
+  if (body?.action === "reset_trial") {
+    if (typeof body.trialId !== "string") return NextResponse.json({ error: "trialId が必要です。" }, { status: 400 });
+    const { error } = await supabaseAdmin.from("license_trials").delete().eq("id", body.trialId);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true });
   }
 
   return NextResponse.json({ error: "不明な操作です。" }, { status: 400 });

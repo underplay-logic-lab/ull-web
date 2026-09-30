@@ -3,15 +3,15 @@
 ツールの起動時に ``ensure_license(...)`` を 1 回呼ぶだけで使える。正本は ULL Studio リポジトリの
 ``tools/ull_license/ull_license.py``。各ツールへはこのファイルをコピーして使う（直すときは正本を直してから配り直す）。
 
-仕組み（サーバー側は src/lib/license/license.server.ts）:
+仕組み（サーバー側は src/lib/license/license.server.ts）。**オンライン専用**（2026-09-30 ホスト判断）:
   1. admin が発行したライセンスキーを初回起動時に入力 → ULL Studio がこの PC（HWID）用の署名付きライセンスを返す
-  2. ライセンスはツールの隣に ``<product>.license`` として保存。以後は同梱の公開鍵で署名を確かめるだけなのでオフラインで動く
-  3. 30 日ごとにオンラインで再確認を試みる（停止・PC の解除を反映）。つながらなければ今のライセンスのまま動く
-  4. ネットに出られない PC は「スマホで認証する」→ QR をスマホで読んでキーを入力 → 受け取ったライセンスファイルを PC で「読み込む」
-     （それでも困ったら「困ったときは」で HWID を添えて開発者へ → admin の手動発行）
+  2. ライセンスはツールの隣に ``<product>.license`` として保存し、同梱の公開鍵で署名を確かめて起動する
+  3. 7 日ごとにネットで確認（つながらなければそのまま）、30 日確認できなければ止まる（ネットにつなげば再開）
+  4. 台数が上限なら「この PC に移しますか？」→ 古い PC を外して移す（30 日に 1 回まで。超えたら連絡）
+  5. キーが無い人は「無料で試す」で試用（ツールごとの日数・1 台 1 回）。試用中は起動のたびにネットで確かめる
+  6. 非常用: 通信が止められる環境は「困ったときは」で HWID を添えて連絡 → admin の手動発行ファイルを「読み込む」
 
-依存は標準ライブラリだけ（Ed25519 の検証も純 Python）。QR コードの表示だけは ``qrcode`` パッケージ（BSD）があれば使い、
-無ければ URL を文字で出す。使うツールは requirements に ``qrcode`` を足し、Nuitka に ``--include-package=qrcode`` を付ける。
+依存は標準ライブラリだけ（Ed25519 の検証も純 Python）。
 """
 from __future__ import annotations
 
@@ -189,46 +189,23 @@ def format_hwid(hwid: str) -> str:
     return "-".join(hwid[i : i + 8] for i in range(0, len(hwid), 8)).upper()
 
 
-def offline_activation_url(api_base: str, product: str, hwid: str) -> str:
-    """スマホで開く認証ページ（ULL Studio の /license/offline）。QR コードの中身。"""
-    return f"{api_base.rstrip('/')}/license/offline?p={product}&h={hwid}"
-
-
-def _draw_qr(parent, text: str) -> bool:
-    """QR コードを Tk の Canvas に描く。qrcode パッケージが無ければ False（呼び出し側で URL を出す）。
-
-    qrcode（BSD）は行列を作るのに使うだけで、画像ライブラリは使わない。ツールの requirements に
-    ``qrcode`` を足し、Nuitka では ``--include-package=qrcode`` を付ける。
-    """
-    try:
-        import qrcode
-    except Exception:
-        return False
-    import tkinter as tk
-
-    qr = qrcode.QRCode(border=3, error_correction=qrcode.constants.ERROR_CORRECT_M)
-    qr.add_data(text)
-    qr.make(fit=True)
-    matrix = qr.get_matrix()
-    cell = max(3, 200 // len(matrix))
-    size = cell * len(matrix)
-    canvas = tk.Canvas(parent, width=size, height=size, bg="#ffffff", highlightthickness=0)
-    for y, row in enumerate(matrix):
-        for x, on in enumerate(row):
-            if on:
-                canvas.create_rectangle(x * cell, y * cell, (x + 1) * cell, (y + 1) * cell, fill="#000000", width=0)
-    canvas.pack(pady=(4, 10))
-    return True
-
 
 # ---------------------------------------------------------------------------
 # 通信
 # ---------------------------------------------------------------------------
+NETWORK_ERROR_MESSAGE = (
+    "認証サーバーにつながりませんでした。ネット接続を確認してください。"
+    "つながっている場合は、セキュリティソフトや会社のネットワークでこのアプリの通信が止められていないか確認してください。"
+    "解決しない場合は「困ったときは」からご連絡ください。"
+)
+
+
 class LicenseServerError(Exception):
-    def __init__(self, status: int, code: str, message: str):
+    def __init__(self, status: int, code: str, message: str, data: Optional[dict] = None):
         super().__init__(message)
         self.status = status
         self.code = code
+        self.data = data or {}
 
 
 def _post(api_base: str, path: str, body: dict, app_name: str) -> dict:
@@ -246,7 +223,7 @@ def _post(api_base: str, path: str, body: dict, app_name: str) -> dict:
             data = json.loads(e.read().decode("utf-8"))
         except Exception:
             data = {}
-        raise LicenseServerError(e.code, str(data.get("code", "")), str(data.get("error") or f"HTTP {e.code}")) from None
+        raise LicenseServerError(e.code, str(data.get("code", "")), str(data.get("error") or f"HTTP {e.code}"), data) from None
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +239,8 @@ def _check_payload(payload: Optional[dict], product: str, hwid: str, ignore_exp:
         return "このライセンスは別の PC 用です。"
     exp = payload.get("exp")
     if not ignore_exp and isinstance(exp, (int, float)) and time.time() >= exp:
+        if payload.get("kind") == "trial":
+            return "試用期間が終わりました。続けて使いたい方は「困ったときは」からご連絡ください。ライセンスキーをお持ちの方は入力してください。"
         return "ライセンスの期限が切れています。"
     return None
 
@@ -275,8 +254,9 @@ def ensure_license(
     support_url: str = "",
     support_label: str = "開発者に連絡する",
     api_base: str = DEFAULT_API_BASE,
+    offer_trial: bool = True,
 ) -> dict:
-    """有効なライセンスがあれば payload を返す。無ければ認証画面を出し、認証できなければ終了する。
+    """有効なライセンス（または試用）があれば payload を返す。無ければ認証画面を出し、認証できなければ終了する。
 
     DPI 対応（SetProcessDpiAwareness）より後、アプリ本体のウィンドウを作る前に呼ぶこと。
     """
@@ -288,11 +268,15 @@ def ensure_license(
         token = path.read_text(encoding="utf-8", errors="ignore").strip()
         payload = parse_token(token, public_key_b64)
         reason = _check_payload(payload, product, hwid)
-        # 期限切れでも、admin が期限を延ばしていればオンラインで新しいライセンスを受け取れる（2026-09-30）。
+        # 期限切れでも、admin が期限を延ばしていればオンラインで新しいライセンスを受け取れる。
         expired = payload is not None and reason is not None and _check_payload(payload, product, hwid, ignore_exp=True) is None
+        now = time.time()
         rck = payload.get("rck") if payload else None
-        recheck_due = reason is None and isinstance(rck, (int, float)) and time.time() >= rck
-        if expired or recheck_due:
+        hck = payload.get("hck") if payload else None
+        always = bool(payload and payload.get("chk"))  # 試用: 起動のたびにサーバーの時刻で確かめる
+        hard_due = reason is None and isinstance(hck, (int, float)) and now >= hck
+        soft_due = reason is None and isinstance(rck, (int, float)) and now >= rck
+        if expired or always or hard_due or soft_due:
             try:
                 res = _post(api_base, "/api/license/refresh", {"token": token}, app_name)
                 fresh = parse_token(res.get("token", ""), public_key_b64)
@@ -301,12 +285,18 @@ def ensure_license(
                     return fresh
             except LicenseServerError as e:
                 if e.status in (400, 403, 404):
-                    _safe_unlink(path)
+                    # 試用が終わった記録は残す（キー入力の画面で理由を出すため）。それ以外は消して認証し直し。
+                    if not (payload and payload.get("kind") == "trial"):
+                        _safe_unlink(path)
                     reason = e.args[0]
             except Exception:
                 if expired:
                     reason = "ライセンスの期限が切れています。延長済みの場合は、ネットにつないでから起動し直してください。"
-                # 再確認だけならつながらなくても今のライセンスのまま動かす
+                elif always:
+                    reason = "試用中はネット接続が必要です。ネットにつないでから起動し直してください。"
+                elif hard_due:
+                    reason = "30 日以上ネットで確認できていません。ネットにつないでから起動し直してください。"
+                # soft_due だけならつながらなくても今のライセンスのまま動かす
         if reason is None:
             return payload
         notice = reason
@@ -321,6 +311,7 @@ def ensure_license(
         support_url=support_url,
         support_label=support_label,
         api_base=api_base,
+        offer_trial=offer_trial,
     )
     if payload is None:
         sys.exit(1)
@@ -334,9 +325,9 @@ def _safe_unlink(path: Path) -> None:
         pass
 
 
-def _show_dialog(*, product, public_key_b64, app_name, path, hwid, notice, support_url, support_label, api_base):
+def _show_dialog(*, product, public_key_b64, app_name, path, hwid, notice, support_url, support_label, api_base, offer_trial):
     import tkinter as tk
-    from tkinter import filedialog
+    from tkinter import filedialog, messagebox
 
     result: dict = {}
     bg, panel, fg, muted, accent = "#121212", "#1e1e1e", "#eeeeee", "#9a9a9a", "#ff4fa3"
@@ -376,19 +367,45 @@ def _show_dialog(*, product, public_key_b64, app_name, path, hwid, notice, suppo
         root.destroy()
         return True
 
-    def activate(_event=None):
+    def activate(_event=None, transfer=False):
         key = key_var.get().strip()
         if not key:
             set_status("ライセンスキーを入力してください。")
             return
         set_status("認証しています…", error=False)
+        body = {"key": key, "hwid": hwid, "product": product}
+        if transfer:
+            body["transfer"] = True
         try:
-            res = _post(api_base, "/api/license/activate", {"key": key, "hwid": hwid, "product": product}, app_name)
+            res = _post(api_base, "/api/license/activate", body, app_name)
+            accept(res.get("token", ""))
+        except LicenseServerError as e:
+            if e.code == "device_limit" and e.data.get("transferAvailable") and not transfer:
+                set_status(e.args[0])
+                ok = messagebox.askyesno(
+                    "PC の移し替え",
+                    "このライセンスは別の PC で使われています。\n\n"
+                    "古い PC の登録を外して、この PC に移しますか？\n"
+                    "・古い PC では、次にネットで確認したときから使えなくなります。\n"
+                    "・移し替えは 30 日に 1 回までです。",
+                    parent=root,
+                )
+                if ok:
+                    activate(transfer=True)
+                return
+            set_status(e.args[0])
+        except Exception:
+            set_status(NETWORK_ERROR_MESSAGE)
+
+    def start_trial():
+        set_status("試用を始めています…", error=False)
+        try:
+            res = _post(api_base, "/api/license/trial", {"hwid": hwid, "product": product}, app_name)
             accept(res.get("token", ""))
         except LicenseServerError as e:
             set_status(e.args[0])
         except Exception:
-            set_status("認証サーバーにつながりませんでした。ネット接続を確認するか、「スマホで認証する」をお使いください。")
+            set_status(NETWORK_ERROR_MESSAGE)
 
     def load_file():
         name = filedialog.askopenfilename(
@@ -402,43 +419,16 @@ def _show_dialog(*, product, public_key_b64, app_name, path, hwid, notice, suppo
         padx=20, pady=(10, 4), fill="x"
     )
 
-    # --- ネットにつながらない PC: QR コード → スマホで認証 → ライセンスファイルを PC に移して読み込む（2026-09-30） ---
-    label("ネットにつながらない PC の場合", fg=muted, font=("Yu Gothic UI", 9)).pack(anchor="w", padx=20, pady=(14, 2))
-    offline_url = offline_activation_url(api_base, product, hwid)
-    offline = tk.Frame(root, bg=panel)
+    if offer_trial:
+        label("ライセンスキーをお持ちでない方", fg=muted, font=("Yu Gothic UI", 9)).pack(anchor="w", padx=20, pady=(12, 2))
+        tk.Button(root, text="無料で試す（期間限定・この PC で 1 回）", command=start_trial, bg="#2c2c2c", fg=fg, relief="flat", pady=5).pack(
+            padx=20, fill="x"
+        )
 
-    def toggle_offline():
-        if offline.winfo_ismapped():
-            offline.pack_forget()
-            return
-        offline.pack(padx=20, fill="x", after=offline_btn)
-
-    offline_btn = tk.Button(root, text="スマホで認証する（QR コードを表示）", command=toggle_offline, bg="#2c2c2c", fg=fg, relief="flat", pady=4)
-    offline_btn.pack(padx=20, fill="x")
-
-    tk.Label(
-        offline,
-        text=(
-            "1. スマホのカメラでこの QR コードを読み取る\n"
-            "2. 開いたページでライセンスキーを入力 → ライセンスファイルがスマホに保存される\n"
-            "3. そのファイルを USB ケーブル・USB メモリ・クラウド等で PC に移す\n"
-            "4. 下の「ライセンスファイルを読み込む」で選ぶ"
-        ),
-        bg=panel, fg=fg, font=("Yu Gothic UI", 9), justify="left",
-    ).pack(anchor="w", padx=10, pady=(8, 4))
-    if not _draw_qr(offline, offline_url):
-        # QR を作れない環境（qrcode パッケージ無し）では URL を出す。
-        url_entry = tk.Entry(offline, font=("Consolas", 8), bg=panel, fg="#00ffcc", relief="flat", readonlybackground=panel)
-        url_entry.insert(0, offline_url)
-        url_entry.config(state="readonly")
-        url_entry.pack(fill="x", padx=10, pady=(0, 8))
+    label("ネット接続が必要です（認証と、定期的な確認のため）。", fg=muted, font=("Yu Gothic UI", 8)).pack(anchor="w", padx=20, pady=(10, 0))
 
     row = tk.Frame(root, bg=bg)
-    row.pack(padx=20, pady=(10, 4), fill="x")
-    tk.Button(row, text="ライセンスファイルを読み込む", command=load_file, bg="#2c2c2c", fg=fg, relief="flat").pack(side="left")
-    tk.Button(row, text="閉じる", command=root.destroy, bg="#2c2c2c", fg=muted, relief="flat").pack(side="right")
-
-    # --- それでも困ったとき: HWID を添えて開発者へ（admin の「手動発行」で対応） ---
+    row.pack(padx=20, pady=(8, 4), fill="x")
     if support_url:
         shown = format_hwid(hwid)
 
@@ -446,13 +436,17 @@ def _show_dialog(*, product, public_key_b64, app_name, path, hwid, notice, suppo
             root.clipboard_clear()
             root.clipboard_append(shown)
             root.update()
-            set_status("HWID をコピーしました。問い合わせのメッセージに貼り付けて送ってください。", error=False)
+            set_status("PC の識別子をコピーしました。問い合わせのメッセージに貼り付けて送ってください。", error=False)
             webbrowser.open(support_url)
 
-        tk.Button(
-            root, text=f"困ったときは: {support_label}（HWID をコピーして開きます）", command=contact,
-            bg=bg, fg=muted, activebackground=bg, relief="flat", font=("Yu Gothic UI", 8), cursor="hand2",
-        ).pack(padx=20, pady=(2, 14), anchor="w")
+        tk.Button(row, text=f"困ったときは（{support_label}）", command=contact, bg="#2c2c2c", fg=fg, relief="flat").pack(side="left")
+    tk.Button(row, text="閉じる", command=root.destroy, bg="#2c2c2c", fg=muted, relief="flat").pack(side="right")
+
+    # 非常用（開発者から届いたライセンスファイル）。普段は使わないので目立たせない。
+    tk.Button(
+        root, text="開発者から届いたライセンスファイルを読み込む", command=load_file,
+        bg=bg, fg=muted, activebackground=bg, relief="flat", font=("Yu Gothic UI", 8), cursor="hand2",
+    ).pack(padx=20, pady=(2, 14), anchor="w")
 
     root.protocol("WM_DELETE_WINDOW", root.destroy)
     root.mainloop()

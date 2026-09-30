@@ -4,21 +4,32 @@ import { createHash, createPrivateKey, createPublicKey, randomBytes, sign, verif
 // 納品ツールのライセンス（2026-09-30、ホスト要望: 手元で動かすツールを「その人の PC だけ」で動かす）。
 //
 // 流れ: admin がライセンスを発行（キーを相手に渡す）→ ツールが初回起動時にキーと HWID を /api/license/activate へ →
-// サーバーが Ed25519 で署名したライセンスファイル（トークン）を返す → ツールは同梱の公開鍵で検証するので以後オフラインで動く。
-// ネットに出られない相手は HWID を LINE 等で受け取り、admin の「手動発行」でファイルを作って渡す。
-// 停止（revoke）はオンラインの再確認（RECHECK_DAYS ごと、ツール側で試行）で効く。オフラインのままなら期限（exp）だけが効く。
+// サーバーが Ed25519 で署名したライセンスファイル（トークン）を返す → ツールは同梱の公開鍵で検証して起動する。
+//
+// 方針（2026-09-30 ホスト判断）: **オンライン専用**。
+//  - 再確認: RECHECK_DAYS ごとに試み（つながらなければそのまま）、HARD_CHECK_DAYS 確認できなければ止める
+//    （移し替えた古い PC がオフラインで動き続ける抜け道を塞ぐ。ネットにつなげばすぐ再開）。
+//  - 移し替え: 台数が上限のとき、ツールが確認のうえ transfer:true で認証し直すと古い PC（オンライン認証のもの）を外して移す。
+//    TRANSFER_COOLDOWN_DAYS に 1 回まで。超えたら連絡 → admin で解除。
+//  - 試用: キー無しで products.ts の trialDays 日（1 台 1 回、license_trials に記録）。試用中は起動のたびにオンラインで確かめる
+//    （時計を戻して延ばされないよう、期限はサーバーの時刻で判定）。
+//  - admin の「手動発行」は非常用（通信が止められる環境など）。再確認なしのトークンを返す。
 //
 // トークン形式: "ULL1." + base64url(JSON payload) + "." + base64url(Ed25519 署名（"ULL1." + payload 部分の ASCII に対して）)
 // Python 側の検証は tools/ull_license/ull_license.py（純 Python の Ed25519）。形式を変えるときは両方を直す。
 
 export const TOKEN_PREFIX = "ULL1.";
-export const RECHECK_DAYS = 30;
+export const RECHECK_DAYS = 7;
+export const HARD_CHECK_DAYS = 30;
+export const TRANSFER_COOLDOWN_DAYS = 30;
 
 export type LicensePayload = {
   v: 1;
-  /** licenses.id */
+  /** "license"（キーで認証）/ "trial"（試用）。古いトークンに無ければ license 扱い */
+  kind?: "license" | "trial";
+  /** licenses.id（試用は "trial"） */
   lid: string;
-  /** license_activations.id */
+  /** license_activations.id（試用は license_trials.id） */
   aid: string;
   product: string;
   /** 管理用の名義（admin で誰に発行したかを見分ける呼び名。今はツール画面には出していない） */
@@ -29,8 +40,12 @@ export type LicensePayload = {
   iat: number;
   /** ライセンスの期限（unix 秒）。無期限は null */
   exp: number | null;
-  /** この時刻を過ぎたらオンラインで再確認を試みる（unix 秒）。手動発行（オフライン前提）は null */
+  /** この時刻を過ぎたらオンラインで再確認を試みる（unix 秒）。つながらなければそのまま動く。手動発行は null */
   rck: number | null;
+  /** この時刻を過ぎたら再確認できるまで止める（unix 秒）。手動発行は null */
+  hck?: number | null;
+  /** true なら起動のたびにオンラインで確かめる（試用） */
+  chk?: boolean;
 };
 
 let cachedKey: KeyObject | null = null;

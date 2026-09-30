@@ -26,8 +26,18 @@ type License = {
   max_devices: number;
   expires_at: string | null;
   revoked_at: string | null;
+  last_transfer_at: string | null;
   created_at: string;
   license_activations: Activation[];
+};
+
+type Trial = {
+  id: string;
+  product: string;
+  hwid: string;
+  started_at: string;
+  expires_at: string;
+  last_seen_at: string;
 };
 
 const fmt = (iso: string) => new Date(iso).toLocaleString("ja-JP", { dateStyle: "short", timeStyle: "short" });
@@ -105,6 +115,7 @@ function LimitsEditor({ lic, onSave }: { lic: License; onSave: (maxDevices: numb
 export function LicensesTab() {
   const [rows, setRows] = useState<License[]>([]);
   const [publicKey, setPublicKey] = useState<string | null>(null);
+  const [trials, setTrials] = useState<Trial[]>([]);
   const [keyError, setKeyError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -131,6 +142,7 @@ export function LicensesTab() {
       setRows(json.licenses as License[]);
       setPublicKey(json.publicKey ?? null);
       setKeyError(json.keyError ?? null);
+      setTrials((json.trials ?? []) as Trial[]);
       setLoadedAt(Date.now());
     } catch (e) {
       setError(e instanceof Error ? e.message : "取得に失敗しました。");
@@ -212,11 +224,12 @@ export function LicensesTab() {
     <section className="space-y-6">
       <div className="rounded-xl border border-border bg-surface/40 p-4 text-xs leading-relaxed text-muted">
         <p className="text-foreground">
-          納品ツール（手元の PC で動かすもの）のライセンス。発行したキーを相手に渡し、ツールの初回起動で入力してもらいます。
-          ネットにつながらない相手は、ツールに出る HWID を送ってもらい「手動発行」でライセンスファイルを渡します。
+          納品ツール（手元の PC で動かすもの）のライセンス。<b>オンライン専用</b>。発行したキーを相手に渡し、ツールの初回起動で入力してもらいます。
+          キーが無い人は、ツールの「無料で試す」で試用できます（ツールごとの日数・1 台 1 回）。
         </p>
         <p className="mt-2">
-          停止・端末の解除は、ツールがオンラインで再確認したとき（30 日ごと）に効きます。手動発行のファイルは再確認しないので、期限で縛ってください。
+          ツールは 7 日ごとにネットで確認し、30 日確認できないと止まります（ネットにつなげば再開）。停止・PC の解除は次の確認で効きます。
+          PC の買い替えは、相手がツール上で「この PC に移す」を選べば自分で移せます（30 日に 1 回まで。超えたら連絡→ここで解除）。
         </p>
         <details className="mt-3 rounded-lg border border-border bg-background/60 p-3">
           <summary className="cursor-pointer text-foreground">手順（発行のしかた・新しいツールの追加）</summary>
@@ -231,23 +244,34 @@ export function LicensesTab() {
               </ol>
             </div>
             <div>
-              <p className="font-medium text-foreground">■ 相手の PC がネットにつながらないとき</p>
-              <p className="mt-1">
-                基本は相手が自分で済ませる: 認証画面の「スマホで認証する」→ QR をスマホで読む → キーを入力 → ライセンスファイルがスマホに保存 →
-                PC に移して「ライセンスファイルを読み込む」。こちらの作業は不要（一覧には「手動」として PC が増える）。
-              </p>
-              <p className="mt-2">それでも困って連絡が来たとき（認証画面の「困ったときは」から HWID が届く）:</p>
+              <p className="font-medium text-foreground">■ 試用から購入したい、と連絡が来たとき</p>
               <ol className="mt-1 list-decimal space-y-0.5 pl-5">
-                <li>その人のライセンスの「手動発行」欄に HWID を貼り付けて「ライセンスファイルを作る」→ 〇〇.license がダウンロードされる。</li>
-                <li>そのファイルを相手に送り、認証画面の「ライセンスファイルを読み込む」で選んでもらう。</li>
+                <li>支払いを受けたら、通常どおり発行してキーを送る。</li>
+                <li>相手は同じ認証画面でキーを入れるだけ（試用中でも試用が終わった後でも、その場で正規版になる）。</li>
+              </ol>
+            </div>
+            <div>
+              <p className="font-medium text-foreground">■ PC の買い替え・連絡が来たとき</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                <li>通常は相手が自分で移せる（新しい PC でキーを入れると「この PC に移しますか？」が出る。30 日に 1 回まで）。</li>
+                <li>30 日以内に 2 回目が必要になった・キーを他人に使われた等で連絡が来たら、そのライセンスの古い PC を「この PC を解除」する。</li>
+                <li>待つ間は、新しい PC で「無料で試す」を使ってもらえる（PC ごとに 1 回）。</li>
+              </ul>
+            </div>
+            <div>
+              <p className="font-medium text-foreground">■ 非常用: 通信が止められて認証できないとき</p>
+              <ol className="mt-1 list-decimal space-y-0.5 pl-5">
+                <li>相手に認証画面の「困ったときは」から連絡してもらう（PC の識別子 HWID が自動でコピーされる）。まずはセキュリティソフト・会社のネットワークの設定を確認してもらう。</li>
+                <li>それでも駄目なら、その人のライセンスの「手動発行」欄に HWID を貼って「ライセンスファイルを作る」→ ファイルを送り、「ライセンスファイルを読み込む」で選んでもらう。</li>
+                <li>手動発行のファイルは確認をしないので、停止が効かない。期限を付けたライセンスで出すのが安全。</li>
               </ol>
             </div>
             <div>
               <p className="font-medium text-foreground">■ 発行したあと</p>
               <ul className="mt-1 list-disc space-y-0.5 pl-5">
-                <li>台数・期限はライセンスごとに変えられる（延長は、相手のツールがネットにつながったときに反映）。</li>
-                <li>PC を入れ替えたいときは「この PC を解除」で枠を空ける。止めたいときは「停止する」。</li>
-                <li>停止・解除は、相手のツールがネットにつながって確認したとき（30 日ごと）に効く。ずっとオフラインの PC は止められない。</li>
+                <li>台数・期限はライセンスごとに変えられる（延長は、相手のツールが次にネットで確認したときに反映）。</li>
+                <li>止めたいときは「停止する」（次の確認で止まる。遅くとも 30 日で止まる）。</li>
+                <li>試用の一覧は下の「試用」。試用中に PC が壊れた等の救済は「やり直せるようにする」。</li>
               </ul>
             </div>
             <div>
@@ -260,8 +284,8 @@ export function LicensesTab() {
             <div>
               <p className="font-medium text-foreground">■ 新しいツールを追加するとき（開発側）</p>
               <ol className="mt-1 list-decimal space-y-0.5 pl-5">
-                <li>ULL Studio の src/lib/license/products.ts にツールの ID と名前を足して push（この画面の「ツール」に出る）。</li>
-                <li>ツールのフォルダに tools/ull_license/ull_license.py をコピーし、main.py で ensure_license(product=同じ ID, public_key_b64=下の公開鍵, …) を呼ぶ。QR 表示のため requirements に qrcode を足す。</li>
+                <li>ULL Studio の src/lib/license/products.ts にツールの ID・名前・試用日数（trialDays、0 で試用なし）を足して push（この画面の「ツール」に出る）。</li>
+                <li>ツールのフォルダに tools/ull_license/ull_license.py をコピーし、main.py で ensure_license(product=同じ ID, public_key_b64=下の公開鍵, …) を呼ぶ（標準ライブラリだけで動く）。</li>
                 <li>FramePicker の build.bat をコピーして名前・版を直し、ビルド。詳しくは D:\tool\Underplay-FramePicker\exe化（まとめ）.txt。</li>
               </ol>
             </div>
@@ -386,7 +410,10 @@ export function LicensesTab() {
                   {lic.note}
                 </p>
               )}
-              <p className="mt-1 text-[11px] text-muted">発行 {fmt(lic.created_at)}</p>
+              <p className="mt-1 text-[11px] text-muted">
+                発行 {fmt(lic.created_at)}
+                {lic.last_transfer_at ? `・最後の自分での移し替え ${fmt(lic.last_transfer_at)}` : ""}
+              </p>
               <LimitsEditor lic={lic} onSave={(maxDevices, expiresAt) => patch({ licenseId: lic.id, maxDevices, expiresAt })} />
 
               {lic.license_activations.length > 0 && (
@@ -432,6 +459,51 @@ export function LicensesTab() {
             </article>
           );
         })}
+      </div>
+
+      {/* 試用（キー無し、ツール × PC ごとに 1 回）。2026-09-30 */}
+      <div>
+        <p className="mb-2 text-sm text-foreground">
+          試用 {trials.length} 件
+          <span className="ml-2 text-xs text-muted">
+            （試用中 {trials.filter((t) => new Date(t.expires_at).getTime() > loadedAt).length} 件）
+          </span>
+        </p>
+        {trials.length === 0 ? (
+          <p className="text-xs text-muted">まだ試用はありません。</p>
+        ) : (
+          <ul className="space-y-1">
+            {trials.map((t) => {
+              const active = new Date(t.expires_at).getTime() > loadedAt;
+              return (
+                <li key={t.id} className={`flex flex-wrap items-center gap-2 text-[11px] ${active ? "" : "opacity-60"}`}>
+                  <span className="rounded-full bg-surface px-2 py-0.5 font-mono text-muted">{licenseProductLabel(t.product)}</span>
+                  <code className="font-mono text-foreground/80" title={t.hwid}>
+                    {t.hwid.slice(0, 12)}…
+                  </code>
+                  <span className="text-muted">
+                    開始 {fmt(t.started_at)}・{active ? `期限 ${fmt(t.expires_at)}` : "終了"}・最終起動 {fmt(t.last_seen_at)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setError(null);
+                      try {
+                        await call("POST", { action: "reset_trial", trialId: t.id });
+                        await load();
+                      } catch (e) {
+                        setError(e instanceof Error ? e.message : "失敗しました。");
+                      }
+                    }}
+                    className="rounded-full border border-border px-2 py-0.5 text-muted hover:text-foreground"
+                  >
+                    やり直せるようにする
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
     </section>
   );
