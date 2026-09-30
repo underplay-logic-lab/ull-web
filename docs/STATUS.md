@@ -970,7 +970,8 @@ C. **ローンチ前にやる（了承済み）**: 説明の整理（要点 1 �
    ポータル表示も OK（ホスト）。解約時アンケートは回答があれば contact_inquiries＋メール（`a2cd842`）。
    **メール（2026-09-30 判明・対応）**: Resend にドメインが 1 つも無く、Supabase の SMTP 差出人が `onboarding@resend.dev`
    ＝所有者宛てしか届かなかった（一般ユーザーに確認・再設定メールが届かない状態）。ホストが `ullstudio.com` を認証＋差出人変更 →
-   別アドレスへの再設定メール到達を確認。サイトの通知（問い合わせ等、`email_sent` が全件 false だった）も 200 で送れるように。（都度チャージ）で決済→Webhook でクレジット付与、寄付→ひとこと、ポータル表示を確認。
+   別アドレスへの再設定メール到達を確認。サイトの通知（問い合わせ等、`email_sent` が全件 false だった）も送れるように。宛先 `contact@ullstudio.com` は
+   Cloudflare Email Routing で転送。差出人＝宛先だと転送先で迷惑メール判定 → 差出人を `noreply@ullstudio.com` に（`09f2d5f`）、受信箱着を確認。（都度チャージ）で決済→Webhook でクレジット付与、寄付→ひとこと、ポータル表示を確認。
 2. **AI クローラー対策一式（ローンチ判断で着手、メモリ `launch-checklist-ai-seo`）**: `public/llms.txt`・`SoftwareApplication` /
    `FAQPage` の JSON-LD・LP の FAQ / 比較セクション。**LoRA「結果がいまいちな時」ヒント（根拠付き 5 項目、下の節）はこの FAQ の
    一部**として書き、完了画面には 3 行＋FAQ リンク。Gemini 文案の 3 つの地雷（Wan 2.2 S2V を看板にしない・モデル名を出さない・
