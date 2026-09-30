@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { Resend } from "resend";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { memberContactServices, memberContactServicesFor } from "@/lib/data";
+import { NOTIFY_FROM } from "@/lib/notifyMail";
 
 const TIER_LABEL: Record<string, string> = {
   entry: "エントリー",
@@ -131,7 +132,7 @@ export async function POST(request: Request) {
     try {
       const resend = new Resend(resendApiKey);
       const { error } = await resend.emails.send({
-        from: `ULL Studio お問い合わせ <${receiverEmail}>`,
+        from: NOTIFY_FROM,
         to: receiverEmail,
         replyTo: email,
         subject,

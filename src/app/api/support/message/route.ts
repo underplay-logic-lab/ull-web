@@ -4,6 +4,7 @@ import { POLAR_DONATION_PRODUCT_ID } from "@/lib/polarProducts";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { Resend } from "resend";
 import { apiErrorResponse } from "@/lib/apiError";
+import { NOTIFY_FROM } from "@/lib/notifyMail";
 
 // 支援者からのひとこと（2026-09-29、ホスト案）。「要望を送るのは気が引ける」人が、支援に "こうなったらいいな" を
 // 添えられる窓口。会員特典の機能リクエスト（/api/contact）とは別枠。支援の決済から戻った画面だけで出し、
@@ -88,7 +89,7 @@ export async function POST(request: Request) {
   } else {
     try {
       const { error } = await new Resend(resendApiKey).emails.send({
-        from: `ULL Studio お問い合わせ <${receiverEmail}>`,
+        from: NOTIFY_FROM,
         to: receiverEmail,
         ...(customerEmail ? { replyTo: customerEmail } : {}),
         subject: `【${SERVICE_LABEL}】¥${amount.toLocaleString()} のご支援`,

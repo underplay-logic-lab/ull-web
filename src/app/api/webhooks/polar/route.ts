@@ -5,6 +5,7 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { polarProductConfig, tierForPolarProduct } from "@/lib/polar";
 import { POLAR_DONATION_PRODUCT_ID } from "@/lib/polarProducts";
 import { apiErrorResponse } from "@/lib/apiError";
+import { NOTIFY_FROM } from "@/lib/notifyMail";
 import { Resend } from "resend";
 
 const LOG_PREFIX = "[webhooks/polar]";
@@ -254,7 +255,7 @@ async function recordCancellationFeedback(subscription: SubscriptionData, userId
     const receiverEmail = process.env.CONTACT_RECEIVER_EMAIL;
     if (!resendApiKey || !receiverEmail) return;
     const { error: sendError } = await new Resend(resendApiKey).emails.send({
-      from: `ULL Studio お問い合わせ <${receiverEmail}>`,
+      from: NOTIFY_FROM,
       to: receiverEmail,
       ...(email ? { replyTo: email } : {}),
       subject: `【解約時のアンケート】${reasonJa}`,
