@@ -1484,7 +1484,7 @@ export function DatasetBuilderTab() {
 
         {/* 右: 指定 */}
         <div className="space-y-4">
-          <div className="grid gap-4 rounded-xl border border-border bg-background p-4">
+          <div id="dataset-scene" className="grid scroll-mt-24 gap-4 rounded-xl border border-border bg-background p-4">
             {/* 止めている間の「これから作る分」から「シーン設定」の名前で参照する（2026-09-30 ホスト指摘）。 */}
             <p className="text-sm font-medium text-foreground">シーン設定</p>
             {(["poses", "places", "framings", "views", "expressions", "outfits"] as SceneAxis[]).map((axis) => (
@@ -1545,6 +1545,19 @@ export function DatasetBuilderTab() {
               表情・服装は 1 枚ごとに順に変わります（後ろ向きの画像に表情は付けません）。表情を大きく変えるほど顔立ちが変わりやすいので、
               LoRA の素材には「真顔・微笑み」がおすすめです（顔の一貫性のほうが大事なため）。日本語の入力は送るときに英訳します。
             </p>
+            {/* 止めている間: 設定を変えたらここから一覧へ戻れるように（2026-09-30 ホスト指摘「行き来の距離が長い」）。 */}
+            {phase === "paused" && run && remainingItems.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  updateRemaining((rest) => rebodyScenePlan(rest, sel, run.plan.length));
+                  scrollToId("dataset-remaining");
+                }}
+                className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2 text-xs font-semibold text-white hover:opacity-90"
+              >
+                この設定で「これから作る分」の文章を作り直して一覧へ戻る
+              </button>
+            )}
           </div>
 
           <div id="dataset-progress" className="scroll-mt-24 rounded-xl border border-border bg-background p-4">
@@ -1782,13 +1795,22 @@ export function DatasetBuilderTab() {
             <p className="text-xs font-medium text-foreground">
               これから作る分 {remainingItems.length} 枚（{remainingCost.toLocaleString()} C）
             </p>
-            <button
-              type="button"
-              onClick={() => updateRemaining((rest) => rebodyScenePlan(rest, sel, run.plan.length))}
-              className="rounded-lg border border-border px-3 py-1.5 text-xs text-foreground hover:bg-surface"
-            >
-              文章を作り直す（先にシーン設定を変えてください）
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => scrollToId("dataset-scene")}
+                className="rounded-lg border border-border px-3 py-1.5 text-xs text-foreground hover:bg-surface"
+              >
+                シーン設定へ移動
+              </button>
+              <button
+                type="button"
+                onClick={() => updateRemaining((rest) => rebodyScenePlan(rest, sel, run.plan.length))}
+                className="rounded-lg border border-border px-3 py-1.5 text-xs text-foreground hover:bg-surface"
+              >
+                文章を作り直す（先にシーン設定を変えてください）
+              </button>
+            </div>
           </div>
           <p className="text-[10px] leading-relaxed text-muted">
             1 行ずつ直すときは、各行の文を書き換えるか × で消してください。まとめて変えるときは、シーン設定（ポーズ・場面・表情・服装など）を
@@ -1822,6 +1844,16 @@ export function DatasetBuilderTab() {
               </li>
             ))}
           </ol>
+          {/* 直したらその場で続けられるように（上の進捗欄の「続きを作る」と同じ動作）。 */}
+          <button
+            type="button"
+            onClick={handleContinue}
+            disabled={!image || (!creditsLoading && (credits ?? 0) < nextBatchCost)}
+            className="w-full rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-3 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+          >
+            この内容で続きを作る（残り {remainingCount} 枚・{remainingCost.toLocaleString()} C）
+          </button>
+          {!image && <p className="text-[10px] text-amber-400">続きを作るには、同じ画像をもう一度入れてください。</p>}
         </div>
       )}
 
