@@ -6,8 +6,12 @@ import { Turnstile, type TurnstileInstance } from "@marsidev/react-turnstile";
 import { KeyRound, Loader2, Mail, X } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 import { PasswordInput } from "@/components/PasswordInput";
+import { GoogleIdentityButton } from "@/components/GoogleIdentityButton";
 
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_CLOUDFLARE_TURNSTILE_SITE_KEY;
+// Set → Google sign-in goes through Google Identity Services (the browser never
+// visits supabase.co). Unset → legacy signInWithOAuth redirect flow below.
+const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
 
 type LoginModalProps = {
   open: boolean;
@@ -221,7 +225,9 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
           </button>
         </div>
 
-        {tab === "google" ? (
+        {tab === "google" && GOOGLE_CLIENT_ID ? (
+          <GoogleIdentityButton clientId={GOOGLE_CLIENT_ID} onSignedIn={handleClose} />
+        ) : tab === "google" ? (
           <button
             type="button"
             onClick={handleGoogleLogin}

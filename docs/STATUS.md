@@ -613,6 +613,10 @@ A2. **ログイン時に supabase.co を見せない（ホスト希望 2026-09-3
    ホスト作業: Google Cloud の OAuth クライアントに承認済み JS 生成元 `https://www.ullstudio.com`（と localhost）を追加、
    Supabase の Google プロバイダの Client ID と同じか確認。② メール: `/auth/confirm?token_hash=…&type=…` で `verifyOtp` する受け口を作り、
    Supabase のメールテンプレート（確認・再設定）のリンクを差し替え（文面は Claude が用意、差し替えはホストがダッシュボードで）。
+   → **2026-09-30 コード側は実装・push 済み**（`GoogleIdentityButton.tsx`・`src/app/auth/confirm/route.ts`、未確認）。
+   **残りはホスト作業**: Google Cloud の JS 生成元追加 → Vercel に `NEXT_PUBLIC_GOOGLE_CLIENT_ID` → 再デプロイ／メールテンプレート 2 本の
+   リンクを `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email&next=/`（確認）・`…&type=recovery&next=/reset-password`
+   （再設定）へ差し替え。旧 `/auth/callback` は残してあるので順不同で壊れない。
 C. **ローンチ前にやる（了承済み）**: 説明の整理（要点 1 行＋「詳しく ▸」、使わない項目は畳む、スマホは既定で閉じる。素材づくり→LoRA の順。
    試行中に「要る/要らない」を拾ってから）。**ローンチ後**: 紹介・操作動画（Remotion＋Playwright）、クライアント向け限定お試し（Qwen Image 2.1、
    非商用のため限定公開→ワークフロー納品）、スタートアップ支援・Alibaba への商用ライセンス申請（ホスト）。
