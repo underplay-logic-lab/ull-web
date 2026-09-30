@@ -624,6 +624,15 @@ A2. **ログイン時に supabase.co を見せない（ホスト希望 2026-09-3
    → **ホスト確認済み（2026-09-30）**: PC で再設定メール→入力画面まで成功／Google ログインは supabase.co が出ず ULL Studio 表示。
    スマホの Turnstile 110200 は `ull-web.vercel.app` で開いていたため → ページ表示だけ www へ 308 転送（`src/proxy.ts`）。
    残（任意）: Site URL を www に揃える・apex→www 転送の確認・Polar Webhook 送信先が vercel.app なら www へ。
+D. **納品ツールのライセンス（2026-09-30 着手、ホスト要望）**: 手元で動かす納品物（まず FramePicker）を「その人の PC だけ」で動かす。
+   admin「ライセンス」タブで発行（キー）→ ツールが初回だけオンライン認証 → Ed25519 署名のライセンスファイルで以後オフライン、
+   30 日ごとに再確認（停止・PC 解除を反映）。ネット無しは HWID → admin「手動発行」。台帳 `licenses`/`license_activations`
+   （migration 20260892）、API `/api/license/{activate,refresh}`、ツール側の正本 `tools/ull_license/ull_license.py`（純 Python・標準ライブラリのみ）。
+   FramePicker（`D:\tool\Underplay-FramePicker`、git 管理外）は組み込み済み・旧 Victor-Shield は `main.py.bak-victor-shield`。
+   **残（ホスト）**: migration 20260892 の適用／Vercel に `LICENSE_SIGNING_KEY`（`.env.local` と同じ値・Sensitive）→ 再デプロイ →
+   admin で自分宛てに発行して FramePicker（ソース実行 or 再ビルド）で認証を通す。**鍵は作り直さない**（配布済みが全部無効になる）。
+   **次**: ① ULL Studio 上で使うツール（許可制の Studio タブ。メタデータクリーナー → 背景透過）、②と同じ台帳で利用権を管理。
+   ブラウザ版 FramePicker は**ローンチ後、①の後に試す**（範囲指定は共有画面の上で・裏タブのタイマー間引きを要確認）。
 C. **ローンチ前にやる（了承済み）**: 説明の整理（要点 1 行＋「詳しく ▸」、使わない項目は畳む、スマホは既定で閉じる。素材づくり→LoRA の順。
    試行中に「要る/要らない」を拾ってから）。**ローンチ後**: 紹介・操作動画（Remotion＋Playwright）、クライアント向け限定お試し（Qwen Image 2.1、
    非商用のため限定公開→ワークフロー納品）、スタートアップ支援・Alibaba への商用ライセンス申請（ホスト）。
