@@ -17,7 +17,8 @@ const LOG_PREFIX = "[support/message]";
 const SERVICE_LABEL = "ご支援へのひとこと";
 const MAX_MESSAGE = 2000;
 const MAX_NAME = 50;
-const MAX_PER_CHECKOUT = 3;
+// 1 回の支援にひとこと 1 回（2026-09-30 ホスト: 送りたければもう一度支援すればよい）。
+const MAX_PER_CHECKOUT = 1;
 
 export async function POST(request: Request) {
   let body: { checkoutId?: unknown; message?: unknown; name?: unknown };
@@ -59,7 +60,7 @@ export async function POST(request: Request) {
     .select("id", { count: "exact", head: true })
     .eq("company", tag);
   if ((count ?? 0) >= MAX_PER_CHECKOUT) {
-    return NextResponse.json({ error: "この支援からは、これ以上送れません。ありがとうございました。" }, { status: 429 });
+    return NextResponse.json({ error: "この支援からのひとことは、もう受け取っています。ありがとうございました。" }, { status: 429 });
   }
 
   const displayName = name || customerName || "（支援者）";

@@ -73,9 +73,23 @@ export function Support() {
         body: JSON.stringify({ checkoutId, message: note, name: noteName }),
       });
       const data = await res.json().catch(() => null);
+      if (res.status === 429) {
+        // 既に受け取り済み（別タブで送った等）。欄は次から出さない。
+        try {
+          window.sessionStorage.removeItem("ull_support_checkout");
+        } catch {
+          // ignore
+        }
+      }
       if (!res.ok) throw new Error(data?.error || "送信に失敗しました。");
       setNoteSent(true);
       setNote("");
+      // 1 回の支援にひとこと 1 回（2026-09-30 ホスト）。送ったら再読み込みでも欄を出さない。
+      try {
+        window.sessionStorage.removeItem("ull_support_checkout");
+      } catch {
+        // ignore
+      }
     } catch (err) {
       setNoteError(err instanceof Error ? err.message : "送信に失敗しました。");
     } finally {
