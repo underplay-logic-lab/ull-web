@@ -9,6 +9,7 @@ import {
   type SafetySetting,
 } from "@google/generative-ai";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { looksLikeRefusal } from "@/lib/llmRefusal";
 
 // Shared Google AI Studio (Gemini) text runner. The free tier needs no card
 // / billing ($0) — this is the ONLY LLM client in the project (the Modal-side
@@ -217,8 +218,13 @@ async function runGeminiGenerate(
   let lastErr = "";
   let sawBusy = false;
   let sawQuota = false;
+  // 文章での断り（2026-10-01、src/lib/llmRefusal.ts）。try の中で throw すると下の catch が "[object Object]" に潰すので、
+  // ループを抜けてから安全ブロックと同じ GemErr（message に "blocked" を含む → isSafetyRefusal が真）で投げる。
+  // 別モデルで取り直しても断られやすく、混ざるのも避けたいので次の候補へは進まない。
+  let softRefusal: string | null = null;
   const keyTail = (process.env.GEMINI_API_KEY?.trim() ?? "").slice(-4);
   for (const modelId of geminiModelCandidates()) {
+    if (softRefusal !== null) break;
     let dropThinking = false;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -245,7 +251,12 @@ async function runGeminiGenerate(
               ?.map((p) => (typeof (p as { text?: unknown }).text === "string" ? (p as { text: string }).text : ""))
               .join("") ?? "";
         }
-        if (out.trim()) return out;
+        if (out.trim()) {
+          if (!looksLikeRefusal(out)) return out;
+          softRefusal = out.trim().slice(0, 160);
+          console.warn(`[geminiText] ${modelId} declined in text (soft refusal): ${softRefusal}`);
+          break;
+        }
         lastErr = `empty response (${resp.promptFeedback?.blockReason ?? cand?.finishReason ?? "empty"})`;
         if (attempt === 0 && cand?.finishReason === "MAX_TOKENS") continue;
         // 安全ブロック等の空応答を別モデルで取り直すと、同じデータセット内でモデルが混ざる。
@@ -294,6 +305,9 @@ async function runGeminiGenerate(
         throw { kind: "failed", message: lastErr } satisfies GemErr;
       }
     }
+  }
+  if (softRefusal !== null) {
+    throw { kind: "failed", message: `blocked (soft refusal in text): ${softRefusal}` } satisfies GemErr;
   }
   throw {
     kind: sawQuota ? "quota" : sawBusy ? "busy" : "failed",

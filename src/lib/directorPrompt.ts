@@ -2,6 +2,7 @@ import "server-only";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { geminiApiKey, isSafetyRefusal, runGeminiText, type GemErr } from "@/lib/geminiText";
 import { directorCameraLabel, type DirectorScene } from "@/lib/directorPricing";
+import { looksLikeRefusal } from "@/lib/llmRefusal";
 
 // 2026-09-15: MiniMax H3 は音声・映像を同時生成するモデルで、プロンプト内に
 // `<d>[言語]セリフ</d>` を埋め込むと台詞＋リップシンクをネイティブに生成する
@@ -43,19 +44,7 @@ export class DirectorPromptError extends Error {
   }
 }
 
-// 2026-10-01: Gemini が安全フィルター（例外）ではなく「文章で」断ることがある（"I cannot fulfill this request..."）。
-// それが正常な応答として動画モデルへ渡り、ユーザーの入力と無関係な動画が出来て課金された実例あり
-// （Director ジョブ 05627a3b、全額返還）。応答の冒頭が断り文句なら拒否として扱う。
-// 合成済みプロンプトは "A woman ..." のような描写文なので、冒頭が一人称の断り文になることは通常ない。
-const REFUSAL_HEAD_RE =
-  /^\s*(?:i['’]?m sorry|i am sorry|sorry,|i can(?:no|['’])t|i (?:am|['’]m) (?:unable|not able)|i will not|i won['’]t|as an ai|unfortunately,? i|申し訳|このリクエストには|お応えできません|ご要望には)/i;
-const REFUSAL_PHRASE_RE =
-  /\b(?:cannot|can['’]t|unable to|not able to) (?:fulfill|comply with|help with|assist with|create|generate|produce)\b/i;
-
-export function looksLikeRefusal(text: string): boolean {
-  const head = text.trim().slice(0, 200);
-  return REFUSAL_HEAD_RE.test(head) || REFUSAL_PHRASE_RE.test(head);
-}
+// 応答冒頭の断り文の検知は src/lib/llmRefusal.ts（Gemini 共通処理でも同じ判定を使う）。
 
 // Gemini に断られたときの代わり（2026-10-01）: 同じ指示文を、動画生成と同じ GPU コンテナ内の Qwen（abliterated＝断らない
 // 調整）に渡して合成させる。日本語訳も同じ生成で書かせ、"===JA===" の後ろに置かせる（Advanced モードの台本生成と同じ書式。
