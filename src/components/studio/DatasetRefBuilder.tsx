@@ -5,6 +5,7 @@
 // 生成した画像を次の参照に使うのはここだけ（まとめて生成では確定した参照だけを毎回使う）。
 // 候補は素材づくりと同じジョブ（angle_jobs・scene 経路・メイン 1 枚・1 枚 14C）。
 
+import { HelpNote } from "./HelpNote";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, Loader2, RefreshCw, Sparkles, ZoomIn } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
@@ -512,7 +513,10 @@ export function CandidatePanel({
           </button>
         ) : null}
       </div>
-      <p className="text-[10px] leading-relaxed text-muted">{description}</p>
+      {/* 説明は長いので項目名だけ出して畳む（2026-10-01、ホスト指摘「真横・斜めの参照は文字が多い」）。
+          料金はボタンに、作れない理由は下の blockedReason に出るので、畳んでも困らない。 */}
+      <HelpNote id={`dataset.panel.${storageKey}`} title="選び方・手持ちの画像の使い方" summary={description} />
+
       {children}
       {blockedReason && (status === "idle" || status === "error") && (
         <p className="text-[10px] leading-relaxed text-amber-300">{blockedReason}</p>
