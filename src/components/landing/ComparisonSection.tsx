@@ -75,7 +75,7 @@ export function ComparisonSection() {
           <EditableText
             as="p"
             siteKey="cmp_subtitle"
-            fallback="ローカルの自由度、クラウドの手軽さ、レンタルの高性能。いいとこだけを1画面に。"
+            fallback="高価なPCも、理不尽な規制も、待機課金も、過去にする。ローカルの自由度、クラウドの手軽さ、レンタルの高性能を1画面に。"
             className="mx-auto mt-4 max-w-xl text-muted"
           />
         </div>
