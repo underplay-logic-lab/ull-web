@@ -22,11 +22,14 @@ import {
   type DirectorScene,
 } from "@/lib/directorPricing";
 import {
+  buildJapaneseTranslationPrompt,
+  buildSceneDirectorPrompt,
   DirectorPromptError,
   expandDirectorScenes,
   looksJapanese,
   translateDirectorPromptToJapanese,
   translateJapanesePromptToEnglish,
+  withJapaneseTranslationRequest,
 } from "@/lib/directorPrompt";
 import { buildCinematicWorkflow, CINEMATIC_PROMPT_NODE_ID } from "@/lib/cinematicWorkflow";
 import { assertOwnedDirectorLoraVolumePath } from "@/lib/directorLoraUpload.server";
@@ -265,7 +268,15 @@ export async function POST(request: Request) {
   // ComfyUIワークフローを実行する設計にした。ここでの combinedPrompt は
   // ワーカー側で必ず上書きされるプレースホルダー（qwenConceptText が
   // 渡っている限りモデルには一切渡らない）。
+  // Gemini に断られたとき（2026-10-01）: 同じ指示文を動画と同じ B300 コンテナ内の Qwen（abliterated）に渡して
+  // 合成させる（qwenTextInstruction）。NSFW を制限しない方針なのに、Gemini の拒否文がそのまま動画の指示になり、
+  // 入力と無関係な動画で課金された実例があった（ジョブ 05627a3b）。普段は Gemini のまま（速い・GPU の追加時間なし）で、
+  // 断られたときだけ Qwen を読み込む（その分の時間・原価はこちら持ち。追加料金は取らない）。
+  // combinedPrompt はワーカー側で必ず上書きされるプレースホルダー（Advanced と同じ扱い）。
   let combinedPrompt: string;
+  let qwenTextInstruction: string | undefined;
+  const statusFor = (e: DirectorPromptError) =>
+    e.reason === "quota" ? 429 : e.reason === "busy" ? 503 : e.reason === "not_configured" ? 501 : 502;
   if (isAdvancedMode) {
     combinedPrompt = conceptTextInput;
   } else if (isPromptMode) {
@@ -274,8 +285,10 @@ export async function POST(request: Request) {
         combinedPrompt = await translateJapanesePromptToEnglish(rawPromptInput);
       } catch (err) {
         const e = err as DirectorPromptError;
-        const status = e.reason === "quota" ? 429 : e.reason === "busy" ? 503 : e.reason === "not_configured" ? 501 : 502;
-        return NextResponse.json({ error: e.message }, { status });
+        if (e.reason !== "refusal") return NextResponse.json({ error: e.message }, { status: statusFor(e) });
+        console.warn("[director/generate] Gemini refused the translation; falling back to the worker-side Qwen");
+        qwenTextInstruction = withJapaneseTranslationRequest(buildJapaneseTranslationPrompt(rawPromptInput));
+        combinedPrompt = rawPromptInput;
       }
     } else {
       combinedPrompt = rawPromptInput;
@@ -285,8 +298,10 @@ export async function POST(request: Request) {
       combinedPrompt = await expandDirectorScenes(scenes, musicDirectionInput || undefined);
     } catch (err) {
       const e = err as DirectorPromptError;
-      const status = e.reason === "quota" ? 429 : e.reason === "busy" ? 503 : e.reason === "not_configured" ? 501 : 502;
-      return NextResponse.json({ error: e.message }, { status });
+      if (e.reason !== "refusal") return NextResponse.json({ error: e.message }, { status: statusFor(e) });
+      console.warn("[director/generate] Gemini refused the scene synthesis; falling back to the worker-side Qwen");
+      qwenTextInstruction = withJapaneseTranslationRequest(buildSceneDirectorPrompt(scenes, musicDirectionInput || undefined));
+      combinedPrompt = scenes.map((s) => s.text).join("\n");
     }
   }
 
@@ -304,7 +319,9 @@ export async function POST(request: Request) {
   // 結果画面でのコピペ用日本語表示（ベストエフォート、失敗しても生成は続行）。
   // Advancedモードはまだ本物の英語プロンプトが存在しない（ワーカー側で
   // これから生成される）ため翻訳をスキップし、完了後の画面は英語のみ表示する。
-  const combinedPromptJa = isAdvancedMode ? null : await translateDirectorPromptToJapanese(combinedPrompt);
+  // Qwen に回したときも同じ（日本語訳はワーカーの Qwen が "===JA===" の後ろに一緒に書く）。
+  const combinedPromptJa =
+    isAdvancedMode || qwenTextInstruction ? null : await translateDirectorPromptToJapanese(combinedPrompt);
 
   const debitedCredits = currentCredits - creditsCost;
   const { error: debitError } = await supabaseAdmin
@@ -359,6 +376,8 @@ export async function POST(request: Request) {
         total_duration_s: breakdown.totalDurationS,
         prompt_mode: isPromptMode,
         advanced_mode: isAdvancedMode,
+        // Gemini に断られて GPU 上の Qwen で合成した印（集計・調査用）。
+        ...(qwenTextInstruction ? { prompt_fallback: "qwen" } : {}),
         quality_mode: qualityMode,
         priority,
         lora_name: loraName || null,
@@ -411,9 +430,10 @@ export async function POST(request: Request) {
       referenceImageB64: imageBuffer.toString("base64"),
       pollDeadlineS: directorPollDeadlineS(breakdown.totalDurationS, qualityMode),
       qwenConceptText: isAdvancedMode ? conceptTextInput : undefined,
-      qwenPromptNodeId: isAdvancedMode ? CINEMATIC_PROMPT_NODE_ID : undefined,
+      qwenTextInstruction,
+      qwenPromptNodeId: isAdvancedMode || qwenTextInstruction ? CINEMATIC_PROMPT_NODE_ID : undefined,
       qwenDurationS: isAdvancedMode ? breakdown.totalDurationS : undefined,
-      directorInputsSnapshot: isAdvancedMode ? directorInputsSnapshot : undefined,
+      directorInputsSnapshot: isAdvancedMode || qwenTextInstruction ? directorInputsSnapshot : undefined,
       loraVolumePath,
       loraFilename: loraVolumePath ? loraName : undefined,
     });

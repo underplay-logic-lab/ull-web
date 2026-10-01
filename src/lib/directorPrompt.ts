@@ -43,6 +43,31 @@ export class DirectorPromptError extends Error {
   }
 }
 
+// 2026-10-01: Gemini が安全フィルター（例外）ではなく「文章で」断ることがある（"I cannot fulfill this request..."）。
+// それが正常な応答として動画モデルへ渡り、ユーザーの入力と無関係な動画が出来て課金された実例あり
+// （Director ジョブ 05627a3b、全額返還）。応答の冒頭が断り文句なら拒否として扱う。
+// 合成済みプロンプトは "A woman ..." のような描写文なので、冒頭が一人称の断り文になることは通常ない。
+const REFUSAL_HEAD_RE =
+  /^\s*(?:i['’]?m sorry|i am sorry|sorry,|i can(?:no|['’])t|i (?:am|['’]m) (?:unable|not able)|i will not|i won['’]t|as an ai|unfortunately,? i|申し訳|このリクエストには|お応えできません|ご要望には)/i;
+const REFUSAL_PHRASE_RE =
+  /\b(?:cannot|can['’]t|unable to|not able to) (?:fulfill|comply with|help with|assist with|create|generate|produce)\b/i;
+
+export function looksLikeRefusal(text: string): boolean {
+  const head = text.trim().slice(0, 200);
+  return REFUSAL_HEAD_RE.test(head) || REFUSAL_PHRASE_RE.test(head);
+}
+
+// Gemini に断られたときの代わり（2026-10-01）: 同じ指示文を、動画生成と同じ GPU コンテナ内の Qwen（abliterated＝断らない
+// 調整）に渡して合成させる。日本語訳も同じ生成で書かせ、"===JA===" の後ろに置かせる（Advanced モードの台本生成と同じ書式。
+// ワーカー側が分割して combined_prompt / combined_prompt_ja へ書き戻す）。
+export function withJapaneseTranslationRequest(instruction: string): string {
+  return [
+    instruction,
+    "",
+    "After the English prompt, output a line containing only ===JA=== and then a natural, fluent Japanese translation of that English prompt (for the user to read). Output nothing else.",
+  ].join("\n");
+}
+
 // 2026-09-14: 一度「各シーンの時間配分をプロンプトへ明示的に書き込む」
 // (Scene N (0s-8s): ...) 方式を試したが、ホスト指摘により撤回した —
 // MiniMax H3（および調査した限りWan2.2等も含め、この種の単発呼び出し動画
@@ -55,7 +80,7 @@ export class DirectorPromptError extends Error {
 // 2026-09-14: シーンごとに「明確な場面転換」か「同じ場面内の継続」かを
 // ユーザーが選べるようにした（sceneChange フラグ、DirectorScene参照）。
 // 先頭シーンは「直前」が無いため常に継続扱い（[CONTINUE]）。
-function buildSceneDirectorPrompt(scenes: DirectorScene[], musicDirection?: string): string {
+export function buildSceneDirectorPrompt(scenes: DirectorScene[], musicDirection?: string): string {
   const sceneLines = scenes
     .map((s, i) => {
       const marker = i === 0 || s.sceneChange === false ? "[CONTINUE]" : "[SCENE CHANGE]";
@@ -110,8 +135,12 @@ export async function expandDirectorScenes(scenes: DirectorScene[], musicDirecti
     if (!cleaned) {
       throw new DirectorPromptError("プロンプトの合成に失敗しました（空の応答）。", "failed");
     }
+    if (looksLikeRefusal(cleaned)) {
+      throw new DirectorPromptError("AI がプロンプトの合成を断りました。", "refusal");
+    }
     return cleaned;
   } catch (err) {
+    if (err instanceof DirectorPromptError) throw err;
     if (isSafetyRefusal(err)) {
       throw new DirectorPromptError(
         "入力内容がAIの安全フィルターに引っかかり、プロンプトを生成できませんでした。表現を少し変えて再度お試しください。",
@@ -155,7 +184,8 @@ export async function translateDirectorPromptToJapanese(englishPrompt: string): 
       { feature: "director_prompt" },
     );
     const cleaned = raw.trim().replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
-    return cleaned || null;
+    // 断り文を「日本語訳」として画面に出さない。
+    return cleaned && !looksLikeRefusal(cleaned) ? cleaned : null;
   } catch (err) {
     console.error("[directorPrompt] translateDirectorPromptToJapanese failed:", err);
     return null;
@@ -182,33 +212,15 @@ export async function translateJapanesePromptToEnglish(japanesePrompt: string): 
   }
   const genAI = new GoogleGenerativeAI(apiKey);
   try {
-    const raw = await runGeminiText(
-      genAI,
-      [
-        "Translate the following Japanese video-generation prompt into natural, highly detailed English",
-        "optimized for a text-to-video model. Preserve all specific details (camera movements, actions, timing).",
-        "",
-        // 2026-09-19: buildSceneDirectorPrompt（シーンで作るモード）と同じ
-        // <d>[Language]...</d> 規約をここにも適用する。プロンプトモードは
-        // シーンビルダーと違いセリフ専用の入力欄が無く、ユーザーはこの
-        // タグの存在を知らずに普通の日本語文としてセリフを書く——それを
-        // 気付かずまとめて英訳すると、動画モデルへ渡る時点でセリフが英語に
-        // なってしまう（リップシンク自体も外れる）というバグがあったため
-        // 追加（ホスト報告）。
-        "If the prompt contains a line of dialogue that a character actually speaks out loud (e.g. text quoted with 「」or otherwise clearly spoken, such as a greeting or line of speech), do NOT translate that spoken line — keep its original Japanese words, and wrap it exactly as <d>[Japanese]...</d> at the point in the English prompt where the character speaks it. This is a literal syntax the video model requires for lip-synced speech, not a stylistic suggestion. Translate everything else (scene description, actions, camera direction, atmosphere) into English as normal. Never invent dialogue that isn't in the original prompt, and never change the actual wording or meaning of the dialogue line.",
-        // 2026-09-19: buildSceneDirectorPromptに追加したのと同じ読みやすさの
-        // 例外（全文ひらがな化は禁止・単語単位のみ）。
-        "Readability exception: within that Japanese dialogue line's exact words, you may rewrite an individual word into hiragana if it is prone to being misread by the video model's speech engine (a rare kanji reading, an ambiguous compound, an uncommon proper noun) — but leave ordinary, easily-read words in their natural kanji form. Do NOT rewrite the whole line into hiragana (this flattens natural pitch accent and sounds worse, not better).",
-        "Output ONLY the translated prompt (with any <d>[Japanese]...</d> tag embedded as described, if present) — no preamble, no extra quotes wrapping the whole output.",
-        "",
-        japanesePrompt,
-      ].join("\n"),
-      false,
-      { feature: "director_prompt" },
-    );
+    const raw = await runGeminiText(genAI, buildJapaneseTranslationPrompt(japanesePrompt), false, {
+      feature: "director_prompt",
+    });
     const cleaned = raw.trim().replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
     if (!cleaned) {
       throw new DirectorPromptError("プロンプトの翻訳に失敗しました（空の応答）。", "failed");
+    }
+    if (looksLikeRefusal(cleaned)) {
+      throw new DirectorPromptError("AI がプロンプトの翻訳を断りました。", "refusal");
     }
     return cleaned;
   } catch (err) {
@@ -233,4 +245,27 @@ export async function translateJapanesePromptToEnglish(japanesePrompt: string): 
     }
     throw new DirectorPromptError("プロンプトの翻訳に失敗しました。", "failed");
   }
+}
+
+/** プロンプトモードの日本語 → 英語の指示文（Gemini に断られたときは同じ文を Qwen に渡す）。 */
+export function buildJapaneseTranslationPrompt(japanesePrompt: string): string {
+  return [
+    "Translate the following Japanese video-generation prompt into natural, highly detailed English",
+    "optimized for a text-to-video model. Preserve all specific details (camera movements, actions, timing).",
+    "",
+    // 2026-09-19: buildSceneDirectorPrompt（シーンで作るモード）と同じ
+    // <d>[Language]...</d> 規約をここにも適用する。プロンプトモードは
+    // シーンビルダーと違いセリフ専用の入力欄が無く、ユーザーはこの
+    // タグの存在を知らずに普通の日本語文としてセリフを書く——それを
+    // 気付かずまとめて英訳すると、動画モデルへ渡る時点でセリフが英語に
+    // なってしまう（リップシンク自体も外れる）というバグがあったため
+    // 追加（ホスト報告）。
+    "If the prompt contains a line of dialogue that a character actually speaks out loud (e.g. text quoted with 「」or otherwise clearly spoken, such as a greeting or line of speech), do NOT translate that spoken line — keep its original Japanese words, and wrap it exactly as <d>[Japanese]...</d> at the point in the English prompt where the character speaks it. This is a literal syntax the video model requires for lip-synced speech, not a stylistic suggestion. Translate everything else (scene description, actions, camera direction, atmosphere) into English as normal. Never invent dialogue that isn't in the original prompt, and never change the actual wording or meaning of the dialogue line.",
+    // 2026-09-19: buildSceneDirectorPromptに追加したのと同じ読みやすさの
+    // 例外（全文ひらがな化は禁止・単語単位のみ）。
+    "Readability exception: within that Japanese dialogue line's exact words, you may rewrite an individual word into hiragana if it is prone to being misread by the video model's speech engine (a rare kanji reading, an ambiguous compound, an uncommon proper noun) — but leave ordinary, easily-read words in their natural kanji form. Do NOT rewrite the whole line into hiragana (this flattens natural pitch accent and sounds worse, not better).",
+    "Output ONLY the translated prompt (with any <d>[Japanese]...</d> tag embedded as described, if present) — no preamble, no extra quotes wrapping the whole output.",
+    "",
+    japanesePrompt,
+  ].join("\n");
 }

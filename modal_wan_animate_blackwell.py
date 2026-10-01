@@ -1905,6 +1905,44 @@ class WanAnimateBlackwell:
                 except Exception:  # noqa: BLE001
                     pass
 
+    def _generate_director_text(self, instruction: str) -> dict:
+        """Gemini に断られたときの代わり（2026-10-01）: Next.js が Gemini に渡すはずだった指示文
+        （src/lib/directorPrompt.ts の buildSceneDirectorPrompt / buildJapaneseTranslationPrompt に、
+        日本語訳を "===JA===" の後ろへ書かせる一文を足したもの）を、画像なしでそのまま Qwen に渡す。
+        戻り値は _generate_director_script と同じ {"en", "ja"}。"""
+        import torch
+
+        self._ensure_qwen_loaded()
+        messages = [{"role": "user", "content": [{"type": "text", "text": instruction}]}]
+        processor = self._qwen_processor
+        # thinking を切る理由は _generate_director_script と同じ（独り言で max_new_tokens を使い切る）。
+        try:
+            text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
+        except TypeError:
+            text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = processor(text=[text], padding=True, return_tensors="pt").to(self._qwen_model.device)
+        with torch.inference_mode():
+            generated = self._qwen_model.generate(**inputs, max_new_tokens=1200, do_sample=True, temperature=0.7, top_p=0.9)
+        trimmed = generated[:, inputs["input_ids"].shape[1] :]
+        raw = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+        full = raw.strip().strip('"')
+        if not full:
+            raise RuntimeError("empty response from the VLM")
+        if "===JA===" in full:
+            en_part, ja_part = full.split("===JA===", 1)
+        else:
+            en_part, ja_part = full, ""
+        en = en_part.strip().strip('"')
+        print(f"[director-text] synthesized {len(en)} chars (ja {len(ja_part.strip())} chars)", flush=True)
+        return {"en": en, "ja": ja_part.strip().strip('"')}
+
+    @modal.method()
+    def probe_director_text(self, instruction: str) -> dict:
+        """_generate_director_text の実機検証用（2026-10-01）。ComfyUI は一切通さない。GPU 課金あり。"""
+        started = time.time()
+        out = self._generate_director_text(instruction)
+        return {**out, "elapsed_s": round(time.time() - started, 1)}
+
     @modal.method()
     def probe_director_script(self, image_b64: str, concept_text: str, duration_s: float = 15) -> dict:
         """Advanced台本生成の実機検証用（2026-09-18）。_generate_director_script
@@ -1938,6 +1976,7 @@ class WanAnimateBlackwell:
         director_inputs_snapshot: dict = None,
         lora_volume_path: str = None,
         lora_filename: str = None,
+        qwen_text_instruction: str = None,
     ) -> dict:
         """
         Generic counterpart to generate_video for admin-authored Custom
@@ -2002,13 +2041,19 @@ class WanAnimateBlackwell:
             # B300コンテナが起動済みであることを利用し、ComfyUI本体を動かす
             # 前にこの同一コンテナ内でVLMを使って台本を書き起こし、
             # workflow の該当ノードの prompt を上書きする。
-            if qwen_concept_text and qwen_prompt_node_id:
+            # 2026-10-01: qwen_text_instruction（Gemini にシーン合成／英訳を断られたとき、Next.js が Gemini に渡すはずだった
+            # 指示文をそのまま送ってくる）も同じ Qwen で文章だけ合成し、同じ書き戻しに乗せる。Gemini の断り文が
+            # そのまま動画の指示になり、入力と無関係な動画で課金された実例があった（ジョブ 05627a3b・0001c776）。
+            if (qwen_concept_text or qwen_text_instruction) and qwen_prompt_node_id:
                 if is_async:
                     _supabase_patch_job(job_id, {"progress_message": "台本を執筆中..."})
-                ref_image_bytes = files[0][1] if files else None
-                if not ref_image_bytes:
-                    raise RuntimeError("qwen_concept_text requires at least one reference file")
-                script = self._generate_director_script(ref_image_bytes, qwen_concept_text, qwen_duration_s or 15)
+                if qwen_text_instruction:
+                    script = self._generate_director_text(qwen_text_instruction)
+                else:
+                    ref_image_bytes = files[0][1] if files else None
+                    if not ref_image_bytes:
+                        raise RuntimeError("qwen_concept_text requires at least one reference file")
+                    script = self._generate_director_script(ref_image_bytes, qwen_concept_text, qwen_duration_s or 15)
                 if qwen_prompt_node_id not in workflow:
                     raise RuntimeError(f"qwen_prompt_node_id {qwen_prompt_node_id!r} not found in workflow")
                 workflow[qwen_prompt_node_id]["inputs"]["prompt"] = script["en"]
@@ -2196,6 +2241,7 @@ def custom_workflow_async(item: dict, request: fastapi.Request):
         item.get("director_inputs_snapshot"),
         item.get("lora_volume_path"),
         item.get("lora_filename"),
+        item.get("qwen_text_instruction"),
     )
     return {"ok": True, "job_id": job_id, "call_id": call.object_id}
 

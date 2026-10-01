@@ -26,6 +26,12 @@ export type SpawnDirectorJobParams = {
    * （別GPUを新たに起動しないための設計 — 2つ目のコールドスタートを避ける）。
    */
   qwenConceptText?: string;
+  /**
+   * Gemini にシーン合成／英訳を断られたとき（2026-10-01）の代わり。Gemini に渡すはずだった指示文そのもの
+   * （＋日本語訳を "===JA===" の後ろに書かせる一文）。qwenPromptNodeId とセットで渡すと、ワーカーが同じ B300 コンテナ内の
+   * Qwen（abliterated）で文章だけ合成して workflow のプロンプトを上書きし、combined_prompt(_ja) を書き戻す。
+   */
+  qwenTextInstruction?: string;
   qwenPromptNodeId?: string;
   qwenDurationS?: number;
   /** generation_jobs.inputs の元スナップショット（Advancedモードでワーカー側が
@@ -68,6 +74,7 @@ export async function spawnDirectorJob(params: SpawnDirectorJobParams): Promise<
       skip_torch_compile: true,
       poll_deadline_s: params.pollDeadlineS,
       qwen_concept_text: params.qwenConceptText,
+      qwen_text_instruction: params.qwenTextInstruction,
       qwen_prompt_node_id: params.qwenPromptNodeId,
       qwen_duration_s: params.qwenDurationS,
       director_inputs_snapshot: params.directorInputsSnapshot,
