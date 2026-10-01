@@ -99,6 +99,7 @@ angle_test_tuned2/
 # 紹介動画（Remotion）
 /promo/node_modules/
 /promo/out/
+/promo/.rec-profile/
 
 /promo/public/*
 !/promo/public/.gitkeep

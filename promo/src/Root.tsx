@@ -2,6 +2,7 @@ import { Composition, Series } from "remotion";
 import { assets } from "./assets";
 import { BaseViews, ClipMontage, DatasetGrid, Hook, Outro, Screen, Source, StepCompare, UpscaleCompare } from "./scenes";
 import { FPS, sec } from "./theme";
+import { Tutorial, calculateTutorialMetadata, type TutorialProps } from "./tutorial/Tutorial";
 
 // 尺は docs/promo-video-storyboard.md の表に合わせる。秒を変えたら合計（durationInFrames）も揃うよう total() で数える。
 type Part = { s: number; el: React.ReactNode };
@@ -57,6 +58,17 @@ export const Root = () => (
       id="Landscape"
       component={() => render(landscapeParts)}
       durationInFrames={total(landscapeParts)}
+      fps={FPS}
+      width={1920}
+      height={1080}
+    />
+    {/* C. 操作動画。録画は scripts/record.mjs → public/rec/<session>/。--props='{"session":"dataset"}' で切り替え */}
+    <Composition
+      id="Tutorial"
+      component={Tutorial}
+      calculateMetadata={calculateTutorialMetadata}
+      defaultProps={{ session: "demo" } as TutorialProps}
+      durationInFrames={1}
       fps={FPS}
       width={1920}
       height={1080}
