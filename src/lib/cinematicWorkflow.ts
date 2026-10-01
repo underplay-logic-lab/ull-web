@@ -254,6 +254,11 @@ export type BuildCinematicWorkflowParams = {
   loraName?: string;
   /** ユーザーLoRAの強度（既定1.0）。 */
   loraStrength?: number;
+  /**
+   * 動画のシード（2026-10-01〜。route が決めて inputs.seed に残し、「作り直す」で引き継ぐ）。
+   * 省略時はランダム。同じシード＋同じ入力だと ComfyUI のキャッシュで前の結果がそのまま返る（下のコメント）。
+   */
+  seed?: number;
 };
 
 export function buildCinematicWorkflow({
@@ -267,6 +272,7 @@ export function buildCinematicWorkflow({
   jobId,
   loraName,
   loraStrength,
+  seed,
 }: BuildCinematicWorkflowParams): CinematicWorkflow {
   const workflow = structuredClone(WORKFLOW_TEMPLATE) as unknown as CinematicWorkflow;
 
@@ -296,7 +302,7 @@ export function buildCinematicWorkflow({
   // same inputs) hits ComfyUI's node-level execution cache and returns a
   // previously-generated result instantly instead of actually sampling
   // (confirmed while benchmarking this exact graph).
-  workflow["105:15"].inputs.noise_seed = Math.floor(Math.random() * 2 ** 32);
+  workflow["105:15"].inputs.noise_seed = seed ?? Math.floor(Math.random() * 2 ** 32);
 
   // ユーザー選択LoRA（2026-09-18導入）— UNETLoader(105:6)の直後、ターボLoRA/
   // VDN-H3より手前に差し込む（コミュニティのComfyUIワークフロー例が使っていた

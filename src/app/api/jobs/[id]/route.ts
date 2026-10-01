@@ -177,6 +177,9 @@ export async function GET(request: Request, { params }: RouteParams) {
   const inputs = (effJob.inputs ?? null) as Record<string, unknown> | null;
   const combinedPrompt = typeof inputs?.combined_prompt === "string" ? inputs.combined_prompt : null;
   const combinedPromptJa = typeof inputs?.combined_prompt_ja === "string" ? inputs.combined_prompt_ja : null;
+  // Director の「作り直す」（2026-10-01〜）: シードと、元の参照画像が記録されているか（古いジョブには無い）。
+  const seed = typeof inputs?.seed === "number" ? inputs.seed : null;
+  const regenerable = typeof inputs?.reference_storage_path === "string" && Boolean(combinedPrompt);
 
   // Director（2026-09-18〜）は video_url にSupabase公開URLではなく
   // Volume相対パス（director_results/<user_id>/<job_id>.mp4）を保存する
@@ -209,6 +212,8 @@ export async function GET(request: Request, { params }: RouteParams) {
     metadata: effJob.metadata ?? null,
     combinedPrompt,
     combinedPromptJa,
+    seed,
+    regenerable,
     retryCount: typeof effJob.retry_count === "number" ? effJob.retry_count : 0,
     ...(queue
       ? {

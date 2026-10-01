@@ -125,6 +125,41 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
   };
 }
 
+/**
+ * 完了した動画を元に作り直す（2026-10-01〜）。参照画像・台本・尺・LoRA はサーバーが元のジョブから引き継ぐ。
+ *   new_seed  … 別パターン（台本はそのまま、揺れだけ変える）
+ *   same_seed … この動画をもとに調整（同じシードで、rawPrompt を書き換えたり画質を変えたりする）
+ */
+export async function regenerateDirectorJob(args: {
+  baseJobId: string;
+  variation: "new_seed" | "same_seed";
+  rawPrompt?: string;
+  rawDurationS?: number;
+  quality?: DirectorQualityMode;
+  priority?: boolean;
+}): Promise<DirectorStartResult> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) throw new Error("ログインが必要です。");
+  const res = await fetch("/api/director/generate", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ ...args, priority: args.priority ?? false }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    const error: DirectorApiError = new Error(data?.error || "動画生成に失敗しました。");
+    if (typeof data?.remainingCredits === "number") error.remainingCredits = data.remainingCredits;
+    throw error;
+  }
+  return {
+    jobId: data.jobId as string,
+    creditsCost: data.creditsCost as number,
+    remainingCredits: data.remainingCredits as number,
+    totalDurationS: data.totalDurationS as number,
+  };
+}
+
 // 外部LoRA（.safetensors）アップロード（2026-09-18導入・同日中に設計変更）。
 // 当初 Supabase Storage 経由だったが、Freeプランのグローバルアップロード
 // 上限（プロジェクト全体で50MB固定、バケット単位のfile_size_limitとは別物で
@@ -395,6 +430,12 @@ export type DirectorJobStatus = {
   outHeight: number | null;
   combinedPrompt: string | null;
   combinedPromptJa: string | null;
+  /** 動画のシード（2026-10-01〜のジョブだけ）。 */
+  seed: number | null;
+  /** 「作り直す」が使えるか（参照画像と台本が記録されている）。 */
+  regenerable: boolean;
+  /** 生成時の画質（metadata.quality_mode）。作り直しの料金表示に使う。 */
+  quality: DirectorQualityMode | null;
   totalDurationS: number | null;
   queue: { queuePosition: number; avgExecutionSeconds: number; estimatedWaitSeconds: number } | null;
 };
@@ -425,6 +466,7 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
     total_duration_s?: unknown;
     out_width?: unknown;
     out_height?: unknown;
+    quality_mode?: unknown;
   };
   const vramUsedGb =
     typeof meta.vram_used_gb === "number" && Number.isFinite(meta.vram_used_gb) ? meta.vram_used_gb : null;
@@ -439,6 +481,9 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
     outHeight: typeof meta.out_height === "number" ? meta.out_height : null,
     combinedPrompt: (data.combinedPrompt as string | null) ?? null,
     combinedPromptJa: (data.combinedPromptJa as string | null) ?? null,
+    seed: typeof data.seed === "number" ? data.seed : null,
+    regenerable: data.regenerable === true,
+    quality: meta.quality_mode === "fast" || meta.quality_mode === "quality" ? meta.quality_mode : null,
     totalDurationS: typeof meta.total_duration_s === "number" ? meta.total_duration_s : null,
     queue:
       typeof data.queuePosition === "number"

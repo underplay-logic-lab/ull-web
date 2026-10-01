@@ -73,6 +73,47 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "リクエストの形式が正しくありません。" }, { status: 400 });
   }
 
+  // 作り直し（2026-10-01、ホスト要望）: 完了した動画を元に、同じ台本（AI が書いた最終の指示文＝combined_prompt）で作り直す。
+  // 参照画像・尺・LoRA は元のジョブから引き継ぐので、再読み込み後でも画像を入れ直さずに押せる。
+  //   variation "new_seed"  … 別パターン（台本はそのまま、揺れだけ変える）
+  //   variation "same_seed" … この動画をもとに調整（同じシードで、編集した rawPrompt や画質を変えて作り直す）
+  // 台本は AI が毎回書き直すので、シードだけ固定しても再現しない。台本ごと引き継ぐのはそのため。
+  const baseJobId = typeof body.baseJobId === "string" ? body.baseJobId : "";
+  let reusingScript = false;
+  if (baseJobId) {
+    const { data: baseJob } = await supabaseAdmin
+      .from("generation_jobs")
+      .select("status, inputs")
+      .eq("id", baseJobId)
+      .eq("user_id", user.id)
+      .eq("workflow_type", "director")
+      .maybeSingle();
+    const bi = (baseJob?.inputs ?? null) as Record<string, unknown> | null;
+    const refPath = typeof bi?.reference_storage_path === "string" ? bi.reference_storage_path : "";
+    const basePrompt = typeof bi?.combined_prompt === "string" ? bi.combined_prompt : "";
+    if (!bi || baseJob?.status !== "completed" || !refPath || !basePrompt) {
+      return NextResponse.json({ error: "この動画からは作り直せません。新しく生成してください。" }, { status: 400 });
+    }
+    const edited = typeof body.rawPrompt === "string" ? body.rawPrompt.trim() : "";
+    reusingScript = !edited;
+    body = {
+      storagePath: refPath,
+      rawPrompt: edited || basePrompt,
+      rawDurationS: typeof body.rawDurationS === "number" ? body.rawDurationS : bi.total_duration_s,
+      quality: isDirectorQualityMode(body.quality) ? body.quality : bi.quality_mode,
+      priority: body.priority,
+      ...(typeof bi.lora_id === "string" && bi.lora_id ? { loraId: bi.lora_id } : {}),
+      ...(typeof bi.lora_upload_volume_path === "string" && bi.lora_upload_volume_path
+        ? { loraUploadVolumePath: bi.lora_upload_volume_path }
+        : {}),
+      ...(body.variation === "same_seed" && typeof bi.seed === "number" ? { seed: bi.seed } : {}),
+    };
+  }
+  const seed =
+    typeof body.seed === "number" && Number.isInteger(body.seed) && body.seed > 0 && body.seed < 2 ** 32
+      ? body.seed
+      : 1 + Math.floor(Math.random() * (2 ** 32 - 1));
+
   const storagePath = typeof body.storagePath === "string" ? body.storagePath : "";
   if (!storagePath) {
     return NextResponse.json({ error: "参照画像をアップロードしてください。" }, { status: 400 });
@@ -280,7 +321,8 @@ export async function POST(request: Request) {
   if (isAdvancedMode) {
     combinedPrompt = conceptTextInput;
   } else if (isPromptMode) {
-    if (looksJapanese(rawPromptInput)) {
+    // 作り直しで台本をそのまま使うときは訳し直さない（セリフが日本語でも、訳し直すと台本が変わる）。
+    if (!reusingScript && looksJapanese(rawPromptInput)) {
       try {
         combinedPrompt = await translateJapanesePromptToEnglish(rawPromptInput);
       } catch (err) {
@@ -350,6 +392,12 @@ export async function POST(request: Request) {
     music_direction: musicDirectionInput || null,
     lora_name: loraName || null,
     lora_source: loraIdRaw ? "trained" : loraUploadVolumePathRaw ? "upload" : null,
+    // 作り直し用（2026-10-01〜）。これが無い古いジョブからは作り直せない。
+    seed,
+    reference_storage_path: storagePath,
+    lora_id: loraIdRaw || null,
+    lora_upload_volume_path: loraUploadVolumePathRaw || null,
+    base_job_id: baseJobId || null,
   };
   // 出力解像度（2026-09-24、ホスト「生成後の解像度がわからないので記載して」）。
   // buildCinematicWorkflow と同じ式で先に決め、metadata に残して完了画面が読む。
@@ -418,6 +466,7 @@ export async function POST(request: Request) {
     rawImageHeight: rawDims?.height,
     jobId,
     loraName,
+    seed,
   });
 
   try {
@@ -447,13 +496,15 @@ export async function POST(request: Request) {
       .update({ status: "failed", error_message: message.slice(0, 2000) })
       .eq("id", jobId);
     await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+    // 作り直しのときは元のジョブの参照画像なので消さない（元から作り直せなくなる）。
+    if (!baseJobId) deleteStudioUploads([storagePath]);
     return NextResponse.json(
       { error: "生成の開始に失敗しました。", remainingCredits: currentCredits },
       { status: 502 },
     );
-  } finally {
-    deleteStudioUploads([storagePath]);
   }
+  // 参照画像は成功しても消さない（2026-10-01〜）: 「作り直す」で同じ画像を使うため。
+  // 置き場（R2 の持ち込み・Volume の studio_uploads）はどちらも 14 日で自動削除される。
 
   return NextResponse.json({
     jobId,

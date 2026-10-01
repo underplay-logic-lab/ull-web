@@ -16,6 +16,7 @@ import {
   ImagePlus,
   LogIn,
   Pencil,
+  RefreshCw,
   Plus,
   Sparkles,
   Trash2,
@@ -48,6 +49,7 @@ import {
   pollDirectorJob,
   DirectorJobNotFoundError,
   startDirectorJob,
+  regenerateDirectorJob,
   downloadDirectorVideo,
   listDirectorLoras,
   uploadDirectorLoraFile,
@@ -276,6 +278,11 @@ function CopyButton({ text, label }: { text: string; label: string }) {
   );
 }
 
+/** 保存するファイル名。シードが分かれば入れる（あとでどの条件の動画か分かるように、2026-10-01〜）。 */
+function directorFilename(seed: number | null): string {
+  return seed ? `ull_cinematic_director_s${seed}.mp4` : "ull_cinematic_director.mp4";
+}
+
 export function DirectorStudioTab() {
   const { user } = useSupabaseUser();
   const { credits, loading: creditsLoading } = useProfileCredits(user);
@@ -317,6 +324,9 @@ export function DirectorStudioTab() {
   const [uiMode, setUiMode] = useState<UiMode>("scenes");
   const [promptDraft, setPromptDraft] = useState("");
   const [promptDraftDurationS, setPromptDraftDurationS] = useState(DIRECTOR_SECONDS_PER_SCENE);
+  // 「この動画をもとに調整する」（2026-10-01〜）: 完了した動画から入ったときだけ持つ。
+  // この間は元の動画と同じシード・同じ参照画像で作り直す（画像の入れ直しは不要）。
+  const [adjustBase, setAdjustBase] = useState<{ jobId: string; seed: number | null } | null>(null);
 
   // Advanced モード（2026-09-18追加。TODO(advanced-gate): 月額プラン限定に
   // する場合はこのモードを選べる条件をここに追加する — 今回は未実装）。
@@ -466,6 +476,15 @@ export function DirectorStudioTab() {
         rawDurationS: number;
         quality: DirectorQualityMode;
         lora: DirectorLoraSelection;
+      }
+    | {
+        // 完了した動画から作り直す（参照画像・台本・LoRA はサーバーが元のジョブから引き継ぐ）。
+        uiMode: "regen";
+        baseJobId: string;
+        variation: "new_seed" | "same_seed";
+        rawPrompt?: string;
+        rawDurationS?: number;
+        quality?: DirectorQualityMode;
       };
   // 2026-09-23: 予約は 1 件 → 先入れ先出しのリスト（Multi-Angle と同じ。1 件だと
   // 後の予約が前の予約を黙って上書きする）。順番待ちは無料なので件数上限は無し。
@@ -545,9 +564,14 @@ export function DirectorStudioTab() {
     if (!job?.combinedPrompt) return;
     setPromptDraft(job.combinedPromptJa || job.combinedPrompt);
     setPromptDraftDurationS(job.totalDurationS ?? DIRECTOR_SECONDS_PER_SCENE);
+    setAdjustBase(job.status === "completed" && job.regenerable ? { jobId: job.jobId, seed: job.seed } : null);
+    if (job.quality) setQualityMode(job.quality);
     setUiMode("prompt");
   }, [job]);
-  const exitPromptMode = useCallback(() => setUiMode("scenes"), []);
+  const exitPromptMode = useCallback(() => {
+    setAdjustBase(null);
+    setUiMode("scenes");
+  }, []);
 
   // LoRAのソースを選んだのに中身（選択/アップロード完了）が無いままだと、
   // 意図せず「なし」で生成されてしまう——選んだ以上は完了させてから送信
@@ -559,8 +583,9 @@ export function DirectorStudioTab() {
 
   // 不足していれば入力が揃う前でもチャージへ案内する（他タブと同じ。2026-09-28）。実行中は順番待ちを選べるので出さない。
   const chargeFirst = insufficientCredits && !busy;
+  const adjusting = uiMode === "prompt" && adjustBase !== null;
   const canRun =
-    Boolean(image) &&
+    (Boolean(image) || adjusting) &&
     cost > 0 &&
     !loraSelectionIncomplete &&
     (uiMode === "prompt"
@@ -570,6 +595,16 @@ export function DirectorStudioTab() {
         : scenes.every((s) => s.text.trim().length > 0));
 
   const buildSnapshot = (): QueuedSnapshot | null => {
+    if (adjusting && adjustBase) {
+      return {
+        uiMode: "regen",
+        baseJobId: adjustBase.jobId,
+        variation: "same_seed",
+        rawPrompt: promptDraft.trim(),
+        rawDurationS: promptDraftDurationS,
+        quality: qualityMode,
+      };
+    }
     if (!image) return null;
     if (uiMode === "prompt") {
       return {
@@ -629,6 +664,18 @@ export function DirectorStudioTab() {
     setQueueChoiceOpen(false);
   };
 
+  // 「別パターンで作り直す」: 台本・参照画像・尺・LoRA・画質はそのまま、シードだけ変える。
+  // 前の動画は「前回の結果」として並べて見比べられるよう continuation で出す。
+  const regenCost =
+    job?.regenerable && job.totalDurationS
+      ? directorCostBreakdownForDuration({ totalDurationS: job.totalDurationS, mode: job.quality ?? qualityMode, knobs }).credits
+      : 0;
+  const handleRegenerate = () => {
+    if (!user || !job?.regenerable || busy) return;
+    if (!creditsLoading && (credits ?? 0) < regenCost) return setChargeOpen(true);
+    void runGenerate({ uiMode: "regen", baseJobId: job.jobId, variation: "new_seed" }, { continuation: true });
+  };
+
   const handleCancelQueue = () => {
     queuedNextRef.current = [];
     setQueuedNext([]);
@@ -661,7 +708,16 @@ export function DirectorStudioTab() {
 
       try {
         const res =
-          snapshot.uiMode === "prompt"
+          snapshot.uiMode === "regen"
+            ? await regenerateDirectorJob({
+                baseJobId: snapshot.baseJobId,
+                variation: snapshot.variation,
+                rawPrompt: snapshot.rawPrompt,
+                rawDurationS: snapshot.rawDurationS,
+                quality: snapshot.quality,
+                priority: opts.priority,
+              })
+            : snapshot.uiMode === "prompt"
             ? await startDirectorJob({
                 userId: user.id,
                 image: snapshot.image,
@@ -692,7 +748,7 @@ export function DirectorStudioTab() {
                 });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
         {
-          const entry: StudioSessionEntry = { id: res.jobId, createdAt: new Date().toISOString(), label: snapshot.image instanceof File ? snapshot.image.name : "" };
+          const entry: StudioSessionEntry = { id: res.jobId, createdAt: new Date().toISOString(), label: snapshot.uiMode === "regen" ? "作り直し" : snapshot.image instanceof File ? snapshot.image.name : "" };
           commitSession([...sessionJobsRef.current.filter((e) => e.id !== res.jobId), entry]);
           freshJobIdRef.current = opts.continuation ? null : res.jobId;
         }
@@ -735,7 +791,7 @@ export function DirectorStudioTab() {
             if (sawInProgress) markGpuWarm();
             const videoUrl = next.videoUrl;
             if (videoUrl && takeAutoDownload(jobId)) {
-              runAutoDownload("DirectorStudioTab", () => downloadDirectorVideo(videoUrl, "ull_cinematic_director.mp4"));
+              runAutoDownload("DirectorStudioTab", () => downloadDirectorVideo(videoUrl, directorFilename(next.seed)));
             }
             // 改めて生成したジョブが完了したら、前の「今回の生成」を消して
             // このジョブ 1 件から始める（確認時点では消さない）。
@@ -875,6 +931,20 @@ export function DirectorStudioTab() {
                 シーンモードに戻る
               </button>
             </div>
+            {adjustBase && (
+              <div className="mb-2 flex items-start justify-between gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-[11px] leading-relaxed text-foreground">
+                <span>
+                  元の動画と同じシード・同じ参照画像で作り直します（画像の入れ直しは不要）。文章・尺・画質を変えた分だけ結果が変わります。
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setAdjustBase(null)}
+                  className="shrink-0 text-muted underline transition-colors hover:text-foreground"
+                >
+                  解除
+                </button>
+              </div>
+            )}
             <textarea
               value={promptDraft}
               onChange={(e) => setPromptDraft(e.target.value)}
@@ -1354,7 +1424,7 @@ export function DirectorStudioTab() {
               onClick={async () => {
                 const url = await freshVideoUrl();
                 if (!url) return;
-                downloadDirectorVideo(url, "ull_cinematic_director.mp4").catch((err) => {
+                downloadDirectorVideo(url, directorFilename(job.seed)).catch((err) => {
                   console.error("[DirectorStudioTab] download failed:", err);
                   setErrorMessage("ダウンロードに失敗しました。");
                 });
@@ -1364,13 +1434,24 @@ export function DirectorStudioTab() {
               <Download size={14} />
               ダウンロード
             </button>
+            {job.regenerable && (
+              <button
+                type="button"
+                onClick={handleRegenerate}
+                disabled={busy}
+                className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-neon-violet/40 disabled:opacity-50"
+              >
+                <RefreshCw size={14} />
+                別パターンで作り直す（同じ台本・{regenCost}C）
+              </button>
+            )}
             <button
               type="button"
               onClick={async () => {
                 const url = await freshVideoUrl();
                 if (!url) return;
                 requestStudioHandoff(
-                  { kind: "video", url, filename: "ull_cinematic_director.mp4", source: "Cinematic Director" },
+                  { kind: "video", url, filename: directorFilename(job.seed), source: "Cinematic Director" },
                   "upscale_video",
                 );
               }}
@@ -1398,7 +1479,7 @@ export function DirectorStudioTab() {
           key={peekId}
           kind="video"
           resolveUrl={async () => (await pollDirectorJob(peekId)).videoUrl}
-          onDownload={(url) => downloadDirectorVideo(url, "ull_cinematic_director.mp4")}
+          onDownload={async (url) => downloadDirectorVideo(url, directorFilename((await pollDirectorJob(peekId)).seed))}
           onClose={() => setPeekId(null)}
         />
       )}
@@ -1458,7 +1539,11 @@ export function DirectorStudioTab() {
                 className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-neon-violet/40"
               >
                 <Pencil size={14} />
-                {phase === "done" ? "このプロンプトを編集して再生成" : "このプロンプトを編集して次を予約"}
+                {phase !== "done"
+                  ? "このプロンプトを編集して次を予約"
+                  : job.regenerable
+                    ? "この動画をもとに調整する（同じシード）"
+                    : "このプロンプトを編集して再生成"}
               </button>
             </div>
           </div>
