@@ -74,7 +74,7 @@ export function Hero() {
           <EditableLink
             siteKey="hero_ii_cta_primary_href"
             fallback="#studio"
-            className="group flex items-center gap-2 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-8 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 glow-pink"
+            className="group flex items-center gap-2 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-8 py-3.5 text-sm font-semibold text-background transition-all hover:opacity-90 glow-pink"
           >
             <LogIn size={16} />
             <EditableText siteKey="hero_ii_cta_primary" fallback="ログイン / スタジオを開く" />

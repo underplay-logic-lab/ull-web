@@ -156,7 +156,7 @@ export default function ComfyUiLoadingPage() {
             <a
               href={COMFYUI_DEV_URL}
               rel="noreferrer"
-              className="mt-6 flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+              className="mt-6 flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-2.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
             >
               <ExternalLink size={15} />
               手動で開く

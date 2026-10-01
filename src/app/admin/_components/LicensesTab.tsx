@@ -353,7 +353,7 @@ export function LicensesTab() {
           type="button"
           onClick={() => void create()}
           disabled={creating || !licensee.trim() || !publicKey}
-          className="mt-3 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+          className="mt-3 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2 text-sm font-semibold text-background hover:opacity-90 disabled:opacity-50"
         >
           発行する
         </button>

@@ -449,7 +449,7 @@ export function CandidatePanel({
                 onError={() => refreshUrl(j, i)}
               />
               {on && (
-                <span className="absolute right-1 top-1 rounded-full bg-neon-pink p-0.5 text-white">
+                <span className="absolute right-1 top-1 rounded-full bg-neon-pink p-0.5 text-background">
                   <Check size={11} />
                 </span>
               )}

@@ -516,7 +516,7 @@ export function WanAnimateTab() {
                         {preset.title}
                       </span>
                       {isSelected && (
-                        <span className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-neon-pink text-white">
+                        <span className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-neon-pink text-background">
                           <Check size={12} />
                         </span>
                       )}

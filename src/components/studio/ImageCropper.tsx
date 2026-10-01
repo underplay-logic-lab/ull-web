@@ -125,7 +125,7 @@ export function ImageCropper({ open, imageUrl, initialAspect = "16:9", onCancel,
           type="button"
           onClick={handleConfirm}
           disabled={!croppedAreaPixels || confirming}
-          className="mx-auto flex items-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-8 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="mx-auto flex items-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-8 py-3 text-sm font-semibold text-background transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Check size={16} />
           {confirming ? "処理中..." : "確定"}

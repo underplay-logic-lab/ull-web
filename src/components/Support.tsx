@@ -187,7 +187,7 @@ export function Support() {
                     type="button"
                     onClick={() => void sendNote()}
                     disabled={noteBusy || !note.trim()}
-                    className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                    className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2 text-sm font-semibold text-background hover:opacity-90 disabled:opacity-50"
                   >
                     {noteBusy ? <Loader2 size={14} className="animate-spin" /> : <MessageSquare size={14} />}
                     ひとことを送る
@@ -249,7 +249,7 @@ export function Support() {
             type="button"
             onClick={() => void submit()}
             disabled={!amountValid || busy}
-            className="mt-6 inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-7 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="mt-6 inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-7 py-3 text-sm font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             {busy ? <Loader2 size={16} className="animate-spin" /> : <Heart size={16} />}
             {amountValid ? `¥${amount.toLocaleString()} を支援する` : "金額を選んでください"}

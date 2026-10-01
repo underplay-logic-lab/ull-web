@@ -2,24 +2,26 @@ import { ImageResponse } from "next/og";
 
 // リンクを貼ったときのカード画像（OGP、2026-10-01 ローンチ日に追加）。Discord・X・LINE 等で表示される。
 // 作例の画像に差し替えたくなったら、このファイルを消して同じ場所に opengraph-image.png（1200×630）を置けばよい。
-// 日本語は Noto Sans JP（OFL・商用可）を Google Fonts から使う文字だけ取得。取れなければ英語だけで描く。
+// 書体は Fraunces と Noto Serif JP（どちらも OFL・商用可）を Google Fonts から使う文字だけ取得。取れなければ代わりの書体で描く。
 // 基盤モデル名・GPU 型番は書かない（CLAUDE.md §2）。
 
-export const alt = "ULL Studio — やりたいことが叶う、AI 映像・画像スタジオ";
+export const alt = "ULL Studio — 声が届く距離の、映像スタジオ";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
-const TITLE = "ULL Studio";
-const LINE1 = "やりたいことが叶う、AI 映像・画像スタジオ";
-const LINE2 = "画像 1 枚から、自分だけの LoRA と動画まで。ブラウザだけで。";
-const FALLBACK_LINE = "AI video & image studio in your browser";
-const URL_LINE = "www.ullstudio.com";
+// 2026-10-01 ブランド刷新: 黒 × 明朝の文字だけ（SNS の素材 promo/brand/render.mjs と同じ組み方）。
+const BG = "#0b0b0c";
+const FG = "#ecebe7";
+const MUTED = "#77756f";
+const LINE1 = "声が届く距離の、映像スタジオ。";
+const LINE2 = "画像 1 枚から、自分だけの LoRA と動画まで。";
+const URL_LINE = "ullstudio.com";
 
-async function loadJapaneseFont(text: string): Promise<ArrayBuffer | null> {
+// Google Fonts から使う文字だけ取る。User-Agent を付けないと TrueType が返る（satori は woff2 を読めない）。
+async function loadFont(family: string, text: string): Promise<ArrayBuffer | null> {
   try {
-    // User-Agent を付けないと TrueType が返る（satori は woff2 を読めない）。
     const css = await (
-      await fetch(`https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@700&text=${encodeURIComponent(text)}`)
+      await fetch(`https://fonts.googleapis.com/css2?family=${family}&text=${encodeURIComponent(text)}`)
     ).text();
     const url = css.match(/src:\s*url\(([^)]+)\)/)?.[1];
     if (!url) return null;
@@ -32,7 +34,15 @@ async function loadJapaneseFont(text: string): Promise<ArrayBuffer | null> {
 
 export default async function OpengraphImage() {
   // 画像に出す文字は全部渡す（渡し漏れた文字は別の書体で描かれて太さがちぐはぐになる）。
-  const font = await loadJapaneseFont(TITLE + LINE1 + LINE2 + URL_LINE);
+  const [latin, jp] = await Promise.all([
+    loadFont("Fraunces:wght@400", "ULLStudio" + URL_LINE),
+    loadFont("Noto+Serif+JP:wght@400", LINE1 + LINE2),
+  ]);
+  const fonts = [
+    ...(latin ? [{ name: "Fraunces", data: latin, weight: 400 as const, style: "normal" as const }] : []),
+    ...(jp ? [{ name: "NotoSerifJP", data: jp, weight: 400 as const, style: "normal" as const }] : []),
+  ];
+  const latinFamily = latin ? "Fraunces" : "serif";
   return new ImageResponse(
     (
       <div
@@ -41,34 +51,21 @@ export default async function OpengraphImage() {
           height: "100%",
           display: "flex",
           flexDirection: "column",
+          alignItems: "center",
           justifyContent: "center",
-          padding: "0 90px",
-          background: "radial-gradient(circle at 85% 15%, rgba(139,92,246,0.45), transparent 55%), radial-gradient(circle at 10% 95%, rgba(255,42,133,0.40), transparent 50%), #121214",
-          color: "#f5f5f7",
-          fontFamily: font ? "NotoSansJP" : "sans-serif",
+          background: BG,
+          color: FG,
+          fontFamily: jp ? "NotoSerifJP" : "serif",
         }}
       >
-        <div
-          style={{
-            display: "flex",
-            fontSize: 108,
-            fontWeight: 700,
-            letterSpacing: -2,
-            backgroundImage: "linear-gradient(90deg, #ff2a85, #8b5cf6)",
-            backgroundClip: "text",
-            color: "transparent",
-          }}
-        >
-          {TITLE}
+        <div style={{ display: "flex", fontFamily: latinFamily, fontSize: 104, letterSpacing: 17 }}>
+          ULL<span style={{ marginLeft: 52, color: MUTED }}>Studio</span>
         </div>
-        <div style={{ display: "flex", marginTop: 28, fontSize: 46, fontWeight: 700 }}>{font ? LINE1 : FALLBACK_LINE}</div>
-        {font && <div style={{ display: "flex", marginTop: 18, fontSize: 30, color: "#b4b4bc" }}>{LINE2}</div>}
-        <div style={{ display: "flex", marginTop: 56, fontSize: 26, color: "#8b8b95" }}>{URL_LINE}</div>
+        {jp && <div style={{ display: "flex", marginTop: 44, fontSize: 40, letterSpacing: 8 }}>{LINE1}</div>}
+        {jp && <div style={{ display: "flex", marginTop: 20, fontSize: 26, color: MUTED, letterSpacing: 4 }}>{LINE2}</div>}
+        <div style={{ display: "flex", marginTop: 44, fontFamily: latinFamily, fontSize: 22, color: MUTED, letterSpacing: 6 }}>{URL_LINE}</div>
       </div>
     ),
-    {
-      ...size,
-      ...(font ? { fonts: [{ name: "NotoSansJP", data: font, weight: 700 as const, style: "normal" as const }] } : {}),
-    },
+    { ...size, ...(fonts.length ? { fonts } : {}) },
   );
 }

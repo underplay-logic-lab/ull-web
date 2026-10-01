@@ -58,7 +58,7 @@ export function WorkflowFieldGrid({
                 onKeyDown={(e) => (e.key === "Enter" ? onLockedInteract?.() : undefined)}
                 className="relative cursor-pointer rounded-lg border border-dashed border-neon-pink/40 p-3"
               >
-                <span className="absolute -top-2 right-2 rounded-full bg-neon-pink px-2 py-0.5 text-[9px] font-semibold text-white">
+                <span className="absolute -top-2 right-2 rounded-full bg-neon-pink px-2 py-0.5 text-[9px] font-semibold text-background">
                   🔒 {WORKFLOW_FIELD_TIER_LABELS[field.minTier!]} 限定
                 </span>
                 <div className="pointer-events-none opacity-50">

@@ -84,7 +84,7 @@ export function EditableLink({ siteKey, fallback, className, children }: Editabl
           <button
             type="button"
             onClick={handleSave}
-            className="mt-2 w-full rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-white transition-opacity hover:opacity-90"
+            className="mt-2 w-full rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-background transition-opacity hover:opacity-90"
           >
             適用（下部バーで公開）
           </button>

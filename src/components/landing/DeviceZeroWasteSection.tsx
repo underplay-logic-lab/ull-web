@@ -88,7 +88,7 @@ function PhoneMock() {
         <div className="mx-auto mt-2 h-1.5 w-16 rounded-full bg-border" />
         <div className="space-y-3 p-4">
           <div className="flex items-center gap-2">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-neon-pink to-neon-violet text-white">
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-neon-pink to-neon-violet text-background">
               <Cpu size={14} />
             </span>
             <div className="h-2 w-20 rounded-full bg-surface-hover" />

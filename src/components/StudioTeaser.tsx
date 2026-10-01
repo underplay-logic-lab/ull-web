@@ -63,7 +63,7 @@ export function StudioTeaser() {
         <div className="mt-10 flex justify-center">
           <Link
             href="/studio"
-            className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-8 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+            className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-8 py-3 text-sm font-semibold text-background transition-opacity hover:opacity-90"
           >
             Studio を開く
             <ArrowRight size={16} />

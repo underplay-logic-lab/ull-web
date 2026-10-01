@@ -21,7 +21,7 @@ const RANK_STYLE: Record<SubscriptionTier, string> = {
   free: "border-border bg-surface/60 text-muted",
   entry: "border-cyan-400/40 bg-cyan-400/10 text-cyan-300",
   standard: "border-emerald-400/40 bg-emerald-400/10 text-emerald-300",
-  pro: "border-neon-violet/40 bg-neon-violet/10 text-neon-violet shadow-[0_0_10px_rgba(139,92,246,0.25)]",
+  pro: "border-neon-violet/40 bg-neon-violet/10 text-neon-violet shadow-[0_0_10px_rgba(207,203,194,0.25)]",
   master:
     "border-amber-400/50 bg-amber-400/10 text-amber-300 shadow-[0_0_10px_rgba(251,191,36,0.3)]",
   studio:

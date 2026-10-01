@@ -338,7 +338,7 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
             <button
               type="submit"
               disabled={emailSubmitting || !turnstileToken}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-background transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {emailSubmitting ? (
                 <Loader2 size={16} className="animate-spin" />

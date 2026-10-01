@@ -4,6 +4,7 @@ import Link from "next/link";
 import { siteConfig, CONTACT_EMAIL } from "@/lib/data";
 import { BrandLink } from "@/components/BrandLink";
 import { EditableText } from "@/components/EditableText";
+import { Wordmark } from "@/components/Wordmark";
 
 const legalLinks = [
   { label: "料金の目安", href: "/pricing" },
@@ -23,10 +24,7 @@ export function Footer() {
       <div className="mx-auto max-w-6xl px-6 py-10">
         <div className="flex flex-col items-center justify-between gap-6 sm:flex-row">
           <BrandLink className="flex items-center gap-2">
-            <span className="font-mono text-sm font-bold">
-              <span className="text-neon-pink">/</span>
-              {siteConfig.name}
-            </span>
+            <Wordmark className="text-base" />
           </BrandLink>
 
           <nav className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2">
@@ -51,7 +49,7 @@ export function Footer() {
         <EditableText
           as="p"
           siteKey="footer_copyright"
-          fallback={`© ${years} ULL Studio. Powered by Underplay Logic Engine.`}
+          fallback={`© ${years} ULL Studio · 運営 ${siteConfig.name}`}
           className="mt-2 text-center text-xs text-muted sm:text-left"
         />
         </div>

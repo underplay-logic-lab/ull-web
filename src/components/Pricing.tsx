@@ -341,7 +341,7 @@ export function Pricing({ onPurchased }: { onPurchased?: () => void } = {}) {
                 type="button"
                 onClick={() => handlePurchase(plan)}
                 disabled={!isPurchasable(plan) || processingPlanId === plan.id}
-                className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-background transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {processingPlanId === plan.id ? (
                   <>
@@ -406,7 +406,7 @@ export function Pricing({ onPurchased }: { onPurchased?: () => void } = {}) {
           <p className="text-sm leading-relaxed text-foreground/90">
             ⚙️ 大量生成・専用リソースが必要な大口のお客様へ：エンタープライズプラン・大口契約のご相談を承ります。
           </p>
-          <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-sm font-semibold text-white">
+          <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-sm font-semibold text-background">
             お問い合わせはこちら
             <ArrowRight size={16} />
           </span>
@@ -446,7 +446,7 @@ export function Pricing({ onPurchased }: { onPurchased?: () => void } = {}) {
               <button
                 type="button"
                 onClick={() => window.close()}
-                className="mt-6 w-full rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white hover:opacity-90"
+                className="mt-6 w-full rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-background hover:opacity-90"
               >
                 このタブを閉じる
               </button>
@@ -528,7 +528,7 @@ function PlanReplaceModal({
           <button
             type="button"
             onClick={onConfirm}
-            className="rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
+            className="rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-background transition-all hover:opacity-90"
           >
             {target.price} で購入手続きへ進む
           </button>

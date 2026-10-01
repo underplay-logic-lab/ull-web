@@ -430,7 +430,7 @@ export function WorkflowBuilderShell({ workflowId }: { workflowId: string }) {
             type="button"
             onClick={handleSave}
             disabled={saving || !dirty}
-            className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-1.5 text-xs font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-1.5 text-xs font-semibold text-background transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
             {dirty ? "保存" : "保存済み"}

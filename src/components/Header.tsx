@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu, X, LogIn, LogOut, Settings, UserCircle2 } from "lucide-react";
-import { navLinks, siteConfig } from "@/lib/data";
+import { navLinks } from "@/lib/data";
+import { Wordmark } from "@/components/Wordmark";
 import { LoginModal } from "@/components/LoginModal";
 import { LogoutModal } from "@/components/LogoutModal";
 import { BrandLink } from "@/components/BrandLink";
@@ -165,10 +166,7 @@ export function Header() {
     >
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
         <BrandLink className="group flex min-w-0 items-center gap-2">
-          <span className="truncate font-mono text-sm font-bold tracking-tight sm:text-lg">
-            <span className="text-neon-pink">/</span>
-            {siteConfig.name}
-          </span>
+          <Wordmark className="text-base sm:text-xl" />
         </BrandLink>
 
         <nav className="hidden items-center gap-8 md:flex">
@@ -230,7 +228,7 @@ export function Header() {
             <button
               type="button"
               onClick={() => setLoginOpen(true)}
-              className="hidden items-center gap-1.5 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 sm:flex"
+              className="hidden items-center gap-1.5 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90 sm:flex"
             >
               <LogIn size={14} />
               新規登録 / ログイン
@@ -321,7 +319,7 @@ export function Header() {
                   setMobileOpen(false);
                   setLoginOpen(true);
                 }}
-                className="flex items-center justify-center gap-1.5 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-center text-sm font-medium text-white"
+                className="flex items-center justify-center gap-1.5 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-center text-sm font-medium text-background"
               >
                 <LogIn size={14} />
                 ログイン

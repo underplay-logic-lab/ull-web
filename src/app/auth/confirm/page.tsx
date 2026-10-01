@@ -100,7 +100,7 @@ export default function AuthConfirmPage() {
                 type="button"
                 onClick={handleConfirm}
                 disabled={submitting}
-                className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 glow-pink"
+                className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-background transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 glow-pink"
               >
                 {submitting && <Loader2 size={16} className="animate-spin" />}
                 {isRecovery ? "パスワードの再設定へ進む" : "登録を完了する"}

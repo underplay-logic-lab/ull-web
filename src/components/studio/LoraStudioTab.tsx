@@ -5383,7 +5383,7 @@ export function LoraStudioTab({
           <button
             type="button"
             onClick={() => setPhase("tracking")}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-white transition-all hover:opacity-90"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-background transition-all hover:opacity-90"
           >
             進行状況パネルへ戻る
             <ArrowLeft size={12} className="rotate-180" />
@@ -5405,7 +5405,7 @@ export function LoraStudioTab({
             <button
               type="button"
               onClick={() => setPhase("tracking")}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-white transition-all hover:opacity-90"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-background transition-all hover:opacity-90"
             >
               成果物をダウンロードする
               <ArrowLeft size={12} className="rotate-180" />
@@ -5713,7 +5713,7 @@ export function LoraStudioTab({
                         scrollToStatusOnStartRef.current = true;
                         setAnalysisStarted(true);
                       }}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[12px] font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-50"
                     >
                       <Sparkles size={13} />
                       取り込み完了 — 特徴と構図を診断する（無料）
@@ -5900,7 +5900,7 @@ export function LoraStudioTab({
                       .getElementById(DIAGNOSTICS_PANEL_ID)
                       ?.scrollIntoView({ behavior: "smooth", block: "start" });
                   }}
-                  className="inline-flex items-center gap-1 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-2.5 py-1 text-[10px] font-semibold text-white transition-opacity hover:opacity-90"
+                  className="inline-flex items-center gap-1 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-2.5 py-1 text-[10px] font-semibold text-background transition-opacity hover:opacity-90"
                 >
                   点検が終わったので次へ進む →
                 </button>
@@ -6134,7 +6134,7 @@ export function LoraStudioTab({
                     type="button"
                     disabled={busy || composition.running || needsIdentityConfirm || identityExtracting !== null}
                     onClick={() => setCaptionStarted(true)}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[12px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[12px] font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-50"
                   >
                     <Sparkles size={13} />
                     {/* 解析対象はキャプションの無い画像だけ。前回の結果を再利用した画像まで「N 枚」と読める

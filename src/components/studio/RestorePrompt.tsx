@@ -42,7 +42,7 @@ export function RestorePrompt({
             type="button"
             onClick={onRestore}
             disabled={busy}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             {busy ? <Loader2 size={12} className="animate-spin" /> : null}
             復元する

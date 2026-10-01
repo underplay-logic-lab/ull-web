@@ -1,16 +1,20 @@
 @import "tailwindcss";
 
 :root {
-  --background: #121214;
-  --foreground: #ffffff;
-  --muted: #8e8e93;
-  --surface: #1c1c1e;
-  --surface-hover: #242426;
-  --border: #2c2c30;
-  --neon-pink: #ff2a85;
-  --neon-violet: #8b5cf6;
-  --neon-pink-glow: rgba(255, 42, 133, 0.35);
-  --neon-violet-glow: rgba(139, 92, 246, 0.35);
+  /* 2026-10-01 ブランド刷新: 黒 × アイボリーのモノクロ（promo/brand/render.mjs と同じ色）。
+     変数名の neon-pink / neon-violet は 87 ファイルで使っているので名前はそのまま、値だけ替えた:
+     neon-pink＝アイボリー（主のアクセント）、neon-violet＝少し沈んだアイボリー。
+     アクセントの面に乗る文字は text-background（黒）にする。白文字は読めない。 */
+  --background: #0b0b0c;
+  --foreground: #ecebe7;
+  --muted: #8a877f;
+  --surface: #161617;
+  --surface-hover: #1f1f20;
+  --border: #2b2a28;
+  --neon-pink: #ecebe7;
+  --neon-violet: #cfcbc2;
+  --neon-pink-glow: rgba(236, 235, 231, 0.35);
+  --neon-violet-glow: rgba(207, 203, 194, 0.35);
 }
 
 @theme inline {
@@ -24,6 +28,7 @@
   --color-neon-violet: var(--neon-violet);
   --font-sans: var(--font-inter);
   --font-mono: var(--font-jetbrains-mono);
+  --font-serif: var(--font-fraunces), "Noto Serif JP", "Yu Mincho", serif;
 }
 
 * {
@@ -41,23 +46,23 @@ body {
 }
 
 ::selection {
-  background: rgba(255, 42, 133, 0.3);
-  color: #fff;
+  background: rgba(236, 235, 231, 0.85);
+  color: #0b0b0c;
 }
 
 .grid-bg {
   background-image:
-    linear-gradient(rgba(255, 42, 133, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 42, 133, 0.03) 1px, transparent 1px);
+    linear-gradient(rgba(236, 235, 231, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(236, 235, 231, 0.03) 1px, transparent 1px);
   background-size: 64px 64px;
 }
 
 .glow-pink {
-  box-shadow: 0 0 20px var(--neon-pink-glow), 0 0 60px rgba(255, 42, 133, 0.1);
+  box-shadow: 0 0 20px var(--neon-pink-glow), 0 0 60px rgba(236, 235, 231, 0.1);
 }
 
 .glow-violet {
-  box-shadow: 0 0 20px var(--neon-violet-glow), 0 0 60px rgba(139, 92, 246, 0.1);
+  box-shadow: 0 0 20px var(--neon-violet-glow), 0 0 60px rgba(207, 203, 194, 0.1);
 }
 
 .text-gradient {
@@ -71,7 +76,7 @@ body {
   border: 1px solid transparent;
   background:
     linear-gradient(var(--surface), var(--surface)) padding-box,
-    linear-gradient(135deg, rgba(255, 42, 133, 0.4), rgba(139, 92, 246, 0.4))
+    linear-gradient(135deg, rgba(236, 235, 231, 0.4), rgba(207, 203, 194, 0.4))
       border-box;
 }
 
@@ -90,16 +95,16 @@ body {
 }
 
 /* LoRA Studio の「次にやること」を示す枠（2026-09-22）。
-   既存の警告色（赤＝要確認 / 琥珀＝注意）と混同しないようピンク系に統一する。
+   既存の警告色（赤＝要確認 / 琥珀＝注意）と混同しないようアクセント色（2026-10-01 からアイボリー）に統一する。
    常に1〜2箇所しか付かない（src/lib/loraFlowStep.ts が決める）。
    prefers-reduced-motion では点滅を止め、枠だけ残す。 */
 @keyframes flow-next {
   0%,
   100% {
-    box-shadow: 0 0 0 2px rgba(255, 42, 133, 0.55), 0 0 12px rgba(255, 42, 133, 0.25);
+    box-shadow: 0 0 0 2px rgba(236, 235, 231, 0.55), 0 0 12px rgba(236, 235, 231, 0.25);
   }
   50% {
-    box-shadow: 0 0 0 3px rgba(255, 42, 133, 0.9), 0 0 22px rgba(255, 42, 133, 0.5);
+    box-shadow: 0 0 0 3px rgba(236, 235, 231, 0.9), 0 0 22px rgba(236, 235, 231, 0.5);
   }
 }
 
@@ -111,14 +116,14 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .flow-next {
     animation: none;
-    box-shadow: 0 0 0 2px rgba(255, 42, 133, 0.8);
+    box-shadow: 0 0 0 2px rgba(236, 235, 231, 0.8);
   }
 }
 
 /* 「済んだので使える」印。flow-next（次にやること）と違い、scrollToNextFlow の行き先にはならない。 */
 .flow-done {
   border-radius: 0.75rem;
-  box-shadow: 0 0 0 2px rgba(255, 42, 133, 0.45);
+  box-shadow: 0 0 0 2px rgba(236, 235, 231, 0.45);
 }
 
 @keyframes float {

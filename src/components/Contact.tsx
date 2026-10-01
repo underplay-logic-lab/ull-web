@@ -258,7 +258,7 @@ export function Contact() {
                 <button
                   type="submit"
                   disabled={formState === "submitting"}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:opacity-60 glow-pink"
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3.5 text-sm font-semibold text-background transition-all hover:opacity-90 disabled:opacity-60 glow-pink"
                 >
                   {formState === "submitting" ? (
                     <>

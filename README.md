@@ -57,5 +57,5 @@ src/
 
 Cyber-minimal Underplay style:
 
-- Base: `#121214`
-- Accent: Neon Pink `#ff2a85`, Neon Violet `#8b5cf6`
+- Base: `#0b0b0c`
+- Accent: アイボリー `#ecebe7`（変数名は `neon-pink` のまま。2026-10-01 にピンク→紫から黒 × アイボリーのモノクロへ）。ロゴは `src/components/Wordmark.tsx`（Fraunces）

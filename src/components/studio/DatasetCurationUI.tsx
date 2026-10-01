@@ -636,7 +636,7 @@ export function DatasetCurationUI({
           type="button"
           onClick={onConfirm}
           disabled={!canConfirm}
-          className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-background transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Flame size={15} />
           {`🔥 このデータセットで学習を開始 (${requiredCredits} C)`}

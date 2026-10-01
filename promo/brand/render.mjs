@@ -8,6 +8,7 @@ import { chromium } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const out = process.env.BRAND_OUT ?? path.join(root, "out", "brand");
@@ -102,6 +103,42 @@ for (const [key, d] of Object.entries(DESIGNS)) {
 const FINAL = "black-serif";
 fs.copyFileSync(path.join(out, `${FINAL}-icon.png`), path.join(out, "youtube-icon.png"));
 fs.copyFileSync(path.join(out, `${FINAL}-youtube.png`), path.join(out, "youtube-banner.png"));
+
+// サイトのアイコン（src/app/icon.png・apple-icon.png・favicon.ico）。SVG だと明朝が出ないので PNG で描く。
+// favicon.ico は PNG をそのまま入れた ICO（今のブラウザは読める）。3 つは src/app へ直接書く（途中の PNG は out 側）。
+const site = path.join(out, "site");
+const appDir = path.join(root, "..", "src", "app");
+fs.mkdirSync(site, { recursive: true });
+for (const [file, px] of [["icon.png", 512], ["apple-icon.png", 180], ["fav-32.png", 32], ["fav-48.png", 48]]) {
+  const page = await browser.newPage({ viewport: { width: 1024, height: 1024 }, deviceScaleFactor: px / 1024 });
+  await page.setContent(`<!doctype html><html><head><meta charset="utf-8">${fonts}<style>*{margin:0;padding:0}body{overflow:hidden}</style></head><body><div style="position:relative;width:1024px;height:1024px">${DESIGNS[FINAL].icon()}</div></body></html>`);
+  await page.evaluate(() => document.fonts.ready);
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(file.startsWith("fav-") ? site : appDir, file) });
+  await page.close();
+}
+// Chromium は不透明な画像を RGB で保存するが、Next は ICO の中の PNG が RGBA でないと読めない。
+// sharp はサイト本体（../node_modules）のものを借りる。
+const sharp = createRequire(path.join(root, "..", "package.json"))("sharp");
+const rgba = (f) => sharp(f).ensureAlpha().png().toBuffer();
+for (const f of ["icon.png", "apple-icon.png"]) fs.writeFileSync(path.join(appDir, f), await rgba(path.join(appDir, f)));
+const pngs = await Promise.all([32, 48].map(async (s) => ({ s, buf: await rgba(path.join(site, `fav-${s}.png`)) })));
+const ico = Buffer.alloc(6 + 16 * pngs.length);
+ico.writeUInt16LE(0, 0);
+ico.writeUInt16LE(1, 2);
+ico.writeUInt16LE(pngs.length, 4);
+let offset = ico.length;
+pngs.forEach(({ s, buf }, i) => {
+  const o = 6 + 16 * i;
+  ico.writeUInt8(s, o);
+  ico.writeUInt8(s, o + 1);
+  ico.writeUInt16LE(1, o + 4);
+  ico.writeUInt16LE(32, o + 6);
+  ico.writeUInt32LE(buf.length, o + 8);
+  ico.writeUInt32LE(offset, o + 12);
+  offset += buf.length;
+});
+fs.writeFileSync(path.join(appDir, "favicon.ico"), Buffer.concat([ico, ...pngs.map((p) => p.buf)]));
 
 // 見比べ用の一覧。アイコンは丸く切り抜いた見え方と小さい見え方、YouTube はスマホでも見える範囲を点線で。
 const img = (f) => `data:image/png;base64,${fs.readFileSync(path.join(out, f)).toString("base64")}`;

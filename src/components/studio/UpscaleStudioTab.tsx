@@ -1700,7 +1700,7 @@ export function UpscaleStudioTab() {
               type="button"
               onClick={() => void handleReturnToLora()}
               disabled={returningToLora}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 flow-next"
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 flow-next"
             >
               {returningToLora ? (
                 <>

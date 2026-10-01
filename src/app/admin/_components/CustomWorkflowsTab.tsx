@@ -120,7 +120,7 @@ export function CustomWorkflowsTab() {
         <button
           type="button"
           onClick={() => setModalState({ open: true, workflow: null })}
-          className="flex items-center gap-1.5 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90"
+          className="flex items-center gap-1.5 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2 text-xs font-semibold text-background transition-opacity hover:opacity-90"
         >
           <Plus size={14} />
           新規追加

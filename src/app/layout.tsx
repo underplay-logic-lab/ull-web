@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Script from "next/script";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Fraunces, Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
@@ -21,6 +21,13 @@ const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
 });
 
+// ロゴ・見出し用の明朝（2026-10-01 ブランド刷新: 黒 × 明朝の文字だけのロゴ。素材は promo/brand/render.mjs）。
+const fraunces = Fraunces({
+  variable: "--font-fraunces",
+  subsets: ["latin"],
+  axes: ["opsz"],
+});
+
 // ローンチ向けに ULL Studio の説明へ（2026-09-26）。旧値は「UNDERPLAY LOGIC LAB — AI Generation & Automation」
 // ＋ツール配布サイトの説明で、キーワードに基盤名（ComfyUI / Stable Diffusion）も出ていた（CLAUDE.md §2）。
 // siteConfig は法務ページの表記にも使うので触らない。
@@ -30,7 +37,7 @@ const SITE_DESCRIPTION =
 
 // リンクのカード（OGP / X）: 2026-10-01 ローンチ日に追加（それまで og:* が 1 つも無く、Discord 等で画像が出なかった）。
 // 画像は src/app/opengraph-image.tsx（X は twitter-image.tsx）。
-const OG_TITLE = "ULL Studio — やりたいことが叶う、AI 映像・画像スタジオ";
+const OG_TITLE = "ULL Studio — 声が届く距離の、映像スタジオ";
 const OG_DESCRIPTION =
   "画像 1 枚から、LoRA の学習素材づくり・LoRA 学習・そのキャラでの動画生成まで。マルチアングル・超解像も。環境構築なし、ブラウザだけで。";
 
@@ -99,7 +106,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="ja"
-      className={`${inter.variable} ${jetbrainsMono.variable} h-full antialiased`}
+      className={`${inter.variable} ${jetbrainsMono.variable} ${fraunces.variable} h-full antialiased`}
     >
       <body
         className="min-h-full flex flex-col bg-background text-foreground"

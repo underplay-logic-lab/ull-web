@@ -61,7 +61,7 @@ export function LoginStreakModal({ data, onClose }: LoginStreakModalProps) {
                 key={day}
                 className={`flex flex-col items-center justify-center gap-1 rounded-xl border p-1.5 text-center sm:p-2 ${
                   isToday
-                    ? "border-neon-pink bg-neon-pink/10 shadow-[0_0_12px_rgba(255,42,133,0.3)]"
+                    ? "border-neon-pink bg-neon-pink/10 shadow-[0_0_12px_rgba(236,235,231,0.3)]"
                     : isDone
                       ? "border-emerald-500/40 bg-emerald-500/10"
                       : "border-border bg-background/60 opacity-60"
@@ -112,7 +112,7 @@ export function LoginStreakModal({ data, onClose }: LoginStreakModalProps) {
         <button
           type="button"
           onClick={onClose}
-          className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
+          className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-background transition-all hover:opacity-90"
         >
           画像生成をはじめる
         </button>

@@ -55,7 +55,7 @@ export function QueueChoiceModal({
             <button
               type="button"
               onClick={onQueue}
-              className="rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
+              className="rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-background transition-all hover:opacity-90"
             >
               順番待ち（無料）
             </button>

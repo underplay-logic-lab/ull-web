@@ -182,7 +182,7 @@ export function DatasetDiagnosticsPanel({
                 <button
                   type="button"
                   onClick={onProceed}
-                  className="shrink-0 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1 text-[11px] font-semibold text-white hover:opacity-90"
+                  className="shrink-0 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1 text-[11px] font-semibold text-background hover:opacity-90"
                 >
                   このまま進む
                 </button>
@@ -206,7 +206,7 @@ export function DatasetDiagnosticsPanel({
                 type="button"
                 disabled={autoTidyBusy || provisional || stalledCount > 0}
                 onClick={onAutoTidy}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-50"
               >
                 {autoTidyBusy ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
                 {autoTidyBusy ? "整えています…" : "おまかせで整える"}

@@ -47,7 +47,7 @@ export function AdminEditBar() {
             type="button"
             onClick={publishChanges}
             disabled={publishing}
-            className="flex items-center gap-1 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1 text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            className="flex items-center gap-1 rounded-full bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1 text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Save size={12} />
             {publishing ? "公開中..." : "💾 変更を本番公開"}

@@ -1714,7 +1714,7 @@ export function DatasetBuilderTab() {
                   updateRemaining((rest) => rebodyScenePlan(rest, sel, run.plan.length));
                   scrollToId("dataset-remaining");
                 }}
-                className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2 text-xs font-semibold text-white hover:opacity-90"
+                className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2 text-xs font-semibold text-background hover:opacity-90"
               >
                 この設定で「これから作る分」の文章を作り直して一覧へ戻る
               </button>
@@ -1801,7 +1801,7 @@ export function DatasetBuilderTab() {
                   type="button"
                   onClick={handleContinue}
                   disabled={!image || (!creditsLoading && (credits ?? 0) < nextBatchCost)}
-                  className="flex-1 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-3 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                  className="flex-1 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-3 text-sm font-semibold text-background hover:opacity-90 disabled:opacity-50"
                 >
                   続きを作る（残り {remainingCount} 枚・{remainingCost.toLocaleString()} C）
                 </button>
@@ -1873,7 +1873,7 @@ export function DatasetBuilderTab() {
               <button
                 type="button"
                 onClick={handleConfirmReview}
-                className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+                className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-1.5 text-xs font-semibold text-background hover:opacity-90"
               >
                 {(() => {
                   const ordered = orderPlanForBatches(review, batchOpt, firstKeys);
@@ -2017,7 +2017,7 @@ export function DatasetBuilderTab() {
             type="button"
             onClick={handleContinue}
             disabled={!image || (!creditsLoading && (credits ?? 0) < nextBatchCost)}
-            className="w-full rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-3 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+            className="w-full rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-3 text-sm font-semibold text-background hover:opacity-90 disabled:opacity-50"
           >
             この内容で続きを作る（残り {remainingCount} 枚・{remainingCost.toLocaleString()} C）
           </button>
@@ -2069,7 +2069,7 @@ export function DatasetBuilderTab() {
                   type="button"
                   onClick={sendToLora}
                   disabled={sending || kept.length === 0}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-background hover:opacity-90 disabled:opacity-50"
                 >
                   {sending ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
                   {kept.length + (mainRoute === "face" && sendOriginal && image ? 1 : 0)} 枚を LoRA Studio に追加
@@ -2112,7 +2112,7 @@ export function DatasetBuilderTab() {
                     type="button"
                     onClick={() => toggleRejected(r.key)}
                     title={off ? "戻す" : "外す"}
-                    className={`absolute right-1 top-1 rounded-full p-1 text-white ${off ? "bg-black/70" : "bg-neon-pink"}`}
+                    className={`absolute right-1 top-1 rounded-full p-1 text-background ${off ? "bg-black/70" : "bg-neon-pink"}`}
                   >
                     {off ? <Check size={11} /> : <X size={11} />}
                   </button>

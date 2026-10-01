@@ -146,7 +146,7 @@ export function AutoTidyPanel({
                 <button
                   type="button"
                   onClick={nextStep.onClick}
-                  className={`rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1 text-[11px] font-semibold text-white hover:opacity-90${
+                  className={`rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1 text-[11px] font-semibold text-background hover:opacity-90${
                     nextStep.highlight ? " flow-next" : ""
                   }`}
                 >

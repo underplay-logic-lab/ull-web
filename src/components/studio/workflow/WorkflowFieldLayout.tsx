@@ -92,7 +92,7 @@ export function WorkflowFieldLayout({
               <span className="flex items-center gap-2">
                 <span className="text-xs font-semibold text-neon-violet">{section.label}</span>
                 {locked && (
-                  <span className="inline-flex items-center gap-0.5 rounded-full bg-neon-pink px-2 py-0.5 text-[9px] font-semibold text-white">
+                  <span className="inline-flex items-center gap-0.5 rounded-full bg-neon-pink px-2 py-0.5 text-[9px] font-semibold text-background">
                     <Lock size={8} />
                     {WORKFLOW_FIELD_TIER_LABELS[section.minTier!]} 限定
                   </span>

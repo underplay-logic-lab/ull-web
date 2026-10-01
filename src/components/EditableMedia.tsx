@@ -157,7 +157,7 @@ export function EditableMedia({ siteKey, kind, fallback = "", alt = "", classNam
               <button
                 type="button"
                 onClick={() => applyUrl(draftUrl)}
-                className="flex-1 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90"
+                className="flex-1 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-2 text-xs font-semibold text-background transition-opacity hover:opacity-90"
               >
                 適用（下部バーで公開）
               </button>

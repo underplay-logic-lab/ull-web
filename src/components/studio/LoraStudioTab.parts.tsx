@@ -1657,7 +1657,7 @@ export function YamlVipLockCard() {
         href="/#contact"
         target="_blank"
         rel="noopener"
-        className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-white transition-all hover:opacity-90"
+        className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-background transition-all hover:opacity-90"
       >
         <MessageCircle size={13} />
         💬 特注LoRA・カスタム学習のご相談
@@ -1806,7 +1806,7 @@ function SalvageSection({
                   )
                 }
                 disabled={busyFile !== null}
-                className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2 text-xs font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-2 text-xs font-semibold text-background transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {busyFile === bundleArchive.filename ? (
                   <Loader2 size={13} className="animate-spin" />
@@ -2158,7 +2158,7 @@ export function ProgressPanel({
               onClick={() => handleBundleDownload("final")}
               disabled={dlBusy}
               title="完成版（無ければ最新の中間チェックポイント）を .safetensors で取得します。"
-              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-2.5 text-xs font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-2.5 text-xs font-semibold text-background transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {downloadingCkpt === "final" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
               🏆 完成版LoRA DL (.safetensors)
@@ -2378,7 +2378,7 @@ export function ProgressPanel({
             <button
               type="button"
               onClick={() => onUseLora(filename)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-white transition-all hover:opacity-90"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-background transition-all hover:opacity-90"
             >
               <Clapperboard size={13} />
               🎬 動画生成でこの LoRA を使う
@@ -2449,7 +2449,7 @@ export function ProgressPanel({
                       ? "成果物の転送が終わるまで一括ダウンロードは待ってください（1〜3 分）。"
                       : "チェックを入れたチェックポイントをまとめてダウンロードします（ファイルごとに直通リンクで並列取得・解凍不要）。"
                   }
-                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-3 text-sm font-bold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-4 py-3 text-sm font-bold text-background transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {bulk.state === "preparing" ? (
                     <>

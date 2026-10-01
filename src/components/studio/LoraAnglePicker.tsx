@@ -91,7 +91,7 @@ export function LoraAnglePicker({
                   </span>
                 )}
                 {on && (
-                  <span className="absolute right-1 top-1 rounded-full bg-neon-pink p-0.5 text-white">
+                  <span className="absolute right-1 top-1 rounded-full bg-neon-pink p-0.5 text-background">
                     <Check size={12} />
                   </span>
                 )}
@@ -118,7 +118,7 @@ export function LoraAnglePicker({
               setPicked(new Set());
               onConfirm(files);
             }}
-            className="rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2 text-sm font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             選んだ {picked.size} 枚をマルチアングルへ
           </button>

@@ -454,7 +454,7 @@ function AxisGroup({
             >
               <span
                 className={`flex h-3.5 w-3.5 items-center justify-center rounded border ${
-                  on ? "border-neon-pink bg-neon-pink text-white" : "border-border"
+                  on ? "border-neon-pink bg-neon-pink text-background" : "border-border"
                 }`}
               >
                 {on && <Check size={10} />}
@@ -684,7 +684,7 @@ function RegenerateConfirmModal({
           <button
             type="button"
             onClick={onConfirm}
-            className="flex-1 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
+            className="flex-1 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-background transition-all hover:opacity-90"
           >
             続けて生成
           </button>
@@ -1526,7 +1526,7 @@ export function MultiAngleStudioTab() {
                   type="button"
                   onClick={generateAllLoraSources}
                   disabled={count === 0 || overCap || underMin}
-                  className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                  className="rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-background hover:opacity-90 disabled:opacity-50"
                 >
                   未生成の {loraRemaining.length} 枚を同じ構図で生成（{count} 構図 × {loraRemaining.length} 枚・合計 {(cost * loraRemaining.length).toLocaleString()}C）
                 </button>
@@ -1575,7 +1575,7 @@ export function MultiAngleStudioTab() {
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={c.url} alt={c.label} className="h-full w-full bg-black/40 object-contain" onError={refreshImageUrls} />
-                      {on && <Check size={12} className="absolute right-1 top-1 rounded-full bg-neon-pink p-0.5 text-white" />}
+                      {on && <Check size={12} className="absolute right-1 top-1 rounded-full bg-neon-pink p-0.5 text-background" />}
                     </button>
                   );
                 })}
@@ -1584,7 +1584,7 @@ export function MultiAngleStudioTab() {
                 type="button"
                 onClick={() => void sendPickedToLora()}
                 disabled={loraPicked.size === 0 || loraSending}
-                className="flow-next inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-bold text-white hover:opacity-90 disabled:opacity-50"
+                className="flow-next inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-bold text-background hover:opacity-90 disabled:opacity-50"
               >
                 {loraSending ? <Loader2 size={13} className="animate-spin" /> : null}
                 選んだ {loraPicked.size} 枚を LoRA Studio に追加
@@ -1833,7 +1833,7 @@ export function MultiAngleStudioTab() {
                   type="button"
                   onClick={() => void upscaleAll()}
                   disabled={upscaleAllBusy}
-                  className="flow-next inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-bold text-white shadow-lg transition-opacity hover:opacity-90 disabled:opacity-50"
+                  className="flow-next inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-bold text-background shadow-lg transition-opacity hover:opacity-90 disabled:opacity-50"
                 >
                   {upscaleAllBusy ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
                   {images.length} 枚をまとめて 4K / 8K に超解像

@@ -1388,7 +1388,7 @@ export function ModalStorageTab() {
               type="button"
               onClick={handleDownload}
               disabled={downloading || !downloadUrl.trim() || !downloadFilename.trim()}
-              className="mt-3 flex items-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              className="mt-3 flex items-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-sm font-semibold text-background transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {downloading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
               ⚡ Modalへ直接ダウンロード
@@ -1418,7 +1418,7 @@ export function ModalStorageTab() {
               type="button"
               onClick={handleDownload}
               disabled={downloading || !repoId.trim() || !repoSaveDir.trim()}
-              className="mt-3 flex items-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              className="mt-3 flex items-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-sm font-semibold text-background transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {downloading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
               ⚡ リポジトリを一括ダウンロード
@@ -1463,7 +1463,7 @@ export function ModalStorageTab() {
             type="button"
             onClick={handleInstallNode}
             disabled={installing || !gitUrl.trim()}
-            className="flex shrink-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex shrink-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-5 py-2.5 text-sm font-semibold text-background transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {installing ? <Loader2 size={16} className="animate-spin" /> : <GitBranch size={16} />}
             📦 ノードをインストール

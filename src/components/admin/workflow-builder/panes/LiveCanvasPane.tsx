@@ -80,7 +80,7 @@ function SortableFieldCard({
           </span>
           <span className="flex shrink-0 items-center gap-1">
             {field.minTier && (
-              <span className="rounded bg-neon-pink px-1 text-[8px] font-semibold text-white">
+              <span className="rounded bg-neon-pink px-1 text-[8px] font-semibold text-background">
                 🔒 {WORKFLOW_FIELD_TIER_LABELS[field.minTier]}
               </span>
             )}
