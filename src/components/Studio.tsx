@@ -237,7 +237,7 @@ export function Studio() {
             ) : activeTab === "director" ? (
               <EditableText
                 siteKey="studio_desc_director"
-                fallback="参照画像とカメラワーク・シーンを並べるだけ。AIが1本の連続したシネマティック映像に自動合成し、最大60秒の動画を生成します。"
+                fallback="参照画像と、やりたいことの要点を書くだけ。AI が台本にして、最大60秒の動画を生成します。場面ごとに組み立てたり、文章を直接書いたりもできます。"
               />
             ) : activeTab === "lora" ? (
               <EditableText

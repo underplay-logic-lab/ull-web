@@ -321,12 +321,14 @@ export function DirectorStudioTab() {
   // プロンプトモード（結果画面でコピペしたプロンプトを微修正して直接
   // 再生成する経路、2026-09-14）。uiMode="prompt" の間はシーンビルダーの
   // 代わりにテキストエリア＋尺セレクタを表示し、handleRun はこちらの値を送る。
-  const [uiMode, setUiMode] = useState<UiMode>("scenes");
+  // 既定は「おまかせ」（2026-10-02 ホスト判断: 初心者向け・失敗しにくい・台本代込みで少し高い。
+  // 直接書くモードは上級者向けと明記する。1 文だけで 15 秒を作り、後半で別人になった実例を受けて）。
+  const [uiMode, setUiMode] = useState<UiMode>("advanced");
   const [promptDraft, setPromptDraft] = useState("");
   const [promptDraftDurationS, setPromptDraftDurationS] = useState(DIRECTOR_SECONDS_PER_SCENE);
   // 「この動画をもとに調整する」（2026-10-01〜）: 完了した動画から入ったときだけ持つ。
   // この間は元の動画と同じシード・同じ参照画像で作り直す（画像の入れ直しは不要）。
-  const [adjustBase, setAdjustBase] = useState<{ jobId: string; seed: number | null } | null>(null);
+  const [adjustBase, setAdjustBase] = useState<{ jobId: string; seed: number | null; english: string } | null>(null);
   // 編集欄は画面の上の方にあるので、結果の下のボタンから入ったらそこまで連れて行く（押しても反応が無いように見えた、2026-10-02）。
   const promptEditorRef = useRef<HTMLTextAreaElement>(null);
 
@@ -566,7 +568,9 @@ export function DirectorStudioTab() {
     if (!job?.combinedPrompt) return;
     setPromptDraft(job.combinedPromptJa || job.combinedPrompt);
     setPromptDraftDurationS(job.totalDurationS ?? DIRECTOR_SECONDS_PER_SCENE);
-    setAdjustBase(job.status === "completed" && job.regenerable ? { jobId: job.jobId, seed: job.seed } : null);
+    setAdjustBase(
+      job.status === "completed" && job.regenerable ? { jobId: job.jobId, seed: job.seed, english: job.combinedPrompt } : null,
+    );
     if (job.quality) setQualityMode(job.quality);
     setUiMode("prompt");
     setTimeout(() => {
@@ -576,7 +580,7 @@ export function DirectorStudioTab() {
   }, [job]);
   const exitPromptMode = useCallback(() => {
     setAdjustBase(null);
-    setUiMode("scenes");
+    setUiMode("advanced");
   }, []);
 
   // LoRAのソースを選んだのに中身（選択/アップロード完了）が無いままだと、
@@ -878,6 +882,10 @@ export function DirectorStudioTab() {
           onFileSelected={setImage}
           onClear={() => setImage(null)}
         />
+        <p className="-mt-3 text-[11px] leading-relaxed text-muted">
+          入れた画像の見た目（人物・絵柄・服装）のまま動かす機能です。アニメを実写にする・別人に変えるなど、見た目を大きく変える指示は苦手で、途中で崩れることがあります。
+          見た目を変えたいときは、先に画像を作り直してから入れてください。
+        </p>
 
         {
           // モード切替（2026-09-18追加、同日「プロンプトで作る」を追加）。
@@ -893,32 +901,33 @@ export function DirectorStudioTab() {
           <div className="flex items-center gap-2 rounded-xl border border-border bg-background p-1">
             <button
               type="button"
+              onClick={() => setUiMode("advanced")}
+              className={`flex flex-1 flex-col items-center justify-center rounded-lg px-2 py-1.5 text-xs font-medium leading-tight transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                uiMode === "advanced" ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
+              }`}
+            >
+              <span>おまかせ</span>
+              <span className="text-[10px] font-normal opacity-70">初心者におすすめ</span>
+            </button>
+            <button
+              type="button"
               onClick={() => setUiMode("scenes")}
-              className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+              className={`flex flex-1 flex-col items-center justify-center rounded-lg px-2 py-1.5 text-xs font-medium leading-tight transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                 uiMode === "scenes" ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
               }`}
             >
-              シーンで作る
+              <span>シーンを組む</span>
+              <span className="text-[10px] font-normal opacity-70">場面ごとに指定</span>
             </button>
             <button
               type="button"
               onClick={() => setUiMode("prompt")}
-              className={`flex flex-1 items-center justify-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+              className={`flex flex-1 flex-col items-center justify-center rounded-lg px-2 py-1.5 text-xs font-medium leading-tight transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                 uiMode === "prompt" ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
               }`}
             >
-              <Pencil size={12} />
-              プロンプトで作る
-            </button>
-            <button
-              type="button"
-              onClick={() => setUiMode("advanced")}
-              className={`flex flex-1 items-center justify-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-                uiMode === "advanced" ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
-              }`}
-            >
-              <Sparkles size={12} />
-              Advanced（要点から台本）
+              <span>直接書く</span>
+              <span className="text-[10px] font-normal opacity-70">上級者向け</span>
             </button>
           </div>
         }
@@ -928,7 +937,7 @@ export function DirectorStudioTab() {
             <div className="mb-2 flex items-center justify-between">
               <p className="flex items-center gap-1.5 text-xs font-mono uppercase tracking-widest text-muted">
                 <Pencil size={12} />
-                プロンプトモード（直接編集）
+                直接書く（上級者向け）
               </p>
               <button
                 type="button"
@@ -936,7 +945,7 @@ export function DirectorStudioTab() {
                 className="flex items-center gap-1 text-[11px] text-muted transition-colors hover:text-foreground"
               >
                 <Undo2 size={12} />
-                シーンモードに戻る
+                おまかせに戻る
               </button>
             </div>
             {adjustBase && (
@@ -944,6 +953,16 @@ export function DirectorStudioTab() {
                 <span>
                   元の動画と同じシード・同じ参照画像で作り直します（画像の入れ直しは不要）。
                   セリフの一言や光の加減など、小さな変更に向いています。カメラの向きや動きを変えると、別の動画になります。
+                  元の言い回しを変えたくないときは英語の原文を直してください（日本語のまま直すと、全文が訳し直されて言い回しも変わります）。
+                  {promptDraft !== adjustBase.english && (
+                    <button
+                      type="button"
+                      onClick={() => setPromptDraft(adjustBase.english)}
+                      className="ml-1 text-neon-pink underline transition-colors hover:opacity-80"
+                    >
+                      英語の原文に切り替える
+                    </button>
+                  )}
                 </span>
                 <button
                   type="button"
@@ -1003,7 +1022,7 @@ export function DirectorStudioTab() {
             <div className="mb-2 flex items-center justify-between">
               <p className="flex items-center gap-1.5 text-xs font-mono uppercase tracking-widest text-muted">
                 <Sparkles size={12} />
-                Advanced — 要点を書くだけで、AI が台本にします
+                おまかせ — 要点を書くだけで、AI が台本にします
               </p>
             </div>
             <textarea
