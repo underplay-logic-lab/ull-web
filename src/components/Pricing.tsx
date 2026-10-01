@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ArrowRight, Check, Loader2, Settings, Sparkles } from "lucide-react";
 import { ENTRY_FIRST_PURCHASE_OFF_JPY, pricingPlans, type PricingPlan } from "@/lib/data";
 import { LoginModal } from "@/components/LoginModal";
@@ -41,6 +42,9 @@ export function Pricing() {
   // 一度だけ飛ぶが、その後に上の区画の画像・動画が読み込まれて位置がずれ、見出しの途中で止まっていた（2026-09-26）。
   // 落ち着くまで何度か合わせ直す。ユーザーが自分でスクロールしたらやめる。購入完了ならトーストも出す。
   const [toasts, setToasts] = useState<ToastData[]>([]);
+  // Studio から開いた料金表で買い終えたときの「元のタブへ戻って」の案内。
+  const [studioReturnOpen, setStudioReturnOpen] = useState(false);
+  const router = useRouter();
   useEffect(() => {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
@@ -145,7 +149,7 @@ export function Pricing() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ productId: plan.productId, replaceCurrent: opts.replaceCurrent === true }),
+        body: JSON.stringify({ productId: plan.productId, replaceCurrent: opts.replaceCurrent === true, embed: true }),
       });
 
       const data = await res.json();
@@ -154,7 +158,22 @@ export function Pricing() {
         throw new Error(data?.error || "決済セッションの作成に失敗しました。");
       }
 
-      window.location.assign(data.checkoutUrl);
+      // 埋め込み決済（2026-10-01）: ページを離れずに決済を重ねて出す。許可外の origin 等で embedded:false なら従来どおり移動。
+      if (!data.embedded) {
+        window.location.assign(data.checkoutUrl);
+        return;
+      }
+      const { PolarEmbedCheckout } = await import("@polar-sh/checkout/embed");
+      const checkout = await PolarEmbedCheckout.create(data.checkoutUrl, { theme: "dark" });
+      checkout.addEventListener("close", () => setProcessingPlanId(null));
+      checkout.addEventListener("success", (event) => {
+        event.preventDefault();
+        setProcessingPlanId(null);
+        // Studio の「月額プランを見る」から新しいタブで来たときは、このタブで Studio を開かず元のタブへ戻ってもらう
+        // （元のタブに作業中の内容があり、残高は realtime 購読でそちらにも反映される）。
+        if (new URLSearchParams(window.location.search).get("from") === "studio") setStudioReturnOpen(true);
+        else router.push("/studio?purchase=success");
+      });
     } catch (err) {
       alert(err instanceof Error ? err.message : "決済セッションの作成に失敗しました。");
       setProcessingPlanId(null);
@@ -408,6 +427,33 @@ export function Pricing() {
       />
 
       <ToastStack toasts={toasts} onDismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))} />
+
+      {studioReturnOpen &&
+        createPortal(
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-sm rounded-2xl border-gradient bg-surface p-8 text-center">
+              <h3 className="text-lg font-bold">購入が完了しました</h3>
+              <p className="mt-3 text-sm leading-relaxed text-muted">
+                このタブを閉じて、元の Studio のタブに戻ってください。クレジットはそちらにも反映され、今の設定のまま実行できます。
+              </p>
+              <button
+                type="button"
+                onClick={() => window.close()}
+                className="mt-6 w-full rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white hover:opacity-90"
+              >
+                このタブを閉じる
+              </button>
+              <p className="mt-3 text-[11px] leading-relaxed text-muted">
+                閉じられないときは、ブラウザのタブの × で閉じてください。元のタブが無い場合は{" "}
+                <Link href="/studio" className="text-neon-violet underline">
+                  Studio を開く
+                </Link>
+                。
+              </p>
+            </div>
+          </div>,
+          document.body,
+        )}
 
       <PlanReplaceModal
         target={replaceTarget}
