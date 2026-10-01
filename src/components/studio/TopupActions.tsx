@@ -2,63 +2,21 @@
 
 import { useState } from "react";
 import { createPortal } from "react-dom";
-import { CheckCircle2, Loader2, X, Zap } from "lucide-react";
+import { CheckCircle2, X, Zap } from "lucide-react";
 import { Pricing } from "@/components/Pricing";
-import { supabase } from "@/lib/supabaseClient";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
-import { TOPUP_PRICE_BY_TIER, useProfileCredits } from "@/hooks/useProfileCredits";
-import { POLAR_PRODUCT_IDS } from "@/lib/polarProducts";
+import { useProfileCredits } from "@/hooks/useProfileCredits";
 
-// クレジット不足の案内の中身（2026-10-01）。都度チャージは Studio の上に Polar の決済を重ねて出す（@polar-sh/checkout/embed）
-// ので、ページを離れず・タブも増えず・作業中の内容が消えない。月額プランは料金表（Pricing）をこの上に重ねて出し、そこから
-// 同じく埋め込み決済で買う（2026-10-01 ホスト指摘「月額は別タブが開く」→ 別タブをやめた）。
+// クレジット不足の案内の中身（2026-10-01）。料金表（Pricing。都度チャージと月額プランの両方が並ぶ）を Studio の上に重ねて出し、
+// 購入は埋め込み決済（@polar-sh/checkout/embed、Pricing 側）。ページを離れず・タブも増えず・作業中の内容が消えない。
+// 入口は 1 つ（ホスト判断 2026-10-01: 都度と月額でボタンを分けるより、料金表で比べて選ぶ方が迷わない）。
 // 購入後の残高は webhook → profiles 更新 → useProfileCredits の realtime 購読で、この画面にもそのまま反映される。
-// 埋め込みが使えないとき（API が embedded:false を返した＝許可外の origin 等）は決済ページを新しいタブで開く。
-
-const TOPUP_CREDITS = 300; // src/lib/polar.ts の POLAR_PRODUCT_CONFIG（topup）と同じ
-
 export function TopupActions({ cost, onClose }: { cost: number; onClose: () => void }) {
   const { user } = useSupabaseUser();
-  const { credits, tier } = useProfileCredits(user);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { credits } = useProfileCredits(user);
   const [purchased, setPurchased] = useState(false);
   const [plansOpen, setPlansOpen] = useState(false);
-  const price = TOPUP_PRICE_BY_TIER[tier ?? "free"] ?? TOPUP_PRICE_BY_TIER.free;
   const enough = (credits ?? 0) >= cost;
-
-  const buyHere = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) throw new Error("ログインし直してください。");
-      const res = await fetch("/api/checkout/polar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify({ productId: POLAR_PRODUCT_IDS.topup, embed: true }),
-      });
-      const data = (await res.json()) as { checkoutUrl?: string; embedded?: boolean; error?: string };
-      if (!res.ok || !data.checkoutUrl) throw new Error(data.error || "決済の準備に失敗しました。");
-      if (!data.embedded) {
-        window.open(data.checkoutUrl, "_blank", "noopener");
-        return;
-      }
-      const { PolarEmbedCheckout } = await import("@polar-sh/checkout/embed");
-      const checkout = await PolarEmbedCheckout.create(data.checkoutUrl, { theme: "dark" });
-      checkout.addEventListener("success", (event) => {
-        // 成功ページへ移動させない（移動すると Studio の作業内容が消える）。
-        event.preventDefault();
-        setPurchased(true);
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "決済の準備に失敗しました。");
-    } finally {
-      setBusy(false);
-    }
-  };
 
   if (purchased) {
     return (
@@ -87,24 +45,15 @@ export function TopupActions({ cost, onClose }: { cost: number; onClose: () => v
     <div className="mt-6 space-y-2">
       <button
         type="button"
-        onClick={() => void buyHere()}
-        disabled={busy}
-        className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:opacity-60"
-      >
-        {busy ? <Loader2 size={16} className="animate-spin" /> : <Zap size={16} />}
-        {TOPUP_CREDITS} クレジットをここで購入（¥{price.toLocaleString()}）
-      </button>
-      <button
-        type="button"
         onClick={() => setPlansOpen(true)}
-        className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-border px-6 py-2.5 text-xs text-muted hover:border-neon-violet/40 hover:text-foreground"
+        className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
       >
-        月額プランを見る
+        <Zap size={16} />
+        クレジットを購入する
       </button>
       <p className="text-center text-[11px] leading-relaxed text-muted">
-        どちらもこの画面のまま購入でき、今の設定は消えません。
+        都度チャージと月額プランから選べます。この画面のまま購入でき、今の設定は消えません。
       </p>
-      {error && <p className="text-center text-[11px] text-red-400">{error}</p>}
       {plansOpen &&
         createPortal(
           // 重なり順は他のモーダルと同じ 100（料金表の中のプラン変更の確認・ログインも 100 で、後から開いた方が上に来る）。
