@@ -1,6 +1,7 @@
 "use client";
 
 import { HelpNote } from "./HelpNote";
+import { TOPUP_NOTE, TOPUP_URL } from "@/lib/topup";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import JSZip from "jszip";
@@ -641,13 +642,16 @@ export function InsufficientCreditsModal({
           この生成には {cost} クレジット必要です。現在の保有クレジット: {credits ?? 0}
         </p>
         <a
-          href="#pricing"
+          href={TOPUP_URL}
+          target="_blank"
+          rel="noopener"
           onClick={onClose}
           className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
         >
           <Zap size={16} />
           クレジットをチャージする
         </a>
+        <p className="mt-2 text-center text-[11px] leading-relaxed text-muted">{TOPUP_NOTE}</p>
       </div>
     </div>,
     document.body,

@@ -1652,8 +1652,11 @@ export function YamlVipLockCard() {
         最上位クラスの専用GPUを用いた特注アーキテクチャ指定、Rank 64
         超の極限LoRA、および業務受託モデルの構築は個別相談にて承っております。
       </p>
+      {/* 問い合わせ欄はトップページ（Studio は /studio へ移した、2026-10-01）。作業中の内容を残すため新しいタブで開く。 */}
       <a
-        href="#contact"
+        href="/#contact"
+        target="_blank"
+        rel="noopener"
         className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-white transition-all hover:opacity-90"
       >
         <MessageCircle size={13} />

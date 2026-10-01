@@ -5,6 +5,7 @@
 // ./LoraStudioTab.parts.tsx に切り出し済み。この本体ファイルには状態を持つ
 // LoraStudioTab コンポーネントそのものだけを残している。
 
+import { InsufficientCreditsModal } from "./MultiAngleStudioTab";
 import { HelpNote } from "./HelpNote";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DIRECTOR_LORA_ENABLED } from "@/lib/featureFlags";
@@ -286,6 +287,7 @@ export function LoraStudioTab({
 }) {
   const { user } = useSupabaseUser();
   const { credits, loading: creditsLoading } = useProfileCredits(user);
+  const [chargeOpen, setChargeOpen] = useState(false);
   const { knobs: pricingKnobs } = usePricingKnobs();
   // Gates the raw-YAML editor (a bespoke-contract / support feature). Non-
   // admins get the consultation card and can never reach yamlMode, so the
@@ -4733,14 +4735,8 @@ export function LoraStudioTab({
       return;
     }
     if (insufficientCredits) {
-      if (typeof document !== "undefined") {
-        document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth" });
-        try {
-          window.history.replaceState(null, "", "#pricing");
-        } catch {
-          /* no-op */
-        }
-      }
+      // 料金表は /studio には無い（2026-10-01 に専用ページへ移した）。他タブと同じ不足の案内から新しいタブで開く。
+      setChargeOpen(true);
       return;
     }
     if (!canSubmit) return;
@@ -7740,6 +7736,12 @@ export function LoraStudioTab({
         open={loginOpen}
         onClose={() => setLoginOpen(false)}
         message="LoRA Studio でキャラクター学習を行うにはログインしてください。"
+      />
+      <InsufficientCreditsModal
+        open={chargeOpen}
+        onClose={() => setChargeOpen(false)}
+        credits={credits}
+        cost={requiredCredits}
       />
     </div>
   );
