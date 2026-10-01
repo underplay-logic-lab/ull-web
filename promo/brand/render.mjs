@@ -18,6 +18,10 @@ const MAIN = "声が届く距離の、映像スタジオ。";
 const SUB = "要望で育つ、映像・画像スタジオ";
 const URL = "ullstudio.com";
 const YT = { w: 2560, h: 1440, safe: { w: 1546, h: 423 } };
+// note のヘッダーは 1920×1006（note の指定）で上げるが、表示は中央の細長い帯だけ（端末で幅も変わる）。文字は中央の狭い範囲に収める。
+// X のヘッダーは 1500×500。左下にアイコンが重なり、スマホでは上下も少し切れるので、文字は中央に小さめに置く。
+const X_HEADER = { w: 1500, h: 500, safe: { w: 900, h: 300 } };
+const NOTE = { w: 1920, h: 1006, safe: { w: 1200, h: 380 } };
 
 const fonts = `<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700;800&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Serif+JP:wght@400;600&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter+Tight:wght@500;600;700&display=block" rel="stylesheet">`;
 
@@ -103,6 +107,8 @@ for (const [key, d] of Object.entries(DESIGNS)) {
 const FINAL = "black-serif";
 fs.copyFileSync(path.join(out, `${FINAL}-icon.png`), path.join(out, "youtube-icon.png"));
 fs.copyFileSync(path.join(out, `${FINAL}-youtube.png`), path.join(out, "youtube-banner.png"));
+await shoot("x-header.png", X_HEADER.w, X_HEADER.h, DESIGNS[FINAL].banner(X_HEADER));
+await shoot("note-header.png", NOTE.w, NOTE.h, DESIGNS[FINAL].banner(NOTE));
 
 // サイトのアイコン（src/app/icon.png・apple-icon.png・favicon.ico）。SVG だと明朝が出ないので PNG で描く。
 // favicon.ico は PNG をそのまま入れた ICO（今のブラウザは読める）。3 つは src/app へ直接書く（途中の PNG は out 側）。
@@ -121,6 +127,8 @@ for (const [file, px] of [["icon.png", 512], ["apple-icon.png", 180], ["fav-32.p
 // sharp はサイト本体（../node_modules）のものを借りる。
 const sharp = createRequire(path.join(root, "..", "package.json"))("sharp");
 const rgba = (f) => sharp(f).ensureAlpha().png().toBuffer();
+// YouTube の動画の透かし（右下に出る。推奨 150×150・1MB 以下）。アイコンを縮めるだけ。
+await sharp(path.join(out, "youtube-icon.png")).resize(150, 150).png().toFile(path.join(out, "youtube-watermark.png"));
 for (const f of ["icon.png", "apple-icon.png"]) fs.writeFileSync(path.join(appDir, f), await rgba(path.join(appDir, f)));
 const pngs = await Promise.all([32, 48].map(async (s) => ({ s, buf: await rgba(path.join(site, `fav-${s}.png`)) })));
 const ico = Buffer.alloc(6 + 16 * pngs.length);
