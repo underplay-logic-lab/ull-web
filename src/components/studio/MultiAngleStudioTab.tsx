@@ -1037,7 +1037,9 @@ export function MultiAngleStudioTab() {
             setPhase("done");
             const urls = next.images;
             if (urls.length > 0 && takeAutoDownload(jobId)) {
-              runAutoDownload("MultiAngleStudioTab", async () => triggerBlobDownload(await zipAngleImages(urls), buildZipFilename()));
+              runAutoDownload("MultiAngleStudioTab", async () =>
+                triggerBlobDownload(await zipAngleImages(await freshAngleImageUrls(jobId, urls)), buildZipFilename()),
+              );
             }
             if (loraModeRef.current && loraJobIdsRef.current.has(jobId) && next.images.length > 0) {
               const jid = jobId;

@@ -791,7 +791,9 @@ export function DirectorStudioTab() {
             if (sawInProgress) markGpuWarm();
             const videoUrl = next.videoUrl;
             if (videoUrl && takeAutoDownload(jobId)) {
-              runAutoDownload("DirectorStudioTab", () => downloadDirectorVideo(videoUrl, directorFilename(next.seed)));
+              runAutoDownload("DirectorStudioTab", async () =>
+                downloadDirectorVideo((await pollDirectorJob(jobId)).videoUrl ?? videoUrl, directorFilename(next.seed)),
+              );
             }
             // 改めて生成したジョブが完了したら、前の「今回の生成」を消して
             // このジョブ 1 件から始める（確認時点では消さない）。

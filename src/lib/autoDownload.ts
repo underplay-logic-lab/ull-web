@@ -59,18 +59,36 @@ function subscribe(cb: () => void): () => void {
 /**
  * 自動保存を実行する。失敗は握りつぶさず、切り替えスイッチの下に出す（CLAUDE.md §6-11）。
  * タブ側のエラー表示は「生成の失敗」用で、結果を表示中は出ない所が多いため、こちらにまとめる。
+ *
+ * 完了直後の URL は Volume を指していて、直後に R2 へ移されて消える（取得の途中で切れることもある）。
+ * なので最初に少し待ち（移し終わるのを待つ）、失敗したらさらに待って取り直す。
+ * save は URL を必ずジョブから取り直すこと（完了時の URL を使い回さない。2026-10-02 実例）。
  */
 let failure: string | null = null;
-export function runAutoDownload(tag: string, save: () => Promise<void> | void): void {
+const FIRST_DELAY_MS = 5000;
+const RETRY_DELAYS_MS = [5000, 15000];
+export function runAutoDownload(tag: string, save: (attempt: number) => Promise<void> | void): void {
   failure = null;
   emit();
-  Promise.resolve()
-    .then(save)
-    .catch((err) => {
-      console.error(`[${tag}] auto download failed:`, err);
-      failure = "自動保存に失敗しました。結果の「ダウンロード」から保存してください。";
-      emit();
-    });
+  void (async () => {
+    await new Promise((r) => setTimeout(r, FIRST_DELAY_MS));
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await save(attempt);
+        return;
+      } catch (err) {
+        if (attempt < RETRY_DELAYS_MS.length) {
+          console.warn(`[${tag}] auto download failed (attempt ${attempt + 1}), retrying:`, err);
+          await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+          continue;
+        }
+        console.error(`[${tag}] auto download failed:`, err);
+        failure = "自動保存に失敗しました。結果の「ダウンロード」から保存してください。";
+        emit();
+        return;
+      }
+    }
+  })();
 }
 
 export function useAutoDownloadFailure(): string | null {

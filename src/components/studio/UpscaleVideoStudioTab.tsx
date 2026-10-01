@@ -559,10 +559,11 @@ export function UpscaleVideoStudioTab() {
               // 手動の「ダウンロード」と同じ経路（Volume 上なら名前付きの URL を発行、それ以外は再生用 URL に名前を付ける）。
               runAutoDownload("UpscaleVideoStudioTab", async () => {
                 const name = buildOutFilename();
+                const url = (await pollUpscaleJob(jobId)).resultUrl ?? resultUrl;
                 downloadViaBrowser(
-                  isUpscaleResultVolumePath(resultUrl)
+                  isUpscaleResultVolumePath(url)
                     ? await fetchUpscaleVideoResultUrl(jobId, name)
-                    : withDownloadName(await resolveUpscaleVideoUrl(jobId, resultUrl), name),
+                    : withDownloadName(await resolveUpscaleVideoUrl(jobId, url), name),
                 );
               });
             }

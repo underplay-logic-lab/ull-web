@@ -898,7 +898,12 @@ export function UpscaleStudioTab() {
             const toSave = results
               .filter((j) => j.status === "completed" && j.resultUrl && takeAutoDownload(j.id))
               .map((j) => ({ id: j.id, resultUrl: j.resultUrl as string }));
-            if (toSave.length > 0) runAutoDownload("UpscaleStudioTab", () => downloadUpscaleZip(toSave));
+            if (toSave.length > 0) {
+              runAutoDownload("UpscaleStudioTab", async () => {
+                const fresh = new Map((await pollUpscaleJobs(toSave.map((r) => r.id))).map((j) => [j.id, j.resultUrl]));
+                await downloadUpscaleZip(toSave.map((r) => ({ id: r.id, resultUrl: fresh.get(r.id) ?? r.resultUrl })));
+              });
+            }
             // JOB_KEY と同じく完了後もクリアしない — リロード時に最後のバッチの
             // 結果をそのまま再表示する（Multi-Angle/LoRAタブと同じ挙動）。
             return;
@@ -1003,7 +1008,10 @@ export function UpscaleStudioTab() {
             if (sawInProgress) markGpuWarm();
             const resultUrl = next.resultUrl;
             if (resultUrl && takeAutoDownload(jobId)) {
-              runAutoDownload("UpscaleStudioTab", () => downloadUpscaleResult(jobId, resultUrl, buildOutFilename(resultUrl)));
+              runAutoDownload("UpscaleStudioTab", async () => {
+                const url = (await pollUpscaleJob(jobId)).resultUrl ?? resultUrl;
+                await downloadUpscaleResult(jobId, url, buildOutFilename(url));
+              });
             }
             // 「順番待ち」で予約されていた次の1件を、コンテナがまだ温かい
             // うちに自動発火する。ref はイベントハンドラでのみ書かれるので
