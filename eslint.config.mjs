@@ -27,6 +27,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // 紹介動画（Remotion）は別プロジェクト。依存も設定も promo/ の中で完結させる。
+    "promo/**",
   ]),
 ]);
 

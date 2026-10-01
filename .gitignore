@@ -95,3 +95,11 @@ angle_test_tuned2/
 /_backups/
 /_recover_*/
 
+
+# 紹介動画（Remotion）
+/promo/node_modules/
+/promo/out/
+
+/promo/public/*
+!/promo/public/.gitkeep
+

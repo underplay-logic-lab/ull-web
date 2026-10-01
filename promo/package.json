@@ -1,0 +1,23 @@
+{
+  "name": "ull-promo",
+  "private": true,
+  "description": "ULL Studio の紹介動画（Remotion）。絵コンテは ../docs/promo-video-storyboard.md",
+  "scripts": {
+    "studio": "remotion studio",
+    "render:short": "remotion render Short out/short.mp4",
+    "render:landscape": "remotion render Landscape out/landscape.mp4",
+    "still": "remotion still Short out/short.png --frame=60",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.531",
+    "@remotion/google-fonts": "4.0.531",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.531"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "typescript": "5.9.3"
+  }
+}
