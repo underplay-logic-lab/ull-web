@@ -615,7 +615,11 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 `/studio` へ送る。ヘッダーの Studio・決済の戻り先・ログイン必須ページの戻り先は `/studio` に変更済み。**本番での見た目は未確認**。
    **クレジット不足のチャージは埋め込み決済**（`TopupActions`・`@polar-sh/checkout/embed`）: 都度チャージは Studio の上に Polar の
    決済を重ねて出す（ページを離れない＝作業内容が消えない・タブが増えない）。月額プランは料金表を新しいタブ。**要: Polar の
-   Settings → Preferences → Embedding に www.ullstudio.com**（無いと新しいタブで決済ページが開く代替になる）。本番未確認。
+   Settings → Preferences → Embedding に www.ullstudio.com**（2026-10-01 ホスト設定済み・frame-ancestors で確認済み）。
+   料金表（Pricing）の購入も埋め込み。Studio から開いた料金表（`/?from=studio#pricing`）で買うと「このタブを閉じて元の Studio へ」。
+   **本番で重なって出るかはホストの目視待ち**。
+**依存の脆弱性（2026-10-01 済）**: Next.js 16.3.1→16.3.8（致命的な RCE 3 件、うち 1 件は next/og＝OGP 画像で使用）・sharp・
+   brace-expansion を更新、npm audit 0 件・next build 通過。
 
 **その次**
 4. 素材づくり（必要になったら）: 全身の行の同一性・超こだわりモード（表情違いの顔アップ＋BFS 強度 1.0・別料金）・斜めの左右（反転の技）
