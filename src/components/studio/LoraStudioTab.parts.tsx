@@ -5,6 +5,7 @@
 // コンポーネント本体（巨大な状態を持つ単一関数）はリスクが高いため分割せず
 // LoraStudioTab.tsx に残し、ここでは props だけで完結する部分のみを扱う。
 
+import { HelpNote } from "./HelpNote";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
@@ -657,11 +658,18 @@ export function IdentityTagsField({
       </div>
       {addError && <p className="mt-1 text-[10px] text-amber-400">{addError}</p>}
 
-      <p className="mt-1 text-[10px] leading-relaxed text-muted">
-        ここに残した特徴だけが<strong className="text-foreground">トリガーワードに焼き込まれ</strong>、キャプションには書かれません。
+      <HelpNote
+        id="lora.trigger-traits"
+        className="mt-1"
+        summary={
+          <>
+            ここに残した特徴だけが<strong className="text-foreground">トリガーワードに焼き込まれ</strong>、キャプションには書かれません。
+          </>
+        }
+      >
         学習させたくないもの（例: 眼鏡を外した絵も出したい）は <strong className="text-foreground">×</strong> で消してください。
         完成した LoRA の metadata にも同じ内容が埋め込まれます。
-      </p>
+      </HelpNote>
     </div>
   );
 }
@@ -824,17 +832,23 @@ export function ImageDropzone({
         </p>
         {/* 入れる前に比率を意識してもらう（2026-09-25、ホスト指摘）。全身ばかり入れると、あとで削る・切り出すことになり、
             切り出しても比率が届かないことがある。数字は診断の目安（DIAGNOSTIC_TARGETS.distanceShare）と同じ。 */}
-        <p className="max-w-md rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-2.5 py-1.5 text-[11px] leading-relaxed text-muted">
-          <strong className="text-foreground">入れる前に構図の比率を意識してください：</strong>1 人あたり
-          <strong className="text-foreground">
-            {" "}
-            顔アップ（肩まで）{Math.round(DIAGNOSTIC_TARGETS.distanceShare.closeup * 100)}%・上半身
-            {Math.round(DIAGNOSTIC_TARGETS.distanceShare.upper * 100)}%・全身{" "}
-            {Math.round(DIAGNOSTIC_TARGETS.distanceShare.full * 100)}% 以上
-          </strong>
-          が目安です（向きもばらけているほど良い）。全身ばかりだと、あとで削るか切り出すことになります。
+        <HelpNote
+          id="lora.composition-ratio"
+          className="max-w-md rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-2.5 py-1.5 text-[11px]!"
+          summary={
+            <>
+              <strong className="text-foreground">構図の目安（1 人あたり）：</strong>
+              <strong className="text-foreground">
+                顔アップ（肩まで）{Math.round(DIAGNOSTIC_TARGETS.distanceShare.closeup * 100)}%・上半身
+                {Math.round(DIAGNOSTIC_TARGETS.distanceShare.upper * 100)}%・全身{" "}
+                {Math.round(DIAGNOSTIC_TARGETS.distanceShare.full * 100)}% 以上
+              </strong>
+            </>
+          }
+        >
+          向きもばらけているほど良いです。全身ばかりだと、あとで削るか切り出すことになります。
           意図して偏らせる場合（全身だけのポーズ集など）はこの限りではありません。
-        </p>
+        </HelpNote>
         <input
           ref={inputRef}
           type="file"
@@ -2452,12 +2466,16 @@ export function ProgressPanel({
                   )}
                   📋 選択したファイルの URL 一覧をコピー ({selectedCount} 件)
                 </button>
-                <p className="mt-1.5 text-[10px] leading-relaxed text-muted opacity-70">
+                <HelpNote
+                  id="lora.bulk-download"
+                  className="mt-1.5 opacity-70"
+                  summary="ブラウザが「複数ファイルのダウンロードを許可しますか」と尋ねたら許可してください。"
+                >
                   まず 1 個だけ各行の「⬇️」でテスト取得し、良ければ必要な数件をチェックして一括ダウンロードできます。
-                  ファイルごとに直通リンクで並列に取得するので解凍は不要です（ブラウザが「複数ファイルのダウンロードを許可しますか」と尋ねたら許可してください）。
+                  ファイルごとに直通リンクで並列に取得するので解凍は不要です。
                   <br />
                   ※以前のジョブは 1 つのファイルにまとめて配信されるため、開始まで30〜60秒ほどかかります。
-                </p>
+                </HelpNote>
 
                 <div className="mt-2 flex flex-col gap-1.5">
                   {checkpoints.map((c) => (

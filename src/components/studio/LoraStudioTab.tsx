@@ -5,6 +5,7 @@
 // ./LoraStudioTab.parts.tsx に切り出し済み。この本体ファイルには状態を持つ
 // LoraStudioTab コンポーネントそのものだけを残している。
 
+import { HelpNote } from "./HelpNote";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DIRECTOR_LORA_ENABLED } from "@/lib/featureFlags";
 import {
@@ -5718,13 +5719,19 @@ export function LoraStudioTab({
                       <Sparkles size={13} />
                       取り込み完了 — 特徴と構図を診断する（無料）
                     </button>
-                    <p className="mt-1.5 text-[10px] leading-relaxed text-muted">
-                      画像を<strong className="text-foreground">全部入れ終えてから</strong>押してください。
+                    <HelpNote
+                      id="lora.diagnose"
+                      className="mt-1.5"
+                      summary={
+                        <>
+                          画像を<strong className="text-foreground">全部入れ終えてから</strong>押してください（押したあとに足した分も判定されます）。
+                        </>
+                      }
+                    >
                       被写体の特徴を抽出し、画像ごとの構図（全身・上半身・向き・姿勢・背景）を判定して、
                       足りない構図を診断します。途中で押すと、先に入れたフォルダにしか写っていない被写体の特徴が取れません。
-                      <strong className="text-foreground">押したあとに画像を足しても構いません</strong>
-                      （追加分だけ判定されます）。キャプションはこのあと、切り出しまで済んでから作ります。
-                    </p>
+                      キャプションはこのあと、切り出しまで済んでから作ります。
+                    </HelpNote>
                   </div>
                 )}
                 {/* 短辺不足の警告は解析開始ボタンの隣に置く（2026-09-24、ホスト指摘）。
@@ -6985,8 +6992,20 @@ export function LoraStudioTab({
                     </p>
                   </div>
                 ) : (
-                <p className="rounded-lg border border-border/60 bg-background/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted">
-                  <strong className="text-foreground">通常は両方とも空欄のままで構いません。</strong>
+                <HelpNote
+                  id="lora.caption-rules"
+                  className="rounded-lg border border-border/60 bg-background/60 px-2 py-1.5"
+                  summary={
+                    <>
+                      <strong className="text-foreground">通常は両方とも空欄のままで構いません。</strong>
+                      {captionCategory === "outfit" && (
+                        <span className="text-amber-400">
+                          {" "}⚠️ 学習タイプが「衣装」なので逆になります（衣装を書かず、着ている人の顔や髪を描写）。人物LoRAなら「キャラクター／人物」を選んでください。
+                        </span>
+                      )}
+                    </>
+                  }
+                >
                   学習タイプを選んだ時点で既定ルールが効いています。人物なら、顔立ち・髪型・髪色・目の色・固有の装飾品は
                   <strong className="text-foreground">キャプションに書かれず、トリガーワードに焼き込まれます</strong>。
                   ポーズ・表情・構図・背景・光だけが描写されます。
@@ -6996,9 +7015,13 @@ export function LoraStudioTab({
                   <strong className="text-foreground">変化させたい特徴に「眼鏡」</strong>と入力。
                   逆に既定では拾われない持ち物などを焼き込みたければ、固定したい特徴に書きます。
                   <strong className="text-foreground">ここに書いた指定は既定より優先されます。</strong>
-                  <br />
-                  ⚠️ 学習タイプを「衣装」にすると<strong className="text-foreground">逆になります</strong>（衣装を書かず、着ている人の顔や髪を描写）。人物LoRAでは「キャラクター／人物」を選んでください。
-                </p>
+                  {captionCategory !== "outfit" && (
+                    <>
+                      <br />
+                      学習タイプを「衣装」にすると<strong className="text-foreground">逆になります</strong>（衣装を書かず、着ている人の顔や髪を描写）。
+                    </>
+                  )}
+                </HelpNote>
                 )}
 
                 {/* Caption FORMAT — dense prose vs. comma tags, routed by the

@@ -82,7 +82,11 @@ export function HelpNote({
         {hasMore && (
           <button
             type="button"
-            onClick={() => write(KEY_PREFIX + id, open ? "0" : "1")}
+            onClick={(e) => {
+              // ドロップ欄など、クリックで別の動作をする枠の中にも置くので親へ伝えない。
+              e.stopPropagation();
+              write(KEY_PREFIX + id, open ? "0" : "1");
+            }}
             aria-expanded={open}
             className="ml-1 inline-flex items-center gap-0.5 whitespace-nowrap text-neon-violet/80 hover:text-neon-violet"
           >
