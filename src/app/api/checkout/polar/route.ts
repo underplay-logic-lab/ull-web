@@ -21,7 +21,8 @@ const LOG_PREFIX = "[checkout/polar]";
 // somewhere unexpected. Both land on the pricing section (there is no
 // standalone /pricing route; it's the #pricing anchor on the home page).
 // 購入後は Studio へ（2026-09-26 ホスト案: 使うために買っているので、料金欄に戻す理由が無い）。
-const SUCCESS_URL = "https://www.ullstudio.com/?purchase=success#studio";
+// Studio は専用ページへ移した（2026-10-01）。旧 URL で戻っても StudioHashRedirect が /studio へ送る。
+const SUCCESS_URL = "https://www.ullstudio.com/studio?purchase=success";
 const RETURN_URL = "https://www.ullstudio.com/#pricing";
 
 export async function POST(request: Request) {

@@ -8,10 +8,10 @@ import { ComfyUiDevControls } from "@/components/admin/ComfyUiDevControls";
 export default async function AdminLayout({ children }: { children: ReactNode }) {
   const user = await getAdminUser();
 
-  // No public /studio route exists — Studio is the #studio section on the
-  // homepage (see src/app/page.tsx) — so unauthorized visitors land there.
+  // Unauthorized visitors land on the public Studio page (/studio, 2026-10-01 —
+  // it used to be the #studio section on the homepage).
   if (!user) {
-    redirect("/#studio");
+    redirect("/studio");
   }
 
   return (
@@ -33,7 +33,7 @@ export default async function AdminLayout({ children }: { children: ReactNode })
             </span>
             <ComfyUiDevControls />
             <Link
-              href="/#studio"
+              href="/studio"
               className="flex items-center gap-1.5 rounded-full border border-border bg-surface/60 px-3 py-1.5 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
             >
               <ArrowLeft size={14} />

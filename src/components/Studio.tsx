@@ -43,6 +43,24 @@ const STUDIO_TABS: { id: StudioTab; label: string; adminOnly?: boolean }[] = [
 // Studio を開いたときに最初に表示するタブ。
 const DEFAULT_TAB: StudioTab = "director";
 
+// 専用ページ /studio（2026-10-01、ホスト指摘「トップの 1 セクションだと、下へスクロールしすぎると別の内容が出る」）では
+// 今のタブを ?tab= に載せる。使い方の案内・紹介動画からタブ単位でリンクでき、再読み込みしても同じタブが開く。
+// 切り替えは replaceState（履歴を積まない — タブごとに「戻る」が溜まると、ページを離れるのに何度も戻ることになる）。
+const STUDIO_PATH = "/studio";
+const isStudioTab = (v: string | null): v is StudioTab => STUDIO_TABS.some((t) => t.id === v);
+function tabFromUrl(): StudioTab | null {
+  if (typeof window === "undefined" || window.location.pathname !== STUDIO_PATH) return null;
+  const v = new URLSearchParams(window.location.search).get("tab");
+  return isStudioTab(v) ? v : null;
+}
+function writeTabToUrl(tab: StudioTab) {
+  if (window.location.pathname !== STUDIO_PATH) return;
+  const url = new URL(window.location.href);
+  if (url.searchParams.get("tab") === tab) return;
+  url.searchParams.set("tab", tab);
+  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 function ImageGenMaintenancePlaceholder() {
   return (
     <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border-gradient bg-surface/40 px-6 py-20 text-center">
@@ -59,22 +77,36 @@ export function Studio() {
   const { user, loading: userLoading } = useSupabaseUser();
   // 別アカウントに切り替わっていたら、前のアカウントの作業状態（実行中ジョブ等）を退避し、今のアカウントの
   // 退避分を戻してからタブを出す（入れ替えたら読み直す）。タブはマウント時に保存分を読むので、判定が済むまで描画しない。
+  const [activeTab, setActiveTab] = useState<StudioTab>(DEFAULT_TAB);
+  // 一度でも lora を開いたか（理由は goTab の上のコメント）。URL のタブ反映でも立てるのでここで宣言する。
+  const [loraMounted, setLoraMounted] = useState(false);
   const [storageReady, setStorageReady] = useState(false);
+  // URL のタブを開いたときは、タブ切り替え時の「タブの頭へスクロール」をしない（開いた直後に勝手に動くため）。
+  const skipTabScrollRef = useRef(false);
   useEffect(() => {
     if (userLoading) return;
     let cancelled = false;
     (async () => {
       const wiped = user ? await claimStudioStorage(user.id) : false;
       if (cancelled) return;
-      if (wiped) window.location.reload();
-      else setStorageReady(true);
+      if (wiped) {
+        window.location.reload();
+        return;
+      }
+      // URL のタブはここで反映する（サーバー描画と食い違わないよう、マウント後に読む）。
+      const fromUrl = tabFromUrl();
+      if (fromUrl && fromUrl !== DEFAULT_TAB) {
+        skipTabScrollRef.current = true;
+        if (fromUrl === "lora") setLoraMounted(true);
+        setActiveTab(fromUrl);
+      }
+      setStorageReady(true);
     })();
     return () => {
       cancelled = true;
     };
   }, [user, userLoading]);
   const { isAdmin } = useIsAdmin(user);
-  const [activeTab, setActiveTab] = useState<StudioTab>(DEFAULT_TAB);
   const visibleTabs = STUDIO_TABS.filter((tab) => !tab.adminOnly || isAdmin);
 
   // LoRA Studio だけは一度開いたら**アンマウントしない**（2026-09-21）。
@@ -85,13 +117,13 @@ export function Studio() {
   // 案内した導線が自分で成果物を壊す状態になっていた。
   // 他タブは失っても困る state が無いので従来どおり。
   // 一度でも lora を開いたか。タブ遷移は必ず goTab を通す。
-  const [loraMounted, setLoraMounted] = useState(false);
   const goTab = useCallback(
     (id: StudioTab) => {
       // admin 限定タブは非 admin からの遷移（LoRA 完了画面の旧導線等）でも開かない。
       if (STUDIO_TABS.find((t) => t.id === id)?.adminOnly && !isAdmin) return;
       if (id === "lora") setLoraMounted(true);
       setActiveTab(id);
+      writeTabToUrl(id);
     },
     [isAdmin],
   );
@@ -117,6 +149,10 @@ export function Studio() {
   useEffect(() => {
     if (firstRenderRef.current) {
       firstRenderRef.current = false;
+      return;
+    }
+    if (skipTabScrollRef.current) {
+      skipTabScrollRef.current = false;
       return;
     }
     tabsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });

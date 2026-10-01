@@ -8,7 +8,7 @@ import { getAdminUser } from "@/lib/adminAuth";
 // ADMIN_EMAILS gate as /admin.
 export default async function WorkflowBuilderLayout({ children }: { children: ReactNode }) {
   const user = await getAdminUser();
-  if (!user) redirect("/#studio");
+  if (!user) redirect("/studio");
 
   // pt-16 clears the app's fixed 4rem <Header>; the shell sizes its own
   // panes to the remaining viewport height.

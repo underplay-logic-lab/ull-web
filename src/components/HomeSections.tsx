@@ -2,7 +2,7 @@
 
 import type { ComponentType } from "react";
 import { Hero } from "@/components/Hero";
-import { Studio } from "@/components/Studio";
+import { StudioTeaser } from "@/components/StudioTeaser";
 import { Pricing } from "@/components/Pricing";
 import { Contact } from "@/components/Contact";
 import { Support } from "@/components/Support";
@@ -19,7 +19,8 @@ const SECTION_REGISTRY: Record<string, { label: string; Component: ComponentType
   hero: { label: "Hero", Component: Hero },
   comparison: { label: "徹底比較", Component: ComparisonSection },
   showcase: { label: "実績ショーケース", Component: ShowcaseSection },
-  studio: { label: "Studio", Component: Studio },
+  // Studio 本体は /studio へ移した（2026-10-01）。トップは各機能への入口だけ。
+  studio: { label: "Studio", Component: StudioTeaser },
   devicezerowaste: { label: "デバイスフリー / 死に金ゼロ", Component: DeviceZeroWasteSection },
   trustmedia: { label: "信頼・メディア導線", Component: TrustMediaSection },
   pricing: { label: "Pricing", Component: Pricing },

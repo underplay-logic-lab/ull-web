@@ -17,7 +17,7 @@ export const siteConfig = {
 export const CONTACT_EMAIL = "support@ullstudio.com";
 
 export const navLinks = [
-  { label: "Studio", href: "/#studio" },
+  { label: "Studio", href: "/studio" },
   { label: "Pricing", href: "/#pricing" },
   { label: "Contact", href: "/#contact" },
 ];

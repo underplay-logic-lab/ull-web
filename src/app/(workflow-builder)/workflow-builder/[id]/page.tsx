@@ -8,7 +8,7 @@ export default async function WorkflowBuilderPage({
   params: Promise<{ id: string }>;
 }) {
   const user = await getAdminUser();
-  if (!user) redirect("/#studio");
+  if (!user) redirect("/studio");
 
   const { id } = await params;
   return <WorkflowBuilderShell workflowId={id} />;
