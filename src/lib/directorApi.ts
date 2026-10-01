@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabaseClient";
 import { uploadStudioAsset } from "@/lib/studioUploads";
-import type { DirectorQualityMode, DirectorScene } from "@/lib/directorPricing";
+import { isDirectorQualityMode, type DirectorQualityMode, type DirectorScene } from "@/lib/directorPricing";
 
 export type DirectorApiError = Error & { remainingCredits?: number };
 
@@ -483,8 +483,9 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
     combinedPromptJa: (data.combinedPromptJa as string | null) ?? null,
     seed: typeof data.seed === "number" ? data.seed : null,
     regenerable: data.regenerable === true,
-    quality: meta.quality_mode === "fast" || meta.quality_mode === "quality" ? meta.quality_mode : null,
-    totalDurationS: typeof meta.total_duration_s === "number" ? meta.total_duration_s : null,
+    quality: isDirectorQualityMode(data.qualityMode) ? data.qualityMode : isDirectorQualityMode(meta.quality_mode) ? meta.quality_mode : null,
+    totalDurationS:
+      typeof data.durationS === "number" ? data.durationS : typeof meta.total_duration_s === "number" ? meta.total_duration_s : null,
     queue:
       typeof data.queuePosition === "number"
         ? {

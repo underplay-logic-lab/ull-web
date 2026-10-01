@@ -137,7 +137,9 @@ export function directorCostBreakdownForDuration(args: {
   const mode = args.mode ?? "fast";
   const totalDurationS = Math.min(
     DIRECTOR_MAX_TOTAL_SECONDS,
-    Math.max(DIRECTOR_SECONDS_PER_SCENE, Math.round(args.totalDurationS || 0)),
+    // 下限はシード 1 本分の最短（3 秒）。以前は 15 秒で、5 秒の動画を「作り直す」と 15 秒・3 倍の料金になっていた（2026-10-02）。
+    // プロンプト／Advanced の尺の選択肢は 15 秒刻みなので、そちらの料金は変わらない。
+    Math.max(DIRECTOR_MIN_SCENE_DURATION_S, Math.round(args.totalDurationS || 0)),
   );
   const perSecond = directorPerSecond(mode, knobs);
   const raw = Math.ceil(perSecond * totalDurationS);

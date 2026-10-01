@@ -968,10 +968,16 @@ export function DirectorStudioTab() {
                 onChange={(e) => setPromptDraftDurationS(Number(e.target.value))}
                 className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-foreground"
               >
-                {Array.from(
-                  { length: Math.floor(DIRECTOR_MAX_TOTAL_SECONDS / DIRECTOR_SECONDS_PER_SCENE) },
-                  (_, i) => (i + 1) * DIRECTOR_SECONDS_PER_SCENE,
-                ).map((s) => (
+                {/* 調整で入ったとき、元の動画の尺（シーンモードの 5 秒など）も選べるようにする。 */}
+                {[
+                  ...new Set([
+                    promptDraftDurationS,
+                    ...Array.from(
+                      { length: Math.floor(DIRECTOR_MAX_TOTAL_SECONDS / DIRECTOR_SECONDS_PER_SCENE) },
+                      (_, i) => (i + 1) * DIRECTOR_SECONDS_PER_SCENE,
+                    ),
+                  ]),
+                ].sort((a, b) => a - b).map((s) => (
                   <option key={s} value={s}>
                     約{s}秒
                   </option>

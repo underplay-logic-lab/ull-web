@@ -180,6 +180,9 @@ export async function GET(request: Request, { params }: RouteParams) {
   // Director の「作り直す」（2026-10-01〜）: シードと、元の参照画像が記録されているか（古いジョブには無い）。
   const seed = typeof inputs?.seed === "number" ? inputs.seed : null;
   const regenerable = typeof inputs?.reference_storage_path === "string" && Boolean(combinedPrompt);
+  // 尺・画質は metadata にも書くが、完了時にワーカーが metadata を丸ごと置き換えて消える。inputs 側は残るのでこちらを返す。
+  const durationS = typeof inputs?.total_duration_s === "number" ? inputs.total_duration_s : null;
+  const qualityMode = typeof inputs?.quality_mode === "string" ? inputs.quality_mode : null;
 
   // Director（2026-09-18〜）は video_url にSupabase公開URLではなく
   // Volume相対パス（director_results/<user_id>/<job_id>.mp4）を保存する
@@ -214,6 +217,8 @@ export async function GET(request: Request, { params }: RouteParams) {
     combinedPromptJa,
     seed,
     regenerable,
+    durationS,
+    qualityMode,
     retryCount: typeof effJob.retry_count === "number" ? effJob.retry_count : 0,
     ...(queue
       ? {
