@@ -1,5 +1,6 @@
 "use client";
 
+import { HelpNote } from "./HelpNote";
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, X } from "lucide-react";
@@ -46,10 +47,14 @@ export function LoraAnglePicker({
         <div className="flex items-start justify-between gap-4">
           <div>
             <h3 className="text-lg font-bold">マルチアングルの元にする画像を選ぶ</h3>
-            <p className="mt-1 text-xs leading-relaxed text-muted">
-              選んだ画像ごとに、別の向き・距離の画像を作ります。顔と服がはっきり写っている画像がおすすめです（最大 {MAX_PICK} 枚）。
-              作った画像は、マルチアングルの画面で選んでこのデータセットに戻せます。
-            </p>
+            <HelpNote
+              id="lora.angle-picker"
+              className="mt-1"
+              textClass="text-xs text-muted"
+              summary={`選んだ画像ごとに、別の向き・距離の画像を作ります（最大 ${MAX_PICK} 枚）。`}
+            >
+              顔と服がはっきり写っている画像がおすすめです。作った画像は、マルチアングルの画面で選んでこのデータセットに戻せます。
+            </HelpNote>
             {items.some((it) => it.closeUp) && (
               <p className="mt-1 text-xs leading-relaxed text-amber-400">
                 「顔アップ」の印が付いた画像は体が写っていないため、真横・背面への回転はほぼ効きません（正面〜斜め前なら作れます）。

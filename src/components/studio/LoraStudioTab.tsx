@@ -5846,24 +5846,22 @@ export function LoraStudioTab({
               <p className="text-[11px] font-medium text-neon-violet">
                 切り出した {reviewCroppedImages.length} 枚を確認してください
               </p>
-              <ul className="space-y-0.5 text-[10px] leading-relaxed text-muted">
-                <li>
-                  ・
+              {/* 消すべき 2 種類は要点に残す（ここでの作業そのもの）。理由と「気にしなくてよいもの」は詳しく。 */}
+              <HelpNote
+                id="lora.crop-review"
+                summary={
                   <strong className="text-foreground">
-                    顔（目・鼻・口）がフレームから欠けている画像は削除してください。
+                    顔（目・鼻・口）が欠けている画像と、別の被写体が顔なしで大きく写り込んでいる画像は削除してください。
                   </strong>
-                  顔が欠けた絵を学習させると、その構図での再現性が落ちます。頭頂部が少し切れている程度は問題ありません。
-                </li>
-                <li>・体が胸や腰で切れているのは問題ありません。それが上半身クロップの目的です。</li>
-                <li>
-                  ・
-                  <strong className="text-foreground">
-                    別の被写体が顔なしで大きく写り込んでいる画像も削除してください。
-                  </strong>
-                  顔が無いとその被写体の学習には使えず、かといって主役の特徴として吸収されてしまいます。
-                </li>
-                <li>・端にわずかに他の被写体が入る程度（細い帯）は無視して構いません。</li>
-              </ul>
+                }
+              >
+                <ul className="space-y-0.5">
+                  <li>・顔が欠けた絵を学習させると、その構図での再現性が落ちます。頭頂部が少し切れている程度は問題ありません。</li>
+                  <li>・体が胸や腰で切れているのは問題ありません。それが上半身クロップの目的です。</li>
+                  <li>・顔が無い被写体はその被写体の学習には使えず、かといって主役の特徴として吸収されてしまいます。</li>
+                  <li>・端にわずかに他の被写体が入る程度（細い帯）は無視して構いません。</li>
+                </ul>
+              </HelpNote>
               {multiSubjectCrops.length > 0 && (
                 <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
                   <p className="text-[10px] leading-relaxed text-amber-400">
@@ -6491,9 +6489,14 @@ export function LoraStudioTab({
               {/* 設定値の注意書き（2026-09-26、ホスト判断）。用途・素材・枚数で最適値は変わるので、既定値は出発点だと
                   どのモードにも同じく書く。人物の既定値を各モデルで「トリガーで呼び出せる」と確かめたら、その旨を足す
                   （docs/STATUS.md、LoRA 既定値の検証）。 */}
-              <p className="mt-1.5 text-[10px] leading-relaxed text-muted">
-                最適な設定値は、LoRA の用途・素材の状態・枚数によって変わります。既定値は出発点です。仕上がりを見て、途中の保存（チェックポイント）を比べたり、学習設定を調整したりしてください。
-              </p>
+              <HelpNote
+                id="lora.settings-note"
+                title="設定値について"
+                className="mt-1.5"
+                summary="最適な設定値は、LoRA の用途・素材の状態・枚数によって変わります。既定値は出発点です。"
+              >
+                仕上がりを見て、途中の保存（チェックポイント）を比べたり、学習設定を調整したりしてください。
+              </HelpNote>
             </div>
           )}
 
@@ -6960,10 +6963,13 @@ export function LoraStudioTab({
 
             {captionPromptOpen && (
               <div className="space-y-3 px-3 pb-3">
-                <p className="text-[10px] leading-relaxed text-muted">
-                  上で選んだ学習タイプに合ったキャプションの方針が自動で適用されます。
+                <HelpNote
+                  id="lora.caption-policy"
+                  title="ここで何が起きるか"
+                  summary="選んだ学習タイプに合ったキャプションの方針が自動で適用されます。"
+                >
                   「次へ」を押すと、画像解析エンジン向けの英語キャプション指示をAIが組み立てて反映します。
-                </p>
+                </HelpNote>
                 {/* 2026-09-21: 「入力しないと何も効かない」と誤解されていた
                     （ホスト確認）。実際は学習タイプごとの既定ルールが常に
                     効いていて、入力はその追加。以前は入力すると既定が

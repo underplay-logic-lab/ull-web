@@ -1274,21 +1274,26 @@ export function RepeatWeightPanel({
       )}
     </div>
     <div className="mt-1.5 space-y-1 text-[10px] leading-relaxed text-muted">
-      <p>
-        ×2 にした画像は、学習中に
-        <strong className="text-foreground">2倍の頻度で見せられます</strong>
-        （同じ画像を2枚入れるのと同じ意味）。
-        <strong className="text-foreground">消費クレジットは変わりません</strong>
-        ——総ステップ数は固定で、変わるのはデータセットの構成比だけです。
-      </p>
-      <p>
+      <HelpNote
+        id="lora.repeats"
+        title="学習回数（×2 など）の使い方"
+        summary={
+          <>
+            ×2 にした画像は、学習中に
+            <strong className="text-foreground">2倍の頻度で見せられます</strong>
+            （同じ画像を2枚入れるのと同じ意味）。
+            <strong className="text-foreground">消費クレジットは変わりません</strong>
+            ——総ステップ数は固定で、変わるのはデータセットの構成比だけです。
+          </>
+        }
+      >
         使いどころは
         <strong className="text-foreground">「少ない構図を、多い構図に近づける」</strong>
         こと。全身ばかりで顔アップが少ないなら、顔アップ側を上げます。
         多い側を下げることはできない（最小が ×1）ので、常に少ない側を上げる方向で調整します。
         <strong className="text-foreground">情報が増えるわけではない</strong>ので、
         ×3 を超える重み付けは素材不足の先送りにしかなりません（その画像の表情・背景まで焼き込まれます）。
-      </p>
+      </HelpNote>
       {onSuggestRepeats && (
         <div className="flex flex-wrap items-center gap-2 pt-0.5">
           <button
@@ -1483,31 +1488,30 @@ export function SmartCropPanel({
         </span>
       )}
     </div>
-    <p
-      className={`mt-1.5 text-[10px] leading-relaxed ${
-        images.length + cropEstimate > MAX_IMAGES ? "text-amber-400" : "text-muted"
-      }`}
-    >
-      {cropTargetIds.length === 0 ? (
-        <>
-          選んだ構図を作れる元画像がありません。切り出しは
-          <strong className="text-foreground">引いた画を寄せることしかできない</strong>
-          ので、たとえば「全身」は元画像より引いた画が無いと作れません。
-          「上半身」なら全身の画像から、「顔」なら全身・上半身の画像から作れます。
-        </>
-      ) : (
-        <>
-          構図の横の数字は「対象 {cropPool.length} 枚のうち、その構図を作れる枚数」です
-          （切り出しは引いた画を寄せることしかできないため）。現在 {images.length} 枚 / 上限{" "}
-          {MAX_IMAGES} 枚。
-          <strong className="text-foreground">実際に増える枚数はこれよりかなり少なくなります</strong>
-          ——切り出し元が小さすぎるもの（全身写真からの顔アップが典型）と、人物の骨格を検出できな
-          かった画像は自動で除外されるためです。実行後に内訳が出ます。
-          {selected.size === 0 &&
-            " 被写体で絞るには、下の一括選択チップで選んでからこのボタンを押してください。"}
-        </>
-      )}
-    </p>
+    {cropTargetIds.length === 0 ? (
+      <p
+        className={`mt-1.5 text-[10px] leading-relaxed ${
+          images.length + cropEstimate > MAX_IMAGES ? "text-amber-400" : "text-muted"
+        }`}
+      >
+        選んだ構図を作れる元画像がありません。切り出しは
+        <strong className="text-foreground">引いた画を寄せることしかできない</strong>
+        ので、たとえば「全身」は元画像より引いた画が無いと作れません。
+        「上半身」なら全身の画像から、「顔」なら全身・上半身の画像から作れます。
+      </p>
+    ) : (
+      <HelpNote
+        id="lora.smart-crop"
+        className="mt-1.5"
+        textClass={`text-[10px] ${images.length + cropEstimate > MAX_IMAGES ? "text-amber-400" : "text-muted"}`}
+        summary={`現在 ${images.length} 枚 / 上限 ${MAX_IMAGES} 枚。実際に増える枚数は、表示よりかなり少なくなります。`}
+      >
+        構図の横の数字は「対象 {cropPool.length} 枚のうち、その構図を作れる枚数」です
+        （切り出しは引いた画を寄せることしかできないため）。
+        切り出し元が小さすぎるもの（全身写真からの顔アップが典型）と、人物の骨格を検出できなかった画像は自動で除外されます。実行後に内訳が出ます。
+        {selected.size === 0 && " 被写体で絞るには、一括選択チップで選んでからこのボタンを押してください。"}
+      </HelpNote>
+    )}
   </div>
 )}
     </>
@@ -2329,11 +2333,20 @@ export function ProgressPanel({
           この LoRA はモデルライブラリに保存されました。
         </p>
         {/* 最終版だけ見て「うまくいかない」と判断されないように（2026-09-28、ホスト判断）。FAQ と同じ趣旨。 */}
-        <p className="mt-1.5 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2 text-[11px] leading-relaxed text-foreground">
-          <strong>最終版が最良とは限りません。</strong>
-          最も良い版は学習データやベースモデルによって変わるため、下の途中の保存も必ず見比べてください。
+        {/* 要点は畳まない（最終版だけ見て判断されるのを防ぐのが目的）。 */}
+        <HelpNote
+          id="lora.best-checkpoint"
+          className="mt-1.5 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2"
+          textClass="text-[11px] text-foreground"
+          summary={
+            <>
+              <strong>最終版が最良とは限りません。</strong>途中の保存も必ず見比べてください。
+            </>
+          }
+        >
+          最も良い版は学習データやベースモデルによって変わります。
           似せ方が強すぎる・指定した場面に従いにくいときは手前の版、似方が足りないときは後ろの版が合うことが多いです。
-        </p>
+        </HelpNote>
         {job.artifactsTransferring && (
           <p className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-400">
             <Loader2 size={12} className="mt-0.5 shrink-0 animate-spin" />

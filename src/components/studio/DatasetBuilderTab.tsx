@@ -1314,11 +1314,15 @@ export function DatasetBuilderTab() {
                 ))}
                 <span className="text-[10px] text-muted/80">実写を選ぶと、アニメ調に転ぶのを抑えます。</span>
               </div>
-              <p className="text-[10px] leading-relaxed text-muted">
-                {precision === "careful"
-                  ? "基準の全身像・真横・後ろ姿を先に候補から選んで確定し、それを元に作ります。顔や体つきが揃いやすく、仕上がりの精度が上がります（候補づくりの料金がかかります）。"
-                  : "基準の全身像・真横・後ろ姿を作らず、メイン画像のまますぐ作ります。手早く安く済みますが、顔や体つきは画像ごとに多少ぶれます。"}
-              </p>
+              <HelpNote
+                id="dataset.precision"
+                title={precision === "careful" ? "「こだわり」で作ると" : "「かんたん」で作ると"}
+                summary={
+                  precision === "careful"
+                    ? "基準の全身像・真横・後ろ姿を先に候補から選んで確定し、それを元に作ります。顔や体つきが揃いやすく、仕上がりの精度が上がります（候補づくりの料金がかかります）。"
+                    : "基準の全身像・真横・後ろ姿を作らず、メイン画像のまますぐ作ります。手早く安く済みますが、顔や体つきは画像ごとに多少ぶれます。"
+                }
+              />
               {mainRoute === "full" && (
                 <label className="flex items-center gap-1.5 text-[11px] text-muted">
                   <input
