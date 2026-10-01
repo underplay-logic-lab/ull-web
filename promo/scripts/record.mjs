@@ -31,6 +31,18 @@ const QUALITY = Number(process.env.REC_QUALITY ?? 88);
 const profileDir = path.join(root, ".rec-profile");
 const recording = name !== "login";
 
+// ログインは自動操作をつながない普通の Chrome で、録画と同じプロファイルを開く。
+// Playwright でつないだままだと、起動オプションで印を消してもログイン画面の Turnstile に弾かれる（エラー 600010、2026-10-01）。
+// Turnstile が出るのはログイン画面だけなので、一度ログインしておけば録画中は当たらない。
+const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
+if (!recording && fs.existsSync(CHROME)) {
+  const { spawn } = await import("node:child_process");
+  console.log("ログインしたらブラウザを閉じてください（録画はしていません）。");
+  const chrome = spawn(CHROME, [`--user-data-dir=${profileDir}`, "--no-first-run", "--hide-crash-restore-bubble", startUrl], { stdio: "ignore" });
+  await new Promise((r) => chrome.on("exit", r));
+  process.exit(0);
+}
+
 const launch = (channel) =>
   chromium.launchPersistentContext(profileDir, {
     channel,
@@ -38,7 +50,10 @@ const launch = (channel) =>
     viewport: VIEW,
     deviceScaleFactor: DPR,
     locale: "ja-JP",
-    args: ["--hide-crash-restore-bubble"],
+    // 自動操作の印（navigator.webdriver・「自動テストソフトウェアによって制御」）を消す。
+    // 付いたままだとログイン画面の Turnstile（Cloudflare のロボット判定）に弾かれる（2026-10-01）。
+    ignoreDefaultArgs: ["--enable-automation"],
+    args: ["--hide-crash-restore-bubble", "--disable-blink-features=AutomationControlled"],
   });
 // 普段の Chrome があればそれを使う（無ければ Playwright 同梱の Chromium）。
 const context = await launch("chrome").catch(() => launch(undefined));

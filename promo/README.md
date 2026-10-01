@@ -31,7 +31,7 @@ npm run render:landscape  # out/landscape.mp4（16:9・90 秒）
 本物の画面を人が操作して録る。ズーム・カーソル・クリックの波紋・待ち時間の早送り・テロップは後から自動で乗る。
 
 ```sh
-node scripts/record.mjs login                    # 初回だけ: テスト用アカウントでログインして閉じる（.rec-profile/ に残る）
+node scripts/record.mjs login                    # 初回だけ: 普通の Chrome が開く。テスト用アカウントでログインして閉じる（.rec-profile/ に残る。自動操作中だと Turnstile に弾かれるため）
 node scripts/record.mjs dataset https://www.ullstudio.com/studio?tab=dataset
 #   → 普通に操作する。説明を入れたい所で F8。終わったらブラウザを閉じる
 #   → public/rec/dataset/ に frames/・session.json・edit.json
