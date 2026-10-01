@@ -125,7 +125,7 @@ export function WorkflowFieldLayout({
           >
             <span className="flex items-center gap-1.5">
               <Settings2 size={14} />
-              詳細設定
+              詳細設定（上級者向け）
             </span>
             <ChevronDown size={14} className={`transition-transform ${advancedOpen ? "rotate-180" : ""}`} />
           </button>

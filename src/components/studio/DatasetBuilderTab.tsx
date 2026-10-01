@@ -1673,7 +1673,7 @@ export function DatasetBuilderTab() {
                     aria-expanded={open}
                     className="inline-flex w-fit items-center gap-0.5 text-[11px] text-neon-violet/80 hover:text-neon-violet disabled:cursor-default disabled:hover:text-neon-violet/80"
                   >
-                    詳細設定（服装の自由指定・追加の指示）
+                    詳細設定（上級者向け）: 服装の自由指定・追加の指示
                     {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
                   </button>
                   {open && (

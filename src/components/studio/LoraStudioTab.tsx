@@ -7343,7 +7343,7 @@ export function LoraStudioTab({
                       aria-expanded={advancedOpen}
                       className="ml-auto inline-flex items-center gap-0.5 text-neon-violet/80 hover:text-neon-violet"
                     >
-                      詳細設定
+                      詳細設定（上級者向け）
                       {advancedOpen ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
                     </button>
                   </div>

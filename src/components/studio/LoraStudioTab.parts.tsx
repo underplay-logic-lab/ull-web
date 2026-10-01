@@ -339,8 +339,9 @@ export function loadFormDraft(): LegacyFormDraft | null {
 export type Mode = "auto" | "pro";
 
 export const MODES: { id: Mode; label: string; desc: string }[] = [
-  { id: "auto", label: "⚡ オート (Auto)", desc: "画像を入れるだけ。キャプションは自動検知（同名 .txt があれば優先）" },
-  { id: "pro", label: "🔬 エキスパート (Pro)", desc: "Rank / LR / Steps スライダーや生 YAML を直接編集" },
+  // 2026-10-02: Director と同じく「初心者におすすめ／上級者向け」の言葉に揃えた。
+  { id: "auto", label: "⚡ オート（初心者におすすめ）", desc: "画像を入れるだけ。キャプションは自動検知（同名 .txt があれば優先）" },
+  { id: "pro", label: "🔬 エキスパート（上級者向け）", desc: "Rank / LR / Steps スライダーや生 YAML を直接編集" },
 ];
 
 export const PRESET_GROUPS: LoraPresetGroup[] = ["video", "photo", "anime"];
