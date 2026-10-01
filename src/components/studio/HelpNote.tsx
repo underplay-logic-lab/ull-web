@@ -1,20 +1,21 @@
 "use client";
 
-import { useSyncExternalStore, type ReactNode } from "react";
+import { useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
-// Studio の説明ブロック（2026-10-01、説明の整理）。要点 1 行を常に出し、補足は「詳しく ▸」で開く。
+// Studio の説明ブロック（2026-10-01、説明の整理）。
 //
-// 開閉はブラウザに記憶する（per-id の上書き → 全体の既定 → 画面幅の既定 の順）。全体の既定は
-// Studio 上部の「説明: すべて開く／すべて畳む」（HelpNoteToggleAll）で切り替え、押すと per-id の上書きは消える。
-// 画面幅の既定は、PC は開く・スマホ（640px 未満）は畳む（ホスト了承 2026-09-29）。
+// 基本は「項目名 ▸」だけを出し、押すと説明（要点＋補足）が開く（ホスト判断 2026-10-01: 初見でどれだけシンプルに
+// 見えるかを優先。分からなくなったときに開けば詳しく書いてある状態）。title を渡さないものは従来どおり要点を常に出し、
+// 補足だけ「詳しく ▸」で開く — 料金・所要時間の注意や、間違えると困る指示はこちら（畳むと事故になる）。
+// notice は開閉に関係なく常に出す（条件付きの警告など）。
 //
-// 注意・警告（料金がかかる・結果が入れ替わる等）は要点側に書く。「詳しく」に隠してよいのは読まなくても困らない補足だけ。
+// 開閉はブラウザに記憶する（部分ごとの記憶 → 全体の既定 → 閉じる の順）。全体の既定は Studio 上部の
+// 「説明: すべて開く／すべて畳む」（HelpNoteToggleAll）で切り替え、押すと部分ごとの記憶は消える。
 
 const KEY_PREFIX = "ull_help_";
 const DEFAULT_KEY = `${KEY_PREFIX}_default`;
 const EVENT = "ull-help-change";
-const MOBILE_QUERY = "(max-width: 639px)";
 
 const read = (key: string): string | null => {
   try {
@@ -36,42 +37,40 @@ const write = (key: string, value: string | null) => {
 const subscribe = (cb: () => void) => {
   window.addEventListener(EVENT, cb);
   window.addEventListener("storage", cb);
-  const mq = window.matchMedia(MOBILE_QUERY);
-  mq.addEventListener("change", cb);
   return () => {
     window.removeEventListener(EVENT, cb);
     window.removeEventListener("storage", cb);
-    mq.removeEventListener("change", cb);
   };
 };
 
-const defaultOpen = () => {
-  const d = read(DEFAULT_KEY);
-  if (d === "1") return true;
-  if (d === "0") return false;
-  return !window.matchMedia(MOBILE_QUERY).matches;
-};
+const defaultOpen = () => read(DEFAULT_KEY) === "1";
 
 const isOpen = (id: string) => {
   const v = read(KEY_PREFIX + id);
   return v === "1" ? true : v === "0" ? false : defaultOpen();
 };
 
-// サーバー描画では畳んだ状態で出す（要点は出るのでレイアウトは大きく跳ねない）。
+// サーバー描画では畳んだ状態で出す（既定も閉じるなのでレイアウトは跳ねない）。
 const serverClosed = () => false;
 
 export function HelpNote({
   id,
+  title,
   summary,
   children,
+  notice,
   className = "",
   textClass = "text-[10px] text-muted",
   icon,
 }: {
   // ブラウザに記憶する開閉のキー。タブ名を頭に付ける（例: "dataset.reference"）。
   id: string;
+  // 畳んだときに出す項目名（何の説明か）。無ければ要点を常に出す。
+  title?: string;
   summary: ReactNode;
   children?: ReactNode;
+  // 開閉に関係なく常に出す（条件付きの警告など）。
+  notice?: ReactNode;
   className?: string;
   // 文字サイズと色（既存の説明に合わせる。注意の枠なら text-amber-300 など）。
   textClass?: string;
@@ -81,23 +80,46 @@ export function HelpNote({
   const open = useSyncExternalStore(subscribe, () => isOpen(id), serverClosed);
   const hasMore = children != null && children !== false && children !== "";
 
-  const body = (
+  const toggle = (e: MouseEvent) => {
+    // ドロップ欄など、クリックで別の動作をする枠の中にも置くので親へ伝えない。
+    e.stopPropagation();
+    write(KEY_PREFIX + id, open ? "0" : "1");
+  };
+  const chevron = open ? <ChevronDown size={10} /> : <ChevronRight size={10} />;
+
+  const body = title ? (
+    <>
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={open}
+        className="inline-flex items-center gap-0.5 text-left text-neon-violet/80 hover:text-neon-violet"
+      >
+        {title}
+        {chevron}
+      </button>
+      {notice && <p>{notice}</p>}
+      {open && (
+        <div className="mt-0.5">
+          <p>{summary}</p>
+          {hasMore && <div className="text-muted/80">{children}</div>}
+        </div>
+      )}
+    </>
+  ) : (
     <>
       <p>
         {summary}
+        {notice}
         {hasMore && (
           <button
             type="button"
-            onClick={(e) => {
-              // ドロップ欄など、クリックで別の動作をする枠の中にも置くので親へ伝えない。
-              e.stopPropagation();
-              write(KEY_PREFIX + id, open ? "0" : "1");
-            }}
+            onClick={toggle}
             aria-expanded={open}
             className="ml-1 inline-flex items-center gap-0.5 whitespace-nowrap text-neon-violet/80 hover:text-neon-violet"
           >
             {open ? "閉じる" : "詳しく"}
-            {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+            {chevron}
           </button>
         )}
       </p>

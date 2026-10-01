@@ -899,7 +899,7 @@ export function DirectorStudioTab() {
               </select>
             </div>
             <HelpNote
-              id="director.prompt"
+              id="director.prompt" title="書き方のコツ（セリフ・日本語）"
               className="mt-2"
               textClass="text-[11px] text-muted"
               icon={<Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />}
@@ -1052,7 +1052,7 @@ export function DirectorStudioTab() {
             </div>
 
             <HelpNote
-              id="director.scenes"
+              id="director.scenes" title="シーンのつながり方"
               className="mt-2"
               textClass="text-[11px] text-muted"
               icon={<Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />}

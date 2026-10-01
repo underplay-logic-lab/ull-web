@@ -387,7 +387,7 @@ export function SubReferenceSlots({
       {error && <p className="mt-1.5 text-[11px] text-red-400">{error}</p>}
       {files.length > 0 && (
         <HelpNote
-          id="angle.subref"
+          id="angle.subref" title="サブ参照の使われ方"
           className="mt-1.5"
           textClass="text-[11px] text-muted/80"
           icon={<Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />}
@@ -1540,7 +1540,7 @@ export function MultiAngleStudioTab() {
             </div>
           )}
           {loraSources.length > 1 && (
-            <HelpNote id="angle.lora-sources" summary="画像ごとに構図を変えるか、残りをまとめて同じ構図で作れます。">
+            <HelpNote id="angle.lora-sources" title="作り方" summary="画像ごとに構図を変えるか、残りをまとめて同じ構図で作れます。">
               <strong className="text-foreground/90">画像ごとに構図を変える:</strong> 画像をクリック → 構図を選ぶ → 生成ボタン。生成した画像は「生成済み」になります。
               <br />
               <strong className="text-foreground/90">残りをまとめて:</strong> 構図を選んでから「未生成の○枚を同じ構図で生成」。1 枚ずつ順番に作ります（追加料金なし）。
@@ -1723,7 +1723,7 @@ export function MultiAngleStudioTab() {
           )}
 
           <HelpNote
-            id="angle.output"
+            id="angle.output" title="出力サイズ・対応形式"
             className="-mt-2"
             textClass="text-xs text-muted"
             icon={<ImagePlus size={14} className="mt-0.5 shrink-0 text-neon-violet" />}

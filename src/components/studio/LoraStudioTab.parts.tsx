@@ -659,7 +659,7 @@ export function IdentityTagsField({
       {addError && <p className="mt-1 text-[10px] text-amber-400">{addError}</p>}
 
       <HelpNote
-        id="lora.trigger-traits"
+        id="lora.trigger-traits" title="ここで決まること"
         className="mt-1"
         summary={
           <>
@@ -833,7 +833,7 @@ export function ImageDropzone({
         {/* 入れる前に比率を意識してもらう（2026-09-25、ホスト指摘）。全身ばかり入れると、あとで削る・切り出すことになり、
             切り出しても比率が届かないことがある。数字は診断の目安（DIAGNOSTIC_TARGETS.distanceShare）と同じ。 */}
         <HelpNote
-          id="lora.composition-ratio"
+          id="lora.composition-ratio" title="入れる画像の構図の目安"
           className="max-w-md rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-2.5 py-1.5"
           textClass="text-[11px] text-muted"
           summary={
@@ -2468,7 +2468,7 @@ export function ProgressPanel({
                   📋 選択したファイルの URL 一覧をコピー ({selectedCount} 件)
                 </button>
                 <HelpNote
-                  id="lora.bulk-download"
+                  id="lora.bulk-download" title="一括ダウンロードの使い方"
                   className="mt-1.5 opacity-70"
                   summary="ブラウザが「複数ファイルのダウンロードを許可しますか」と尋ねたら許可してください。"
                 >

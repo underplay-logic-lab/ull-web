@@ -1346,14 +1346,14 @@ export function DatasetBuilderTab() {
             error={subError}
             onZoom={(i, url) => setLocalPreview({ url, label: `参照 ${i + 1}` })}
           />
-          <HelpNote id="dataset.reference" summary="メインの画像からは分からない後ろ姿・真横があれば、参照に足してください。">
+          <HelpNote id="dataset.reference" title="参照の使われ方" summary="メインの画像からは分からない後ろ姿・真横があれば、参照に足してください。">
             参照は真横・後ろ向きの画像にだけ使い、正面・斜めの画像はメイン 1 枚で作ります（そのぶん速く・安く）。
           </HelpNote>
           {image && (
             <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
               <p className="text-[11px] font-medium text-foreground">素材づくりの基準にする画像</p>
               <HelpNote
-                id="dataset.base"
+                id="dataset.base" title="基準にする画像について"
                 summary={`全身の画像は${activeBaseFull ? "確定した基準の全身像" : "メイン画像"}を、上半身・バストアップの画像は下の画像を基準に作ります。`}
               >
                 上半身・バストアップの基準は、{activeBaseFull ? "基準の全身像" : "メイン画像"}から自動で切り出します（無料・切り出しの解像度は仕上がりに影響しません）。
@@ -1675,7 +1675,7 @@ export function DatasetBuilderTab() {
                 />
               </label>
             </div>
-            <HelpNote id="dataset.combos" summary="選んだ組み合わせを順に回して枚数ぶん作ります。">
+            <HelpNote id="dataset.combos" title="組み合わせの作られ方" summary="選んだ組み合わせを順に回して枚数ぶん作ります。">
               未選択の軸は既定（立つ・無地・全身・正面・元の服装）になります。
               服装は 1 枚ごとに順に変わります。表情はすべて真顔で作ります（表情を変えると顔立ちが変わりやすく、LoRA の素材では同じ人に見えることを優先するため）。
               日本語の入力は送るときに英訳します。
@@ -1865,14 +1865,12 @@ export function DatasetBuilderTab() {
             const jobs = checkBatchCount(ordered.plan, batchOpt, ordered.prefixLen);
             return (
               <HelpNote
-                id="dataset.review"
-                summary={
-                  <>
-                    各行の文は日本語のまま書き換えられます。「先に作る」にチェックを入れた画像は、最初の確認分（最大 {SCENE_BATCH_SIZE} 枚）に入ります。
-                    {jobs > 1 && (
-                      <span className="text-amber-400"> 選んだ行が {SCENE_BATCH_SIZE} 枚を超えるため {jobs} 本のジョブに分かれます。</span>
-                    )}
-                  </>
+                id="dataset.review" title="この一覧の直し方"
+                summary={`各行の文は日本語のまま書き換えられます。「先に作る」にチェックを入れた画像は、最初の確認分（最大 ${SCENE_BATCH_SIZE} 枚）に入ります。`}
+                notice={
+                  jobs > 1 && (
+                    <span className="text-amber-400">選んだ行が {SCENE_BATCH_SIZE} 枚を超えるため {jobs} 本のジョブに分かれます。</span>
+                  )
                 }
               >
                 送るときに英訳します。構図・向きは各行の表示のとおり固定です。行を消すと枚数が減ります。
@@ -1957,7 +1955,7 @@ export function DatasetBuilderTab() {
               </button>
             </div>
           </div>
-          <HelpNote id="dataset.remaining" summary="各行の文を書き換えるか、× で消して直せます。できた画像はそのまま残ります。">
+          <HelpNote id="dataset.remaining" title="残りの直し方" summary="各行の文を書き換えるか、× で消して直せます。できた画像はそのまま残ります。">
             まとめて変えるときは、シーン設定（ポーズ・場面・服装など）を変えてから「文章を作り直す」を押すと、この一覧に反映されます。構図・向きは変わりません。
           </HelpNote>
           <ol className="max-h-[420px] space-y-1 overflow-y-auto pr-1">
@@ -2060,7 +2058,7 @@ export function DatasetBuilderTab() {
               </div>
             )}
           </div>
-          <HelpNote id="dataset.results" summary="使わない画像は、サムネの右上の × で外せます（もう一度押すと戻ります）。">
+          <HelpNote id="dataset.results" title="画像の外し方" summary="使わない画像は、サムネの右上の × で外せます（もう一度押すと戻ります）。">
             クリックで拡大（拡大中は「この画像を外す」か x キー）。外した画像は保存・LoRA の対象になりません（料金は生成した分にかかります）。
           </HelpNote>
           <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
