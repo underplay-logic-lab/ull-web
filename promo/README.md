@@ -44,3 +44,8 @@ node scripts/record.mjs demo https://www.ullstudio.com/   # 仕組みの動作�
 - 何を打ったかは記録しない（キーは「押した」ことだけ）。画面に出るメールアドレス等はテスト用アカウントで避ける。
 - 録画は 30fps 上限で約 2MB/秒（10 分で 1.2GB）。`public/` なので git には入らない。
 - 画質を上げたいとき `REC_DPR=2`（既定 1.5）。
+
+## ブランド素材（SNS のアイコン・バナー）
+
+`node brand/render.mjs` → `out/brand/`。採用案（黒 × 明朝、2026-10-01）は `youtube-icon.png`・`youtube-banner.png`。
+`sheet.png` は案の見比べ用。色・書体・一行は `brand/render.mjs` の先頭（`PALETTE` / `TYPE` / `MAIN`）。
