@@ -834,7 +834,8 @@ export function ImageDropzone({
             切り出しても比率が届かないことがある。数字は診断の目安（DIAGNOSTIC_TARGETS.distanceShare）と同じ。 */}
         <HelpNote
           id="lora.composition-ratio"
-          className="max-w-md rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-2.5 py-1.5 text-[11px]!"
+          className="max-w-md rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-2.5 py-1.5"
+          textClass="text-[11px] text-muted"
           summary={
             <>
               <strong className="text-foreground">構図の目安（1 人あたり）：</strong>

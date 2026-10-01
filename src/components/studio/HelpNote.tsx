@@ -65,18 +65,24 @@ export function HelpNote({
   summary,
   children,
   className = "",
+  textClass = "text-[10px] text-muted",
+  icon,
 }: {
   // ブラウザに記憶する開閉のキー。タブ名を頭に付ける（例: "dataset.reference"）。
   id: string;
   summary: ReactNode;
   children?: ReactNode;
   className?: string;
+  // 文字サイズと色（既存の説明に合わせる。注意の枠なら text-amber-300 など）。
+  textClass?: string;
+  // 行頭のアイコン（Multi-Angle などの「✦ 説明」型）。
+  icon?: ReactNode;
 }) {
   const open = useSyncExternalStore(subscribe, () => isOpen(id), serverClosed);
   const hasMore = children != null && children !== false && children !== "";
 
-  return (
-    <div className={`text-[10px] leading-relaxed text-muted ${className}`}>
+  const body = (
+    <>
       <p>
         {summary}
         {hasMore && (
@@ -96,7 +102,16 @@ export function HelpNote({
         )}
       </p>
       {hasMore && open && <div className="mt-0.5 text-muted/80">{children}</div>}
+    </>
+  );
+
+  return icon ? (
+    <div className={`flex items-start gap-1.5 leading-relaxed ${textClass} ${className}`}>
+      {icon}
+      <div className="min-w-0">{body}</div>
     </div>
+  ) : (
+    <div className={`leading-relaxed ${textClass} ${className}`}>{body}</div>
   );
 }
 

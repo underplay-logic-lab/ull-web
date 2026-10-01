@@ -1,5 +1,6 @@
 "use client";
 
+import { HelpNote } from "./HelpNote";
 import { PrevResultPanel } from "@/components/studio/PrevResultPanel";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -813,11 +814,14 @@ export function UpscaleVideoStudioTab() {
             )}
           </div>
 
-          <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
-            <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-            動画超解像は最小構成の提供です（最大{UPSCALE_VIDEO_MAX_SECONDS}秒・音声はそのまま維持されます）。
-            解像度が高いほど、またフレーム数が多い動画ほど処理時間・消費クレジットが増えます。すでに4K相当以上の動画は対応していません。
-          </p>
+          <HelpNote
+            id="upscale-video.limits"
+            textClass="text-[11px] text-muted"
+            icon={<Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />}
+            summary={`最大${UPSCALE_VIDEO_MAX_SECONDS}秒・音声はそのまま維持されます。すでに4K相当以上の動画は対応していません。`}
+          >
+            動画超解像は最小構成の提供です。解像度が高いほど、またフレーム数が多い動画ほど処理時間・消費クレジットが増えます。
+          </HelpNote>
         </div>
 
         {/* ── 右: アクション / 結果 ───────────────────────────── */}

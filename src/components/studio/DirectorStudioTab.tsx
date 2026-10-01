@@ -1,5 +1,6 @@
 "use client";
 
+import { HelpNote } from "./HelpNote";
 import { PrevResultPanel } from "@/components/studio/PrevResultPanel";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -897,10 +898,15 @@ export function DirectorStudioTab() {
                 ))}
               </select>
             </div>
-            <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
-              <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-              このプロンプトはそのままモデルに渡されます（シーンの自動合成はスキップされますが、日本語で書いた場合は送信前に自動で英訳されます）。セリフを話させたい部分は「」で囲むと、そこだけ日本語のまま音声・リップシンクに反映されます。
-            </p>
+            <HelpNote
+              id="director.prompt"
+              className="mt-2"
+              textClass="text-[11px] text-muted"
+              icon={<Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />}
+              summary="セリフを話させたい部分は「」で囲むと、そこだけ日本語のまま音声・リップシンクに反映されます。"
+            >
+              このプロンプトはそのままモデルに渡されます（シーンの自動合成はスキップされますが、日本語で書いた場合は送信前に自動で英訳されます）。
+            </HelpNote>
           </div>
         ) : uiMode === "advanced" ? (
           <div>
@@ -1045,10 +1051,15 @@ export function DirectorStudioTab() {
               />
             </div>
 
-            <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
-              <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-              各シーンのカメラワーク・アイデアはAIが1本の連続した映像指示に自動合成します（上から順番に展開されますが、厳密な秒数通りに切り替わる保証はありません）。秒数は合計尺・消費クレジットの計算に使われます。合計最大{DIRECTOR_MAX_TOTAL_SECONDS}秒。
-            </p>
+            <HelpNote
+              id="director.scenes"
+              className="mt-2"
+              textClass="text-[11px] text-muted"
+              icon={<Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />}
+              summary={`各シーンはAIが1本の連続した映像にまとめます（合計最大${DIRECTOR_MAX_TOTAL_SECONDS}秒）。`}
+            >
+              上から順番に展開されますが、厳密な秒数通りに切り替わる保証はありません。秒数は合計尺・消費クレジットの計算に使われます。
+            </HelpNote>
           </div>
         )}
       </div>

@@ -1,5 +1,6 @@
 "use client";
 
+import { HelpNote } from "./HelpNote";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import JSZip from "jszip";
@@ -385,12 +386,21 @@ export function SubReferenceSlots({
       </div>
       {error && <p className="mt-1.5 text-[11px] text-red-400">{error}</p>}
       {files.length > 0 && (
-        <p className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted/80">
-          <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
+        <HelpNote
+          id="angle.subref"
+          className="mt-1.5"
+          textClass="text-[11px] text-muted/80"
+          icon={<Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />}
+          summary={
+            scopes
+              ? "サブ参照は既定で真横・後ろ寄りの構図にだけ使います。"
+              : "サブ参照を追加すると、背面・真横の生成で死角のデザイン・丈・テクスチャをそのまま維持します。"
+          }
+        >
           {scopes
-            ? "サブ参照は既定で真横・後ろ寄りの構図にだけ使います（死角のデザイン・丈・テクスチャの補完）。顔のアップは「後ろ以外」、衣装の細部などどの向きでも保ちたい画像は「全構図」に、サムネ下の切替で変えてください。"
-            : "サブ参照を追加すると、背面・真横の生成で死角のデザイン・丈・テクスチャをそのまま維持します。"}
-        </p>
+            ? "死角のデザイン・丈・テクスチャの補完に使います。顔のアップは「後ろ以外」、衣装の細部などどの向きでも保ちたい画像は「全構図」に、サムネ下の切替で変えてください。"
+            : null}
+        </HelpNote>
       )}
     </div>
   );
@@ -1530,11 +1540,11 @@ export function MultiAngleStudioTab() {
             </div>
           )}
           {loraSources.length > 1 && (
-            <p className="text-[10px] leading-relaxed text-muted">
-              <strong className="text-foreground/90">画像ごとに構図を変える:</strong> 画像をクリック → 下で構図を選ぶ → 下の生成ボタン。生成した画像は「生成済み」になります。
+            <HelpNote id="angle.lora-sources" summary="画像ごとに構図を変えるか、残りをまとめて同じ構図で作れます。">
+              <strong className="text-foreground/90">画像ごとに構図を変える:</strong> 画像をクリック → 構図を選ぶ → 生成ボタン。生成した画像は「生成済み」になります。
               <br />
-              <strong className="text-foreground/90">残りをまとめて:</strong> 下で構図を選んでから「未生成の○枚を同じ構図で生成」。1 枚ずつ順番に作ります（追加料金なし）。
-            </p>
+              <strong className="text-foreground/90">残りをまとめて:</strong> 構図を選んでから「未生成の○枚を同じ構図で生成」。1 枚ずつ順番に作ります（追加料金なし）。
+            </HelpNote>
           )}
           {loraCandidates.length > 0 && (
             <div className="space-y-2 border-t border-neon-violet/30 pt-3">
@@ -1699,20 +1709,28 @@ export function MultiAngleStudioTab() {
           </p>
 
           {subRefCount > 0 && (
-            <p className="-mt-2 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-300">
-              <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-              サブ参照 1 枚ごとに、生成時間・消費クレジットが上がります（全部使う構図で {perAngleBase} → {perAngle} クレジット/構図）。
+            <HelpNote
+              id="angle.subref-cost"
+              className="-mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2"
+              textClass="text-[11px] text-amber-300"
+              icon={<AlertTriangle size={13} className="mt-0.5 shrink-0" />}
+              summary={`サブ参照 1 枚ごとに、生成時間・消費クレジットが上がります（全部使う構図で ${perAngleBase} → ${perAngle} クレジット/構図）。合計 ${cost} クレジット・生成におよそ ${estMinutes} 分です。`}
+            >
               「真横・後ろだけ」は真横・後ろ寄りの構図（この選択では {count} 構図のうち {refCombosCount} 構図）、「後ろ以外」は
-              斜め後ろ・真後ろ以外の構図、「全構図」はすべての構図に使います。合計 {cost} クレジット・生成におよそ {estMinutes} 分です。
+              斜め後ろ・真後ろ以外の構図、「全構図」はすべての構図に使います。
               サブ参照を使う構図は、出力の縦横比がサブ参照画像に寄ります。
-            </p>
+            </HelpNote>
           )}
 
-          <p className="-mt-2 flex items-start gap-2 text-xs leading-relaxed text-muted">
-            <ImagePlus size={14} className="mt-0.5 shrink-0 text-neon-violet" />
-            出力解像度は約100万画素（アップロード画像のアスペクト比を維持し、およそ1024×1024相当）です。
-            サイズ・形式・向き（HEIC / 透過PNG / スマホの縦写真など）は内部で自動補正されるため、そのままアップロードできます。
-          </p>
+          <HelpNote
+            id="angle.output"
+            className="-mt-2"
+            textClass="text-xs text-muted"
+            icon={<ImagePlus size={14} className="mt-0.5 shrink-0 text-neon-violet" />}
+            summary="出力解像度は約100万画素（元の画像の縦横比のまま）です。"
+          >
+            およそ1024×1024相当です。サイズ・形式・向き（HEIC / 透過PNG / スマホの縦写真など）は内部で自動補正されるため、そのままアップロードできます。
+          </HelpNote>
 
           {phase === "error" && errorMessage && (
             <p className="-mt-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
