@@ -494,8 +494,8 @@ export function CandidatePanel({
             onClick={onStart}
             disabled={!image || Boolean(blockedReason)}
             title={blockedReason ?? undefined}
-            className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white disabled:opacity-50 ${
-              insufficient ? "bg-amber-600/80" : "bg-gradient-to-r from-neon-pink to-neon-violet hover:opacity-90"
+            className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold disabled:opacity-50 ${
+              insufficient ? "bg-amber-600/80 text-white" : "bg-gradient-to-r from-neon-pink to-neon-violet text-background hover:opacity-90"
             }`}
           >
             <Sparkles size={11} />

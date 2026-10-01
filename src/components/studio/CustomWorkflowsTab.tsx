@@ -289,10 +289,10 @@ export function CustomWorkflowsTab() {
           type="button"
           onClick={handleGenerate}
           disabled={missingRequiredFile || status === "loading"}
-          className={`flex items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold text-white transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
+          className={`flex items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
             insufficientCredits
-              ? "bg-amber-600/80 hover:opacity-90"
-              : "bg-gradient-to-r from-neon-pink to-neon-violet hover:opacity-90 glow-pink"
+              ? "bg-amber-600/80 text-white hover:opacity-90"
+              : "bg-gradient-to-r from-neon-pink to-neon-violet text-background hover:opacity-90 glow-pink"
           }`}
         >
           {status === "loading" ? (

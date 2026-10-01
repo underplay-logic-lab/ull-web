@@ -1068,14 +1068,14 @@ export function ImageDropzone({
                   )}
                   {reps !== 1 && (
                     <span
-                      className="absolute bottom-1 left-1 rounded bg-neon-pink/90 px-1 py-0.5 text-[9px] font-bold text-white"
+                      className="absolute bottom-1 left-1 rounded bg-neon-pink/90 px-1 py-0.5 text-[9px] font-bold text-background"
                       title={`この画像は ${reps} 回学習されます`}
                     >
                       ×{reps}
                     </span>
                   )}
                   {img.cropKind && (
-                    <span className="absolute bottom-1 right-1 rounded bg-neon-violet/85 px-1 py-0.5 text-[8px] font-medium text-white">
+                    <span className="absolute bottom-1 right-1 rounded bg-neon-violet/85 px-1 py-0.5 text-[8px] font-medium text-background">
                       ✂️ {SMART_CROP_KIND_LABEL[img.cropKind]}
                     </span>
                   )}

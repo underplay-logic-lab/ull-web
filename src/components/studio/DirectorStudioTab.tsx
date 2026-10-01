@@ -1348,8 +1348,8 @@ export function DirectorStudioTab() {
               type="button"
               onClick={chargeFirst ? () => setChargeOpen(true) : handleRun}
               disabled={!canRun && !chargeFirst}
-              className={`mt-4 flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 ${
-                chargeFirst ? "bg-amber-600/80" : "bg-gradient-to-r from-neon-pink to-neon-violet"
+              className={`mt-4 flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3 text-sm font-semibold transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 ${
+                chargeFirst ? "bg-amber-600/80 text-white" : "bg-gradient-to-r from-neon-pink to-neon-violet text-background"
               }`}
             >
               {chargeFirst ? (

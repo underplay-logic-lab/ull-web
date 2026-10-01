@@ -1378,10 +1378,10 @@ export function UpscaleStudioTab() {
             type="button"
             onClick={handleRun}
             disabled={!canRun && Boolean(user) && !(insufficientCredits && !busy)}
-            className={`mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold text-white transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
+            className={`mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
               insufficientCredits
-                ? "bg-amber-600/80 hover:opacity-90"
-                : "bg-gradient-to-r from-neon-pink to-neon-violet hover:opacity-90 glow-pink"
+                ? "bg-amber-600/80 text-white hover:opacity-90"
+                : "bg-gradient-to-r from-neon-pink to-neon-violet text-background hover:opacity-90 glow-pink"
             }`}
           >
             {phase === "submitting" ? (
@@ -1662,10 +1662,10 @@ export function UpscaleStudioTab() {
               type="button"
               onClick={handleBatchRun}
               disabled={batchItems.length === 0 && !batchInsufficientCredits && Boolean(user)}
-              className={`mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold text-white transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
+              className={`mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-6 py-3.5 text-sm font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
                 batchInsufficientCredits
-                  ? "bg-amber-600/80 hover:opacity-90"
-                  : "bg-gradient-to-r from-neon-pink to-neon-violet hover:opacity-90 glow-pink"
+                  ? "bg-amber-600/80 text-white hover:opacity-90"
+                  : "bg-gradient-to-r from-neon-pink to-neon-violet text-background hover:opacity-90 glow-pink"
               }`}
             >
               {batchBusy && batchItems.length > 0 ? (
