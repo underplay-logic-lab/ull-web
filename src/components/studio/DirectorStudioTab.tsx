@@ -910,7 +910,7 @@ export function DirectorStudioTab() {
               }`}
             >
               <Sparkles size={12} />
-              Advanced（台本自動生成）
+              Advanced（要点から台本）
             </button>
           </div>
         }
@@ -984,14 +984,14 @@ export function DirectorStudioTab() {
             <div className="mb-2 flex items-center justify-between">
               <p className="flex items-center gap-1.5 text-xs font-mono uppercase tracking-widest text-muted">
                 <Sparkles size={12} />
-                Advanced（AIによる台本自動生成）
+                Advanced — 要点を書くだけで、AI が台本にします
               </p>
             </div>
             <textarea
               value={conceptText}
               onChange={(e) => setConceptText(e.target.value.slice(0, DIRECTOR_SCENE_TEXT_MAX_LENGTH))}
               rows={4}
-              placeholder="例: 雨が降るネオンに照らされた夜の路地裏で、静かにこちらを見つめている。"
+              placeholder={"やりたいことを一言や箇条書きで（200 字まで）。例:\n・雨の夜の路地裏、ネオン\n・こちらに気づいて振り向き、少し笑う\n・「やっと来たね」と言う"}
               className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm leading-relaxed text-foreground placeholder:text-muted"
             />
             <div className="mt-3 flex items-center justify-between gap-3">
@@ -1013,7 +1013,8 @@ export function DirectorStudioTab() {
             </div>
             <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
               <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-              参照画像を実際に見た上で、短いアイデアからAIが台本を書き起こします（検閲による生成拒否が起きにくい代わりに追加でクレジットを消費します）。
+              細かく書かなくて大丈夫です。AI が参照画像を見たうえで、場面の流れ・動き・カメラ・光・環境音まで台本に書き起こします。
+              セリフは「」で書いたものだけが使われます（AI が勝手に足すことはありません）。台本を書く分、追加でクレジットがかかります。
             </p>
           </div>
         ) : (
