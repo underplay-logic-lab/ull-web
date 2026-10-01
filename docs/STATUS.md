@@ -614,7 +614,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 「Studio」セクションは各機能への入口（`StudioTeaser`）。古い `/#studio`（決済の戻り・DB の文言リンク等）は `StudioHashRedirect` が
 `/studio` へ送る。ヘッダーの Studio・決済の戻り先・ログイン必須ページの戻り先は `/studio` に変更済み。**本番での見た目は未確認**。
    **クレジット不足のチャージは埋め込み決済**（`TopupActions`・`@polar-sh/checkout/embed`）: 都度チャージは Studio の上に Polar の
-   決済を重ねて出す（ページを離れない＝作業内容が消えない・タブが増えない）。月額プランは料金表を新しいタブ。**要: Polar の
+   決済を重ねて出す（ページを離れない＝作業内容が消えない・タブが増えない）。月額プランは料金表（Pricing）を Studio の上に重ねて出し、そこから同じく埋め込み決済（別タブは開かない）。**要: Polar の
    Settings → Preferences → Embedding に www.ullstudio.com**（2026-10-01 ホスト設定済み・frame-ancestors で確認済み）。
    料金表（Pricing）の購入も埋め込み。Studio から開いた料金表（`/?from=studio#pricing`）で買うと「このタブを閉じて元の Studio へ」。
    **本番で重なって出るかはホストの目視待ち**。

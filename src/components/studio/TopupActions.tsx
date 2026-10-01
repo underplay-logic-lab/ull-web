@@ -1,15 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { CheckCircle2, ExternalLink, Loader2, Zap } from "lucide-react";
+import { createPortal } from "react-dom";
+import { CheckCircle2, Loader2, X, Zap } from "lucide-react";
+import { Pricing } from "@/components/Pricing";
 import { supabase } from "@/lib/supabaseClient";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { TOPUP_PRICE_BY_TIER, useProfileCredits } from "@/hooks/useProfileCredits";
 import { POLAR_PRODUCT_IDS } from "@/lib/polarProducts";
-import { TOPUP_URL } from "@/lib/topup";
 
 // クレジット不足の案内の中身（2026-10-01）。都度チャージは Studio の上に Polar の決済を重ねて出す（@polar-sh/checkout/embed）
-// ので、ページを離れず・タブも増えず・作業中の内容が消えない。月額プランは比べて選ぶ画面が要るので料金表を新しいタブで開く。
+// ので、ページを離れず・タブも増えず・作業中の内容が消えない。月額プランは料金表（Pricing）をこの上に重ねて出し、そこから
+// 同じく埋め込み決済で買う（2026-10-01 ホスト指摘「月額は別タブが開く」→ 別タブをやめた）。
 // 購入後の残高は webhook → profiles 更新 → useProfileCredits の realtime 購読で、この画面にもそのまま反映される。
 // 埋め込みが使えないとき（API が embedded:false を返した＝許可外の origin 等）は決済ページを新しいタブで開く。
 
@@ -21,6 +23,7 @@ export function TopupActions({ cost, onClose }: { cost: number; onClose: () => v
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [purchased, setPurchased] = useState(false);
+  const [plansOpen, setPlansOpen] = useState(false);
   const price = TOPUP_PRICE_BY_TIER[tier ?? "free"] ?? TOPUP_PRICE_BY_TIER.free;
   const enough = (credits ?? 0) >= cost;
 
@@ -91,19 +94,38 @@ export function TopupActions({ cost, onClose }: { cost: number; onClose: () => v
         {busy ? <Loader2 size={16} className="animate-spin" /> : <Zap size={16} />}
         {TOPUP_CREDITS} クレジットをここで購入（¥{price.toLocaleString()}）
       </button>
-      <a
-        href={TOPUP_URL}
-        target="_blank"
-        rel="noopener"
+      <button
+        type="button"
+        onClick={() => setPlansOpen(true)}
         className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-border px-6 py-2.5 text-xs text-muted hover:border-neon-violet/40 hover:text-foreground"
       >
         月額プランを見る
-        <ExternalLink size={12} />
-      </a>
+      </button>
       <p className="text-center text-[11px] leading-relaxed text-muted">
-        この画面のまま購入できます。月額プランは新しいタブで開きます。
+        どちらもこの画面のまま購入でき、今の設定は消えません。
       </p>
       {error && <p className="text-center text-[11px] text-red-400">{error}</p>}
+      {plansOpen &&
+        createPortal(
+          // 重なり順は他のモーダルと同じ 100（料金表の中のプラン変更の確認・ログインも 100 で、後から開いた方が上に来る）。
+          <div className="fixed inset-0 z-[100] overflow-y-auto bg-background/95 backdrop-blur-sm">
+            <button
+              type="button"
+              onClick={() => setPlansOpen(false)}
+              aria-label="閉じる"
+              className="fixed right-4 top-4 z-[101] rounded-full border border-border bg-surface p-2 text-muted hover:text-foreground"
+            >
+              <X size={18} />
+            </button>
+            <Pricing
+              onPurchased={() => {
+                setPlansOpen(false);
+                setPurchased(true);
+              }}
+            />
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

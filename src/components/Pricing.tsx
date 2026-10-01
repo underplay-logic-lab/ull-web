@@ -28,7 +28,9 @@ type WarningState =
 
 const yenPerCredit = (yen: number, credits: number) => (yen / credits).toFixed(2);
 
-export function Pricing() {
+// onPurchased: Studio の上に重ねて出すとき（TopupActions、2026-10-01）に渡す。購入が済んだらページを移らずこれを呼ぶ
+// （Studio の作業内容を残す）。トップページでは渡さず、従来どおり購入後に /studio へ進む。
+export function Pricing({ onPurchased }: { onPurchased?: () => void } = {}) {
   const { user } = useSupabaseUser();
   const { tier, cancelAtPeriodEnd } = useProfileCredits(user);
   const [loginOpen, setLoginOpen] = useState(false);
@@ -171,7 +173,8 @@ export function Pricing() {
         setProcessingPlanId(null);
         // Studio の「月額プランを見る」から新しいタブで来たときは、このタブで Studio を開かず元のタブへ戻ってもらう
         // （元のタブに作業中の内容があり、残高は realtime 購読でそちらにも反映される）。
-        if (new URLSearchParams(window.location.search).get("from") === "studio") setStudioReturnOpen(true);
+        if (onPurchased) onPurchased();
+        else if (new URLSearchParams(window.location.search).get("from") === "studio") setStudioReturnOpen(true);
         else router.push("/studio?purchase=success");
       });
     } catch (err) {
@@ -232,7 +235,11 @@ export function Pricing() {
   };
 
   return (
-    <section id="pricing" data-source-file="src/components/Pricing.tsx" className="relative py-24 sm:py-32">
+    <section
+      id={onPurchased ? undefined : "pricing"}
+      data-source-file="src/components/Pricing.tsx"
+      className={onPurchased ? "relative py-10" : "relative py-24 sm:py-32"}
+    >
       <div className="mx-auto max-w-6xl px-6">
         <div className="mb-16 text-center">
           <EditableText
