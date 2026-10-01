@@ -327,6 +327,8 @@ export function DirectorStudioTab() {
   // 「この動画をもとに調整する」（2026-10-01〜）: 完了した動画から入ったときだけ持つ。
   // この間は元の動画と同じシード・同じ参照画像で作り直す（画像の入れ直しは不要）。
   const [adjustBase, setAdjustBase] = useState<{ jobId: string; seed: number | null } | null>(null);
+  // 編集欄は画面の上の方にあるので、結果の下のボタンから入ったらそこまで連れて行く（押しても反応が無いように見えた、2026-10-02）。
+  const promptEditorRef = useRef<HTMLTextAreaElement>(null);
 
   // Advanced モード（2026-09-18追加。TODO(advanced-gate): 月額プラン限定に
   // する場合はこのモードを選べる条件をここに追加する — 今回は未実装）。
@@ -567,6 +569,10 @@ export function DirectorStudioTab() {
     setAdjustBase(job.status === "completed" && job.regenerable ? { jobId: job.jobId, seed: job.seed } : null);
     if (job.quality) setQualityMode(job.quality);
     setUiMode("prompt");
+    setTimeout(() => {
+      promptEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      promptEditorRef.current?.focus({ preventScroll: true });
+    }, 50);
   }, [job]);
   const exitPromptMode = useCallback(() => {
     setAdjustBase(null);
@@ -948,6 +954,7 @@ export function DirectorStudioTab() {
               </div>
             )}
             <textarea
+              ref={promptEditorRef}
               value={promptDraft}
               onChange={(e) => setPromptDraft(e.target.value)}
               rows={8}
