@@ -630,7 +630,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 5. 納品ツール: ULL 上の許可制ツール（メタデータクリーナー → 背景透過）→ ブラウザ版 FramePicker。FramePicker の Colab 連携は問い合わせ主が確認
 6. 片付け: ~~JS バンドルの GPU 型番~~ **済**（2026-10-01: knob の説明文を `knobMeta.server.ts`、特化 WF の GPU 一覧を `workflowGpuTiers.ts` へ分離。
    一般ページの bundle から型番ゼロ・残りは admin と workflow-builder だけ。knob のキー名 `gpu_usd_per_hour_b300` と値は LoRA の価格計算に要るので残置）・
-   ~~RunPod の死にコード~~ **済**（`/api/generate`・`runpod.ts` 削除）・管理画面の常時起動は確認済み（ComfyUI dev の状態確認は押したときだけ）・Supabase Site URL を www に・
+   ~~RunPod の死にコード~~ **済**（`/api/generate`・`runpod.ts` 削除）・管理画面の常時起動は確認済み（ComfyUI dev の状態確認は押したときだけ）・~~Supabase Site URL を www に~~ **済**（設定済みを 2026-10-01 にホストが確認）・
    UptimeRobot 等の死活監視（任意）・利用者が増えたら Supabase Pro／Modal Team／Resend Pro
 7. 期限: Polar API の次の版（2027-04 頃）
 
