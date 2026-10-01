@@ -15,6 +15,7 @@ import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { EditableText } from "@/components/EditableText";
 import { STUDIO_TAB_EVENT, type StudioHandoffTab } from "@/lib/studioHandoff";
 import { DatasetBuilderTab } from "@/components/studio/DatasetBuilderTab";
+import { HelpNoteToggleAll } from "@/components/studio/HelpNote";
 
 // 2026-09-09: Wan Animate 2 / Cinematic Video タブは廃止。汎用の動画・特殊要望は
 // すべて「特化ワークフロー」で対応する方針（管理者がワークフローを登録）。
@@ -214,6 +215,7 @@ export function Studio() {
               />
             )}
           </p>
+          <HelpNoteToggleAll className="mt-2" />
         </div>
 
         {storageReady && (

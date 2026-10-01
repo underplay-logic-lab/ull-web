@@ -8,6 +8,7 @@
 // CLAUDE.md §6 のチェックリスト: ジョブはリロードで消えない（RUN_KEY）／「見つからない」は専用エラー／
 // VramBadge／起動待ち表示／結果 URL は使い回さない（fresh URL で取り直し）／サムネは切り抜かない。
 
+import { HelpNote } from "./HelpNote";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 import { Check, Download, ImagePlus, Loader2, Sparkles, Wand2, X, Zap, ZoomIn } from "lucide-react";
@@ -1345,17 +1346,19 @@ export function DatasetBuilderTab() {
             error={subError}
             onZoom={(i, url) => setLocalPreview({ url, label: `参照 ${i + 1}` })}
           />
-          <p className="text-[11px] leading-relaxed text-muted/80">
-            メインの画像からは分からない後ろ姿・真横があれば参照に足してください。参照は真横・後ろ向きの画像にだけ使い、正面・斜めの画像はメイン 1 枚で作ります（そのぶん速く・安く）。
-          </p>
+          <HelpNote id="dataset.reference" summary="メインの画像からは分からない後ろ姿・真横があれば、参照に足してください。">
+            参照は真横・後ろ向きの画像にだけ使い、正面・斜めの画像はメイン 1 枚で作ります（そのぶん速く・安く）。
+          </HelpNote>
           {image && (
             <div className="space-y-2 rounded-lg border border-neon-violet/30 bg-neon-violet/5 px-3 py-2">
               <p className="text-[11px] font-medium text-foreground">素材づくりの基準にする画像</p>
-              <p className="text-[10px] leading-relaxed text-muted">
-                全身の画像は{activeBaseFull ? "確定した基準の全身像" : "メイン画像"}を、上半身・バストアップの画像は下の画像を基準に作ります。
+              <HelpNote
+                id="dataset.base"
+                summary={`全身の画像は${activeBaseFull ? "確定した基準の全身像" : "メイン画像"}を、上半身・バストアップの画像は下の画像を基準に作ります。`}
+              >
                 上半身・バストアップの基準は、{activeBaseFull ? "基準の全身像" : "メイン画像"}から自動で切り出します（無料・切り出しの解像度は仕上がりに影響しません）。
                 寄りで写った手持ちの画像（上半身・バストアップの写真など）を参照欄に入れていれば、それを基準に生成することもできます。
-              </p>
+              </HelpNote>
               {deriving && (
                 <p className="flex items-center gap-1.5 text-[10px] text-muted">
                   <Loader2 size={10} className="animate-spin" /> {activeBaseFull ? "基準の全身像" : "メイン画像"}から切り出しています…
@@ -1672,11 +1675,11 @@ export function DatasetBuilderTab() {
                 />
               </label>
             </div>
-            <p className="text-[11px] leading-relaxed text-muted/70">
-              選んだ組み合わせを順に回して枚数ぶん作ります。未選択の軸は既定（立つ・無地・全身・正面・元の服装）になります。
+            <HelpNote id="dataset.combos" summary="選んだ組み合わせを順に回して枚数ぶん作ります。">
+              未選択の軸は既定（立つ・無地・全身・正面・元の服装）になります。
               服装は 1 枚ごとに順に変わります。表情はすべて真顔で作ります（表情を変えると顔立ちが変わりやすく、LoRA の素材では同じ人に見えることを優先するため）。
               日本語の入力は送るときに英訳します。
-            </p>
+            </HelpNote>
             {/* 止めている間: 設定を変えたらここから一覧へ戻れるように（2026-09-30 ホスト指摘「行き来の距離が長い」）。 */}
             {phase === "paused" && run && remainingItems.length > 0 && (
               <button
@@ -1721,10 +1724,13 @@ export function DatasetBuilderTab() {
               </span>
             </div>
             {confirmFirst && safeCount > SCENE_BATCH_SIZE && (
-              <p className="mt-1.5 text-[10px] text-muted">
-                まず {firstBatch} 枚（{firstCost.toLocaleString()} C）を作って止まるので、仕上がりを確認してから「続きを作る」で残りを作れます（クレジットは作る分ずつ消費します）。
+              <HelpNote
+                id="dataset.first-batch"
+                className="mt-1.5"
+                summary={`まず ${firstBatch} 枚（${firstCost.toLocaleString()} C）を作って止まるので、仕上がりを確認してから「続きを作る」で残りを作れます（クレジットは作る分ずつ消費します）。`}
+              >
                 最初の {firstBatch} 枚に入れたい画像は、次に出る一覧で「先に作る」にチェックを入れて選べます。真横・後ろ向きの画像は参照付きで作るので、1 枚あたり 10 秒ほど長くかかります。
-              </p>
+              </HelpNote>
             )}
 
             {busy && activeJob && activeJob.status === "pending" && (
@@ -1854,21 +1860,28 @@ export function DatasetBuilderTab() {
               </button>
             </div>
           </div>
-          <p className="text-[10px] leading-relaxed text-muted">
-            各行の文を書き換えられます（日本語のまま。送るときに英訳します）。構図・向きは左の表示のとおり固定です。
-            行を消すと枚数が減ります。左の「先に作る」にチェックを入れた画像は、最初の確認分（最大 {SCENE_BATCH_SIZE} 枚）に入ります。
-            {(() => {
-              const ordered = orderPlanForBatches(review, batchOpt, firstKeys);
-              const jobs = checkBatchCount(ordered.plan, batchOpt, ordered.prefixLen);
-              return jobs > 1 ? (
-                <span className="text-amber-400"> 選んだ行が {SCENE_BATCH_SIZE} 枚を超えるため {jobs} 本のジョブに分かれます。</span>
-              ) : (
-                <span> 全身・上半身・バストアップ・真横・後ろが混ざっていても 1 つのジョブで作ります。選ばなければ先頭の {SCENE_BATCH_SIZE} 枚です。</span>
-              );
-            })()}
-            {derivedFlags.upper || derivedFlags.bust ? `「切り出し」の行は${activeBaseFull ? "基準の全身像" : "メイン画像"}から自動で切り出した寄りの画像を元に作ります。` : ""}
-            {closeMain.upper != null || closeMain.bust != null ? "「寄り元 N」の行は手持ちの画像（参照 N）を元に作ります。" : ""}{subCount > 0 ? "「参照」の印の行だけ参照画像を付けて作ります（料金も参照付き）。実行はメインだけの行 → 寄り元の行 → 参照付きの行の順です。" : ""}
-          </p>
+          {(() => {
+            const ordered = orderPlanForBatches(review, batchOpt, firstKeys);
+            const jobs = checkBatchCount(ordered.plan, batchOpt, ordered.prefixLen);
+            return (
+              <HelpNote
+                id="dataset.review"
+                summary={
+                  <>
+                    各行の文は日本語のまま書き換えられます。「先に作る」にチェックを入れた画像は、最初の確認分（最大 {SCENE_BATCH_SIZE} 枚）に入ります。
+                    {jobs > 1 && (
+                      <span className="text-amber-400"> 選んだ行が {SCENE_BATCH_SIZE} 枚を超えるため {jobs} 本のジョブに分かれます。</span>
+                    )}
+                  </>
+                }
+              >
+                送るときに英訳します。構図・向きは各行の表示のとおり固定です。行を消すと枚数が減ります。
+                {jobs > 1 ? "" : ` 全身・上半身・バストアップ・真横・後ろが混ざっていても 1 つのジョブで作ります。選ばなければ先頭の ${SCENE_BATCH_SIZE} 枚です。`}
+                {derivedFlags.upper || derivedFlags.bust ? `「切り出し」の行は${activeBaseFull ? "基準の全身像" : "メイン画像"}から自動で切り出した寄りの画像を元に作ります。` : ""}
+                {closeMain.upper != null || closeMain.bust != null ? "「寄り元 N」の行は手持ちの画像（参照 N）を元に作ります。" : ""}{subCount > 0 ? "「参照」の印の行だけ参照画像を付けて作ります（料金も参照付き）。実行はメインだけの行 → 寄り元の行 → 参照付きの行の順です。" : ""}
+              </HelpNote>
+            );
+          })()}
           <ol className="max-h-[420px] space-y-1 overflow-y-auto pr-1">
             {review.map((it, i) => (
               <li key={it.key} className={`flex items-center gap-2 rounded-md text-[11px] ${firstKeys.has(it.key) ? "bg-neon-pink/10" : ""}`}>
@@ -1944,10 +1957,9 @@ export function DatasetBuilderTab() {
               </button>
             </div>
           </div>
-          <p className="text-[10px] leading-relaxed text-muted">
-            1 行ずつ直すときは、各行の文を書き換えるか × で消してください。まとめて変えるときは、シーン設定（ポーズ・場面・服装など）を
-            変えてから「文章を作り直す」を押すと、この一覧に反映されます。構図・向きは変わりません。できた画像はそのまま残ります。
-          </p>
+          <HelpNote id="dataset.remaining" summary="各行の文を書き換えるか、× で消して直せます。できた画像はそのまま残ります。">
+            まとめて変えるときは、シーン設定（ポーズ・場面・服装など）を変えてから「文章を作り直す」を押すと、この一覧に反映されます。構図・向きは変わりません。
+          </HelpNote>
           <ol className="max-h-[420px] space-y-1 overflow-y-auto pr-1">
             {remainingItems.map((it, i) => (
               <li key={it.key} className="flex items-center gap-2 text-[11px]">
@@ -2048,9 +2060,9 @@ export function DatasetBuilderTab() {
               </div>
             )}
           </div>
-          <p className="text-[10px] text-muted">
-            クリックで拡大（拡大中は「この画像を外す」か x キー）。サムネの右上の × でも外す／戻す。外した画像は保存・LoRA の対象になりません（料金は生成した分にかかります）。
-          </p>
+          <HelpNote id="dataset.results" summary="使わない画像は、サムネの右上の × で外せます（もう一度押すと戻ります）。">
+            クリックで拡大（拡大中は「この画像を外す」か x キー）。外した画像は保存・LoRA の対象になりません（料金は生成した分にかかります）。
+          </HelpNote>
           <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
             {results.map((r, i) => {
               const off = rejected.has(r.key);
