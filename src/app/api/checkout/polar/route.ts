@@ -24,6 +24,10 @@ const LOG_PREFIX = "[checkout/polar]";
 // Studio は専用ページへ移した（2026-10-01）。旧 URL で戻っても StudioHashRedirect が /studio へ送る。
 const SUCCESS_URL = "https://www.ullstudio.com/studio?purchase=success";
 const RETURN_URL = "https://www.ullstudio.com/#pricing";
+// 埋め込み決済（2026-10-01）: Studio の上に Polar の決済を重ねて出す（@polar-sh/checkout/embed）。ページを離れないので
+// 作業中の内容が消えず、新しいタブも増えない。embed_origin は「この origin の iframe として出してよい」の指定なので、
+// リクエストの Origin をそのまま信じず固定の許可リストから選ぶ（Polar 側でも Settings → Preferences → Embedding に同じ host が要る）。
+const EMBED_ORIGINS = new Set(["https://www.ullstudio.com", "http://localhost:3000"]);
 
 export async function POST(request: Request) {
   const authHeader = request.headers.get("authorization");
@@ -46,7 +50,7 @@ export async function POST(request: Request) {
   }
   const user = userData.user;
 
-  let body: { productId?: string; replaceCurrent?: boolean };
+  let body: { productId?: string; replaceCurrent?: boolean; embed?: boolean };
   try {
     body = await request.json();
   } catch (err) {
@@ -62,6 +66,9 @@ export async function POST(request: Request) {
   if (!productId || !config) {
     return NextResponse.json({ error: "不明な商品IDです。" }, { status: 400 });
   }
+
+  const requestOrigin = request.headers.get("origin") ?? "";
+  const embedOrigin = body.embed === true && EMBED_ORIGINS.has(requestOrigin) ? requestOrigin : undefined;
 
   // One-time top-up: an active paid subscriber gets their standing tier
   // discount (a Polar Discount object — applied automatically and locked so
@@ -111,6 +118,7 @@ export async function POST(request: Request) {
         return_url: RETURN_URL,
         // Render the hosted Polar checkout in Japanese.
         locale: "ja",
+        ...(embedOrigin ? { embed_origin: embedOrigin } : {}),
         customer_email: user.email ?? undefined,
         // Links the Polar customer to the Supabase user id so /api/portal/polar
         // can mint a customer-portal session straight from external_customer_id
@@ -175,7 +183,7 @@ export async function POST(request: Request) {
       // checkout.url wasn't a parseable absolute URL — return it as-is.
     }
 
-    return NextResponse.json({ checkoutUrl, url: checkoutUrl });
+    return NextResponse.json({ checkoutUrl, url: checkoutUrl, embedded: Boolean(embedOrigin) });
   } catch (err) {
     return apiErrorResponse(err, "create_checkout", 502, LOG_PREFIX);
   }

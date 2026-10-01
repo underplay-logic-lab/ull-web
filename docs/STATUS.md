@@ -613,6 +613,9 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 **Studio の専用ページ化（2026-10-01 済）**: Studio 本体は `/studio`（今のタブは `?tab=`、例 `/studio?tab=dataset`）。トップの
 「Studio」セクションは各機能への入口（`StudioTeaser`）。古い `/#studio`（決済の戻り・DB の文言リンク等）は `StudioHashRedirect` が
 `/studio` へ送る。ヘッダーの Studio・決済の戻り先・ログイン必須ページの戻り先は `/studio` に変更済み。**本番での見た目は未確認**。
+   **クレジット不足のチャージは埋め込み決済**（`TopupActions`・`@polar-sh/checkout/embed`）: 都度チャージは Studio の上に Polar の
+   決済を重ねて出す（ページを離れない＝作業内容が消えない・タブが増えない）。月額プランは料金表を新しいタブ。**要: Polar の
+   Settings → Preferences → Embedding に www.ullstudio.com**（無いと新しいタブで決済ページが開く代替になる）。本番未確認。
 
 **その次**
 4. 素材づくり（必要になったら）: 全身の行の同一性・超こだわりモード（表情違いの顔アップ＋BFS 強度 1.0・別料金）・斜めの左右（反転の技）

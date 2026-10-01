@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { TOPUP_NOTE, TOPUP_URL } from "@/lib/topup";
+import { TopupActions } from "./TopupActions";
 import { createPortal } from "react-dom";
 import {
   AlertTriangle,
@@ -252,17 +252,7 @@ function InsufficientCreditsModal({
           {credits ?? 0}
         </p>
 
-        <a
-          href={TOPUP_URL}
-          target="_blank"
-          rel="noopener"
-          onClick={onClose}
-          className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-white transition-all hover:opacity-90"
-        >
-          <Zap size={16} />
-          クレジットをチャージする
-        </a>
-        <p className="mt-2 text-center text-[11px] leading-relaxed text-muted">{TOPUP_NOTE}</p>
+        <TopupActions cost={cost} onClose={onClose} />
       </div>
     </div>,
     document.body,
