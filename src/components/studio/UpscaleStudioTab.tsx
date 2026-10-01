@@ -66,6 +66,8 @@ import {
   type StudioSessionEntry,
 } from "@/components/studio/StudioSessionList";
 import { VramBadge } from "@/components/studio/VramBadge";
+import AutoDownloadToggle from "@/components/studio/AutoDownloadToggle";
+import { armAutoDownload, runAutoDownload, takeAutoDownload } from "@/lib/autoDownload";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
@@ -113,6 +115,32 @@ async function readImageSize(file: File): Promise<{ width: number; height: numbe
   } catch {
     return null;
   }
+}
+
+/** まとめ処理の結果を ZIP 1 つで保存する（「まとめてダウンロード」と自動保存で共用）。 */
+async function downloadUpscaleZip(results: { id: string; resultUrl: string }[]): Promise<void> {
+  const zip = new JSZip();
+  await Promise.all(
+    results.map(async ({ id, resultUrl }, i) => {
+      const url = await resolveUpscaleImageUrl(id, resultUrl);
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const buf = await res.arrayBuffer();
+      const ext = /\.webp(\?|$)/i.test(resultUrl) ? "webp" : /\.jpe?g(\?|$)/i.test(resultUrl) ? "jpg" : "png";
+      zip.file(`${String(i + 1).padStart(2, "0")}_upscale.${ext}`, buf);
+    }),
+  );
+  const blob = await zip.generateAsync({ type: "blob" });
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  const now = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  a.download = `ullstudio_upscale_batch_${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}_${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
 function buildOutFilename(url: string) {
@@ -715,6 +743,8 @@ export function UpscaleStudioTab() {
         });
         setLoraReturnEntries(loraMap);
         setBatchLoraMap(getLoraReturnMap());
+        // LoRA から来た分は LoRA Studio へ戻すのが目的なので自動保存しない。
+        armAutoDownload(...res.jobIds.filter((id) => !loraMap[id]));
         if (!append) setBatchItems([]);
         setBatchJobIds((prev) => (append ? [...prev, ...res.jobIds] : res.jobIds));
         setBatchPhase("running");
@@ -777,28 +807,7 @@ export function UpscaleStudioTab() {
     if (batchCompletedResults.length === 0 || downloadingAll) return;
     setDownloadingAll(true);
     try {
-      const zip = new JSZip();
-      await Promise.all(
-        batchCompletedResults.map(async ({ id, resultUrl }, i) => {
-          const url = await resolveUpscaleImageUrl(id, resultUrl);
-          const res = await fetch(url);
-          if (!res.ok) return;
-          const buf = await res.arrayBuffer();
-          const ext = /\.webp(\?|$)/i.test(resultUrl) ? "webp" : /\.jpe?g(\?|$)/i.test(resultUrl) ? "jpg" : "png";
-          zip.file(`${String(i + 1).padStart(2, "0")}_upscale.${ext}`, buf);
-        }),
-      );
-      const blob = await zip.generateAsync({ type: "blob" });
-      const objectUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = objectUrl;
-      const now = new Date();
-      const p = (n: number) => String(n).padStart(2, "0");
-      a.download = `ullstudio_upscale_batch_${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}_${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      await downloadUpscaleZip(batchCompletedResults);
     } catch (err) {
       console.error("[UpscaleStudioTab] batch zip download failed:", err);
       setBatchError("ZIP の作成に失敗しました。");
@@ -885,6 +894,11 @@ export function UpscaleStudioTab() {
               return;
             }
             setBatchPhase("done");
+            // 予約した分（順番待ちで続いたまとめも含む）を ZIP 1 つで自動保存する。
+            const toSave = results
+              .filter((j) => j.status === "completed" && j.resultUrl && takeAutoDownload(j.id))
+              .map((j) => ({ id: j.id, resultUrl: j.resultUrl as string }));
+            if (toSave.length > 0) runAutoDownload("UpscaleStudioTab", () => downloadUpscaleZip(toSave));
             // JOB_KEY と同じく完了後もクリアしない — リロード時に最後のバッチの
             // 結果をそのまま再表示する（Multi-Angle/LoRAタブと同じ挙動）。
             return;
@@ -945,6 +959,7 @@ export function UpscaleStudioTab() {
           commitSession([...sessionJobsRef.current.filter((e) => e.id !== res.jobId), entry]);
           freshJobIdRef.current = opts.continuation ? null : res.jobId;
         }
+        armAutoDownload(res.jobId);
         setJobId(res.jobId);
         setPhase("running");
       } catch (err) {
@@ -986,6 +1001,10 @@ export function UpscaleStudioTab() {
             // 完了後もクリアしない — リロード時に最後のジョブの結果をそのまま
             // 再表示する（Multi-Angle/LoRAタブと同じ挙動）。
             if (sawInProgress) markGpuWarm();
+            const resultUrl = next.resultUrl;
+            if (resultUrl && takeAutoDownload(jobId)) {
+              runAutoDownload("UpscaleStudioTab", () => downloadUpscaleResult(jobId, resultUrl, buildOutFilename(resultUrl)));
+            }
             // 「順番待ち」で予約されていた次の1件を、コンテナがまだ温かい
             // うちに自動発火する。ref はイベントハンドラでのみ書かれるので
             // ここでは読むだけ（clear は同じ非同期コールバック内で行う）。
@@ -1389,6 +1408,11 @@ export function UpscaleStudioTab() {
               </>
             )}
           </button>
+          {user && (
+            <div className="mt-2">
+              <AutoDownloadToggle />
+            </div>
+          )}
         </div>
 
         {busy && (
@@ -1673,6 +1697,11 @@ export function UpscaleStudioTab() {
                 </>
               )}
             </button>
+            {user && (
+              <div className="mt-2">
+                <AutoDownloadToggle />
+              </div>
+            )}
           </div>
 
           {batchBusy && (

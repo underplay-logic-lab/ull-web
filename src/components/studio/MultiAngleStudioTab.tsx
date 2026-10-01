@@ -64,6 +64,8 @@ import {
 } from "@/lib/angleApi";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { VramBadge } from "@/components/studio/VramBadge";
+import AutoDownloadToggle from "@/components/studio/AutoDownloadToggle";
+import { armAutoDownload, runAutoDownload, takeAutoDownload } from "@/lib/autoDownload";
 import {
   requestStudioBatchHandoff,
   requestStudioHandoff,
@@ -995,6 +997,8 @@ export function MultiAngleStudioTab() {
           vramUsedGb: null,
         });
         if (loraModeRef.current) loraJobIdsRef.current.add(res.jobId);
+        // LoRA 素材として作る分は LoRA Studio へ送るのが目的なので自動保存しない。
+        else armAutoDownload(res.jobId);
         setJobId(res.jobId);
         setPhase("running");
       } catch (err) {
@@ -1031,6 +1035,10 @@ export function MultiAngleStudioTab() {
 
           if (next.status === "completed") {
             setPhase("done");
+            const urls = next.images;
+            if (urls.length > 0 && takeAutoDownload(jobId)) {
+              runAutoDownload("MultiAngleStudioTab", async () => triggerBlobDownload(await zipAngleImages(urls), buildZipFilename()));
+            }
             if (loraModeRef.current && loraJobIdsRef.current.has(jobId) && next.images.length > 0) {
               const jid = jobId;
               setLoraCandidates((prev) =>
@@ -1684,6 +1692,11 @@ export function MultiAngleStudioTab() {
             >
               {buttonLabel}
             </button>
+            {user && (
+              <div className="mt-2">
+                <AutoDownloadToggle />
+              </div>
+            )}
           </div>
 
           {busy && queuedNext.length === 0 && (

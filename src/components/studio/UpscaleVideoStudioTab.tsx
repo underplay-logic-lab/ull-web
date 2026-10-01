@@ -53,6 +53,8 @@ import {
   type StudioSessionEntry,
 } from "@/components/studio/StudioSessionList";
 import { VramBadge } from "@/components/studio/VramBadge";
+import AutoDownloadToggle from "@/components/studio/AutoDownloadToggle";
+import { armAutoDownload, runAutoDownload, takeAutoDownload } from "@/lib/autoDownload";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
@@ -515,6 +517,7 @@ export function UpscaleVideoStudioTab() {
           commitSession([...sessionJobsRef.current.filter((e) => e.id !== res.jobId), entry]);
           freshJobIdRef.current = opts.continuation ? null : res.jobId;
         }
+        armAutoDownload(res.jobId);
         setJobId(res.jobId);
         setPhase("running");
       } catch (err) {
@@ -551,6 +554,18 @@ export function UpscaleVideoStudioTab() {
           if (next.status === "completed") {
             setPhase("done");
             if (sawInProgress) markGpuWarm();
+            const resultUrl = next.resultUrl;
+            if (resultUrl && takeAutoDownload(jobId)) {
+              // 手動の「ダウンロード」と同じ経路（Volume 上なら名前付きの URL を発行、それ以外は再生用 URL に名前を付ける）。
+              runAutoDownload("UpscaleVideoStudioTab", async () => {
+                const name = buildOutFilename();
+                downloadViaBrowser(
+                  isUpscaleResultVolumePath(resultUrl)
+                    ? await fetchUpscaleVideoResultUrl(jobId, name)
+                    : withDownloadName(await resolveUpscaleVideoUrl(jobId, resultUrl), name),
+                );
+              });
+            }
             // 改めて生成したジョブが完了したら、前の「今回の生成」を消して
             // このジョブ 1 件から始める（確認時点では消さない）。
             if (freshJobIdRef.current === jobId) {
@@ -907,6 +922,11 @@ export function UpscaleVideoStudioTab() {
                 </>
               )}
             </button>
+            {user && (
+              <div className="mt-2">
+                <AutoDownloadToggle />
+              </div>
+            )}
           </div>
 
           {busy && (

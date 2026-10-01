@@ -66,6 +66,8 @@ import {
   type StudioSessionEntry,
 } from "@/components/studio/StudioSessionList";
 import { VramBadge } from "@/components/studio/VramBadge";
+import AutoDownloadToggle from "@/components/studio/AutoDownloadToggle";
+import { armAutoDownload, runAutoDownload, takeAutoDownload } from "@/lib/autoDownload";
 import { requestStudioHandoff } from "@/lib/studioHandoff";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
@@ -694,6 +696,7 @@ export function DirectorStudioTab() {
           commitSession([...sessionJobsRef.current.filter((e) => e.id !== res.jobId), entry]);
           freshJobIdRef.current = opts.continuation ? null : res.jobId;
         }
+        armAutoDownload(res.jobId);
         setJobId(res.jobId);
         setPhase("running");
       } catch (err) {
@@ -730,6 +733,10 @@ export function DirectorStudioTab() {
           if (next.status === "completed") {
             setPhase("done");
             if (sawInProgress) markGpuWarm();
+            const videoUrl = next.videoUrl;
+            if (videoUrl && takeAutoDownload(jobId)) {
+              runAutoDownload("DirectorStudioTab", () => downloadDirectorVideo(videoUrl, "ull_cinematic_director.mp4"));
+            }
             // 改めて生成したジョブが完了したら、前の「今回の生成」を消して
             // このジョブ 1 件から始める（確認時点では消さない）。
             if (freshJobIdRef.current === jobId) {
@@ -1289,6 +1296,11 @@ export function DirectorStudioTab() {
                 "生成する"
               )}
             </button>
+          )}
+          {user && (
+            <div className="mt-2">
+              <AutoDownloadToggle />
+            </div>
           )}
           {!busy && gpuWarm && <WarmCountdownBanner remainingMs={gpuWarmMs} />}
           {busy && queuedNext.length === 0 && (
