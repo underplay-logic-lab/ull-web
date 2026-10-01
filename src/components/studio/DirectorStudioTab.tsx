@@ -942,7 +942,8 @@ export function DirectorStudioTab() {
             {adjustBase && (
               <div className="mb-2 flex items-start justify-between gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-[11px] leading-relaxed text-foreground">
                 <span>
-                  元の動画と同じシード・同じ参照画像で作り直します（画像の入れ直しは不要）。文章・尺・画質を変えた分だけ結果が変わります。
+                  元の動画と同じシード・同じ参照画像で作り直します（画像の入れ直しは不要）。
+                  セリフの一言や光の加減など、小さな変更に向いています。カメラの向きや動きを変えると、別の動画になります。
                 </span>
                 <button
                   type="button"
@@ -989,9 +990,12 @@ export function DirectorStudioTab() {
               className="mt-2"
               textClass="text-[11px] text-muted"
               icon={<Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />}
-              summary="セリフを話させたい部分は「」で囲むと、そこだけ日本語のまま音声・リップシンクに反映されます。"
+              summary="ここに書いた文章がそのまま動画の指示になります。思いつきを書くだけなら Advanced（要点から台本）の方が向いています。"
             >
-              このプロンプトはそのままモデルに渡されます（シーンの自動合成はスキップされますが、日本語で書いた場合は送信前に自動で英訳されます）。
+              シーンの自動合成をせず、書いた文章をそのまま使います（日本語で書いた部分は送信前に英訳されます）。
+              「誰が・どう動き・カメラがどう動くか」まで書いてください。一言だけだと、長い動画では途中で人物が崩れることがあります
+              （参照画像の人物のまま保つ指示が無いときは、自動で先頭に足します）。
+              セリフを話させたい部分は「」で囲むと、そこだけ日本語のまま音声・リップシンクに反映されます。
             </HelpNote>
           </div>
         ) : uiMode === "advanced" ? (

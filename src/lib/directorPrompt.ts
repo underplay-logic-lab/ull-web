@@ -189,6 +189,25 @@ export function looksJapanese(text: string): boolean {
   return JAPANESE_RE.test(text);
 }
 
+/**
+ * セリフ（<d>…</d> の中）を除いて日本語があるか。英語の台本にセリフだけ日本語、という正しい書き方で
+ * 全文を訳し直さないようにする（訳し直すと言い回しが全部変わり、<d>[Japanese]…</d> の言語指定まで落ちた。2026-10-02）。
+ */
+export function looksJapaneseOutsideDialogue(text: string): boolean {
+  return looksJapanese(text.replace(/<d>[\s\S]*?<\/d>/g, ""));
+}
+
+// プロンプトモードは書かれた文章をそのまま使うので、「参照画像の人物のまま」という指示が無いことがある。
+// 無いまま長い尺を作らせると、後半で別人に入れ替わった実例がある（2026-10-01、ジョブ 6d5b922f）。
+// シーンモード（Gemini 合成）・Advanced（Qwen 台本）の文章には必ず入っているので、無いときだけ先頭に足す。
+const IDENTITY_ANCHOR =
+  "The person in the reference image remains exactly the same person, with the same face, hair and body, for the entire video, and is never replaced by a different person.";
+const IDENTITY_HINT_RE = /reference image|same (person|identity|face)|identical|identity/i;
+
+export function withIdentityAnchor(prompt: string): string {
+  return IDENTITY_HINT_RE.test(prompt) ? prompt : `${IDENTITY_ANCHOR} ${prompt}`;
+}
+
 /** プロンプトモード用: ユーザーが日本語で書いた（または日本語訳をコピペして
  * 少し直した）プロンプトを、モデルに渡す前に英語へ変換する。looksJapanese()
  * で日本語が検知された場合のみ呼び出す想定 — 英語ならそのまま使えばよい。

@@ -26,7 +26,8 @@ import {
   buildSceneDirectorPrompt,
   DirectorPromptError,
   expandDirectorScenes,
-  looksJapanese,
+  looksJapaneseOutsideDialogue,
+  withIdentityAnchor,
   translateDirectorPromptToJapanese,
   translateJapanesePromptToEnglish,
   withJapaneseTranslationRequest,
@@ -322,7 +323,7 @@ export async function POST(request: Request) {
     combinedPrompt = conceptTextInput;
   } else if (isPromptMode) {
     // 作り直しで台本をそのまま使うときは訳し直さない（セリフが日本語でも、訳し直すと台本が変わる）。
-    if (!reusingScript && looksJapanese(rawPromptInput)) {
+    if (!reusingScript && looksJapaneseOutsideDialogue(rawPromptInput)) {
       try {
         combinedPrompt = await translateJapanesePromptToEnglish(rawPromptInput);
       } catch (err) {
@@ -335,6 +336,8 @@ export async function POST(request: Request) {
     } else {
       combinedPrompt = rawPromptInput;
     }
+    // 「参照画像の人物のまま」の指示が無ければ先頭に足す（Qwen に回すときはワーカーが書き直すので不要）。
+    if (!qwenTextInstruction) combinedPrompt = withIdentityAnchor(combinedPrompt);
   } else {
     try {
       combinedPrompt = await expandDirectorScenes(scenes, musicDirectionInput || undefined);
