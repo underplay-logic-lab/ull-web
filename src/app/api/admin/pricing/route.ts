@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/adminApiGuard";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { DEFAULT_KNOBS, KNOB_META, type KnobKey } from "@/lib/pricing/knobDefaults";
+import { DEFAULT_KNOBS, type KnobKey } from "@/lib/pricing/knobDefaults";
+import { KNOB_META } from "@/lib/pricing/knobMeta.server";
 
 export async function GET() {
   const { user, response } = await requireAdmin();

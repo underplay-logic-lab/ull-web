@@ -7,13 +7,13 @@ import {
   SYSTEM_FIELD_GPU_TIER,
   WORKFLOW_FIELD_TIERS,
   WORKFLOW_FIELD_TIER_LABELS,
-  makeGpuTierField,
   workflowCreditsBreakdown,
   type StudioCustomWorkflow,
   type WorkflowGpuTier,
   type WorkflowInputField,
   type WorkflowSection,
 } from "@/lib/customWorkflows";
+import { makeGpuTierField } from "@/lib/workflowGpuTiers";
 import { parseWorkflowNodes, type WorkflowNodeInfo } from "@/lib/workflowGraph";
 import { buildModelSizeIndex, estimateWorkflowModelVram } from "@/lib/modelVram";
 import { defaultValueFor, type FieldValue } from "@/components/studio/workflow/DynamicField";

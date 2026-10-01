@@ -3,8 +3,6 @@
 import { ChevronDown, ChevronUp, Trash2 } from "lucide-react";
 import {
   SYSTEM_FIELD_GPU_TIER,
-  WORKFLOW_GPU_TIERS,
-  WORKFLOW_GPU_SPEC_BY_TIER,
   WORKFLOW_INPUT_FIELD_TYPES,
   WORKFLOW_FIELD_TIERS,
   type WorkflowFieldColSpan,
@@ -15,6 +13,7 @@ import {
   type WorkflowInputFieldType,
   type WorkflowSection,
 } from "@/lib/customWorkflows";
+import { WORKFLOW_GPU_SPEC_BY_TIER, WORKFLOW_GPU_TIERS } from "@/lib/workflowGpuTiers";
 import { COL_SPAN_OPTIONS } from "@/lib/workflowLayout";
 import { isOomForTier } from "@/lib/modelVram";
 

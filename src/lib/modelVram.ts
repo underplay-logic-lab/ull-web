@@ -11,7 +11,7 @@ import {
   WORKFLOW_GPU_TIERS,
   type WorkflowGpuSpec,
   type WorkflowGpuTier,
-} from "@/lib/customWorkflows";
+} from "@/lib/workflowGpuTiers";
 
 // "63.2 GB" / "840 MB" / "512 KB" / "0 B". Binary units (1024).
 export function formatBytes(bytes: number | null | undefined): string {

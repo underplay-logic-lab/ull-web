@@ -6,14 +6,12 @@ import { getOrCreateProfile } from "@/lib/profile";
 import {
   calculateTotalWorkflowCredits,
   isTierLocked,
-  isUltraGpuTier,
-  isValidWorkflowGpuTier,
-  resolveGpuFallbackChain,
   SYSTEM_FIELD_GPU_TIER,
   type WorkflowGpuTier,
   type WorkflowInputField,
   type WorkflowSection,
 } from "@/lib/customWorkflows";
+import { isUltraGpuTier, isValidWorkflowGpuTier, resolveGpuFallbackChain } from "@/lib/workflowGpuTiers";
 import { patchCustomWorkflow, type CustomWorkflowFieldValue } from "@/lib/customWorkflowExecution";
 import { runCustomWorkflowOnModal } from "@/lib/modalCustomWorkflow";
 import type { GpuTier } from "@/lib/gpuTier";

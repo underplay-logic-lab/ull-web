@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { DEFAULT_KNOBS, PUBLIC_KNOB_KEYS } from "@/lib/pricing/knobDefaults";
+import { DEFAULT_KNOBS } from "@/lib/pricing/knobDefaults";
+import { PUBLIC_KNOB_KEYS } from "@/lib/pricing/knobMeta.server";
 
 // Public, read-only: lets the Studio UI display the live credits cost per
 // generation mode (admin-edited via /admin's Pricing tab) instead of a

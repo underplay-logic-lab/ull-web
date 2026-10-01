@@ -5,9 +5,8 @@ import {
   isValidInputSchema,
   isValidWorkflowJson,
   isValidWorkflowSections,
-  isValidWorkflowGpuTier,
-  isValidWorkflowGpuFallbackList,
 } from "@/lib/customWorkflows";
+import { isValidWorkflowGpuFallbackList, isValidWorkflowGpuTier } from "@/lib/workflowGpuTiers";
 
 type RouteParams = { params: Promise<{ id: string }> };
 

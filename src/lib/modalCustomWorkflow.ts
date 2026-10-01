@@ -1,5 +1,5 @@
 import "server-only";
-import { DEFAULT_WORKFLOW_GPU_TIER, type WorkflowGpuTier } from "@/lib/customWorkflows";
+import { DEFAULT_WORKFLOW_GPU_TIER, type WorkflowGpuTier } from "@/lib/workflowGpuTiers";
 
 export type CustomWorkflowFile = { filename: string; base64: string };
 

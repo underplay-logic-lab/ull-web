@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/adminApiGuard";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { invalidatePricingKnobs } from "@/lib/pricing/knobs.server";
-import { KNOB_META, type KnobKey } from "@/lib/pricing/knobDefaults";
+import type { KnobKey } from "@/lib/pricing/knobDefaults";
+import { KNOB_META } from "@/lib/pricing/knobMeta.server";
 
 type RouteParams = { params: Promise<{ key: string }> };
 
