@@ -19,6 +19,7 @@ import {
   XCircle,
 } from "lucide-react";
 import type { GenerationLog, GenerationLogEntry, LogsAlert, LogsSummary } from "./types";
+import { GpuWaitCard } from "./GpuWaitCard";
 
 function formatJpy(value: number): string {
   return `¥${Math.round(value).toLocaleString()}`;
@@ -207,6 +208,8 @@ export function LogsTab() {
 
   return (
     <div>
+      <GpuWaitCard />
+
       {alert && (alert.negativeMarginCount > 0 || alert.lowMarginCount > 0) && (
         <div className="mb-4 flex items-start gap-2 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
           <AlertTriangle size={16} className="mt-0.5 shrink-0" />
