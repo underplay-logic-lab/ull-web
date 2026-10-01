@@ -15,6 +15,7 @@ import {
   Bot,
   Check,
   ChevronDown,
+  ChevronRight,
   Cpu,
   Download,
   ImagePlus,
@@ -450,6 +451,8 @@ export function LoraStudioTab({
   // on "次へ". Non-empty overrides generation.
   const [captionPromptOverride, setCaptionPromptOverride] = useState("");
   const [captionPromptOpen, setCaptionPromptOpen] = useState(false);
+  // 学習の数値設定（Rank〜Optimizer）は「詳細設定 ▸」に畳む（2026-10-01 説明の整理、ホスト判断）。
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   // Caption FORMAT: 'auto' routes off the base model (dense prose for the
   // next-gen DiT lineup, comma tags for CLIP-encoder SDXL); 'dense' / 'tags'
   // pin it. Resolved via resolveCaptionMode() and sent to the vision API.
@@ -7235,7 +7238,8 @@ export function LoraStudioTab({
                   ので、ここが「自動で決まった値」であることを明示する。 */}
               <p className="text-[11px] leading-relaxed text-muted">
                 {/* 2026-09-28: 「このままで問題ありません」は言い過ぎ（ホスト指摘。素材は人それぞれで、実写は検証も少ない）。 */}
-                <strong className="text-foreground">取り込んだ画像とベースモデルから決めた推奨設定です。</strong>
+                {/* 「推奨」は言い過ぎなので「標準設定」と呼ぶ（2026-10-01 ホスト指摘）。 */}
+                <strong className="text-foreground">取り込んだ画像とベースモデルから決めた標準設定です。</strong>
                 まずはこのまま試し、結果を見て必要なら調整してください。
               </p>
               {isAdmin ? (
@@ -7309,29 +7313,44 @@ export function LoraStudioTab({
                 </>
               ) : (
                 <div className="space-y-3">
+                  {/* 畳んでいても今の値と「手動で変えている」ことは見えるようにする（2026-10-01）。 */}
+                  <div className="flex flex-wrap items-center gap-2 text-[10px]">
+                    {effPro.recipeAuto ? (
+                      <span className="text-neon-violet">
+                        Rank・学習方式・学習率は標準設定です（{effPro.optimizer}・rank {effPro.rank}）
+                      </span>
+                    ) : (
+                      <>
+                        <span className="text-amber-400">
+                          Rank・学習方式・学習率は手動で固定中（標準は {autoConfig.optimizer}・rank {autoConfig.rank}）
+                        </span>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => updatePro({ recipeAuto: true })}
+                          className="rounded-lg border border-neon-violet/40 px-2 py-0.5 text-neon-violet transition-colors hover:bg-neon-violet/10 disabled:opacity-50"
+                        >
+                          標準設定に戻す
+                        </button>
+                      </>
+                    )}
+                    <span className={effPro.stepsAuto ? "text-neon-violet" : "text-amber-400"}>
+                      {effPro.steps.toLocaleString()} step{effPro.stepsAuto ? "（枚数から自動）" : "（手動で固定中）"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setAdvancedOpen((v) => !v)}
+                      aria-expanded={advancedOpen}
+                      className="ml-auto inline-flex items-center gap-0.5 text-neon-violet/80 hover:text-neon-violet"
+                    >
+                      詳細設定
+                      {advancedOpen ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+                    </button>
+                  </div>
+                  {advancedOpen && (
+                  <>
                   {/* Rank — discrete choices only */}
                   <div>
-                    <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]">
-                      {effPro.recipeAuto ? (
-                        <span className="text-neon-violet">
-                          Rank・学習方式・学習率はモデルの推奨値です（{effPro.optimizer}・rank {effPro.rank}）
-                        </span>
-                      ) : (
-                        <>
-                          <span className="text-amber-400">
-                            Rank・学習方式・学習率は手動で固定中（推奨は {autoConfig.optimizer}・rank {autoConfig.rank}）
-                          </span>
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => updatePro({ recipeAuto: true })}
-                            className="rounded-lg border border-neon-violet/40 px-2 py-0.5 text-neon-violet transition-colors hover:bg-neon-violet/10 disabled:opacity-50"
-                          >
-                            推奨値に戻す
-                          </button>
-                        </>
-                      )}
-                    </div>
                     <label className="mb-1 block text-[10px] text-muted">Rank（LoRA の表現力）</label>
                     <div className="flex flex-wrap gap-1.5">
                       {RANK_OPTIONS.map((r) => (
@@ -7533,6 +7552,8 @@ export function LoraStudioTab({
                       ))}
                     </select>
                   </div>
+                  </>
+                  )}
                 </div>
               )}
             </div>

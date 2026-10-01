@@ -11,7 +11,7 @@
 import { HelpNote } from "./HelpNote";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
-import { Check, Download, ImagePlus, Loader2, Sparkles, Wand2, X, Zap, ZoomIn } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Download, ImagePlus, Loader2, Sparkles, Wand2, X, Zap, ZoomIn } from "lucide-react";
 import { MAX_SUB_REFERENCE_IMAGES } from "@/lib/angleStudio";
 import {
   AngleJobNotFoundError,
@@ -584,6 +584,8 @@ export function DatasetBuilderTab() {
   const [sel, setSel] = useState<SceneSelection>(() => ({ ...DEFAULT_SCENE_SELECTION, ...(savedForm?.sel ?? {}) }));
   const [count, setCount] = useState<number>(() => savedForm?.count ?? SCENE_DEFAULT_COUNT);
   const [confirmFirst, setConfirmFirst] = useState<boolean>(() => savedForm?.confirmFirst ?? true);
+  // 服装の自由指定・追加の指示は「詳細設定 ▸」に畳む（2026-10-01 説明の整理、ホスト判断）。入力があれば開いて出す。
+  const [sceneAdvancedOpen, setSceneAdvancedOpen] = useState(false);
   const [bodyDesign, setBodyDesign] = useState<BodyDesign>(() => ({ ...EMPTY_BODY_DESIGN, ...(savedForm?.body ?? {}) }));
   const [routeOverride, setRouteOverride] = useState<MainRoute | "auto">(() => savedForm?.routeOverride ?? "auto");
   const [sendOriginal, setSendOriginal] = useState<boolean>(() => savedForm?.sendOriginal ?? true);
@@ -1659,6 +1661,22 @@ export function DatasetBuilderTab() {
                   : {})}
               />
             ))}
+            {(() => {
+              const filled = Boolean(sel.outfit?.trim() || sel.extra?.trim());
+              const open = sceneAdvancedOpen || filled;
+              return (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setSceneAdvancedOpen(!open)}
+                    disabled={filled}
+                    aria-expanded={open}
+                    className="inline-flex w-fit items-center gap-0.5 text-[11px] text-neon-violet/80 hover:text-neon-violet disabled:cursor-default disabled:hover:text-neon-violet/80"
+                  >
+                    詳細設定（服装の自由指定・追加の指示）
+                    {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                  </button>
+                  {open && (
             <div className="grid gap-2 sm:grid-cols-2">
               <label className="text-[11px] text-muted">
                 服装を自由に指定（任意・日本語OK。書くと上のチップより優先）
@@ -1679,6 +1697,10 @@ export function DatasetBuilderTab() {
                 />
               </label>
             </div>
+                  )}
+                </>
+              );
+            })()}
             <HelpNote id="dataset.combos" title="組み合わせの作られ方" summary="選んだ組み合わせを順に回して枚数ぶん作ります。">
               未選択の軸は既定（立つ・無地・全身・正面・元の服装）になります。
               服装は 1 枚ごとに順に変わります。表情はすべて真顔で作ります（表情を変えると顔立ちが変わりやすく、LoRA の素材では同じ人に見えることを優先するため）。
