@@ -14,6 +14,8 @@
 // 「azimuth = 被写体のどちら側が見えるか」（"right side view" は被写体の右側）。
 // 2026-09-08 の CLI 実写で `<sks> right side view eye-level shot medium shot` 等が
 // model card どおり正しく機能することを確認済み（左右反転なし）。
+// ただし顔アップ 1 枚では左側を指定しても画面の右を向いた（2026-10-02）→ ワーカーが左側の記述子を
+// 「入力を反転 → 右側で生成 → 出力を反転」に置き換える（modal_angle_worker.py の _mirror_plan）。
 // 3 軸マトリクス（直積）で構図を展開する構造は据え置き。
 
 import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";

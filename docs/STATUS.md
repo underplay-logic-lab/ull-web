@@ -602,7 +602,9 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    → 実写化すると印象が大きく変わった（その辺にいそう・二人がほぼ同じ顔）→ 実写で先に選び、イラストはそこから起こす方向で検討中。
    → **実写の 3 人目（パッツンのボブ）をひなたに決定**・1 人目は姉候補（`promo/characters/README.md`）。次は仕上げの顔アップ 1 枚 → Multi-Angle から撮影。
    → **1 本目（Multi-Angle・8 方向ターンアラウンド・約 86 秒）を録画・書き出し済み**: `promo/out/hinata-angle.mp4`（テロップは `promo/public/rec/hinata-angle/edit.json`）。
-     顔アップは `promo/characters/hinata_face_v1_3x4.png`。ホストの確認待ち: 上部の「999,887 Credits」をぼかすか・投稿先。
+     顔アップは `promo/characters/hinata_face_v1_3x4.png`。→ 8 方向のうち左側が全部右向きだった（「右斜め前が無い」）→ **反転の反転をワーカーに組み込みデプロイ・CLI で左 3 方向 OK**（2026-10-02）→ **録り直し**。
+     書き出しはスクロールバー・連打で寄らないよう修正済み。サムネイル `node brand/thumbnail.mjs angle <顔> <結果フォルダ>`。
+     Studio の「▶ 使い方の動画」は `src/lib/tutorialVideos.ts` に YouTube の ID を書けば出る（未 push）。
    絵コンテ・素材リストは `docs/promo-video-storyboard.md`。
 2. **短い動画を 1 本撮る**（1 本目は Multi-Angle の 1〜2 分を提案済み＝録画→書き出し→投稿の流れを安く通すため。ホストの最終確認はまだ）。
    準備は済み: テスト用アカウント（ullstudio.com のアドレス・Cloudflare Email Routing で転送）でログイン済み（`promo/.rec-profile/`）・
