@@ -330,6 +330,40 @@ def _align_image(img):
     return img
 
 
+# 左側の向きは「反転の反転」で作る（2026-10-02）。顔アップ 1 枚（ひなた）で 8 方向を作ったら、左側を指定しても
+# 全部が画面の右を向いた（右側の指定は正しく出る）。左右の手がかりが少ない入力で片側に寄る。
+# → 左側の記述子が入った構図は、入力を左右反転 → 右側の記述子で生成 → 出力を左右反転して返す。
+#    2 回反転するので、ほくろ・分け目など左右非対称な特徴は元の側に戻る。ANGLE_MIRROR_LEFT=0 で無効。
+ANGLE_MIRROR_LEFT = os.environ.get("ANGLE_MIRROR_LEFT", "1").strip() != "0"
+_MIRROR_SWAP = (
+    ("front-left quarter view", "front-right quarter view"),
+    ("back-left quarter view", "back-right quarter view"),
+    ("left side view", "right side view"),
+)
+
+
+def _mirror_plan(instr: str):
+    """(生成に使う指示, 反転するか)。左側の記述子が無ければそのまま。"""
+    if not ANGLE_MIRROR_LEFT:
+        return instr, False
+    out = instr
+    hit = False
+    for left, right in _MIRROR_SWAP:
+        if left in out:
+            out = out.replace(left, right)
+            hit = True
+    return out, hit
+
+
+def _mirror_images(image):
+    """1 枚またはリストを左右反転する（Multi-Reference は全部反転）。"""
+    from PIL import ImageOps
+
+    if isinstance(image, list):
+        return [ImageOps.mirror(im) for im in image]
+    return ImageOps.mirror(image)
+
+
 def _apply_lora_trigger(prompt: str, lora_on: bool) -> str:
     """プロンプトを HF model card 規格 "<sks> [azimuth] [elevation] [distance]"
     に整形する。
@@ -1761,6 +1795,7 @@ class QwenImageEditWorker:
                     _prof["nsteps"] += 1
                     return a[-1] if a and isinstance(a[-1], dict) else {}
 
+                instr, mirror = _mirror_plan(instr)
                 final_prompt = instr if raw_prompt else _apply_lora_trigger(instr, self._lora_loaded)
                 if multi_ref and ANGLE_MULTIREF_PROMPT_SUFFIX:
                     final_prompt = f"{final_prompt} {ANGLE_MULTIREF_PROMPT_SUFFIX}".strip()
@@ -1768,7 +1803,7 @@ class QwenImageEditWorker:
                     print(f"[angle] prompt[0]: {final_prompt!r}", flush=True)
 
                 call_kwargs = dict(
-                    image=pipe_image,
+                    image=_mirror_images(pipe_image) if mirror else pipe_image,
                     prompt=final_prompt,
                     negative_prompt=negative_prompt,
                     num_inference_steps=steps,
@@ -1786,7 +1821,13 @@ class QwenImageEditWorker:
                 result = self.pipe(**call_kwargs)
                 _call_end = time.time()
 
-                images_b64.append(_png_b64(result.images[0]))
+                out_img = result.images[0]
+                if mirror:
+                    from PIL import ImageOps
+
+                    out_img = ImageOps.mirror(out_img)
+                    print(f"[angle] {idx + 1}/{len(instructions)} mirrored (left side via right)", flush=True)
+                images_b64.append(_png_b64(out_img))
 
                 # 前処理+TE = step0 まで / 拡散ループ = step0→last_step /
                 # VAE+後処理 = last_step→call_end
@@ -2104,6 +2145,7 @@ class QwenImageEditWorker:
                 if base_seed is not None:
                     generator = torch.Generator(device="cuda").manual_seed(base_seed + idx)
 
+                instr, mirror = _mirror_plan(instr)
                 final_prompt = instr if raw_prompt else _apply_lora_trigger(instr, self._lora_loaded)
                 # 行ごとの画像セットがあればそれを使う（1 枚ならメインだけ、2 枚以上なら Multi-Reference）。
                 row_image = pipe_image
@@ -2114,6 +2156,8 @@ class QwenImageEditWorker:
                     row_image = rs if row_multi else rs[0]
                 if row_multi and ANGLE_MULTIREF_PROMPT_SUFFIX:
                     final_prompt = f"{final_prompt} {ANGLE_MULTIREF_PROMPT_SUFFIX}".strip()
+                if mirror:
+                    row_image = _mirror_images(row_image)
                 if idx == 0:
                     print(f"[angle-job] {job_id} prompt[0]: {final_prompt!r}", flush=True)
 
@@ -2136,8 +2180,17 @@ class QwenImageEditWorker:
                 result = self.pipe(**call_kwargs)
                 vram_gb = self._vram_gb()
                 last_progress_time[0] = time.time()
-                print(f"[angle-job] {job_id} angle {idx} computed in {time.time() - _tc:.1f}s", flush=True)
-                finalize_futs.append(finalize_pool.submit(_finalize_angle, idx, result.images[0], vram_gb))
+                out_img = result.images[0]
+                if mirror:
+                    from PIL import ImageOps
+
+                    out_img = ImageOps.mirror(out_img)
+                print(
+                    f"[angle-job] {job_id} angle {idx} computed in {time.time() - _tc:.1f}s"
+                    + (" (mirrored: left side via right)" if mirror else ""),
+                    flush=True,
+                )
+                finalize_futs.append(finalize_pool.submit(_finalize_angle, idx, out_img, vram_gb))
             _tj = time.time()
             _drain_finalize()
             done = done_box[0]
