@@ -155,3 +155,19 @@ def main(out_dir: str = "./music_out", duration: float = 60.0, seed: int = 7, ly
         p = out / f"{name}_s{seed}.wav"
         p.write_bytes(r["wav"])
         print(f"{p}  {r['seconds']:.1f}s  peak {r['peak_vram_gb']}GB", flush=True)
+
+
+@app.local_entrypoint()
+def batch(jobs: str, out_dir: str = "./music_out"):
+    """jobs: JSON ファイル [{"name", "prompt", "lyrics", "duration", "seed"}]。ComfyUI 既定例の形式
+    （Global Metadata / Vocal Details / Arrangement の指示文＋セクションタグ付きの歌詞）で書く。"""
+    import json
+
+    out = pathlib.Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    m = Music()
+    for j in json.loads(pathlib.Path(jobs).read_text(encoding="utf-8")):
+        r = m.generate.remote(j["prompt"], lyrics=j.get("lyrics", ""), duration=j.get("duration", 60.0), seed=j.get("seed", 7))
+        p = out / f"{j['name']}.wav"
+        p.write_bytes(r["wav"])
+        print(f"{p}  {r['seconds']:.1f}s  peak {r['peak_vram_gb']}GB", flush=True)
