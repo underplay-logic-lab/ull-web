@@ -25,9 +25,10 @@ load_lora_weights で載せる。推論スタック（2026-09-09 実機チュー
 
 左右の向き（2026-10-02）: 顔アップ 1 枚だと左側の指定でも画面の右を向くことが多い。
   - 左側の構図は「反転の反転」（入力を反転 → 右側の指定で生成 → 出力を反転。_mirror_plan）。
-  - 生成後に顔の向きを判定し（_face_side）、指定と逆なら「もう一方のやり方＋別シード」で 1 回だけ作り直す。
+  - 生成後に顔の向きを判定し（_face_side）、指定と逆なら、外れた画像を反転して取った骨格図（_pose_skeleton）を
+    参照に足して 1 回だけ作り直す（骨格が取れなければ「もう一方のやり方＋別シード」）。
     それでも逆ならそのまま返す（1 回だけの反転は、ほくろ・分け目が逆になるのでしない — ホスト判断）。
-  - 採用: MediaPipe 1.0.1（Apache-2.0）＋ BlazeFace short range（Apache-2.0）、2026-10-02 確認。
+  - 採用: MediaPipe 1.0.1（Apache-2.0）＋ BlazeFace short range・Pose Landmarker heavy（Apache-2.0）、2026-10-02 確認。
 
 構成・規約は modal_lora_worker.py / modal_wan_animate_blackwell.py を踏襲:
   - コンテナ標準 (CLAUDE.md §1、改変厳禁): nvidia/cuda:13.0.0-devel +
@@ -376,6 +377,60 @@ _FACE_MODEL_PATH = "/opt/blaze_face_short_range.tflite"
 _face_detector = None
 
 
+# 作り直しは骨格図で向きを渡す（2026-10-02）。外れた画像は「逆向きの同じ構図」なので、反転すれば向きだけは正しい。
+# そこから体のポーズ（鼻・目・耳・肩）を取り出して OpenPose 風の骨格図にし、元の参照＋骨格図で作り直す。
+# 骨格図は顔の特徴を持たないので、ほくろ等が逆になる問題は持ち込まない。ひなたの左斜め前で 4/4（それまで 0/5）。
+_POSE_MODEL_PATH = "/opt/pose_landmarker_heavy.task"
+_pose_detector = None
+ANGLE_POSE_PROMPT = " The head pose follows the pose skeleton in the last image."
+
+
+def _pose_skeleton(img):
+    """img の頭と肩の骨格図（黒地・OpenPose の配色）。取れなければ None。"""
+    global _pose_detector
+    try:
+        import mediapipe as mp
+        import numpy as np
+        from mediapipe.tasks import python as mpt
+        from mediapipe.tasks.python import vision
+        from PIL import Image, ImageDraw
+
+        if _pose_detector is None:
+            _pose_detector = vision.PoseLandmarker.create_from_options(
+                vision.PoseLandmarkerOptions(base_options=mpt.BaseOptions(model_asset_path=_POSE_MODEL_PATH))
+            )
+        rgb = np.ascontiguousarray(np.asarray(img.convert("RGB")))
+        res = _pose_detector.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+        if not res.pose_landmarks:
+            return None
+        lm = res.pose_landmarks[0]
+        w, h = img.size
+
+        def pt(i):
+            return (lm[i].x * w, lm[i].y * h)
+
+        neck = ((pt(11)[0] + pt(12)[0]) / 2, (pt(11)[1] + pt(12)[1]) / 2)
+        can = Image.new("RGB", (w, h), "black")
+        d = ImageDraw.Draw(can)
+        r = max(4, round(min(w, h) * 0.012))
+        lines = [
+            (neck, pt(12), (255, 85, 0)), (neck, pt(11), (255, 0, 0)), (neck, pt(0), (0, 0, 255)),
+            (pt(0), pt(5), (170, 0, 255)), (pt(5), pt(8), (255, 0, 255)),
+            (pt(0), pt(2), (255, 0, 170)), (pt(2), pt(7), (255, 0, 85)),
+        ]
+        for a, b, c in lines:
+            d.line([a, b], fill=c, width=r)
+        for q, c in [
+            (pt(0), (255, 0, 0)), (pt(2), (170, 0, 255)), (pt(5), (255, 0, 255)), (pt(7), (255, 0, 170)),
+            (pt(8), (255, 0, 85)), (pt(11), (85, 255, 0)), (pt(12), (255, 170, 0)), (neck, (255, 85, 0)),
+        ]:
+            d.ellipse([q[0] - r, q[1] - r, q[0] + r, q[1] + r], fill=c)
+        return can
+    except Exception as exc:  # noqa: BLE001 — 取れなければ従来の作り直しに戻る
+        print(f"[angle] pose skeleton unavailable: {exc!r}", flush=True)
+        return None
+
+
 def _expected_side(instr: str):
     if any(r in instr for r in _RIGHT_DESCS):
         return 1
@@ -640,6 +695,10 @@ image = (
         "python -c \"import urllib.request; urllib.request.urlretrieve("
         "'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/"
         "blaze_face_short_range.tflite', '/opt/blaze_face_short_range.tflite')\"",
+        # 作り直しの骨格図（_pose_skeleton）。Pose Landmarker heavy（Apache-2.0）。
+        "python -c \"import urllib.request; urllib.request.urlretrieve("
+        "'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/"
+        "pose_landmarker_heavy.task', '/opt/pose_landmarker_heavy.task')\"",
     )
     # 全ワーカー共通の入力画像正規化レイヤー（_load_ref_image が使う）。
     .add_local_python_source("ull_image_prep")
@@ -1144,7 +1203,12 @@ def probe_orientation(pngs: dict) -> dict:
     PYTHONIOENCODING=utf-8 PYTHONUTF8=1 modal run modal_angle_worker.py::probe_orientation_main --folder <画像フォルダ>"""
     from PIL import Image
 
-    return {k: _face_side(Image.open(io.BytesIO(v))) for k, v in pngs.items()}
+    out = {}
+    for k, v in pngs.items():
+        im = Image.open(io.BytesIO(v))
+        sk = _pose_skeleton(im)
+        out[k] = f"side={_face_side(im)} skeleton={'ok' if sk is not None else 'none'}"
+    return out
 
 
 @app.local_entrypoint()
@@ -2242,14 +2306,21 @@ class QwenImageEditWorker:
                     row_multi = len(rs) > 1
                     row_image = rs if row_multi else rs[0]
 
-                def _gen(use_mirror: bool, gen):
+                def _gen(use_mirror: bool, gen, skeleton=None):
                     # use_mirror: 入力を反転 → 左右を入れ替えた指示で生成 → 出力を反転（反転の反転）。
+                    # skeleton: 骨格図を最後の参照として足す（反転するときは骨格図も一緒に反転する）。
                     plan = _swap_sides(instr) if use_mirror else instr
                     prompt = plan if raw_prompt else _apply_lora_trigger(plan, self._lora_loaded)
-                    if row_multi and ANGLE_MULTIREF_PROMPT_SUFFIX:
+                    imgs = row_image
+                    multi = row_multi
+                    if skeleton is not None:
+                        imgs = (list(row_image) if row_multi else [row_image]) + [skeleton]
+                        multi = True
+                        prompt = f"{prompt}{ANGLE_POSE_PROMPT}"
+                    if multi and ANGLE_MULTIREF_PROMPT_SUFFIX:
                         prompt = f"{prompt} {ANGLE_MULTIREF_PROMPT_SUFFIX}".strip()
                     call_kwargs = dict(
-                        image=_mirror_images(row_image) if use_mirror else row_image,
+                        image=_mirror_images(imgs) if use_mirror else imgs,
                         prompt=prompt,
                         negative_prompt=negative_prompt,
                         num_inference_steps=steps,
@@ -2285,13 +2356,21 @@ class QwenImageEditWorker:
                             if base_seed is not None
                             else None
                         )
-                        retry_img, _ = _gen(not use_mirror, retry_gen)
+                        from PIL import ImageOps
+
+                        skeleton = _pose_skeleton(ImageOps.mirror(out_img))
+                        if skeleton is not None:
+                            retry_img, _ = _gen(use_mirror, retry_gen, skeleton=skeleton)
+                            how = "pose"
+                        else:
+                            retry_img, _ = _gen(not use_mirror, retry_gen)
+                            how = "mirrored" if not use_mirror else "direct"
                         side2 = _face_side(retry_img)
                         if side2 == expected:
                             out_img = retry_img
-                            note += f" | orient: wrong -> retried {'mirrored' if not use_mirror else 'direct'} -> OK"
+                            note += f" | orient: wrong -> retried {how} -> OK"
                         else:
-                            note += f" | orient: wrong -> retried -> {side2} (kept first)"
+                            note += f" | orient: wrong -> retried {how} -> {side2} (kept first)"
                     else:
                         note += f" | orient: {'OK' if side == expected else 'unknown'}"
                 vram_gb = self._vram_gb()
