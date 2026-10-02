@@ -612,6 +612,11 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
      骨格図は全身・任意ポーズにも使える → 素材づくりのポーズモードの土台になる（ホストも同意）。
      → **8 方向そろった版を書き出し済み**: `promo/out/hinata-angle-8dir.mp4`（約 61 秒。生成〜一覧＝`hinata-angle5`、プレビュー＝`hinata-angle5b` をつなげた）。
      **YouTube に公開済み（2026-10-02）: https://youtu.be/97jplBqgBiU**（4K・BGM 入りで上げ直し）・Multi-Angle タブに「▶ 使い方の動画（1分）」を出した（`src/lib/tutorialVideos.ts`）。サムネイルは新しい 8 枚で作り直し済み。
+     **BGM・音（2026-10-02）**: 共通 BGM＝MiniMax Music 3 で作った静かなピアノ（歌なし）`promo/public/audio/bgm.wav`、-20 LUFS に合わせる。クリック音は合成。
+     仕上げは `promo/scripts/finish_video.py`（4K で書き出した部分をつなぎ BGM を通しで重ねる）。手順は `promo/README.md`。
+     **MiniMax Music 3 の評価**（`modal_music_worker.py`、重み 57GB は Volume の `/models/music/` に残置）: 速い（1〜2 分の曲が 30〜90 秒）・日本語の歌は聞き取れる・
+     ただし**声の性別とテンポは指示が効かない**（女性指定 4/4 男性・guidance 1.7/3.0/4.5 でも同じ、音圧だけ変わる）・「歌なし」でもハミングが混ざる・長さは上限扱い。
+     → Director の BGM 機能には今は採用しない。機能化するなら UI にモデル名表示の義務（§2 と衝突）。英語歌詞で女性が出るかと ACE-Step との比較は未実施。
      左斜め後ろの作り直し（深度マップ）で背景が部屋に変わった → 深度で作り直すときは「背景は元のまま」を足す案（未着手・ホスト判断待ち）。録画用 Chrome は完了 10〜20 秒後にページが閉じる（4 回、原因未特定・自動保存の時間帯）→ 生成とプレビューを分けて録れば回避できる。
      書き出しはスクロールバー・連打で寄らないよう修正済み。サムネイル `node brand/thumbnail.mjs angle <顔> <結果フォルダ>`。
      Studio の「▶ 使い方の動画」は `src/lib/tutorialVideos.ts` に YouTube の ID を書けば出る（未 push）。
