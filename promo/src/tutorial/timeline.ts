@@ -27,6 +27,7 @@ export type Edit = {
   idleKeep?: number; // 早送りの前後に等速で残す秒数
   idleOut?: number; // 早送り区間を書き出しで何秒に縮めるか
   zoom?: number; // クリック時に寄る倍率（1 で寄らない）
+  noZoom?: [number, number][]; // この区間（録画の秒）は寄らない
 };
 
 // 録画の区間 [from, to)（秒）を speed 倍で流す。
@@ -122,6 +123,25 @@ export function cursorAt(s: Session, tMs: number): { x: number; y: number } | nu
 export const clicks = (s: Session) =>
   s.events.filter((e): e is Extract<RecEvent, { type: "click" }> => e.type === "click");
 
+// 寄らないクリック（2026-10-02、ホスト指摘「目障り」）:
+// - スクロールバー（画面の右端）を掴んだもの
+// - 同じ場所を続けて押したもの（プレビューのページ送り等）。押すたびに寄り引きを繰り返すので、連打の一続きは寄らない。
+const SCROLLBAR_PX = 24;
+const REPEAT_PX = 40;
+const REPEAT_S = 10;
+function zoomableClicks(s: Session) {
+  const cs = clicks(s);
+  const near = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y) <= REPEAT_PX;
+  return cs.filter((c, i) => {
+    if (c.x >= s.view.width - SCROLLBAR_PX) return false;
+    const prev = cs[i - 1];
+    const next = cs[i + 1];
+    if (prev && near(prev, c) && c.t - prev.t <= REPEAT_S * 1000) return false;
+    if (next && near(next, c) && next.t - c.t <= REPEAT_S * 1000) return false;
+    return true;
+  });
+}
+
 // カメラ（寄り）の目標。クリックの少し前から寄り、HOLD 秒そのまま、次の操作が遠ければ引く。
 // テロップの zoom 指定があればその間はそれを優先する（1 なら引きで見せる）。
 const LEAD = 0.5;
@@ -135,8 +155,9 @@ export function cameraTarget(s: Session, edit: Edit, srcT: number): Camera {
   if (cap?.zoom === 1) return full;
   const scale = cap?.zoom ?? o.zoom;
   if (scale <= 1) return full;
+  if (edit.noZoom?.some(([a, b]) => srcT >= a && srcT < b)) return full;
   let target: Camera | null = null;
-  for (const c of clicks(s)) {
+  for (const c of zoomableClicks(s)) {
     const ct = c.t / 1000;
     if (ct - LEAD > srcT) break;
     if (srcT - ct < HOLD) target = { scale, cx: c.x, cy: c.y };
