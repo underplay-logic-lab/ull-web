@@ -1,3 +1,5 @@
+import { zipLocalDate } from "@/lib/zipDate";
+
 // Browser-side dataset ZIP unpacking for the LoRA Studio curation UI.
 // jszip is dynamically imported so it never lands in the main bundle.
 
@@ -77,8 +79,8 @@ export async function buildDatasetZip(
   entries.forEach((e, i) => {
     const ext = (e.file.name.match(/\.(png|jpe?g|webp)$/i)?.[1] ?? "png").toLowerCase();
     const stem = String(i + 1).padStart(4, "0");
-    zip.file(`${stem}.${ext === "jpeg" ? "jpg" : ext}`, e.file);
-    zip.file(`${stem}.txt`, e.caption ?? "");
+    zip.file(`${stem}.${ext === "jpeg" ? "jpg" : ext}`, e.file, { date: zipLocalDate() });
+    zip.file(`${stem}.txt`, e.caption ?? "", { date: zipLocalDate() });
   });
   return zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
 }

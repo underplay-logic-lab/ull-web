@@ -11,6 +11,7 @@
 import { HelpNote } from "./HelpNote";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
+import { zipLocalDate } from "@/lib/zipDate";
 import { Check, ChevronDown, ChevronRight, Download, ImagePlus, Loader2, Sparkles, Wand2, X, Zap, ZoomIn } from "lucide-react";
 import { MAX_SUB_REFERENCE_IMAGES } from "@/lib/angleStudio";
 import {
@@ -1171,7 +1172,8 @@ export function DatasetBuilderTab() {
     try {
       const zip = new JSZip();
       const blobs = await Promise.all(kept.map((r) => fetchFresh(r)));
-      blobs.forEach((b, n) => zip.file(fileName(kept[n], n), b));
+      const date = zipLocalDate();
+      blobs.forEach((b, n) => zip.file(fileName(kept[n], n), b, { date }));
       triggerDownload(await zip.generateAsync({ type: "blob" }), `dataset_${new Date().toISOString().slice(0, 10)}.zip`);
     } catch (err) {
       setErrorMessage(`ZIP の作成に失敗しました: ${err instanceof Error ? err.message : String(err)}`);

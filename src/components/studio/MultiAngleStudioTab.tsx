@@ -5,6 +5,7 @@ import { TopupActions } from "./TopupActions";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import JSZip from "jszip";
+import { zipLocalDate } from "@/lib/zipDate";
 import {
   AlertTriangle,
   Check,
@@ -136,7 +137,7 @@ async function zipAngleImages(jobId: string | null, urls: string[]): Promise<Blo
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         blob = await res.blob();
       }
-      zip.file(`${String(i + 1).padStart(2, "0")}_angle.png`, blob);
+      zip.file(`${String(i + 1).padStart(2, "0")}_angle.png`, blob, { date: zipLocalDate() });
     }),
   );
   return zip.generateAsync({ type: "blob" });

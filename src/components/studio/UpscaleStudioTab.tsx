@@ -6,6 +6,7 @@ import { TopupActions } from "./TopupActions";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import JSZip from "jszip";
+import { zipLocalDate } from "@/lib/zipDate";
 import {
   AlertTriangle,
   Download,
@@ -128,7 +129,7 @@ async function downloadUpscaleZip(results: { id: string; resultUrl: string }[]):
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = await res.arrayBuffer();
       const ext = /\.webp(\?|$)/i.test(resultUrl) ? "webp" : /\.jpe?g(\?|$)/i.test(resultUrl) ? "jpg" : "png";
-      zip.file(`${String(i + 1).padStart(2, "0")}_upscale.${ext}`, buf);
+      zip.file(`${String(i + 1).padStart(2, "0")}_upscale.${ext}`, buf, { date: zipLocalDate() });
     }),
   );
   const blob = await zip.generateAsync({ type: "blob" });
