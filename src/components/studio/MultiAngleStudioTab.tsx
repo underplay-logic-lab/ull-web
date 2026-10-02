@@ -15,7 +15,6 @@ import {
   Layers,
   Loader2,
   LogIn,
-  RefreshCw,
   Sparkles,
   Wand2,
   X,
@@ -791,10 +790,6 @@ export function MultiAngleStudioTab() {
   }, [job]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // reroll: 別ジョブを1構図で投げ、完了したら該当セルの URL を差し替える。
-  const [submittedCombos, setSubmittedCombos] = useState<AngleCombo[]>([]);
-  const [reroll, setReroll] = useState<{ index: number; jobId: string } | null>(null);
-
   const [zipping, setZipping] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   // 入力画像（メイン・サブ参照）の拡大表示（2026-09-29）。
@@ -876,7 +871,6 @@ export function MultiAngleStudioTab() {
       return;
     }
     setErrorMessage(null);
-    setSubmittedCombos([]);
     setJob(null);
     saveFormState(JOB_KEY, { jobId: id });
     setJobId(id);
@@ -914,7 +908,6 @@ export function MultiAngleStudioTab() {
         setJob(null);
         setJobId(null);
         setPhase("idle");
-        setSubmittedCombos([]);
         setSessionIds([]);
         sessionIdsRef.current = [];
         saveFormState(SESSION_KEY, { ids: [] });
@@ -964,7 +957,6 @@ export function MultiAngleStudioTab() {
       setPhase("submitting");
       setErrorMessage(null);
       setJob(null);
-      setSubmittedCombos(snapshot.combos);
 
       try {
         const res = await startAngleJob({
@@ -1121,57 +1113,6 @@ export function MultiAngleStudioTab() {
     };
   }, [jobId, markGpuWarm, runGenerate]);
 
-  // --- reroll ジョブのポーリング -------------------------------------
-  useEffect(() => {
-    if (!reroll) return;
-    let cancelled = false;
-
-    (async () => {
-      let streak = 0;
-      while (!cancelled) {
-        try {
-          const r = await pollAngleJob(reroll.jobId);
-          if (cancelled) return;
-          streak = 0;
-          if (r.status === "completed" && r.images[0]) {
-            setJob((prev) => {
-              if (!prev) return prev;
-              const images = [...prev.images];
-              images[reroll.index] = r.images[0];
-              return { ...prev, images };
-            });
-            setReroll(null);
-            markGpuWarm();
-            return;
-          }
-          if (r.status === "failed") {
-            setReroll(null);
-            setErrorMessage("リロールに失敗しました。");
-            return;
-          }
-        } catch (err) {
-          if (err instanceof AngleJobNotFoundError) {
-            setReroll(null);
-            setErrorMessage(
-              "このジョブの記録が見つかりませんでした。",
-            );
-            return;
-          }
-          streak += 1;
-          if (streak >= POLL_MAX_CONSECUTIVE_ERRORS) {
-            setReroll(null);
-            return;
-          }
-        }
-        await sleep(POLL_INTERVAL_MS);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [reroll, markGpuWarm]);
-
   const combos = useMemo(() => buildAngleCombos(selection), [selection]);
   const selectionWarning = useMemo(() => angleSelectionWarning(selection), [selection]);
   const count = combos.length;
@@ -1324,27 +1265,6 @@ export function MultiAngleStudioTab() {
     }
     markLoraUsed([image]);
     void runGenerate({ image, subImages, subScopes, selection, combos }, { priority: true, continuation: true });
-  };
-
-  const handleReroll = async (index: number) => {
-    const combo = submittedCombos[index];
-    if (!image || !user || !combo || reroll) return;
-    if (!creditsLoading && (credits ?? 0) < angleCombosCredits([combo], subRefUse, knobs)) return setChargeOpen(true);
-    try {
-      // seed を渡さない = worker が generator なしで実行 → 毎回別の結果。
-      // サブ参照画像も再送して Multi-Reference の整合性を保つ。
-      const res = await startAngleJob({ userId: user.id, image, subImages, subScopes, selection: combo.selection, mode });
-      broadcastCreditsUpdate(user.id, res.remainingCredits);
-      setReroll({ index, jobId: res.jobId });
-    } catch (err) {
-      const remaining = (err as AngleApiError)?.remainingCredits;
-      if (typeof remaining === "number") {
-        broadcastCreditsUpdate(user.id, remaining);
-        setChargeOpen(true);
-      } else {
-        setErrorMessage(err instanceof Error ? err.message : "リロールの起動に失敗しました。");
-      }
-    }
   };
 
   const images = job?.images ?? [];
@@ -1887,12 +1807,6 @@ export function MultiAngleStudioTab() {
                   />
                 </button>
 
-                {reroll?.index === i && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-black/60">
-                    <Loader2 size={22} className="animate-spin text-neon-pink" />
-                  </div>
-                )}
-
                 <div className="absolute right-0 top-0 p-1.5 opacity-0 transition-opacity group-hover:opacity-100">
                   <div className="flex shrink-0 items-center gap-0.5">
                     <button
@@ -1903,17 +1817,6 @@ export function MultiAngleStudioTab() {
                     >
                       <ZoomIn size={13} />
                     </button>
-                    {submittedCombos[i] && (
-                      <button
-                        type="button"
-                        onClick={() => handleReroll(i)}
-                        disabled={Boolean(reroll)}
-                        aria-label="リロール（別シードで再生成）"
-                        className="rounded-md bg-black/50 p-1 text-white transition-colors hover:bg-black/80 disabled:opacity-40"
-                      >
-                        <RefreshCw size={13} />
-                      </button>
-                    )}
                     <button
                       type="button"
                       onClick={() => void saveAngle(i)}
@@ -1953,7 +1856,7 @@ export function MultiAngleStudioTab() {
 
           <p className="mt-3 text-[11px] leading-relaxed text-muted/70">
             ※向きは生成後に自動で確かめ、違っていれば作り直す対策をしていますが、指定した向きにならないことがあります（特に斜め）。
-            気になる 1 枚は右上の <RefreshCw size={10} className="inline align-[-1px]" /> で作り直せます。
+            気になる構図は、もう一度まとめて生成してください。
             <br />
             ※必要な画像はダウンロードして保存してください。
           </p>
