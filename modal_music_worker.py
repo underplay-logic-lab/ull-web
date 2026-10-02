@@ -67,6 +67,22 @@ def probe() -> dict:
     return out
 
 
+@app.function(image=image, cpu=2, memory=8192, timeout=600, volumes={MODELS_DIR: vol}, scaledown_window=2)
+def probe_inputs() -> str:
+    """パイプラインが受け付ける引数（既定値つき）を GPU なしで一覧する。指示の効き具合を変える調整項目を探す。"""
+    from diffusers import ModularPipeline
+
+    pipe = ModularPipeline.from_pretrained(REPO)
+    doc = str(pipe.blocks.doc) if hasattr(pipe.blocks, "doc") else repr(pipe.blocks)
+    print(doc, flush=True)
+    try:
+        spec = {c.name: c for c in pipe.blocks.expected_components}
+        print("[guider spec]", spec.get("guider"), flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print("[guider spec] n/a", exc, flush=True)
+    return doc
+
+
 @app.function(
     image=image,
     cpu=4,
@@ -108,10 +124,16 @@ class Music:
         print(f"[music] loaded in {time.time() - t:.0f}s, VRAM={torch.cuda.memory_allocated() / 1e9:.1f}GB", flush=True)
 
     @modal.method()
-    def generate(self, prompt: str, lyrics: str = "", duration: float = 60.0, seed: int = 7) -> dict:
+    def generate(self, prompt: str, lyrics: str = "", duration: float = 60.0, seed: int = 7, guidance: float = 0.0) -> dict:
         import numpy as np
         import soundfile as sf
         import torch
+
+        if guidance:
+            # 指示文への従わせ方（既定 1.7）。声の性別やテンポは前段の言語モデルで決まり、効かない可能性もある。
+            from diffusers.guiders import ClassifierFreeGuidance
+
+            self.pipe.update_components(guider=ClassifierFreeGuidance(guidance_scale=float(guidance)))
 
         torch.cuda.reset_peak_memory_stats()
         t = time.time()
@@ -167,7 +189,10 @@ def batch(jobs: str, out_dir: str = "./music_out"):
     out.mkdir(parents=True, exist_ok=True)
     m = Music()
     for j in json.loads(pathlib.Path(jobs).read_text(encoding="utf-8")):
-        r = m.generate.remote(j["prompt"], lyrics=j.get("lyrics", ""), duration=j.get("duration", 60.0), seed=j.get("seed", 7))
+        r = m.generate.remote(
+            j["prompt"], lyrics=j.get("lyrics", ""), duration=j.get("duration", 60.0), seed=j.get("seed", 7),
+            guidance=j.get("guidance", 0.0),
+        )
         p = out / f"{j['name']}.wav"
         p.write_bytes(r["wav"])
         print(f"{p}  {r['seconds']:.1f}s  peak {r['peak_vram_gb']}GB", flush=True)
