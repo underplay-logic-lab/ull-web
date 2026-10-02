@@ -49,3 +49,11 @@ node scripts/record.mjs demo https://www.ullstudio.com/   # 仕組みの動作�
 
 `node brand/render.mjs` → `out/brand/`。採用案（黒 × 明朝、2026-10-01）は `youtube-icon.png`・`youtube-banner.png`。
 `sheet.png` は案の見比べ用。色・書体・一行は `brand/render.mjs` の先頭（`PALETTE` / `TYPE` / `MAIN`）。
+
+## 仕上げ（4K・BGM・クリック音、2026-10-02）
+
+- 共通 BGM は `public/audio/bgm.wav`（MiniMax Music 3 で作った静かなピアノ・歌なし。`modal_music_worker.py`）。クリック音は `python scripts/make_click.py`。
+- 部分ごとに `edit.json` に `"bgm": null` を書き、4K で書き出す: `npx remotion render Tutorial out/a.mp4 --props='{"session":"<名前>"}' --scale=2 --crf=16`
+  （1440p の倍率 4/3 は割り切れず書き出せない。YouTube は 4K で上げると 1080p 視聴でも画質が良い）
+- つないで BGM を通しで重ねる: `python scripts/finish_video.py out/<完成>.mp4 out/a.mp4 out/b.mp4`
+- 録画用 Chrome は完了直後（10〜20 秒）にページが閉じることがある（原因未特定）→ 生成とプレビューを別の録画にしてつなぐ。
