@@ -33,13 +33,13 @@ npm run render:landscape  # out/landscape.mp4（16:9・90 秒）
 ```sh
 node scripts/record.mjs login                    # 初回だけ: 普通の Chrome が開く。テスト用アカウントでログインして閉じる（.rec-profile/ に残る。自動操作中だと Turnstile に弾かれるため）
 node scripts/record.mjs dataset https://www.ullstudio.com/studio?tab=dataset
-#   → 普通に操作する。説明を入れたい所で F8。終わったらブラウザを閉じる
+#   → 普通に操作する。説明を入れたい所で F8 → 出た欄に入れたいテロップをメモして Enter（欄が出ている間は録画が止まる。Esc で取り消し）。終わったらブラウザを閉じる
 #   → public/rec/dataset/ に frames/・session.json・edit.json
 npx remotion render Tutorial out/dataset.mp4 --props='{"session":"dataset"}'
 node scripts/record.mjs demo https://www.ullstudio.com/   # 仕組みの動作確認（自動で動いて閉じる）
 ```
 
-- `edit.json` を手で直す: `title`（冒頭 2.5 秒）、`captions[]`（`at` は録画の秒・F8 の位置が入っている。`text` が空なら出ない。
+- `edit.json` を手で直す: `title`（冒頭 2.5 秒）、`captions[]`（`at` は録画の秒・F8 の位置が入っている。`memo` はそのとき書いたメモで画面には出ない。`text` が空なら出ない。
   `dur` 表示秒・`zoom: 1` でその間は引き）、`trimStart`/`trimEnd`、`idleGap`（既定 6 秒操作が無ければ早送り）、`zoom`（クリック時の倍率、既定 1.6）。
 - 何を打ったかは記録しない（キーは「押した」ことだけ）。画面に出るメールアドレス等はテスト用アカウントで避ける。
 - 録画は 30fps 上限で約 2MB/秒（10 分で 1.2GB）。`public/` なので git には入らない。
