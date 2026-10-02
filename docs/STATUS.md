@@ -599,11 +599,11 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    （`cuts` で途中を切る・`noZoom`・`"bgm": null`）→ `npx remotion render Tutorial ... --scale=2 --crf=16`（4K）→
    `python scripts/finish_video.py out/<完成>.mp4 out/a.mp4 out/b.mp4`（つないで BGM を -20 LUFS で通しで重ねる）→ サムネ `node brand/thumbnail.mjs` →
    ホストが YouTube に上げる（AI の使用＝はい・埋め込み許可）→ `src/lib/tutorialVideos.ts` に ID を足して push。
-2. **Multi-Angle の確認・判断待ち**: ①本番で「▶ 使い方の動画（1分）」が出て再生できるか ②**普通のブラウザでも完了直後に落ちないか**
-   （録画用 Chrome では 4 回閉じた。お客さんにも起きるなら自動保存を疑う）③深度マップで作り直すと背景が変わる（無地→部屋）→ 指示に「背景は元のまま」を足すか。
+2. **Multi-Angle の確認**: ①使い方の動画は本番で再生 OK（2026-10-02 ホスト確認）③深度マップの作り直しに「背景は元のまま」を足してデプロイ済み
+   （効いたかは未確認。外れた向きが出たときに背景を見る）。残りは ②**普通のブラウザでも完了直後に落ちないか**（録画用 Chrome では 4 回閉じた）。
 3. **モデル名の方針**（提案: サイト・YouTube には出さない／ログイン後の Studio では必要な場面だけ。MiniMax H3 はライセンス上名前を広めない方がよい）
    ＋操作動画に映る LoRA Studio のモデル名をぼかすか。決まったら CLAUDE.md §2 を書き直す。
-   ついでに: MiniMax Music 3 の重み（Volume 57GB）を消すか（機能化は見送り。残す理由は英語歌詞で女性が出るか・ACE-Step との比較）。
+   MiniMax Music 3 の重み（Volume 57GB）は**消してよい**（ホスト判断 2026-10-02）。Volume に余裕があるので、足りなくなったときに消す。
 
 **記録（2026-10-01〜02 にやったこと。蒸し返さない）**
 - **2026-10-02: 看板キャラ「ひなた」と 1 本目の操作動画**（詳細は `promo/characters/README.md`・`promo/README.md`）

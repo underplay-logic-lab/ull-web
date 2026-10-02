@@ -436,7 +436,11 @@ def _pose_skeleton(img):
 # 外れた画像を反転して深度を取ると、頭・髪・肩の立体の形と向きだけが入り、分け目などの細部は入らない。
 # ひなたの右斜め後ろで 4/4（それまで 0/4）。Depth Anything V2 Small（Apache-2.0。Base/Large は非商用なので使わない）。
 ANGLE_DEPTH_REPO = os.environ.get("ANGLE_DEPTH_REPO", "depth-anything/Depth-Anything-V2-Small-hf")
-ANGLE_DEPTH_PROMPT = " The body and head shape follow the depth map in the last image."
+# 深度マップは背景を描かないので、無地の背景が部屋などに描き変わった（2026-10-02）→ 背景は元画像のままと明示する。
+ANGLE_DEPTH_PROMPT = (
+    " The body and head shape follow the depth map in the last image."
+    " The background stays exactly the same as in the first image."
+)
 _depth_pipe = None
 
 
