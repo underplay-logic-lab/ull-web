@@ -601,6 +601,8 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    → 3 案（A 丸顔・人懐っこい「ひなた」／B 猫目・生意気／C たれ目・おっとり「こころ」）で A が第一候補・B は無し・C も良く姉妹案あり（2026-10-02）。
    → 実写化すると印象が大きく変わった（その辺にいそう・二人がほぼ同じ顔）→ 実写で先に選び、イラストはそこから起こす方向で検討中。
    → **実写の 3 人目（パッツンのボブ）をひなたに決定**・1 人目は姉候補（`promo/characters/README.md`）。次は仕上げの顔アップ 1 枚 → Multi-Angle から撮影。
+   → **1 本目（Multi-Angle・8 方向ターンアラウンド・約 86 秒）を録画・書き出し済み**: `promo/out/hinata-angle.mp4`（テロップは `promo/public/rec/hinata-angle/edit.json`）。
+     顔アップは `promo/characters/hinata_face_v1_3x4.png`。ホストの確認待ち: 上部の「999,887 Credits」をぼかすか・投稿先。
    絵コンテ・素材リストは `docs/promo-video-storyboard.md`。
 2. **短い動画を 1 本撮る**（1 本目は Multi-Angle の 1〜2 分を提案済み＝録画→書き出し→投稿の流れを安く通すため。ホストの最終確認はまだ）。
    準備は済み: テスト用アカウント（ullstudio.com のアドレス・Cloudflare Email Routing で転送）でログイン済み（`promo/.rec-profile/`）・
