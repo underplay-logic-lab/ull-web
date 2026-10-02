@@ -28,6 +28,7 @@ export type Edit = {
   idleOut?: number; // 早送り区間を書き出しで何秒に縮めるか
   zoom?: number; // クリック時に寄る倍率（1 で寄らない）
   noZoom?: [number, number][]; // この区間（録画の秒）は寄らない
+  cuts?: [number, number][]; // この区間（録画の秒）を切り落とす（操作のやり直し等）
 };
 
 // 録画の区間 [from, to)（秒）を speed 倍で流す。
@@ -37,9 +38,22 @@ const DEFAULTS = { idleGap: 6, idleKeep: 1.2, idleOut: 1.5, zoom: 1.6 };
 export const opts = (e: Edit) => ({ ...DEFAULTS, ...e });
 
 export function buildSegments(s: Session, edit: Edit): Segment[] {
-  const o = opts(edit);
   const start = edit.trimStart ?? 0;
   const end = Math.min(edit.trimEnd ?? Infinity, s.duration / 1000);
+  // 切り落とす区間を除いた残りを、それぞれ同じ規則で早送りしてつなぐ。
+  const kept: [number, number][] = [];
+  let cur = start;
+  for (const [a, b] of [...(edit.cuts ?? [])].sort((x, y) => x[0] - y[0])) {
+    if (b <= cur || a >= end) continue;
+    if (a > cur) kept.push([cur, a]);
+    cur = Math.max(cur, b);
+  }
+  if (end > cur) kept.push([cur, end]);
+  return kept.flatMap(([a, b]) => buildRange(s, edit, a, b));
+}
+
+function buildRange(s: Session, edit: Edit, start: number, end: number): Segment[] {
+  const o = opts(edit);
   // 「操作している」とみなす時刻。マウスを揺らしているだけの待ち時間は早送りしたいので move は数えない。
   const acts = s.events
     .filter((e) => e.type !== "move")
