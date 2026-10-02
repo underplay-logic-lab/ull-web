@@ -124,7 +124,8 @@ async function downloadUpscaleZip(results: { id: string; resultUrl: string }[]):
     results.map(async ({ id, resultUrl }, i) => {
       const url = await resolveUpscaleImageUrl(id, resultUrl);
       const res = await fetch(url);
-      if (!res.ok) return;
+      // 飛ばすと欠けた（空の）ZIP が黙って保存される → エラーにして取り直させる（Multi-Angle で発生、2026-10-02）。
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = await res.arrayBuffer();
       const ext = /\.webp(\?|$)/i.test(resultUrl) ? "webp" : /\.jpe?g(\?|$)/i.test(resultUrl) ? "jpg" : "png";
       zip.file(`${String(i + 1).padStart(2, "0")}_upscale.${ext}`, buf);

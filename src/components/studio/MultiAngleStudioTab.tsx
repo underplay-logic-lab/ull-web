@@ -52,6 +52,7 @@ import {
   AngleJobNotFoundError,
   downloadAngleImage,
   freshAngleImageUrl,
+  fetchAngleImageBlob,
   freshAngleImageUrls,
   invalidateAngleImageUrls,
   listAngleJobs,
@@ -118,15 +119,24 @@ function buildZipFilename() {
   )}${p(now.getMinutes())}${p(now.getSeconds())}.zip`;
 }
 
-/** 画像URL配列を1つのZIP Blobへ束ねる（handleZip・自動ダウンロード両方で共用）。 */
-async function zipAngleImages(urls: string[]): Promise<Blob> {
+/**
+ * 画像URL配列を1つのZIP Blobへ束ねる（handleZip・自動ダウンロード両方で共用）。
+ * 取れない画像は飛ばさずエラーにする（完了直後は R2 への移動中で取れず、空の ZIP が保存された。2026-10-02）。
+ * jobId があれば 1 枚ずつ URL を取り直して数回試す。
+ */
+async function zipAngleImages(jobId: string | null, urls: string[]): Promise<Blob> {
   const zip = new JSZip();
   await Promise.all(
     urls.map(async (url, i) => {
-      const res = await fetch(url);
-      if (!res.ok) return;
-      const buf = await res.arrayBuffer();
-      zip.file(`${String(i + 1).padStart(2, "0")}_angle.png`, buf);
+      let blob: Blob;
+      if (jobId) {
+        blob = await fetchAngleImageBlob(jobId, i, url);
+      } else {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        blob = await res.blob();
+      }
+      zip.file(`${String(i + 1).padStart(2, "0")}_angle.png`, blob);
     }),
   );
   return zip.generateAsync({ type: "blob" });
@@ -1030,7 +1040,7 @@ export function MultiAngleStudioTab() {
             const urls = next.images;
             if (urls.length > 0 && takeAutoDownload(jobId)) {
               runAutoDownload("MultiAngleStudioTab", async () =>
-                triggerBlobDownload(await zipAngleImages(await freshAngleImageUrls(jobId, urls)), buildZipFilename()),
+                triggerBlobDownload(await zipAngleImages(jobId, await freshAngleImageUrls(jobId, urls)), buildZipFilename()),
               );
             }
             if (loraModeRef.current && loraJobIdsRef.current.has(jobId) && next.images.length > 0) {
@@ -1336,7 +1346,7 @@ export function MultiAngleStudioTab() {
     setZipping(true);
     try {
       // 表示中の URL は無効になっていることがあるので、その場で取り直す（2026-09-24）。
-      const blob = await zipAngleImages(job ? await freshAngleImageUrls(job.id, images) : images);
+      const blob = await zipAngleImages(job?.id ?? null, job ? await freshAngleImageUrls(job.id, images) : images);
       triggerBlobDownload(blob, buildZipFilename());
     } catch (err) {
       console.error("[MultiAngleStudioTab] zip failed:", err);
