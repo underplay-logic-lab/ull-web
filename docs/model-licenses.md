@@ -16,6 +16,7 @@ CLAUDE.md §5（商用利用・SaaS再頒布・地域制限の3点を満たす�
 - **WD タガー（`SmilingWolf/wd-eva02-large-tagger-v3`）**: Apache-2.0（2026-09-25 確認）。LoRA Studio の構図診断（`modal_wd_tagger.py`・CPU/onnxruntime〔MIT〕）。
 - **Qwen2.5-VL-7B-Instruct（abliterated 版を含む）**: Apache-2.0。※ Qwen2.5-VL の **3B は研究用ライセンス（商用不可）**、72B は Qwen ライセンス。
 - **MediaPipe 1.0.1 ＋ 顔検出 BlazeFace short range・Pose Landmarker heavy**: いずれも Apache-2.0（2026-10-02 確認）。
+- **Depth Anything V2 Small（`depth-anything/Depth-Anything-V2-Small-hf`）**: Apache-2.0（2026-10-02 確認）。**Base・Large は CC-BY-NC（非商用）なので不可**。Multi-Angle の後ろ斜めの作り直し（`_depth_map`）。
   Multi-Angle の向きの自動判定（`modal_angle_worker.py` の `_face_side`・CPU）。
 - **Wan2.2-S2V-14B**: Apache-2.0・地域制限なし。ただし**速度・品質とも本番採用の水準に届かず不採用**（`docs/gpu-benchmarks.md` §10）。
 

@@ -230,6 +230,11 @@ const closed = new Promise((r) => {
   context.on("close", r);
   page.on("close", r);
 });
+// 落ちたときの手がかり（2026-10-02、プレビュー中に 3 回続けて録画用 Chrome が消えた）。
+page.on("crash", () => console.error(`[落ちた] ページがクラッシュ（${(rel(Date.now()) ?? -1) / 1000} 秒）`));
+page.on("close", () => console.log(`[終了] ページが閉じた（${(rel(Date.now()) ?? -1) / 1000} 秒）`));
+context.browser()?.on("disconnected", () => console.log("[終了] ブラウザとの接続が切れた"));
+page.on("pageerror", (e) => console.error(`[ページのエラー] ${String(e).slice(0, 200)}`));
 // 名前が demo のときは自動で動かして閉じる（仕組みの動作確認用。人が触らなくても一通り撮れる）。
 if (name === "demo") {
   const m = page.mouse;

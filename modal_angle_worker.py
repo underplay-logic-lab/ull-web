@@ -26,9 +26,10 @@ load_lora_weights で載せる。推論スタック（2026-09-09 実機チュー
 左右の向き（2026-10-02）: 顔アップ 1 枚だと左側の指定でも画面の右を向くことが多い。
   - 左側の構図は「反転の反転」（入力を反転 → 右側の指定で生成 → 出力を反転。_mirror_plan）。
   - 生成後に顔の向きを判定し（_face_side）、指定と逆なら、外れた画像を反転して取った骨格図（_pose_skeleton）を
-    参照に足して 1 回だけ作り直す（骨格が取れなければ「もう一方のやり方＋別シード」）。
+    参照に足して 1 回だけ作り直す（骨格が取れなければ深度マップ＝_depth_map、それも無理なら「もう一方のやり方＋別シード」）。
     それでも逆ならそのまま返す（1 回だけの反転は、ほくろ・分け目が逆になるのでしない — ホスト判断）。
-  - 採用: MediaPipe 1.0.1（Apache-2.0）＋ BlazeFace short range・Pose Landmarker heavy（Apache-2.0）、2026-10-02 確認。
+  - 採用: MediaPipe 1.0.1（Apache-2.0）＋ BlazeFace short range・Pose Landmarker heavy（Apache-2.0）、
+    Depth Anything V2 Small（Apache-2.0。Base/Large は CC-BY-NC なので不可）、2026-10-02 確認。
 
 構成・規約は modal_lora_worker.py / modal_wan_animate_blackwell.py を踏襲:
   - コンテナ標準 (CLAUDE.md §1、改変厳禁): nvidia/cuda:13.0.0-devel +
@@ -428,6 +429,33 @@ def _pose_skeleton(img):
         return can
     except Exception as exc:  # noqa: BLE001 — 取れなければ従来の作り直しに戻る
         print(f"[angle] pose skeleton unavailable: {exc!r}", flush=True)
+        return None
+
+
+# 骨格が取れない構図（後ろ斜め＝顔がほぼ見えない）は深度マップで向きを渡す（2026-10-02）。
+# 外れた画像を反転して深度を取ると、頭・髪・肩の立体の形と向きだけが入り、分け目などの細部は入らない。
+# ひなたの右斜め後ろで 4/4（それまで 0/4）。Depth Anything V2 Small（Apache-2.0。Base/Large は非商用なので使わない）。
+ANGLE_DEPTH_REPO = os.environ.get("ANGLE_DEPTH_REPO", "depth-anything/Depth-Anything-V2-Small-hf")
+ANGLE_DEPTH_PROMPT = " The body and head shape follow the depth map in the last image."
+_depth_pipe = None
+
+
+def _depth_map(img):
+    """img の深度マップ（RGB・同じ大きさ）。取れなければ None。"""
+    global _depth_pipe
+    try:
+        if _depth_pipe is None:
+            import torch
+            from transformers import pipeline
+
+            _depth_pipe = pipeline(
+                "depth-estimation",
+                model=ANGLE_DEPTH_REPO,
+                device=0 if torch.cuda.is_available() else -1,
+            )
+        return _depth_pipe(img.convert("RGB"))["depth"].convert("RGB").resize(img.size)
+    except Exception as exc:  # noqa: BLE001 — 取れなければ従来の作り直しに戻る
+        print(f"[angle] depth map unavailable: {exc!r}", flush=True)
         return None
 
 
@@ -1296,6 +1324,26 @@ def probe_image_prep() -> dict:
     report["ok"] = all(not isinstance(v, str) or not v.startswith("FAIL") for v in report["cases"].values())
     print("[probe_image_prep]", report, flush=True)
     return report
+
+
+@app.function(
+    image=image,
+    timeout=600,
+    cpu=2,
+    memory=4096,
+    volumes={MODELS_DIR: vol},
+    secrets=[modal.Secret.from_name("huggingface-secret")],
+    scaledown_window=2,
+)
+def ensure_depth_cached() -> dict:
+    """向きの作り直しに使う深度モデルを Volume の HF キャッシュへ引き、CPU で 1 回推論して確かめる。
+    PYTHONIOENCODING=utf-8 PYTHONUTF8=1 modal run modal_angle_worker.py::ensure_depth_cached"""
+    from PIL import Image
+
+    d = _depth_map(Image.new("RGB", (256, 320), "white"))
+    vol.commit()
+    print(f"[depth] repo={ANGLE_DEPTH_REPO} ok={d is not None} size={None if d is None else d.size}", flush=True)
+    return {"repo": ANGLE_DEPTH_REPO, "ok": d is not None, "size": None if d is None else d.size}
 
 
 # ---------------------------------------------------------------------------
@@ -2306,9 +2354,9 @@ class QwenImageEditWorker:
                     row_multi = len(rs) > 1
                     row_image = rs if row_multi else rs[0]
 
-                def _gen(use_mirror: bool, gen, skeleton=None):
+                def _gen(use_mirror: bool, gen, skeleton=None, control_prompt=ANGLE_POSE_PROMPT):
                     # use_mirror: 入力を反転 → 左右を入れ替えた指示で生成 → 出力を反転（反転の反転）。
-                    # skeleton: 骨格図を最後の参照として足す（反転するときは骨格図も一緒に反転する）。
+                    # skeleton: 骨格図か深度マップを最後の参照として足す（反転するときは一緒に反転する）。
                     plan = _swap_sides(instr) if use_mirror else instr
                     prompt = plan if raw_prompt else _apply_lora_trigger(plan, self._lora_loaded)
                     imgs = row_image
@@ -2316,7 +2364,7 @@ class QwenImageEditWorker:
                     if skeleton is not None:
                         imgs = (list(row_image) if row_multi else [row_image]) + [skeleton]
                         multi = True
-                        prompt = f"{prompt}{ANGLE_POSE_PROMPT}"
+                        prompt = f"{prompt}{control_prompt}"
                     if multi and ANGLE_MULTIREF_PROMPT_SUFFIX:
                         prompt = f"{prompt} {ANGLE_MULTIREF_PROMPT_SUFFIX}".strip()
                     call_kwargs = dict(
@@ -2358,10 +2406,15 @@ class QwenImageEditWorker:
                         )
                         from PIL import ImageOps
 
-                        skeleton = _pose_skeleton(ImageOps.mirror(out_img))
+                        flipped = ImageOps.mirror(out_img)
+                        skeleton = _pose_skeleton(flipped)
+                        depth = None if skeleton is not None else _depth_map(flipped)
                         if skeleton is not None:
                             retry_img, _ = _gen(use_mirror, retry_gen, skeleton=skeleton)
                             how = "pose"
+                        elif depth is not None:
+                            retry_img, _ = _gen(use_mirror, retry_gen, skeleton=depth, control_prompt=ANGLE_DEPTH_PROMPT)
+                            how = "depth"
                         else:
                             retry_img, _ = _gen(not use_mirror, retry_gen)
                             how = "mirrored" if not use_mirror else "direct"
