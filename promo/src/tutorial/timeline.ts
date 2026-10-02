@@ -29,6 +29,7 @@ export type Edit = {
   zoom?: number; // クリック時に寄る倍率（1 で寄らない）
   noZoom?: [number, number][]; // この区間（録画の秒）は寄らない
   cuts?: [number, number][]; // この区間（録画の秒）を切り落とす（操作のやり直し等）
+  bgm?: string | null; // BGM（public からのパス）。省略で共通の BGM、null で無し
 };
 
 // 録画の区間 [from, to)（秒）を speed 倍で流す。

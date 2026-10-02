@@ -1,4 +1,4 @@
-import { AbsoluteFill, Img, interpolate, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
+import { AbsoluteFill, Audio, Img, interpolate, Sequence, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 import type { CalculateMetadataFunction } from "remotion";
 import { color, fontFamily } from "../theme";
 import {
@@ -23,6 +23,12 @@ export type TutorialProps = {
 };
 
 const TITLE_SEC = 2.5;
+// 音（2026-10-02）: 全動画共通の BGM（public/audio/bgm.*、edit.json の bgm で差し替え・null で無し）と、クリック音。
+// BGM は控えめに敷いて頭と終わりをフェード。クリック音は等速で流れている所のクリックだけ（早送り中は鳴らさない）。
+const BGM_DEFAULT = "audio/bgm.wav";
+const BGM_VOLUME = 0.22;
+const CLICK_SRC = "audio/click.wav";
+const CLICK_VOLUME = 0.6;
 
 export const calculateTutorialMetadata: CalculateMetadataFunction<TutorialProps> = async ({ props }) => {
   const base = `rec/${props.session}`;
@@ -64,6 +70,13 @@ export function Tutorial({ session, data }: TutorialProps) {
   const cursor = cursorAt(s, srcT * 1000);
   const ripple = clicks(s).find((c) => srcT * 1000 - c.t >= 0 && srcT * 1000 - c.t < 450);
 
+  const { durationInFrames } = useVideoConfig();
+  const bgm = edit.bgm === undefined ? BGM_DEFAULT : edit.bgm;
+  const clickFrames = clicks(s)
+    .map((c) => toOutput(segs, c.t / 1000))
+    .filter((t, i, a) => toSource(segs, t).speed <= 1.01 && (i === 0 || t - a[i - 1] > 0.05))
+    .map((t) => Math.round(t * fps));
+
   const caption = edit.captions.find((c, i) => {
     const from = toOutput(segs, c.at);
     const next = edit.captions[i + 1];
@@ -88,6 +101,25 @@ export function Tutorial({ session, data }: TutorialProps) {
       {speed > 1.5 && <FastForward speed={speed} />}
       {caption && <CaptionBar key={caption.at} text={caption.text} />}
       {edit.title && outT < TITLE_SEC && <TitleCard text={edit.title} outT={outT} />}
+
+      {bgm && (
+        <Audio
+          src={staticFile(bgm)}
+          loop
+          volume={(f) =>
+            BGM_VOLUME *
+            Math.min(
+              interpolate(f, [0, fps * 1.5], [0, 1], { extrapolateRight: "clamp" }),
+              interpolate(f, [durationInFrames - fps * 2.5, durationInFrames - 1], [1, 0], { extrapolateLeft: "clamp" }),
+            )
+          }
+        />
+      )}
+      {clickFrames.map((f, i) => (
+        <Sequence key={i} from={f} durationInFrames={Math.round(fps * 0.4)}>
+          <Audio src={staticFile(CLICK_SRC)} volume={CLICK_VOLUME} />
+        </Sequence>
+      ))}
     </AbsoluteFill>
   );
 }
