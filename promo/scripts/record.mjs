@@ -24,9 +24,9 @@ if (!name) {
 }
 
 // 見せる画面の大きさ（CSS px）。書き出しは 1920×1080 なので同じ比率にする。
-// DPR を上げるとズームしても文字が読める（1.5 で 2880×1620 の JPEG）。
+// DPR を上げるとズームしても文字が読める（2 で 3200×1800 の JPEG。1.5 だと 1440p 書き出しで拡大時に粗い、2026-10-02）。
 const VIEW = { width: 1600, height: 900 };
-const DPR = Number(process.env.REC_DPR ?? 1.5);
+const DPR = Number(process.env.REC_DPR ?? 2);
 const QUALITY = Number(process.env.REC_QUALITY ?? 88);
 
 const profileDir = path.join(root, ".rec-profile");
