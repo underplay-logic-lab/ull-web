@@ -13,6 +13,7 @@
 // 出力: public/rec/<名前>/frames/*.jpg・session.json・edit.json（既にあれば上書きしない）
 import { chromium } from "playwright";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -66,6 +67,19 @@ if (!recording) {
   await new Promise((r) => context.on("close", r));
   process.exit(0);
 }
+
+// 自動操作の Chrome はダウンロードを一時フォルダに置き、閉じると消す。いつものダウンロードフォルダへ写す（2026-10-02）。
+const downloadsDir = path.join(os.homedir(), "Downloads");
+const keepDownloads = (p) =>
+  p.on("download", (d) => {
+    const to = path.join(downloadsDir, d.suggestedFilename());
+    d.saveAs(to).then(
+      () => console.log(`ダウンロード: ${to}`),
+      (err) => console.error(`ダウンロードの保存に失敗: ${err.message}`),
+    );
+  });
+context.pages().forEach(keepDownloads);
+context.on("page", keepDownloads);
 
 const outDir = path.join(root, "public", "rec", name);
 const framesDir = path.join(outDir, "frames");
