@@ -1952,6 +1952,9 @@ export function MultiAngleStudioTab() {
           </div>
 
           <p className="mt-3 text-[11px] leading-relaxed text-muted/70">
+            ※向きは生成後に自動で確かめ、違っていれば作り直す対策をしていますが、指定した向きにならないことがあります（特に斜め）。
+            気になる 1 枚は右上の <RefreshCw size={10} className="inline align-[-1px]" /> で作り直せます。
+            <br />
             ※必要な画像はダウンロードして保存してください。
           </p>
         </div>

@@ -23,6 +23,12 @@ load_lora_weights で載せる。推論スタック（2026-09-09 実機チュー
   - フレーミングは eye-level + medium/wide 推奨。close-up + アオリは回転が
     ほぼ効かない（顔クロップだとシルエット情報が無い）。
 
+左右の向き（2026-10-02）: 顔アップ 1 枚だと左側の指定でも画面の右を向くことが多い。
+  - 左側の構図は「反転の反転」（入力を反転 → 右側の指定で生成 → 出力を反転。_mirror_plan）。
+  - 生成後に顔の向きを判定し（_face_side）、指定と逆なら「もう一方のやり方＋別シード」で 1 回だけ作り直す。
+    それでも逆ならそのまま返す（1 回だけの反転は、ほくろ・分け目が逆になるのでしない — ホスト判断）。
+  - 採用: MediaPipe 1.0.1（Apache-2.0）＋ BlazeFace short range（Apache-2.0）、2026-10-02 確認。
+
 構成・規約は modal_lora_worker.py / modal_wan_animate_blackwell.py を踏襲:
   - コンテナ標準 (CLAUDE.md §1、改変厳禁): nvidia/cuda:13.0.0-devel +
     Python 3.13 + PyTorch cu130 + Blackwell 優先の GPU フォールバック列。
@@ -335,24 +341,81 @@ def _align_image(img):
 # → 左側の記述子が入った構図は、入力を左右反転 → 右側の記述子で生成 → 出力を左右反転して返す。
 #    2 回反転するので、ほくろ・分け目など左右非対称な特徴は元の側に戻る。ANGLE_MIRROR_LEFT=0 で無効。
 ANGLE_MIRROR_LEFT = os.environ.get("ANGLE_MIRROR_LEFT", "1").strip() != "0"
-_MIRROR_SWAP = (
-    ("front-left quarter view", "front-right quarter view"),
-    ("back-left quarter view", "back-right quarter view"),
-    ("left side view", "right side view"),
-)
+_RIGHT_DESCS = ("front-right quarter view", "back-right quarter view", "right side view")
+_LEFT_DESCS = ("front-left quarter view", "back-left quarter view", "left side view")
+
+
+def _swap_sides(instr: str) -> str:
+    """左右の方位の記述子を入れ替える（反転した入力に対して同じ向きを頼むため）。"""
+    out = instr
+    for i, (r, l) in enumerate(zip(_RIGHT_DESCS, _LEFT_DESCS)):
+        out = out.replace(r, f"@@R{i}@@").replace(l, r).replace(f"@@R{i}@@", l)
+    return out
+
+
+def _wants_mirror(instr: str) -> bool:
+    """既定で「反転の反転」を使うか（左側の記述子を含む構図）。"""
+    return ANGLE_MIRROR_LEFT and any(l in instr for l in _LEFT_DESCS)
 
 
 def _mirror_plan(instr: str):
     """(生成に使う指示, 反転するか)。左側の記述子が無ければそのまま。"""
-    if not ANGLE_MIRROR_LEFT:
+    if not _wants_mirror(instr):
         return instr, False
-    out = instr
-    hit = False
-    for left, right in _MIRROR_SWAP:
-        if left in out:
-            out = out.replace(left, right)
-            hit = True
-    return out, hit
+    return _swap_sides(instr), True
+
+
+# 向きの自動判定（2026-10-02）。反転の反転でも斜め前は当たり外れがある（ひなたの左斜め前は 3 回とも右を向いた）。
+# 生成した画像の顔の向きを耳と鼻の位置で判定し、指定と逆なら「もう一方のやり方（そのまま⇔反転の反転）＋別シード」で
+# 1 回だけ作り直す。それでも逆なら最初の画像を返す（1 回だけの反転はほくろ等が逆になるのでしない — ホスト判断）。
+# 判定値 = (鼻の x − 両耳の中点の x) / 顔の幅。+ は画面の右向き。17 枚で符号が全部正しかった
+# （自信度 0.5 未満・|値| 0.15 未満は判定しない）。期待: right 系（被写体の右側が見える）= 画面の右向き（+）。
+# right side view が 4/4 で + だったことから。ANGLE_ORIENT_CHECK=0 で無効。
+ANGLE_ORIENT_CHECK = os.environ.get("ANGLE_ORIENT_CHECK", "1").strip() != "0"
+_FACE_MODEL_PATH = "/opt/blaze_face_short_range.tflite"
+_face_detector = None
+
+
+def _expected_side(instr: str):
+    if any(r in instr for r in _RIGHT_DESCS):
+        return 1
+    if any(l in instr for l in _LEFT_DESCS):
+        return -1
+    return None
+
+
+def _face_side(img):
+    """+1 = 画面の右向き / -1 = 左向き / None = 判定できない（顔が無い・正面寄り・読み込み失敗）。"""
+    global _face_detector
+    try:
+        import mediapipe as mp
+        import numpy as np
+        from mediapipe.tasks import python as mpt
+        from mediapipe.tasks.python import vision
+
+        if _face_detector is None:
+            _face_detector = vision.FaceDetector.create_from_options(
+                vision.FaceDetectorOptions(
+                    base_options=mpt.BaseOptions(model_asset_path=_FACE_MODEL_PATH),
+                    min_detection_confidence=0.3,
+                )
+            )
+        rgb = np.ascontiguousarray(np.asarray(img.convert("RGB")))
+        res = _face_detector.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+        if not res.detections:
+            return None
+        det = max(res.detections, key=lambda d: d.categories[0].score)
+        if det.categories[0].score < 0.5:
+            return None
+        k = det.keypoints  # 0 右目 1 左目 2 鼻 3 口 4 右耳 5 左耳（正規化座標）
+        bw = det.bounding_box.width / max(1, rgb.shape[1])
+        rel = (k[2].x - (k[4].x + k[5].x) / 2) / max(1e-6, bw)
+        if abs(rel) < 0.15:
+            return None
+        return 1 if rel > 0 else -1
+    except Exception as exc:  # noqa: BLE001 — 判定できないだけで生成は止めない（fail-open）
+        print(f"[angle] orientation check unavailable: {exc!r}", flush=True)
+        return None
 
 
 def _mirror_images(image):
@@ -568,6 +631,16 @@ image = (
     # iPhone の HEIC がそのまま上がってくるため実質必須。チェーン末尾に置き、
     # flash-attn のソースビルド層を無効化しないようにする（薄い追加レイヤーで済む）。
     .pip_install("pillow-heif", "pillow-avif-plugin")
+    # 向きの自動判定（_face_side）。MediaPipe 1.0.1（Apache-2.0）の顔検出 BlazeFace short range（Apache-2.0）。
+    # 依存の opencv-contrib-python は libGL が要るので入れず、headless 版と必要な分だけを入れて --no-deps で載せる。
+    .apt_install("libegl1", "libgles2")  # MediaPipe の tasks が CPU でも libEGL を読み込む
+    .pip_install("absl-py~=2.3", "flatbuffers~=25.9", "opencv-contrib-python-headless", "matplotlib")
+    .run_commands(
+        "pip install --no-deps mediapipe==1.0.1",
+        "python -c \"import urllib.request; urllib.request.urlretrieve("
+        "'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/"
+        "blaze_face_short_range.tflite', '/opt/blaze_face_short_range.tflite')\"",
+    )
     # 全ワーカー共通の入力画像正規化レイヤー（_load_ref_image が使う）。
     .add_local_python_source("ull_image_prep")
 )
@@ -1065,6 +1138,22 @@ def download_angle_image(user_id: str, job_id: str, filename: str, expires: str,
 # CLAUDE.md §1「CPU で import と資産準備がグリーン → はじめて GPU 実行」。
 #   PYTHONIOENCODING=utf-8 PYTHONUTF8=1 modal run modal_angle_worker.py::probe_image_prep
 # ---------------------------------------------------------------------------
+@app.function(image=image, cpu=2, memory=4096, timeout=300, scaledown_window=2)
+def probe_orientation(pngs: dict) -> dict:
+    """向きの自動判定を本番 image（GPU なし）で試す。{名前: PNG bytes} → {名前: +1/-1/None}。
+    PYTHONIOENCODING=utf-8 PYTHONUTF8=1 modal run modal_angle_worker.py::probe_orientation_main --folder <画像フォルダ>"""
+    from PIL import Image
+
+    return {k: _face_side(Image.open(io.BytesIO(v))) for k, v in pngs.items()}
+
+
+@app.local_entrypoint()
+def probe_orientation_main(folder: str):
+    pngs = {p.name: p.read_bytes() for p in sorted(pathlib.Path(folder).glob("*.png"))}
+    for k, v in probe_orientation.remote(pngs).items():
+        print(f"{k}: {v}")
+
+
 @app.function(image=image, cpu=2, memory=4096, timeout=300, scaledown_window=2)
 def probe_image_prep() -> dict:
     import io as _io
@@ -2145,8 +2234,6 @@ class QwenImageEditWorker:
                 if base_seed is not None:
                     generator = torch.Generator(device="cuda").manual_seed(base_seed + idx)
 
-                instr, mirror = _mirror_plan(instr)
-                final_prompt = instr if raw_prompt else _apply_lora_trigger(instr, self._lora_loaded)
                 # 行ごとの画像セットがあればそれを使う（1 枚ならメインだけ、2 枚以上なら Multi-Reference）。
                 row_image = pipe_image
                 row_multi = multi_ref
@@ -2154,42 +2241,62 @@ class QwenImageEditWorker:
                     rs = row_sets[idx] if idx < len(row_sets) else row_sets[0]
                     row_multi = len(rs) > 1
                     row_image = rs if row_multi else rs[0]
-                if row_multi and ANGLE_MULTIREF_PROMPT_SUFFIX:
-                    final_prompt = f"{final_prompt} {ANGLE_MULTIREF_PROMPT_SUFFIX}".strip()
-                if mirror:
-                    row_image = _mirror_images(row_image)
-                if idx == 0:
-                    print(f"[angle-job] {job_id} prompt[0]: {final_prompt!r}", flush=True)
 
-                call_kwargs = dict(
-                    image=row_image,
-                    prompt=final_prompt,
-                    negative_prompt=negative_prompt,
-                    num_inference_steps=steps,
-                    true_cfg_scale=cfg,
-                    num_images_per_prompt=1,
-                    generator=generator,
-                )
-                if out_w and out_h:
-                    call_kwargs["width"] = out_w
-                    call_kwargs["height"] = out_h
-                if self._supports_step_cb:
-                    call_kwargs["callback_on_step_end"] = _heartbeat
+                def _gen(use_mirror: bool, gen):
+                    # use_mirror: 入力を反転 → 左右を入れ替えた指示で生成 → 出力を反転（反転の反転）。
+                    plan = _swap_sides(instr) if use_mirror else instr
+                    prompt = plan if raw_prompt else _apply_lora_trigger(plan, self._lora_loaded)
+                    if row_multi and ANGLE_MULTIREF_PROMPT_SUFFIX:
+                        prompt = f"{prompt} {ANGLE_MULTIREF_PROMPT_SUFFIX}".strip()
+                    call_kwargs = dict(
+                        image=_mirror_images(row_image) if use_mirror else row_image,
+                        prompt=prompt,
+                        negative_prompt=negative_prompt,
+                        num_inference_steps=steps,
+                        true_cfg_scale=cfg,
+                        num_images_per_prompt=1,
+                        generator=gen,
+                    )
+                    if out_w and out_h:
+                        call_kwargs["width"] = out_w
+                        call_kwargs["height"] = out_h
+                    if self._supports_step_cb:
+                        call_kwargs["callback_on_step_end"] = _heartbeat
+                    img = self.pipe(**call_kwargs).images[0]
+                    if use_mirror:
+                        from PIL import ImageOps
+
+                        img = ImageOps.mirror(img)
+                    return img, prompt
 
                 _tc = time.time()
-                result = self.pipe(**call_kwargs)
+                use_mirror = _wants_mirror(instr)
+                out_img, final_prompt = _gen(use_mirror, generator)
+                if idx == 0:
+                    print(f"[angle-job] {job_id} prompt[0]: {final_prompt!r}", flush=True)
+                note = " (mirrored)" if use_mirror else ""
+                expected = _expected_side(instr) if ANGLE_ORIENT_CHECK else None
+                if expected is not None and not cost_stop.is_set():
+                    side = _face_side(out_img)
+                    if side is not None and side != expected:
+                        last_progress_time[0] = time.time()
+                        retry_gen = (
+                            torch.Generator(device="cuda").manual_seed(base_seed + idx + 7919)
+                            if base_seed is not None
+                            else None
+                        )
+                        retry_img, _ = _gen(not use_mirror, retry_gen)
+                        side2 = _face_side(retry_img)
+                        if side2 == expected:
+                            out_img = retry_img
+                            note += f" | orient: wrong -> retried {'mirrored' if not use_mirror else 'direct'} -> OK"
+                        else:
+                            note += f" | orient: wrong -> retried -> {side2} (kept first)"
+                    else:
+                        note += f" | orient: {'OK' if side == expected else 'unknown'}"
                 vram_gb = self._vram_gb()
                 last_progress_time[0] = time.time()
-                out_img = result.images[0]
-                if mirror:
-                    from PIL import ImageOps
-
-                    out_img = ImageOps.mirror(out_img)
-                print(
-                    f"[angle-job] {job_id} angle {idx} computed in {time.time() - _tc:.1f}s"
-                    + (" (mirrored: left side via right)" if mirror else ""),
-                    flush=True,
-                )
+                print(f"[angle-job] {job_id} angle {idx} computed in {time.time() - _tc:.1f}s{note}", flush=True)
                 finalize_futs.append(finalize_pool.submit(_finalize_angle, idx, out_img, vram_gb))
             _tj = time.time()
             _drain_finalize()
