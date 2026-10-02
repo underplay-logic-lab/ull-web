@@ -527,7 +527,17 @@ def _apply_lora_trigger(prompt: str, lora_on: bool) -> str:
     p = " ".join(str(prompt or "").replace(",", " ").split())
     if lora_on and ANGLE_LORA_TRIGGER and not p.startswith(ANGLE_LORA_TRIGGER):
         p = f"{ANGLE_LORA_TRIGGER} {p}".strip()
+    if ANGLE_BACK_QUARTER_PROMPT and ("back-right quarter view" in p or "back-left quarter view" in p):
+        p = f"{p}{ANGLE_BACK_QUARTER_PROMPT}"
     return p
+
+
+# 斜め後ろ（135°/225°）が真横（90°）寄りに止まる（ひなたで 3/3、2026-10-02）。顔検出では 135° と真横を
+# 見分けられなかった（CPU 検証）ので、判定ではなく指示で後ろへ回す。空文字の env で無効化できる。
+ANGLE_BACK_QUARTER_PROMPT = os.environ.get(
+    "ANGLE_BACK_QUARTER_PROMPT",
+    " Much of the back of the head is visible and the face is mostly hidden, only the cheek line shows.",
+)
 
 
 def _ensure_angle_lora(token: str | None = None) -> str:
