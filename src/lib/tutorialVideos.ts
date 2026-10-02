@@ -10,5 +10,5 @@ export type TutorialVideo = {
 };
 
 export const TUTORIAL_VIDEOS: Partial<Record<string, TutorialVideo>> = {
-  angle: { youtubeId: "rHp12Zydb-g", length: "1分" },
+  angle: { youtubeId: "97jplBqgBiU", length: "1分" },
 };
