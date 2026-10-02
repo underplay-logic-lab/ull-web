@@ -9,11 +9,15 @@ import subprocess
 import sys
 
 import numpy as np
+import pyloudnorm as pyln
 import soundfile as sf
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BGM = ROOT / "public" / "audio" / "bgm.wav"
-BGM_VOLUME = 0.22
+# BGM の大きさは倍率ではなく LUFS で合わせる（曲が変わっても同じに聞こえるように）。
+# YouTube は再生時に約 -14 LUFS へそろえるが、小さい動画は持ち上げない。最初に 0.22 倍で出したら -33 LUFS で
+# ほぼ聞こえなかった（2026-10-02）。BGM だけの説明動画として、基準より少し控えめな -20 にする。
+BGM_LUFS = -20.0
 FADE_IN, FADE_OUT = 1.5, 2.5
 
 
@@ -38,14 +42,15 @@ def main(out, *parts):
         x = np.linspace(0, len(bgm) - 1, int(len(bgm) * sr / bsr))
         bgm = np.stack([np.interp(x, np.arange(len(bgm)), bgm[:, c]) for c in range(2)], 1).astype("float32")
     n = len(clk)
-    b = np.concatenate([bgm] * int(np.ceil(n / len(bgm))))[:n] * BGM_VOLUME
+    gain = 10 ** ((BGM_LUFS - pyln.Meter(sr).integrated_loudness(bgm)) / 20)
+    b = np.concatenate([bgm] * int(np.ceil(n / len(bgm))))[:n] * gain
     t = np.arange(n) / sr
     fade = np.minimum(np.clip(t / FADE_IN, 0, 1), np.clip((n / sr - t) / FADE_OUT, 0, 1))[:, None]
     sf.write(mixed, np.clip(clk + b * fade, -1, 1), sr, subtype="PCM_16")
 
     ff("-i", str(joined), "-i", str(mixed), "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
        "-shortest", str(ROOT / out))
-    print(f"保存: {out}（{n / sr:.1f} 秒）")
+    print(f"保存: {out}（{n / sr:.1f} 秒・BGM {BGM_LUFS} LUFS・倍率 {gain:.2f}）")
 
 
 if __name__ == "__main__":
