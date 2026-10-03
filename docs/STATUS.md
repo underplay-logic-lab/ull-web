@@ -665,6 +665,17 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    Director 用は全層の可能性 → 50 以降と lm_head は読み飛ばす）。DiT は推論が非 pruned の bf16 なので別途。デプロイは学習ジョブが無いときに。
    ワーカー側 `ull_r2.py` の `user_root` も、問い合わせ失敗で nomail を返す同じ作り（Next 側は `0abe452` で直した）→ 次の Modal デプロイで揃える。
 
+6. **Director で LoRA Studio の LoRA が使えない（本番で一度も通っていなかった）**（2026-10-03 発覚）。完成品は R2 へ移って Volume から消える・
+   Director は Volume しか見ない・名前も `_final` 付きで食い違い。**方針（ホスト 2026-10-03）**: 学習済み LoRA の一覧は外す（いつまでもあると誤解させる）。
+   基本は手元の LoRA をアップロード。LoRA Studio の完了画面に「LoRA を保存して動画を作る」（押すたびに DL → そのタブだけで Director へ受け渡し）案を提示中。
+   アップロード LoRA の Volume 保存期間（今 14 日・画面からは再利用不可）も決める。**書きかけの変更が未コミットで手元にある**
+   （route の R2 キー解決・`directorDispatch` で署名・`modalDirector` の `lora_url`・ワーカーが R2 から loras/ へ落とす）。デプロイは Director のジョブが無いときに。
+7. **R2 のダウンロードがときどき 1〜2MB/s に張り付く**（2026-10-03 実測）。バケットは APAC・東京経由。Cloudflare の速度測定サーバーは 43〜68MB/s で
+   張り付きなし＝R2 の中の経路。1 本の接続だと 7〜8 本に 1 本が遅く、ファイル・時間帯で波がある。LoRA の DL を分割・並行に（`9ec1807`、最悪 8MB/s・普段 30〜70MB/s）。
+   動画超解像・Director の動画にも広げるか要検討。自分用の R:（rclone mount）はオプション追加で一覧が速くなった（`--use-server-modtime` 等、デスクトップの bat）。
+   まとめて落とすときは `rclone copy … --transfers 4 --multi-thread-streams 8`。
+   **録画用 Chrome が閉じていた原因はダウンロード**（`.rec-profile` ではダウンロード開始でブラウザごと落ちる）→ 録画中は断る（`a6d3508`）。
+
 **記録（2026-10-01〜02 にやったこと。蒸し返さない）**
 - **2026-10-02: 看板キャラ「ひなた」と 1 本目の操作動画**（詳細は `promo/characters/README.md`・`promo/README.md`）
   - キャラ: 人物像を先に決めた（何にでも放り込まれる実演役・日本人女性 20 代前半・色白の可愛い系・「は？」→ すぐ順応）。Gemini（Nano Banana Pro）の
