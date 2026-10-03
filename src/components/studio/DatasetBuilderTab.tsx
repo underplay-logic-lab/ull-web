@@ -2126,6 +2126,20 @@ export function DatasetBuilderTab() {
                 </button>
               )}
             </p>
+            {/* 進み具合はここにも出す（2026-10-03 ホスト指摘: 一覧の下の「続きを作る」を押すとここへ移るが、進捗は上の欄にしか無く何が起きているか分からなかった）。 */}
+            {phase === "submitting" && (
+              <p className="flex items-center gap-1.5 text-[11px] text-muted">
+                <Loader2 size={12} className="animate-spin" /> 画像を送っています…（送り終わるまでこのタブは閉じないでください）
+              </p>
+            )}
+            {phase === "running" && (
+              <p className="flex items-center gap-1.5 text-[11px] text-muted">
+                <Loader2 size={12} className="animate-spin text-neon-pink" />
+                {activeJob?.status === "processing"
+                  ? `生成中: 全体 ${producedTotal} / ${plannedTotal} 枚（ジョブ ${run ? run.jobIds.length : 0} / ${runBatches.length}・${formatElapsedSeconds(elapsedMs)}s）`
+                  : "生成準備中…GPUを起動しています（初回は1〜2分ほどかかります）"}
+              </p>
+            )}
             {/* 全部できてから（または「ここで止める」の後で）まとめて保存・LoRA へ（2026-09-27、ホスト指摘）。 */}
             {(phase === "done" || phase === "paused") && (
               <div className="flex flex-wrap items-center gap-2">
