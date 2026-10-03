@@ -260,6 +260,7 @@ export function CandidatePanel({
   blockedReason,
   children,
   subImages,
+  compareImage,
 }: {
   title: string;
   description: string;
@@ -292,8 +293,11 @@ export function CandidatePanel({
   children?: ReactNode;
   /** 候補づくりに毎回添える参照（後ろ姿に確定した真横、2026-09-29）。料金は親が参照込みの単価で渡す。 */
   subImages?: File[];
+  /** 拡大表示の隅に出す見比べ用の画像（取り込んだ元の画像、2026-10-03）。 */
+  compareImage?: File | null;
 }) {
   const { job, status, error, start, reset } = useCandidateJob(storageKey);
+  const compareUrl = useObjectUrl(compareImage ?? null);
   // 選び中の候補（"jobId:index"）と、派生の元を取りに行っている候補。
   const [picking, setPicking] = useState<string | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
@@ -659,6 +663,8 @@ export function CandidatePanel({
           onClose={() => setLight(null)}
           onSave={(i) => void saveLight(i)}
           onUpscale={light.job ? (i) => void upscaleLight(i) : undefined}
+          compare={compareUrl ? { url: compareUrl, label: "元の画像" } : null}
+          keepZoom
           onImageError={() => {
             // 候補の拡大表示なら、その候補の URL を取り直して拡大側も差し替える。
             const j = light.job;

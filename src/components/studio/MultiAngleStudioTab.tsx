@@ -495,6 +495,8 @@ export function AngleLightbox({
   onImageError,
   onToggleExclude,
   isExcluded,
+  compare,
+  keepZoom = false,
 }: {
   items: LightItem[];
   index: number;
@@ -508,8 +510,16 @@ export function AngleLightbox({
   /** 素材づくり（2026-09-28）: 拡大したまま「外す／戻す」。× は閉じるのままにし、別のボタンと x キーで切り替える。 */
   onToggleExclude?: (index: number) => void;
   isExcluded?: (index: number) => boolean;
+  /**
+   * 見比べ用に隅へ小さく出す元の画像（2026-10-03 ホスト指摘「どれが一番似ているか分からない」）。
+   * 素材づくりの候補・できた素材で、取り込んだ顔と並べて見られるようにする。
+   */
+  compare?: { url: string; label: string } | null;
+  /** 画像を替えても拡大の倍率・位置を保つ（同じ構図の候補を見比べるとき）。 */
+  keepZoom?: boolean;
 }) {
   const item = items[index];
+  const [compareOpen, setCompareOpen] = useState(true);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -598,7 +608,26 @@ export function AngleLightbox({
       </div>
 
       <div className="relative flex-1 overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        <ZoomableImage src={item.url} alt={item.label} onError={onImageError} />
+        <ZoomableImage src={item.url} alt={item.label} onError={onImageError} keepView={keepZoom} />
+        {compare && (
+          <div className="absolute left-3 top-3 z-10 flex flex-col items-start gap-1">
+            <button
+              type="button"
+              onClick={() => setCompareOpen((v) => !v)}
+              className="rounded-md border border-white/20 bg-black/60 px-2 py-0.5 text-[10px] text-white/80 hover:bg-black/80"
+            >
+              {compareOpen ? `${compare.label}を隠す` : `${compare.label}と見比べる`}
+            </button>
+            {compareOpen && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={compare.url}
+                alt={compare.label}
+                className="max-h-[40vh] w-28 rounded-md border border-white/30 bg-black object-contain sm:w-44"
+              />
+            )}
+          </div>
+        )}
         {items.length > 1 && (
           <>
             <button

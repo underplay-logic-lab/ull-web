@@ -1440,6 +1440,7 @@ export function DatasetBuilderTab() {
           {/* 参照づくり（段階 1・3）: 全身が無ければ基準の全身を、真横・後ろの行があれば参照を、候補から選んで確定する。 */}
           {precision === "careful" && image && (needsBaseFull || baseFull) && (
             <CandidatePanel
+              compareImage={image}
               title={baseFull ? "基準の全身像（確定済み）" : "基準の全身像を作る"}
               description={
                 baseFull
@@ -1496,6 +1497,7 @@ export function DatasetBuilderTab() {
           )}
           {precision === "careful" && effectiveMain && (viewsInPlan.has("side") || refSide) && (
             <CandidatePanel
+              compareImage={image}
               title={refSide ? "真横の参照（確定済み）" : "真横の参照を作る"}
               description="真横向きの画像は、ここで選んだ真横を参照にして作ります。候補はカメラを横へ回して作ります（右 2 枚・左 2 枚）。下で、顔の大きく写った画像を選んで添えると横顔が似やすくなります。顔がいちばんイメージに近い 1 枚を選んでください（後ろ姿はこの真横の髪に揃えます）。後ろ髪の長さや結び方を決めたいときは上の「後ろ髪の指定」に書いてください。手持ちの真横があれば、下の「持っているなら」の行にドロップするか「ファイルを選ぶ」で指定してください（参照欄に入れてある場合は「参照 N を使う」で選べます。指定しないと真横として扱われません）。選ぶと参照欄に入ります。"
               user={user}
@@ -1547,6 +1549,7 @@ export function DatasetBuilderTab() {
             // 斜めの顔（2026-09-30）: 顔の大きく写った画像で向きだけ変えて確定し、斜めの行に添える。
             // 真顔でも向きが変わると別人になりやすい対策（顔が大きい段階で向きを変えると崩れにくい）。
             <CandidatePanel
+              compareImage={image}
               title={refDiag ? "斜めの顔の参照（確定済み）" : "斜めの顔の参照を作る"}
               description="斜め向きの画像は、ここで選んだ「斜めを向いた顔」を参照にして作ります（顔が小さい全身・上半身で向きを変えると別人になりやすいため、顔が大きく写った画像で先に向きだけ変えておきます）。元にするのは顔アップ（全身から始めたときは自動で切り出したバストアップ）です。候補 4 枚から、元の人にいちばん近い 1 枚を選んでください。左右どちら向きでも構いません。手持ちの斜めの顔があれば、下の「持っているなら」の行で指定できます。"
               user={user}
@@ -1588,6 +1591,7 @@ export function DatasetBuilderTab() {
           )}
           {precision === "careful" && effectiveMain && (viewsInPlan.has("back") || refBack) && (
             <CandidatePanel
+              compareImage={image}
               title={refBack ? "後ろ姿の参照（確定済み）" : "後ろ姿の参照を作る"}
               description={
                 backUsesSide
@@ -2186,6 +2190,7 @@ export function DatasetBuilderTab() {
           onClose={() => setLightboxIndex(null)}
           onSave={(i) => void saveOne(results[i])}
           onUpscale={(i) => void upscaleOne(results[i])}
+          compare={imagePreview ? { url: imagePreview, label: "元の画像" } : null}
           onImageError={() => {
             const r = results[lightboxIndex];
             if (r) refreshResultUrl(r);

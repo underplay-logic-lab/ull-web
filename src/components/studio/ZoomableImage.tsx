@@ -2,6 +2,8 @@
 
 // 拡大表示の中でさらにズームして細部を見る（2026-09-29 ホスト要望「アップで詳細を見たい」）。
 // ホイール＝カーソル位置を中心にズーム／クリック＝等倍⇔3 倍／ドラッグ＝移動／2 本指＝ピンチ／+ − 0 キー。
+// keepView（2026-10-03 ホスト指摘「候補を切り替えるたびに寄り直すので似ているか比べにくい」）: 画像を替えても
+// 倍率と位置を保つ。同じ構図の候補を ← → で見比べると、顔が同じ場所に出る。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Minus, Plus, RotateCcw } from "lucide-react";
@@ -13,18 +15,28 @@ const CLICK_ZOOM = 3;
 type View = { s: number; x: number; y: number };
 const RESET: View = { s: 1, x: 0, y: 0 };
 
-export function ZoomableImage({ src, alt, onError }: { src: string; alt: string; onError?: () => void }) {
+export function ZoomableImage({
+  src,
+  alt,
+  onError,
+  keepView = false,
+}: {
+  src: string;
+  alt: string;
+  onError?: () => void;
+  keepView?: boolean;
+}) {
   const boxRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>(RESET);
   const viewRef = useRef(view);
   useEffect(() => {
     viewRef.current = view;
   }, [view]);
-  // 画像が替わったら等倍に戻す。
+  // 画像が替わったら等倍に戻す（keepView なら保つ）。
   const [shownSrc, setShownSrc] = useState(src);
   if (shownSrc !== src) {
     setShownSrc(src);
-    setView(RESET);
+    if (!keepView) setView(RESET);
   }
 
   /** 容器の中心からの相対座標 (px, py) を動かさずに倍率を s2 にする。 */
@@ -70,12 +82,19 @@ export function ZoomableImage({ src, alt, onError }: { src: string; alt: string;
 
   // ドラッグ（1 本）とピンチ（2 本）。動かさずに離したらクリック扱いで等倍⇔3 倍。
   const pointers = useRef(new Map<number, { x: number; y: number }>());
-  const gesture = useRef<{ moved: boolean; pinchDist: number | null }>({ moved: false, pinchDist: null });
+  // 動かしたかは押した位置からの累計で見る（2026-10-03: 1 回の移動量で見ていたため、ゆっくりドラッグすると
+  // 毎回 2px 未満で「動かしていない」扱いになり、離した瞬間クリックとして等倍に戻っていた）。
+  const gesture = useRef<{ moved: boolean; pinchDist: number | null; startX: number; startY: number }>({
+    moved: false,
+    pinchDist: null,
+    startX: 0,
+    startY: 0,
+  });
 
   const onPointerDown = (e: React.PointerEvent) => {
     e.currentTarget.setPointerCapture(e.pointerId);
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointers.current.size === 1) gesture.current = { moved: false, pinchDist: null };
+    if (pointers.current.size === 1) gesture.current = { moved: false, pinchDist: null, startX: e.clientX, startY: e.clientY };
     if (pointers.current.size === 2) {
       const [a, b] = [...pointers.current.values()];
       gesture.current.pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
@@ -98,7 +117,7 @@ export function ZoomableImage({ src, alt, onError }: { src: string; alt: string;
     }
     const dx = cur.x - prev.x;
     const dy = cur.y - prev.y;
-    if (Math.abs(dx) + Math.abs(dy) > 2) gesture.current.moved = true;
+    if (Math.abs(cur.x - gesture.current.startX) + Math.abs(cur.y - gesture.current.startY) > 4) gesture.current.moved = true;
     if (viewRef.current.s > 1) setView((v) => ({ ...v, x: v.x + dx, y: v.y + dy }));
   };
 
