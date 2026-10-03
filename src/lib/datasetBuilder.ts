@@ -173,7 +173,10 @@ export const CHIPS_BY_AXIS: Record<SceneAxis, SceneChip[]> = {
 /** 1 ジョブに入れる枚数。GPU の 1 ジョブの時間上限と「最初の 1 ジョブで確認」の単位。 */
 export const SCENE_BATCH_SIZE = 8;
 export const SCENE_DEFAULT_COUNT = 24;
-export const SCENE_MAX_COUNT = 400;
+// 上限 100 枚（2026-10-03 ホスト判断、旧 400）。続きのジョブは画面が送るので、1 本に収まらない枚数だとタブを閉じたとき
+// 途中で止まる（LoRA は 1 本のジョブなので閉じてよい）。100 枚なら確認あり 8＋92・確認なし 100 の 1 本で必ず収まる。
+// もっと要るならサーバー側で次のジョブを送る仕組みにしてから上げる。
+export const SCENE_MAX_COUNT = 100;
 
 export type ScenePlanItem = {
   key: string;
@@ -523,10 +526,10 @@ export function orderPlanForBatches(
 }
 
 /** 確認の後の塊の大きさ。ワーカーが行ごとの画像セットを受けられるので（2026-09-28）、種類が違っても 1 ジョブにまとめる。 */
-// 2026-10-03: 16 → 96。続きのジョブは画面が前のジョブの完了を見てから送るので、タブを閉じると残りが作られなかった
-// （お客さんでも起きる）。残りを 1 本にまとめて送れば閉じても最後まで流れる。実測 1 枚 約 38 秒（16 枚 600 秒）で
-// 96 枚 ≈ 61 分＝ワーカーの強制上限 2 時間の約半分。API の 1 ジョブ上限（MAX_SCENES_PER_JOB）と揃える。
-export const SCENE_REST_BATCH_SIZE = 96;
+// 2026-10-03: 16 → 100（＝SCENE_MAX_COUNT）。続きのジョブは画面が前のジョブの完了を見てから送るので、タブを閉じると
+// 残りが作られなかった（お客さんでも起きる）。残りを 1 本にまとめて送れば閉じても最後まで流れる。実測 1 枚 約 38 秒
+// （16 枚 600 秒）で 100 枚 ≈ 63 分＝ワーカーの強制上限 2 時間の約半分。API の 1 ジョブ上限（MAX_SCENES_PER_JOB）と揃える。
+export const SCENE_REST_BATCH_SIZE = 100;
 /** 2026-10-03 より前に始めた実行の区切り（保存済みの run に restBatchSize が無いとき）。途中で区切りを変えると完了数がずれる。 */
 export const LEGACY_SCENE_REST_BATCH_SIZE = 16;
 
