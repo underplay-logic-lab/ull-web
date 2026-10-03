@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { advanceQueue, isQueueKind, listReserved, sweepAllQueues, userIdFromBearer } from "@/lib/studioQueue.server";
 
 // 予約の次の 1 件を起動する（2026-10-03、lib/studioQueue.server.ts）。
-// 呼ぶのは: ① DB トリガー（前のジョブが完了・失敗、pg_net・Bearer CRON_SECRET と userId）
+// 呼ぶのは: ① DB トリガー（前のジョブが完了・失敗、pg_net・Bearer STUDIO_QUEUE_SECRET と userId。
+//              同じ値を Supabase Vault の studio_queue_secret に入れておく）
 //           ② 画面（完了を見たとき・開いたとき、Bearer ユーザーのトークン＝自分の分だけ）
 // 順番が来ていなければ何もしない（何度呼ばれても害は無い）。
 export const maxDuration = 60;
@@ -14,7 +15,7 @@ export async function POST(request: Request) {
   } catch {
     body = {};
   }
-  const secret = process.env.CRON_SECRET;
+  const secret = process.env.STUDIO_QUEUE_SECRET;
   const isServer = Boolean(secret) && request.headers.get("authorization") === `Bearer ${secret}`;
 
   if (isServer && body.kind === undefined && body.userId === undefined) {

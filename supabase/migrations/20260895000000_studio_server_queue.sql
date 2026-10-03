@@ -9,7 +9,7 @@
 --
 -- ★ 適用後にやること（1 回だけ・SQL Editor で）: トリガーが叩く先と合言葉を Vault に入れる。
 --   select vault.create_secret('https://www.ullstudio.com/api/studio/queue/advance', 'studio_queue_advance_url');
---   select vault.create_secret('<Vercel の CRON_SECRET と同じ値>', 'studio_queue_secret');
+--   select vault.create_secret('<Vercel の STUDIO_QUEUE_SECRET と同じ値>', 'studio_queue_secret');
 --   入っていなければトリガーは何もしない（画面を開いたとき・画面が完了を見たときの起動だけになる）。
 
 -- 1. 状態に 'reserved' を足す --------------------------------------------------
