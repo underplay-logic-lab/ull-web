@@ -56,4 +56,5 @@ node scripts/record.mjs demo https://www.ullstudio.com/   # 仕組みの動作�
 - 部分ごとに `edit.json` に `"bgm": null` を書き、4K で書き出す: `npx remotion render Tutorial out/a.mp4 --props='{"session":"<名前>"}' --scale=2 --crf=16`
   （1440p の倍率 4/3 は割り切れず書き出せない。YouTube は 4K で上げると 1080p 視聴でも画質が良い）
 - つないで BGM を通しで重ねる: `python scripts/finish_video.py out/<完成>.mp4 out/a.mp4 out/b.mp4`
-- 録画用 Chrome は完了直後（10〜20 秒）にページが閉じることがある（原因未特定）→ 生成とプレビューを別の録画にしてつなぐ。
+- 録画用 Chrome は完了直後にページが閉じていた → 原因は**ダウンロード**（この録画用プロファイルではダウンロード開始でブラウザごと落ちる。自動保存・ZIP・チェックポイント DL）。
+  2026-10-03 から `record.mjs` が録画中のダウンロードを断るので落ちない（ファイルは保存されない。画面はそのまま）。

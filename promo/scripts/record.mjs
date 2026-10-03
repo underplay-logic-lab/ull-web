@@ -235,19 +235,17 @@ page.on("crash", () => console.error(`[落ちた] ページがクラッシュ（
 page.on("close", () => console.log(`[終了] ページが閉じた（${(rel(Date.now()) ?? -1) / 1000} 秒）`));
 context.browser()?.on("disconnected", () => console.log("[終了] ブラウザとの接続が切れた"));
 page.on("pageerror", (e) => console.error(`[ページのエラー] ${String(e).slice(0, 200)}`));
-// ダウンロード（2026-10-03）: 完了時の自動保存・ZIP 保存の直後にページが閉じて録画が終わっていた。
-// 受け止めて out/downloads/ に保存し、何が起きたかをログに出す。別タブが開いた場合もログに出す。
-page.on("download", async (d) => {
-  const to = path.join(root, "out", "downloads", d.suggestedFilename());
-  console.log(`[ダウンロード] ${d.suggestedFilename()}（${(rel(Date.now()) ?? -1) / 1000} 秒）`);
-  try {
-    fs.mkdirSync(path.dirname(to), { recursive: true });
-    await d.saveAs(to);
-    console.log(`[ダウンロード] 保存: ${to}`);
-  } catch (e) {
-    console.error(`[ダウンロード] 失敗: ${String(e).slice(0, 200)}`);
-  }
-});
+// ダウンロード（2026-10-03）: この録画用プロファイルでは、ダウンロードが始まった瞬間にブラウザごと落ちる
+// （完了時の自動保存・ZIP・チェックポイントの一括 DL のたびに録画が終わっていた原因。_dltest で再現。
+// 新しいプロファイルでは落ちないが、ログイン状態を持っているのでこのプロファイルを使い続ける）。
+// 録画ではファイルは要らないので、ダウンロードはブラウザ側で断る（画面はそのまま・取り消されるだけ）。
+const cdpDl = await context.newCDPSession(page);
+await cdpDl.send("Browser.setDownloadBehavior", { behavior: "deny" }).catch((e) =>
+  console.error(`[ダウンロード] 断る設定に失敗（落ちるかもしれない）: ${String(e).slice(0, 120)}`),
+);
+page.on("download", (d) =>
+  console.log(`[ダウンロード] ${d.suggestedFilename()} は録画中なので保存しない（${(rel(Date.now()) ?? -1) / 1000} 秒）`),
+);
 context.on("page", (p) => console.log(`[別タブ] ${p.url()}（${(rel(Date.now()) ?? -1) / 1000} 秒）`));
 // 名前が demo のときは自動で動かして閉じる（仕組みの動作確認用。人が触らなくても一通り撮れる）。
 if (name === "demo") {
