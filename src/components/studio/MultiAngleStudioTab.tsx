@@ -68,6 +68,7 @@ import { VramBadge } from "@/components/studio/VramBadge";
 import AutoDownloadToggle from "@/components/studio/AutoDownloadToggle";
 import GenerationCaveat from "@/components/studio/GenerationCaveat";
 import { armAutoDownload, runAutoDownload, takeAutoDownload } from "@/lib/autoDownload";
+import { advanceStudioQueue, cancelStudioQueue } from "@/lib/studioQueue";
 import {
   requestStudioBatchHandoff,
   requestStudioHandoff,
@@ -96,6 +97,9 @@ const JOB_KEY = "multi-angle-active-job";
 // 改めて生成するときは確認のうえこの並びを空にする。サーバー側の保持は安全弁で、
 // ユーザーには「都度 DL しなければ消える」感覚でいてもらう（保持期間は UI に出さない）。
 const SESSION_KEY = "multi-angle-session-jobs";
+// このブラウザで予約し、まだ画面に出していないジョブ（2026-10-03〜予約はサーバー側）。タブを閉じている間に
+// 始まった・終わった分を、開き直したときに順に追いかけるために残す。
+const RESERVED_KEY = "multi-angle-reserved-jobs";
 // アップロード前の生ファイルの受け入れ上限。これを超えるとブラウザでの
 // 縮小（createImageBitmap → canvas）でメモリを食い過ぎるうえ、縮小に失敗
 // した場合にサーバーの 12MB 制限に確実に弾かれる。縮小後は数百KBになる。
@@ -870,14 +874,21 @@ export function MultiAngleStudioTab() {
     selection: AngleSelection;
     combos: AngleCombo[];
   };
-  // 2026-09-23: 予約は 1 件だけ → 先入れ先出しのリストへ。1 件だと後から予約した
-  // ものが前の予約を黙って上書きし、ホストがサブ参照 1/2/3 枚を続けて予約したら
-  // 最後の 1 本しか走らなかった。順番待ちは無料なので件数上限は設けない。
-  const [queuedNext, setQueuedNext] = useState<QueuedSnapshot[]>([]);
-  // ポーリングの長寿命な useEffect から「今すぐ最新の予約」を読めるようにする
-  // ref。イベントハンドラ（予約する/取り消す）でだけ state と一緒に書き込み、
-  // effect 内では書き込まない（完了時の先頭取り出しは例外 — 下のコメント参照）。
-  const queuedNextRef = useRef<QueuedSnapshot[]>([]);
+  // 予約（順番待ち）はサーバー側（2026-10-03、lib/studioQueue.server.ts）。予約した時点で課金してジョブ行を
+  // reserved で作り、前のジョブが終わるとサーバーが起動する（タブを閉じても進む）。それまでは画面のメモリにだけあり、
+  // 閉じると消えていた。reservedIds = DB の reserved（古い順・表示用）。
+  const [reservedIds, setReservedIds] = useState<string[]>([]);
+  // 予約の送信中（画像のアップロード中）の件数。バナーの件数に足す。
+  const [reserving, setReserving] = useState(0);
+  const [queueError, setQueueError] = useState<string | null>(null);
+  // このブラウザで予約し、まだ画面に出していない id（RESERVED_KEY に残す）。完了を見たら次はここから追いかける。
+  const trackedInit = useMemo(
+    () => loadFormState<{ ids: string[] }>(RESERVED_KEY)?.ids?.filter((x): x is string => typeof x === "string") ?? [],
+    [],
+  );
+  const trackedRef = useRef<string[]>(trackedInit);
+  // LoRA から受け取った元画像で予約した分（取り消したら「未生成」に戻す）。
+  const reservedFilesRef = useRef<Map<string, File>>(new Map());
 
   // 「最近の生成」（2026-09-23）: 予約や並列実行で画面が次のジョブへ切り替わると、
   // 前の結果に戻る手段が無かった（サーバーには 14 日残っている）。一覧から選ぶと
@@ -1069,6 +1080,49 @@ export function MultiAngleStudioTab() {
     [user],
   );
 
+  // サーバーが起動した予約のジョブへ画面を切り替える（続けて出した生成として一覧に足す）。
+  const followJob = useCallback((id: string) => {
+    const prev = jobRef.current;
+    if (prev && prev.status === "completed" && prev.images.length > 0) {
+      setPeek(prev);
+      setPeekUrls({});
+    }
+    trackedRef.current = trackedRef.current.filter((x) => x !== id);
+    saveFormState(RESERVED_KEY, { ids: trackedRef.current });
+    const ids = [...sessionIdsRef.current.filter((x) => x !== id), id];
+    sessionIdsRef.current = ids;
+    setSessionIds(ids);
+    saveFormState(SESSION_KEY, { ids });
+    saveFormState(JOB_KEY, { jobId: id });
+    setErrorMessage(null);
+    setJob(null);
+    setJobId(id);
+    setPhase("running");
+  }, []);
+
+  // 順番が来ていれば次を起動させ（DB トリガーが先に起動していても害は無い）、予約一覧を取り直す。
+  // follow: 起動した（またはタブを閉じている間に始まった）予約のジョブへ画面を切り替える。
+  const advanceAndFollow = useCallback(
+    async (follow: boolean) => {
+      const q = await advanceStudioQueue("angle");
+      if (!q) return;
+      setReservedIds(q.reserved);
+      if (!follow) return;
+      const moved = trackedRef.current.filter((id) => !q.reserved.includes(id));
+      const next = q.started ?? moved[0] ?? null;
+      if (next) followJob(next);
+    },
+    [followJob],
+  );
+
+  // 開いたとき: 順番が来ていれば起動し、予約一覧を出す。復元したジョブが無ければ、閉じている間に始まった予約を追いかける
+  // （復元したジョブがあれば、その完了を見たときに追いかける）。
+  useEffect(() => {
+    if (!user) return;
+    // 状態の更新は API の応答後だけ（効果内で同期に setState しない）。
+    queueMicrotask(() => void advanceAndFollow(!resumedJobId));
+  }, [user, resumedJobId, advanceAndFollow]);
+
   // --- メインポーリングループ ----------------------------------------
   useEffect(() => {
     if (!jobId) return;
@@ -1116,11 +1170,6 @@ export function MultiAngleStudioTab() {
               );
             }
             if (sawInProgress) markGpuWarm();
-            // 「順番待ち」で予約されていた次の1件を、コンテナがまだ温かい
-            // うちに自動発火する。ref はイベントハンドラでのみ書かれるので
-            // ここでは読むだけ（clear は同じ非同期コールバック内で行う —
-            // ポーリング応答というイベントに対する反応であり、レンダー毎の
-            // 同期的な副作用ではない）。
             // 改めて生成したジョブが完了したら、前の「今回の生成」を消して
             // このジョブ 1 件から始める（確認時点では消さない）。
             if (freshJobIdRef.current === jobId) {
@@ -1130,20 +1179,15 @@ export function MultiAngleStudioTab() {
               setSessionIds(ids);
               saveFormState(SESSION_KEY, { ids });
             }
-            const [queued, ...restQueued] = queuedNextRef.current;
-            if (queued) {
-              // 2026-09-23: 以前はここで完了分を ZIP 自動 DL していた（次のジョブが
-              // 画面を上書きして戻れなくなる対策）。「今回の生成」一覧から戻れる
-              // ようになったので自動 DL はやめ、DL はユーザーの操作に任せる。
-              queuedNextRef.current = restQueued;
-              setQueuedNext(restQueued);
-              void runGenerate(queued, { continuation: true });
-            }
+            // 予約の次の 1 件へ（起動はサーバー。普段は DB トリガーが先に起動している）。
+            void advanceAndFollow(true);
             return;
           }
           if (next.status === "failed") {
             setPhase("error");
             setErrorMessage(next.errorMessage || "生成に失敗しました。");
+            // 予約はサーバーが続けて起動する（失敗の表示は残すので画面は切り替えない）。
+            void advanceAndFollow(false);
             return;
           }
           sawInProgress = true;
@@ -1176,7 +1220,7 @@ export function MultiAngleStudioTab() {
     return () => {
       cancelled = true;
     };
-  }, [jobId, markGpuWarm, runGenerate]);
+  }, [jobId, markGpuWarm, advanceAndFollow]);
 
   const combos = useMemo(() => buildAngleCombos(selection), [selection]);
   const selectionWarning = useMemo(() => angleSelectionWarning(selection), [selection]);
@@ -1229,24 +1273,60 @@ export function MultiAngleStudioTab() {
     await runGenerate({ image, subImages, subScopes, selection, combos });
   };
 
-  // LoRA から受け取った画像のうち、まだ生成していないものを同じ構図で順番に生成する（2 枚目以降は無料の順番待ち）。
+  // 予約する（サーバー側の順番待ち、2026-10-03）。1 件ずつ送る（画像のアップロード込み）。その場で課金され、
+  // 何も動いていなければすぐ始まる（そのときは画面をそのジョブへ切り替える）。
+  const reserveSnapshots = async (snaps: QueuedSnapshot[]) => {
+    if (!user || snaps.length === 0) return;
+    setQueueError(null);
+    setReserving((n) => n + snaps.length);
+    for (let i = 0; i < snaps.length; i++) {
+      const snap = snaps[i];
+      try {
+        const res = await startAngleJob({
+          userId: user.id,
+          image: snap.image,
+          subImages: snap.subImages,
+          subScopes: snap.subScopes,
+          selection: snap.selection,
+          mode,
+          queue: true,
+        });
+        broadcastCreditsUpdate(user.id, res.remainingCredits);
+        if (loraModeRef.current) loraJobIdsRef.current.add(res.jobId);
+        // LoRA 素材として作る分は LoRA Studio へ送るのが目的なので自動保存しない。
+        else armAutoDownload(res.jobId);
+        if (loraSources.includes(snap.image)) reservedFilesRef.current.set(res.jobId, snap.image);
+        if (res.reserved) {
+          trackedRef.current = [...trackedRef.current.filter((x) => x !== res.jobId), res.jobId];
+          saveFormState(RESERVED_KEY, { ids: trackedRef.current });
+          setReservedIds((prev) => (prev.includes(res.jobId) ? prev : [...prev, res.jobId]));
+        } else {
+          followJob(res.jobId);
+        }
+        setReserving((n) => n - 1);
+      } catch (err) {
+        console.error("[MultiAngleStudioTab] reserve failed:", err);
+        setQueueError(err instanceof Error ? err.message : "予約に失敗しました。");
+        const remaining = (err as AngleApiError)?.remainingCredits;
+        if (typeof remaining === "number") broadcastCreditsUpdate(user.id, remaining);
+        // 送れなかった分（この 1 件と残り）は「未生成」に戻す。
+        markLoraUsed(snaps.slice(i).map((x) => x.image), false);
+        setReserving((n) => n - (snaps.length - i));
+        return;
+      }
+    }
+  };
+
+  // LoRA から受け取った画像のうち、まだ生成していないものを同じ構図で順番に生成する（2 枚目以降は順番待ち）。
   const generateAllLoraSources = () => {
     if (loraRemaining.length === 0 || count === 0 || overCap || underMin) return;
     if (!user) return setLoginOpen(true);
     const snaps = loraRemaining.map((f) => ({ image: f, subImages: [] as File[], subScopes: [] as SubRefScope[], selection, combos }));
-    if (!busy && insufficientCredits) return setChargeOpen(true);
+    // 予約もその場で課金されるので、全件ぶん足りるか先に見る。
+    if (!creditsLoading && (credits ?? 0) < cost * snaps.length) return setChargeOpen(true);
     markLoraUsed(loraRemaining);
-    if (busy) {
-      const next = [...queuedNextRef.current, ...snaps];
-      queuedNextRef.current = next;
-      setQueuedNext(next);
-      return;
-    }
-    const [first, ...rest] = snaps;
-    queuedNextRef.current = [...queuedNextRef.current, ...rest];
-    setQueuedNext(queuedNextRef.current);
-    setImage(first.image);
-    void runGenerate(first, { continuation: true });
+    if (!busy) setImage(snaps[0].image);
+    void reserveSnapshots(snaps);
   };
 
   const sendPickedToLora = async () => {
@@ -1305,19 +1385,31 @@ export function MultiAngleStudioTab() {
 
   const handleQueueWait = () => {
     if (!image) return;
-    const snapshot = { image, subImages, subScopes, selection, combos };
-    markLoraUsed([image]);
-    const next = [...queuedNextRef.current, snapshot];
-    queuedNextRef.current = next;
-    setQueuedNext(next);
     setQueueChoiceOpen(false);
+    // 予約はその場で課金される（2026-10-03〜）。
+    if (insufficientCredits) return setChargeOpen(true);
+    markLoraUsed([image]);
+    void reserveSnapshots([{ image, subImages, subScopes, selection, combos }]);
   };
 
-  const handleCancelQueue = () => {
-    // 始まっていない予約の元画像は「未生成」に戻す。
-    markLoraUsed(queuedNextRef.current.map((q) => q.image), false);
-    queuedNextRef.current = [];
-    setQueuedNext([]);
+  // 始まる前の予約を全部取り消す（全額返金）。始まったものは完走する。
+  const handleCancelQueue = async () => {
+    if (!user) return;
+    setQueueError(null);
+    try {
+      const r = await cancelStudioQueue("angle");
+      if (r.remainingCredits != null) broadcastCreditsUpdate(user.id, r.remainingCredits);
+      trackedRef.current = trackedRef.current.filter((x) => !r.cancelled.includes(x));
+      saveFormState(RESERVED_KEY, { ids: trackedRef.current });
+      // 始まっていない予約の元画像は「未生成」に戻す。
+      const files = r.cancelled
+        .map((id) => reservedFilesRef.current.get(id))
+        .filter((f): f is File => Boolean(f));
+      markLoraUsed(files, false);
+    } catch (err) {
+      setQueueError(err instanceof Error ? err.message : "予約の取り消しに失敗しました。");
+    }
+    void advanceAndFollow(false);
   };
 
   const handleQueueParallel = () => {
@@ -1689,14 +1781,17 @@ export function MultiAngleStudioTab() {
             )}
           </div>
 
-          {busy && queuedNext.length === 0 && (
+          {busy && reservedIds.length === 0 && reserving === 0 && (
             <p className="-mt-2 flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-xs leading-relaxed text-neon-violet">
               <Sparkles size={14} className="mt-0.5 shrink-0" />
               バックグラウンドで生成中です。このタブを閉じたり再読み込みしても生成は継続し、次に開いたときに途中から表示されます。もう一度ボタンを押すと、次の生成を予約できます（複数件を順番に予約できます）。
             </p>
           )}
 
-          {queuedNext.length > 0 && <QueuedNextBanner count={queuedNext.length} onCancel={handleCancelQueue} />}
+          {(reservedIds.length > 0 || reserving > 0) && (
+            <QueuedNextBanner count={reservedIds.length + reserving} serverSide onCancel={() => void handleCancelQueue()} />
+          )}
+          {queueError && <p className="-mt-2 text-xs text-red-400">{queueError}</p>}
 
           <p className="-mt-2 flex items-start gap-2 text-xs leading-relaxed text-muted">
             <Sparkles size={14} className="mt-0.5 shrink-0 text-neon-violet" />
@@ -2036,7 +2131,15 @@ export function MultiAngleStudioTab() {
               const current = h.id === jobId;
               const when = h.createdAt ? new Date(h.createdAt).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
               const statusLabel =
-                h.status === "completed" ? "完了" : h.status === "failed" ? "失敗" : h.status === "processing" ? "生成中" : "起動待ち";
+                h.status === "completed"
+                  ? "完了"
+                  : h.status === "failed"
+                    ? "失敗"
+                    : h.status === "processing"
+                      ? "生成中"
+                      : h.status === "reserved"
+                        ? "予約中"
+                        : "起動待ち";
               return (
                 <li key={h.id} className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
                   <span className="flex min-w-0 items-center gap-3">
@@ -2085,6 +2188,7 @@ export function MultiAngleStudioTab() {
         total={cost + anglePriorityParallelSurcharge(knobs, cost)}
         onCancel={() => setQueueChoiceOpen(false)}
         onQueue={handleQueueWait}
+        queueCost={cost}
         onParallel={handleQueueParallel}
       />
     </div>

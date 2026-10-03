@@ -17,6 +17,7 @@ export function QueueChoiceModal({
   onParallel,
   title = "まだ生成中です",
   description,
+  queueCost,
 }: {
   open: boolean;
   surcharge: number;
@@ -29,6 +30,8 @@ export function QueueChoiceModal({
   onParallel: () => void;
   title?: string;
   description?: string;
+  /** 予約をサーバー側で流すタブ（2026-10-03〜）: 予約の時点で通常料金がかかる。渡すと「順番待ち（○C）」と出す。 */
+  queueCost?: number;
 }) {
   if (!open || typeof document === "undefined") return null;
   return createPortal(
@@ -44,12 +47,17 @@ export function QueueChoiceModal({
           </button>
         </div>
         <p className="mt-2 text-sm leading-relaxed text-muted">
-          {description ?? (
+          {description ?? (queueCost != null ? (
+            <>
+              今の生成が終わり次第、自動的に次を始めます（通常料金・追加料金なし）。予約した時点で料金がかかり、
+              始まる前なら取り消すと全額戻ります。タブを閉じても順番に進みます。待たずに今すぐ並列で実行することもできます（追加料金）。
+            </>
+          ) : (
             <>
               今の生成が終わり次第、自動的に次を実行できます（無料）。待たずに今すぐ並列で実行することもできます（追加料金）。
               ※並列実行を選ぶと、今表示中の生成の進捗はこの画面では追えなくなります（生成自体は裏で完了します）。
             </>
-          )}
+          ))}
         </p>
         <div className="mt-6 flex flex-col gap-2">
           {onQueue && (
@@ -58,7 +66,7 @@ export function QueueChoiceModal({
               onClick={onQueue}
               className="rounded-xl bg-gradient-to-r from-neon-pink to-neon-violet px-6 py-3 text-sm font-semibold text-background transition-all hover:opacity-90"
             >
-              順番待ち（無料）
+              {queueCost != null ? `順番待ち（${queueCost}C・追加料金なし）` : "順番待ち（無料）"}
             </button>
           )}
           <button
@@ -98,7 +106,16 @@ export function WarmCountdownBanner({ remainingMs }: { remainingMs: number }) {
 }
 
 // 予約中インジケーター（生成中フォームの下に出す小さなバナー）。
-export function QueuedNextBanner({ onCancel, count }: { onCancel: () => void; count?: number }) {
+export function QueuedNextBanner({
+  onCancel,
+  count,
+  serverSide = false,
+}: {
+  onCancel: () => void;
+  count?: number;
+  /** 予約をサーバー側で流すタブ（2026-10-03〜）。閉じても消えないので確認を出さない。 */
+  serverSide?: boolean;
+}) {
   // count は複数件予約に対応したタブ（Multi-Angle、2026-09-23）だけが渡す。
   const label =
     count != null && count > 1
@@ -107,19 +124,24 @@ export function QueuedNextBanner({ onCancel, count }: { onCancel: () => void; co
   // 止血（2026-10-03）: 予約はまだ画面の中にだけあり、タブを閉じると送られずに消える（課金もされない）。
   // サーバー側で順番に流す作りへ直すまで、閉じる前に確認を出し、画面にも書いておく。
   useEffect(() => {
+    if (serverSide) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = "";
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, []);
+  }, [serverSide]);
   return (
     <p className="-mt-2 flex items-center justify-between gap-2 rounded-lg border border-neon-pink/30 bg-neon-pink/10 px-3 py-2 text-xs leading-relaxed text-neon-pink">
       <span>
         {label}
         <br />
-        <span className="text-[11px] text-amber-300">予約はこのタブを開いている間だけ有効です（閉じると予約は取り消されます。料金はかかりません）。</span>
+        {serverSide ? (
+          <span className="text-[11px] text-muted">タブを閉じても順番に始まります。始まる前に取り消すと料金は全額戻ります。</span>
+        ) : (
+          <span className="text-[11px] text-amber-300">予約はこのタブを開いている間だけ有効です（閉じると予約は取り消されます。料金はかかりません）。</span>
+        )}
       </span>
       <button
         type="button"

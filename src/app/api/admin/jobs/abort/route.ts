@@ -7,7 +7,7 @@ import { cancelLoraTrainingCall } from "@/lib/modalLoraTrain";
 // 動画（generation_jobs: Cinematic Director・特化 WF）の中止（2026-09-29、ホスト「停止ボタンを全般に」）。
 // Modal 側を止めても DB が processing のまま残り、画面が生成中で固まっていた（angle_jobs cc508d01）。
 //
-// やること: ① 行を failed で閉じる（pending/processing のときだけ・二重に閉じない）
+// やること: ① 行を failed で閉じる（reserved/pending/processing のときだけ・二重に閉じない。reserved＝予約は全額）
 //          ② 返金（refund=true のとき。angle は未完了の構図ぶん、動画は全額）
 //          ③ 起動時に残した Modal の実行 id があれば、その実行を取り消す（GPU を止める）
 // generation_logs はステータス変更のトリガーが拾う。
@@ -45,7 +45,7 @@ export async function POST(request: Request) {
     const meta = (row.metadata as Record<string, unknown> | null) ?? {};
     callId = typeof meta.modal_call_id === "string" ? meta.modal_call_id : "";
     userId = row.user_id as string;
-    if (row.status === "pending" || row.status === "processing") {
+    if (row.status === "reserved" || row.status === "pending" || row.status === "processing") {
       const total = Math.max(1, (row.total_angles as number) ?? 1);
       const done = Math.min(total, (row.completed_angles as number) ?? 0);
       refundAmount = refund ? Math.round((((row.credits_cost as number) ?? 0) * (total - done)) / total) : 0;
@@ -73,7 +73,7 @@ export async function POST(request: Request) {
     }
     callId = typeof row.modal_call_id === "string" ? row.modal_call_id : "";
     userId = row.user_id as string;
-    if (row.status === "queued" || row.status === "pending" || row.status === "processing") {
+    if (row.status === "reserved" || row.status === "queued" || row.status === "pending" || row.status === "processing") {
       refundAmount = refund ? ((row.credits_cost as number) ?? 0) : 0;
       const { data: updated } = await supabaseAdmin
         .from("generation_jobs")
@@ -87,6 +87,9 @@ export async function POST(request: Request) {
       closed = Boolean(updated?.length);
     }
   }
+
+  // 予約（reserved）を閉じたら、起動の引数も捨てる（無ければ何もしない）。
+  if (closed) await supabaseAdmin.from("studio_dispatch_specs").delete().eq("job_id", jobId);
 
   // 返金は行を閉じられたときだけ（ワーカーが同時に完了を書いたら触らない）。
   let refunded = 0;

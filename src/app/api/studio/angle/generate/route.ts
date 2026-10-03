@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { rememberAngleCall } from "@/lib/modalCallRecord.server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
-import { spawnAngleJob } from "@/lib/modalAngle";
+import { dispatchAngleJob, type AngleDispatchSpec } from "@/lib/angleDispatch.server";
+import { advanceQueue, saveDispatchSpec } from "@/lib/studioQueue.server";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { angleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import { downloadStudioUpload, deleteStudioUploads } from "@/lib/studioUploads.server";
@@ -167,6 +167,10 @@ export async function POST(request: Request) {
   let aspectRaw: unknown;
   // ネガティブプロンプト（2026-09-30、素材づくり）。制御文字を落として 600 文字まで。
   let negativeRaw: unknown;
+  // 予約（2026-10-03）: true なら課金してジョブ行を reserved で作り、順番が来たらサーバーが起動する
+  // （lib/studioQueue.server.ts）。画像は置き場所（storagePaths）で受けたときだけ・起動まで消さない。
+  let queue = false;
+  let storagePaths: string[] = [];
 
   if (contentType.includes("application/json")) {
     let body: Record<string, unknown>;
@@ -180,6 +184,11 @@ export async function POST(request: Request) {
     const storagePathsArr = Array.isArray(body.storagePaths)
       ? body.storagePaths.filter((p): p is string => typeof p === "string" && p.length > 0)
       : [];
+    queue = body.queue === true;
+    if (queue && storagePathsArr.length === 0) {
+      return NextResponse.json({ error: "予約には画像のアップロードが必要です。" }, { status: 400 });
+    }
+    storagePaths = storagePathsArr;
     if (storagePathsArr.length > 0) {
       const downloaded: Buffer[] = [];
       for (const p of storagePathsArr) {
@@ -190,8 +199,8 @@ export async function POST(request: Request) {
         }
       }
       imageBuffers = downloaded;
-      // ベストエフォート削除（読み終わったら不要）。
-      deleteStudioUploads(storagePathsArr);
+      // ベストエフォート削除（読み終わったら不要）。予約は起動するまで残す。
+      if (!queue) deleteStudioUploads(storagePathsArr);
     } else {
       // `images: string[]`（メイン + サブ、先頭がメイン）があれば優先。
       // 無ければ `image` + `subImages: string[]`。互換のため base64 も残す。
@@ -241,7 +250,8 @@ export async function POST(request: Request) {
     seedRaw = formData.get("seed");
     priorityRaw = formData.get("priority");
   }
-  const priority = priorityRaw === true || priorityRaw === "true";
+  // 予約は並列の追加料金を取らない（順番待ち）。
+  const priority = !queue && (priorityRaw === true || priorityRaw === "true");
 
   // 空要素（サブスロット未使用など）を落とし、先頭がメイン参照であることを保つ。
   imageBuffers = imageBuffers.filter((b) => b.length > 0);
@@ -422,7 +432,7 @@ export async function POST(request: Request) {
     .from("angle_jobs")
     .insert({
       user_id: user.id,
-      status: "pending",
+      status: queue ? "reserved" : "pending",
       mode,
       total_angles: combos.length,
       completed_angles: 0,
@@ -451,28 +461,53 @@ export async function POST(request: Request) {
   }
   const jobId = jobRow.id as string;
 
+  const spec: AngleDispatchSpec = {
+    storagePaths: queue ? storagePaths : [],
+    creditsCost: generationCost,
+    maxAllowedTime,
+    instructions: combos.map((c) => c.instruction),
+    labels: combos.map((c) => c.labelJa),
+    mode,
+    seed,
+    rawPrompt,
+    ...(useSets ? { imageSets: jobImageSets!, instructionSets: instructionSets! } : {}),
+    ...(aspectRaw === "portrait" ? { outputSize: { width: 832, height: 1248 } } : {}),
+    ...(typeof negativeRaw === "string" && negativeRaw.trim()
+      ? { negativePrompt: negativeRaw.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 600) }
+      : {}),
+  };
+
+  // --- 予約: 起動の引数を残して、順番が来ていればその場で起動 ----------------
+  if (queue) {
+    try {
+      await saveDispatchSpec("angle", jobId, user.id, spec);
+    } catch (err) {
+      console.error("[studio/angle/generate] save spec failed:", (err as Error).message);
+      await supabaseAdmin.from("angle_jobs").delete().eq("id", jobId);
+      await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+      return NextResponse.json(
+        { error: "予約に失敗しました。しばらくしてから再度お試しください。", remainingCredits: currentCredits },
+        { status: 500 },
+      );
+    }
+    const started = await advanceQueue("angle", user.id);
+    return NextResponse.json({
+      success: true,
+      jobId,
+      reserved: started !== jobId,
+      totalAngles: combos.length,
+      remainingCredits: debitedCredits,
+    });
+  }
+
   // --- dispatch to Modal ---------------------------------------------
   try {
-    const imagesBase64 = imageBuffers.map((b) => b.toString("base64"));
-    const { callId: modalCallId } = await spawnAngleJob({
+    await dispatchAngleJob(
       jobId,
-      userId: user.id,
-      creditsCost: generationCost,
-      maxAllowedTime,
-      imagesBase64,
-      instructions: combos.map((c) => c.instruction),
-      labels: combos.map((c) => c.labelJa),
-      mode,
-      seed,
-      rawPrompt,
-      ...(useSets ? { imageSets: jobImageSets!, instructionSets: instructionSets! } : {}),
-      ...(aspectRaw === "portrait" ? { outputSize: { width: 832, height: 1248 } } : {}),
-      ...(typeof negativeRaw === "string" && negativeRaw.trim()
-        ? { negativePrompt: negativeRaw.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 600) }
-        : {}),
-    });
-    // admin の中止ボタンが Modal の実行まで止められるよう、実行 id を残す（best-effort）。
-    await rememberAngleCall(jobId, modalCallId);
+      user.id,
+      spec,
+      imageBuffers.map((b) => b.toString("base64")),
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[studio/angle/generate] dispatch failed:", message);
@@ -490,6 +525,7 @@ export async function POST(request: Request) {
   return NextResponse.json({
     success: true,
     jobId,
+    reserved: false,
     totalAngles: combos.length,
     remainingCredits: debitedCredits,
   });

@@ -15,7 +15,8 @@ export class AngleJobNotFoundError extends Error {
   }
 }
 
-export type AngleJobStatus = "pending" | "processing" | "completed" | "failed";
+/** reserved = 予約（順番待ち）。前のジョブが終わるとサーバーが起動して pending へ（2026-10-03）。 */
+export type AngleJobStatus = "reserved" | "pending" | "processing" | "completed" | "failed";
 
 export type AngleJob = {
   id: string;
@@ -35,6 +36,8 @@ export type AngleJob = {
 
 export type StartAngleJobResult = {
   jobId: string;
+  /** 予約として受け付けた（まだ始まっていない）。queue: true で、前のジョブが動いているとき。 */
+  reserved: boolean;
   totalAngles: number;
   remainingCredits: number;
 };
@@ -56,6 +59,8 @@ export async function startAngleJob(params: {
   seed?: number;
   /** true: 実行中のジョブを待たず並列で今すぐ実行（追加料金）。既定 false = 順番待ち。 */
   priority?: boolean;
+  /** true: 予約（順番待ち）。その場で課金し、前のジョブが終わったらサーバーが起動する（タブを閉じても進む）。 */
+  queue?: boolean;
   /**
    * 素材づくり（2026-09-27）: 角度ではなくポーズ・場面の文章指示で生成する。指定すると selection は使わず、
    * ワーカーは角度 LoRA のトリガーを付けない。
@@ -134,6 +139,7 @@ export async function startAngleJob(params: {
       mode: params.mode,
       seed: params.seed,
       priority: params.priority ?? false,
+      ...(params.queue ? { queue: true } : {}),
     }),
   });
 
@@ -146,6 +152,7 @@ export async function startAngleJob(params: {
 
   return {
     jobId: data.jobId as string,
+    reserved: data.reserved === true,
     totalAngles: data.totalAngles as number,
     remainingCredits: data.remainingCredits as number,
   };

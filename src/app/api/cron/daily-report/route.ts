@@ -1,3 +1,4 @@
+import { sweepAllQueues } from "@/lib/studioQueue.server";
 import { NextResponse } from "next/server";
 import { summarizeGenerationLogs, type GenerationLogsPeriodSummary } from "@/lib/adminLogsSummary.server";
 import { sendDiscordEmbed } from "@/lib/discordNotify.server";
@@ -84,5 +85,14 @@ export async function GET(request: Request) {
     monthlySent = true;
   }
 
-  return NextResponse.json({ ok: true, day: dayLabel, monthlySent });
+  // 予約（順番待ち）の取りこぼし掃除（2026-10-03）。普段は前のジョブの完了で DB トリガーが次を起動するが、
+  // その呼び出しが落ちて誰も画面を開かなければ予約が残り続けるので、日に 1 回すべて advance する。
+  let queueStarted = 0;
+  try {
+    queueStarted = await sweepAllQueues();
+  } catch (err) {
+    console.error("[cron/daily-report] queue sweep failed:", err);
+  }
+
+  return NextResponse.json({ ok: true, day: dayLabel, monthlySent, queueStarted });
 }
