@@ -189,8 +189,12 @@ export type ScenePlanItem = {
 
 // 顔立ちを保つ＋表情は控えめに＋画風を保つ（2026-09-29: 表情指定で別人・アニメ調に転んだ対策）。
 // 2026-09-30: 40 枚中 2 枚が男性になった（ホスト報告）ので、性別・年齢も保つよう明記。
-const IDENTITY_EN =
-  "Keep the same character (the same gender and age) with the identical face, hairstyle, body shape and clothing as the reference. Any change of expression must be subtle and must not alter the facial features. Keep the same art style, rendering and level of realism as the reference (if the reference is a photo, keep it a photorealistic photo).";
+const IDENTITY_TAIL =
+  "Any change of expression must be subtle and must not alter the facial features. Keep the same art style, rendering and level of realism as the reference (if the reference is a photo, keep it a photorealistic photo).";
+const IDENTITY_EN = `Keep the same character (the same gender and age) with the identical face, hairstyle, body shape and clothing as the reference. ${IDENTITY_TAIL}`;
+// 服装を変える行（2026-10-03）: 「服装も元と同じ」と書いたままだと服装の指定と矛盾して元の服が勝っていた
+// （部屋着の指定が元の白 T シャツ＋ジーンズのまま、ホスト報告）。服だけは指示どおりに変えると明記する。
+const IDENTITY_EN_NEW_OUTFIT = `Keep the same character (the same gender and age) with the identical face, hairstyle and body shape as the reference, but change the clothing exactly as instructed above (do not keep the original outfit). ${IDENTITY_TAIL}`;
 
 function chip(axis: SceneAxis, id: string): SceneChip {
   return CHIPS_BY_AXIS[axis].find((c) => c.id === id) ?? CHIPS_BY_AXIS[axis][0];
@@ -201,7 +205,8 @@ export function scenePlanInstruction(item: ScenePlanItem): string {
   const framing = chip("framings", item.framingId);
   const view = chip("views", item.viewId);
   const body = (item.custom ?? "").trim() || item.bodyEn;
-  return `${framing.en}, ${view.en}. ${body.replace(/[。.]\s*$/, "")}. ${IDENTITY_EN}`;
+  const identity = /\bwearing\b/.test(body) ? IDENTITY_EN_NEW_OUTFIT : IDENTITY_EN;
+  return `${framing.en}, ${view.en}. ${body.replace(/[。.]\s*$/, "")}. ${identity}`;
 }
 
 /** 一覧・結果のラベル（日本語）。 */
@@ -219,13 +224,17 @@ export function scenePlanPreviewJa(item: ScenePlanItem): string {
   return `${framing.label}・${view.label}で、${(item.custom ?? "").trim() || item.bodyJa}`;
 }
 
+// 自分で足した項目は日本語のまま入る。何の指定かを英語で前置きし、英訳（API 側）で文脈が分かるようにする
+// （2026-10-03: 「Make the character ピースする 桜並木」は訳で語ごと落ちていた）。
+const CUSTOM_PREFIX: Partial<Record<SceneAxis, string>> = { poses: "doing this pose: ", places: "in this place: " };
+
 function pick(axis: SceneAxis, ids: string[], custom: string[] = []): SceneChip[] {
   const set = new Set(ids);
   const fixed = CHIPS_BY_AXIS[axis].filter((c) => set.has(c.id));
   const extra = custom
     .map((t) => t.trim())
     .filter(Boolean)
-    .map((t) => ({ id: `custom:${t}`, label: t, en: t }));
+    .map((t) => ({ id: `custom:${t}`, label: t, en: `${CUSTOM_PREFIX[axis] ?? ""}${t}` }));
   return [...fixed, ...extra];
 }
 

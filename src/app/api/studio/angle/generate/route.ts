@@ -7,7 +7,7 @@ import { spawnAngleJob } from "@/lib/modalAngle";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { angleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import { downloadStudioUpload, deleteStudioUploads } from "@/lib/studioUploads.server";
-import { containsJapanese, translateToEnglish } from "@/lib/translate";
+import { translateSceneInstructions } from "@/lib/sceneInstructionTranslate.server";
 import {
   angleComboSubRefIndexes,
   angleCreditsPerAngle,
@@ -294,11 +294,14 @@ export async function POST(request: Request) {
     ? scenes!.map((sc) => (typeof sc.set === "number" && sc.set >= 0 && sc.set < imageSets!.length ? sc.set : 0))
     : null;
   // 素材づくりの自由入力（場面・ポーズ・服装・追加指示）は日本語で書ける。指示に日本語が混ざっていれば
-  // 英訳してからワーカーへ（無料の翻訳。失敗時は原文のまま＝生成は止めない）。同じ文は 1 回だけ訳す。
+  // 英訳してからワーカーへ（失敗時は原文のまま＝生成は止めない）。文ごと機械翻訳すると英文中の日本語の語を
+  // 落としていたので、文脈ごと Gemini で訳す（2026-10-03、sceneInstructionTranslate.server.ts）。
   if (rawPrompt) {
-    const uniq = [...new Set(scenes!.map((sc) => sc.instruction).filter((t) => containsJapanese(t)))];
-    const translated = new Map(await Promise.all(uniq.map(async (t) => [t, await translateToEnglish(t)] as const)));
-    for (const sc of scenes!) sc.instruction = translated.get(sc.instruction) ?? sc.instruction;
+    const translated = await translateSceneInstructions(
+      scenes!.map((sc) => sc.instruction),
+      user.id,
+    );
+    scenes!.forEach((sc, i) => (sc.instruction = translated[i]));
   }
   const combos = rawPrompt
     ? scenes!.map((sc) => ({ instruction: sc.instruction, labelJa: sc.label }))
