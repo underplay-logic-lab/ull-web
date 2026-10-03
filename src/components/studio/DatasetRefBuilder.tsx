@@ -585,7 +585,7 @@ export function CandidatePanel({
           <p className="flex items-center gap-2 text-xs font-semibold text-foreground">
             <Loader2 size={16} className="animate-spin text-neon-pink" />
             {status === "queued"
-              ? "順番待ち中：他の生成が終わり次第すぐ始まります（追加料金なし）"
+              ? "順番待ち中：他の生成が終わり次第すぐ始まります（追加料金なし）。まだ送信前なので、このタブは開いたままにしてください（閉じると始まりません）"
               : status === "submitting"
                 ? "画像を送っています…"
                 : job?.status === "processing"
@@ -665,6 +665,8 @@ export function CandidatePanel({
           onUpscale={light.job ? (i) => void upscaleLight(i) : undefined}
           compare={compareUrl ? { url: compareUrl, label: "元の画像" } : null}
           keepZoom
+          onPick={light.job ? (i) => light.job && void pick(light.job, i) : undefined}
+          isPicked={(i) => Boolean(light.job && picked?.jobId === light.job.id && picked.index === i)}
           onImageError={() => {
             // 候補の拡大表示なら、その候補の URL を取り直して拡大側も差し替える。
             const j = light.job;

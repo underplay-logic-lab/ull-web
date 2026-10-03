@@ -497,6 +497,8 @@ export function AngleLightbox({
   isExcluded,
   compare,
   keepZoom = false,
+  onPick,
+  isPicked,
 }: {
   items: LightItem[];
   index: number;
@@ -517,6 +519,9 @@ export function AngleLightbox({
   compare?: { url: string; label: string } | null;
   /** 画像を替えても拡大の倍率・位置を保つ（同じ構図の候補を見比べるとき）。 */
   keepZoom?: boolean;
+  /** 素材づくりの候補（2026-10-03 ホスト要望）: 拡大したまま「この候補を使う」で確定する。押すと閉じる。 */
+  onPick?: (index: number) => void;
+  isPicked?: (index: number) => boolean;
 }) {
   const item = items[index];
   const [compareOpen, setCompareOpen] = useState(true);
@@ -561,6 +566,25 @@ export function AngleLightbox({
           </span>
         </span>
         <div className="flex shrink-0 items-center gap-1.5">
+          {onPick &&
+            (isPicked?.(index) ? (
+              <span className="inline-flex items-center gap-1 rounded-md border border-neon-pink/60 bg-neon-pink/20 px-2 py-1 text-[11px] text-neon-pink">
+                <Check size={12} />
+                この候補を使っています
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  onPick(index);
+                  onClose();
+                }}
+                className="inline-flex items-center gap-1 rounded-md bg-neon-pink px-2.5 py-1 text-[11px] font-semibold text-background transition-opacity hover:opacity-90"
+              >
+                <Check size={12} />
+                この候補を使う
+              </button>
+            ))}
           {onToggleExclude && (
             <button
               type="button"
