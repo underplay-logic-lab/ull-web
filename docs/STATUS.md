@@ -654,6 +654,12 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    （`UpscaleStudioTab.tsx` の `BatchResultCard`）。クリックで拡大＋前後比較（1 枚のときの `CompareSlider` と同じ）にする。
    見て物足りなければ別の拡大方式（モデル）で掛け直す、という使い方の入口にもなる。
 
+5. **minimax の学習を bf16 ベースにする調査**（ホスト発案 2026-10-03）。今は int8_convrot を毎ジョブ逆量子化（約 270 秒・`lora_prep_dequant_s`）、
+   Director の推論は `minimax_h3_fl2va_bf16.safetensors`＝学習と推論でベースが違う。壁は ai-toolkit の `MiniMaxH3Transformer` が
+   融合済み（`adaln_proj`）の state_dict に決め打ち（docs/gpu-benchmarks.md §14.8.5）。まずソースを読み、①読み込み時に bf16 を同じ形へ並べ替える
+   ②モデル定義を直す、のどちらで済むか確認（"convrot" が重みの回転なら名前の付け替えだけでは済まない）。CPU で通してから GPU 1 回（要承認）。
+   ワーカー側 `ull_r2.py` の `user_root` も、問い合わせ失敗で nomail を返す同じ作り（Next 側は `0abe452` で直した）→ 次の Modal デプロイで揃える。
+
 **記録（2026-10-01〜02 にやったこと。蒸し返さない）**
 - **2026-10-02: 看板キャラ「ひなた」と 1 本目の操作動画**（詳細は `promo/characters/README.md`・`promo/README.md`）
   - キャラ: 人物像を先に決めた（何にでも放り込まれる実演役・日本人女性 20 代前半・色白の可愛い系・「は？」→ すぐ順応）。Gemini（Nano Banana Pro）の
