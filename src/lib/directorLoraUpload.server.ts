@@ -1,4 +1,5 @@
 import "server-only";
+import { randomBytes } from "crypto";
 
 // ULL Cinematic Director: ユーザーが外部で用意した .safetensors を持ち込んで適用する経路。
 // 2026-09-18〜10-03 はブラウザ → Modal（modal_lora_worker.py::upload_user_lora）→ Volume の直送だったが、
@@ -22,12 +23,12 @@ export const DIRECTOR_LORA_PART_BYTES = 32 * 1024 * 1024;
 export const DIRECTOR_LORA_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 
 /**
- * `<root>/director_user_loras/<サイズ>-<更新時刻>-<安全な名前>.safetensors`。名前は ComfyUI の loras/ にそのまま置く。
- * 同じファイルなら同じキーになる＝上げ直しても R2 に複製が溜まらず上書きになり、既にあれば送らずに済む（2026-10-04）。
+ * `<root>/director_user_loras/<時刻>-<乱数>-<安全な名前>.safetensors`。名前は ComfyUI の loras/ にそのまま置く。
+ * アップロードごとに別のキー＝1 回のアップロードは 1 本の生成にだけ使い、生成が終わったらワーカーが消す（2026-10-04）。
  */
-export function directorLoraR2Key(root: string, originalName: string, size: number, lastModified: number): string {
+export function directorLoraR2Key(root: string, originalName: string): string {
   const base = originalName.replace(/\.safetensors$/i, "").replace(/[^A-Za-z0-9_-]/g, "_").slice(-60) || "lora";
-  return `${root}/${DIRECTOR_LORA_R2_SUBDIR}/${Math.floor(size)}-${Math.floor(lastModified)}-${base}.safetensors`;
+  return `${root}/${DIRECTOR_LORA_R2_SUBDIR}/${Date.now()}-${randomBytes(4).toString("hex")}-${base}.safetensors`;
 }
 
 /** そのユーザーの置き場所の中の .safetensors だけを通す。 */

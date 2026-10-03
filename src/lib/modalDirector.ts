@@ -51,6 +51,8 @@ export type SpawnDirectorJobParams = {
   loraUrl?: string;
   /** LoRA のトリガーワード（カンマ区切り）。Qwen が台本を書いたとき、ワーカーが最終の文に無ければ先頭に足す（2026-10-04）。 */
   loraTriggerWord?: string;
+  /** 持ち込み LoRA の R2 署名付き DELETE URL。ワーカーが取り込んだ直後に消す（2026-10-04）。 */
+  loraDeleteUrl?: string;
 };
 
 export async function spawnDirectorJob(params: SpawnDirectorJobParams): Promise<{ callId: string | null }> {
@@ -86,6 +88,7 @@ export async function spawnDirectorJob(params: SpawnDirectorJobParams): Promise<
       lora_filename: params.loraFilename,
       lora_url: params.loraUrl,
       lora_trigger_word: params.loraTriggerWord,
+      lora_delete_url: params.loraDeleteUrl,
     }),
     signal: AbortSignal.timeout(30_000),
   });

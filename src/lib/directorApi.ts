@@ -145,14 +145,21 @@ export async function regenerateDirectorJob(args: {
   quality?: DirectorQualityMode;
   priority?: boolean;
   queue?: boolean;
+  /** 今アップロードした持ち込み LoRA（元のジョブの分は使い終わって消えている）。 */
+  lora?: DirectorLoraSelection;
 }): Promise<DirectorStartResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) throw new Error("ログインが必要です。");
+  const { lora, ...rest } = args;
   const res = await fetch("/api/director/generate", {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ ...args, priority: args.priority ?? false }),
+    body: JSON.stringify({
+      ...rest,
+      priority: args.priority ?? false,
+      ...(lora?.source === "upload" ? { loraUploadR2Key: lora.r2Key, loraTriggerWord: lora.triggerWord } : {}),
+    }),
   });
   const data = await res.json();
   if (!res.ok) {
@@ -173,11 +180,9 @@ export async function regenerateDirectorJob(args: {
 // 2026-09-18〜10-03 はブラウザ → Modal（modal_lora_worker.py::upload_user_lora）→ Volume の 1 本の接続で送っていたが、
 // 日米往復のせいで 1 本あたり約 2.2 Mbps で頭打ちになり（docs/gpu-benchmarks.md §15）、1GB 級に数十分かかった。
 // 2026-10-03 から R2 へ 32MB ずつ並行に PUT する（S3 マルチパート、/api/director/loras/r2-upload）。
-// 保存はしない前提（R2 は 14 日で消える。使うたびに上げ直せばよい、ホスト判断）。
+// 保存はしない: 1 回のアップロードを 1 本の生成にだけ使い、生成が終わったらワーカーが R2 から消す（2026-10-04、
+// ホスト「速いので毎回アップロードでよい」）。消し損ねても R2 の 14 日のライフサイクルで消える。
 const DIRECTOR_LORA_MAX_BYTES = 2 * 1024 * 1024 * 1024; // サーバー側の上限（2GB）と合わせる
-
-// 同じ File を連続生成のたびに上げ直さない（ファイルを選び直せば WeakMap から自然に消える）。
-const _uploadedLoraCache = new WeakMap<File, string>();
 
 /** アップロードの進捗。loaded/total はファイル全体のバイト数。 */
 export type DirectorLoraUploadProgress = (loaded: number, total: number) => void;
@@ -242,9 +247,6 @@ export async function uploadDirectorLoraFile(
   file: File,
   onProgress?: DirectorLoraUploadProgress,
 ): Promise<{ r2Key: string }> {
-  const cached = _uploadedLoraCache.get(file);
-  if (cached) return { r2Key: cached };
-
   if (!file.name.toLowerCase().endsWith(".safetensors")) {
     throw new Error(".safetensors ファイルを選んでください。");
   }
@@ -261,14 +263,7 @@ export async function uploadDirectorLoraFile(
     action: "start",
     filename: file.name,
     size: file.size,
-    lastModified: file.lastModified,
-  })) as { key: string; exists?: boolean; uploadId: string; partBytes: number; partUrls: string[] };
-  // 同じファイルが既に上がっている（同じキーに上書きする作りなので、上げ直しても複製は溜まらない）。
-  if (start.exists) {
-    onProgress?.(file.size, file.size);
-    _uploadedLoraCache.set(file, start.key);
-    return { r2Key: start.key };
-  }
+  })) as { key: string; uploadId: string; partBytes: number; partUrls: string[] };
   const loadedByPart = new Array<number>(start.partUrls.length).fill(0);
   const report = () => onProgress?.(Math.min(file.size, loadedByPart.reduce((a, b) => a + b, 0)), file.size);
   report();
@@ -316,7 +311,6 @@ export async function uploadDirectorLoraFile(
     `[director-lora-upload] ${(file.size / 1e6).toFixed(1)}MB を ${sec.toFixed(1)}秒` +
       `（実効 ${((file.size * 8) / 1e6 / Math.max(sec, 0.001)).toFixed(1)} Mbps・r2・${start.partUrls.length}分割・並列${PART_CONCURRENCY}）`,
   );
-  _uploadedLoraCache.set(file, start.key);
   return { r2Key: start.key };
 }
 

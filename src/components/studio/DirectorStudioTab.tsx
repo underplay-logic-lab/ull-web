@@ -405,6 +405,15 @@ export function DirectorStudioTab() {
     setLoraSource(next);
   };
 
+  // 持ち込み LoRA は 1 回のアップロードを 1 本の生成にだけ使い、生成が終わったらワーカーが消す（2026-10-04、
+  // ホスト「速いので毎回アップロードでよい」）。送ったらアップロード済みの印を外し、次はもう一度アップロードしてもらう
+  // （選んだファイルは残すので「このLoRAをアップロード」を押すだけ）。
+  const consumeUploadedLora = useCallback((snapshot: { lora?: DirectorLoraSelection }) => {
+    if (snapshot.lora?.source !== "upload") return;
+    setLoraUploadedKey(null);
+    setLoraUploadBytes(null);
+  }, []);
+
   const handleUploadLora = async () => {
     if (!user || !loraUploadFile || loraUploading) return;
     setLoraUploading(true);
@@ -522,6 +531,8 @@ export function DirectorStudioTab() {
         rawPrompt?: string;
         rawDurationS?: number;
         quality?: DirectorQualityMode;
+        /** 持ち込み LoRA は使ったら消すので、作り直しでは今アップロードした分を使う（2026-10-04）。 */
+        lora?: DirectorLoraSelection;
       };
   // 予約（順番待ち）はサーバー側（2026-10-03、lib/studioQueue.server.ts）。予約した時点で課金してジョブ行を
   // reserved で作り、前のジョブが終わるとサーバーが起動する（タブを閉じても進む）。それまでは画面のメモリにだけあり、
@@ -655,6 +666,7 @@ export function DirectorStudioTab() {
         rawPrompt: promptDraft.trim(),
         rawDurationS: promptDraftDurationS,
         quality: qualityMode,
+        lora: loraSelection.source === "upload" ? loraSelection : undefined,
       };
     }
     if (!image) return null;
@@ -716,7 +728,15 @@ export function DirectorStudioTab() {
   const handleRegenerate = () => {
     if (!user || !job?.regenerable || busy) return;
     if (!creditsLoading && (credits ?? 0) < regenCost) return setChargeOpen(true);
-    void runGenerate({ uiMode: "regen", baseJobId: job.jobId, variation: "new_seed" }, { continuation: true });
+    void runGenerate(
+      {
+        uiMode: "regen",
+        baseJobId: job.jobId,
+        variation: "new_seed",
+        lora: loraSelection.source === "upload" ? loraSelection : undefined,
+      },
+      { continuation: true },
+    );
   };
 
   const handleQueueParallel = () => {
@@ -748,6 +768,7 @@ export function DirectorStudioTab() {
             quality: snapshot.quality,
             priority: opts.priority,
             queue: opts.queue,
+            lora: snapshot.lora,
           })
         : snapshot.uiMode === "prompt"
           ? startDirectorJob({
@@ -797,6 +818,7 @@ export function DirectorStudioTab() {
       try {
         const res = await startFromSnapshot(snapshot, { priority: opts.priority });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
+        consumeUploadedLora(snapshot);
         {
           const entry: StudioSessionEntry = { id: res.jobId, createdAt: new Date().toISOString(), label: snapshotLabel(snapshot) };
           commitSession([...sessionJobsRef.current.filter((e) => e.id !== res.jobId), entry]);
@@ -815,7 +837,7 @@ export function DirectorStudioTab() {
         if (e.message?.includes("クレジット")) setChargeOpen(true);
       }
     },
-    [user, commitSession, startFromSnapshot],
+    [user, commitSession, startFromSnapshot, consumeUploadedLora],
   );
 
   // サーバーが起動した予約のジョブへ画面を切り替える（続けて出した生成として一覧に足す）。
@@ -870,6 +892,7 @@ export function DirectorStudioTab() {
     try {
       const res = await startFromSnapshot(snapshot, { queue: true });
       broadcastCreditsUpdate(user.id, res.remainingCredits);
+      consumeUploadedLora(snapshot);
       armAutoDownload(res.jobId);
       trackedRef.current = [
         ...trackedRef.current.filter((t) => t.id !== res.jobId),

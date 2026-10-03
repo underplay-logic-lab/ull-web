@@ -3,6 +3,7 @@ import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
+  DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
@@ -237,6 +238,12 @@ export async function completeR2Multipart(
 export async function abortR2Multipart(key: string, uploadId: string): Promise<void> {
   if (!isSafeR2Key(key)) return;
   await r2Client().send(new AbortMultipartUploadCommand({ Bucket: r2Bucket(), Key: key, UploadId: uploadId }));
+}
+
+// Presigned DELETE (worker deletes a one-shot input after reading it, without R2 credentials).
+export async function presignR2Delete(key: string, expiresIn = DEFAULT_GET_TTL_S): Promise<string> {
+  if (!isSafeR2Key(key)) throw new Error("invalid R2 key");
+  return getSignedUrl(r2Client(), new DeleteObjectCommand({ Bucket: r2Bucket(), Key: key }), { expiresIn });
 }
 
 // Size in bytes, or null when the object does not exist.
