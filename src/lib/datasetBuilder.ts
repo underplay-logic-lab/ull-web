@@ -111,6 +111,12 @@ export type SceneSelection = {
   framings: string[];
   views: string[];
   expressions: string[];
+  /**
+   * 表情も変えるか（2026-10-03 ホスト判断）。既定 false＝真顔に固定。表情を変えると別人になりやすく LoRA の素材としては
+   * 害になりやすいが、表情違いが欲しい人向けに「詳細設定（上級者向け）」の中にだけ出す。古い保存の expressions は
+   * これが true のときしか使わない。
+   */
+  expressionsOn?: boolean;
   outfits: string[];
   /** 自分で足したポーズ・場面（日本語可）。指示に入った日本語は API 側で英訳する（2026-09-27）。 */
   customPoses: string[];
@@ -146,6 +152,7 @@ export const DEFAULT_SCENE_SELECTION: SceneSelection = {
   framings: ["full", "upper", "bust"],
   views: ["front", "three_quarter", "side", "back"],
   expressions: ["neutral"],
+  expressionsOn: false,
   outfits: ["same", "casual"],
   customPoses: [],
   customPlaces: [],
@@ -282,14 +289,15 @@ export function buildScenePlan(sel: SceneSelection, count: number): ScenePlanIte
   const places = pick("places", sel.places, sel.customPlaces ?? []);
   const framings = pick("framings", sel.framings);
   const views = pick("views", sel.views);
-  // 表情は真顔に固定（2026-09-30 ホスト判断）。元の人物の「正しい表情」の見本が無いまま表情を変えると別人になり、
-  // LoRA の素材としては害になる。保存済みの選択（sel.expressions）に他の表情が残っていても使わない。
+  // 表情は既定で真顔に固定（2026-09-30 ホスト判断）。元の人物の「正しい表情」の見本が無いまま表情を変えると別人になり、
+  // LoRA の素材としては害になる。詳細設定で「表情も変える」を入れたときだけ選んだ表情を回す（2026-10-03）。
+  const expressions = sel.expressionsOn ? pick("expressions", sel.expressions ?? []) : [];
   const outfits = pick("outfits", sel.outfits ?? []);
   const P = poses.length ? poses : [POSE_CHIPS[0]];
   const L = places.length ? places : [PLACE_CHIPS[0]];
   const F = framings.length ? framings : [FRAMING_CHIPS[0]];
   const V = views.length ? views : [VIEW_CHIPS[0]];
-  const E = [EXPRESSION_CHIPS[0]];
+  const E = expressions.length ? expressions : [EXPRESSION_CHIPS[0]];
   const O = outfits.length ? outfits : [OUTFIT_CHIPS[0]];
   const total = P.length * L.length * F.length * V.length;
   const outfitText = sel.outfit.trim();

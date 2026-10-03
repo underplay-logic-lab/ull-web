@@ -1630,7 +1630,7 @@ export function DatasetBuilderTab() {
           <div id="dataset-scene" className="grid scroll-mt-24 gap-4 rounded-xl border border-border bg-background p-4">
             {/* 止めている間の「これから作る分」から「シーン設定」の名前で参照する（2026-09-30 ホスト指摘）。 */}
             <p className="text-sm font-medium text-foreground">シーン設定</p>
-            {/* 表情は真顔に固定したので選ばせない（2026-09-30、datasetBuilder.ts の buildScenePlan）。 */}
+            {/* 表情は既定で真顔に固定（2026-09-30）。変えたい人向けに下の「詳細設定（上級者向け）」の中にだけ出す（2026-10-03）。 */}
             {(["poses", "places", "framings", "views", "outfits"] as SceneAxis[]).map((axis) => (
               <ChipGroup
                 key={axis}
@@ -1665,7 +1665,7 @@ export function DatasetBuilderTab() {
               />
             ))}
             {(() => {
-              const filled = Boolean(sel.outfit?.trim() || sel.extra?.trim());
+              const filled = Boolean(sel.outfit?.trim() || sel.extra?.trim() || sel.expressionsOn);
               const open = sceneAdvancedOpen || filled;
               return (
                 <>
@@ -1676,10 +1676,37 @@ export function DatasetBuilderTab() {
                     aria-expanded={open}
                     className="inline-flex w-fit items-center gap-0.5 text-[11px] text-neon-violet/80 hover:text-neon-violet disabled:cursor-default disabled:hover:text-neon-violet/80"
                   >
-                    詳細設定（上級者向け）: 服装の自由指定・追加の指示
+                    詳細設定（上級者向け）: 表情・服装の自由指定・追加の指示
                     {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
                   </button>
                   {open && (
+            <>
+            {/* 表情（2026-10-03 ホスト判断）: 変えると別人になりやすいので既定オフ・ここにだけ出す。 */}
+            <div className="space-y-1.5">
+              <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted">
+                <input
+                  type="checkbox"
+                  checked={Boolean(sel.expressionsOn)}
+                  onChange={(e) => setSel((p) => ({ ...p, expressionsOn: e.target.checked }))}
+                />
+                表情も変える（既定は真顔）
+              </label>
+              {sel.expressionsOn && (
+                <>
+                  <p className="text-[10px] leading-relaxed text-amber-400">
+                    表情を変えると顔立ちが変わり、別人に見えやすくなります。LoRA の素材にするなら真顔のままがおすすめです。
+                    本人の表情違いの写真があれば、作るよりそれを素材に入れるほうが確実です。
+                  </p>
+                  <ChipGroup
+                    axis="expressions"
+                    selected={sel.expressions ?? []}
+                    onToggle={(id) => toggle("expressions", id)}
+                    onAll={() => setSel((p) => ({ ...p, expressions: CHIPS_BY_AXIS.expressions.map((c) => c.id) }))}
+                    onClear={() => setSel((p) => ({ ...p, expressions: [] }))}
+                  />
+                </>
+              )}
+            </div>
             <div className="grid gap-2 sm:grid-cols-2">
               <label className="text-[11px] text-muted">
                 服装を自由に指定（任意・日本語OK。書くと上のチップより優先）
@@ -1700,13 +1727,14 @@ export function DatasetBuilderTab() {
                 />
               </label>
             </div>
+            </>
                   )}
                 </>
               );
             })()}
             <HelpNote id="dataset.combos" title="組み合わせの作られ方" summary="選んだ組み合わせを順に回して枚数ぶん作ります。">
               未選択の軸は既定（立つ・無地・全身・正面・元の服装）になります。
-              服装は 1 枚ごとに順に変わります。表情はすべて真顔で作ります（表情を変えると顔立ちが変わりやすく、LoRA の素材では同じ人に見えることを優先するため）。
+              服装は 1 枚ごとに順に変わります。表情は既定ですべて真顔で作ります（表情を変えると顔立ちが変わりやすく、LoRA の素材では同じ人に見えることを優先するため。変えたいときは「詳細設定（上級者向け）」で）。
               日本語の入力は送るときに英訳します。
             </HelpNote>
             {/* 止めている間: 設定を変えたらここから一覧へ戻れるように（2026-09-30 ホスト指摘「行き来の距離が長い」）。 */}
