@@ -605,11 +605,11 @@ export function DatasetCurationUI({
             type="button"
             onClick={downloadDataset}
             disabled={disabled || zipping || Boolean(bulk) || kept.length === 0}
-            title="【admin限定】現在残っている画像とキャプション(.txt)を1つのZIPにまとめて保存します。"
+            title="今残っている画像とキャプション(.txt)を 1 つの ZIP にまとめて保存します。"
             className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
           >
             {zipping ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-            📦 データセットDL (画像+txt)（admin）
+            📦 データセットを保存（画像＋キャプション）
           </button>
           )}
         </div>
