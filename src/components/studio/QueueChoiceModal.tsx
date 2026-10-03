@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Flame, Loader2, Plus, X } from "lucide-react";
 import { formatWarmCountdown } from "@/hooks/useLocalWarmCountdown";
@@ -103,9 +104,23 @@ export function QueuedNextBanner({ onCancel, count }: { onCancel: () => void; co
     count != null && count > 1
       ? `次の生成を ${count} 件予約中です。今の生成が終わり次第、予約した順に自動で始まります。`
       : "次の生成を予約中です。今の生成が終わり次第、自動的に始まります。";
+  // 止血（2026-10-03）: 予約はまだ画面の中にだけあり、タブを閉じると送られずに消える（課金もされない）。
+  // サーバー側で順番に流す作りへ直すまで、閉じる前に確認を出し、画面にも書いておく。
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
   return (
     <p className="-mt-2 flex items-center justify-between gap-2 rounded-lg border border-neon-pink/30 bg-neon-pink/10 px-3 py-2 text-xs leading-relaxed text-neon-pink">
-      <span>{label}</span>
+      <span>
+        {label}
+        <br />
+        <span className="text-[11px] text-amber-300">予約はこのタブを開いている間だけ有効です（閉じると予約は取り消されます。料金はかかりません）。</span>
+      </span>
       <button
         type="button"
         onClick={onCancel}
