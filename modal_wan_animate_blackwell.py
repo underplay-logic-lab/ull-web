@@ -1977,6 +1977,7 @@ class WanAnimateBlackwell:
         lora_volume_path: str = None,
         lora_filename: str = None,
         qwen_text_instruction: str = None,
+        lora_url: str = None,
     ) -> dict:
         """
         Generic counterpart to generate_video for admin-authored Custom
@@ -2082,7 +2083,35 @@ class WanAnimateBlackwell:
             # ローカルコピーするだけ（同一Volumeマウント上のコピーなので
             # ネットワーク転送は発生しない）。
             _staged_lora_path = None
-            if lora_volume_path and lora_filename:
+            # LoRA Studio で学習した LoRA（2026-10-03）: 完成品は R2 へ移って Volume から消えるので、Next が R2 の
+            # 署名付き URL を渡し、ここで loras/ へ落とす（300MB で 10 秒ほど）。それまで Director は Volume しか見て
+            # おらず、学習済み LoRA は一度も使えていなかった（ファイル名も _final 付きで食い違っていた）。
+            if lora_url and lora_filename:
+                import requests as _requests
+
+                safe_name = os.path.basename(lora_filename)
+                if not safe_name.endswith(".safetensors"):
+                    raise RuntimeError(f"unexpected lora_filename: {lora_filename!r}")
+                host = (urlparse(lora_url).hostname or "").lower()
+                if urlparse(lora_url).scheme != "https" or not host.endswith(".r2.cloudflarestorage.com"):
+                    raise RuntimeError(f"LoRA URL host not allowed: {host!r}")
+                loras_dir = os.path.join(COMFY_DIR, "models", "loras")
+                os.makedirs(loras_dir, exist_ok=True)
+                _staged_lora_path = os.path.join(loras_dir, safe_name)
+                _t0 = time.time()
+                with _requests.get(lora_url, stream=True, timeout=(15, 120)) as _r:
+                    _r.raise_for_status()
+                    with open(_staged_lora_path + ".part", "wb") as _f:
+                        for _chunk in _r.iter_content(chunk_size=4 * 1024 * 1024):
+                            if _chunk:
+                                _f.write(_chunk)
+                os.replace(_staged_lora_path + ".part", _staged_lora_path)
+                print(
+                    f"[director-lora] fetched trained LoRA -> {_staged_lora_path} "
+                    f"({os.path.getsize(_staged_lora_path) / 1e6:.0f}MB, {time.time() - _t0:.1f}s)",
+                    flush=True,
+                )
+            elif lora_volume_path and lora_filename:
                 import shutil as _shutil
 
                 safe_name = os.path.basename(lora_filename)
@@ -2242,6 +2271,7 @@ def custom_workflow_async(item: dict, request: fastapi.Request):
         item.get("lora_volume_path"),
         item.get("lora_filename"),
         item.get("qwen_text_instruction"),
+        item.get("lora_url"),
     )
     return {"ok": True, "job_id": job_id, "call_id": call.object_id}
 

@@ -640,6 +640,8 @@ export type LoraJobStatus = {
   // 完了直後、成果物がまだ Volume から R2 へ転送中（2026-09-28）。この間の 2 本以上の一括は旧経路の ZIP に落ちて
   // 遅くなるので、画面は「転送中」を出して一括を止め、ポーリングは転送が終わるまで続ける。
   artifactsTransferring: boolean;
+  /** 学習のベースモデル（inputs.target_model）。古い行・取れないときは null。 */
+  targetModel: string | null;
 };
 
 // A pollLoraJob failure, tagged so the caller's polling loop can decide
@@ -743,6 +745,7 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
     logs,
     checkpoints,
     artifactsTransferring,
+    targetModel: typeof data.targetModel === "string" ? data.targetModel : null,
     refunded: typeof meta.refunded === "boolean" ? meta.refunded : null,
     customYaml: meta.custom_yaml === true,
     safetyStop: meta.safety_stop === true,

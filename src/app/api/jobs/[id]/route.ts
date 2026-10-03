@@ -219,6 +219,8 @@ export async function GET(request: Request, { params }: RouteParams) {
     regenerable,
     durationS,
     qualityMode,
+    // LoRA 学習のベースモデル（完了画面で「動画を作る」を出すかの判定。Director は minimax_h3 だけ使える）。
+    targetModel: typeof inputs?.target_model === "string" ? inputs.target_model : null,
     retryCount: typeof effJob.retry_count === "number" ? effJob.retry_count : 0,
     ...(queue
       ? {

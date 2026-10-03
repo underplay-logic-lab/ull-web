@@ -650,9 +650,8 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 3. ~~モデル名の方針~~ **済（2026-10-02）**: LoRA Studio は実名のまま（隠すと使えない）・Director などは会員にも出さない＝CLAUDE.md §2 のまま変更なし。
    MiniMax Music 3 の重み（Volume 57GB）は**消してよい**（ホスト判断 2026-10-02）。Volume に余裕があるので、足りなくなったときに消す。
 
-4. **超解像のまとめの結果を拡大できるようにする**（ホスト要望 2026-10-03、録画 7 の最中に）。今はサムネをクリックするとダウンロードになるだけ
-   （`UpscaleStudioTab.tsx` の `BatchResultCard`）。クリックで拡大＋前後比較（1 枚のときの `CompareSlider` と同じ）にする。
-   見て物足りなければ別の拡大方式（モデル）で掛け直す、という使い方の入口にもなる。
+4. ~~超解像のまとめの結果を拡大~~ **済（2026-10-03、`f45e239`）**: サムネをクリックで拡大＋前後比較（`BatchLightbox`・← → で移動・保存ボタン）。
+   保存はサムネ下のボタンへ。元画像はこのタブで選んだファイルがあるときだけ比較（リロード後は結果だけ）。本番での見た目確認はまだ。
 
 5. **minimax の学習を bf16 ベースにする調査**（ホスト発案 2026-10-03）。今は int8_convrot を毎ジョブ逆量子化（約 270 秒・`lora_prep_dequant_s`）、
    Director の推論は `minimax_h3_fl2va_bf16.safetensors`＝学習と推論でベースが違う。壁は ai-toolkit の `MiniMaxH3Transformer` が
@@ -665,11 +664,17 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    Director 用は全層の可能性 → 50 以降と lm_head は読み飛ばす）。DiT は推論が非 pruned の bf16 なので別途。デプロイは学習ジョブが無いときに。
    ワーカー側 `ull_r2.py` の `user_root` も、問い合わせ失敗で nomail を返す同じ作り（Next 側は `0abe452` で直した）→ 次の Modal デプロイで揃える。
 
-6. **Director で LoRA Studio の LoRA が使えない（本番で一度も通っていなかった）**（2026-10-03 発覚）。完成品は R2 へ移って Volume から消える・
-   Director は Volume しか見ない・名前も `_final` 付きで食い違い。**方針（ホスト 2026-10-03）**: 学習済み LoRA の一覧は外す（いつまでもあると誤解させる）。
-   基本は手元の LoRA をアップロード。LoRA Studio の完了画面に「LoRA を保存して動画を作る」（押すたびに DL → そのタブだけで Director へ受け渡し）案を提示中。
-   アップロード LoRA の Volume 保存期間（今 14 日・画面からは再利用不可）も決める。**書きかけの変更が未コミットで手元にある**
-   （route の R2 キー解決・`directorDispatch` で署名・`modalDirector` の `lora_url`・ワーカーが R2 から loras/ へ落とす）。デプロイは Director のジョブが無いときに。
+6. **Director で LoRA Studio の LoRA を使う**（2026-10-03 発覚・同日実装・ワーカーはデプロイ済み）。完成品は R2 へ移って Volume から消える・
+   Director は Volume しか見ず名前も `_final` 付きで食い違い＝本番で一度も通っていなかった。
+   - 直したこと: Director の「学習済みから選ぶ」一覧と `/api/director/loras` を削除。LoRA Studio の完了画面（minimax のみ）に
+     「🎬 LoRA を保存して動画を作る」＝完成版を DL しつつ、このブラウザのタブだけ（sessionStorage `ull_director_lora`）で Director へ渡す。
+     Director は「LoRA Studio から」として表示・「外す」で消える。サーバーは学習ジョブ id から `metadata.checkpoints` の最終版の
+     `r2_key` を引き、起動直前に 1 時間の署名 URL を作ってワーカーへ（`lora_url`）。ワーカーが loras/ へ落とす（予約からの起動でも期限切れにならない）。
+     旧ジョブの作り直しは LoRA 名で引く（互換）。
+   - **UI は今も `DIRECTOR_LORA_ENABLED=false`（featureFlags.ts、§2 で 2026-09-23 に伏せた）→ admin にだけ出る**。一般公開するかはホスト判断。
+   - **未確認**: 本番で admin が 1 本通す（ワーカーログに `[director-lora] fetched trained LoRA`）。
+   - 未決: アップロード LoRA の Volume 保存期間（今 14 日・画面から再利用不可）。
+
 7. **R2 のダウンロードがときどき 1〜2MB/s に張り付く**（2026-10-03 実測）。バケットは APAC・東京経由。Cloudflare の速度測定サーバーは 43〜68MB/s で
    張り付きなし＝R2 の中の経路。1 本の接続だと 7〜8 本に 1 本が遅く、ファイル・時間帯で波がある。LoRA の DL を分割・並行に（`9ec1807`、最悪 8MB/s・普段 30〜70MB/s）。
    動画超解像・Director の動画にも広げるか要検討。自分用の R:（rclone mount）はオプション追加で一覧が速くなった（`--use-server-modtime` 等、デスクトップの bat）。

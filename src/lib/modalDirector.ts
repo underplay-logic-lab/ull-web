@@ -47,6 +47,8 @@ export type SpawnDirectorJobParams = {
    * と同じ値）とセットで渡す。 */
   loraVolumePath?: string;
   loraFilename?: string;
+  /** LoRA Studio で学習した LoRA の R2 署名付き URL（2026-10-03）。ワーカーが loras/ へ落とす。loraFilename とセット。 */
+  loraUrl?: string;
 };
 
 export async function spawnDirectorJob(params: SpawnDirectorJobParams): Promise<{ callId: string | null }> {
@@ -80,6 +82,7 @@ export async function spawnDirectorJob(params: SpawnDirectorJobParams): Promise<
       director_inputs_snapshot: params.directorInputsSnapshot,
       lora_volume_path: params.loraVolumePath,
       lora_filename: params.loraFilename,
+      lora_url: params.loraUrl,
     }),
     signal: AbortSignal.timeout(30_000),
   });

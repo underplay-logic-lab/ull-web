@@ -1941,7 +1941,8 @@ export function ProgressPanel({
   // provisioning copy below (0-15s / 15s+), and stays 0 once the job
   // leaves 'queued'.
   queuedElapsedSec?: number;
-  onUseLora?: (loraFilename: string) => void;
+  /** 完成版を Director へ渡す（このブラウザのタブだけ。lib/studioHandoff.ts sendLoraToDirector）。 */
+  onUseLora?: (loraJobId: string, label: string) => void;
 }) {
   // Bundle-download busy flag ("final" / "dataset") — a single heavy op, so it
   // stays serialised. The per-row ⬇️ buttons do NOT use this (see
@@ -2324,6 +2325,7 @@ export function ProgressPanel({
     const checkpoints = allCheckpoints
       .filter((c) => !c.isCaptionArchive && !c.isBundle)
       .sort((a, b) => a.step - b.step);
+    const finalCkpt = checkpoints.find((c) => c.isFinal);
     return (
       <div className="rounded-xl border border-green-500/30 bg-green-500/10 p-4">
         <div className="flex items-center gap-2 text-sm font-semibold text-green-400">
@@ -2375,14 +2377,19 @@ export function ProgressPanel({
             <Sparkles size={13} />
             ファイル名をコピー
           </button>
-          {onUseLora && filename && (
+          {/* Director は minimax の LoRA だけ使える。押すたびに完成版を保存してから Director へ渡す
+              （Director に学習済みの一覧は出さない＝手元に残すのが前提。2026-10-03 ホスト方針）。 */}
+          {onUseLora && job.targetModel === "minimax_h3" && finalCkpt && (
             <button
               type="button"
-              onClick={() => onUseLora(filename)}
+              onClick={() => {
+                handleCkptDownload(finalCkpt.filename);
+                onUseLora(job.jobId, finalCkpt.filename.replace(/\.safetensors$/, ""));
+              }}
               className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-xs font-semibold text-background transition-all hover:opacity-90"
             >
               <Clapperboard size={13} />
-              🎬 動画生成でこの LoRA を使う
+              🎬 LoRA を保存して動画を作る
             </button>
           )}
         </div>

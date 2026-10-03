@@ -198,30 +198,54 @@ export async function POST(request: Request) {
 
   let loraName: string | undefined;
   let loraVolumePath: string | undefined;
+  // 学習済み LoRA の R2 キー（起動時に署名して渡す。予約から起動するときも期限切れにならないように）。
+  let loraR2Key: string | undefined;
   if (loraIdRaw) {
     if (!/^[A-Za-z0-9_-]+$/.test(loraIdRaw)) {
       return NextResponse.json({ error: "LoRAの指定が不正です。" }, { status: 400 });
     }
     // CLAUDE.md §3 の14日自動パージ（modal_retention_purge.py、created_at
     // 起点）— DB行がパージより先に消えるとは限らないため、実体ファイルが
-    // 既に消えていそうな古い行は明示的に弾く（/api/director/loras と同じ
-    // cutoff、実機確認済み — 詳細はそちらのコメント参照）。
+    // 既に消えていそうな古い行は明示的に弾く（created_at が 14 日前ちょうどの行で
+    // 実体が既に消えていたのを実機で確認済み）。
     const retentionCutoffIso = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
-    const { data: loraJob } = await supabaseAdmin
+    // loraId は LoRA Studio の学習ジョブの id（2026-10-03〜、完了画面の「動画を作る」から渡す）。
+    // それ以前の作り直しは LoRA 名（output_lora_name）で来るので、その場合は名前で一番新しいものを引く。
+    const isJobId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(loraIdRaw);
+    let loraQuery = supabaseAdmin
       .from("generation_jobs")
-      .select("id")
+      .select("id, metadata")
       .eq("user_id", user.id)
       .eq("workflow_type", "lora_training")
       .eq("status", "completed")
       .eq("inputs->>target_model", "minimax_h3")
-      .eq("inputs->>output_lora_name", loraIdRaw)
-      .gte("created_at", retentionCutoffIso)
+      .gte("created_at", retentionCutoffIso);
+    loraQuery = isJobId ? loraQuery.eq("id", loraIdRaw) : loraQuery.eq("inputs->>output_lora_name", loraIdRaw);
+    const { data: loraJob } = await loraQuery
+      .order("completed_at", { ascending: false })
       .limit(1)
       .maybeSingle();
     if (!loraJob) {
       return NextResponse.json({ error: "指定されたLoRAが見つかりません。" }, { status: 400 });
     }
-    loraName = `${loraIdRaw}.safetensors`;
+    // 完成版の置き場所（2026-10-03）。学習の完成品は R2 へ移って Volume から消えるので、記録（metadata.checkpoints）
+    // から最終版を探し、R2 にあれば署名 URL、まだ Volume にあればその場所を渡す。名前は `<lora名>.safetensors` では
+    // なく `_final` 付き（以前はここが食い違い、Volume も見ていたので学習済み LoRA は一度も使えなかった）。
+    const ckpts = ((loraJob.metadata as { checkpoints?: unknown } | null)?.checkpoints ?? []) as {
+      filename?: string;
+      path?: string;
+      r2_key?: string;
+      is_final?: boolean;
+    }[];
+    const finalCkpt = ckpts.find((c) => c?.is_final && typeof c.filename === "string" && c.filename.endsWith(".safetensors"));
+    if (!finalCkpt?.filename) {
+      return NextResponse.json({ error: "この LoRA の完成版が見つかりません。" }, { status: 400 });
+    }
+    // ComfyUI の loras/ に置く名前。別のジョブの同名 LoRA と取り違えないようジョブ id を前に付ける。
+    loraName = `${String(loraJob.id).slice(0, 8)}_${finalCkpt.filename}`.replace(/[^A-Za-z0-9._-]/g, "_");
+    if (finalCkpt.r2_key) loraR2Key = finalCkpt.r2_key;
+    else if (finalCkpt.path) loraVolumePath = finalCkpt.path;
+    else return NextResponse.json({ error: "この LoRA の完成版が見つかりません。" }, { status: 400 });
   } else if (loraUploadVolumePathRaw) {
     try {
       assertOwnedDirectorLoraVolumePath(user.id, loraUploadVolumePathRaw);
@@ -487,7 +511,8 @@ export async function POST(request: Request) {
     qwenDurationS: isAdvancedMode ? breakdown.totalDurationS : undefined,
     directorInputsSnapshot: isAdvancedMode || qwenTextInstruction ? directorInputsSnapshot : undefined,
     loraVolumePath,
-    loraFilename: loraVolumePath ? loraName : undefined,
+    loraR2Key,
+    loraFilename: loraVolumePath || loraR2Key ? loraName : undefined,
   };
 
   // --- 予約: 起動の引数を残して、順番が来ていればその場で起動 ----------------

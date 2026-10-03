@@ -78,6 +78,7 @@ import {
   requestStudioBatchHandoff,
   takeLoraAdditions,
   type LoraReplacement,
+  sendLoraToDirector,
 } from "@/lib/studioHandoff";
 import { DatasetCurationUI, type CurationPair } from "@/components/studio/DatasetCurationUI";
 import {
@@ -276,11 +277,9 @@ function scrollToCenterAbove(id: string, abovePx = 120) {
 }
 
 export function LoraStudioTab({
-  onUseLora,
   onOpenMultiAngle,
   onOpenUpscale,
 }: {
-  onUseLora?: (loraFilename: string) => void;
   /** データセット診断から「足りない構図を作る」導線でタブを切り替える。 */
   onOpenMultiAngle?: () => void;
   /** 小さすぎる素材を拡大しに行く導線（超解像タブへ切り替える）。 */
@@ -3461,6 +3460,7 @@ export function LoraStudioTab({
         progressPercent: 0,
         progressMessage: "queued",
         retryCount: 0,
+        targetModel,
         vramUsedGb: null,
         currentStep: null,
         totalSteps: null,
@@ -5204,7 +5204,11 @@ export function LoraStudioTab({
             <ProgressPanel
               job={job}
               queuedElapsedSec={queuedElapsedSec}
-              onUseLora={DIRECTOR_LORA_ENABLED ? onUseLora : undefined}
+              onUseLora={
+                DIRECTOR_LORA_ENABLED || isAdmin
+                  ? (loraJobId, label) => sendLoraToDirector({ loraJobId, label })
+                  : undefined
+              }
             />
 
             {/* 「うまく出ないときは」（2026-09-26、STATUS の残課題「結果がいまいちな時」ヒント）。書くのは実案件・実測で

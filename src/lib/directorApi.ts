@@ -390,24 +390,6 @@ export async function uploadDirectorLoraFile(
   throw lastError ?? new Error("LoRAのアップロードに失敗しました。");
 }
 
-export type DirectorLoraOption = { id: string; label: string };
-
-/** 現在のユーザーが LoRA Studio で学習済みの MiniMax H3 LoRA 一覧
- * （2026-09-18追加、LoRA選択ピッカー用）。 */
-export async function listDirectorLoras(): Promise<DirectorLoraOption[]> {
-  const { data: sessionData } = await supabase.auth.getSession();
-  const accessToken = sessionData.session?.access_token;
-  if (!accessToken) return [];
-
-  const res = await fetch("/api/director/loras", {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    cache: "no-store",
-  });
-  if (!res.ok) return [];
-  const data = await res.json();
-  return Array.isArray(data?.loras) ? (data.loras as DirectorLoraOption[]) : [];
-}
-
 /** 公開 URL を実ファイルとして保存させる（cross-origin download 対策）。
  * 2026-09-17: videoUrl が旧 data: URI から director-results バケットの公開
  * URL へ移行したため、plain `<a download>` はクロスオリジンで無視される

@@ -134,7 +134,8 @@ export function Studio() {
   useEffect(() => {
     const onSwitch = (e: Event) => {
       const tab = (e as CustomEvent<{ tab: StudioHandoffTab }>).detail?.tab;
-      if (tab === "upscale" || tab === "upscale_video" || tab === "lora" || tab === "angle" || tab === "dataset") goTab(tab);
+      if (tab === "upscale" || tab === "upscale_video" || tab === "lora" || tab === "angle" || tab === "dataset" || tab === "director")
+        goTab(tab);
     };
     window.addEventListener(STUDIO_TAB_EVENT, onSwitch);
     return () => window.removeEventListener(STUDIO_TAB_EVENT, onSwitch);
@@ -264,7 +265,6 @@ export function Studio() {
         {loraMounted && (
           <div className={shownTab === "lora" ? undefined : "hidden"}>
             <LoraStudioTab
-              onUseLora={() => goTab("custom")}
               onOpenMultiAngle={() => goTab("angle")}
               onOpenUpscale={() => goTab("upscale")}
             />

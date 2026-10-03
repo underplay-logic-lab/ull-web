@@ -51,11 +51,9 @@ import {
   startDirectorJob,
   regenerateDirectorJob,
   downloadDirectorVideo,
-  listDirectorLoras,
   uploadDirectorLoraFile,
   type DirectorApiError,
   type DirectorJobStatus,
-  type DirectorLoraOption,
   type DirectorLoraSelection,
 } from "@/lib/directorApi";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
@@ -72,7 +70,14 @@ import AutoDownloadToggle from "@/components/studio/AutoDownloadToggle";
 import GenerationCaveat from "@/components/studio/GenerationCaveat";
 import { armAutoDownload, runAutoDownload, takeAutoDownload } from "@/lib/autoDownload";
 import { advanceStudioQueue, cancelStudioQueue } from "@/lib/studioQueue";
-import { requestStudioHandoff } from "@/lib/studioHandoff";
+import {
+  DIRECTOR_LORA_EVENT,
+  clearDirectorLora,
+  peekDirectorLora,
+  requestStudioHandoff,
+  type DirectorLoraHandoff,
+} from "@/lib/studioHandoff";
+import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
@@ -296,6 +301,9 @@ function directorFilename(seed: number | null): string {
 
 export function DirectorStudioTab() {
   const { user } = useSupabaseUser();
+  const { isAdmin } = useIsAdmin(user);
+  // LoRA 欄は一般には伏せている（featureFlags.ts）。admin には出して確かめられるようにする（2026-10-03）。
+  const loraUiEnabled = DIRECTOR_LORA_ENABLED || isAdmin;
   const { credits, loading: creditsLoading } = useProfileCredits(user);
   const { knobs } = usePricingKnobs();
 
@@ -348,12 +356,14 @@ export function DirectorStudioTab() {
   const [conceptText, setConceptText] = useState("");
   const [conceptDurationS, setConceptDurationS] = useState(DIRECTOR_SECONDS_PER_SCENE);
 
-  // LoRA（2026-09-18追加。全モード共通・任意）。①LoRA Studio学習済みから選ぶ
+  // LoRA（2026-09-18追加。全モード共通・任意）。①LoRA Studio の完了画面から渡された LoRA
   // ②外部で用意した .safetensors をこの場でアップロード、の2系統を持つ。
+  // 学習済みの一覧は 2026-10-03 に外した（いつまでも残っていると誤解させる。完成品は R2 で 14 日）。
+  // LoRA Studio の「LoRA を保存して動画を作る」が、このブラウザのタブにだけ渡す（lib/studioHandoff.ts）。
   type LoraSource = "none" | "trained" | "upload";
   const [loraSource, setLoraSource] = useState<LoraSource>("none");
-  const [loraOptions, setLoraOptions] = useState<DirectorLoraOption[]>([]);
-  const [loraId, setLoraId] = useState("");
+  const [trainedLora, setTrainedLora] = useState<DirectorLoraHandoff | null>(null);
+  const loraId = trainedLora?.loraJobId ?? "";
   const [loraUploadFile, setLoraUploadFile] = useState<File | null>(null);
   // 2026-09-19: 「アップロード」と「生成」を別操作に分離した（1GB級の
   // アップロード中にブラウザを閉じるとジョブが一度も作られないまま止まる
@@ -409,17 +419,25 @@ export function DirectorStudioTab() {
     }
   };
   useEffect(() => {
-    if (!user) return;
-    let cancelled = false;
-    listDirectorLoras()
-      .then((loras) => {
-        if (!cancelled) setLoraOptions(loras);
-      })
-      .catch((err) => console.warn("[DirectorStudioTab] listDirectorLoras failed:", err));
-    return () => {
-      cancelled = true;
+    const receive = (h: DirectorLoraHandoff | null) => {
+      if (!h) return;
+      setTrainedLora(h);
+      setLoraSource("trained");
+      setLoraUploadFile(null);
+      setLoraUploadedVolumePath(null);
+      setLoraUploadError(null);
+      setLoraUploadBytes(null);
     };
-  }, [user]);
+    receive(peekDirectorLora());
+    const onLora = (e: Event) => receive((e as CustomEvent<DirectorLoraHandoff>).detail ?? null);
+    window.addEventListener(DIRECTOR_LORA_EVENT, onLora);
+    return () => window.removeEventListener(DIRECTOR_LORA_EVENT, onLora);
+  }, []);
+  const removeTrainedLora = () => {
+    clearDirectorLora();
+    setTrainedLora(null);
+    if (loraSource === "trained") setLoraSource("none");
+  };
 
   const resumedJobId = useMemo(() => loadFormState<PersistedJob>(JOB_KEY)?.jobId || null, []);
   const [phase, setPhase] = useState<Phase>(resumedJobId ? "running" : "idle");
@@ -1324,10 +1342,10 @@ export function DirectorStudioTab() {
           </div>
         </div>
 
-        {DIRECTOR_LORA_ENABLED && (
+        {loraUiEnabled && (
         <div className="rounded-xl border border-border bg-background p-4">
           <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">LoRA（任意）</p>
-          <div className="grid grid-cols-3 gap-1.5">
+          <div className={`grid gap-1.5 ${trainedLora ? "grid-cols-3" : "grid-cols-2"}`}>
             <button
               type="button"
               onClick={() => selectLoraSource("none")}
@@ -1337,17 +1355,17 @@ export function DirectorStudioTab() {
             >
               なし
             </button>
-            <button
-              type="button"
-              disabled={loraOptions.length === 0}
-              onClick={() => selectLoraSource("trained")}
-              title={loraOptions.length === 0 ? "LoRA Studio で学習済みの LoRA がありません" : undefined}
-              className={`rounded-lg px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                loraSource === "trained" ? "bg-neon-violet/15 text-foreground" : "bg-surface text-muted hover:text-foreground"
-              }`}
-            >
-              学習済みから選ぶ
-            </button>
+            {trainedLora && (
+              <button
+                type="button"
+                onClick={() => selectLoraSource("trained")}
+                className={`rounded-lg px-2 py-1.5 text-xs font-medium transition-colors ${
+                  loraSource === "trained" ? "bg-neon-violet/15 text-foreground" : "bg-surface text-muted hover:text-foreground"
+                }`}
+              >
+                LoRA Studio から
+              </button>
+            )}
             <button
               type="button"
               onClick={() => selectLoraSource("upload")}
@@ -1359,21 +1377,24 @@ export function DirectorStudioTab() {
             </button>
           </div>
 
-          {loraSource === "trained" && (
+          {loraSource === "trained" && trainedLora && (
             <>
-              <select
-                value={loraId}
-                onChange={(e) => setLoraId(e.target.value)}
-                className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <option value="">選択してください</option>
-                {loraOptions.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.label}
-                  </option>
-                ))}
-              </select>
-              <p className="mt-2 text-[11px] text-muted">LoRA Studio で学習済みの LoRA を生成に適用します。</p>
+              <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-border bg-surface px-3 py-2">
+                <span className="flex min-w-0 items-center gap-1.5 text-xs text-foreground">
+                  <Check size={12} className="shrink-0 text-emerald-400" />
+                  <span className="truncate font-mono">{trainedLora.label || "LoRA Studio の LoRA"}</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={removeTrainedLora}
+                  className="shrink-0 text-[11px] text-muted transition-colors hover:text-foreground"
+                >
+                  外す
+                </button>
+              </div>
+              <p className="mt-2 text-[11px] text-muted">
+                LoRA Studio で作った LoRA を生成に適用します。次からは保存したファイルを「アップロード」で使えます。
+              </p>
             </>
           )}
 

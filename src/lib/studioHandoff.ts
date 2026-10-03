@@ -7,7 +7,7 @@
 // 受け取る側はマウント時に 1 回だけ取り出して消す（再読み込みで二重に
 // 取り込まない）。Studio.tsx が `ull:studio-tab` を拾って goTab する。
 
-export type StudioHandoffTab = "upscale" | "upscale_video" | "lora" | "angle" | "dataset";
+export type StudioHandoffTab = "upscale" | "upscale_video" | "lora" | "angle" | "dataset" | "director";
 
 export type StudioHandoff = {
   kind: "image" | "video";
@@ -152,4 +152,47 @@ export function setLoraReturnEntries(entries: Record<string, string>): void {
 
 export function deleteLoraReturnEntries(jobIds: string[]): void {
   jobIds.forEach((id) => delete loraReturnMap[id]);
+}
+
+// --- LoRA Studio で学習した LoRA を Director で使う（2026-10-03、ホスト方針）---
+// Director に学習済み LoRA の一覧は出さない（いつまでも残っていると誤解させる）。完了画面の「LoRA を保存して
+// 動画を作る」で、このブラウザのタブにだけ渡す。sessionStorage なのでリロードしても残り、別のタブには出ない。
+// 中身はジョブ id だけで、ファイルはサーバーが R2 から直接ワーカーへ渡す（アップロードし直さない）。
+export type DirectorLoraHandoff = { loraJobId: string; label: string };
+
+const DIRECTOR_LORA_KEY = "ull_director_lora";
+export const DIRECTOR_LORA_EVENT = "ull:director-lora";
+
+export function sendLoraToDirector(handoff: DirectorLoraHandoff): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(DIRECTOR_LORA_KEY, JSON.stringify(handoff));
+  } catch {
+    // 書けなくても、開いている Director にはイベントで届く。
+  }
+  window.dispatchEvent(new CustomEvent(DIRECTOR_LORA_EVENT, { detail: handoff }));
+  window.dispatchEvent(new CustomEvent(STUDIO_TAB_EVENT, { detail: { tab: "director" } }));
+}
+
+/** 受け取った LoRA（消さない。外すのは clearDirectorLora）。 */
+export function peekDirectorLora(): DirectorLoraHandoff | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(DIRECTOR_LORA_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw) as Partial<DirectorLoraHandoff>;
+    if (typeof p.loraJobId !== "string" || !p.loraJobId) return null;
+    return { loraJobId: p.loraJobId, label: typeof p.label === "string" ? p.label : "" };
+  } catch {
+    return null;
+  }
+}
+
+export function clearDirectorLora(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(DIRECTOR_LORA_KEY);
+  } catch {
+    // noop
+  }
 }
