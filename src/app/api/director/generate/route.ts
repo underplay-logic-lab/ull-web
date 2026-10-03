@@ -113,6 +113,9 @@ export async function POST(request: Request) {
       ...(typeof bi.lora_upload_r2_key === "string" && bi.lora_upload_r2_key
         ? { loraUploadR2Key: bi.lora_upload_r2_key }
         : {}),
+      ...(typeof bi.lora_trigger_word === "string" && bi.lora_trigger_word
+        ? { loraTriggerWord: bi.lora_trigger_word }
+        : {}),
       ...(body.variation === "same_seed" && typeof bi.seed === "number" ? { seed: bi.seed } : {}),
     };
   }
@@ -198,6 +201,11 @@ export async function POST(request: Request) {
     typeof body.loraUploadVolumePath === "string" ? body.loraUploadVolumePath.trim() : "";
   // 2026-10-03〜 の持ち込みは R2（/api/director/loras/r2-upload）。Volume のパスは旧ジョブの作り直し用に残す。
   const loraUploadR2KeyRaw = typeof body.loraUploadR2Key === "string" ? body.loraUploadR2Key.trim() : "";
+  // トリガーワード（カンマ区切りで複数可）。改行は潰し、長さを切る。LoRA が無ければ使わない。
+  const loraTriggerWord =
+    (loraIdRaw || loraUploadVolumePathRaw || loraUploadR2KeyRaw) && typeof body.loraTriggerWord === "string"
+      ? body.loraTriggerWord.replace(/\s+/g, " ").trim().slice(0, 120)
+      : "";
   if ([loraIdRaw, loraUploadVolumePathRaw, loraUploadR2KeyRaw].filter(Boolean).length > 1) {
     return NextResponse.json({ error: "LoRAの指定が重複しています。" }, { status: 400 });
   }
@@ -395,6 +403,12 @@ export async function POST(request: Request) {
     }
   }
 
+  // LoRA のトリガーワード（2026-10-04）: 最終の指示文に無ければ先頭に足す。Gemini の合成・英訳で名前が落ちることがある
+  // （LoRA Studio の「うまく出ないときは」1 番。ホストが実際に踏んだ）。Qwen が書くとき（Advanced・断られたとき）は
+  // ワーカーが書いた後に同じことをする（lora_trigger_word）。
+  if (loraTriggerWord && !isAdvancedMode && !qwenTextInstruction) {
+    combinedPrompt = withLoraTriggerWords(combinedPrompt, loraTriggerWord);
+  }
   // 課金前の最終防波堤としてもう一度（Gemini が合成した英語文・ユーザーが
   // 直接編集した英語文のいずれにも念のため）。Advancedモードは combinedPrompt
   // がプレースホルダー（conceptTextInput）で、その内容自体は既に前段の
@@ -446,6 +460,7 @@ export async function POST(request: Request) {
     lora_id: loraIdRaw || null,
     lora_upload_volume_path: loraUploadVolumePathRaw || null,
     lora_upload_r2_key: loraUploadR2KeyRaw || null,
+    lora_trigger_word: loraTriggerWord || null,
     base_job_id: baseJobId || null,
   };
   // 出力解像度（2026-09-24、ホスト「生成後の解像度がわからないので記載して」）。
@@ -531,6 +546,7 @@ export async function POST(request: Request) {
     directorInputsSnapshot: isAdvancedMode || qwenTextInstruction ? directorInputsSnapshot : undefined,
     loraVolumePath,
     loraR2Key,
+    loraTriggerWord: loraName ? loraTriggerWord : undefined,
     loraFilename: loraVolumePath || loraR2Key ? loraName : undefined,
   };
 
@@ -585,4 +601,14 @@ export async function POST(request: Request) {
     remainingCredits: debitedCredits,
     totalDurationS: breakdown.totalDurationS,
   });
+}
+
+/** トリガーワード（カンマ・読点区切り）のうち、指示文に入っていないものを先頭に足す。大文字小文字は区別しない。 */
+function withLoraTriggerWords(prompt: string, triggerWord: string): string {
+  const lower = prompt.toLowerCase();
+  const missing = triggerWord
+    .split(/[,、]/)
+    .map((t) => t.trim())
+    .filter((t) => t && !lower.includes(t.toLowerCase()));
+  return missing.length ? `${missing.join(", ")}, ${prompt}` : prompt;
 }

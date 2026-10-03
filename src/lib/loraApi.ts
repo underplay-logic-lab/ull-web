@@ -642,6 +642,8 @@ export type LoraJobStatus = {
   artifactsTransferring: boolean;
   /** 学習のベースモデル（inputs.target_model）。古い行・取れないときは null。 */
   targetModel: string | null;
+  /** トリガーワード（1 人目＋2 人目以降）。古い行は 1 人目だけ。 */
+  triggerWords: string[];
 };
 
 // A pollLoraJob failure, tagged so the caller's polling loop can decide
@@ -746,6 +748,9 @@ export async function pollLoraJob(jobId: string): Promise<LoraJobStatus> {
     checkpoints,
     artifactsTransferring,
     targetModel: typeof data.targetModel === "string" ? data.targetModel : null,
+    triggerWords: Array.isArray(data.triggerWords)
+      ? (data.triggerWords as unknown[]).filter((t): t is string => typeof t === "string")
+      : [],
     refunded: typeof meta.refunded === "boolean" ? meta.refunded : null,
     customYaml: meta.custom_yaml === true,
     safetyStop: meta.safety_stop === true,

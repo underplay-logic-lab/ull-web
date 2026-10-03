@@ -158,7 +158,7 @@ export function deleteLoraReturnEntries(jobIds: string[]): void {
 // Director に学習済み LoRA の一覧は出さない（いつまでも残っていると誤解させる）。完了画面の「LoRA を保存して
 // 動画を作る」で、このブラウザのタブにだけ渡す。sessionStorage なのでリロードしても残り、別のタブには出ない。
 // 中身はジョブ id だけで、ファイルはサーバーが R2 から直接ワーカーへ渡す（アップロードし直さない）。
-export type DirectorLoraHandoff = { loraJobId: string; label: string };
+export type DirectorLoraHandoff = { loraJobId: string; label: string; triggerWords?: string[] };
 
 const DIRECTOR_LORA_KEY = "ull_director_lora";
 export const DIRECTOR_LORA_EVENT = "ull:director-lora";
@@ -182,7 +182,11 @@ export function peekDirectorLora(): DirectorLoraHandoff | null {
     if (!raw) return null;
     const p = JSON.parse(raw) as Partial<DirectorLoraHandoff>;
     if (typeof p.loraJobId !== "string" || !p.loraJobId) return null;
-    return { loraJobId: p.loraJobId, label: typeof p.label === "string" ? p.label : "" };
+    return {
+      loraJobId: p.loraJobId,
+      label: typeof p.label === "string" ? p.label : "",
+      triggerWords: Array.isArray(p.triggerWords) ? p.triggerWords.filter((t) => typeof t === "string") : [],
+    };
   } catch {
     return null;
   }

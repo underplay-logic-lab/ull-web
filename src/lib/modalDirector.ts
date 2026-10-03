@@ -49,6 +49,8 @@ export type SpawnDirectorJobParams = {
   loraFilename?: string;
   /** LoRA Studio で学習した LoRA の R2 署名付き URL（2026-10-03）。ワーカーが loras/ へ落とす。loraFilename とセット。 */
   loraUrl?: string;
+  /** LoRA のトリガーワード（カンマ区切り）。Qwen が台本を書いたとき、ワーカーが最終の文に無ければ先頭に足す（2026-10-04）。 */
+  loraTriggerWord?: string;
 };
 
 export async function spawnDirectorJob(params: SpawnDirectorJobParams): Promise<{ callId: string | null }> {
@@ -83,6 +85,7 @@ export async function spawnDirectorJob(params: SpawnDirectorJobParams): Promise<
       lora_volume_path: params.loraVolumePath,
       lora_filename: params.loraFilename,
       lora_url: params.loraUrl,
+      lora_trigger_word: params.loraTriggerWord,
     }),
     signal: AbortSignal.timeout(30_000),
   });

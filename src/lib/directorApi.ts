@@ -62,8 +62,8 @@ export type DirectorStartArgs = (
  * 明確に別々の操作に分離した——ホスト指摘）。 */
 export type DirectorLoraSelection =
   | { source: "none" }
-  | { source: "trained"; loraId: string }
-  | { source: "upload"; r2Key: string };
+  | { source: "trained"; loraId: string; triggerWord?: string }
+  | { source: "upload"; r2Key: string; triggerWord?: string };
 
 export async function startDirectorJob(args: DirectorStartArgs): Promise<DirectorStartResult> {
   const { data: sessionData } = await supabase.auth.getSession();
@@ -81,7 +81,9 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
   }
 
   const priority = args.priority ?? false;
-  const loraFields = { loraId, loraUploadR2Key, ...(args.queue ? { queue: true } : {}) };
+  // トリガーワード（2026-10-04）: サーバー／ワーカーが最終の指示文に入っていなければ先頭に足す。
+  const loraTriggerWord = args.lora && args.lora.source !== "none" ? args.lora.triggerWord : undefined;
+  const loraFields = { loraId, loraUploadR2Key, loraTriggerWord, ...(args.queue ? { queue: true } : {}) };
   const body =
     "conceptText" in args && args.conceptText !== undefined
       ? {
@@ -255,12 +257,18 @@ export async function uploadDirectorLoraFile(
   if (!accessToken) throw new Error("ログインが必要です。");
 
   const t0 = performance.now();
-  const start = (await r2UploadApi(accessToken, { action: "start", filename: file.name, size: file.size })) as {
-    key: string;
-    uploadId: string;
-    partBytes: number;
-    partUrls: string[];
-  };
+  const start = (await r2UploadApi(accessToken, {
+    action: "start",
+    filename: file.name,
+    size: file.size,
+    lastModified: file.lastModified,
+  })) as { key: string; exists?: boolean; uploadId: string; partBytes: number; partUrls: string[] };
+  // 同じファイルが既に上がっている（同じキーに上書きする作りなので、上げ直しても複製は溜まらない）。
+  if (start.exists) {
+    onProgress?.(file.size, file.size);
+    _uploadedLoraCache.set(file, start.key);
+    return { r2Key: start.key };
+  }
   const loadedByPart = new Array<number>(start.partUrls.length).fill(0);
   const report = () => onProgress?.(Math.min(file.size, loadedByPart.reduce((a, b) => a + b, 0)), file.size);
   report();

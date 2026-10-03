@@ -363,6 +363,9 @@ export function DirectorStudioTab() {
   type LoraSource = "none" | "trained" | "upload";
   const [loraSource, setLoraSource] = useState<LoraSource>("none");
   const [trainedLora, setTrainedLora] = useState<DirectorLoraHandoff | null>(null);
+  // トリガーワード（2026-10-04、ホスト要望「プロンプトに毎回打ち込むのは忘れそう」）。AI が指示文を書き直しても
+  // 消えないよう、サーバー／ワーカーが最終の文に無ければ先頭に足す。LoRA Studio から渡したときは自動で入る。
+  const [loraTrigger, setLoraTrigger] = useState("");
   const loraId = trainedLora?.loraJobId ?? "";
   const [loraUploadFile, setLoraUploadFile] = useState<File | null>(null);
   // 2026-09-19: 「アップロード」と「生成」を別操作に分離した（1GB級の
@@ -381,9 +384,9 @@ export function DirectorStudioTab() {
   const [loraUploadBytes, setLoraUploadBytes] = useState<{ loaded: number; total: number } | null>(null);
   const loraSelection: DirectorLoraSelection =
     loraSource === "trained" && loraId
-      ? { source: "trained", loraId }
+      ? { source: "trained", loraId, triggerWord: loraTrigger.trim() || undefined }
       : loraSource === "upload" && loraUploadedKey
-        ? { source: "upload", r2Key: loraUploadedKey }
+        ? { source: "upload", r2Key: loraUploadedKey, triggerWord: loraTrigger.trim() || undefined }
         : { source: "none" };
 
   // LoRAソースを切り替える。「アップロード」から他のソースへ離れる時は
@@ -423,6 +426,7 @@ export function DirectorStudioTab() {
       if (!h) return;
       setTrainedLora(h);
       setLoraSource("trained");
+      if (h.triggerWords?.length) setLoraTrigger(h.triggerWords.join(", "));
       setLoraUploadFile(null);
       setLoraUploadedKey(null);
       setLoraUploadError(null);
@@ -1472,8 +1476,29 @@ export function DirectorStudioTab() {
               )}
               <p className="mt-2 text-[11px] text-muted">
                 外部で用意した LoRA（.safetensors）を持ち込んで適用します。先にアップロードを完了させてから生成してください。
+                アップロードした LoRA は保存されません。次に使うときも、ファイルを選んでアップロードしてください。
               </p>
             </>
+          )}
+
+          {loraSource !== "none" && (
+            <div className="mt-3">
+              <label htmlFor="director-lora-trigger" className="text-[11px] font-medium text-foreground">
+                トリガーワード
+              </label>
+              <input
+                id="director-lora-trigger"
+                type="text"
+                value={loraTrigger}
+                maxLength={120}
+                onChange={(e) => setLoraTrigger(e.target.value)}
+                placeholder="例: hinata（複数人はカンマで区切る）"
+                className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted/60"
+              />
+              <p className="mt-1 text-[11px] text-muted">
+                指示文に入っていなければ、先頭に自動で足します。顔などの特徴はトリガーワードに覚えさせているので、無いと別人が出ます。
+              </p>
+            </div>
           )}
         </div>
         )}

@@ -221,6 +221,10 @@ export async function GET(request: Request, { params }: RouteParams) {
     qualityMode,
     // LoRA 学習のベースモデル（完了画面で「動画を作る」を出すかの判定。Director は minimax_h3 だけ使える）。
     targetModel: typeof inputs?.target_model === "string" ? inputs.target_model : null,
+    // LoRA のトリガーワード（1 人目＋2 人目以降）。Director へ渡すときに使う。
+    triggerWords: [inputs?.trigger_word, ...(Array.isArray(inputs?.extra_triggers) ? inputs.extra_triggers : [])].filter(
+      (t): t is string => typeof t === "string" && t.trim().length > 0,
+    ),
     retryCount: typeof effJob.retry_count === "number" ? effJob.retry_count : 0,
     ...(queue
       ? {

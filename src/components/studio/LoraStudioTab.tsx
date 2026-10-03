@@ -3461,6 +3461,7 @@ export function LoraStudioTab({
         progressMessage: "queued",
         retryCount: 0,
         targetModel,
+        triggerWords: [],
         vramUsedGb: null,
         currentStep: null,
         totalSteps: null,
@@ -5206,7 +5207,13 @@ export function LoraStudioTab({
               queuedElapsedSec={queuedElapsedSec}
               onUseLora={
                 DIRECTOR_LORA_ENABLED || isAdmin
-                  ? (loraJobId, label) => sendLoraToDirector({ loraJobId, label })
+                  ? (loraJobId, label) =>
+                      sendLoraToDirector({
+                        loraJobId,
+                        label,
+                        // 学習ジョブに残したトリガーを優先（リロード後は入力欄が空のことがある）。
+                        triggerWords: job?.triggerWords?.length ? job.triggerWords : completedTriggers,
+                      })
                   : undefined
               }
             />

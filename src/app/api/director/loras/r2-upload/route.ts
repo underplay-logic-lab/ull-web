@@ -9,13 +9,14 @@ import {
 import {
   completeR2Multipart,
   createR2Multipart,
+  headR2,
   presignR2UploadPart,
   r2Enabled,
   r2UserRoot,
 } from "@/lib/r2.server";
 
 // Director の持ち込み LoRA を R2 へ分割・並行でアップロードする（2026-10-03）。
-//   start    { filename, size }               → { key, uploadId, partBytes, partUrls[] }
+//   start    { filename, size, lastModified }  → { key, uploadId, partBytes, partUrls[] } または { key, exists: true }
 //   complete { key, uploadId, parts[{partNumber, etag}] } → { key }
 // バイトはブラウザ → R2 に直接流れ、ここは署名と完了の通知だけ（Vercel のボディ上限に触れない）。
 export const maxDuration = 30;
@@ -43,13 +44,16 @@ export async function POST(request: Request) {
     if (body.action === "start") {
       const filename = typeof body.filename === "string" ? body.filename : "";
       const size = typeof body.size === "number" ? body.size : 0;
+      const lastModified = typeof body.lastModified === "number" && body.lastModified > 0 ? body.lastModified : 0;
       if (!/\.safetensors$/i.test(filename)) {
         return NextResponse.json({ error: ".safetensors ファイルを選んでください。" }, { status: 400 });
       }
       if (!(size > 0) || size > DIRECTOR_LORA_MAX_BYTES) {
         return NextResponse.json({ error: "ファイルサイズが大きすぎます（上限2GB）。" }, { status: 400 });
       }
-      const key = directorLoraR2Key(root, filename);
+      const key = directorLoraR2Key(root, filename, size, lastModified);
+      // 同じファイルが既に上がっていれば送らない（14 日で消えるまでは使い回せる）。
+      if ((await headR2(key)) === size) return NextResponse.json({ key, exists: true });
       const uploadId = await createR2Multipart(key, "application/octet-stream");
       const partCount = Math.ceil(size / DIRECTOR_LORA_PART_BYTES);
       const partUrls = await Promise.all(

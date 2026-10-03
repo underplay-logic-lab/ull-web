@@ -669,6 +669,8 @@ async function handlePost(request: Request): Promise<NextResponse> {
     num_images: storagePaths.length,
     resolution,
     trigger_word: triggerWord || null,
+    // 2 人目以降のトリガー（Director へ LoRA を渡すときに一緒に渡す、2026-10-04）。
+    extra_triggers: extraTriggers?.length ? extraTriggers : undefined,
     // 重み付けを使ったジョブかどうかを監査できるよう、使った場合だけ残す。
     image_repeats: repeats && repeats.some((n) => n !== 1) ? repeats : undefined,
     // どのModalワーカー/appへ配送したか — 自己修復系（/api/jobs/[id]、

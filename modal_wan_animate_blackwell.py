@@ -1978,6 +1978,7 @@ class WanAnimateBlackwell:
         lora_filename: str = None,
         qwen_text_instruction: str = None,
         lora_url: str = None,
+        lora_trigger_word: str = None,
     ) -> dict:
         """
         Generic counterpart to generate_video for admin-authored Custom
@@ -2057,6 +2058,18 @@ class WanAnimateBlackwell:
                     script = self._generate_director_script(ref_image_bytes, qwen_concept_text, qwen_duration_s or 15)
                 if qwen_prompt_node_id not in workflow:
                     raise RuntimeError(f"qwen_prompt_node_id {qwen_prompt_node_id!r} not found in workflow")
+                # LoRA のトリガーワード（2026-10-04）: Qwen が書いた文に無ければ先頭に足す（Next の Gemini 経路と同じ）。
+                # 顔などの特徴はトリガーに覚えさせているので、名前が落ちると別人が出る。
+                if lora_trigger_word:
+                    _lower = script["en"].lower()
+                    _missing = [
+                        t.strip()
+                        for t in re.split(r"[,、]", lora_trigger_word)
+                        if t.strip() and t.strip().lower() not in _lower
+                    ]
+                    if _missing:
+                        script["en"] = ", ".join(_missing) + ", " + script["en"]
+                        print(f"[director-lora] prepended trigger word(s): {_missing}", flush=True)
                 workflow[qwen_prompt_node_id]["inputs"]["prompt"] = script["en"]
                 if is_async:
                     # inputs は他フィールド（scenes/quality_mode/lora_name等）
@@ -2272,6 +2285,7 @@ def custom_workflow_async(item: dict, request: fastapi.Request):
         item.get("lora_filename"),
         item.get("qwen_text_instruction"),
         item.get("lora_url"),
+        item.get("lora_trigger_word"),
     )
     return {"ok": True, "job_id": job_id, "call_id": call.object_id}
 

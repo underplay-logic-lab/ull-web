@@ -21,10 +21,13 @@ export const DIRECTOR_LORA_R2_SUBDIR = "director_user_loras";
 export const DIRECTOR_LORA_PART_BYTES = 32 * 1024 * 1024;
 export const DIRECTOR_LORA_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 
-/** `<root>/director_user_loras/<時刻>-<安全な名前>.safetensors`。名前は ComfyUI の loras/ にそのまま置く。 */
-export function directorLoraR2Key(root: string, originalName: string): string {
+/**
+ * `<root>/director_user_loras/<サイズ>-<更新時刻>-<安全な名前>.safetensors`。名前は ComfyUI の loras/ にそのまま置く。
+ * 同じファイルなら同じキーになる＝上げ直しても R2 に複製が溜まらず上書きになり、既にあれば送らずに済む（2026-10-04）。
+ */
+export function directorLoraR2Key(root: string, originalName: string, size: number, lastModified: number): string {
   const base = originalName.replace(/\.safetensors$/i, "").replace(/[^A-Za-z0-9_-]/g, "_").slice(-60) || "lora";
-  return `${root}/${DIRECTOR_LORA_R2_SUBDIR}/${Date.now()}-${base}.safetensors`;
+  return `${root}/${DIRECTOR_LORA_R2_SUBDIR}/${Math.floor(size)}-${Math.floor(lastModified)}-${base}.safetensors`;
 }
 
 /** そのユーザーの置き場所の中の .safetensors だけを通す。 */
