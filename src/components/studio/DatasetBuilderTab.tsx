@@ -64,6 +64,7 @@ import {
   type MainRoute,
 } from "@/lib/datasetBuilder";
 import { BodyDesignForm } from "@/components/studio/BodyDesignForm";
+import GenerationCaveat from "@/components/studio/GenerationCaveat";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState, studioFormStorageKey } from "@/lib/studioFormPersistence";
 import { requestStudioHandoff, sendLoraAdditions, takeStudioBatchHandoff } from "@/lib/studioHandoff";
@@ -1849,6 +1850,7 @@ export function DatasetBuilderTab() {
                           : `内容を確認する（無料）→ ${safeCount} 枚 ${totalCost.toLocaleString()} C`}
               </button>
             )}
+            <GenerationCaveat />
             {errorMessage && <p className="mt-2 text-[11px] text-red-400">{errorMessage}</p>}
           </div>
         </div>

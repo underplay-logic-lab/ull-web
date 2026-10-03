@@ -69,6 +69,7 @@ import {
 } from "@/components/studio/StudioSessionList";
 import { VramBadge } from "@/components/studio/VramBadge";
 import AutoDownloadToggle from "@/components/studio/AutoDownloadToggle";
+import GenerationCaveat from "@/components/studio/GenerationCaveat";
 import { armAutoDownload, runAutoDownload, takeAutoDownload } from "@/lib/autoDownload";
 import { requestStudioHandoff } from "@/lib/studioHandoff";
 import { LoginModal } from "@/components/LoginModal";
@@ -1406,6 +1407,7 @@ export function DirectorStudioTab() {
               )}
             </button>
           )}
+          <GenerationCaveat />
           {user && (
             <div className="mt-2">
               <AutoDownloadToggle />
