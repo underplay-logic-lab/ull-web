@@ -285,20 +285,6 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    // 1 回のアップロードは 1 本の生成にだけ使う（取り込んだらワーカーが消す。2026-10-04）。
-    const { data: usedBy } = await supabaseAdmin
-      .from("generation_jobs")
-      .select("id")
-      .eq("user_id", user.id)
-      .eq("workflow_type", "director")
-      .eq("inputs->>lora_upload_r2_key", loraUploadR2KeyRaw)
-      .limit(1);
-    if (usedBy && usedBy.length > 0) {
-      return NextResponse.json(
-        { error: "この LoRA は前の生成で使い終わっています。もう一度アップロードしてください。" },
-        { status: 400 },
-      );
-    }
     loraR2Key = loraUploadR2KeyRaw;
     loraName = loraUploadR2KeyRaw.split("/").pop();
   }
@@ -561,7 +547,6 @@ export async function POST(request: Request) {
     loraVolumePath,
     loraR2Key,
     loraTriggerWord: loraName ? loraTriggerWord : undefined,
-    loraDeleteAfterFetch: loraUploadR2KeyRaw ? true : undefined,
     loraFilename: loraVolumePath || loraR2Key ? loraName : undefined,
   };
 

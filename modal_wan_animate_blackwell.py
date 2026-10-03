@@ -1979,7 +1979,6 @@ class WanAnimateBlackwell:
         qwen_text_instruction: str = None,
         lora_url: str = None,
         lora_trigger_word: str = None,
-        lora_delete_url: str = None,
     ) -> dict:
         """
         Generic counterpart to generate_video for admin-authored Custom
@@ -2120,14 +2119,6 @@ class WanAnimateBlackwell:
                             if _chunk:
                                 _f.write(_chunk)
                 os.replace(_staged_lora_path + ".part", _staged_lora_path)
-                # 持ち込み LoRA は 1 回のアップロード＝1 本の生成なので、取り込んだら R2 から消す（2026-10-04、
-                # ホスト「速いので毎回アップロードでよい」）。消し損ねても R2 の 14 日のライフサイクルで消える。
-                if lora_delete_url:
-                    try:
-                        _d = _requests.delete(lora_delete_url, timeout=30)
-                        print(f"[director-lora] deleted uploaded LoRA from R2 (HTTP {_d.status_code})", flush=True)
-                    except Exception as _exc:
-                        print(f"[director-lora] R2 delete failed (lifecycle will clean up): {_exc}", flush=True)
                 print(
                     f"[director-lora] fetched trained LoRA -> {_staged_lora_path} "
                     f"({os.path.getsize(_staged_lora_path) / 1e6:.0f}MB, {time.time() - _t0:.1f}s)",
@@ -2168,7 +2159,7 @@ class WanAnimateBlackwell:
                 # よう、使い終わったら都度消す（ステージング元(Volume)は
                 # ここでは消さない——旧方式の Volume 持ち込み LoRA は作り直しで
                 # 参照するため。14日経過後の掃除は modal_retention_purge.py が行う。
-                # 2026-10-04〜の R2 持ち込みは取り込み直後に R2 から消している）。
+                # 2026-10-04〜の R2 持ち込みはタブを閉じたときに画面が消す＋R2 の 1 日のライフサイクル）。
                 if _staged_lora_path:
                     try:
                         os.remove(_staged_lora_path)
@@ -2294,7 +2285,6 @@ def custom_workflow_async(item: dict, request: fastapi.Request):
         item.get("qwen_text_instruction"),
         item.get("lora_url"),
         item.get("lora_trigger_word"),
-        item.get("lora_delete_url"),
     )
     return {"ok": True, "job_id": job_id, "call_id": call.object_id}
 

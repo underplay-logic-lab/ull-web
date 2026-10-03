@@ -5,6 +5,7 @@ import {
   DIRECTOR_LORA_PART_BYTES,
   directorLoraR2Key,
   isOwnedDirectorLoraR2Key,
+  signDirectorLoraRelease,
 } from "@/lib/directorLoraUpload.server";
 import {
   completeR2Multipart,
@@ -15,7 +16,7 @@ import {
 } from "@/lib/r2.server";
 
 // Director の持ち込み LoRA を R2 へ分割・並行でアップロードする（2026-10-03）。
-//   start    { filename, size }               → { key, uploadId, partBytes, partUrls[] }
+//   start    { filename, size }               → { key, uploadId, partBytes, partUrls[], releaseSig }
 //   complete { key, uploadId, parts[{partNumber, etag}] } → { key }
 // バイトはブラウザ → R2 に直接流れ、ここは署名と完了の通知だけ（Vercel のボディ上限に触れない）。
 export const maxDuration = 30;
@@ -55,7 +56,14 @@ export async function POST(request: Request) {
       const partUrls = await Promise.all(
         Array.from({ length: partCount }, (_, i) => presignR2UploadPart(key, uploadId, i + 1)),
       );
-      return NextResponse.json({ key, uploadId, partBytes: DIRECTOR_LORA_PART_BYTES, partUrls });
+      // releaseSig: タブを閉じるときの削除依頼（/api/director/loras/release）に使う。
+      return NextResponse.json({
+        key,
+        uploadId,
+        partBytes: DIRECTOR_LORA_PART_BYTES,
+        partUrls,
+        releaseSig: signDirectorLoraRelease(key),
+      });
     }
 
     if (body.action === "complete") {

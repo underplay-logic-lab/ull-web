@@ -52,6 +52,7 @@ import {
   regenerateDirectorJob,
   downloadDirectorVideo,
   uploadDirectorLoraFile,
+  forgetUploadedDirectorLora,
   type DirectorApiError,
   type DirectorJobStatus,
   type DirectorLoraSelection,
@@ -405,14 +406,17 @@ export function DirectorStudioTab() {
     setLoraSource(next);
   };
 
-  // 持ち込み LoRA は 1 回のアップロードを 1 本の生成にだけ使い、生成が終わったらワーカーが消す（2026-10-04、
-  // ホスト「速いので毎回アップロードでよい」）。送ったらアップロード済みの印を外し、次はもう一度アップロードしてもらう
-  // （選んだファイルは残すので「このLoRAをアップロード」を押すだけ）。
-  const consumeUploadedLora = useCallback((snapshot: { lora?: DirectorLoraSelection }) => {
-    if (snapshot.lora?.source !== "upload") return;
-    setLoraUploadedKey(null);
-    setLoraUploadBytes(null);
-  }, []);
+  // 持ち込み LoRA はこのタブを開いている間は使い回す（閉じたら消える・開いたままでも 1 日で消える、2026-10-04）。
+  // 消えていたとサーバーに言われたら、アップロード済みの印を外してもう一度アップロードしてもらう。
+  const forgetUploadedLoraIfGone = useCallback(
+    (message: string | undefined) => {
+      if (!message?.includes("もう一度アップロード")) return;
+      if (loraUploadFile) forgetUploadedDirectorLora(loraUploadFile);
+      setLoraUploadedKey(null);
+      setLoraUploadBytes(null);
+    },
+    [loraUploadFile],
+  );
 
   const handleUploadLora = async () => {
     if (!user || !loraUploadFile || loraUploading) return;
@@ -818,7 +822,6 @@ export function DirectorStudioTab() {
       try {
         const res = await startFromSnapshot(snapshot, { priority: opts.priority });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
-        consumeUploadedLora(snapshot);
         {
           const entry: StudioSessionEntry = { id: res.jobId, createdAt: new Date().toISOString(), label: snapshotLabel(snapshot) };
           commitSession([...sessionJobsRef.current.filter((e) => e.id !== res.jobId), entry]);
@@ -835,9 +838,10 @@ export function DirectorStudioTab() {
         setPhase("error");
         setErrorMessage(e.message || "ジョブの作成に失敗しました。");
         if (e.message?.includes("クレジット")) setChargeOpen(true);
+        forgetUploadedLoraIfGone(e.message);
       }
     },
-    [user, commitSession, startFromSnapshot, consumeUploadedLora],
+    [user, commitSession, startFromSnapshot, forgetUploadedLoraIfGone],
   );
 
   // サーバーが起動した予約のジョブへ画面を切り替える（続けて出した生成として一覧に足す）。
@@ -892,7 +896,6 @@ export function DirectorStudioTab() {
     try {
       const res = await startFromSnapshot(snapshot, { queue: true });
       broadcastCreditsUpdate(user.id, res.remainingCredits);
-      consumeUploadedLora(snapshot);
       armAutoDownload(res.jobId);
       trackedRef.current = [
         ...trackedRef.current.filter((t) => t.id !== res.jobId),
@@ -906,6 +909,7 @@ export function DirectorStudioTab() {
       console.error("[DirectorStudioTab] reserve failed:", e);
       if (typeof e.remainingCredits === "number") broadcastCreditsUpdate(user.id, e.remainingCredits);
       setQueueError(e.message || "予約に失敗しました。");
+      forgetUploadedLoraIfGone(e.message);
     } finally {
       setReserving((n) => n - 1);
     }
@@ -1499,7 +1503,7 @@ export function DirectorStudioTab() {
               )}
               <p className="mt-2 text-[11px] text-muted">
                 外部で用意した LoRA（.safetensors）を持ち込んで適用します。先にアップロードを完了させてから生成してください。
-                アップロードした LoRA は保存されません。次に使うときも、ファイルを選んでアップロードしてください。
+                アップロードした LoRA はこのタブを閉じると消えます（開いたままでも 1 日たつと消えます）。
               </p>
             </>
           )}

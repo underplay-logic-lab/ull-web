@@ -50,6 +50,15 @@ LIFECYCLE = {
             "Expiration": {"Days": RETENTION_DAYS},
         },
         {
+            # Director の持ち込み LoRA（2026-10-04）: タブを開いている間だけ使い回し、閉じたら画面が削除を頼む。
+            # 届かなかった分（ブラウザが落ちた等）をここで 1 日後に消す。キーは director_user_loras/<root>/… と
+            # 先頭に置いている（ユーザーの置き場所の中だと前方一致で指定できないため）。
+            "ID": "ull-director-loras-1d",
+            "Status": "Enabled",
+            "Filter": {"Prefix": "director_user_loras/"},
+            "Expiration": {"Days": 1},
+        },
+        {
             "ID": "ull-abort-multipart-1d",
             "Status": "Enabled",
             "Filter": {"Prefix": ""},

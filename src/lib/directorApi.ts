@@ -180,9 +180,38 @@ export async function regenerateDirectorJob(args: {
 // 2026-09-18〜10-03 はブラウザ → Modal（modal_lora_worker.py::upload_user_lora）→ Volume の 1 本の接続で送っていたが、
 // 日米往復のせいで 1 本あたり約 2.2 Mbps で頭打ちになり（docs/gpu-benchmarks.md §15）、1GB 級に数十分かかった。
 // 2026-10-03 から R2 へ 32MB ずつ並行に PUT する（S3 マルチパート、/api/director/loras/r2-upload）。
-// 保存はしない: 1 回のアップロードを 1 本の生成にだけ使い、生成が終わったらワーカーが R2 から消す（2026-10-04、
-// ホスト「速いので毎回アップロードでよい」）。消し損ねても R2 の 14 日のライフサイクルで消える。
+// 保存期間（2026-10-04 ホスト判断）: このタブを開いている間は使い回し（連続生成のたびに上げ直さない）、タブを閉じたら
+// 削除を頼む（pagehide → sendBeacon → /api/director/loras/release）。届かなかった分は R2 が 1 日後に消す。
 const DIRECTOR_LORA_MAX_BYTES = 2 * 1024 * 1024 * 1024; // サーバー側の上限（2GB）と合わせる
+
+// 同じ File を連続生成のたびに上げ直さない（ファイルを選び直せば WeakMap から自然に消える）。
+const _uploadedLoraCache = new WeakMap<File, string>();
+
+/** 1 日たって消えていた等で「もう一度アップロード」になったとき、使い回しをやめる。 */
+export function forgetUploadedDirectorLora(file: File): void {
+  _uploadedLoraCache.delete(file);
+}
+
+// このタブで上げた LoRA（キー → 削除依頼の署名）。タブを閉じるときにまとめて削除を頼む。
+const _uploadedThisTab = new Map<string, string>();
+let _releaseHooked = false;
+
+function hookReleaseOnClose(): void {
+  if (_releaseHooked || typeof window === "undefined") return;
+  _releaseHooked = true;
+  window.addEventListener("pagehide", () => {
+    for (const [key, sig] of _uploadedThisTab) {
+      try {
+        navigator.sendBeacon(
+          "/api/director/loras/release",
+          new Blob([JSON.stringify({ key, sig })], { type: "application/json" }),
+        );
+      } catch {
+        // 届かなくても R2 が 1 日後に消す。
+      }
+    }
+  });
+}
 
 /** アップロードの進捗。loaded/total はファイル全体のバイト数。 */
 export type DirectorLoraUploadProgress = (loaded: number, total: number) => void;
@@ -258,12 +287,18 @@ export async function uploadDirectorLoraFile(
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) throw new Error("ログインが必要です。");
 
+  const cached = _uploadedLoraCache.get(file);
+  if (cached) {
+    onProgress?.(file.size, file.size);
+    return { r2Key: cached };
+  }
+
   const t0 = performance.now();
   const start = (await r2UploadApi(accessToken, {
     action: "start",
     filename: file.name,
     size: file.size,
-  })) as { key: string; uploadId: string; partBytes: number; partUrls: string[] };
+  })) as { key: string; uploadId: string; partBytes: number; partUrls: string[]; releaseSig?: string };
   const loadedByPart = new Array<number>(start.partUrls.length).fill(0);
   const report = () => onProgress?.(Math.min(file.size, loadedByPart.reduce((a, b) => a + b, 0)), file.size);
   report();
@@ -311,6 +346,11 @@ export async function uploadDirectorLoraFile(
     `[director-lora-upload] ${(file.size / 1e6).toFixed(1)}MB を ${sec.toFixed(1)}秒` +
       `（実効 ${((file.size * 8) / 1e6 / Math.max(sec, 0.001)).toFixed(1)} Mbps・r2・${start.partUrls.length}分割・並列${PART_CONCURRENCY}）`,
   );
+  _uploadedLoraCache.set(file, start.key);
+  if (start.releaseSig) {
+    _uploadedThisTab.set(start.key, start.releaseSig);
+    hookReleaseOnClose();
+  }
   return { r2Key: start.key };
 }
 
