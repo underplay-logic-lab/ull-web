@@ -253,7 +253,7 @@ const KNOB_TEXT: Record<KnobKey, Omit<KnobMeta, "value">> = {
     category: "lora_formula",
     unit: "s",
     description:
-      "compile ウォームアップ・サンプル生成・モデルロード等、枚数にも step 数にも依らない固定オーバーヘッド。",
+      "コンテナ起動・モデルロード等、枚数にも step 数にも依らない固定オーバーヘッド。2026-10-04 の本番実測（minimax）で約 116 秒 → 200。",
     isPublic: true,
   },
   lora_prep_dequant_s: {
@@ -261,7 +261,7 @@ const KNOB_TEXT: Record<KnobKey, Omit<KnobMeta, "value">> = {
     category: "lora_formula",
     unit: "s",
     description:
-      "量子化配布された重み（現状 minimax_h3 のみ）をロード時に full precision へ戻すコスト。該当 arch にのみ加算。",
+      "量子化配布された重みをロード時に full precision へ戻すコスト。2026-10-04 から minimax も bf16 を直接読むので 0（逆量子化なし）。",
     isPublic: true,
   },
   lora_prep_load_s_sdxl: {

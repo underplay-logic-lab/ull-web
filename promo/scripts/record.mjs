@@ -235,6 +235,13 @@ page.on("crash", () => console.error(`[落ちた] ページがクラッシュ（
 page.on("close", () => console.log(`[終了] ページが閉じた（${(rel(Date.now()) ?? -1) / 1000} 秒）`));
 context.browser()?.on("disconnected", () => console.log("[終了] ブラウザとの接続が切れた"));
 page.on("pageerror", (e) => console.error(`[ページのエラー] ${String(e).slice(0, 200)}`));
+// 確認ダイアログ（window.confirm 等、2026-10-04）: Playwright はリスナーが無いと自動で「キャンセル」するので、
+// 「復元しないで全部消す」のような確認付きのボタンが無反応に見えていた。録画では押した＝実行する意図なので OK で返す
+// （ダイアログ自体は録画に映らない）。
+page.on("dialog", (d) => {
+  console.log(`[確認ダイアログ] ${d.type()}: ${d.message().slice(0, 120)} → OK`);
+  d.accept().catch(() => {});
+});
 // ダウンロード（2026-10-03）: この録画用プロファイルでは、ダウンロードが始まった瞬間にブラウザごと落ちる
 // （完了時の自動保存・ZIP・チェックポイントの一括 DL のたびに録画が終わっていた原因。_dltest で再現。
 // 新しいプロファイルでは落ちないが、ログイン状態を持っているのでこのプロファイルを使い続ける）。

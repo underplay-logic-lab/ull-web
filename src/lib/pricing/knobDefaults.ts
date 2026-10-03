@@ -335,7 +335,13 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // おり、GUI の実態（compile 有効）を表していなかった。固定分は
   //   621.5 + 476.9 = 1,098.4
   // なので、逆量子化ぶん（lora_prep_dequant_s = 270）を差し引いて 828 とする。
-  lora_prep_load_s: 828,
+  //
+  // 2026-10-04 に 828 → 200（ホスト判断・admin で変更済み）。minimax の TE・DiT を bf16 ファイルから直接読む
+  // ようにして逆量子化が消え（docs/gpu-benchmarks.md §14.8.5）、torch.compile も minimax は既定オフになっていた
+  // （上の 476.9s の first-step compile は今は起きない）。本番の実測（ジョブ 67a689bf・52 枚・4,000 step）:
+  // ジョブ開始→学習 1 step 目が 185 秒、うち latent キャッシュ約 70 秒（per_image 1.33s × 52 と一致）→ 固定分 約 116 秒。
+  // コンテナ起動の課金ぶんなどの余裕を乗せて 200。ひなた 3,248 step の例で 1,495C → 約 950C。
+  lora_prep_load_s: 200,
   // 配布重みが量子化されている arch（現状 minimax_h3 のみ）が、ロードの
   // たびに払う full precision への逆量子化コスト。DiT(int8 convrot) と
   // text encoder(nvfp4 AWQ) の2回ぶん。
@@ -349,7 +355,11 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // ではない（そちらのコメント参照）。実測できているのは両者の合計
   // （2026-09-20 の GUI 既定条件ランで 1,098.4秒）だけなので、配分を変える
   // 根拠が無い間は 270 を据え置き、差分は lora_prep_load_s 側で吸収する。
-  lora_prep_dequant_s: 270,
+  //
+  // 2026-10-04 に 270 → 0（ホスト判断・admin で変更済み）。minimax も bf16 を直接読むようになり、逆量子化は起きない。
+  // bf16 ファイルが無いときは量子化版に戻る（lora_worker_core.minimax_h3_te_path / minimax_h3_dit_path）ので、
+  // そのファイルを消すなら、ここを戻すか量子化版も消すこと。
+  lora_prep_dequant_s: 0,
   // sd-scripts ワーカー（SDXL）の固定準備時間。
   //
   // 2026-09-20 実測: step 数だけ変えた2回（20step=56.0s / 120step=120.2s）の

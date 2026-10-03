@@ -1145,6 +1145,8 @@ B300 時給のままなら cap 2,520s で余裕 4% しか無かった。
 >   ベンチは本番の ai-toolkit パッチを通さない素の経路の比較。本番（パッチあり）では TE の逆量子化が約 8 分あった（STATUS 2026-10-03 c2c49dc9）ので差はもっと大きい見込み。
 > - 実装: `lora_worker_core.minimax_h3_te_path()` / `minimax_h3_dit_path()` / `apply_minimax_h3_te()`。ファイルが無い・
 >   env `ULL_H3_TE_BF16=0` / `ULL_H3_DIT_BF16=0` なら量子化版に戻る。読み込みで例外なら量子化版で読み直す保険つき。
+> - **本番実測（2026-10-04、ジョブ 67a689bf・52 枚・4,000 step・rank16・実効バッチ 1・compile 無し）**: ジョブ開始→学習 1 step 目
+>   **185 秒**（latent 約 70 秒・固定分 約 116 秒）、学習 3.6 step/秒。これを受けて `lora_prep_load_s` 828 → 200・`lora_prep_dequant_s` 270 → 0 に値下げ。
 > - 以下は 2026-09-21 時点の記録（経緯として残す）。
 
 CLAUDE.md §1 は「量子化禁止・BF16 フル精度を既定」だが、**`minimax_h3` は

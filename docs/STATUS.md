@@ -656,9 +656,12 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 5. ~~minimax の学習の展開処理を消す~~ **済（2026-10-04・LoRA ワーカーはデプロイ済み）**: TE も DiT も bf16 ファイルを直接読む。
    TE＝Director 用の bf16（流用）、DiT＝配布元の `minimax_h3_fl2va_pruned_bf16`（40.2GB を Volume に追加）。
    B300 実測で**起動〜1 step 目 400.9 → 132.4 秒**・s/it と VRAM は同等（詳細 docs/gpu-benchmarks.md §14.8.5）。
-   - **本番の 1 本目で確認**: ログに `[minimax] text encoder: …_bf16` / `[minimax] transformer: …_pruned_bf16` /
-     `attached 0 pre-quantized` / `[ULL][minimax][dit-probe] _load_transformer TOTAL` / `[ULL][minimax][te-probe] _load_text_encoder TOTAL`。
-     準備時間が縮んだら価格の固定 prep（`lora_prep_load_s` knob）を下げられる（要ホスト判断）。
+   - **本番で確認済み（2026-10-04、ジョブ 67a689bf・ひなた 52 枚・4,000 step）**: ジョブ開始→学習 1 step 目 **185 秒**
+     （latent 約 70 秒込み・固定分 約 116 秒。前回 c2c49dc9 は準備だけで 15 分以上）・学習は 3.6 step/秒（0.28 s/it）。
+   - **値下げ済み（ホスト判断・admin で変更）**: `lora_prep_load_s` 828 → 200、`lora_prep_dequant_s` 270 → 0（コード既定値も揃えた）。
+     ひなた 3,248 step で 1,495C → 約 950C、4,000 step で 1,677C → 約 1,130C（原価の約 4.3 倍＝目標 3 倍より上）。
+     損切りの上限は課金額×1.4（最低 2,520 秒）で、実時間の 4 倍近く余裕がある。
+   - **次の値下げ候補**: minimax の s/it の見積もり（式 0.40 / 実測 0.28、rank16・実効バッチ 1）。rank・バッチで変わるので 1〜2 本測ってから。
    - **未実施: MiniMax Music 3 の重み（`/models/music`、約 57GB）の削除**は Claude の自動権限チェックで止められた → ホストが実行するか許可を出す。
      Volume は今 約 887GB / 1TB（+40GB）。量子化版（int8_convrot 21GB・nvfp4 15.7GB）は戻し用に残している。
    - ワーカー側 `ull_r2.py` の `user_root` も、問い合わせ失敗で nomail を返す同じ作り（Next 側は `0abe452` で直した）→ 次の Modal デプロイで揃える。
