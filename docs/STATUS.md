@@ -658,6 +658,11 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    Director の推論は `minimax_h3_fl2va_bf16.safetensors`＝学習と推論でベースが違う。壁は ai-toolkit の `MiniMaxH3Transformer` が
    融合済み（`adaln_proj`）の state_dict に決め打ち（docs/gpu-benchmarks.md §14.8.5）。まずソースを読み、①読み込み時に bf16 を同じ形へ並べ替える
    ②モデル定義を直す、のどちらで済むか確認（"convrot" が重みの回転なら名前の付け替えだけでは済まない）。CPU で通してから GPU 1 回（要承認）。
+   **実測（2026-10-03 c2c49dc9）**: TE（`qwen3vl_32b_minimax_h3_nvfp4_awq`）は読み込み 30.8 秒、その後の nvfp4→bf16 逆量子化（CPU）が**約 8 分**
+   ＝ DiT の約 4.5 分より重い。以前の Bake & Skip（DiT・TE を bf16 で Volume に焼く）は 85.5GB の容量のため 2026-09-14 に既定オフ。
+   **本命: Director 用に既にある `clip/qwen3vl_32b_minimax_h3_bf16.safetensors`（48GB）を学習の TE に直接使う**（容量増ゼロ・学習と推論で同じ TE）。
+   Bake & Skip の「空の器に state_dict を読む」経路（`lora_worker_train.py` の TE パッチ）をこのファイルに向ける。要確認: キー名・層数（学習は 50 層、
+   Director 用は全層の可能性 → 50 以降と lm_head は読み飛ばす）。DiT は推論が非 pruned の bf16 なので別途。デプロイは学習ジョブが無いときに。
    ワーカー側 `ull_r2.py` の `user_root` も、問い合わせ失敗で nomail を返す同じ作り（Next 側は `0abe452` で直した）→ 次の Modal デプロイで揃える。
 
 **記録（2026-10-01〜02 にやったこと。蒸し返さない）**
