@@ -673,7 +673,11 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
      旧ジョブの作り直しは LoRA 名で引く（互換）。
    - **UI は今も `DIRECTOR_LORA_ENABLED=false`（featureFlags.ts、§2 で 2026-09-23 に伏せた）→ admin にだけ出る**。一般公開するかはホスト判断。
    - **未確認**: 本番で admin が 1 本通す（ワーカーログに `[director-lora] fetched trained LoRA`）。
-   - 未決: アップロード LoRA の Volume 保存期間（今 14 日・画面から再利用不可）。
+   - **持ち込み LoRA のアップロードを R2 の分割並行に（2026-10-03）**: 旧 Modal 直は 1 本の接続で約 2.2 Mbps 頭打ち（§15）＝1GB 級に数十分。
+     32MB × 並列 6 の S3 マルチパート（`/api/director/loras/r2-upload`、`uploadDirectorLoraFile`）→ 生成時は `loraUploadR2Key` →
+     起動直前に署名してワーカーへ（学習済みと同じ `lora_url`）。保存しない前提（R2 の 14 日で消える・毎回上げ直せばよい＝ホスト判断）。
+     旧 `upload-token` route は削除（Volume パスは旧ジョブの作り直し用に検証だけ残す）。ローカルから 70MB/3 分割で完了・サイズ一致を確認。
+     **本番の速度は未計測**（コンソールに `[director-lora-upload] …MB を …秒（実効 … Mbps）` が出る）。
 
 7. **R2 のダウンロードがときどき 1〜2MB/s に張り付く**（2026-10-03 実測）。バケットは APAC・東京経由。Cloudflare の速度測定サーバーは 43〜68MB/s で
    張り付きなし＝R2 の中の経路。1 本の接続だと 7〜8 本に 1 本が遅く、ファイル・時間帯で波がある。LoRA の DL を分割・並行に（`9ec1807`、最悪 8MB/s・普段 30〜70MB/s）。

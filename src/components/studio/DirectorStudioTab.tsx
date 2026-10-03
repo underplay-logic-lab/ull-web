@@ -371,7 +371,7 @@ export function DirectorStudioTab() {
   // アップロードが成功して volumePath を得るまでは loraSelection が
   // "none" 扱いになり canRun が false のまま——ユーザーは必ず「アップロード」
   // →完了確認→「生成」の順で操作することになる。
-  const [loraUploadedVolumePath, setLoraUploadedVolumePath] = useState<string | null>(null);
+  const [loraUploadedKey, setLoraUploadedKey] = useState<string | null>(null);
   const [loraUploading, setLoraUploading] = useState(false);
   const [loraUploadError, setLoraUploadError] = useState<string | null>(null);
   // アップロード進捗（2026-09-19追加、ホスト指摘: 1GB級のファイルを
@@ -382,20 +382,20 @@ export function DirectorStudioTab() {
   const loraSelection: DirectorLoraSelection =
     loraSource === "trained" && loraId
       ? { source: "trained", loraId }
-      : loraSource === "upload" && loraUploadedVolumePath
-        ? { source: "upload", volumePath: loraUploadedVolumePath }
+      : loraSource === "upload" && loraUploadedKey
+        ? { source: "upload", r2Key: loraUploadedKey }
         : { source: "none" };
 
   // LoRAソースを切り替える。「アップロード」から他のソースへ離れる時は
   // 選択中ファイル・アップロード状態を破棄する——破棄しないと、後で
   // 「アップロード」に戻った際に前回選んだファイル名とアップロード
-  // 完了チェックだけが残り、確認ボタンが出ない（loraUploadedVolumePath
+  // 完了チェックだけが残り、確認ボタンが出ない（loraUploadedKey
   // が真のまま）ため選び直しができなくなるバグがあった
   // （2026-09-19、ホスト報告）。
   const selectLoraSource = (next: LoraSource) => {
     if (loraSource === "upload" && next !== "upload") {
       setLoraUploadFile(null);
-      setLoraUploadedVolumePath(null);
+      setLoraUploadedKey(null);
       setLoraUploadError(null);
       setLoraUploadBytes(null);
     }
@@ -408,10 +408,10 @@ export function DirectorStudioTab() {
     setLoraUploadError(null);
     setLoraUploadBytes({ loaded: 0, total: loraUploadFile.size });
     try {
-      const { volumePath } = await uploadDirectorLoraFile(user.id, loraUploadFile, (loaded, total) =>
+      const { r2Key } = await uploadDirectorLoraFile(loraUploadFile, (loaded, total) =>
         setLoraUploadBytes({ loaded, total }),
       );
-      setLoraUploadedVolumePath(volumePath);
+      setLoraUploadedKey(r2Key);
     } catch (err) {
       setLoraUploadError(err instanceof Error ? err.message : "アップロードに失敗しました。");
     } finally {
@@ -424,7 +424,7 @@ export function DirectorStudioTab() {
       setTrainedLora(h);
       setLoraSource("trained");
       setLoraUploadFile(null);
-      setLoraUploadedVolumePath(null);
+      setLoraUploadedKey(null);
       setLoraUploadError(null);
       setLoraUploadBytes(null);
     };
@@ -627,7 +627,7 @@ export function DirectorStudioTab() {
   // handleUploadLora が成功してvolumePathを得るまで未完了扱いにする
   // （2026-09-19、アップロードと生成を別操作に分離）。
   const loraSelectionIncomplete =
-    (loraSource === "trained" && !loraId) || (loraSource === "upload" && !loraUploadedVolumePath);
+    (loraSource === "trained" && !loraId) || (loraSource === "upload" && !loraUploadedKey);
 
   // 不足していれば入力が揃う前でもチャージへ案内する（他タブと同じ。2026-09-28）。実行中は順番待ちを選べるので出さない。
   const chargeFirst = insufficientCredits && !busy;
@@ -1409,7 +1409,7 @@ export function DirectorStudioTab() {
                   // 別のファイルを選び直したら、前回のアップロード済み状態は
                   // 無効——再アップロードが必要（handleUploadLoraが新しい
                   // Fileオブジェクトに対して改めて呼ばれる）。
-                  setLoraUploadedVolumePath(null);
+                  setLoraUploadedKey(null);
                   setLoraUploadError(null);
                   setLoraUploadBytes(null);
                 }}
@@ -1420,7 +1420,7 @@ export function DirectorStudioTab() {
                   {loraUploadFile.name}（{(loraUploadFile.size / 1024 / 1024).toFixed(1)} MB）
                 </p>
               )}
-              {loraUploadFile && !loraUploadedVolumePath && (
+              {loraUploadFile && !loraUploadedKey && (
                 <button
                   type="button"
                   onClick={() => void handleUploadLora()}
@@ -1454,11 +1454,11 @@ export function DirectorStudioTab() {
                   )}
                   <p className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-300">
                     <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-                    アップロード中はブラウザを閉じたりタブを切り替えたりしないでください。途中で中断した場合は、もう一度同じファイルを選び直せば続きから再開できます。
+                    アップロード中はブラウザを閉じないでください。途中で止まった場合は、もう一度「このLoRAをアップロード」を押してください。
                   </p>
                 </>
               )}
-              {loraUploadedVolumePath && (
+              {loraUploadedKey && (
                 <p className="mt-2 flex items-center gap-1.5 text-[11px] text-emerald-400">
                   <Check size={12} />
                   アップロード完了。このLoRAを使って生成できます。

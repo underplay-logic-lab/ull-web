@@ -32,7 +32,8 @@ import {
   withJapaneseTranslationRequest,
 } from "@/lib/directorPrompt";
 import { buildCinematicWorkflow, CINEMATIC_PROMPT_NODE_ID } from "@/lib/cinematicWorkflow";
-import { assertOwnedDirectorLoraVolumePath } from "@/lib/directorLoraUpload.server";
+import { headR2, r2UserRoot } from "@/lib/r2.server";
+import { assertOwnedDirectorLoraVolumePath, isOwnedDirectorLoraR2Key } from "@/lib/directorLoraUpload.server";
 import { CINEMATIC_MODE_BY_ID, cinematicMegapixels, cinematicSafeDimensions } from "@/lib/cinematicPricing";
 import { dispatchDirectorJob, type DirectorDispatchSpec } from "@/lib/directorDispatch.server";
 import { advanceQueue, saveDispatchSpec } from "@/lib/studioQueue.server";
@@ -108,6 +109,9 @@ export async function POST(request: Request) {
       ...(typeof bi.lora_id === "string" && bi.lora_id ? { loraId: bi.lora_id } : {}),
       ...(typeof bi.lora_upload_volume_path === "string" && bi.lora_upload_volume_path
         ? { loraUploadVolumePath: bi.lora_upload_volume_path }
+        : {}),
+      ...(typeof bi.lora_upload_r2_key === "string" && bi.lora_upload_r2_key
+        ? { loraUploadR2Key: bi.lora_upload_r2_key }
         : {}),
       ...(body.variation === "same_seed" && typeof bi.seed === "number" ? { seed: bi.seed } : {}),
     };
@@ -192,7 +196,9 @@ export async function POST(request: Request) {
   const loraIdRaw = typeof body.loraId === "string" ? body.loraId.trim() : "";
   const loraUploadVolumePathRaw =
     typeof body.loraUploadVolumePath === "string" ? body.loraUploadVolumePath.trim() : "";
-  if (loraIdRaw && loraUploadVolumePathRaw) {
+  // 2026-10-03〜 の持ち込みは R2（/api/director/loras/r2-upload）。Volume のパスは旧ジョブの作り直し用に残す。
+  const loraUploadR2KeyRaw = typeof body.loraUploadR2Key === "string" ? body.loraUploadR2Key.trim() : "";
+  if ([loraIdRaw, loraUploadVolumePathRaw, loraUploadR2KeyRaw].filter(Boolean).length > 1) {
     return NextResponse.json({ error: "LoRAの指定が重複しています。" }, { status: 400 });
   }
 
@@ -261,6 +267,18 @@ export async function POST(request: Request) {
     }
     loraVolumePath = loraUploadVolumePathRaw;
     loraName = uploadedFilename;
+  } else if (loraUploadR2KeyRaw) {
+    if (!isOwnedDirectorLoraR2Key(await r2UserRoot(user.id), loraUploadR2KeyRaw)) {
+      return NextResponse.json({ error: "LoRAファイルの指定が不正です。" }, { status: 400 });
+    }
+    if ((await headR2(loraUploadR2KeyRaw)) == null) {
+      return NextResponse.json(
+        { error: "アップロードした LoRA が見つかりません。もう一度アップロードしてください。" },
+        { status: 400 },
+      );
+    }
+    loraR2Key = loraUploadR2KeyRaw;
+    loraName = loraUploadR2KeyRaw.split("/").pop();
   }
 
   let imageBuffer: Buffer;
@@ -421,12 +439,13 @@ export async function POST(request: Request) {
     quality_mode: qualityMode,
     music_direction: musicDirectionInput || null,
     lora_name: loraName || null,
-    lora_source: loraIdRaw ? "trained" : loraUploadVolumePathRaw ? "upload" : null,
+    lora_source: loraIdRaw ? "trained" : loraUploadVolumePathRaw || loraUploadR2KeyRaw ? "upload" : null,
     // 作り直し用（2026-10-01〜）。これが無い古いジョブからは作り直せない。
     seed,
     reference_storage_path: storagePath,
     lora_id: loraIdRaw || null,
     lora_upload_volume_path: loraUploadVolumePathRaw || null,
+    lora_upload_r2_key: loraUploadR2KeyRaw || null,
     base_job_id: baseJobId || null,
   };
   // 出力解像度（2026-09-24、ホスト「生成後の解像度がわからないので記載して」）。

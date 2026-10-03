@@ -1,11 +1,15 @@
 import "server-only";
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
+  UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
@@ -183,6 +187,56 @@ export async function presignR2Put(
     ContentLength: opts.contentLength,
   });
   return getSignedUrl(r2Client(), cmd, { expiresIn: opts.expiresIn ?? DEFAULT_GET_TTL_S });
+}
+
+// Multipart upload (browser → R2, parts PUT in parallel). A single stream is
+// slow for GB-sized files (Director の LoRA 持ち込み、2026-10-03); the browser
+// PUTs each part to its own presigned URL and reads the ETag back (CORS exposes
+// it, scripts/r2_bucket_setup.py). Unfinished uploads are aborted by the
+// bucket's 1-day lifecycle rule.
+export async function createR2Multipart(key: string, contentType?: string): Promise<string> {
+  if (!isSafeR2Key(key)) throw new Error("invalid R2 key");
+  const res = await r2Client().send(
+    new CreateMultipartUploadCommand({ Bucket: r2Bucket(), Key: key, ContentType: contentType }),
+  );
+  if (!res.UploadId) throw new Error("R2 multipart: no UploadId");
+  return res.UploadId;
+}
+
+export async function presignR2UploadPart(
+  key: string,
+  uploadId: string,
+  partNumber: number,
+  expiresIn = 2 * 60 * 60,
+): Promise<string> {
+  if (!isSafeR2Key(key)) throw new Error("invalid R2 key");
+  const cmd = new UploadPartCommand({ Bucket: r2Bucket(), Key: key, UploadId: uploadId, PartNumber: partNumber });
+  return getSignedUrl(r2Client(), cmd, { expiresIn });
+}
+
+export async function completeR2Multipart(
+  key: string,
+  uploadId: string,
+  parts: { partNumber: number; etag: string }[],
+): Promise<void> {
+  if (!isSafeR2Key(key)) throw new Error("invalid R2 key");
+  await r2Client().send(
+    new CompleteMultipartUploadCommand({
+      Bucket: r2Bucket(),
+      Key: key,
+      UploadId: uploadId,
+      MultipartUpload: {
+        Parts: [...parts]
+          .sort((a, b) => a.partNumber - b.partNumber)
+          .map((p) => ({ PartNumber: p.partNumber, ETag: p.etag })),
+      },
+    }),
+  );
+}
+
+export async function abortR2Multipart(key: string, uploadId: string): Promise<void> {
+  if (!isSafeR2Key(key)) return;
+  await r2Client().send(new AbortMultipartUploadCommand({ Bucket: r2Bucket(), Key: key, UploadId: uploadId }));
 }
 
 // Size in bytes, or null when the object does not exist.

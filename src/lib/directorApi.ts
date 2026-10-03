@@ -63,7 +63,7 @@ export type DirectorStartArgs = (
 export type DirectorLoraSelection =
   | { source: "none" }
   | { source: "trained"; loraId: string }
-  | { source: "upload"; volumePath: string };
+  | { source: "upload"; r2Key: string };
 
 export async function startDirectorJob(args: DirectorStartArgs): Promise<DirectorStartResult> {
   const { data: sessionData } = await supabase.auth.getSession();
@@ -73,15 +73,15 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
   const { path: storagePath } = await uploadStudioAsset(args.userId, args.image);
 
   let loraId: string | undefined;
-  let loraUploadVolumePath: string | undefined;
+  let loraUploadR2Key: string | undefined;
   if (args.lora?.source === "trained") {
     loraId = args.lora.loraId;
   } else if (args.lora?.source === "upload") {
-    loraUploadVolumePath = args.lora.volumePath;
+    loraUploadR2Key = args.lora.r2Key;
   }
 
   const priority = args.priority ?? false;
-  const loraFields = { loraId, loraUploadVolumePath, ...(args.queue ? { queue: true } : {}) };
+  const loraFields = { loraId, loraUploadR2Key, ...(args.queue ? { queue: true } : {}) };
   const body =
     "conceptText" in args && args.conceptText !== undefined
       ? {
@@ -167,190 +167,81 @@ export async function regenerateDirectorJob(args: {
   };
 }
 
-// 外部LoRA（.safetensors）アップロード（2026-09-18導入・同日中に設計変更）。
-// 当初 Supabase Storage 経由だったが、Freeプランのグローバルアップロード
-// 上限（プロジェクト全体で50MB固定、バケット単位のfile_size_limitとは別物で
-// 引き上げ不可）に阻まれ、実運用サイズのLoRA（rank32のminimax_h3で約1.18GB）
-// を通せないことが実機で判明したため撤回。modal_lora_worker.py::
-// upload_user_lora へブラウザから直接アップロードする（Vercel/Supabase
-// どちらのボディサイズ上限も経由せず、Supabaseの月間転送量クォータにも
-// 一切カウントされない）。
-const DIRECTOR_LORA_MAX_BYTES = 2 * 1024 * 1024 * 1024; // Modal側エンドポイントの上限（2GB）と合わせる
+// 外部LoRA（.safetensors）アップロード。
+// 2026-09-18〜10-03 はブラウザ → Modal（modal_lora_worker.py::upload_user_lora）→ Volume の 1 本の接続で送っていたが、
+// 日米往復のせいで 1 本あたり約 2.2 Mbps で頭打ちになり（docs/gpu-benchmarks.md §15）、1GB 級に数十分かかった。
+// 2026-10-03 から R2 へ 32MB ずつ並行に PUT する（S3 マルチパート、/api/director/loras/r2-upload）。
+// 保存はしない前提（R2 は 14 日で消える。使うたびに上げ直せばよい、ホスト判断）。
+const DIRECTOR_LORA_MAX_BYTES = 2 * 1024 * 1024 * 1024; // サーバー側の上限（2GB）と合わせる
 
-// 同じFileオブジェクト（＝ユーザーがファイル選択を変えない限り、連続生成の
-// たびに呼ばれるuploadDirectorLoraFileへ渡される参照は同一）を毎回フルサイズ
-// （rank32のminimax_h3で約1.18GB）再アップロードしていた無駄を防ぐ
-// （2026-09-19、ホスト指摘）。Volume側は「入力データなので保持期限なし」
-// という当初の整理だったが、再アップロードのたびに新規UUIDファイル名で
-// 重複が無期限に積み上がる欠陥も併発していたため、こちらの重複自体を
-// 防ぐのが本筋の対策——保持期限の見直しは modal_retention_purge.py 側で
-// 別途対応（director_user_loras/を14日パージ対象に追加）。
-// WeakMapなのでFileオブジェクトがGCされれば（＝ユーザーが別ファイルを
-// 選び直せば）自動的にエントリも消える。
+// 同じ File を連続生成のたびに上げ直さない（ファイルを選び直せば WeakMap から自然に消える）。
 const _uploadedLoraCache = new WeakMap<File, string>();
 
-/** アップロードの進捗を伝えるコールバック。loaded/total はファイル全体
- * バイト数基準（レジューム再開時も、既に届いている分を含めた値になる）。 */
+/** アップロードの進捗。loaded/total はファイル全体のバイト数。 */
 export type DirectorLoraUploadProgress = (loaded: number, total: number) => void;
 
-// 進捗イベントが一定時間発生しなければ「詰まった」とみなして中断する
-// （2026-09-19導入）。実機で「69%・821.6MBで進捗が完全に止まり、エラーも
-// 出ないまま固まる」事象を確認——タイムアウトを一切設定していなかった
-// ため、接続が生きているのかどうかブラウザ側からは判別できず、
-// XHRのonload/onerror/onabortのどれも発火しないまま無限に待ち続けて
-// いた。stall検知でここを強制的に打ち切り、自動リトライへ渡す。
-// データが流れている限り（遅くても）onprogressはこれよりずっと高頻度で
-// 発火するので、短くしても遅い回線を誤検知することはない——再試行は
-// 自動・安価なので、ホスト指摘どおり短めに倒す（45秒→10秒、2026-09-19）。
-const STALL_TIMEOUT_MS = 10_000;
+const PART_CONCURRENCY = 6;
+const PART_ATTEMPTS = 4;
+// 進捗が止まったら打ち切って、その部分だけ送り直す（2026-09-19 に「69% で固まりエラーも出ない」を踏んだ）。
+const STALL_TIMEOUT_MS = 30_000;
 
-/** XMLHttpRequestでPOSTし、upload.onprogressで進捗を拾う（2026-09-19導入
- * ——1GB級のファイルをfetchで送りっぱなしにすると進捗が一切見えず
- * 「固まっているのか送信中なのか分からない」というホスト指摘への対応。
- * fetchのRequestStreamでも理論上は進捗を拾えるが、ブラウザ互換性が
- * XHRのupload.onprogressほど安定していないため採用しない）。 */
-function xhrPostWithProgress(
+function putPart(
   url: string,
   body: Blob,
-  baseLoaded: number,
-  total: number,
-  onProgress?: DirectorLoraUploadProgress,
-): Promise<{ ok: boolean; status: number; json: unknown }> {
+  onLoaded: (loaded: number) => void,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", url);
-    xhr.setRequestHeader("Content-Type", "application/octet-stream");
-
-    let stallTimer: ReturnType<typeof setTimeout> | null = null;
-    const clearStallTimer = () => {
-      if (stallTimer) clearTimeout(stallTimer);
-      stallTimer = null;
+    xhr.open("PUT", url);
+    let stall: ReturnType<typeof setTimeout> | null = null;
+    const arm = () => {
+      if (stall) clearTimeout(stall);
+      stall = setTimeout(() => xhr.abort(), STALL_TIMEOUT_MS);
     };
-    const armStallTimer = () => {
-      clearStallTimer();
-      stallTimer = setTimeout(() => {
-        xhr.abort();
-      }, STALL_TIMEOUT_MS);
+    const done = () => {
+      if (stall) clearTimeout(stall);
     };
-
     xhr.upload.onprogress = (e) => {
-      armStallTimer();
-      if (onProgress) onProgress(baseLoaded + e.loaded, total);
+      arm();
+      onLoaded(e.loaded);
     };
     xhr.onload = () => {
-      clearStallTimer();
-      let json: unknown = null;
-      try {
-        json = JSON.parse(xhr.responseText);
-      } catch {
-        // ignore — 呼び出し側が !uploadData?.path でエラーメッセージを出す
-      }
-      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, json });
+      done();
+      const etag = xhr.getResponseHeader("ETag");
+      if (xhr.status >= 200 && xhr.status < 300 && etag) resolve(etag);
+      else reject(new Error(`HTTP ${xhr.status}${etag ? "" : "（ETag なし）"}`));
     };
     xhr.onerror = () => {
-      clearStallTimer();
-      reject(new Error("ネットワークエラーでアップロードに失敗しました。"));
+      done();
+      reject(new Error("ネットワークエラー"));
     };
     xhr.onabort = () => {
-      clearStallTimer();
-      reject(new Error(`アップロードが${STALL_TIMEOUT_MS / 1000}秒間進まなかったため中断しました。もう一度同じファイルを選び直せば続きから再開できます。`));
+      done();
+      reject(new Error(`${STALL_TIMEOUT_MS / 1000}秒間進まなかった`));
     };
-    armStallTimer(); // 最初の1バイトが届く前に詰まるケースもカバーする。
+    arm();
     xhr.send(body);
   });
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// スタール検知（10秒）で1回の試行が打ち切られても、ここまで自動で
-// 再試行する（2026-09-19、ホスト指摘:「エラー表示するより再アップロード
-// すれば良いのでは」——ユーザーの手を止めず、進捗バーだけ見せ続けて裏で
-// 再試行する）。回数多めにしておいても、詰まっていない限り即座に成功
-// するので実害はない。
-const MAX_UPLOAD_ATTEMPTS = 30;
-const RETRY_DELAY_MS = 1500;
-
-/** 1回ぶんの試行: チケット発行→ステータス確認→（必要なら）アップロード。
- * チケットは試行ごとに毎回新規発行する——アップロードトークンの有効期限
- * (10分)より遅い回線で長時間かかると、使い回したチケットが期限切れに
- * なりうるため。 */
-async function uploadDirectorLoraFileAttempt(
-  file: File,
-  filename: string,
-  accessToken: string,
-  onProgress?: DirectorLoraUploadProgress,
-): Promise<string> {
-  const ticketRes = await fetch("/api/director/loras/upload-token", {
+async function r2UploadApi(accessToken: string, payload: Record<string, unknown>) {
+  const res = await fetch("/api/director/loras/r2-upload", {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ filename }),
+    body: JSON.stringify(payload),
   });
-  const ticket = await ticketRes.json();
-  if (!ticketRes.ok) throw new Error(ticket?.error || "アップロード準備に失敗しました。");
-
-  const buildSignedUrl = (base: string): URL => {
-    const u = new URL(base);
-    u.searchParams.set("user_id", ticket.userId);
-    u.searchParams.set("filename", ticket.filename);
-    u.searchParams.set("expires", String(ticket.expiresAt));
-    u.searchParams.set("sig", ticket.sig);
-    return u;
-  };
-
-  // 前回どこまで届いているか確認する（失敗しても致命的ではない——確認
-  // できなければ existingBytes=0 のまま、つまり最初から送るだけ）。
-  let existingBytes = 0;
-  try {
-    const statusRes = await fetch(buildSignedUrl(ticket.statusUrl).toString());
-    if (statusRes.ok) {
-      const statusData = await statusRes.json();
-      if (typeof statusData?.size_bytes === "number") existingBytes = statusData.size_bytes;
-    }
-  } catch (err) {
-    console.warn("[directorApi] upload status check failed, uploading from scratch:", err);
-  }
-
-  if (existingBytes >= file.size) {
-    // 既に前回のアップロードで最後まで届いていた（レスポンスが返る前に
-    // 切断されただけ等）。
-    if (onProgress) onProgress(file.size, file.size);
-    return ticket.volumePath as string;
-  }
-  if (onProgress) onProgress(existingBytes, file.size);
-
-  const uploadUrl = buildSignedUrl(ticket.uploadUrl);
-  if (existingBytes > 0) uploadUrl.searchParams.set("offset", String(existingBytes));
-  const body = existingBytes > 0 ? file.slice(existingBytes) : file;
-
-  const { ok: uploadOk, status: uploadStatus, json: uploadData } = await xhrPostWithProgress(
-    uploadUrl.toString(),
-    body,
-    existingBytes,
-    file.size,
-    onProgress,
-  );
-  const uploadResult = uploadData as { path?: string; detail?: string; error?: string } | null;
-  if (!uploadOk || !uploadResult?.path) {
-    // detail/errorが無い（=サーバーがJSON以外を返した等）場合でもステータス
-    // コードだけは表示する——次回の原因調査を「LoRAのアップロードに失敗
-    // しました」だけより手掛かり付きにするため（2026-09-19、実機で
-    // detail無し失敗を確認）。
-    throw new Error(
-      uploadResult?.detail || uploadResult?.error || `LoRAのアップロードに失敗しました（HTTP ${uploadStatus}）。`,
-    );
-  }
-  return uploadResult.path;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || `LoRAのアップロードに失敗しました（HTTP ${res.status}）。`);
+  return data;
 }
 
+/** R2 へ上げて、そのキーを返す（生成のときに loraUploadR2Key として渡す）。 */
 export async function uploadDirectorLoraFile(
-  userId: string,
   file: File,
   onProgress?: DirectorLoraUploadProgress,
-): Promise<{ volumePath: string }> {
+): Promise<{ r2Key: string }> {
   const cached = _uploadedLoraCache.get(file);
-  if (cached) return { volumePath: cached };
+  if (cached) return { r2Key: cached };
 
   if (!file.name.toLowerCase().endsWith(".safetensors")) {
     throw new Error(".safetensors ファイルを選んでください。");
@@ -363,31 +254,66 @@ export async function uploadDirectorLoraFile(
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) throw new Error("ログインが必要です。");
 
-  // ファイルサイズ＋更新日時から決定的な名前を作る（2026-09-19、乱数UUID
-  // から変更）。同じファイルを選び直せば毎回同じVolumeパスに解決するので、
-  // ブラウザがバックグラウンドタブの切断・スリープ・ネットワーク断で
-  // 1GB級のアップロード中に落ちても、ステータス確認で前回の続きを検出
-  // して再開できる（ホスト指摘: 「仕掛けたらブラウザを落として良い」
-  // という使い方が前提なら、単発送りっぱなしは脆すぎる）。
-  const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "lora.safetensors";
-  const filename = `${file.size}-${file.lastModified}-${safeName}`;
+  const t0 = performance.now();
+  const start = (await r2UploadApi(accessToken, { action: "start", filename: file.name, size: file.size })) as {
+    key: string;
+    uploadId: string;
+    partBytes: number;
+    partUrls: string[];
+  };
+  const loadedByPart = new Array<number>(start.partUrls.length).fill(0);
+  const report = () => onProgress?.(Math.min(file.size, loadedByPart.reduce((a, b) => a + b, 0)), file.size);
+  report();
 
-  let lastError: Error | null = null;
-  for (let attempt = 1; attempt <= MAX_UPLOAD_ATTEMPTS; attempt++) {
-    try {
-      const volumePath = await uploadDirectorLoraFileAttempt(file, filename, accessToken, onProgress);
-      _uploadedLoraCache.set(file, volumePath);
-      return { volumePath };
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-      console.warn(
-        `[directorApi] LoRA upload attempt ${attempt}/${MAX_UPLOAD_ATTEMPTS} failed, retrying from where it left off:`,
-        lastError.message,
-      );
-      if (attempt < MAX_UPLOAD_ATTEMPTS) await sleep(RETRY_DELAY_MS);
+  const etags = new Array<string>(start.partUrls.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < start.partUrls.length) {
+      const i = next++;
+      const blob = file.slice(i * start.partBytes, Math.min(file.size, (i + 1) * start.partBytes));
+      let lastErr: unknown = null;
+      for (let attempt = 1; attempt <= PART_ATTEMPTS; attempt++) {
+        try {
+          etags[i] = await putPart(start.partUrls[i], blob, (loaded) => {
+            loadedByPart[i] = loaded;
+            report();
+          });
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err;
+          loadedByPart[i] = 0;
+          report();
+          console.warn(`[directorApi] LoRA part ${i + 1}/${start.partUrls.length} failed (attempt ${attempt}):`, err);
+          if (attempt < PART_ATTEMPTS) await sleep(1500 * attempt);
+        }
+      }
+      if (lastErr) {
+        throw new Error(
+          `LoRAのアップロードに失敗しました（${lastErr instanceof Error ? lastErr.message : String(lastErr)}）。もう一度お試しください。`,
+        );
+      }
     }
-  }
-  throw lastError ?? new Error("LoRAのアップロードに失敗しました。");
+  };
+  await Promise.all(Array.from({ length: Math.min(PART_CONCURRENCY, start.partUrls.length) }, worker));
+
+  await r2UploadApi(accessToken, {
+    action: "complete",
+    key: start.key,
+    uploadId: start.uploadId,
+    parts: etags.map((etag, i) => ({ partNumber: i + 1, etag })),
+  });
+  const sec = (performance.now() - t0) / 1000;
+  console.log(
+    `[director-lora-upload] ${(file.size / 1e6).toFixed(1)}MB を ${sec.toFixed(1)}秒` +
+      `（実効 ${((file.size * 8) / 1e6 / Math.max(sec, 0.001)).toFixed(1)} Mbps・r2・${start.partUrls.length}分割・並列${PART_CONCURRENCY}）`,
+  );
+  _uploadedLoraCache.set(file, start.key);
+  return { r2Key: start.key };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** 公開 URL を実ファイルとして保存させる（cross-origin download 対策）。
