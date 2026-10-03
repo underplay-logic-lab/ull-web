@@ -278,17 +278,28 @@ function CompareSlider({
   before,
   after,
   onAfterError,
+  fit = false,
 }: {
   before: string;
   after: string;
   onAfterError?: () => void;
+  /** 拡大表示用: 画面の高さに収める（箱は画像に合わせて縮む）。 */
+  fit?: boolean;
 }) {
   const [pos, setPos] = useState(50);
   return (
-    <div className="relative select-none overflow-hidden rounded-xl border border-border bg-background">
+    <div
+      className={`relative select-none overflow-hidden rounded-xl border border-border bg-background ${fit ? "mx-auto w-fit" : ""}`}
+    >
       {/* after が箱のサイズを決める */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={after} alt="アップスケール後" className="block w-full" draggable={false} onError={onAfterError} />
+      <img
+        src={after}
+        alt="アップスケール後"
+        className={fit ? "block max-h-[80vh] w-auto max-w-full" : "block w-full"}
+        draggable={false}
+        onError={onAfterError}
+      />
       {/* before を箱いっぱいに絶対配置し、左から pos% だけ見せる（同一アスペクト比） */}
       <div
         className="absolute inset-0 overflow-hidden"
@@ -348,7 +359,7 @@ function BatchThumb({ file, onRemove }: { file: File; onRemove: () => void }) {
   );
 }
 
-function BatchResultCard({ job }: { job: UpscaleJob | undefined }) {
+function BatchResultCard({ job, onOpen }: { job: UpscaleJob | undefined; onOpen: () => void }) {
   // job.resultUrl は超解像画像の結果（2026-09-18〜）だとURLではなくVolume
   // 相対パスなので、<img src>・ダウンロードで使える実URLへ都度解決する
   // （resolveUpscaleImageUrl、CLAUDE.md §1）。旧方式の行はそのまま素通し。
@@ -387,37 +398,36 @@ function BatchResultCard({ job }: { job: UpscaleJob | undefined }) {
       );
     }
     return (
-      <button
-        type="button"
-        disabled={saving}
-        onClick={async () => {
-          setSaving(true);
-          setSaveError(false);
-          try {
-            await downloadUpscaleResult(job.id, rawUrl, buildOutFilename(rawUrl));
-          } catch (err) {
-            console.warn("[BatchResultCard] download failed:", err);
-            setSaveError(true);
-          } finally {
-            setSaving(false);
-          }
-        }}
-        className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-background"
-        title="ダウンロード"
-      >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={displayUrl}
-          alt="結果"
-          className="h-full w-full bg-black/40 object-contain"
-          onError={() => {
-            if (reloads < 2) setReloads((n) => n + 1);
+      <div className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-background">
+        <button type="button" onClick={onOpen} className="block h-full w-full cursor-zoom-in" title="拡大して比べる">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={displayUrl}
+            alt="結果"
+            className="h-full w-full bg-black/40 object-contain"
+            onError={() => {
+              if (reloads < 2) setReloads((n) => n + 1);
+            }}
+          />
+        </button>
+        <button
+          type="button"
+          disabled={saving}
+          onClick={async () => {
+            setSaving(true);
+            setSaveError(false);
+            try {
+              await downloadUpscaleResult(job.id, rawUrl, buildOutFilename(rawUrl));
+            } catch (err) {
+              console.warn("[BatchResultCard] download failed:", err);
+              setSaveError(true);
+            } finally {
+              setSaving(false);
+            }
           }}
-        />
-        <span
           className={`absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 py-1 text-[10px] text-white transition-opacity ${
             saving || saveError ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-          } ${saveError ? "bg-red-600/80" : "bg-black/60"}`}
+          } ${saveError ? "bg-red-600/80" : "bg-black/60 hover:bg-black/80"}`}
         >
           {saving ? (
             <>
@@ -430,8 +440,8 @@ function BatchResultCard({ job }: { job: UpscaleJob | undefined }) {
               <Download size={11} /> 保存
             </>
           )}
-        </span>
-      </button>
+        </button>
+      </div>
     );
   }
   if (job?.status === "failed") {
@@ -446,6 +456,128 @@ function BatchResultCard({ job }: { job: UpscaleJob | undefined }) {
     <div className="flex aspect-square items-center justify-center rounded-lg border border-border bg-background text-muted">
       <Loader2 size={14} className="animate-spin" />
     </div>
+  );
+}
+
+// まとめの結果を拡大して前後を比べる（2026-10-03 ホスト要望）。元画像はこのタブで選んだファイルが
+// 手元にあるときだけ（リロード後は結果だけ）。完了した結果の間を ← → で移れる。
+function BatchLightbox({
+  jobs,
+  index,
+  beforeUrls,
+  onIndex,
+  onClose,
+}: {
+  jobs: UpscaleJob[];
+  index: number;
+  beforeUrls: Map<string, string>;
+  onIndex: (i: number) => void;
+  onClose: () => void;
+}) {
+  const job = jobs[index];
+  const [shown, setShown] = useState<{ id: string; url: string } | null>(null);
+  const [reloads, setReloads] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(false);
+  const jobId = job?.id;
+  const resultUrl = job?.resultUrl;
+  // 表示の直前に URL を取り直す（完了直後の Volume の URL は R2 への移動で無効になる。CLAUDE.md §6-11）。
+  useEffect(() => {
+    if (!jobId || !resultUrl) return;
+    let cancelled = false;
+    resolveUpscaleImageUrl(jobId, resultUrl)
+      .then((url) => {
+        if (!cancelled) setShown({ id: jobId, url });
+      })
+      .catch((err) => console.warn("[BatchLightbox] resolveUpscaleImageUrl failed:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId, resultUrl, reloads]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft" && index > 0) onIndex(index - 1);
+      else if (e.key === "ArrowRight" && index < jobs.length - 1) onIndex(index + 1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [index, jobs.length, onIndex, onClose]);
+
+  if (!job || typeof document === "undefined") return null;
+  const afterUrl = shown?.id === job.id ? shown.url : null;
+  const beforeUrl = beforeUrls.get(job.id);
+  const onAfterError = () => {
+    if (reloads < 2) setReloads((n) => n + 1);
+  };
+  const navBtn = "rounded-lg bg-white/10 px-3 py-1.5 transition-colors hover:bg-white/20 disabled:opacity-30";
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-3 bg-black/85 px-4 py-6 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div className="relative w-full max-w-6xl" onClick={(e) => e.stopPropagation()}>
+        {!afterUrl ? (
+          <div className="flex h-[50vh] items-center justify-center text-white/70">
+            <Loader2 size={24} className="animate-spin" />
+          </div>
+        ) : beforeUrl ? (
+          <CompareSlider key={job.id} fit before={beforeUrl} after={afterUrl} onAfterError={onAfterError} />
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={afterUrl}
+            alt="アップスケール後"
+            className="mx-auto block max-h-[80vh] w-auto max-w-full rounded-xl bg-black/40 object-contain"
+            onError={onAfterError}
+          />
+        )}
+      </div>
+      <div className="flex flex-wrap items-center justify-center gap-2 text-sm text-white" onClick={(e) => e.stopPropagation()}>
+        <button type="button" disabled={index === 0} onClick={() => onIndex(index - 1)} className={navBtn} aria-label="前の結果">
+          ←
+        </button>
+        <span className="min-w-[4rem] text-center text-xs text-white/70">
+          {index + 1} / {jobs.length}
+        </span>
+        <button
+          type="button"
+          disabled={index >= jobs.length - 1}
+          onClick={() => onIndex(index + 1)}
+          className={navBtn}
+          aria-label="次の結果"
+        >
+          →
+        </button>
+        <button
+          type="button"
+          disabled={saving || !job.resultUrl}
+          onClick={async () => {
+            if (!job.resultUrl) return;
+            setSaving(true);
+            setSaveError(false);
+            try {
+              await downloadUpscaleResult(job.id, job.resultUrl, buildOutFilename(job.resultUrl));
+            } catch (err) {
+              console.warn("[BatchLightbox] download failed:", err);
+              setSaveError(true);
+            } finally {
+              setSaving(false);
+            }
+          }}
+          className={`ml-2 flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition-colors ${
+            saveError ? "bg-red-600/80" : "bg-white/10 hover:bg-white/20"
+          }`}
+        >
+          {saving ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+          {saving ? "保存中…" : saveError ? "保存に失敗しました" : "保存"}
+        </button>
+        <button type="button" onClick={onClose} className="rounded-lg bg-white/10 p-1.5 transition-colors hover:bg-white/20" aria-label="閉じる">
+          <X size={16} />
+        </button>
+      </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -603,6 +735,9 @@ export function UpscaleStudioTab() {
   );
   const [batchJobIds, setBatchJobIds] = useState<string[]>(resumedBatchJobIds || []);
   const [batchJobs, setBatchJobs] = useState<Record<string, UpscaleJob>>({});
+  // 拡大表示の前後比較用に、このタブで選んだ元画像をジョブ id ごとに持つ（リロード後は無い）。
+  const [batchBeforeUrls, setBatchBeforeUrls] = useState<Map<string, string>>(() => new Map());
+  const [zoomJobId, setZoomJobId] = useState<string | null>(null);
 
   const addBatchFiles = useCallback((files: FileList | File[] | null) => {
     if (!files) return;
@@ -764,6 +899,14 @@ export function UpscaleStudioTab() {
         setBatchLoraMap(getLoraReturnMap());
         // LoRA から来た分は LoRA Studio へ戻すのが目的なので自動保存しない。
         armAutoDownload(...res.jobIds.filter((id) => !loraMap[id]));
+        setBatchBeforeUrls((prev) => {
+          const next = new Map(append ? prev : []);
+          if (!append) prev.forEach((u) => URL.revokeObjectURL(u));
+          snap.items.forEach((it, i) => {
+            if (res.jobIds[i]) next.set(res.jobIds[i], URL.createObjectURL(it.file));
+          });
+          return next;
+        });
         if (!append) setBatchItems([]);
         setBatchJobIds((prev) => (append ? [...prev, ...res.jobIds] : res.jobIds));
         setBatchPhase("running");
@@ -816,6 +959,13 @@ export function UpscaleStudioTab() {
         .map((id) => batchJobs[id])
         .filter((j): j is UpscaleJob => Boolean(j?.resultUrl && j.status === "completed"))
         .map((j) => ({ id: j.id, resultUrl: j.resultUrl as string })),
+    [batchJobIds, batchJobs],
+  );
+  const batchZoomJobs = useMemo(
+    () =>
+      batchJobIds
+        .map((id) => batchJobs[id])
+        .filter((j): j is UpscaleJob => Boolean(j?.resultUrl && j.status === "completed")),
     [batchJobIds, batchJobs],
   );
   const batchAllDone = useMemo(
@@ -1873,9 +2023,19 @@ export function UpscaleStudioTab() {
           {batchJobIds.length > 0 && (
             <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
               {batchJobIds.map((id) => (
-                <BatchResultCard key={id} job={batchJobs[id]} />
+                <BatchResultCard key={id} job={batchJobs[id]} onOpen={() => setZoomJobId(id)} />
               ))}
             </div>
+          )}
+          {zoomJobId && batchZoomJobs.some((j) => j.id === zoomJobId) && (
+            <BatchLightbox
+              key={zoomJobId}
+              jobs={batchZoomJobs}
+              index={batchZoomJobs.findIndex((j) => j.id === zoomJobId)}
+              beforeUrls={batchBeforeUrls}
+              onIndex={(i) => setZoomJobId(batchZoomJobs[i]?.id ?? null)}
+              onClose={() => setZoomJobId(null)}
+            />
           )}
 
           <p className="flex items-start gap-2 text-xs leading-relaxed text-muted">
