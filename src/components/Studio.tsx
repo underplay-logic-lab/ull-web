@@ -17,6 +17,7 @@ import { STUDIO_TAB_EVENT, type StudioHandoffTab } from "@/lib/studioHandoff";
 import { DatasetBuilderTab } from "@/components/studio/DatasetBuilderTab";
 import { HelpNoteToggleAll } from "@/components/studio/HelpNote";
 import { TutorialVideoButton } from "@/components/studio/TutorialVideoButton";
+import { ParallelDownloadIndicator } from "@/components/studio/ParallelDownloadIndicator";
 
 // 2026-09-09: Wan Animate 2 / Cinematic Video タブは廃止。汎用の動画・特殊要望は
 // すべて「特化ワークフロー」で対応する方針（管理者がワークフローを登録）。
@@ -162,6 +163,7 @@ export function Studio() {
   return (
     <section id="studio" data-source-file="src/components/Studio.tsx" className="relative py-24 sm:py-32">
       <div className="pointer-events-none absolute inset-0 grid-bg opacity-40" />
+      <ParallelDownloadIndicator />
 
       <div className="relative mx-auto max-w-5xl px-6">
         <div className="mb-16 text-center">

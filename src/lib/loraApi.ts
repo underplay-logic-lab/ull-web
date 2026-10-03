@@ -1,3 +1,4 @@
+import { isR2Url, parallelDownload } from "@/lib/parallelDownload";
 import { supabase } from "@/lib/supabaseClient";
 import type { LoraBaseArchitecture } from "@/lib/loraModels";
 import type { LoraCaptionSpec, ResolvedCaptionMode } from "@/lib/loraCaptionSpec";
@@ -832,7 +833,10 @@ export async function getLoraCheckpointDownloadUrl(jobId: string, filename: stri
 }
 
 export async function downloadLoraCheckpoint(jobId: string, filename: string): Promise<void> {
-  triggerBrowserDownload(await getLoraCheckpointDownloadUrl(jobId, filename));
+  const url = await getLoraCheckpointDownloadUrl(jobId, filename);
+  // R2 は 1 本の接続だとときどき 1〜2MB/s に張り付くので、分割して並行に落とす（2026-10-03、lib/parallelDownload.ts）。
+  if (isR2Url(url) && (await parallelDownload(url, filename))) return;
+  triggerBrowserDownload(url);
 }
 
 // Kicks off several cross-origin attachment downloads at once. Each URL goes
@@ -906,7 +910,14 @@ export async function downloadLoraSelection(
     triggerBrowserDownload(sel.url);
     return { bundled: true };
   }
-  triggerMultiDownload(sel.files.map((f) => f.url));
+  // R2 は 1 本ずつ分割・並行で落とす（2026-10-03）。範囲指定に応じない分だけ従来どおりブラウザに任せる。
+  const rest: string[] = [];
+  for (let i = 0; i < sel.files.length; i++) {
+    const f = sel.files[i];
+    const ok = isR2Url(f.url) && (await parallelDownload(f.url, f.filename, { index: i + 1, count: sel.files.length }));
+    if (!ok) rest.push(f.url);
+  }
+  if (rest.length > 0) triggerMultiDownload(rest);
   return { bundled: false };
 }
 
@@ -937,7 +948,17 @@ export async function downloadLoraJobBundle(
     if (res.status === 404) throw new Error(data?.error || "ダウンロード対象が見つかりません。");
     throw mapDownloadError(res.status, data?.error);
   }
-  triggerBrowserDownload(data.downloadUrl as string);
+  const url = data.downloadUrl as string;
+  if (isR2Url(url)) {
+    let name = "";
+    try {
+      name = decodeURIComponent(new URL(url).pathname.split("/").pop() || "");
+    } catch {
+      /* 名前が取れなければ従来の方法 */
+    }
+    if (name && (await parallelDownload(url, name))) return;
+  }
+  triggerBrowserDownload(url);
 }
 
 // Lightweight "does this artefact actually exist?" check. Hits the same
