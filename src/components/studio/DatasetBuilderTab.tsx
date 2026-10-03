@@ -61,6 +61,7 @@ import {
   mainRouteOf,
   bodyDesignSentence,
   sceneNegativePrompt,
+  sceneStylePrefix,
   type SourceStyle,
   type BodyDesign,
   type MainRoute,
@@ -905,7 +906,10 @@ export function DatasetBuilderTab() {
       const scenes = items.map((it) => {
         const refs = refsOf(it);
         return {
-          instruction: (bodyTail ? `${scenePlanInstruction(it)} ${bodyTail}` : scenePlanInstruction(it)) + faceTail(refs),
+          instruction:
+            sceneStylePrefix(sourceStyle) +
+            (bodyTail ? `${scenePlanInstruction(it)} ${bodyTail}` : scenePlanInstruction(it)) +
+            faceTail(refs),
           label: scenePlanLabel(it),
           set: setIndex([sourceOf(it), ...refs]),
         };

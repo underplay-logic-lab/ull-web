@@ -83,6 +83,16 @@ export const EXPRESSION_CHIPS: SceneChip[] = [
 export type SourceStyle = "auto" | "photo" | "illust";
 
 /**
+ * 画風を指示の先頭に書く一文（2026-10-03）。実写を選んでいてもネガティブ（anime 等）だけでは 48 枚に 1 枚ほど
+ * アニメ調に転んだ（ホスト報告）。「出さない」より「こう出す」と書く方が効くので、選んだときは本文の先頭で言い切る。
+ */
+export function sceneStylePrefix(style: SourceStyle): string {
+  if (style === "photo") return "A photorealistic photograph of a real person (not anime, illustration or 3D render). ";
+  if (style === "illust") return "An illustration in the same drawing style as the reference (not a photograph). ";
+  return "";
+}
+
+/**
  * 素材づくりの本生成に付けるネガティブプロンプト（2026-09-30）。本文の「〜なし」はこの種のモデルでは効かないので、
  * 避けたいものはネガティブ側へ。赤面・涙・誇張した表情・険しい目は常に、画風は選んだときだけ。
  */
