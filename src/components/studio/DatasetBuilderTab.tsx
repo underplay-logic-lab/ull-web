@@ -18,6 +18,7 @@ import {
   AngleJobNotFoundError,
   fetchAngleImageBlob,
   freshAngleImageUrl,
+  listAngleJobs,
   pollAngleJob,
   startAngleJob,
   type AngleApiError,
@@ -208,6 +209,13 @@ type PersistedRun = {
   hasDiagRef?: boolean;
   /** 寄りの行（後ろ以外）に元の顔アップを添えるか（構図ごと。2026-09-30）。 */
   faceRefFor?: Partial<Record<CloseFraming, boolean>>;
+  /**
+   * 送信中の印（2026-10-03）。送信を始めた時刻と枚数。返事（ジョブ id）を受け取る前にタブを閉じると、サーバーには
+   * ジョブができて課金済みなのに jobIds に入らず、結果が出なくなっていた（録画中に実際に踏んだ）。開き直したとき、
+   * この時刻以降にできた同じ枚数のジョブを拾い直す。
+   */
+  pendingSince?: number;
+  pendingTotal?: number;
 };
 
 /** run の行ごとの参照・切り出しの設定（料金・バッチ分けに使う）。 */
@@ -635,6 +643,7 @@ export function DatasetBuilderTab() {
           hasSideRef: Boolean(r.hasSideRef),
           hasDiagRef: Boolean(r.hasDiagRef),
           faceRefFor: r.faceRefFor && typeof r.faceRefFor === "object" ? r.faceRefFor : {},
+          ...(typeof r.pendingSince === "number" ? { pendingSince: r.pendingSince, pendingTotal: Number(r.pendingTotal ?? 0) } : {}),
         }
       : null;
   });
@@ -648,6 +657,37 @@ export function DatasetBuilderTab() {
   const [jobs, setJobs] = useState<Record<string, AngleJob>>({});
   const [phase, setPhase] = useState<Phase>(() => (run && run.jobIds.length > 0 ? "running" : "idle"));
   const elapsedMs = useElapsedTimer(phase === "running" || phase === "submitting");
+
+  // 送信中に閉じた分を拾い直す（PersistedRun.pendingSince）。送信を始めた時刻以降にできた、同じ枚数で未登録のジョブを
+  // 古い順に 1 件。見つからなければ数回取り直し、それでも無ければ送信前に閉じた（ジョブも課金も無い）として印を消す。
+  useEffect(() => {
+    const r0 = runRef.current;
+    if (!user || !r0?.pendingSince) return;
+    let cancelled = false;
+    void (async () => {
+      for (let attempt = 0; attempt < 6 && !cancelled; attempt++) {
+        const r = runRef.current;
+        if (!r?.pendingSince) return;
+        const since = r.pendingSince - 10_000;
+        const jobs = await listAngleJobs();
+        const hit = jobs
+          .filter((j) => !r.jobIds.includes(j.id) && j.totalAngles === r.pendingTotal && Date.parse(j.createdAt) >= since)
+          .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))[0];
+        if (cancelled) return;
+        if (hit) {
+          commitRun({ ...r, jobIds: [...r.jobIds, hit.id], pendingSince: undefined, pendingTotal: undefined });
+          setPhase("running");
+          return;
+        }
+        await new Promise((res) => setTimeout(res, 5_000));
+      }
+      const r = runRef.current;
+      if (!cancelled && r?.pendingSince) commitRun({ ...r, pendingSince: undefined, pendingTotal: undefined });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user, commitRun]);
   // GPU は最後のジョブの完了から 30 秒で止まる（CLAUDE.md §1）。その間に「続きを作る」を押せば起動待ちが無い。
   const { isWarm: gpuWarm, remainingMs: gpuWarmMs, markWarm: markGpuWarm } = useLocalWarmCountdown(30);
   // 実行前の一覧（review）。ここで日本語の内容を直してから投げる。
@@ -869,6 +909,7 @@ export function DatasetBuilderTab() {
       setErrorMessage(null);
       // 候補づくりが動いていれば、終わるまで待ってから投げる（追加料金なし・温かいまま始まる）。
       gpuReleaseRef.current = await gpuLock.acquire();
+      commitRun({ ...r, pendingSince: Date.now(), pendingTotal: scenes.length });
       try {
         const res = await startAngleJob({
           userId: user.id,
@@ -881,12 +922,13 @@ export function DatasetBuilderTab() {
           negativePrompt: sceneNegativePrompt(sourceStyle),
         });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
-        const next: PersistedRun = { ...r, jobIds: [...r.jobIds, res.jobId] };
+        const next: PersistedRun = { ...r, jobIds: [...r.jobIds, res.jobId], pendingSince: undefined, pendingTotal: undefined };
         commitRun(next);
         setPhase("running");
       } catch (err) {
         gpuReleaseRef.current?.();
         gpuReleaseRef.current = null;
+        commitRun({ ...r, pendingSince: undefined, pendingTotal: undefined });
         console.error("[DatasetBuilderTab] start failed:", err);
         setErrorMessage(err instanceof Error ? err.message : "ジョブの作成に失敗しました。");
         setPhase(r.jobIds.length > 0 ? "paused" : "error");
@@ -1825,7 +1867,7 @@ export function DatasetBuilderTab() {
             )}
             {phase === "submitting" && !activeJob && (
               <p className="mt-3 flex items-center justify-center gap-1.5 text-[11px] text-muted">
-                <Loader2 size={12} className="animate-spin" /> 画像を送っています…
+                <Loader2 size={12} className="animate-spin" /> 画像を送っています…（送り終わるまでこのタブは閉じないでください）
               </p>
             )}
 
