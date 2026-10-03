@@ -66,6 +66,7 @@ import {
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { VramBadge } from "@/components/studio/VramBadge";
 import AutoDownloadToggle from "@/components/studio/AutoDownloadToggle";
+import GenerationCaveat from "@/components/studio/GenerationCaveat";
 import { armAutoDownload, runAutoDownload, takeAutoDownload } from "@/lib/autoDownload";
 import {
   requestStudioBatchHandoff,
@@ -1625,6 +1626,9 @@ export function MultiAngleStudioTab() {
             >
               {buttonLabel}
             </button>
+            <GenerationCaveat>
+              AI による生成のため、指定した向きにならないことがあります（特に斜め）。生成後に向きを自動で確かめ、違っていれば作り直します。
+            </GenerationCaveat>
             {user && (
               <div className="mt-2">
                 <AutoDownloadToggle />
