@@ -1134,6 +1134,19 @@ B300 時給のままなら cap 2,520s で余裕 4% しか無かった。
 
 ### 14.8.5 minimax_h3 のベース重みは量子化版（CLAUDE.md §1 の例外・2026-09-21）
 
+> **2026-10-04 更新: 無圧縮版に切り替えた（この節の「使えない」は誤りだった）。**
+> - TE: Director 用の `clip/qwen3vl_32b_minimax_h3_bf16.safetensors`（51.5GB）は nvfp4 版と同じキー名・同じ 50 層で、
+>   ai-toolkit の `_load_text_encoder` の単一ファイル経路（`model_kwargs.text_encoder_path`）がそのまま読む（量子化層 0 個）。
+> - DiT: 配布元 Comfy-Org/MiniMax-H3 の `diffusion_models/minimax_h3_fl2va_pruned_bf16.safetensors`（40.2GB）は
+>   pruned_int8_convrot と**キー 532・形・ブロック 50 が完全一致**（HTTP Range でヘッダーだけ比較）。下の「Unexpected key
+>   adaln_proj.linear.bias」は **pruned でない方**（`fl2va_bf16`・66GB・キー 535、時間埋め込みの作りが違う）を渡したため。
+> - 実測（B300・24 枚・rank64・実効バッチ 4・gc 有効・compile 無し、`modal_lora_benchmark.py --plan bf16_base`、$0.34）:
+>   **起動〜1 step 目 400.9 → 132.4 秒**（-268 秒）・s/it 0.688 → 0.687・VRAM ピーク 94.6 → 95.3GB（同等）・メモリ不足なし。
+>   ベンチは本番の ai-toolkit パッチを通さない素の経路の比較。本番（パッチあり）では TE の逆量子化が約 8 分あった（STATUS 2026-10-03 c2c49dc9）ので差はもっと大きい見込み。
+> - 実装: `lora_worker_core.minimax_h3_te_path()` / `minimax_h3_dit_path()` / `apply_minimax_h3_te()`。ファイルが無い・
+>   env `ULL_H3_TE_BF16=0` / `ULL_H3_DIT_BF16=0` なら量子化版に戻る。読み込みで例外なら量子化版で読み直す保険つき。
+> - 以下は 2026-09-21 時点の記録（経緯として残す）。
+
 CLAUDE.md §1 は「量子化禁止・BF16 フル精度を既定」だが、**`minimax_h3` は
 ベース重みが量子化版しか無い**。方針は「**使えるなら無圧縮版を使う。使えなければ
 仕方ない**」（ホスト、2026-09-21）。

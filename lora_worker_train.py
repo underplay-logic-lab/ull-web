@@ -1183,7 +1183,21 @@ def _ull_h3_load_transformer(self):
     # セット）。1ジョブあたり+10分の逆量子化コストを毎回払う代わりに、baked
     # コピーを二度と作らない。ULL_H3_BAKE=1 で明示的に再度オプトインできる。
     if os.environ.get("ULL_H3_BAKE", "0") == "0":
-        return _ull_h3_orig_load_transformer(self)  # kill switch: stock path
+        # stock path. 2026-10-04〜 the DiT is the pruned bf16 file by default (lora_worker_core.minimax_h3_dit_path) —
+        # no int8_convrot layers, so nothing to dequantize. If it fails to load, retry with int8_convrot (insurance).
+        _t0 = _ull_time.time()
+        try:
+            return _ull_h3_orig_load_transformer(self)
+        except Exception as _le:
+            _mk = self.model_config.model_kwargs
+            _k = next((k for k, v in _mk.items() if k.startswith("dit_") and str(v).endswith("_pruned_bf16.safetensors")), None)
+            if _k is None:
+                raise
+            print(f"[ULL][minimax] bf16 DiT load failed ({_le!r}) — retrying with int8_convrot", flush=True)
+            _mk[_k] = str(_mk[_k]).replace("_pruned_bf16.safetensors", "_pruned_int8_convrot.safetensors")
+            return _ull_h3_orig_load_transformer(self)
+        finally:
+            print(f"[ULL][minimax][dit-probe] _load_transformer TOTAL: {_ull_time.time() - _t0:.1f}s", flush=True)
 
     baked = _ull_h3_baked_path(self)
 

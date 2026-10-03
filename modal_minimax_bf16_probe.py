@@ -230,6 +230,47 @@ def probe() -> dict:
     return out
 
 
+@app.function(
+    image=PROBE_IMAGE,
+    volumes={W.MODELS_DIR: W.vol},
+    secrets=[modal.Secret.from_name("huggingface-secret")],
+    timeout=60 * 60,
+    scaledown_window=2,
+)
+def fetch_pruned_bf16_dit() -> dict:
+    """CPU only: put Comfy-Org/MiniMax-H3 diffusion_models/minimax_h3_fl2va_pruned_bf16.safetensors (40.2GB) on the Volume."""
+    import os
+    import time
+
+    from huggingface_hub import hf_hub_download
+
+    import lora_worker_core as C
+
+    out: dict = {}
+    dst = C.H3_DIT_BF16
+    if not (os.path.isfile(dst) and os.path.getsize(dst) > 0):
+        t0 = time.time()
+        p = hf_hub_download(
+            repo_id="Comfy-Org/MiniMax-H3",
+            filename="diffusion_models/minimax_h3_fl2va_pruned_bf16.safetensors",
+            local_dir=W.MODELS_DIR,
+            token=os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"),
+        )
+        if os.path.abspath(p) != os.path.abspath(dst):
+            os.replace(p, dst)
+        out["download_s"] = round(time.time() - t0, 1)
+    out["dit_gb"] = round(os.path.getsize(dst) / 1e9, 2)
+    out["dit_keys"] = len(_header(dst))
+    W.vol.commit()
+    out["committed"] = True
+    return out
+
+
+@app.local_entrypoint()
+def fetch():
+    print(fetch_pruned_bf16_dit.remote())
+
+
 @app.local_entrypoint()
 def main():
     import json

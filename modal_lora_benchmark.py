@@ -238,6 +238,13 @@ PLANS["real_config"] = [
     {**_REAL_CONFIG, "tier": "b300", "gradient_checkpointing": False},
 ]
 
+# 2026-10-04: minimax の TE・DiT を bf16 ファイルから読む（lora_worker_core.apply_minimax_h3_te）検証。
+# 比較対象は上の gc 有効側の 2026-09-20 実測（量子化版: warmup_s 400.9・spi 0.688・peak 94.64GB）と同じ条件。
+# 見るもの: 素の ai-toolkit で bf16 が読めるか・warmup_s（逆量子化が消えた分だけ縮むはず）・spi と peak が変わらないか。
+PLANS["bf16_base"] = [
+    {**_REAL_CONFIG, "tier": "b300", "gradient_checkpointing": True},
+]
+
 # チェックポイント保存のコスト検証。
 #
 # ホストの実案件（2000step / save_every 250 / 静止画145枚）は約4時間かかったが、

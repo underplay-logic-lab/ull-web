@@ -791,12 +791,33 @@ def minimax_h3_te_path() -> str:
     return TARGET_MODELS["minimax_h3"]["text_encoder"]
 
 
+# DiT も同じ考え方（2026-10-04）: 配布元 Comfy-Org/MiniMax-H3 の minimax_h3_fl2va_pruned_bf16.safetensors（40.2GB）は
+# 学習で使っている pruned_int8_convrot の無圧縮版で、キー 532 個・形・ブロック数 50 が完全に一致する（HTTP Range で
+# ヘッダーだけ取り寄せて比較。違いは int8 の 200 個が bf16 なのと補助キーが無いことだけ）。読めば int8_convrot の
+# 逆量子化（約 270 秒）が起きない。以前「bf16 を渡したらキーが合わず落ちた」のは pruned でない方（66GB・キー 535）。
+# Volume に無いとき・env ULL_H3_DIT_BF16=0 のときは int8_convrot に戻る。
+H3_DIT_BF16 = f"{MODELS_DIR}/diffusion_models/minimax_h3_fl2va_pruned_bf16.safetensors"
+
+
+def minimax_h3_dit_path() -> str:
+    if os.environ.get("ULL_H3_DIT_BF16", "1") != "0" and os.path.isfile(H3_DIT_BF16):
+        return H3_DIT_BF16
+    return TARGET_MODELS["minimax_h3"]["unet"]
+
+
 def apply_minimax_h3_te(block: dict) -> None:
-    """minimax_h3 の model ブロックの TE を minimax_h3_te_path() に差し替える（ローダーが読むのは model_kwargs 側）。"""
+    """minimax_h3 の model ブロックの TE・DiT を bf16 に差し替える（無ければ量子化版。ローダーが読むのは model_kwargs 側）。"""
     te = minimax_h3_te_path()
     block["text_encoder_path"] = te
-    block["model_kwargs"] = {**(block.get("model_kwargs") or {}), "text_encoder_path": te}
+    dit = minimax_h3_dit_path()
+    block["name_or_path"] = dit
+    block["model_kwargs"] = {
+        **(block.get("model_kwargs") or {}),
+        "text_encoder_path": te,
+        "dit_fl2va_pruned_path": dit,
+    }
     print(f"[minimax] text encoder: {te}", flush=True)
+    print(f"[minimax] transformer: {dit}", flush=True)
 
 # FLUX.1 [dev] is blocked outright (non-commercial licence). Matches
 # "flux dev", "flux-dev", "FLUX.1-dev", "black-forest-labs/FLUX.1-dev", ...
