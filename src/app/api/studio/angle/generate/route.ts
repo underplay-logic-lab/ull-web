@@ -7,7 +7,7 @@ import { advanceQueue, saveDispatchSpec } from "@/lib/studioQueue.server";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { angleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import { downloadStudioUpload, deleteStudioUploads } from "@/lib/studioUploads.server";
-import { translateSceneInstructions } from "@/lib/sceneInstructionTranslate.server";
+import { SceneTranslateError, translateSceneInstructions } from "@/lib/sceneInstructionTranslate.server";
 import {
   angleComboSubRefIndexes,
   angleCreditsPerAngle,
@@ -304,15 +304,21 @@ export async function POST(request: Request) {
   const sceneInstructionSets = sceneSets
     ? scenes!.map((sc) => (typeof sc.set === "number" && sc.set >= 0 && sc.set < imageSets!.length ? sc.set : 0))
     : null;
-  // 素材づくりの自由入力（場面・ポーズ・服装・追加指示）は日本語で書ける。指示に日本語が混ざっていれば
-  // 英訳してからワーカーへ（失敗時は原文のまま＝生成は止めない）。文ごと機械翻訳すると英文中の日本語の語を
-  // 落としていたので、文脈ごと Gemini で訳す（2026-10-03、sceneInstructionTranslate.server.ts）。
+  // 素材づくりの自由入力（場面・ポーズ・服装・追加指示）は日本語で書ける。指示の中の日本語の語句を Gemini で
+  // 英訳してからワーカーへ（2026-10-03、sceneInstructionTranslate.server.ts）。訳せなければ課金前にエラーで止める
+  // （日本語のまま送ると指定が黙って無視され、料金だけかかる。ジョブ 5834d0ca でピースが 1 枚も出なかった）。
   if (rawPrompt) {
-    const translated = await translateSceneInstructions(
-      scenes!.map((sc) => sc.instruction),
-      user.id,
-    );
-    scenes!.forEach((sc, i) => (sc.instruction = translated[i]));
+    try {
+      const translated = await translateSceneInstructions(
+        scenes!.map((sc) => sc.instruction),
+        user.id,
+      );
+      scenes!.forEach((sc, i) => (sc.instruction = translated[i]));
+    } catch (err) {
+      if (!(err instanceof SceneTranslateError)) throw err;
+      console.error("[studio/angle/generate] scene translate failed:", err.phrases);
+      return NextResponse.json({ error: err.message }, { status: 503 });
+    }
   }
   const combos = rawPrompt
     ? scenes!.map((sc) => ({ instruction: sc.instruction, labelJa: sc.label }))
