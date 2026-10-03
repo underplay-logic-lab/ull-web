@@ -8,6 +8,7 @@ import {
   type UpscaleImageQueueSpec,
   type UpscaleVideoSpec,
 } from "@/lib/upscaleDispatch.server";
+import { dispatchDirectorJob, type DirectorDispatchSpec } from "@/lib/directorDispatch.server";
 import { deleteStudioUploads } from "@/lib/studioUploads.server";
 
 /**
@@ -68,6 +69,13 @@ const KINDS: Partial<Record<QueueKind, KindDef>> = {
     match: { media_type: "video" },
     dispatch: (jobId, userId, spec) => dispatchUpscaleVideo(jobId, userId, spec as UpscaleVideoSpec),
     uploads: (spec) => [(spec as UpscaleVideoSpec).storagePath],
+  },
+  director: {
+    table: "generation_jobs",
+    match: { workflow_type: "director" },
+    dispatch: (jobId, userId, spec) => dispatchDirectorJob(jobId, userId, spec as DirectorDispatchSpec),
+    // 参照画像は作り直し用に 14 日残す（取り消しても消さない。作り直しの元が同じ画像のこともある）。
+    uploads: () => [],
   },
 };
 
@@ -132,7 +140,7 @@ async function failAndRefund(def: KindDef, jobId: string, userId: string, messag
     .update({
       status: "failed",
       error_message: `ジョブの起動に失敗しました: ${message}`.slice(0, 500),
-      ...(def.table === "generation_jobs" ? {} : { metadata: { ...meta, ...(refunded && cost > 0 ? { refunded: true } : {}) } }),
+      metadata: { ...meta, ...(refunded && cost > 0 ? { refunded: true } : {}) },
     })
     .eq("id", jobId);
 }

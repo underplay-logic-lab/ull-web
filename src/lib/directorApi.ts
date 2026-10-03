@@ -6,6 +6,8 @@ export type DirectorApiError = Error & { remainingCredits?: number };
 
 export type DirectorStartResult = {
   jobId: string;
+  /** 予約として受け付けた（まだ始まっていない）。queue: true で、前のジョブが動いているとき。 */
+  reserved: boolean;
   creditsCost: number;
   remainingCredits: number;
   totalDurationS: number;
@@ -45,6 +47,8 @@ export type DirectorStartArgs = (
   quality: DirectorQualityMode;
   /** true: 実行中のジョブを待たず並列で今すぐ実行（追加料金）。既定 false = 順番待ち。 */
   priority?: boolean;
+  /** true: 予約（順番待ち）。その場で課金し、前のジョブが終わったらサーバーが起動する（タブを閉じても進む）。 */
+  queue?: boolean;
   /** LoRA選択（全モード共通、2026-09-18追加）。省略/"none" はLoRAなし。 */
   lora?: DirectorLoraSelection;
 };
@@ -77,7 +81,7 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
   }
 
   const priority = args.priority ?? false;
-  const loraFields = { loraId, loraUploadVolumePath };
+  const loraFields = { loraId, loraUploadVolumePath, ...(args.queue ? { queue: true } : {}) };
   const body =
     "conceptText" in args && args.conceptText !== undefined
       ? {
@@ -119,6 +123,7 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
   }
   return {
     jobId: data.jobId as string,
+    reserved: data.reserved === true,
     creditsCost: data.creditsCost as number,
     remainingCredits: data.remainingCredits as number,
     totalDurationS: data.totalDurationS as number,
@@ -137,6 +142,7 @@ export async function regenerateDirectorJob(args: {
   rawDurationS?: number;
   quality?: DirectorQualityMode;
   priority?: boolean;
+  queue?: boolean;
 }): Promise<DirectorStartResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -154,6 +160,7 @@ export async function regenerateDirectorJob(args: {
   }
   return {
     jobId: data.jobId as string,
+    reserved: data.reserved === true,
     creditsCost: data.creditsCost as number,
     remainingCredits: data.remainingCredits as number,
     totalDurationS: data.totalDurationS as number,
@@ -421,7 +428,8 @@ export async function downloadDirectorVideo(url: string, filename: string): Prom
 
 export type DirectorJobStatus = {
   jobId: string;
-  status: "queued" | "processing" | "completed" | "failed";
+  /** reserved = 予約（順番待ち）。前のジョブが終わるとサーバーが起動して queued へ（2026-10-03）。 */
+  status: "reserved" | "queued" | "processing" | "completed" | "failed";
   videoUrl: string | null;
   errorMessage: string | null;
   vramUsedGb: number | null;

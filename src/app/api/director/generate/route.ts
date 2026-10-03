@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { rememberGenerationCall } from "@/lib/modalCallRecord.server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
@@ -35,7 +34,8 @@ import {
 import { buildCinematicWorkflow, CINEMATIC_PROMPT_NODE_ID } from "@/lib/cinematicWorkflow";
 import { assertOwnedDirectorLoraVolumePath } from "@/lib/directorLoraUpload.server";
 import { CINEMATIC_MODE_BY_ID, cinematicMegapixels, cinematicSafeDimensions } from "@/lib/cinematicPricing";
-import { spawnDirectorJob } from "@/lib/modalDirector";
+import { dispatchDirectorJob, type DirectorDispatchSpec } from "@/lib/directorDispatch.server";
+import { advanceQueue, saveDispatchSpec } from "@/lib/studioQueue.server";
 import {
   CONTENT_POLICY_BLOCK_MESSAGE,
   evaluateContentPolicyMany,
@@ -80,6 +80,8 @@ export async function POST(request: Request) {
   //   variation "same_seed" … この動画をもとに調整（同じシードで、編集した rawPrompt や画質を変えて作り直す）
   // 台本は AI が毎回書き直すので、シードだけ固定しても再現しない。台本ごと引き継ぐのはそのため。
   const baseJobId = typeof body.baseJobId === "string" ? body.baseJobId : "";
+  // 予約（2026-10-03、lib/studioQueue.server.ts）: 課金して行を reserved で作り、順番が来たらサーバーが起動する。
+  const queue = body.queue === true;
   let reusingScript = false;
   if (baseJobId) {
     const { data: baseJob } = await supabaseAdmin
@@ -262,7 +264,8 @@ export async function POST(request: Request) {
     (breakdown.credits || directorCreditsWorstCase(knobs)) + (isAdvancedMode ? directorQwenScriptSurcharge(knobs) : 0);
   // 「実行中でも並列で今すぐ実行」を選んだ場合の追加コールドスタート分
   // （順番待ち=無料の既定に対するオプトインの上乗せ。CLAUDE.md §6参照）。
-  const priority = body.priority === true || body.priority === "true";
+  // 予約は並列の追加料金を取らない（順番待ち）。
+  const priority = !queue && (body.priority === true || body.priority === "true");
   const creditsCost = priority
     ? baseCreditsCost + directorPriorityParallelSurcharge(knobs, baseCreditsCost)
     : baseCreditsCost;
@@ -416,7 +419,7 @@ export async function POST(request: Request) {
     .from("generation_jobs")
     .insert({
       user_id: user.id,
-      status: "queued",
+      status: queue ? "reserved" : "queued",
       workflow_type: "director",
       inputs: directorInputsSnapshot,
       credits_cost: creditsCost,
@@ -472,25 +475,47 @@ export async function POST(request: Request) {
     seed,
   });
 
-  try {
-    const { callId: modalCallId } = await spawnDirectorJob({
+  const spec: DirectorDispatchSpec = {
+    storagePath,
+    creditsCost,
+    workflow,
+    referenceImageName,
+    pollDeadlineS: directorPollDeadlineS(breakdown.totalDurationS, qualityMode),
+    qwenConceptText: isAdvancedMode ? conceptTextInput : undefined,
+    qwenTextInstruction,
+    qwenPromptNodeId: isAdvancedMode || qwenTextInstruction ? CINEMATIC_PROMPT_NODE_ID : undefined,
+    qwenDurationS: isAdvancedMode ? breakdown.totalDurationS : undefined,
+    directorInputsSnapshot: isAdvancedMode || qwenTextInstruction ? directorInputsSnapshot : undefined,
+    loraVolumePath,
+    loraFilename: loraVolumePath ? loraName : undefined,
+  };
+
+  // --- 予約: 起動の引数を残して、順番が来ていればその場で起動 ----------------
+  // 参照画像は作り直し用に 14 日残す設計なので、予約の間も消えない。
+  if (queue) {
+    try {
+      await saveDispatchSpec("director", jobId, user.id, JSON.parse(JSON.stringify(spec)));
+    } catch (err) {
+      console.error("[director/generate] save spec failed:", (err as Error).message);
+      await supabaseAdmin.from("generation_jobs").delete().eq("id", jobId);
+      await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+      return NextResponse.json(
+        { error: "予約に失敗しました。しばらくしてから再度お試しください。", remainingCredits: currentCredits },
+        { status: 500 },
+      );
+    }
+    const started = await advanceQueue("director", user.id);
+    return NextResponse.json({
       jobId,
-      userId: user.id,
+      reserved: started !== jobId,
       creditsCost,
-      workflow,
-      referenceImageName,
-      referenceImageB64: imageBuffer.toString("base64"),
-      pollDeadlineS: directorPollDeadlineS(breakdown.totalDurationS, qualityMode),
-      qwenConceptText: isAdvancedMode ? conceptTextInput : undefined,
-      qwenTextInstruction,
-      qwenPromptNodeId: isAdvancedMode || qwenTextInstruction ? CINEMATIC_PROMPT_NODE_ID : undefined,
-      qwenDurationS: isAdvancedMode ? breakdown.totalDurationS : undefined,
-      directorInputsSnapshot: isAdvancedMode || qwenTextInstruction ? directorInputsSnapshot : undefined,
-      loraVolumePath,
-      loraFilename: loraVolumePath ? loraName : undefined,
+      remainingCredits: debitedCredits,
+      totalDurationS: breakdown.totalDurationS,
     });
-    // admin の中止ボタンが Modal の実行まで止められるよう、実行 id を残す（best-effort）。
-    await rememberGenerationCall(jobId, modalCallId);
+  }
+
+  try {
+    await dispatchDirectorJob(jobId, user.id, spec, imageBuffer.toString("base64"));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[director/generate] dispatch failed:", message);
@@ -511,6 +536,7 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     jobId,
+    reserved: false,
     creditsCost,
     remainingCredits: debitedCredits,
     totalDurationS: breakdown.totalDurationS,
