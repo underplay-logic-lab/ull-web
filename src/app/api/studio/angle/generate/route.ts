@@ -54,7 +54,8 @@ const VALID_IDS: Record<keyof AngleSelection, Set<string>> = {
   distances: new Set(DISTANCE_OPTIONS.map((o) => o.id)),
 };
 
-const MAX_SCENES_PER_JOB = 64;
+// 素材づくりの残りを 1 本で送る（SCENE_REST_BATCH_SIZE = 96、2026-10-03）。
+const MAX_SCENES_PER_JOB = 96;
 const MAX_SCENE_INSTRUCTION_CHARS = 500;
 const MAX_SCENE_LABEL_CHARS = 120;
 

@@ -437,6 +437,8 @@ export function rebodyScenePlan(rest: ScenePlanItem[], sel: SceneSelection, tota
 
 export type SceneBatchOptions = {
   subCount: number;
+  /** 確認の後のジョブの区切り（実行ごとに保存した値。無ければ SCENE_REST_BATCH_SIZE）。 */
+  restSize?: number;
   closeMain: CloseMainMap;
   /** メイン画像から自動で切り出した寄りの元があるか（構図ごと）。参照の指定が無いときに使う。 */
   derived?: Partial<Record<CloseFraming, boolean>>;
@@ -521,18 +523,22 @@ export function orderPlanForBatches(
 }
 
 /** 確認の後の塊の大きさ。ワーカーが行ごとの画像セットを受けられるので（2026-09-28）、種類が違っても 1 ジョブにまとめる。 */
-export const SCENE_REST_BATCH_SIZE = 16;
+// 2026-10-03: 16 → 96。続きのジョブは画面が前のジョブの完了を見てから送るので、タブを閉じると残りが作られなかった
+// （お客さんでも起きる）。残りを 1 本にまとめて送れば閉じても最後まで流れる。実測 1 枚 約 38 秒（16 枚 600 秒）で
+// 96 枚 ≈ 61 分＝ワーカーの強制上限 2 時間の約半分。API の 1 ジョブ上限（MAX_SCENES_PER_JOB）と揃える。
+export const SCENE_REST_BATCH_SIZE = 96;
+/** 2026-10-03 より前に始めた実行の区切り（保存済みの run に restBatchSize が無いとき）。途中で区切りを変えると完了数がずれる。 */
+export const LEGACY_SCENE_REST_BATCH_SIZE = 16;
 
 /**
  * prefixLen（最初に確認する行）の境界でだけジョブを分け、前半は SCENE_BATCH_SIZE、後半は SCENE_REST_BATCH_SIZE ずつに切る。
  * 元画像の種類が違う行も同じジョブに入る（行ごとの画像セット）。
  */
 export function planBatches(plan: ScenePlanItem[], opt: SceneBatchOptions, prefixLen = 0): SceneBatch[] {
-  void opt;
   const out: SceneBatch[] = [];
   const cut = Math.max(0, Math.min(plan.length, prefixLen));
   for (const items of chunkPlan(plan.slice(0, cut), SCENE_BATCH_SIZE)) out.push({ items, group: "mixed", useRefs: false });
-  for (const items of chunkPlan(plan.slice(cut), SCENE_REST_BATCH_SIZE)) out.push({ items, group: "mixed", useRefs: false });
+  for (const items of chunkPlan(plan.slice(cut), opt.restSize ?? SCENE_REST_BATCH_SIZE)) out.push({ items, group: "mixed", useRefs: false });
   return out;
 }
 

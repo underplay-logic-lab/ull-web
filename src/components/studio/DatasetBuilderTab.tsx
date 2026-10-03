@@ -44,6 +44,7 @@ import {
   SCENE_DEFAULT_COUNT,
   SCENE_MAX_COUNT,
   SCENE_REST_BATCH_SIZE,
+  LEGACY_SCENE_REST_BATCH_SIZE,
   sceneCreditsPerImage,
   scenePlanInstruction,
   scenePlanLabel,
@@ -216,6 +217,8 @@ type PersistedRun = {
    */
   pendingSince?: number;
   pendingTotal?: number;
+  /** 確認の後のジョブの区切り（2026-10-03〜。無い＝それ以前の実行で 16）。 */
+  restBatchSize?: number;
 };
 
 /** run の行ごとの参照・切り出しの設定（料金・バッチ分けに使う）。 */
@@ -228,6 +231,7 @@ function runBatchOpt(r: PersistedRun): SceneBatchOptions {
     hasSideRef: r.hasSideRef,
     hasDiagRef: Boolean(r.hasDiagRef),
     faceRefFor: r.faceRefFor ?? {},
+    restSize: r.restBatchSize ?? LEGACY_SCENE_REST_BATCH_SIZE,
   };
 }
 
@@ -644,6 +648,7 @@ export function DatasetBuilderTab() {
           hasDiagRef: Boolean(r.hasDiagRef),
           faceRefFor: r.faceRefFor && typeof r.faceRefFor === "object" ? r.faceRefFor : {},
           ...(typeof r.pendingSince === "number" ? { pendingSince: r.pendingSince, pendingTotal: Number(r.pendingTotal ?? 0) } : {}),
+          restBatchSize: typeof r.restBatchSize === "number" ? r.restBatchSize : LEGACY_SCENE_REST_BATCH_SIZE,
         }
       : null;
   });
@@ -998,7 +1003,9 @@ export function DatasetBuilderTab() {
       subCount,
       closeMain,
       derived: derivedFlags,
-      prefixLen: ordered.prefixLen,
+      // 確認しないときは先頭で区切らず、全部を大きいジョブで送る（タブを閉じても最後まで流れる、2026-10-03）。
+      prefixLen: confirmFirst ? ordered.prefixLen : 0,
+      restBatchSize: SCENE_REST_BATCH_SIZE,
       hasBackRef: Boolean(refBack),
       hasSideRef: Boolean(refSide),
       hasDiagRef: Boolean(refDiag),
@@ -1856,7 +1863,7 @@ export function DatasetBuilderTab() {
                   このジョブ {activeJob.completedAngles} / {activeJob.totalAngles} 枚・全体 {producedTotal} / {plannedTotal} 枚（{formatElapsedSeconds(elapsedMs)}s）
                 </p>
                 <p className="mt-1 text-center text-[10px] text-muted/70">
-                  全身・上半身・バストアップ・真横・後ろの行は 1 つのジョブにまとめて流れます（最初の確認分のあとは {SCENE_REST_BATCH_SIZE} 枚ずつ）。
+                  全身・上半身・バストアップ・真横・後ろの行は 1 つのジョブにまとめて流れます（最初の確認分のあとは {run?.restBatchSize ?? LEGACY_SCENE_REST_BATCH_SIZE} 枚ずつ）。
                 </p>
                 {activeJob.vramUsedGb != null && (
                   <div className="mt-2 flex justify-center">
