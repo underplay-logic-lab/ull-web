@@ -1627,7 +1627,7 @@ export function MultiAngleStudioTab() {
               {buttonLabel}
             </button>
             <GenerationCaveat>
-              AI による生成のため、指定した向きにならないことがあります（特に斜め）。生成後に向きを自動で確かめ、違っていれば作り直します。
+              AI による生成のため、指定した向きや角度にならないことがあります。
             </GenerationCaveat>
             {user && (
               <div className="mt-2">
