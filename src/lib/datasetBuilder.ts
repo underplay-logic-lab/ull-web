@@ -201,12 +201,19 @@ function chip(axis: SceneAxis, id: string): SceneChip {
 }
 
 /** ワーカーへ送る英語の指示（構図・向きを先頭に、本文、同一性の順）。本文が日本語なら API 側で英訳される。 */
+// 斜め・真横の左右（2026-10-03 ホスト判断）。左右を書かないとモデルの癖で向かって右ばかりになる。
+// 向きにくい左を常に指定し、たまに左を向けば偏りがならされる程度でよい（交互に指定する案は不要とされた）。
+function viewEn(item: ScenePlanItem): string {
+  if (item.viewId === "three_quarter") return "in a three-quarter view, with the body and face turned toward the left side of the image";
+  if (item.viewId === "side") return "in profile view from the side, facing the left side of the image";
+  return chip("views", item.viewId).en;
+}
+
 export function scenePlanInstruction(item: ScenePlanItem): string {
   const framing = chip("framings", item.framingId);
-  const view = chip("views", item.viewId);
   const body = (item.custom ?? "").trim() || item.bodyEn;
   const identity = /\bwearing\b/.test(body) ? IDENTITY_EN_NEW_OUTFIT : IDENTITY_EN;
-  return `${framing.en}, ${view.en}. ${body.replace(/[。.]\s*$/, "")}. ${identity}`;
+  return `${framing.en}, ${viewEn(item)}. ${body.replace(/[。.]\s*$/, "")}. ${identity}`;
 }
 
 /** 一覧・結果のラベル（日本語）。 */

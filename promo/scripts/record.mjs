@@ -235,6 +235,20 @@ page.on("crash", () => console.error(`[落ちた] ページがクラッシュ（
 page.on("close", () => console.log(`[終了] ページが閉じた（${(rel(Date.now()) ?? -1) / 1000} 秒）`));
 context.browser()?.on("disconnected", () => console.log("[終了] ブラウザとの接続が切れた"));
 page.on("pageerror", (e) => console.error(`[ページのエラー] ${String(e).slice(0, 200)}`));
+// ダウンロード（2026-10-03）: 完了時の自動保存・ZIP 保存の直後にページが閉じて録画が終わっていた。
+// 受け止めて out/downloads/ に保存し、何が起きたかをログに出す。別タブが開いた場合もログに出す。
+page.on("download", async (d) => {
+  const to = path.join(root, "out", "downloads", d.suggestedFilename());
+  console.log(`[ダウンロード] ${d.suggestedFilename()}（${(rel(Date.now()) ?? -1) / 1000} 秒）`);
+  try {
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    await d.saveAs(to);
+    console.log(`[ダウンロード] 保存: ${to}`);
+  } catch (e) {
+    console.error(`[ダウンロード] 失敗: ${String(e).slice(0, 200)}`);
+  }
+});
+context.on("page", (p) => console.log(`[別タブ] ${p.url()}（${(rel(Date.now()) ?? -1) / 1000} 秒）`));
 // 名前が demo のときは自動で動かして閉じる（仕組みの動作確認用。人が触らなくても一通り撮れる）。
 if (name === "demo") {
   const m = page.mouse;
