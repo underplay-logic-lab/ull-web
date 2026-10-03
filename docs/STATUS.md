@@ -593,7 +593,9 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 
 **→ 次の ULL再開で出す上位 3 つ（2026-10-03 夕方に更新）**
 0. **【最優先・ローンチ後の不具合】予約（順番待ち）をサーバー側で流す**（ホスト承認済みの方針 2026-10-03）。
-   **進捗（2026-10-03 夜）: 共通の仕組み＋Multi-Angle を実装・コミット済み・未 push**。
+   **進捗（2026-10-03 夜）: 4 タブとも実装・push 済み・マイグレーション／Vault／Vercel env も適用済み**。
+   **本番確認: Multi-Angle で予約→タブを閉じる→1 件目完了の数秒後に 2 件目が自動起動（a4484d8c→eb9d95b9）＝ DB トリガー経路 OK**。
+   超解像（画像 1 枚・まとめ・動画）と Director は同じ仕組みで、実機の予約はまだ試していない。
    - 共通: `src/lib/studioQueue.server.ts`（advanceQueue・取り消し・日次掃除）／`/api/studio/queue`（一覧・取り消し）／
      `/api/studio/queue/advance`（Bearer ユーザー or `STUDIO_QUEUE_SECRET`）／画面側 `src/lib/studioQueue.ts`。起動の引数は `studio_dispatch_specs`。
      取り出しは DB 関数 `claim_next_reserved_job`（advisory lock で二重起動しない）。取り消しは reserved の行ごと削除＋全額返金。
@@ -602,7 +604,8 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
      （閉じている間に始まった分は `multi-angle-reserved-jobs` から追う）。
    - **出す順番: ① `supabase/migrations/20260895000000_studio_server_queue.sql` を適用（3 表の reserved・pg_net トリガー）
      ② Vault に 2 つ登録（ファイル冒頭の SQL）＋ Vercel に `STUDIO_QUEUE_SECRET`（Vault の studio_queue_secret と同じ値）③ push**。①より先に push すると予約が制約で失敗する（返金はされる）。
-   - 残り: 画像超解像・動画超解像・Director を同じ仕組みへ（`KINDS` に dispatcher を足す。マイグレーションは 3 表とも済み）。
+   - 超解像のまとめ: 予約の引数は先頭の行に持ち、起動時に同じまとめの行をまとめて pending へ。画面は reserved の行を一覧に足してポーリングで追う。
+   - Director: 参照画像は作り直し用に残すので、予約の取り消しでも消さない。
    今の予約は画面のメモリ（各タブの `queuedNext`）にだけあり、前のジョブの完了を画面が見てから送る＝**タブを閉じると予約が消える**
    （課金はされない）。対象 4 タブ: Director（`generation_jobs`・job_type director）／Multi-Angle（`angle_jobs`）／画像超解像（`upscale_jobs`
    image・単発と batch）／動画超解像（`upscale_jobs` video）。止血は済み（`QueuedNextBanner` に「タブを開いている間だけ有効」＋閉じる前の確認、`a969f8f`）。
