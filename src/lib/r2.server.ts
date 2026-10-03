@@ -100,18 +100,39 @@ function sanitizeLabel(v: string): string {
   return v.trim().toLowerCase().replace(/[^a-z0-9._@+-]/g, "_").slice(0, 120);
 }
 
+// 2026-10-03: 問い合わせの失敗で `nomail_<id>` を返すと、その 1 件だけ読む側（email の置き場所を探す）と
+// 食い違って見つからなくなる（LoRA の 52 枚を並列に署名したら 1 枚だけ nomail に置かれ、学習が前処理で止まった）。
+// 同時の問い合わせは 1 本にまとめ、失敗はやり直し、それでも駄目なら throw する（間違った場所に書かない）。
+// `nomail_` は「メールが本当に無い」ときだけ（こちらはキャッシュする）。
+const userRootInflight = new Map<string, Promise<string>>();
+
+async function lookupUserRoot(userId: string): Promise<string> {
+  let lastError = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 300 * attempt));
+    const { data, error } = await supabaseAdmin.from("profiles").select("email").eq("id", userId).maybeSingle();
+    if (error) {
+      lastError = error.message;
+      console.error("[r2] user root lookup failed:", userId.slice(0, 8), `attempt ${attempt + 1}:`, error.message);
+      continue;
+    }
+    const label = sanitizeLabel(typeof data?.email === "string" ? data.email : "");
+    const root = label ? `${label}_${userId.slice(0, 8)}` : `nomail_${userId}`;
+    userRootCache.set(userId, root);
+    return root;
+  }
+  throw new Error(`保存先の確認に失敗しました。もう一度お試しください。（${lastError}）`);
+}
+
 export async function r2UserRoot(userId: string): Promise<string> {
   const hit = userRootCache.get(userId);
   if (hit) return hit;
-  const { data, error } = await supabaseAdmin.from("profiles").select("email").eq("id", userId).maybeSingle();
-  if (error) {
-    console.error("[r2] user root lookup failed:", userId.slice(0, 8), error.message);
-    return `nomail_${userId}`; // not cached: retry next time
+  let p = userRootInflight.get(userId);
+  if (!p) {
+    p = lookupUserRoot(userId).finally(() => userRootInflight.delete(userId));
+    userRootInflight.set(userId, p);
   }
-  const label = sanitizeLabel(typeof data?.email === "string" ? data.email : "");
-  const root = label ? `${label}_${userId.slice(0, 8)}` : `nomail_${userId}`;
-  userRootCache.set(userId, root);
-  return root;
+  return p;
 }
 
 /** Volume-relative `<kind>/<user_id>/<rest>` -> `<root>/<kind>/<rest>`. */
