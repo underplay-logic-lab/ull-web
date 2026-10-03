@@ -591,8 +591,30 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 （「やりたいことが叶う・要望で育てるサイト」。料金など細かい話はしない）。新規登録（Google・メール）・パスワード再設定・決済は確認済み。
 （訪問は Cloudflare → Web Analytics、登録は Supabase の Users で見る。Discord の反応はホストが来たら伝える方針なので予定に載せない）
 
-**→ 次の ULL再開で出す上位 3 つ（2026-10-02 深夜に更新）**
-1. **2 本目の操作動画: 本命の「素材づくり → LoRA Studio → Director」をひなたで**（1 本目 Multi-Angle は公開済み）。
+**→ 次の ULL再開で出す上位 3 つ（2026-10-03 夕方に更新）**
+0. **【最優先・ローンチ後の不具合】予約（順番待ち）をサーバー側で流す**（ホスト承認済みの方針 2026-10-03）。
+   今の予約は画面のメモリ（各タブの `queuedNext`）にだけあり、前のジョブの完了を画面が見てから送る＝**タブを閉じると予約が消える**
+   （課金はされない）。対象 4 タブ: Director（`generation_jobs`・job_type director）／Multi-Angle（`angle_jobs`）／画像超解像（`upscale_jobs`
+   image・単発と batch）／動画超解像（`upscale_jobs` video）。止血は済み（`QueuedNextBanner` に「タブを開いている間だけ有効」＋閉じる前の確認、`a969f8f`）。
+   設計:
+   - 予約時に生成 API を `queue: true` で呼ぶ → 検証・**課金はその場で**・ジョブ行を新しい状態 **`reserved`** で作る（`generation_jobs` は
+     `queued` を「起動済みの待機」に使っているので別名にする）。起動に要る引数は service_role だけが読む表（例 `studio_dispatch_specs`）に保存。
+     画像・動画の本体は入れず置き場所だけ: Multi-Angle はアップロードを**起動まで消さない**（今は読んだ直後に `deleteStudioUploads`）／
+     超解像は署名 URL の期限が切れるので**保存先パスを持って起動時に署名し直す**／Director は参照画像（14 日残す `reference_storage_path`）から読み直す。
+     その人の同じ種類のジョブが動いていなければその場で起動。
+   - 起動役 `advanceQueue(kind, userId)`（Next、`/api/studio/queue/advance`）: 同じ種類で pending/processing が無ければ、`reserved` の古い順 1 件を
+     `update … where status='reserved'` で取って（二重起動防止）起動・失敗なら返金。きっかけ: ① **DB トリガー**（完了/失敗に変わったら `pg_net` で
+     advance を叩く。完了 30 秒のウォーム内に間に合う）② 画面が開いていれば完了を見て advance ③ 画面を開いたときにも advance。
+   - 状態の制約（check）に `reserved` を足す・生成ログのトリガーは completed/failed だけなので影響なし・admin の中止（`admin/upscale/abort` 等）に reserved の返金を足す。
+   - 予約の取り消し（今ある「予約を取り消す」）は reserved のうちだけ返金して取り消せるようにする（始まったら完走のルールは不変）。
+   - 画面: 予約一覧を DB の reserved から出す（リロードしても見える）・完了したら次のジョブ id を追いかける。止血の文言は外す。
+   - マイグレーション（check 追加・dispatch 表＋GRANT・pg_net トリガー）はファイルパスだけ伝える（§4）。ワーカーのデプロイは不要の見込み。
+   **同日に直した素材づくりの同種の問題**: 続きのジョブも画面が送っていた → 確認後の残りを 1 本で送る・上限 100 枚（`eecb5b4`）。
+1. **2 本目の操作動画: 本命の「素材づくり → LoRA Studio → Director」をひなたで**（**撮影途中 2026-10-03**: 素材づくりの録画
+   `hinata-dataset1`〜`4`（参照づくり）・`4b`（シーン設定〜最初の 8 枚）・`5b`（確認〜続き）が使える。`5`・`4` の後半は不具合で撮り直し済み＝使わない。
+   48 枚のうち 8＋16 枚ができた（作りかけの実行は 16 枚区切りのまま）。**次は録画 6: 続きを作る（残り 16＋8 枚・48 枚そろうまでタブを開いたまま）→
+   崩れを外す → LoRA Studio へ**。録画用 Chrome が閉じたのはダウンロード（自動保存・ZIP）の直後 → `record.mjs` で受け止めて `promo/out/downloads/` に保存するようにした（効果は未確認）。
+   台本: こだわり・ポーズ「ピースする」場面「桜並木」を自由入力・48 枚（8 の倍数で崩れを外す前提）。）（1 本目 Multi-Angle は公開済み）。
    顔アップは `promo/characters/hinata_face_v1_3x4.png`。LoRA Studio はモデル名が画面に映るので、**先に 3 のモデル名の方針を決める**。
    撮り方（1 本目で固まった手順・`promo/README.md`）: `node promo/scripts/record.mjs <名前> <URL>`（Claude が実行・解像度 2 倍・F8 でメモ）→
    **生成とプレビューは別の録画に分ける**（録画用 Chrome は完了 10〜20 秒後にページが閉じる・原因未特定）→ `edit.json` を整える
