@@ -51,6 +51,7 @@ from lora_worker_core import (  # noqa: F401
     SafetyLimitError,
     TARGET_MODELS,
     VLM_PATH,
+    apply_minimax_h3_te,
     _LORA_SAMPLING_ON,
     _RUNTIME_QUANT_SHIM,
     _RUN_METRICS,
@@ -293,6 +294,7 @@ def _cloud_safe_model_block(
         # are ignored by it) — see TARGET_MODELS["minimax_h3"].
         if isinstance(h3.get("model_kwargs"), dict):
             block["model_kwargs"] = dict(h3["model_kwargs"])
+        apply_minimax_h3_te(block)
         return block
 
     safe = None
@@ -762,6 +764,8 @@ def _build_config(
     # already snapshotted, not a Comfy-Org single file it would fetch on GPU).
     if isinstance(target.get("model_kwargs"), dict):
         model_block["model_kwargs"] = {**target["model_kwargs"], **model_block.get("model_kwargs", {})}
+    if target.get("arch") == "minimax_h3":
+        apply_minimax_h3_te(model_block)
 
     config = {
         "job": "extension",
@@ -1555,8 +1559,21 @@ try:
                         flush=True,
                     )
 
-            # --- normal load: nvfp4 read + AWQ unpack -----------------------
-            result = _ull_te_orig_load(self)
+            # --- normal load (2026-10-04〜 bf16 TE by default, else nvfp4 + AWQ unpack) ---
+            try:
+                result = _ull_te_orig_load(self)
+            except Exception as _le:  # noqa: BLE001
+                # bf16 TE（lora_worker_core.minimax_h3_te_path）で読めなければ nvfp4 で読み直す（保険）。
+                _mk = self.model_config.model_kwargs
+                _te = str(_mk.get("text_encoder_path") or "")
+                if not _te.endswith("_bf16.safetensors"):
+                    raise
+                print(
+                    f"[ULL][minimax] bf16 TE load failed ({_le!r}) — retrying with nvfp4",
+                    flush=True,
+                )
+                _mk["text_encoder_path"] = _te.replace("_bf16.safetensors", "_nvfp4_awq.safetensors")
+                result = _ull_te_orig_load(self)
 
             # --- BAKE: first run — dequantize to bf16 + persist -------------
             if not _ULL_H3_TE_DISABLED and not _ull_te_baked_ready():

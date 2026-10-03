@@ -773,6 +773,31 @@ TARGET_MODELS: dict[str, dict] = {
     },
 }
 
+
+# MiniMax H3 の TE は Director と同じ bf16 を直接読む（2026-10-04、docs/STATUS.md 次の一手 5）。
+# nvfp4_awq を読むと ai-toolkit が毎ジョブ CPU で bf16 へ逆量子化し、約 8 分かかっていた（DiT の約 4.5 分より重い）。
+# Director 用に Volume に既にある clip/qwen3vl_32b_minimax_h3_bf16.safetensors（51.5GB）は nvfp4 版と同じキー名・
+# 同じ 50 層で、ai-toolkit の _load_text_encoder の単一ファイル経路（model_kwargs.text_encoder_path）がそのまま読める
+# （modal_minimax_bf16_probe.py で CPU 検証: 器 903 キーに対し不足は意図的に外す final norm だけ・余り 0・形の不一致 0）。
+# 量子化層が 0 個になるので逆量子化そのものが起きない。容量増ゼロ・学習と推論で同じ TE になる。
+# DiT は推論が別の調整済みモデル（10Eros）で、ベースの bf16 版が Volume に無いので int8_convrot のまま。
+# 止めるときは env ULL_H3_TE_BF16=0（nvfp4 に戻る）。ファイルが無いときも nvfp4 に戻る。
+H3_TE_BF16 = f"{MODELS_DIR}/clip/qwen3vl_32b_minimax_h3_bf16.safetensors"
+
+
+def minimax_h3_te_path() -> str:
+    if os.environ.get("ULL_H3_TE_BF16", "1") != "0" and os.path.isfile(H3_TE_BF16):
+        return H3_TE_BF16
+    return TARGET_MODELS["minimax_h3"]["text_encoder"]
+
+
+def apply_minimax_h3_te(block: dict) -> None:
+    """minimax_h3 の model ブロックの TE を minimax_h3_te_path() に差し替える（ローダーが読むのは model_kwargs 側）。"""
+    te = minimax_h3_te_path()
+    block["text_encoder_path"] = te
+    block["model_kwargs"] = {**(block.get("model_kwargs") or {}), "text_encoder_path": te}
+    print(f"[minimax] text encoder: {te}", flush=True)
+
 # FLUX.1 [dev] is blocked outright (non-commercial licence). Matches
 # "flux dev", "flux-dev", "FLUX.1-dev", "black-forest-labs/FLUX.1-dev", ...
 _FLUX_DEV_RE = re.compile(r"flux[\s._-]*(?:1[\s._-]*)?dev\b", re.IGNORECASE)

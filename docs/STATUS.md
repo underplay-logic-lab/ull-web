@@ -653,16 +653,21 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 4. ~~超解像のまとめの結果を拡大~~ **済（2026-10-03、`f45e239`）**: サムネをクリックで拡大＋前後比較（`BatchLightbox`・← → で移動・保存ボタン）。
    保存はサムネ下のボタンへ。元画像はこのタブで選んだファイルがあるときだけ比較（リロード後は結果だけ）。本番での見た目確認はまだ。
 
-5. **minimax の学習を bf16 ベースにする調査**（ホスト発案 2026-10-03）。今は int8_convrot を毎ジョブ逆量子化（約 270 秒・`lora_prep_dequant_s`）、
-   Director の推論は `minimax_h3_fl2va_bf16.safetensors`＝学習と推論でベースが違う。壁は ai-toolkit の `MiniMaxH3Transformer` が
-   融合済み（`adaln_proj`）の state_dict に決め打ち（docs/gpu-benchmarks.md §14.8.5）。まずソースを読み、①読み込み時に bf16 を同じ形へ並べ替える
-   ②モデル定義を直す、のどちらで済むか確認（"convrot" が重みの回転なら名前の付け替えだけでは済まない）。CPU で通してから GPU 1 回（要承認）。
-   **実測（2026-10-03 c2c49dc9）**: TE（`qwen3vl_32b_minimax_h3_nvfp4_awq`）は読み込み 30.8 秒、その後の nvfp4→bf16 逆量子化（CPU）が**約 8 分**
-   ＝ DiT の約 4.5 分より重い。以前の Bake & Skip（DiT・TE を bf16 で Volume に焼く）は 85.5GB の容量のため 2026-09-14 に既定オフ。
-   **本命: Director 用に既にある `clip/qwen3vl_32b_minimax_h3_bf16.safetensors`（48GB）を学習の TE に直接使う**（容量増ゼロ・学習と推論で同じ TE）。
-   Bake & Skip の「空の器に state_dict を読む」経路（`lora_worker_train.py` の TE パッチ）をこのファイルに向ける。要確認: キー名・層数（学習は 50 層、
-   Director 用は全層の可能性 → 50 以降と lm_head は読み飛ばす）。DiT は推論が非 pruned の bf16 なので別途。デプロイは学習ジョブが無いときに。
-   ワーカー側 `ull_r2.py` の `user_root` も、問い合わせ失敗で nomail を返す同じ作り（Next 側は `0abe452` で直した）→ 次の Modal デプロイで揃える。
+5. **minimax の学習の TE を bf16 にする（毎ジョブ約 8 分の逆量子化を消す）**（ホスト発案 2026-10-03・**2026-10-04 実装・未デプロイ・GPU 確認は承認待ち**）
+   - **CPU で確認済み**（`modal_minimax_bf16_probe.py`、ヘッダーとソースを読むだけ・GPU なし）:
+     Director 用の `clip/qwen3vl_32b_minimax_h3_bf16.safetensors`（51.5GB）は nvfp4 版と**同じキー名・同じ 50 層**（量子化の補助キーが無いだけ）。
+     ai-toolkit の `_load_text_encoder` は `model_kwargs.text_encoder_path` の単一ファイルを、キー変換して器に読む作り＝bf16 ファイルも
+     そのまま通る（器 903 キーに対し、不足は ai-toolkit が元々外す final norm の 1 つだけ・余り 0・形の不一致 0・全部 BF16）。
+     量子化層が 0 個になるので逆量子化そのものが起きない。本番の設定組み立て（GUI・生 YAML とも）が bf16 を指すことも確認。
+   - 実装: `lora_worker_core.minimax_h3_te_path()` / `apply_minimax_h3_te()`（bf16 が無い・env `ULL_H3_TE_BF16=0` なら nvfp4）、
+     TE ラッパーに「bf16 で例外なら nvfp4 で読み直す」保険。容量増ゼロ・学習と推論で同じ TE になる。
+   - **DiT は対象外**: 本番 Director の DiT はベースではなく `10Eros_Max_h3_hybrid_beta5`（調整済みモデル）で、ベースの bf16 版は
+     Volume に無い（以前の STATUS の「Director は minimax_h3_fl2va_bf16」は旧ワークフローの記述）。DiT の int8_convrot 逆量子化（約 270 秒）は残る。
+   - **次（要承認）**: `modal run modal_lora_benchmark.py --plan smoke --confirm`（B300・minimax・8 枚・40 step・約 $3）で 1 回。
+     見るもの: ログ `[minimax] text encoder: …_bf16` → `[ULL][minimax][te-probe] _load_text_encoder TOTAL`（今は 30.8 秒＋逆量子化約 8 分）・
+     メモリ不足で落ちないか（CPU に 51.5GB 読む）・s/it と peak VRAM が従来どおりか。通ったら LoRA ワーカーを
+     **学習ジョブが無いときに**デプロイ。
+   - ワーカー側 `ull_r2.py` の `user_root` も、問い合わせ失敗で nomail を返す同じ作り（Next 側は `0abe452` で直した）→ 次の Modal デプロイで揃える。
 
 6. **Director で LoRA Studio の LoRA を使う**（2026-10-03 発覚・同日実装・ワーカーはデプロイ済み）。完成品は R2 へ移って Volume から消える・
    Director は Volume しか見ず名前も `_final` 付きで食い違い＝本番で一度も通っていなかった。
