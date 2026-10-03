@@ -1,6 +1,13 @@
 import "server-only";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { dispatchAngleJob, type AngleDispatchSpec } from "@/lib/angleDispatch.server";
+import {
+  dispatchUpscaleBatch,
+  dispatchUpscaleImage,
+  dispatchUpscaleVideo,
+  type UpscaleImageQueueSpec,
+  type UpscaleVideoSpec,
+} from "@/lib/upscaleDispatch.server";
 import { deleteStudioUploads } from "@/lib/studioUploads.server";
 
 /**
@@ -29,6 +36,8 @@ type KindDef = {
   dispatch: (jobId: string, userId: string, spec: unknown) => Promise<void>;
   /** 予約の取り消しで消すアップロード。 */
   uploads: (spec: unknown) => string[];
+  /** 1 つの予約で複数行を作る種類（超解像のまとめ）: 起動・返金をまとめて扱う行。無ければ取り出した 1 行だけ。 */
+  unitJobIds?: (spec: unknown) => string[] | null;
 };
 
 const KINDS: Partial<Record<QueueKind, KindDef>> = {
@@ -37,6 +46,28 @@ const KINDS: Partial<Record<QueueKind, KindDef>> = {
     match: {},
     dispatch: (jobId, userId, spec) => dispatchAngleJob(jobId, userId, spec as AngleDispatchSpec),
     uploads: (spec) => (spec as AngleDispatchSpec).storagePaths ?? [],
+  },
+  upscale_image: {
+    table: "upscale_jobs",
+    match: { media_type: "image" },
+    dispatch: (jobId, userId, spec) => {
+      const s = spec as UpscaleImageQueueSpec;
+      return s.type === "batch" ? dispatchUpscaleBatch(userId, s) : dispatchUpscaleImage(jobId, userId, s);
+    },
+    uploads: (spec) => {
+      const s = spec as UpscaleImageQueueSpec;
+      return s.type === "batch" ? s.items.map((it) => it.storagePath) : [s.storagePath];
+    },
+    unitJobIds: (spec) => {
+      const s = spec as UpscaleImageQueueSpec;
+      return s.type === "batch" ? s.items.map((it) => it.jobId) : null;
+    },
+  },
+  upscale_video: {
+    table: "upscale_jobs",
+    match: { media_type: "video" },
+    dispatch: (jobId, userId, spec) => dispatchUpscaleVideo(jobId, userId, spec as UpscaleVideoSpec),
+    uploads: (spec) => [(spec as UpscaleVideoSpec).storagePath],
   },
 };
 
@@ -64,6 +95,26 @@ async function refundCredits(userId: string, amount: number): Promise<boolean> {
     return false;
   }
   return true;
+}
+
+/** 起動の引数を探す。まとめの予約は代表 1 行（先頭）にだけ持つので、無ければ同じまとめの分を探す。 */
+async function findSpec(def: KindDef, jobId: string): Promise<{ key: string; spec: unknown } | null> {
+  const { data } = await supabaseAdmin
+    .from("studio_dispatch_specs")
+    .select("job_id, spec")
+    .eq("job_id", jobId)
+    .maybeSingle();
+  if (data) return { key: data.job_id as string, spec: data.spec };
+  if (def.table !== "upscale_jobs") return null;
+  const { data: row } = await supabaseAdmin.from("upscale_jobs").select("batch_id").eq("id", jobId).maybeSingle();
+  const batchId = row?.batch_id as string | null | undefined;
+  if (!batchId) return null;
+  const { data: bySpec } = await supabaseAdmin
+    .from("studio_dispatch_specs")
+    .select("job_id, spec")
+    .eq("spec->>batchId", batchId)
+    .maybeSingle();
+  return bySpec ? { key: bySpec.job_id as string, spec: bySpec.spec } : null;
 }
 
 /** 起動に失敗した行を閉じて全額返す（始まっていないので GPU は使っていない）。 */
@@ -104,28 +155,27 @@ export async function advanceQueue(kind: QueueKind, userId: string): Promise<str
     const jobId = typeof claimed === "string" ? claimed : null;
     if (!jobId) return null;
 
-    const { data: specRow } = await supabaseAdmin
-      .from("studio_dispatch_specs")
-      .select("spec")
-      .eq("job_id", jobId)
-      .maybeSingle();
+    const found = await findSpec(def, jobId);
+    const unit = (found && def.unitJobIds?.(found.spec)) || [jobId];
     try {
-      if (!specRow) throw new Error("予約の内容が見つかりません。");
-      await def.dispatch(jobId, userId, specRow.spec);
-      await supabaseAdmin.from("studio_dispatch_specs").delete().eq("job_id", jobId);
-      console.log(`[studioQueue] dispatched ${kind} ${jobId} (user ${userId})`);
+      if (!found) throw new Error("予約の内容が見つかりません。");
+      await def.dispatch(jobId, userId, found.spec);
+      await supabaseAdmin.from("studio_dispatch_specs").delete().eq("job_id", found.key);
+      console.log(`[studioQueue] dispatched ${kind} ${jobId} (${unit.length} rows, user ${userId})`);
       return jobId;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[studioQueue] dispatch failed:", kind, jobId, message);
-      await failAndRefund(def, jobId, userId, message);
-      await supabaseAdmin.from("studio_dispatch_specs").delete().eq("job_id", jobId);
+      for (const id of unit) await failAndRefund(def, id, userId, message);
+      await supabaseAdmin.from("studio_dispatch_specs").delete().eq("job_id", found?.key ?? jobId);
     }
   }
   return null;
 }
 
-/** その人の予約（古い順）。画面の「予約中」一覧用。 */
+/**
+ * その人の予約（古い順）。画面の「予約中」一覧用。超解像のまとめの行は含めない（まとめの画面は自分の行の状態で見る）。
+ */
 export async function listReserved(kind: QueueKind, userId: string): Promise<{ id: string; created_at: string }[]> {
   const def = kindDef(kind);
   let q = supabaseAdmin
@@ -134,6 +184,7 @@ export async function listReserved(kind: QueueKind, userId: string): Promise<{ i
     .eq("user_id", userId)
     .eq("status", "reserved");
   for (const [k, v] of Object.entries(def.match)) q = q.eq(k, v);
+  if (def.table === "upscale_jobs") q = q.is("batch_id", null);
   const { data } = await q.order("created_at", { ascending: true });
   return (data ?? []) as { id: string; created_at: string }[];
 }

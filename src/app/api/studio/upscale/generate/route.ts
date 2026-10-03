@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { rememberUpscaleCall } from "@/lib/modalCallRecord.server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
-import { spawnUpscaleJob } from "@/lib/modalUpscale";
+import { dispatchUpscaleImage, type UpscaleImageSpec } from "@/lib/upscaleDispatch.server";
+import { advanceQueue, saveDispatchSpec } from "@/lib/studioQueue.server";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { upscaleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import { readImageDimensions } from "@/lib/imageDimensions";
@@ -70,6 +70,8 @@ export async function POST(request: Request) {
   let modeRaw: unknown = DEFAULT_UPSCALE_MODE;
   let storagePath: string | null = null;
   let priorityRaw: unknown = false;
+  // 予約（2026-10-03、lib/studioQueue.server.ts）: 課金して行を reserved で作り、順番が来たらサーバーが起動する。
+  let queue = false;
 
   if (contentType.includes("application/json")) {
     let body: Record<string, unknown>;
@@ -82,6 +84,10 @@ export async function POST(request: Request) {
       storagePath = body.storagePath;
     } else {
       imageBuffer = decodeBase64Image(body.image ?? body.image_b64);
+    }
+    queue = body.queue === true;
+    if (queue && !storagePath) {
+      return NextResponse.json({ error: "予約には画像のアップロードが必要です。" }, { status: 400 });
     }
     modelKeyRaw = body.modelKey ?? body.model_key ?? DEFAULT_UPSCALE_MODEL;
     modeRaw = body.mode ?? body.preset ?? DEFAULT_UPSCALE_MODE;
@@ -108,7 +114,8 @@ export async function POST(request: Request) {
     modeRaw = formData.get("mode") ?? formData.get("preset") ?? DEFAULT_UPSCALE_MODE;
     priorityRaw = formData.get("priority");
   }
-  const priority = priorityRaw === true || priorityRaw === "true";
+  // 予約は並列の追加料金を取らない（順番待ち）。
+  const priority = !queue && (priorityRaw === true || priorityRaw === "true");
 
   if (storagePath) {
     // 実寸法をサーバー側で読む（正確な課金のため）。Modal へは base64
@@ -218,7 +225,7 @@ export async function POST(request: Request) {
     .from("upscale_jobs")
     .insert({
       user_id: user.id,
-      status: "pending",
+      status: queue ? "reserved" : "pending",
       model_key: modelKey,
       preset: modeId,
       credits_cost: creditsCost,
@@ -246,6 +253,43 @@ export async function POST(request: Request) {
   }
   const jobId = jobRow.id as string;
 
+  const spec: UpscaleImageSpec = {
+    type: "single",
+    storagePath: storagePath ?? "",
+    creditsCost,
+    maxAllowedTime: upscaleMaxAllowedTime({ creditsCost, knobs }),
+    modelKey,
+    presetId: modeId,
+    params: {
+      target_short: targetShort,
+      max_resolution: mode.maxEdge,
+      batch_size: 1,
+    },
+  };
+
+  // --- 予約: 起動の引数を残して、順番が来ていればその場で起動 ----------------
+  if (queue) {
+    try {
+      await saveDispatchSpec("upscale_image", jobId, user.id, spec);
+    } catch (err) {
+      console.error("[studio/upscale/generate] save spec failed:", (err as Error).message);
+      await supabaseAdmin.from("upscale_jobs").delete().eq("id", jobId);
+      await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+      return NextResponse.json(
+        { error: "予約に失敗しました。しばらくしてから再度お試しください。", remainingCredits: currentCredits },
+        { status: 500 },
+      );
+    }
+    const started = await advanceQueue("upscale_image", user.id);
+    return NextResponse.json({
+      success: true,
+      jobId,
+      reserved: started !== jobId,
+      creditsCost,
+      remainingCredits: debitedCredits,
+    });
+  }
+
   // Modal へは storagePath 由来なら署名付き URL（Vercel 関数を経由させない）、
   // それ以外（旧 base64/multipart 経路）は互換のためそのまま base64 で渡す。
   let imageSpec = imageBuffer.toString("base64");
@@ -263,22 +307,7 @@ export async function POST(request: Request) {
 
   // --- dispatch to Modal ---------------------------------------------
   try {
-    const { callId: modalCallId } = await spawnUpscaleJob({
-      jobId,
-      userId: user.id,
-      creditsCost,
-      maxAllowedTime: upscaleMaxAllowedTime({ creditsCost, knobs }),
-      image: imageSpec,
-      modelKey,
-      presetId: modeId,
-      params: {
-        target_short: targetShort,
-        max_resolution: mode.maxEdge,
-        batch_size: 1,
-      },
-    });
-    // admin の中止ボタンが Modal の実行まで止められるよう、実行 id を残す（best-effort）。
-    await rememberUpscaleCall({ jobId }, modalCallId);
+    await dispatchUpscaleImage(jobId, user.id, spec, imageSpec);
     // 2026-09-13 実障害で判明: ここで即座に削除すると、Modal worker が
     // コールドスタート等でまだ署名付きURLを fetch していないタイミングで
     // オブジェクトが消え、「HTTPError: 400 Client Error」でジョブが失敗する
@@ -306,6 +335,7 @@ export async function POST(request: Request) {
   return NextResponse.json({
     success: true,
     jobId,
+    reserved: false,
     creditsCost,
     remainingCredits: debitedCredits,
   });

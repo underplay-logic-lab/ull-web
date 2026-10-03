@@ -1,17 +1,13 @@
 import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
-import { rememberUpscaleCall } from "@/lib/modalCallRecord.server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
-import { spawnUpscaleBatchJob, type SpawnUpscaleBatchItem } from "@/lib/modalUpscale";
+import { dispatchUpscaleBatch, type UpscaleBatchSpec } from "@/lib/upscaleDispatch.server";
+import { advanceQueue, saveDispatchSpec } from "@/lib/studioQueue.server";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { readImageDimensions } from "@/lib/imageDimensions";
-import {
-  createStudioUploadSignedUrl,
-  downloadStudioUpload,
-  readStudioUploadHead,
-} from "@/lib/studioUploads.server";
+import { downloadStudioUpload, readStudioUploadHead } from "@/lib/studioUploads.server";
 import {
   DEFAULT_UPSCALE_MODE,
   DEFAULT_UPSCALE_MODEL,
@@ -77,6 +73,8 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+  // 予約（2026-10-03、lib/studioQueue.server.ts）: 課金して行を reserved で作り、順番が来たらサーバーが起動する。
+  const queue = body.queue === true;
   const modelKeyRaw = body.modelKey ?? DEFAULT_UPSCALE_MODEL;
   const modeRaw = body.mode ?? body.preset ?? DEFAULT_UPSCALE_MODE;
   const modelKey = typeof modelKeyRaw === "string" && VALID_MODEL_KEYS.has(modelKeyRaw)
@@ -229,7 +227,7 @@ export async function POST(request: Request) {
   const batchId = randomUUID();
   const rows = prepared.map((p, i) => ({
     user_id: user.id,
-    status: "pending",
+    status: queue ? "reserved" : "pending",
     model_key: modelKey,
     preset: modeId,
     credits_cost: p.creditsCost,
@@ -268,46 +266,53 @@ export async function POST(request: Request) {
   // fetch させる（CLAUDE.md §6）。
   // worker は items を先頭から 1 枚ずつ処理し、その都度この URL を fetch する。長い
   // バッチの後ろの画像が期限切れにならないよう、推定合計秒数 + 1h を有効期限にする
-  // （2026-09-24。旧 1h 固定は 30 枚上限の頃なら足りていた）。署名は並列に作る。
+  // （2026-09-24。旧 1h 固定は 30 枚上限の頃なら足りていた）。署名は起動時に並列で作る。
   const urlTtl = Math.max(60 * 60, Math.ceil(estimatedSeconds) + 60 * 60);
-  let signedUrls: string[];
-  try {
-    signedUrls = [];
-    for (let i = 0; i < prepared.length; i += 16) {
-      const chunk = prepared.slice(i, i + 16);
-      signedUrls.push(
-        ...(await Promise.all(chunk.map((p) => createStudioUploadSignedUrl(user.id, p.storagePath, urlTtl)))),
+  const spec: UpscaleBatchSpec = {
+    type: "batch",
+    batchId,
+    maxAllowedTime: estimatedSeconds,
+    urlTtl,
+    items: prepared.map((p, i) => ({
+      jobId: jobIds[i],
+      storagePath: p.storagePath,
+      creditsCost: p.creditsCost,
+      modelKey,
+      presetId: modeId,
+      params: {
+        target_short: p.targetShort,
+        max_resolution: mode.maxEdge,
+        batch_size: 1,
+      },
+    })),
+  };
+
+  // --- 予約: 起動の引数を先頭の行に残して、順番が来ていればその場で起動 ----------
+  if (queue) {
+    try {
+      await saveDispatchSpec("upscale_image", jobIds[0], user.id, spec);
+    } catch (err) {
+      console.error("[studio/upscale/batch] save spec failed:", (err as Error).message);
+      await supabaseAdmin.from("upscale_jobs").delete().in("id", jobIds);
+      await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+      return NextResponse.json(
+        { error: "予約に失敗しました。しばらくしてから再度お試しください。", remainingCredits: currentCredits },
+        { status: 500 },
       );
     }
-  } catch (err) {
-    await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
-    return NextResponse.json(
-      { error: (err as Error).message, remainingCredits: currentCredits },
-      { status: 500 },
-    );
+    const started = await advanceQueue("upscale_image", user.id);
+    return NextResponse.json({
+      success: true,
+      batchId,
+      jobIds,
+      reserved: !started || !jobIds.includes(started),
+      creditsCost: totalCredits,
+      remainingCredits: debitedCredits,
+    });
   }
-  const items: SpawnUpscaleBatchItem[] = prepared.map((p, i) => ({
-    jobId: jobIds[i],
-    creditsCost: p.creditsCost,
-    image: signedUrls[i],
-    modelKey,
-    presetId: modeId,
-    params: {
-      target_short: p.targetShort,
-      max_resolution: mode.maxEdge,
-      batch_size: 1,
-    },
-  }));
 
   try {
-    const { callId: modalCallId } = await spawnUpscaleBatchJob({
-      batchId,
-      userId: user.id,
-      maxAllowedTime: estimatedSeconds,
-      items,
-    });
-    // admin の中止ボタンが Modal の実行まで止められるよう、実行 id を残す（best-effort）。
-    await rememberUpscaleCall({ batchId }, modalCallId);
+    await dispatchUpscaleBatch(user.id, spec);
     // 2026-09-13 実障害で判明: 即座に削除すると Modal worker が署名付きURLを
     // fetch する前にオブジェクトが消えるレース条件になる（upscale/generate
     // route.ts の同種修正コメント参照）。削除はせず studio_uploads/（Modal
@@ -333,6 +338,7 @@ export async function POST(request: Request) {
     success: true,
     batchId,
     jobIds,
+    reserved: false,
     creditsCost: totalCredits,
     remainingCredits: debitedCredits,
   });

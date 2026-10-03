@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { rememberUpscaleCall } from "@/lib/modalCallRecord.server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
-import { spawnUpscaleVideoJob } from "@/lib/modalUpscale";
+import { dispatchUpscaleVideo, type UpscaleVideoSpec } from "@/lib/upscaleDispatch.server";
+import { advanceQueue, saveDispatchSpec } from "@/lib/studioQueue.server";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { probeUpscaleVideo } from "@/lib/modalUpscale";
 import { upscaleVideoMaxAllowedTime } from "@/lib/pricing/costGuard.server";
@@ -147,7 +147,10 @@ export async function POST(request: Request) {
 
   // 「実行中でも並列で今すぐ実行」を選んだ場合の追加コールドスタート分
   // （順番待ち=無料の既定に対するオプトインの上乗せ。CLAUDE.md §6参照）。
-  const priority = body.priority === true || body.priority === "true";
+  // 予約（2026-10-03、lib/studioQueue.server.ts）: 課金して行を reserved で作り、順番が来たらサーバーが起動する。
+  // 予約は並列の追加料金を取らない（順番待ち）。
+  const queue = body.queue === true;
+  const priority = !queue && (body.priority === true || body.priority === "true");
   if (priority) {
     creditsCost += upscalePriorityParallelSurcharge(knobs, creditsCost);
   }
@@ -209,7 +212,7 @@ export async function POST(request: Request) {
     .from("upscale_jobs")
     .insert({
       user_id: user.id,
-      status: "pending",
+      status: queue ? "reserved" : "pending",
       media_type: "video",
       model_key: modelKey,
       preset: presetId,
@@ -244,24 +247,46 @@ export async function POST(request: Request) {
   }
   const jobId = jobRow.id as string;
 
+  const spec: UpscaleVideoSpec = {
+    storagePath,
+    urlTtl: SIGNED_URL_EXPIRES_S,
+    creditsCost,
+    maxAllowedTime: upscaleVideoMaxAllowedTime({ creditsCost, knobs }),
+    modelKey,
+    presetId,
+    params: {
+      target_short: targetShort,
+      max_resolution: 8192,
+      batch_size: 5,
+    },
+  };
+
+  // --- 予約: 起動の引数を残して、順番が来ていればその場で起動（署名 URL は起動時に作り直す）----
+  if (queue) {
+    try {
+      await saveDispatchSpec("upscale_video", jobId, user.id, spec);
+    } catch (err) {
+      console.error("[studio/upscale/video/generate] save spec failed:", (err as Error).message);
+      await supabaseAdmin.from("upscale_jobs").delete().eq("id", jobId);
+      await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+      return NextResponse.json(
+        { error: "予約に失敗しました。しばらくしてから再度お試しください。", remainingCredits: currentCredits },
+        { status: 500 },
+      );
+    }
+    const started = await advanceQueue("upscale_video", user.id);
+    return NextResponse.json({
+      success: true,
+      jobId,
+      reserved: started !== jobId,
+      creditsCost,
+      remainingCredits: debitedCredits,
+    });
+  }
+
   // --- dispatch to Modal ---------------------------------------------
   try {
-    const { callId: modalCallId } = await spawnUpscaleVideoJob({
-      jobId,
-      userId: user.id,
-      creditsCost,
-      maxAllowedTime: upscaleVideoMaxAllowedTime({ creditsCost, knobs }),
-      video: videoUrl,
-      modelKey,
-      presetId,
-      params: {
-        target_short: targetShort,
-        max_resolution: 8192,
-        batch_size: 5,
-      },
-    });
-    // admin の中止ボタンが Modal の実行まで止められるよう、実行 id を残す（best-effort）。
-    await rememberUpscaleCall({ jobId }, modalCallId);
+    await dispatchUpscaleVideo(jobId, user.id, spec, videoUrl);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[studio/upscale/video/generate] dispatch failed:", message);
@@ -282,6 +307,7 @@ export async function POST(request: Request) {
   return NextResponse.json({
     success: true,
     jobId,
+    reserved: false,
     creditsCost,
     remainingCredits: debitedCredits,
   });

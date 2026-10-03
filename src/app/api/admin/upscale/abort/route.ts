@@ -57,7 +57,7 @@ export async function POST(request: Request) {
       .from("upscale_jobs")
       .select(cols)
       .eq("batch_id", first.batch_id)
-      .in("status", ["pending", "processing"]);
+      .in("status", ["reserved", "pending", "processing"]);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     rows = (data ?? []) as Row[];
   }
@@ -68,7 +68,7 @@ export async function POST(request: Request) {
   );
   const targets = rows.filter((r) => {
     if (r.metadata?.refunded === true) return false;
-    if (r.status === "pending") return true;
+    if (r.status === "reserved" || r.status === "pending") return true;
     if (r.status !== "processing") return false;
     // 実行 id があれば Modal ごと止めるので、処理中の 1 枚も閉じてよい。
     if (callIds.size > 0) return true;
@@ -97,6 +97,8 @@ export async function POST(request: Request) {
     }
     if (!updated?.length) continue;
     closed += 1;
+    // 予約（reserved）を閉じたら起動の引数も捨てる（まとめは先頭の行に持つ。無ければ何もしない）。
+    if (r.status === "reserved") await supabaseAdmin.from("studio_dispatch_specs").delete().eq("job_id", r.id);
     if (refund) refundByUser.set(r.user_id, (refundByUser.get(r.user_id) ?? 0) + (r.credits_cost ?? 0));
   }
 
