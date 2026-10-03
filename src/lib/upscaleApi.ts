@@ -4,7 +4,8 @@ import { uploadStudioAsset } from "@/lib/studioUploads";
 
 export type UpscaleApiError = Error & { remainingCredits?: number };
 
-export type UpscaleJobStatus = "pending" | "processing" | "completed" | "failed";
+/** reserved = 予約（順番待ち）。前のジョブが終わるとサーバーが起動して pending へ（2026-10-03）。 */
+export type UpscaleJobStatus = "reserved" | "pending" | "processing" | "completed" | "failed";
 
 export type UpscaleJob = {
   id: string;
@@ -27,6 +28,8 @@ export type UpscaleJob = {
 
 export type StartUpscaleJobResult = {
   jobId: string;
+  /** 予約として受け付けた（まだ始まっていない）。queue: true で、前のジョブが動いているとき。 */
+  reserved: boolean;
   remainingCredits: number;
   creditsCost: number;
 };
@@ -38,6 +41,8 @@ export async function startUpscaleJob(params: {
   modeId: string;
   /** true: 実行中のジョブを待たず並列で今すぐ実行（追加料金）。既定 false = 順番待ち。 */
   priority?: boolean;
+  /** true: 予約（順番待ち）。その場で課金し、前のジョブが終わったらサーバーが起動する（タブを閉じても進む）。 */
+  queue?: boolean;
 }): Promise<StartUpscaleJobResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -57,6 +62,7 @@ export async function startUpscaleJob(params: {
       modelKey: params.modelKey,
       mode: params.modeId,
       priority: params.priority ?? false,
+      ...(params.queue ? { queue: true } : {}),
     }),
   });
 
@@ -69,6 +75,7 @@ export async function startUpscaleJob(params: {
 
   return {
     jobId: data.jobId as string,
+    reserved: data.reserved === true,
     remainingCredits: data.remainingCredits as number,
     creditsCost: data.creditsCost as number,
   };
@@ -76,6 +83,8 @@ export async function startUpscaleJob(params: {
 
 export type StartUpscaleVideoJobResult = {
   jobId: string;
+  /** 予約として受け付けた（まだ始まっていない）。 */
+  reserved: boolean;
   remainingCredits: number;
   creditsCost: number;
 };
@@ -91,6 +100,8 @@ export async function startUpscaleVideoJob(params: {
   height: number;
   /** true: 実行中のジョブを待たず並列で今すぐ実行（追加料金）。既定 false = 順番待ち。 */
   priority?: boolean;
+  /** true: 予約（順番待ち）。その場で課金し、前のジョブが終わったらサーバーが起動する（タブを閉じても進む）。 */
+  queue?: boolean;
 }): Promise<StartUpscaleVideoJobResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -110,6 +121,7 @@ export async function startUpscaleVideoJob(params: {
       width: params.width,
       height: params.height,
       priority: params.priority ?? false,
+      ...(params.queue ? { queue: true } : {}),
     }),
   });
 
@@ -122,6 +134,7 @@ export async function startUpscaleVideoJob(params: {
 
   return {
     jobId: data.jobId as string,
+    reserved: data.reserved === true,
     remainingCredits: data.remainingCredits as number,
     creditsCost: data.creditsCost as number,
   };
@@ -129,6 +142,8 @@ export async function startUpscaleVideoJob(params: {
 
 export type StartUpscaleBatchJobResult = {
   batchId: string;
+  /** 予約として受け付けた（まだ始まっていない）。 */
+  reserved: boolean;
   jobIds: string[];
   remainingCredits: number;
   creditsCost: number;
@@ -140,6 +155,8 @@ export async function startUpscaleBatchJob(params: {
   modelKey: string;
   modeId: string;
   onUploadProgress?: (done: number, total: number) => void;
+  /** true: 予約（順番待ち）。その場で課金し、前のジョブが終わったらサーバーが起動する。 */
+  queue?: boolean;
 }): Promise<StartUpscaleBatchJobResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -167,7 +184,12 @@ export async function startUpscaleBatchJob(params: {
   const res = await fetch("/api/studio/upscale/batch", {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ storagePaths, modelKey: params.modelKey, mode: params.modeId }),
+    body: JSON.stringify({
+      storagePaths,
+      modelKey: params.modelKey,
+      mode: params.modeId,
+      ...(params.queue ? { queue: true } : {}),
+    }),
   });
 
   const data = await res.json().catch(() => null);
@@ -179,6 +201,7 @@ export async function startUpscaleBatchJob(params: {
 
   return {
     batchId: data.batchId as string,
+    reserved: data.reserved === true,
     jobIds: data.jobIds as string[],
     remainingCredits: data.remainingCredits as number,
     creditsCost: data.creditsCost as number,

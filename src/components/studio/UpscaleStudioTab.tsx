@@ -74,6 +74,7 @@ import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
 import { useLocalWarmCountdown } from "@/hooks/useLocalWarmCountdown";
+import { advanceStudioQueue, cancelStudioQueue } from "@/lib/studioQueue";
 import {
   QueueChoiceModal,
   QueuedNextBanner,
@@ -87,6 +88,10 @@ const FORM_ID = "upscale-studio";
 const JOB_KEY = "upscale-active-job";
 const SESSION_KEY = "upscale-session-jobs";
 const BATCH_JOB_KEY = "upscale-active-batch";
+// このブラウザで予約し、まだ画面に出していない 1 枚ずつの予約（2026-10-03〜予約はサーバー側）。
+// タブを閉じている間に始まった・終わった分を、開き直したときに順に追いかけるために残す。
+const RESERVED_KEY = "upscale-reserved-jobs";
+type TrackedReservation = { id: string; label: string };
 const POLL_INTERVAL_MS = 2500;
 const POLL_MAX_CONSECUTIVE_ERRORS = 8;
 
@@ -511,13 +516,24 @@ export function UpscaleStudioTab() {
 
   const [queueChoiceOpen, setQueueChoiceOpen] = useState(false);
   type QueuedSnapshot = { image: File; modelKey: string; modeId: UpscaleModeId };
-  // 2026-09-23: 予約は 1 件 → 先入れ先出しのリスト（Multi-Angle と同じ。1 件だと
-  // 後の予約が前の予約を黙って上書きする）。順番待ちは無料なので件数上限は無し。
-  const [queuedNext, setQueuedNext] = useState<QueuedSnapshot[]>([]);
-  // ポーリングの長寿命な useEffect から「今すぐ最新の予約」を読めるようにする
-  // ref。イベントハンドラ（予約する/取り消す）でだけ state と一緒に書き込み、
-  // effect 内では書き込まない（CLAUDE.md §6 参照。完了時の先頭取り出しは例外）。
-  const queuedNextRef = useRef<QueuedSnapshot[]>([]);
+  // 予約（順番待ち）はサーバー側（2026-10-03、lib/studioQueue.server.ts）。予約した時点で課金してジョブ行を
+  // reserved で作り、前のジョブが終わるとサーバーが起動する（タブを閉じても進む）。それまでは画面のメモリにだけあり、
+  // 閉じると消えていた。reservedIds = DB の reserved（1 枚ずつの分・古い順・表示用）。
+  const [reservedIds, setReservedIds] = useState<string[]>([]);
+  // 予約の送信中（画像のアップロード中）の件数。バナーの件数に足す。
+  const [reserving, setReserving] = useState(0);
+  const [queueError, setQueueError] = useState<string | null>(null);
+  // このブラウザで予約し、まだ画面に出していない分（RESERVED_KEY に残す）。完了を見たら次はここから追いかける。
+  const trackedInit = useMemo(
+    () =>
+      (loadFormState<{ items: TrackedReservation[] }>(RESERVED_KEY)?.items ?? []).filter(
+        (x): x is TrackedReservation => Boolean(x) && typeof x.id === "string",
+      ),
+    [],
+  );
+  const trackedRef = useRef<TrackedReservation[]>(trackedInit);
+  // 予約した元画像（比較表示用。再読み込みで消える）。
+  const reservedFilesRef = useRef<Map<string, File>>(new Map());
 
   useEffect(() => {
     saveFormState(FORM_ID, { modeId, modelKey } satisfies PersistedForm);
@@ -715,17 +731,17 @@ export function UpscaleStudioTab() {
     batchJobIds.length > 0 && batchJobIds.every((id) => (batchJobs[id]?.status ?? "pending") === "pending");
 
   // まとめて処理の予約（2026-09-29、ホスト方針「どんな状態でも予約できるように」）。実行中に画像を足して押すと、
-  // 今のまとめが終わってから続けて流す（順番待ち・無料）。結果は同じ一覧に積み足すので前の結果は消えない。
+  // 今のまとめが終わってから続けて流す（順番待ち）。結果は同じ一覧に積み足すので前の結果は消えない。
+  // 2026-10-03〜予約はサーバー側: 押した時点で課金して行を reserved で作り、一覧にそのまま足す（タブを閉じても進む）。
   type BatchSnapshot = { items: BatchItem[]; modelKey: string; modeId: UpscaleModeId };
-  const [batchQueue, setBatchQueue] = useState<BatchSnapshot[]>([]);
-  const batchQueueRef = useRef<BatchSnapshot[]>([]);
-  const setBatchQueueBoth = useCallback((next: BatchSnapshot[]) => {
-    batchQueueRef.current = next;
-    setBatchQueue(next);
-  }, []);
+  const batchReservedIds = useMemo(
+    () => batchJobIds.filter((id) => batchJobs[id]?.status === "reserved"),
+    [batchJobIds, batchJobs],
+  );
+  const [batchCancelling, setBatchCancelling] = useState(false);
 
   const startBatch = useCallback(
-    async (snap: BatchSnapshot, append: boolean) => {
+    async (snap: BatchSnapshot, append: boolean, queue = false) => {
       if (!user) return;
       setBatchPhase("submitting");
       setBatchError(null);
@@ -736,6 +752,7 @@ export function UpscaleStudioTab() {
           images: snap.items.map((it) => it.file),
           modelKey: snap.modelKey,
           modeId: snap.modeId,
+          queue,
         });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
         const loraMap: Record<string, string> = append ? { ...getLoraReturnMap() } : {};
@@ -762,10 +779,6 @@ export function UpscaleStudioTab() {
     },
     [user],
   );
-  const startBatchRef = useRef(startBatch);
-  useEffect(() => {
-    startBatchRef.current = startBatch;
-  }, [startBatch]);
 
   const handleBatchRun = useCallback(async () => {
     if (!user) return setLoginOpen(true);
@@ -773,12 +786,27 @@ export function UpscaleStudioTab() {
     if (batchItems.length === 0) return;
     const snap: BatchSnapshot = { items: batchItems, modelKey, modeId };
     if (batchBusy) {
-      setBatchQueueBoth([...batchQueueRef.current, snap]);
       setBatchItems([]);
+      await startBatch(snap, true, true);
       return;
     }
     await startBatch(snap, false);
-  }, [user, batchItems, batchBusy, batchInsufficientCredits, modelKey, modeId, startBatch, setBatchQueueBoth]);
+  }, [user, batchItems, batchBusy, batchInsufficientCredits, modelKey, modeId, startBatch]);
+
+  // 始まる前のまとめの予約を取り消す（全額返金）。取り消した行は一覧から外す。
+  const handleCancelBatchQueue = useCallback(async () => {
+    if (!user || batchReservedIds.length === 0) return;
+    setBatchCancelling(true);
+    try {
+      const r = await cancelStudioQueue("upscale_image", batchReservedIds);
+      if (r.remainingCredits != null) broadcastCreditsUpdate(user.id, r.remainingCredits);
+      setBatchJobIds((prev) => prev.filter((id) => !r.cancelled.includes(id)));
+    } catch (err) {
+      setBatchError(err instanceof Error ? err.message : "予約の取り消しに失敗しました。");
+    } finally {
+      setBatchCancelling(false);
+    }
+  }, [user, batchReservedIds]);
 
   // job.resultUrl は署名前の生の値（Volume相対パスの場合あり）。実フェッチ
   // 直前に resolveUpscaleImageUrl で実URLへ解決する（CLAUDE.md §1）。
@@ -888,13 +916,6 @@ export function UpscaleStudioTab() {
 
           const allDone = results.every((j) => j.status === "completed" || j.status === "failed");
           if (allDone) {
-            const [nextBatch, ...restBatches] = batchQueueRef.current;
-            if (nextBatch) {
-              batchQueueRef.current = restBatches;
-              setBatchQueue(restBatches);
-              void startBatchRef.current(nextBatch, true);
-              return;
-            }
             setBatchPhase("done");
             // 予約した分（順番待ちで続いたまとめも含む）を ZIP 1 つで自動保存する。
             const toSave = results
@@ -982,6 +1003,49 @@ export function UpscaleStudioTab() {
     [user, commitSession],
   );
 
+  // サーバーが起動した予約のジョブへ画面を切り替える（続けて出した生成として一覧に足す）。
+  const followJob = useCallback(
+    (id: string) => {
+      const prevJob = jobRefForPeek.current;
+      if (prevJob && prevJob.status === "completed") setPeekId(prevJob.id);
+      const tracked = trackedRef.current.find((t) => t.id === id);
+      trackedRef.current = trackedRef.current.filter((t) => t.id !== id);
+      saveFormState(RESERVED_KEY, { items: trackedRef.current });
+      const entry: StudioSessionEntry = { id, createdAt: new Date().toISOString(), label: tracked?.label ?? "" };
+      commitSession([...sessionJobsRef.current.filter((e) => e.id !== id), entry]);
+      const file = reservedFilesRef.current.get(id);
+      setResultBeforeUrl(file ? URL.createObjectURL(file) : null);
+      setErrorMessage(null);
+      setJob(null);
+      setJobId(id);
+      setPhase("running");
+    },
+    [commitSession],
+  );
+
+  // 順番が来ていれば次を起動させ（DB トリガーが先に起動していても害は無い）、予約一覧を取り直す。
+  // follow: 起動した（またはタブを閉じている間に始まった）予約のジョブへ画面を切り替える。
+  // まとめの行は別の画面（まとめの一覧）で追うので、ここでは 1 枚ずつの予約だけを追う。
+  const advanceAndFollow = useCallback(
+    async (follow: boolean) => {
+      const q = await advanceStudioQueue("upscale_image");
+      if (!q) return;
+      setReservedIds(q.reserved);
+      if (!follow) return;
+      const moved = trackedRef.current.filter((t) => !q.reserved.includes(t.id)).map((t) => t.id);
+      const next = q.started && moved.includes(q.started) ? q.started : (moved[0] ?? null);
+      if (next) followJob(next);
+    },
+    [followJob],
+  );
+
+  // 開いたとき: 順番が来ていれば起動し、予約一覧を出す。復元したジョブが無ければ、閉じている間に始まった予約を追いかける
+  // （復元したジョブがあれば、その完了を見たときに追いかける）。状態の更新は API の応答後だけ。
+  useEffect(() => {
+    if (!user) return;
+    queueMicrotask(() => void advanceAndFollow(!resumedJobId));
+  }, [user, resumedJobId, advanceAndFollow]);
+
   // --- ポーリングループ ----------------------------------------------
   useEffect(() => {
     if (!jobId) return;
@@ -1015,28 +1079,21 @@ export function UpscaleStudioTab() {
                 await downloadUpscaleResult(jobId, url, buildOutFilename(url));
               });
             }
-            // 「順番待ち」で予約されていた次の1件を、コンテナがまだ温かい
-            // うちに自動発火する。ref はイベントハンドラでのみ書かれるので
-            // ここでは読むだけ（clear は同じ非同期コールバック内で行う）。
             // 改めて生成したジョブが完了したら、前の「今回の生成」を消して
             // このジョブ 1 件から始める（確認時点では消さない）。
             if (freshJobIdRef.current === jobId) {
               freshJobIdRef.current = null;
               commitSession(sessionJobsRef.current.filter((e) => e.id === jobId));
             }
-            const [queued, ...restQueued] = queuedNextRef.current;
-            if (queued) {
-              // 2026-09-23: 以前はここで結果を自動 DL していたが廃止（「今回の生成」
-              // 一覧から戻れる。DL はユーザー操作に任せる）。
-              queuedNextRef.current = restQueued;
-              setQueuedNext(restQueued);
-              void runGenerate(queued, { continuation: true });
-            }
+            // 予約の次の 1 件へ（起動はサーバー。普段は DB トリガーが先に起動している）。
+            void advanceAndFollow(true);
             return;
           }
           if (next.status === "failed") {
             setPhase("error");
             setErrorMessage(next.errorMessage || "アップスケールに失敗しました。");
+            // 予約はサーバーが続けて起動する（失敗の表示は残すので画面は切り替えない）。
+            void advanceAndFollow(false);
             return;
           }
           sawInProgress = true;
@@ -1069,7 +1126,7 @@ export function UpscaleStudioTab() {
     return () => {
       cancelled = true;
     };
-  }, [jobId, markGpuWarm, runGenerate, commitSession]);
+  }, [jobId, markGpuWarm, advanceAndFollow, commitSession]);
 
   // job完了後、resultUrlを実際に表示・ダウンロードできるURLへ解決する
   // （Volume相対パスなら署名付きModal URLを発行、旧方式のURLはそのまま）。
@@ -1163,18 +1220,53 @@ export function UpscaleStudioTab() {
     void runGenerate(snapshot);
   };
 
-  const handleQueueWait = () => {
-    if (!image) return;
-    const snapshot: QueuedSnapshot = { image, modelKey, modeId };
-    const next = [...queuedNextRef.current, snapshot];
-    queuedNextRef.current = next;
-    setQueuedNext(next);
+  // 予約する（サーバー側の順番待ち、2026-10-03）。その場で課金され、何も動いていなければすぐ始まる
+  // （そのときは画面をそのジョブへ切り替える）。
+  const handleQueueWait = async () => {
+    if (!image || !user) return;
     setQueueChoiceOpen(false);
+    if (insufficientCredits) return setChargeOpen(true);
+    const snap: QueuedSnapshot = { image, modelKey, modeId };
+    setQueueError(null);
+    setReserving((n) => n + 1);
+    try {
+      const res = await startUpscaleJob({
+        userId: user.id,
+        image: snap.image,
+        modelKey: snap.modelKey,
+        modeId: snap.modeId,
+        queue: true,
+      });
+      broadcastCreditsUpdate(user.id, res.remainingCredits);
+      armAutoDownload(res.jobId);
+      reservedFilesRef.current.set(res.jobId, snap.image);
+      trackedRef.current = [...trackedRef.current.filter((t) => t.id !== res.jobId), { id: res.jobId, label: snap.image.name }];
+      saveFormState(RESERVED_KEY, { items: trackedRef.current });
+      if (res.reserved) setReservedIds((prev) => (prev.includes(res.jobId) ? prev : [...prev, res.jobId]));
+      else followJob(res.jobId);
+    } catch (err) {
+      const e = err as UpscaleApiError;
+      console.error("[UpscaleStudioTab] reserve failed:", e);
+      if (typeof e.remainingCredits === "number") broadcastCreditsUpdate(user.id, e.remainingCredits);
+      setQueueError(e.message || "予約に失敗しました。");
+    } finally {
+      setReserving((n) => n - 1);
+    }
   };
 
-  const handleCancelQueue = () => {
-    queuedNextRef.current = [];
-    setQueuedNext([]);
+  // 始まる前の予約を全部取り消す（全額返金）。始まったものは完走する。
+  const handleCancelQueue = async () => {
+    if (!user || reservedIds.length === 0) return;
+    setQueueError(null);
+    try {
+      const r = await cancelStudioQueue("upscale_image", reservedIds);
+      if (r.remainingCredits != null) broadcastCreditsUpdate(user.id, r.remainingCredits);
+      trackedRef.current = trackedRef.current.filter((t) => !r.cancelled.includes(t.id));
+      saveFormState(RESERVED_KEY, { items: trackedRef.current });
+    } catch (err) {
+      setQueueError(err instanceof Error ? err.message : "予約の取り消しに失敗しました。");
+    }
+    void advanceAndFollow(false);
   };
 
   const handleQueueParallel = () => {
@@ -1371,18 +1463,19 @@ export function UpscaleStudioTab() {
 
           {!busy && gpuWarm && <WarmCountdownBanner remainingMs={gpuWarmMs} />}
 
-          {busy && queuedNext.length === 0 && (
+          {busy && reservedIds.length === 0 && reserving === 0 && (
             <p className="mt-2 flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-xs leading-relaxed text-neon-violet">
               <Sparkles size={14} className="mt-0.5 shrink-0" />
               バックグラウンドで処理中です。もう一度ボタンを押すと、次の生成を予約できます。
             </p>
           )}
 
-          {queuedNext.length > 0 && (
+          {(reservedIds.length > 0 || reserving > 0) && (
             <div className="mt-2">
-              <QueuedNextBanner count={queuedNext.length} onCancel={handleCancelQueue} />
+              <QueuedNextBanner count={reservedIds.length + reserving} serverSide onCancel={() => void handleCancelQueue()} />
             </div>
           )}
+          {queueError && <p className="mt-2 text-xs text-red-400">{queueError}</p>}
 
           <button
             type="button"
@@ -1718,11 +1811,11 @@ export function UpscaleStudioTab() {
             <p className="flex items-start gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-xs leading-relaxed text-neon-violet">
               <Sparkles size={14} className="mt-0.5 shrink-0" />
               バックグラウンドで処理中です。タブを閉じたり再読み込みしても継続し、次に開いたときに結果が表示されます。
-              画像を追加してボタンを押すと、終わってから続けて処理します（予約した分は再読み込みで消えます）。
+              画像を追加してボタンを押すと、終わってから続けて処理します（予約した分もタブを閉じて進みます）。
             </p>
           )}
-          {batchQueue.length > 0 && (
-            <QueuedNextBanner count={batchQueue.length} onCancel={() => setBatchQueueBoth([])} />
+          {batchReservedIds.length > 0 && !batchCancelling && (
+            <QueuedNextBanner serverSide onCancel={() => void handleCancelBatchQueue()} />
           )}
 
           {batchPhase === "error" && batchError && (
@@ -1839,7 +1932,8 @@ export function UpscaleStudioTab() {
         surcharge={upscalePriorityParallelSurcharge(knobs, cost)}
         total={cost + upscalePriorityParallelSurcharge(knobs, cost)}
         onCancel={() => setQueueChoiceOpen(false)}
-        onQueue={handleQueueWait}
+        onQueue={() => void handleQueueWait()}
+        queueCost={cost}
         onParallel={handleQueueParallel}
       />
     </div>
