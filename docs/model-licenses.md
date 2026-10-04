@@ -11,6 +11,10 @@ CLAUDE.md §5（商用利用・SaaS再頒布・地域制限の3点を満たす�
   **ULL Studio の機能として自ホストするのは不可**（企業は作者に商用ライセンスを申請: lauryliuyang@hkgai.org）。
   事業の宣伝動画の BGM に使うのも「個人として」に当たるか曖昧なので、使うなら同じ窓口に確認してから。
   性能面は声の性別・BPM をスタイル指定で書け、日本語の歌も対応（MiniMax Music 3 の不満点）。コードは Apache-2.0。
+- **Qwen-Image 2.1（`Qwen/Qwen-Image-2.1`）**: **Qwen Research License = 非商用のみ**（§2a "FOR NON-COMMERCIAL PURPOSES ONLY"、
+  §2b 商用は model-business@notice.qwencloud.com に申請。2026-10-04 に HF の LICENSE 原文で確認）。生成物の商用可否は明記なし →
+  宣伝動画の素材にも使わない。**初代 Qwen-Image / Qwen-Image-Edit 2509・2511 は Apache-2.0 で可のまま**（2.1 で変わった）。
+  性能は参照画像からの人物の保持が 2511 より明らかに上・1MP 40 step が 18 秒（ローカル int8、2511 は 102 秒）。
 - **`nvdiffrast` / `nvdiffrec`**（NVIDIA Source Code License = 非商用）。3Dレンダリングは商用可のものを使う: 3D Gaussian Splatting 出力を **`gsplat`（Apache-2.0）**、メッシュは PyTorch3D（BSD）/ Kaolin（Apache-2.0）。Inria版3DGSラスタライザ（`diff-gaussian-rasterization`）も研究用途限定で不可。
 
 **可（確認済み・商用OK）**
