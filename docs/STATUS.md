@@ -699,6 +699,17 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    まとめて落とすときは `rclone copy … --transfers 4 --multi-thread-streams 8`。
    **録画用 Chrome が閉じていた原因はダウンロード**（`.rec-profile` ではダウンロード開始でブラウザごと落ちる）→ 録画中は断る（`a6d3508`）。
 
+8. **MiniMax H3 の参照機能で Studio を広げる・判断はローカルで（2026-10-04 ホスト方針）**: リップシンク（歌＋画像）・動画参照（Wan Animate の代わり）等。
+   Modal は費用が嵩むので「使えるか」はローカル（RTX 5070 Ti 16GB・RAM 64GB）で見て、採用時だけ Modal bf16 で 1 本確認。
+   - 判断用環境 `D:\ComfyUI-ull\v0.35.1`・`v0.38.2`（`D:\ComfyUI2` の git から複製・各自 venv（torch 2.13+cu132）・モデルは `extra_model_paths.yaml` で
+     `D:\ComfyUI2\models` を共有・カスタムノードは KJNodes と VDN-H3 だけ）。実行は `run_compare.py <版> <workflow.json> <seed…>`（ノード別秒数・VRAM ピーク）。
+     ローカルは 16GB に載る量子化版（DiT `10Eros_Max_h3_hybrid_beta5_w4a8`・TE `nvfp4_awq`）。ref2va int8・音声 VAE も `D:\ComfyUI2` にある。
+   - **ComfyUI v0.35.1 → v0.38.2 の比較（Director 高速モード・896×1184・5 秒・同 seed 2 本）: 速さ・見た目とも差なし**。合計 241.7→236.0 秒（-2%）、
+     VAE デコード 29.5→26.7 秒（-10%、#16187 の VAE 最適化）、サンプリング同等、VRAM 同等、同じ seed の映像は見た目で区別できない（PSNR 30〜32）。
+     → **Director のためだけに本番を上げる理由は無い**。新しい参照機能で新しい版が要るときに、そのワーカーと一緒に上げる。
+   - 超解像ワーカーは ComfyUI を `master` のまま取っている（`modal_seedvr2_worker.py:279`、イメージのキャッシュ時点の版で動作中）→ 今の版を CPU プローブで調べて固定する（未着手）。
+   - 次: 歌のリップシンク（Ref2VA ＋ `ref_audio_0`、1 回 2〜10 秒）をローカルで試す。歌（10 秒以内・できれば歌声だけ）と画像はホスト指定待ち。
+
 **記録（2026-10-01〜02 にやったこと。蒸し返さない）**
 - **2026-10-02: 看板キャラ「ひなた」と 1 本目の操作動画**（詳細は `promo/characters/README.md`・`promo/README.md`）
   - キャラ: 人物像を先に決めた（何にでも放り込まれる実演役・日本人女性 20 代前半・色白の可愛い系・「は？」→ すぐ順応）。Gemini（Nano Banana Pro）の
