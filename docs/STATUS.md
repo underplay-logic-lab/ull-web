@@ -727,7 +727,11 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
      **10Eros（w4a8・int8 とも）では LoRA がほぼ効かない**（強さ 1.5 で寄るが画質が落ち始め、2.0 で崩れる）。10Eros は説明欄に「H3 LoRA merge」＝LoRA 焼き込み済み。
      turbo LoRA・VAE は無関係。**本番 Director（10Eros ＋ LoRA Studio の LoRA）でも LoRA はほぼ効いていない疑い**（ローンチ時の確認は顔写真を最初のフレームにしていたので根拠にならない）。
      → 10Eros 土台で学習する案: Volume の 10Eros bf16 は公式 pruned bf16 とキー 532 個・形が完全一致（違いは 112 個の dtype と余り 2 キー）→ 変換版を作れば今の bf16 直読みのまま学習できる。
-     要: Music 3 削除（Volume の空き）・LoRA ワーカーに土台切り替え・10Eros のライセンス確認。
+     **2026-10-05 実施（`751af8a`）**: Volume の `10Eros_Max_h3_hybrid_beta5.safetensors` を「余りキー 2 個を外しただけ」の版に同名で置き換え
+     （532 テンソルすべてビット一致。dtype を公式の F16 に合わせると adaln_proj の bias が桁落ちしたので BF16 のまま。余りキーは `…_extra_keys.safetensors`）。
+     Director はファイル名もそのまま＝変更なし。LoRA Studio に admin 限定の「Minimax H3（10Eros 土台）」（`minimax_h3_10eros`）を追加・ワーカーはデプロイ済み。
+     **次: ひなた 52 枚で 1 本学習（ホストが LoRA Studio から）→ 10Eros の上で効くか確認**。ai-toolkit が BF16 の小テンソルを読めるかは未確認（読み込みで落ちれば GPU 数分の損）。
+     **残: 10Eros のライセンス確認**（作者が派生利用をどう許しているか。一般公開の前に必須）。
    - ローカルの ComfyUI2 の input/output が普通のフォルダになっていた件: 16:35 の ComfyUI 更新で git が書き戻した（このセッション前）。ジャンクションに戻し、
      git 管理の目印ファイルをリンク先に置いて再発を防いだ。21:46〜22:20 の 16 本は `D:\ComfyUI\…\output\20261004\video_ComfyUI2_2146-2220\` へ。
    - **曲づくり機能の案**: ACE-Step 1.5 で「曲調・声・男女・歌詞 → すぐ曲」。L4（$0.80/h・24GB）で 1 曲 20〜30 秒・約 1 円の見込み（未計測）、T4 は bf16 が遅く不向き。
