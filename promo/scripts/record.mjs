@@ -225,6 +225,8 @@ page.on("framenavigated", (fr) => {
 });
 
 await page.goto(startUrl);
+const cssSize = await page.evaluate(() => ({ width: innerWidth, height: innerHeight })).catch(() => null);
+console.log(`ページの CSS サイズ: ${cssSize?.width}×${cssSize?.height}（コマは ${VIEW.width}×${VIEW.height}）`);
 console.log(`録画中: ${name}（F8 = テロップのメモ・止めている間は録画されない・終わったらブラウザを閉じる）`);
 const closed = new Promise((r) => {
   context.on("close", r);
@@ -292,7 +294,9 @@ if (pausedAt !== null) pauses.push([pausedAt, Date.now()]), (pausedAt = null);
 const end = rel(Date.now());
 frames.sort((a, b) => a.t - b.t);
 events.sort((a, b) => a.t - b.t);
-const session = { name, view: VIEW, dpr: DPR, duration: end, frames, events };
+// ページの CSS 幅（2026-10-04）: REC_DPR=2 だとコマ 1600 px に対して CSS が約 1067 px で、座標がずれていた。
+// 描画側（timeline.ts normalizeSession）が view.width / css.width で合わせる。
+const session = { name, view: VIEW, dpr: DPR, css: cssSize, duration: end, frames, events };
 fs.writeFileSync(path.join(outDir, "session.json"), JSON.stringify(session));
 
 // テロップの下書き。F8 の位置に空欄を置き、そのとき書いたメモを memo に残す（text を書くまで画面には出ない）。手で直す前提なので、既にあれば触らない。

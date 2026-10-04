@@ -13,8 +13,7 @@ import {
   frameAt,
   outLength,
   toOutput,
-  toSource,
-} from "./timeline";
+  toSource, normalizeSession } from "./timeline";
 
 // 操作動画（docs/promo-video-storyboard.md C）。録画は public/rec/<session>/（scripts/record.mjs）。
 export type TutorialProps = {
@@ -32,7 +31,7 @@ const CLICK_VOLUME = 0.6;
 
 export const calculateTutorialMetadata: CalculateMetadataFunction<TutorialProps> = async ({ props }) => {
   const base = `rec/${props.session}`;
-  const s: Session = await fetch(staticFile(`${base}/session.json`)).then((r) => r.json());
+  const s: Session = normalizeSession(await fetch(staticFile(`${base}/session.json`)).then((r) => r.json()));
   const edit: Edit = await fetch(staticFile(`${base}/edit.json`))
     .then((r) => (r.ok ? r.json() : { captions: [] }))
     .catch(() => ({ captions: [] }));

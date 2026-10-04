@@ -11,6 +11,13 @@ export type Session = {
   name: string;
   view: { width: number; height: number };
   dpr: number;
+  /**
+   * 記録した座標（clientX/Y・CSS px）→ コマの px の倍率（2026-10-04）。REC_DPR=2 で撮った回は、コマが 1600 px でも
+   * ページの CSS 幅が約 1067 px で、カーソルが押したボタンの 2/3 の位置に出ていた（ホスト指摘）。
+   * 新しい録画は record.mjs が css（innerWidth/innerHeight）を残すのでそこから求める。無ければ 1。
+   */
+  coordScale?: number;
+  css?: { width: number; height: number };
   duration: number; // ms
   frames: { f: string; t: number }[]; // t は ms・昇順
   events: RecEvent[]; // 昇順
@@ -75,6 +82,18 @@ function buildRange(s: Session, edit: Edit, start: number, end: number): Segment
   }
   if (end > cur) segs.push({ from: cur, to: end, speed: 1 });
   return segs.filter((g) => g.to > g.from);
+}
+
+/** 座標をコマの px にそろえる（読み込み直後に 1 回だけ呼ぶ）。 */
+export function normalizeSession(s: Session): Session {
+  const k = s.coordScale ?? (s.css?.width ? s.view.width / s.css.width : 1);
+  if (!k || Math.abs(k - 1) < 1e-3) return s;
+  return {
+    ...s,
+    events: s.events.map((e) =>
+      "x" in e && "y" in e ? { ...e, x: (e as { x: number }).x * k, y: (e as { y: number }).y * k } : e,
+    ) as RecEvent[],
+  };
 }
 
 export const outLength = (segs: Segment[]) => segs.reduce((a, g) => a + (g.to - g.from) / g.speed, 0);
