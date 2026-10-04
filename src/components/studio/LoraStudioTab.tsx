@@ -2730,9 +2730,16 @@ export function LoraStudioTab({
   const effectiveAlpha = alphaLinked ? effPro.rank : effPro.alpha;
 
   // admin 用のモデルが下書きから戻った／admin 判定が外れた一般ユーザーは既定へ（2026-09-26）。
+  // 黙って戻すと、選んだつもりのモデルと違うまま学習が走る（2026-10-05、demo アカウントで 10Eros 土台が 2 回とも
+  // 通常の minimax になった）→ 戻したことを欄の下に出す。
+  const [modelResetNote, setModelResetNote] = useState<string | null>(null);
   useEffect(() => {
     if (adminLoading || isAdmin || modelChoice === "__custom__") return;
-    if (!isLoraPresetAvailable(modelChoice, false)) handleModelChange("minimax_h3");
+    if (!isLoraPresetAvailable(modelChoice, false)) {
+      const label = loraPresetById(modelChoice)?.label ?? modelChoice;
+      setModelResetNote(`「${label}」はこのアカウントでは選べないため、Minimax H3 に戻しました。`);
+      handleModelChange("minimax_h3");
+    }
   }, [adminLoading, isAdmin, modelChoice]);
 
   const isCustom = modelChoice === "__custom__";
@@ -6388,6 +6395,7 @@ export function LoraStudioTab({
               value={modelChoice}
               onChange={(e) => {
                 setBaseModelTouched(true);
+                setModelResetNote(null);
                 handleModelChange(e.target.value);
               }}
               // 他のタブから届いた素材で始めたとき、前回のモデルのままでよいなら「欄をクリック」で確認済みにする
@@ -6421,6 +6429,11 @@ export function LoraStudioTab({
                   UI can set modelChoice to "__custom__" any more. */}
             </select>
             </div>
+            {modelResetNote && (
+              <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-400">
+                {modelResetNote}
+              </p>
+            )}
             {flowHint("baseModel")}
           </div>
           <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
