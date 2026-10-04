@@ -11,6 +11,14 @@ CLAUDE.md §5（商用利用・SaaS再頒布・地域制限の3点を満たす�
   **ULL Studio の機能として自ホストするのは不可**（企業は作者に商用ライセンスを申請: lauryliuyang@hkgai.org）。
   事業の宣伝動画の BGM に使うのも「個人として」に当たるか曖昧なので、使うなら同じ窓口に確認してから。
   性能面は声の性別・BPM をスタイル指定で書け、日本語の歌も対応（MiniMax Music 3 の不満点）。コードは Apache-2.0。
+- **MiniMax H3（`MiniMaxAI/MiniMax-H3`、MiniMax H3 Community License、2026-10-05 に HF の LICENSE 原文で確認）**: 派生（ファインチューン・マージ・LoRA）可・
+  出力は派生扱いではない・出力を他社 AI の学習に使うのは禁止・年商 2,000 万ドル超は要許可・第三者に生成させるなら安全対策の義務・
+  地域除外（EU・英国・韓国・米国。**ホストがリスク許容済み**）。**⚠️「商用製品の UI に 'MiniMax H3' を目立つように表示する義務」**があり、
+  CLAUDE.md §2（モデル名を出さない）と衝突する → ホスト判断待ち（Music 3 の表示義務と同じ扱い）。
+- **10Eros（`TenStrip/10Eros-Max`、Director の土台・Hybrid Beta5）**: MiniMax H3 Community License ＋ 作者の README「LTX 2.3・Wan 2.2・Krea 2 から
+  特徴を移植しているので、その部分にはそれぞれのライセンスも及ぶ」。**最も厳しいのは Krea 2 Community License**（商用無料は会社の年商 100 万ドル未満・
+  名称／表記／帰属／利用規定／コンテンツフィルタの義務）。LTX 2.x は年商 1,000 万ドル未満なら無料・Wan 2.2 は Apache-2.0。「20 個以上の LoRA のマージ」で
+  元 LoRA の出所は不明。NSFW タグ付き。Director で既に本番利用しているので、LoRA 学習の土台にしても新たなリスクは増えない（2026-10-05）。
 - **Qwen-Image 2.1（`Qwen/Qwen-Image-2.1`）**: **Qwen Research License = 非商用のみ**（§2a "FOR NON-COMMERCIAL PURPOSES ONLY"、
   §2b 商用は model-business@notice.qwencloud.com に申請。2026-10-04 に HF の LICENSE 原文で確認）。生成物の商用可否は明記なし →
   宣伝動画の素材にも使わない。**初代 Qwen-Image / Qwen-Image-Edit 2509・2511 は Apache-2.0 で可のまま**（2.1 で変わった）。
