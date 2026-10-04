@@ -5,6 +5,12 @@ CLAUDE.md §5（商用利用・SaaS再頒布・地域制限の3点を満たす�
 
 **不可（本番採用禁止）**
 - 非商用ライセンス（CC-BY-NC、"research only"、FLUX.1 `[dev]`、**FLUX.1 Kontext `[dev]`** 等）。Kontext は BFL の有償商用ライセンスまたは Pro/Max API 経由でのみ商用可 → 自ホスト採用は不可。
+- **YuE2（`m-a-p/YuE2-3B`・2026-09-09 公開）**: 重みは **CC BY-NC 4.0 ＋ 個人クリエイター許可**（`MODEL_LICENSE`、効力 2026-09-16、
+  2026-10-04 に GitHub の原文で確認）。許可の対象は *"personal users, content creators and musicians acting in an individual capacity"* で、
+  生成した曲の公開・販売・ライセンスは無償で可。ただし *"does not authorize commercial use of the model weights by companies"* →
+  **ULL Studio の機能として自ホストするのは不可**（企業は作者に商用ライセンスを申請: lauryliuyang@hkgai.org）。
+  事業の宣伝動画の BGM に使うのも「個人として」に当たるか曖昧なので、使うなら同じ窓口に確認してから。
+  性能面は声の性別・BPM をスタイル指定で書け、日本語の歌も対応（MiniMax Music 3 の不満点）。コードは Apache-2.0。
 - **`nvdiffrast` / `nvdiffrec`**（NVIDIA Source Code License = 非商用）。3Dレンダリングは商用可のものを使う: 3D Gaussian Splatting 出力を **`gsplat`（Apache-2.0）**、メッシュは PyTorch3D（BSD）/ Kaolin（Apache-2.0）。Inria版3DGSラスタライザ（`diff-gaussian-rasterization`）も研究用途限定で不可。
 
 **可（確認済み・商用OK）**
