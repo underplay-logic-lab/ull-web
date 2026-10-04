@@ -38,6 +38,7 @@ import {
 } from "@/lib/loraApi";
 import {
   DEFAULT_LORA_RESOLUTION,
+  isDirectorLoraPreset,
   type LoraBaseArchitecture,
   type LoraPresetGroup,
   type LoraResolution,
@@ -2379,7 +2380,7 @@ export function ProgressPanel({
           </button>
           {/* Director は minimax の LoRA だけ使える。押すたびに完成版を保存してから Director へ渡す
               （Director に学習済みの一覧は出さない＝手元に残すのが前提。2026-10-03 ホスト方針）。 */}
-          {onUseLora && job.targetModel === "minimax_h3" && finalCkpt && (
+          {onUseLora && isDirectorLoraPreset(job.targetModel) && finalCkpt && (
             <button
               type="button"
               onClick={() => {

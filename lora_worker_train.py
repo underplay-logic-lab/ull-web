@@ -294,7 +294,7 @@ def _cloud_safe_model_block(
         # are ignored by it) — see TARGET_MODELS["minimax_h3"].
         if isinstance(h3.get("model_kwargs"), dict):
             block["model_kwargs"] = dict(h3["model_kwargs"])
-        apply_minimax_h3_te(block)
+        apply_minimax_h3_te(block, target_model)
         return block
 
     safe = None
@@ -765,7 +765,7 @@ def _build_config(
     if isinstance(target.get("model_kwargs"), dict):
         model_block["model_kwargs"] = {**target["model_kwargs"], **model_block.get("model_kwargs", {})}
     if target.get("arch") == "minimax_h3":
-        apply_minimax_h3_te(model_block)
+        apply_minimax_h3_te(model_block, target_model)
 
     config = {
         "job": "extension",

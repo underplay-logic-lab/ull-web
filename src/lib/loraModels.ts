@@ -104,6 +104,9 @@ export const LORA_PRESETS: LoraPreset[] = [
     note: "Lightricks の次世代動画 DiT。高速・高精細な T2V LoRA。",
   },
   { id: "minimax_h3", label: "Minimax H3", group: "video", arch: "minimax_h3", note: "BF16 フル精度・動画" },
+  // admin の検証用（2026-10-05）: 土台を 10Eros（Director が使う LoRA 焼き込み済みモデル）にする。公式の土台で学習した
+  // LoRA は 10Eros の上ではほぼ効かないため。学習の中身・料金は minimax_h3 と同じ（arch が同じ）。docs/STATUS.md 参照。
+  { id: "minimax_h3_10eros", label: "Minimax H3（10Eros 土台）", group: "video", arch: "minimax_h3", note: "BF16・Director と同じ土台で学習（検証用）" },
   // --- photo / general (1.0x) ---
   {
     id: "flux2_klein_4b",
@@ -194,6 +197,13 @@ export const LORA_PUBLIC_PRESET_IDS: ReadonlySet<string> = new Set(["minimax_h3"
 
 export function isLoraPresetAvailable(id: string, isAdmin: boolean): boolean {
   return LORA_PRESET_IDS.has(id) && (isAdmin || LORA_PUBLIC_PRESET_IDS.has(id));
+}
+
+/** Director で使える LoRA を学習するプリセット（minimax 系）。Director への受け渡しと読み込みの判定に使う。 */
+export const DIRECTOR_LORA_PRESET_IDS = ["minimax_h3", "minimax_h3_10eros"] as const;
+
+export function isDirectorLoraPreset(id: string | null | undefined): boolean {
+  return !!id && (DIRECTOR_LORA_PRESET_IDS as readonly string[]).includes(id);
 }
 
 export function loraPresetById(id: string): LoraPreset | undefined {

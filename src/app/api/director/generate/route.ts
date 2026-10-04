@@ -37,6 +37,7 @@ import { assertOwnedDirectorLoraVolumePath, isOwnedDirectorLoraR2Key } from "@/l
 import { CINEMATIC_MODE_BY_ID, cinematicMegapixels, cinematicSafeDimensions } from "@/lib/cinematicPricing";
 import { dispatchDirectorJob, type DirectorDispatchSpec } from "@/lib/directorDispatch.server";
 import { advanceQueue, saveDispatchSpec } from "@/lib/studioQueue.server";
+import { DIRECTOR_LORA_PRESET_IDS } from "@/lib/loraModels";
 import {
   CONTENT_POLICY_BLOCK_MESSAGE,
   evaluateContentPolicyMany,
@@ -232,7 +233,7 @@ export async function POST(request: Request) {
       .eq("user_id", user.id)
       .eq("workflow_type", "lora_training")
       .eq("status", "completed")
-      .eq("inputs->>target_model", "minimax_h3")
+      .in("inputs->>target_model", [...DIRECTOR_LORA_PRESET_IDS])
       .gte("created_at", retentionCutoffIso);
     loraQuery = isJobId ? loraQuery.eq("id", loraIdRaw) : loraQuery.eq("inputs->>output_lora_name", loraIdRaw);
     const { data: loraJob } = await loraQuery
