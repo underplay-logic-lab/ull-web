@@ -718,6 +718,18 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
      → ローカルで 10 秒の歌唱確認（16GB で 896×1184×10 秒は共有メモリへ溢れて進まない → 640×864）→ Modal B300 で 68 秒 bf16 を 1 本（要承認）。
      崩れたら潜在のまま区間を延ばし、最後に 1 回だけデコードする方式（Reddit「H3 infinite video extending v2」・各区間に歌を AddGuide で固定）に切り替え。
      解像度は縦横とも 32 の倍数（848 等は patchify で落ちる）。`run_compare.py` は終了時に子プロセスまで止める（親だけだと GPU を掴んだ本体が残った）。
+   - **MV の方式を Ref2VA に変更（2026-10-04 夜）**: 最初のフレームを Qwen-Image-Edit 2511 で作ると顔がひなたから離れる（Qwen-Image 2.1 は寄るが
+     非商用ライセンス → 不可、`docs/model-licenses.md`）。→ **Ref2VA（`MiniMaxH3ReferenceToVideo`・顔写真を参照）＋ AddGuide で歌を固定**にした。
+     ローカル 5 秒で顔・場面・口とも良好（`D:\ComfyUI-ull\ref2va_sing_5s*.json`）。本番用 bf16（`minimax_h3_ref2va_pruned_bf16`）は Volume に追加済み（約 927GB/1TB）。
+     本番ワークフロー `D:\ComfyUI-ull\prod_hinata_mv_68s.json`（1344×768・68 秒・VDN 8step）＋ 投げる `submit_prod.py`（Director ワーカーの run_custom_workflow）。
+     曲は `ext68_codes1_v0.38.2_3`（ホスト決定）。**LoRA final を入れて投げる前のホスト承認待ち**（B300 約 45 分・$4〜8）。
+   - **ひなた LoRA（4,000 step・hnt_minimax_v2）の検証**: 公式 FL2VA/Ref2VA ではよく効く（3,500 step 以降でひなた・final 採用候補・まだ伸びている＝5,000 前後も可）。
+     **10Eros（w4a8・int8 とも）では LoRA がほぼ効かない**（強さ 1.5 で寄るが画質が落ち始め、2.0 で崩れる）。10Eros は説明欄に「H3 LoRA merge」＝LoRA 焼き込み済み。
+     turbo LoRA・VAE は無関係。**本番 Director（10Eros ＋ LoRA Studio の LoRA）でも LoRA はほぼ効いていない疑い**（ローンチ時の確認は顔写真を最初のフレームにしていたので根拠にならない）。
+     → 10Eros 土台で学習する案: Volume の 10Eros bf16 は公式 pruned bf16 とキー 532 個・形が完全一致（違いは 112 個の dtype と余り 2 キー）→ 変換版を作れば今の bf16 直読みのまま学習できる。
+     要: Music 3 削除（Volume の空き）・LoRA ワーカーに土台切り替え・10Eros のライセンス確認。
+   - ローカルの ComfyUI2 の input/output が普通のフォルダになっていた件: 16:35 の ComfyUI 更新で git が書き戻した（このセッション前）。ジャンクションに戻し、
+     git 管理の目印ファイルをリンク先に置いて再発を防いだ。21:46〜22:20 の 16 本は `D:\ComfyUI\…\output\20261004\video_ComfyUI2_2146-2220\` へ。
    - **曲づくり機能の案**: ACE-Step 1.5 で「曲調・声・男女・歌詞 → すぐ曲」。L4（$0.80/h・24GB）で 1 曲 20〜30 秒・約 1 円の見込み（未計測）、T4 は bf16 が遅く不向き。
      Director の歌唱 MV へつなげるのが売り。MiniMax Music 3 は見送り（日本語が弱い・UI にモデル名表示義務）→ 重み 57GB は消してよい。MV の後で L4 を 1 本測る。
    - **スマホ版の入口（ホスト構想 2026-10-04・MV の後に設計相談）**: PC 版（無圧縮・長尺）とは別に、スマホで撮った写真から手軽に・安く・速く（640×864 程度・量子化＋4〜8 step）。
