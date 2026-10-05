@@ -357,6 +357,7 @@ export function DirectorStudioTab() {
   const [audio, setAudio] = useState<{ file: File; durationS: number } | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
+  const [audioDragging, setAudioDragging] = useState(false);
   const handleAudioSelected = async (file: File | null | undefined) => {
     if (!file) return;
     setAudioError(null);
@@ -1210,10 +1211,24 @@ export function DirectorStudioTab() {
             <button
               type="button"
               onClick={() => audioInputRef.current?.click()}
-              className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border py-2.5 text-sm text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+              onDragOver={(e) => {
+                e.preventDefault();
+                setAudioDragging(true);
+              }}
+              onDragLeave={() => setAudioDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setAudioDragging(false);
+                void handleAudioSelected(e.dataTransfer.files?.[0]);
+              }}
+              className={`flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed py-2.5 text-sm transition-colors ${
+                audioDragging
+                  ? "border-neon-pink/60 bg-neon-pink/5 text-foreground"
+                  : "border-border text-muted hover:border-neon-violet/40 hover:text-foreground"
+              }`}
             >
               <Plus size={14} />
-              音声ファイルを選ぶ（{DIRECTOR_MAX_AUDIO_SECONDS}秒まで）
+              音声ファイルを選ぶ・ドロップ（{DIRECTOR_MAX_AUDIO_SECONDS}秒まで）
             </button>
           )}
           {audioError && (
