@@ -655,7 +655,9 @@ C. **残りの小物**: 予約（順番待ち）の超解像・Director での�
 Director の LoRA 欄は閉じた（`DIRECTOR_LORA_ENABLED=false`・開放中の利用 0 人・API/ワーカーの LoRA 対応は残置）。
 **minimax の LoRA 学習は一般向けに残す**（持ち帰り用。料金ページもそのまま）。Director 向けの LoRA 改善は打ち切り
 （口パク対策の再学習・Director での強さの欄・特徴のプロンプト自動追加）。LoRA Studio 全般の改善案（顔アップ不足の診断・rank 等）は保留。
-公開済みの操作動画 B・C は触らない（Director に LoRA の口が無いので説明不要）。次は「顔写真として使う」を最大 9 枚に＋素材づくりからの導線。
+公開済みの操作動画 B・C は触らない（Director に LoRA の口が無いので説明不要）。
+**実装・push 済み（本番の画面ではまだ試していない）**: 「顔写真として使う」に同じ人物の写真を最大 8 枚追加（`c293138`・knob `director_extra_ref_rate` 0.04/枚・
+予約と作り直しも引き継ぐ）／素材づくりの完成後に「この人物で動画を作る（N 枚を Director へ）」（元の画像＋顔・表情を優先して最大 9 枚）。
 
 **2026-10-05 に決めたこと（蒸し返さない）**: minimax の LoRA 学習の既定＝10Eros 土台（`2936a4b`・デプロイ済み）／Director に「Powered by MiniMax H3」を常に表示
 （ライセンス §IV.2・会員限定にしない・CLAUDE.md §2 例外）／YouTube 2 本目 A・B・C 公開・再生リスト「ULL Studio の使い方」https://www.youtube.com/playlist?list=PLegsiqrxEcRI

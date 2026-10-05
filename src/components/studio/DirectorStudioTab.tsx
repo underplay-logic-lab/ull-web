@@ -85,6 +85,7 @@ import {
   clearDirectorLora,
   peekDirectorLora,
   requestStudioHandoff,
+  takeStudioBatchHandoff,
   type DirectorLoraHandoff,
 } from "@/lib/studioHandoff";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
@@ -411,6 +412,18 @@ export function DirectorStudioTab() {
     );
     if (ok.length && room > 0) setExtraRefs((prev) => [...prev, ...ok.slice(0, room)]);
   };
+  // 素材づくりから受け取る（2026-10-05）: 先頭を参照画像、残りを追加の写真にして「顔写真として使う」にする。
+  const [handoffNotice, setHandoffNotice] = useState<string | null>(null);
+  useEffect(() => {
+    const h = takeStudioBatchHandoff("director");
+    if (!h || h.files.length === 0) return;
+    queueMicrotask(() => {
+      setImage(h.files[0]);
+      setReferenceMode("reference");
+      setExtraRefs(h.files.slice(1, 9));
+      setHandoffNotice(`${h.source}を受け取りました。${h.hint ?? ""}`);
+    });
+  }, []);
   const media: DirectorMediaOptions = {
     audio,
     referenceMode,
@@ -1151,6 +1164,14 @@ export function DirectorStudioTab() {
 
       {/* ── 左: 入力（参照画像 + タイムライン） ─────────────────────── */}
       <div className="flex flex-col gap-5 rounded-2xl border-gradient bg-surface/40 p-5">
+        {handoffNotice && (
+          <p className="flex items-start justify-between gap-2 rounded-lg border border-neon-violet/30 bg-neon-violet/10 px-3 py-2 text-[11px] leading-relaxed text-foreground">
+            <span>{handoffNotice}</span>
+            <button type="button" onClick={() => setHandoffNotice(null)} className="shrink-0 text-muted hover:text-foreground" aria-label="閉じる">
+              <X size={12} />
+            </button>
+          </p>
+        )}
         <ImageDropzone
           file={image}
           previewUrl={imagePreview}

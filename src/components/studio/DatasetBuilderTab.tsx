@@ -12,7 +12,7 @@ import { HelpNote } from "./HelpNote";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 import { zipLocalDate } from "@/lib/zipDate";
-import { Check, ChevronDown, ChevronRight, Download, ImagePlus, Loader2, Sparkles, Wand2, X, Zap, ZoomIn } from "lucide-react";
+import { Check, ChevronDown, Clapperboard, ChevronRight, Download, ImagePlus, Loader2, Sparkles, Wand2, X, Zap, ZoomIn } from "lucide-react";
 import { MAX_SUB_REFERENCE_IMAGES } from "@/lib/angleStudio";
 import {
   AngleJobNotFoundError,
@@ -70,7 +70,7 @@ import { BodyDesignForm } from "@/components/studio/BodyDesignForm";
 import GenerationCaveat from "@/components/studio/GenerationCaveat";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState, studioFormStorageKey } from "@/lib/studioFormPersistence";
-import { requestStudioHandoff, sendLoraAdditions, takeStudioBatchHandoff } from "@/lib/studioHandoff";
+import { requestStudioBatchHandoff, requestStudioHandoff, sendLoraAdditions, takeStudioBatchHandoff } from "@/lib/studioHandoff";
 import { VramBadge } from "@/components/studio/VramBadge";
 import {
   AngleLightbox,
@@ -1257,6 +1257,35 @@ export function DatasetBuilderTab() {
     }
   };
 
+  // Director の「顔写真として使う」へ最大 9 枚（2026-10-05）。参照画像 9 枚で LoRA なしでも顔・細部・口が保たれた
+  // （docs/STATUS.md）。元の画像を 1 枚目に、残した結果から顔のアップ・表情違いを優先して足す。多ければ Director 側で外せる。
+  const DIRECTOR_REF_MAX = 9;
+  const sendToDirector = async () => {
+    const faceFirst = (label: string) => (/顔|アップ|表情|笑|口|横顔|バスト/.test(label) ? 0 : 1);
+    const picked = [...kept].sort((a, b) => faceFirst(a.label) - faceFirst(b.label));
+    const room = DIRECTOR_REF_MAX - (image ? 1 : 0);
+    if (picked.length === 0 && !image) return;
+    setSending(true);
+    setErrorMessage(null);
+    try {
+      const files = await Promise.all(
+        picked.slice(0, room).map(async (c, n) => {
+          const blob = await fetchFresh(c);
+          return new File([blob], fileName(c, n), { type: blob.type || "image/png" });
+        }),
+      );
+      if (image) files.unshift(image);
+      requestStudioBatchHandoff(
+        { files, source: `素材づくりの ${files.length} 枚`, hint: "「顔写真として使う」に入れました。" },
+        "director",
+      );
+    } catch (err) {
+      setErrorMessage(`Director への受け渡しに失敗しました: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSending(false);
+    }
+  };
+
   const activeJob = activeJobId ? jobs[activeJobId] : null;
   const plannedTotal = run?.plan.length ?? 0;
   const producedTotal = results.length;
@@ -2177,6 +2206,17 @@ export function DatasetBuilderTab() {
                   {sending ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
                   {kept.length + (mainRoute === "face" && sendOriginal && image ? 1 : 0)} 枚を LoRA Studio に追加
                 </button>
+                )}
+                {phase === "done" && (
+                  <button
+                    type="button"
+                    onClick={() => void sendToDirector()}
+                    disabled={sending || (kept.length === 0 && !image)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-neon-violet/50 bg-neon-violet/10 px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-neon-violet/20 disabled:opacity-50"
+                  >
+                    {sending ? <Loader2 size={12} className="animate-spin" /> : <Clapperboard size={12} />}
+                    この人物で動画を作る（{Math.min(DIRECTOR_REF_MAX, kept.length + (image ? 1 : 0))} 枚を Director へ）
+                  </button>
                 )}
                 {phase === "done" && mainRoute === "face" && image && (
                   <label className="inline-flex items-center gap-1 text-[11px] text-muted">
