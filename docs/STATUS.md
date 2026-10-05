@@ -623,7 +623,8 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    - 画面: 予約一覧を DB の reserved から出す（リロードしても見える）・完了したら次のジョブ id を追いかける。止血の文言は外す。
    - マイグレーション（check 追加・dispatch 表＋GRANT・pg_net トリガー）はファイルパスだけ伝える（§4）。ワーカーのデプロイは不要の見込み。
    **同日に直した素材づくりの同種の問題**: 続きのジョブも画面が送っていた → 確認後の残りを 1 本で送る・上限 100 枚（`eecb5b4`）。
-1. **2 本目の操作動画（2026-10-04 編集中）**: 確認版は `promo/out/A-dataset-preview.mp4`・`B-lora-preview.mp4`・`C-retrain-preview.mp4`（一時 C に出したが D 整理後に戻した）。
+1. **2 本目の操作動画 A・B・C は公開済み（2026-10-05）**: A 素材づくり https://youtu.be/HM0POrlvkLQ（6:45）・B LoRA Studio https://youtu.be/LtYgcKU_hJw（4:09）・C 学び直し https://youtu.be/S7YOU78KkPk（2:20）。4K は `promo/out/{A-dataset,B-lora,C-retrain}-4k.mp4`、サムネは `promo/out/thumb/{dataset,lora,retrain}.png`（`brand/thumbnail.mjs` に種類を追加）。素材づくりと LoRA Studio のタブに「▶ 使い方の動画」（LoRA は 2 本並ぶ）。テロップからクレジットの金額は外した（金額は変わり得るため・ホスト方針）。**残り: Director 編を撮る（Director の改修方針＝歌の持ち込み等が決まってから）→ A＋B＋C＋Director のまとめ版**。以下は経緯:
+   旧: **2 本目の操作動画（2026-10-04 編集中）**: 確認版は `promo/out/A-dataset-preview.mp4`・`B-lora-preview.mp4`・`C-retrain-preview.mp4`（一時 C に出したが D 整理後に戻した）。
    A 素材づくり（dataset1/2/3/4/4b/5b/6、8:51）・B LoRA Studio（lora7＝失敗 2 回をカット＋lora8、5:01）・C 学び直し（lora-rerun3、2:15）。
    各 `public/rec/<名前>/edit.json` に範囲・カット・テロップ済み。ホストの確認待ち → 直して 4K（`--scale=2 --crf=16`）で仕上げ。
    Director 分を撮ったら A＋B＋C＋Director の長編もつなぐ。学習の料金（1,495C/1,677C）は値下げ前なのでテロップで触れていない。
