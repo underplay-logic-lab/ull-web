@@ -255,6 +255,13 @@ export function Studio() {
               />
             )}
           </p>
+          {/* MiniMax H3 Community License §IV.2「商用製品の UI に 'MiniMax H3' を目立つように表示」（2026-10-05 ホスト判断:
+              会員限定にせず常に出す・CLAUDE.md §2 の例外）。Director の土台 10Eros も MiniMax H3 の派生なので対象。 */}
+          {activeTab === "director" && (
+            <p className="mt-2 text-[11px] font-medium tracking-wide text-foreground/80">
+              Cinematic Director — Powered by MiniMax H3
+            </p>
+          )}
           <HelpNoteToggleAll className="mt-2" />
           <TutorialVideoButton tab={shownTab} className="mt-1" />
         </div>

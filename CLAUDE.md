@@ -165,6 +165,7 @@ Modalジョブを完全に止めたい時は `modal container stop` ではなく
 - **管理者画面の隔離**: 物理型番や時給原価（$7.10/h等）は管理者専用の Admin 画面（`GpuCostReferenceCard`）のみに表示する。
 - **基盤モデル名の非表示**: 一般ユーザー向けUIに `TRELLIS.2`, `Pixal3D`, `MiniMax H3`, `Qwen-Image-Edit` 等の内部モデル名を露出させることを禁止する。理由: これらはほぼ全て誰でも無料で入手できるオープンウェイトであり、名前を出すこと自体が「それなら自分でタダで動かせるのでは」という比較・離脱を招く。「どのモデルを使っているか」ではなく「ULL Studio で何ができるか」に対価を感じてもらう方針。
   - これは UI 表示上の方針であり、**ライセンス遵守の実務（地域制限の geofence、Community License が求める NOTICE 表記義務）とは別枠**で維持する。NOTICE が必要なモデルは目立たない場所（利用規約ページ等）で義務を満たせば足りる。
+  - **例外: Cinematic Director は「Powered by MiniMax H3」を常に表示する**（MiniMax H3 Community License §IV.2 の UI 表示義務。会員限定にしない。2026-10-05 ホスト判断）。MiniMax H3 の生成物を公開するときは「AI 生成」と明示する義務もある（YouTube は「AI の使用＝はい」＋説明欄）。→ `docs/model-licenses.md`
   - **例外: LoRA Studio（`src/lib/loraModels.ts`）は対象外**。LoRA学習は「どのベースモデルに対して学習するか」自体が機能そのもので（互換性・プロンプト作法・コミュニティ知見の流用に直結）、隠すと実用性が損なわれるため `label` は実モデル名のまま維持する。
 
 ---

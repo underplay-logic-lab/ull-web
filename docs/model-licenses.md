@@ -14,7 +14,8 @@ CLAUDE.md §5（商用利用・SaaS再頒布・地域制限の3点を満たす�
 - **MiniMax H3（`MiniMaxAI/MiniMax-H3`、MiniMax H3 Community License、2026-10-05 に HF の LICENSE 原文で確認）**: 派生（ファインチューン・マージ・LoRA）可・
   出力は派生扱いではない・出力を他社 AI の学習に使うのは禁止・年商 2,000 万ドル超は要許可・第三者に生成させるなら安全対策の義務・
   地域除外（EU・英国・韓国・米国。**ホストがリスク許容済み**）。**⚠️「商用製品の UI に 'MiniMax H3' を目立つように表示する義務」**があり、
-  CLAUDE.md §2（モデル名を出さない）と衝突する → ホスト判断待ち（Music 3 の表示義務と同じ扱い）。
+  CLAUDE.md §2（モデル名を出さない）と衝突 → **Director に「Cinematic Director — Powered by MiniMax H3」を常に表示して満たす（2026-10-05 ホスト判断・会員限定にしない）**。
+  生成物を公の場に出すときは「機械生成」と明示する義務（Exhibit A 12）。MiniMax の名前を出すのは推奨止まり。
 - **10Eros（`TenStrip/10Eros-Max`、Director の土台・Hybrid Beta5）**: MiniMax H3 Community License ＋ 作者の README「LTX 2.3・Wan 2.2・Krea 2 から
   特徴を移植しているので、その部分にはそれぞれのライセンスも及ぶ」。**最も厳しいのは Krea 2 Community License**（商用無料は会社の年商 100 万ドル未満・
   名称／表記／帰属／利用規定／コンテンツフィルタの義務）。LTX 2.x は年商 1,000 万ドル未満なら無料・Wan 2.2 は Apache-2.0。「20 個以上の LoRA のマージ」で
