@@ -104,9 +104,10 @@ export const LORA_PRESETS: LoraPreset[] = [
     note: "Lightricks の次世代動画 DiT。高速・高精細な T2V LoRA。",
   },
   { id: "minimax_h3", label: "Minimax H3", group: "video", arch: "minimax_h3", note: "BF16 フル精度・動画" },
-  // admin の検証用（2026-10-05）: 土台を 10Eros（Director が使う LoRA 焼き込み済みモデル）にする。公式の土台で学習した
-  // LoRA は 10Eros の上ではほぼ効かないため。学習の中身・料金は minimax_h3 と同じ（arch が同じ）。docs/STATUS.md 参照。
-  { id: "minimax_h3_10eros", label: "Minimax H3（10Eros 土台）", group: "video", arch: "minimax_h3", note: "BF16・Director と同じ土台で学習（検証用）" },
+  // minimax_h3 は 2026-10-05 から 10Eros（Director が使う LoRA 焼き込み済みモデル）を土台に学習する（ホスト判断）。
+  // 公式の土台で学習した LoRA は 10Eros の上ではほぼ効かず、10Eros で学習した LoRA は公式・10Eros のどちらでも効いた。
+  // 公式の土台は admin の比較・検証用。minimax_h3_10eros は 2026-10-05 の検証ジョブ（過去の作り直し用に残す・一覧には出さない）。
+  { id: "minimax_h3_official", label: "Minimax H3（公式の土台）", group: "video", arch: "minimax_h3", note: "BF16・公式モデルの土台で学習（比較用）" },
   // --- photo / general (1.0x) ---
   {
     id: "flux2_klein_4b",
@@ -200,7 +201,7 @@ export function isLoraPresetAvailable(id: string, isAdmin: boolean): boolean {
 }
 
 /** Director で使える LoRA を学習するプリセット（minimax 系）。Director への受け渡しと読み込みの判定に使う。 */
-export const DIRECTOR_LORA_PRESET_IDS = ["minimax_h3", "minimax_h3_10eros"] as const;
+export const DIRECTOR_LORA_PRESET_IDS = ["minimax_h3", "minimax_h3_10eros", "minimax_h3_official"] as const;
 
 export function isDirectorLoraPreset(id: string | null | undefined): boolean {
   return !!id && (DIRECTOR_LORA_PRESET_IDS as readonly string[]).includes(id);

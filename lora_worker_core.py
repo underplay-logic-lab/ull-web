@@ -800,22 +800,30 @@ H3_DIT_BF16 = f"{MODELS_DIR}/diffusion_models/minimax_h3_fl2va_pruned_bf16.safet
 
 
 # 10Eros 土台（2026-10-05）: Director の土台 10Eros は「H3 LoRA merge」＝LoRA 焼き込み済みで、公式の土台で学習した LoRA は
-# その上ではほぼ効かない（ひなた LoRA で実測）。Volume の 10Eros bf16 は公式 pruned bf16 とキー 532 個・形が一致し、
-# scripts/modal_10eros_h3keys.py で余りキー 2 個を外し dtype を公式に合わせた（bf16 に戻すとビット一致）。Director も同じファイル。
-# 量子化版は置いていないので、無ければ公式に戻さずに止める（気付かずに公式の土台で学習しないため）。
+# その上ではほぼ効かない（ひなた LoRA で実測）。10Eros で学習した LoRA は 10Eros・公式 FL2VA・Ref2VA のどれでも効いた
+# → **minimax_h3 の既定は 10Eros 土台**（ホスト判断 2026-10-05）。公式の土台は admin の minimax_h3_official（比較・検証用）。
+# Volume の 10Eros bf16 は公式 pruned bf16 とキー 532 個・形が一致し、scripts/modal_10eros_h3keys.py で余りキー 2 個だけ外した
+# （全テンソルがビット一致・Director も同じファイル）。量子化版は置いていないので、無ければ公式に戻さずに止める
+# （気付かずに公式の土台で学習しないため）。戻すときは env ULL_H3_DEFAULT_BASE=official。
 H3_DIT_10EROS_BF16 = f"{MODELS_DIR}/diffusion_models/10Eros_Max_h3_hybrid_beta5.safetensors"
-MINIMAX_H3_10EROS = "minimax_h3_10eros"
+MINIMAX_H3_10EROS = "minimax_h3_10eros"  # 2026-10-05 の検証用（過去のジョブの作り直し用に残す・中身は minimax_h3 と同じ）
+MINIMAX_H3_OFFICIAL = "minimax_h3_official"
 TARGET_MODELS[MINIMAX_H3_10EROS] = {**TARGET_MODELS["minimax_h3"]}
+TARGET_MODELS[MINIMAX_H3_OFFICIAL] = {**TARGET_MODELS["minimax_h3"]}
 
 
-def minimax_h3_dit_path(target_model: str = "minimax_h3") -> str:
-    if target_model == MINIMAX_H3_10EROS:
-        if not os.path.isfile(H3_DIT_10EROS_BF16):
-            raise RuntimeError(f"10Eros の土台が Volume にありません: {H3_DIT_10EROS_BF16}")
-        return H3_DIT_10EROS_BF16
+def _official_dit_path() -> str:
     if os.environ.get("ULL_H3_DIT_BF16", "1") != "0" and os.path.isfile(H3_DIT_BF16):
         return H3_DIT_BF16
     return TARGET_MODELS["minimax_h3"]["unet"]
+
+
+def minimax_h3_dit_path(target_model: str = "minimax_h3") -> str:
+    if target_model == MINIMAX_H3_OFFICIAL or os.environ.get("ULL_H3_DEFAULT_BASE") == "official":
+        return _official_dit_path()
+    if not os.path.isfile(H3_DIT_10EROS_BF16):
+        raise RuntimeError(f"10Eros の土台が Volume にありません: {H3_DIT_10EROS_BF16}")
+    return H3_DIT_10EROS_BF16
 
 
 def apply_minimax_h3_te(block: dict, target_model: str = "minimax_h3") -> None:
