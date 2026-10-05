@@ -115,6 +115,93 @@ def precache() -> dict:
     return done
 
 
+# --- 尺（2026-10-05）--------------------------------------------------------------------
+# ComfyUI の ACE-Step は指定した長さで必ず打ち切る（comfy/text_encoders/ace15.py: 曲の設計図のトークン数＝長さ×5 で固定）。
+# 60 秒のままだと、ひなたの曲（16 行・128 BPM）は最後の行の途中で切れた。歌の部分だけで 16 行×2 小節×1.875 秒＝60 秒あり、
+# 前奏・後奏が入らないため。→ 歌詞から長さを見積もり、少し長めにする（余った分は後奏になる）。
+LINE_BARS = 2  # 歌詞 1 行 ≒ 2 小節（ひなたの曲で 68 秒にしたときにぎりぎり歌い切れたのと合う）
+INTRO_BARS = 4
+OUTRO_BARS = 4
+DURATION_MARGIN = 1.1
+MAX_SECONDS = 240.0
+
+
+def lyric_lines(lyrics: str) -> list[str]:
+    return [ln for ln in lyrics.splitlines() if ln.strip() and not ln.strip().startswith("[")]
+
+
+def estimate_seconds(lyrics: str, bpm: int, timesignature: str = "4") -> float:
+    """歌詞の行数と BPM から、歌い切って後奏まで入る長さ（5 秒単位で切り上げ）。歌詞が無ければ 60 秒。"""
+    import math
+
+    lines = lyric_lines(lyrics)
+    if not lines:
+        return 60.0
+    beats = int(timesignature) if str(timesignature).isdigit() else 4
+    bar_s = beats * 60.0 / max(40, int(bpm))
+    secs = (len(lines) * LINE_BARS + INTRO_BARS + OUTRO_BARS) * bar_s * DURATION_MARGIN
+    return float(min(MAX_SECONDS, max(30, math.ceil(secs / 5) * 5)))
+
+
+def prepare_params(p: dict) -> dict:
+    """seconds が 0・"auto"・未指定なら歌詞から決める。歌詞の最後に [Outro] が無ければ足す（終わり方を作らせる）。"""
+    q = dict(p)
+    lyrics = str(q.get("lyrics", "")).rstrip()
+    if lyric_lines(lyrics) and not lyrics.splitlines()[-1].strip().lower().startswith("[outro"):
+        lyrics += "\n\n[Outro]"
+    q["lyrics"] = lyrics
+    tags = str(q.get("tags", "")).strip()
+    if "ending" not in tags.lower():
+        tags = f"{tags}, natural ending with a short outro" if tags else "natural ending with a short outro"
+    q["tags"] = tags
+    sec = q.get("seconds")
+    q["auto_seconds"] = not sec or sec == "auto" or float(sec) <= 0
+    if q["auto_seconds"]:
+        q["seconds"] = estimate_seconds(lyrics, int(q.get("bpm", 120)), str(q.get("timesignature", "4")))
+    return q
+
+
+def finish_audio(src: str, dst: str) -> dict:
+    """末尾の無音を切って 1.5 秒のフェードアウトを付ける（ffmpeg）。最後の 1 秒が大きい音のまま＝途中で切れた疑いも測る。"""
+    import re
+
+    def run(args):
+        return subprocess.run(args, capture_output=True, text=True)
+
+    dur = float(run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", src]).stdout.strip())
+    # 最後の 1 秒と全体の音量（dB）。差が小さい＝最後まで大きい音のまま終わっている。
+    def vol(extra):
+        out = run(["ffmpeg", "-v", "info", *extra, "-i", src, "-af", "volumedetect", "-f", "null", "-"]).stderr
+        m = re.search(r"mean_volume: (-?[\d.]+) dB", out)
+        return float(m.group(1)) if m else None
+
+    whole_db = vol([])
+    tail_db = vol(["-sseof", "-1"])
+    # 末尾の無音（-50dB 以下が 0.5 秒以上）の始まり。
+    sil = run(["ffmpeg", "-v", "info", "-i", src, "-af", "silencedetect=noise=-50dB:d=0.5", "-f", "null", "-"]).stderr
+    starts = [float(x) for x in re.findall(r"silence_start: ([\d.]+)", sil)]
+    ends = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", sil)]
+    end_at = dur
+    if starts and (len(ends) < len(starts) or ends[-1] >= dur - 0.05):
+        end_at = max(5.0, starts[-1] + 0.3)
+    fade = min(1.5, end_at / 4)
+    r = run([
+        "ffmpeg", "-v", "error", "-y", "-i", src, "-t", f"{end_at:.3f}",
+        "-af", f"afade=t=out:st={end_at - fade:.3f}:d={fade:.3f}", dst,
+    ])
+    if r.returncode != 0:
+        raise RuntimeError(f"ffmpeg finish failed: {r.stderr[-1000:]}")
+    abrupt = whole_db is not None and tail_db is not None and tail_db > whole_db - 6
+    return {
+        "raw_s": round(dur, 2),
+        "final_s": round(end_at, 2),
+        "trimmed_s": round(dur - end_at, 2),
+        "tail_db": tail_db,
+        "whole_db": whole_db,
+        "ended_abruptly": abrupt,
+    }
+
+
 def build_workflow(p: dict) -> dict:
     """ace_hinata_song_60s.json と同じ組み方。p: tags / lyrics / seconds / bpm / keyscale / language / timesignature / seed。"""
     seconds = float(p.get("seconds", 60))
@@ -212,6 +299,7 @@ class AceStep:
 
         import requests
 
+        params = prepare_params(params)
         out_dir = pathlib.Path(COMFY_DIR, "output")
         pre = {str(p) for p in out_dir.rglob("*") if p.is_file()}
         t = time.time()
@@ -237,13 +325,28 @@ class AceStep:
         new = sorted((p for p in out_dir.rglob("*") if p.is_file() and str(p) not in pre), key=os.path.getmtime)
         if not new:
             raise RuntimeError("workflow finished but produced no audio")
-        data = new[-1].read_bytes()
-        print(f"[ace] {params.get('seconds')}s song in {elapsed}s (boot {self.boot_s}s) -> {new[-1].name}", flush=True)
-        return {"audio": data, "filename": new[-1].name, "elapsed_s": elapsed, "boot_s": self.boot_s, "gpu": GPU}
+        finished = str(new[-1].with_name(new[-1].stem + "_final.flac"))
+        info = finish_audio(str(new[-1]), finished)
+        data = pathlib.Path(finished).read_bytes()
+        print(
+            f"[ace] {params['seconds']}s ({'auto' if params['auto_seconds'] else 'fixed'}) song in {elapsed}s "
+            f"(boot {self.boot_s}s) -> {info}",
+            flush=True,
+        )
+        return {
+            "audio": data,
+            "filename": pathlib.Path(finished).name,
+            "elapsed_s": elapsed,
+            "boot_s": self.boot_s,
+            "gpu": GPU,
+            "seconds": params["seconds"],
+            "auto_seconds": params["auto_seconds"],
+            **info,
+        }
 
 
 @app.local_entrypoint()
-def main(out_dir: str = "./ace_out", seconds: float = 60.0, seed: int = 1, workflow: str = "", count: int = 1):
+def main(out_dir: str = "./ace_out", seconds: float = 0.0, seed: int = 1, workflow: str = "", count: int = 1):
     """試作: ローカルの ACE ワークフロー（既定はひなたの曲）から曲調・歌詞を読み、同じ条件で 1 本作る。"""
     src = workflow or r"D:\ComfyUI-ull\ace_hinata_song_60s.json"
     w = json.loads(pathlib.Path(src).read_text(encoding="utf-8"))
@@ -267,9 +370,11 @@ def main(out_dir: str = "./ace_out", seconds: float = 60.0, seed: int = 1, workf
         t = time.time()
         res = worker.generate.remote({**params, "seed": seed + k})
         total = time.time() - t
-        out = dst / f"ace_{GPU}_{int(seconds)}s_seed{seed + k}_{res['filename']}"
+        tag = "auto" if res["auto_seconds"] else f"{int(seconds)}s"
+        out = dst / f"ace_{GPU}_{tag}{int(res['seconds'])}s_seed{seed + k}_{res['filename']}"
         out.write_bytes(res["audio"])
         print(
             f"[main] #{k + 1} gpu={res['gpu']} generate={res['elapsed_s']}s boot={res['boot_s']}s "
-            f"total(含コールド)={total:.0f}s -> {out}"
+            f"total(含コールド)={total:.0f}s set={res['seconds']}s raw={res['raw_s']}s final={res['final_s']}s "
+            f"tail={res['tail_db']}dB whole={res['whole_db']}dB abrupt={res['ended_abruptly']} -> {out}"
         )
