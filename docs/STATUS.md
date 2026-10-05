@@ -611,7 +611,8 @@ A. **【次の本筋】Director の改修＝歌（音声）の持ち込み**（�
      音声欄はドラッグ＆ドロップ対応も追加（`647864d`）。
    - **LoRA の効果（同じ台本・シード 1258081515・顔写真参照・20 秒、違いは LoRA だけ）**: LoRA なしは頬がこけて大人びた・肌が濃い別人寄り、
      ひなた LoRA（`hnt_10eros_minimax_v1_final`・強さ 1）ありは丸い輪郭・色白で写真に近い（全コマで一貫・シード 1 本）。490 秒。
-     比較 `D:\ComfyUI-ullesults\prod_test\cmp_lora.png`・`out_ref_lora.mp4`。→ **Director の LoRA 欄を一般に開放**（ホスト判断・`DIRECTOR_LORA_ENABLED=true`）。
+     比較 `D:\ComfyUI-ull
+esults\prod_test\cmp_lora.png`・`out_ref_lora.mp4`。→ **Director の LoRA 欄を一般に開放**（ホスト判断・`DIRECTOR_LORA_ENABLED=true`）。
      伏せていた理由（基盤モデルが分かる）は「Powered by MiniMax H3」常時表示で消えた。欄に「H3 用の LoRA だけ」と追記。
    - **未確認**: 参照モード×高品質（50 step）の組み合わせは一度も試していない。
    - **未着手**: 潜在の保存（B の部分作り直しと一緒に入れる）。
@@ -625,7 +626,10 @@ A. **【次の本筋】Director の改修＝歌（音声）の持ち込み**（�
      （v2: カット 4 → v3: 0。ffmpeg scdet で検出）。台本 AI（Gemini/Qwen）の指示文にこの書き方を入れる。
    - **解像度の上限**: B300 で 1344×768×68 秒は OOM。**960×544×68 秒は約 222GB で完走**（サンプリング 7 分・全体 11 分・約 $1.3）。尺×解像度で上限を引く。
    - 生成時に**潜在も保存**しておく（後の「部分作り直し」のため）。
-   - 曲づくり（ACE-Step 1.5 XL turbo・MIT・L4 で 1 曲 1 円前後の見込み・未計測）は、歌の持ち込みの後に別タブで。
+   - **曲づくり（ACE-Step 1.5 XL turbo・MIT）: ワーカー `modal_ace_worker.py` を作成（2026-10-05・未デプロイ・Studio 未組み込み）**。
+     ComfyUI v0.38.2＋本体ノードのみ・重み 20GB は Volume `/models/ace_step/`（`Comfy-Org/ace_step_1.5_ComfyUI_files` リビジョン固定）。
+     **L4 実測: 60 秒の曲が 2 本目以降 15.4 秒（約 $0.004＝1 円弱）・コールド 97〜104 秒（約 $0.022）**。48kHz ステレオ FLAC。
+     試作 3 本（ひなたの曲と同じ曲調・歌詞、seed 1〜3）は `D:\ComfyUI-ullesultsce\` → ホストが聴いて品質確認。次は画面の設計（曲調・声・歌詞 → 曲 → Director へ渡す）。
 B. **部分作り直し（時間方向）**: ローカルで成立（前半 5 秒を固定して後半を作り直し・つなぎ目自然・同じ部屋で続く）。`D:\ComfyUI-ull\regen_tail_from5s.json`＋
    自作ノード `ULLVideoTimeMask`（開始〜終了秒・fade_tokens。ComfyUI2 にも入れた）。本番ワーカーにはこのノードが無いので、本体ノード（0/1 の画像を
    フレーム数ぶんつなぐ）で組むか、ワーカーに足す。延長（Reddit の「H3 infinite extending」と同じ）にも広げられる。MV v3 の 50 秒以降の直しはホストが「惜しい時用」と判断＝保留。

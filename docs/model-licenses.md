@@ -27,6 +27,9 @@ CLAUDE.md §5（商用利用・SaaS再頒布・地域制限の3点を満たす�
 - **`nvdiffrast` / `nvdiffrec`**（NVIDIA Source Code License = 非商用）。3Dレンダリングは商用可のものを使う: 3D Gaussian Splatting 出力を **`gsplat`（Apache-2.0）**、メッシュは PyTorch3D（BSD）/ Kaolin（Apache-2.0）。Inria版3DGSラスタライザ（`diff-gaussian-rasterization`）も研究用途限定で不可。
 
 **可（確認済み・商用OK）**
+- **ACE-Step 1.5 XL turbo（曲づくり、`modal_ace_worker.py`）**: 本体 `ACE-Step/acestep-v15-xl-turbo`・言語モデル `acestep-5Hz-lm-0.6B`/`-4B`
+  とも **MIT**（2026-10-05 に HF の cardData で確認）。README に「権利処理済みのデータで学習・生成した曲は商用利用可」。
+  ComfyUI 用のまとめ直し `Comfy-Org/ace_step_1.5_ComfyUI_files` は Apache-2.0。地域制限・表示義務なし。
 - **Qwen-Image / Qwen-Image-Edit-2511**: Apache-2.0。現行の画像編集・リスタイルの基盤。
 - **Microsoft TRELLIS / TRELLIS.2（`microsoft/TRELLIS.2-4B`）**: MIT。image→3D の第一候補（非商用レンダラ依存は上記のとおり回避）。
 - **Qwen3.8-27B-abliterated（`hotdogs/Qwen3.8-27B-abliterated`、base `Qwen/Qwen3.8-27B`）**: Apache-2.0（モデルカードの
