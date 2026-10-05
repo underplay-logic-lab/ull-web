@@ -10,8 +10,14 @@ import { presignR2Get } from "@/lib/r2.server";
  * （2026-10-03、lib/studioQueue.server.ts）。台本の合成・検査・課金は予約の時点で済んでいる。
  * 参照画像は作り直しでも使うので消さない（14 日の自動削除に任せる）。
  */
-export type DirectorDispatchSpec = Omit<SpawnDirectorJobParams, "jobId" | "userId" | "referenceImageB64" | "loraUrl"> & {
+export type DirectorDispatchSpec = Omit<
+  SpawnDirectorJobParams,
+  "jobId" | "userId" | "referenceImageB64" | "loraUrl" | "extraFilesB64"
+> & {
   storagePath: string;
+  /** 持ち込み音声の置き場所と、ComfyUI の input での名前（ワークフローの LoadAudio と同じ）。起動の直前に読む。 */
+  audioStoragePath?: string;
+  audioName?: string;
   /** 学習済み LoRA・持ち込み LoRA の R2 キー。起動の直前に署名する（予約の間に期限が切れないように）。 */
   loraR2Key?: string;
 };
@@ -23,11 +29,15 @@ export async function dispatchDirectorJob(
   spec: DirectorDispatchSpec,
   imageB64?: string,
 ): Promise<void> {
-  const { storagePath, loraR2Key, ...rest } = spec;
+  const { storagePath, loraR2Key, audioStoragePath, audioName, ...rest } = spec;
   const b64 = imageB64 ?? (await downloadStudioUpload(userId, storagePath)).toString("base64");
+  const extraFilesB64 =
+    audioStoragePath && audioName
+      ? { [audioName]: (await downloadStudioUpload(userId, audioStoragePath)).toString("base64") }
+      : undefined;
   // ワーカーはコールドスタート後に取りに行くので、署名は長め（1 時間）。
   const loraUrl = loraR2Key ? await presignR2Get(loraR2Key, { expiresIn: 60 * 60 }) : undefined;
-  const { callId } = await spawnDirectorJob({ ...rest, jobId, userId, referenceImageB64: b64, loraUrl });
+  const { callId } = await spawnDirectorJob({ ...rest, jobId, userId, referenceImageB64: b64, extraFilesB64, loraUrl });
   // admin の中止ボタンが Modal の実行まで止められるよう、実行 id を残す（best-effort）。
   await rememberGenerationCall(jobId, callId);
 }

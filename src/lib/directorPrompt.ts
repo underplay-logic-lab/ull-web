@@ -69,10 +69,61 @@ export function withJapaneseTranslationRequest(instruction: string): string {
 // 2026-09-14: シーンごとに「明確な場面転換」か「同じ場面内の継続」かを
 // ユーザーが選べるようにした（sceneChange フラグ、DirectorScene参照）。
 // 先頭シーンは「直前」が無いため常に継続扱い（[CONTINUE]）。
-export function buildSceneDirectorPrompt(scenes: DirectorScene[], musicDirection?: string): string {
+/** 持ち込み音声（歌・セリフ、2026-10-05）。尺は音声の長さ。 */
+export type DirectorSoundtrack = { durationS: number };
+
+// 持ち込み音声があるときの書き方（D:\ComfyUI-ull\prod_hinata_mv_68s_v3.json で確かめた書き方）:
+// 時間ごとの演出を「ショット」「シーン」と書くとカットが入る（v2 は 68 秒で 4 回）。「1 台のカメラの長回し・カット無し」と
+// 宣言し、前の動きから続ける文で書くと 0 回になった（ffmpeg scdet）。音声はそのまま使うので、別のセリフや音楽を足させない。
+const ONE_TAKE_OPENING = (durationS: number) =>
+  `One continuous unbroken take filmed with a single moving camera: no cuts, no edits, no scene changes, no transitions from the first frame to the last, about ${Math.round(durationS)} seconds long.`;
+const SOUNDTRACK_RULE =
+  "The soundtrack (music and/or voice) is given and must not change; the character's lips move exactly in sync with the vocals and stay closed when there are no vocals.";
+
+export function soundtrackInstruction(soundtrack: DirectorSoundtrack): string {
+  return [
+    `IMPORTANT: The audio for this video is supplied by the user as a ${Math.round(soundtrack.durationS)}-second recording (a song or a spoken voice) and is used as-is.`,
+    `- Start the prompt with exactly this sentence: "${ONE_TAKE_OPENING(soundtrack.durationS)}"`,
+    `- Then include this sentence: "${SOUNDTRACK_RULE}"`,
+    "- Describe everything as ONE continuous camera move. Never write \"shot\", \"scene\", \"cut to\" or \"then, in a different moment\"; describe each change as continuing from the previous motion (\"continuing without any cut\", \"the same camera glides...\"). Keep the same location throughout.",
+    "- You may give rough timings (\"around 20 seconds\") for changes in movement or expression.",
+    "- Do NOT add dialogue tags, invented lines, background music or sound-effect descriptions — the supplied audio is the only sound.",
+  ].join("\n");
+}
+
+/** 顔写真として参照するモード（2026-10-05）。画像は最初のフレームではないので、構図・場所は自由に書かせる。 */
+export const REFERENCE_MODE_NOTE =
+  "IMPORTANT: The reference image is NOT the first frame of the video. It is an identity reference called <Picture 1>. Refer to the person as \"the person from <Picture 1>\" (same face, hairstyle and features); the composition, pose, framing and setting are free to follow the user's idea.";
+
+export type DirectorPromptOptions = { soundtrack?: DirectorSoundtrack; referenceMode?: boolean };
+
+/** おまかせ（ワーカーの Qwen が台本を書く）用: 思いつきの後ろに足す注記。ワーカーを変えずに同じ書き方をさせる。 */
+export function withConceptNotes(conceptText: string, opts: DirectorPromptOptions): string {
+  const notes = [
+    ...(opts.soundtrack ? [soundtrackInstruction(opts.soundtrack)] : []),
+    ...(opts.referenceMode ? [REFERENCE_MODE_NOTE] : []),
+  ];
+  return notes.length ? `${conceptText}\n\n${notes.join("\n\n")}` : conceptText;
+}
+
+/** 直接書くモード用: 長回しの宣言と音声の扱いが無ければ先頭に足す。 */
+export function withSoundtrackAnchor(prompt: string, soundtrack: DirectorSoundtrack): string {
+  const parts: string[] = [];
+  if (!/continuous (unbroken )?take|no cuts/i.test(prompt)) parts.push(ONE_TAKE_OPENING(soundtrack.durationS));
+  if (!/in sync with the (vocals|voice|audio)|lip[- ]?sync/i.test(prompt)) parts.push(SOUNDTRACK_RULE);
+  return parts.length ? `${parts.join(" ")} ${prompt}` : prompt;
+}
+
+export function buildSceneDirectorPrompt(
+  scenes: DirectorScene[],
+  musicDirection?: string,
+  opts: DirectorPromptOptions = {},
+): string {
+  const { soundtrack } = opts;
   const sceneLines = scenes
     .map((s, i) => {
-      const marker = i === 0 || s.sceneChange === false ? "[CONTINUE]" : "[SCENE CHANGE]";
+      // 音声を持ち込んだときは 1 本の長回しにする（場面転換を書くとカットが入る）。
+      const marker = i === 0 || s.sceneChange === false || soundtrack ? "[CONTINUE]" : "[SCENE CHANGE]";
       const dialogue = s.dialogue?.trim();
       const dialogueNote = dialogue
         ? ` Dialogue spoken in this scene (wrap as <d>[${dialogueLanguageTag(dialogue)}]...</d> at the point where it's spoken — do not translate it; see the readability exception below for Japanese lines): ${dialogue}`
@@ -80,7 +131,7 @@ export function buildSceneDirectorPrompt(scenes: DirectorScene[], musicDirection
       return `${marker} Scene ${i + 1}: camera movement = ${directorCameraLabel(s.camera)}. Action: ${s.text}${dialogueNote}`;
     })
     .join("\n");
-  const musicNote = musicDirection?.trim()
+  const musicNote = musicDirection?.trim() && !soundtrack
     ? [
         "",
         `Overall music / ambient sound direction for the whole video: ${musicDirection.trim()}`,
@@ -90,6 +141,8 @@ export function buildSceneDirectorPrompt(scenes: DirectorScene[], musicDirection
   return [
     "You are an expert cinematic video director.",
     "The user has provided a sequence of scenes with specific camera movements and actions.",
+    ...(soundtrack ? ["", soundtrackInstruction(soundtrack), ""] : []),
+    ...(opts.referenceMode ? [REFERENCE_MODE_NOTE, ""] : []),
     "Combine them into a SINGLE, highly detailed, continuous English prompt optimized for a text-to-video model.",
     "Each scene is marked [SCENE CHANGE] or [CONTINUE] (relative to the scene right before it):",
     "- [SCENE CHANGE]: introduce it as a clear transition to a different moment or setting (e.g. \"Then, in a different moment,\" or \"The scene shifts to...\").",
@@ -112,14 +165,18 @@ export function buildSceneDirectorPrompt(scenes: DirectorScene[], musicDirection
 /** シーン配列 → 1本の連続した英語プロンプト。Gemini が拒否/枯渇/輻輳した場合は
  * DirectorPromptError を投げる（呼び出し側は 502/429/503 等へマップする）。
  * musicDirection: 動画全体の音楽・環境音の指示（任意、2026-09-15追加）。 */
-export async function expandDirectorScenes(scenes: DirectorScene[], musicDirection?: string): Promise<string> {
+export async function expandDirectorScenes(
+  scenes: DirectorScene[],
+  musicDirection?: string,
+  opts: DirectorPromptOptions = {},
+): Promise<string> {
   const apiKey = geminiApiKey();
   if (!apiKey) {
     throw new DirectorPromptError("AI 機能が未設定です（GEMINI_API_KEY 未設定）。", "not_configured");
   }
   const genAI = new GoogleGenerativeAI(apiKey);
   try {
-    const raw = await runGeminiText(genAI, buildSceneDirectorPrompt(scenes, musicDirection), false, { feature: "director_prompt" });
+    const raw = await runGeminiText(genAI, buildSceneDirectorPrompt(scenes, musicDirection, opts), false, { feature: "director_prompt" });
     const cleaned = raw.trim().replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
     if (!cleaned) {
       throw new DirectorPromptError("プロンプトの合成に失敗しました（空の応答）。", "failed");

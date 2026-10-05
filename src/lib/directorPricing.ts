@@ -80,6 +80,38 @@ export const DIRECTOR_MAX_SCENE_DURATION_S = 30;
 /** 新規シーン追加時の初期値・プロンプトモードの最短尺クランプに流用。 */
 export const DIRECTOR_SECONDS_PER_SCENE = 15;
 export const DIRECTOR_MAX_TOTAL_SECONDS = 60;
+/** 音声（歌・セリフ）を持ち込んだときの最長。尺は音声の長さに合わせる（2026-10-05、本番 B300 で 68 秒を 1 本で完走）。 */
+export const DIRECTOR_MAX_AUDIO_SECONDS = 68;
+/** 持ち込み音声のファイルサイズ上限（ワーカーへは base64 で送る。68 秒の 24bit WAV で約 20MB）。 */
+export const DIRECTOR_AUDIO_MAX_BYTES = 40 * 1024 * 1024;
+
+/** 参照のしかた（2026-10-05）。first_frame = 画像を最初のフレームにする（従来）、
+ * reference = 顔写真として参照する（長尺でも顔を保てる・構図は自由）。 */
+export type DirectorReferenceMode = "first_frame" | "reference";
+export function isDirectorReferenceMode(value: unknown): value is DirectorReferenceMode {
+  return value === "first_frame" || value === "reference";
+}
+/** 参照モードの画面の縦横（first_frame は画像の縦横比で決まる）。 */
+export const DIRECTOR_ASPECTS = [
+  { id: "16:9", label: "横 16:9", ratio: 16 / 9 },
+  { id: "9:16", label: "縦 9:16", ratio: 9 / 16 },
+  { id: "1:1", label: "正方形", ratio: 1 },
+  { id: "image", label: "画像に合わせる", ratio: 0 },
+] as const;
+export type DirectorAspectId = (typeof DIRECTOR_ASPECTS)[number]["id"];
+export function isDirectorAspectId(value: unknown): value is DirectorAspectId {
+  return DIRECTOR_ASPECTS.some((a) => a.id === value);
+}
+/** 出力の縦横比を決める寸法（cinematicSafeDimensions に渡す）。 */
+export function directorAspectDims(
+  referenceMode: DirectorReferenceMode,
+  aspect: DirectorAspectId,
+  image: { width: number; height: number } | null | undefined,
+): { width: number; height: number } {
+  const a = DIRECTOR_ASPECTS.find((x) => x.id === aspect);
+  if (referenceMode === "reference" && a && a.ratio > 0) return { width: a.ratio, height: 1 };
+  return { width: image?.width || 1, height: image?.height || 1 };
+}
 
 export function directorTotalDurationS(scenes: { durationS: number }[]): number {
   const sum = scenes.reduce((acc, s) => acc + Math.max(0, Math.round(s.durationS || 0)), 0);
@@ -135,8 +167,10 @@ export function directorCostBreakdownForDuration(args: {
 }): DirectorCostBreakdown {
   const knobs = args.knobs ?? DEFAULT_KNOBS;
   const mode = args.mode ?? "fast";
+  // 上限は音声を持ち込んだときの 68 秒。音声なしの 60 秒は呼び出し側（route・尺の選択肢）で抑える
+  // （68 秒の音声入り動画を作り直すとき、画面の表示と課金がずれないように）。
   const totalDurationS = Math.min(
-    DIRECTOR_MAX_TOTAL_SECONDS,
+    DIRECTOR_MAX_AUDIO_SECONDS,
     // 下限はシード 1 本分の最短（3 秒）。以前は 15 秒で、5 秒の動画を「作り直す」と 15 秒・3 倍の料金になっていた（2026-10-02）。
     // プロンプト／Advanced の尺の選択肢は 15 秒刻みなので、そちらの料金は変わらない。
     Math.max(DIRECTOR_MIN_SCENE_DURATION_S, Math.round(args.totalDurationS || 0)),
@@ -151,7 +185,7 @@ export function directorCostBreakdownForDuration(args: {
  * （過小課金を避ける）。 */
 export function directorCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): number {
   return directorCostBreakdownForDuration({
-    totalDurationS: DIRECTOR_MAX_TOTAL_SECONDS,
+    totalDurationS: DIRECTOR_MAX_AUDIO_SECONDS,
     mode: "quality",
     knobs,
   }).credits;

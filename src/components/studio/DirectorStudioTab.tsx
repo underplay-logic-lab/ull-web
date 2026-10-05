@@ -13,6 +13,7 @@ import {
   Clapperboard,
   Copy,
   Download,
+  Music,
   ImagePlus,
   LogIn,
   Pencil,
@@ -25,8 +26,11 @@ import {
   Zap,
 } from "lucide-react";
 import {
+  DIRECTOR_ASPECTS,
+  DIRECTOR_AUDIO_MAX_BYTES,
   DIRECTOR_CAMERA_MOVES,
   DIRECTOR_DIALOGUE_MAX_LENGTH,
+  DIRECTOR_MAX_AUDIO_SECONDS,
   DIRECTOR_MAX_SCENE_DURATION_S,
   DIRECTOR_MAX_SCENES,
   DIRECTOR_MAX_TOTAL_SECONDS,
@@ -39,12 +43,15 @@ import {
   directorCostBreakdownForDuration,
   directorPriorityParallelSurcharge,
   directorQwenScriptSurcharge,
+  directorAspectDims,
   directorTotalDurationS,
+  type DirectorAspectId,
   type DirectorCameraMoveId,
   type DirectorQualityMode,
+  type DirectorReferenceMode,
   type DirectorScene,
 } from "@/lib/directorPricing";
-import { CINEMATIC_MODE_BY_ID, cinematicMegapixels, cinematicSafeDimensions } from "@/lib/cinematicPricing";
+import { CINEMATIC_MODE_BY_ID, cinematicMegapixelsForDuration, cinematicSafeDimensions } from "@/lib/cinematicPricing";
 import {
   pollDirectorJob,
   DirectorJobNotFoundError,
@@ -56,6 +63,7 @@ import {
   type DirectorApiError,
   type DirectorJobStatus,
   type DirectorLoraSelection,
+  type DirectorMediaOptions,
 } from "@/lib/directorApi";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
@@ -127,6 +135,22 @@ const DIRECTOR_SCENE_DURATION_OPTIONS = Array.from(
   { length: DIRECTOR_MAX_SCENE_DURATION_S - DIRECTOR_MIN_SCENE_DURATION_S + 1 },
   (_, j) => DIRECTOR_MIN_SCENE_DURATION_S + j,
 );
+
+/** 音声ファイルの長さ（秒）をブラウザで測る。読めなければ null。 */
+function measureAudioDuration(file: File): Promise<number | null> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const el = new Audio();
+    const done = (v: number | null) => {
+      URL.revokeObjectURL(url);
+      resolve(v);
+    };
+    el.preload = "metadata";
+    el.onloadedmetadata = () => done(Number.isFinite(el.duration) && el.duration > 0 ? el.duration : null);
+    el.onerror = () => done(null);
+    el.src = url;
+  });
+}
 
 function useObjectUrl(file: File | null): string | null {
   const url = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
@@ -329,6 +353,46 @@ export function DirectorStudioTab() {
   }, [image]);
   const [scenes, setScenes] = useState<DirectorScene[]>([newScene()]);
 
+  // 持ち込み音声（歌・セリフ、2026-10-05）。入れると尺は音声の長さになり、口を音声に合わせる。
+  const [audio, setAudio] = useState<{ file: File; durationS: number } | null>(null);
+  const [audioError, setAudioError] = useState<string | null>(null);
+  const audioInputRef = useRef<HTMLInputElement>(null);
+  const handleAudioSelected = async (file: File | null | undefined) => {
+    if (!file) return;
+    setAudioError(null);
+    if (!file.type.startsWith("audio/") && !/\.(wav|mp3|m4a|aac|flac|ogg|opus)$/i.test(file.name)) {
+      setAudioError("音声ファイル（WAV・MP3・M4A・FLAC など）を選んでください。");
+      return;
+    }
+    if (file.size > DIRECTOR_AUDIO_MAX_BYTES) {
+      setAudioError(
+        `ファイルが大きすぎます（${Math.round(DIRECTOR_AUDIO_MAX_BYTES / 1024 / 1024)}MB まで）。MP3 などに変換してからお試しください。`,
+      );
+      return;
+    }
+    const d = await measureAudioDuration(file);
+    if (!d) {
+      setAudioError("この音声は読み込めませんでした。WAV か MP3 に変換してからお試しください。");
+      return;
+    }
+    if (d > DIRECTOR_MAX_AUDIO_SECONDS + 0.5) {
+      setAudioError(
+        `音声は ${DIRECTOR_MAX_AUDIO_SECONDS} 秒までです（このファイルは約 ${Math.round(d)} 秒）。切り詰めてからお試しください。`,
+      );
+      return;
+    }
+    setAudio({ file, durationS: Math.min(DIRECTOR_MAX_AUDIO_SECONDS, d) });
+  };
+
+  // 画像の使い方（2026-10-05）: first_frame = 最初のフレームにする／reference = 顔写真として参照（構図は自由・長尺でも顔を保つ）。
+  const [referenceMode, setReferenceMode] = useState<DirectorReferenceMode>("first_frame");
+  const [aspect, setAspect] = useState<DirectorAspectId>("16:9");
+  const media: DirectorMediaOptions = {
+    audio,
+    referenceMode,
+    aspect: referenceMode === "reference" ? aspect : "image",
+  };
+
   // 画質モード（2026-09-14、VDN-H3導入）。fast=8step蒸留・低コスト、
   // quality=50step非蒸留・高品質。両方とも音声あり（2026-09-18、fastの
   // 「音声非対応」は誤診断と判明——cinematicPricing.ts参照）。詳細は
@@ -510,6 +574,7 @@ export function DirectorStudioTab() {
         quality: DirectorQualityMode;
         musicDirection: string;
         lora: DirectorLoraSelection;
+        media: DirectorMediaOptions;
       }
     | {
         uiMode: "prompt";
@@ -518,6 +583,7 @@ export function DirectorStudioTab() {
         rawDurationS: number;
         quality: DirectorQualityMode;
         lora: DirectorLoraSelection;
+        media: DirectorMediaOptions;
       }
     | {
         uiMode: "advanced";
@@ -526,6 +592,7 @@ export function DirectorStudioTab() {
         rawDurationS: number;
         quality: DirectorQualityMode;
         lora: DirectorLoraSelection;
+        media: DirectorMediaOptions;
       }
     | {
         // 完了した動画から作り直す（参照画像・台本・LoRA はサーバーが元のジョブから引き継ぐ）。
@@ -567,7 +634,28 @@ export function DirectorStudioTab() {
     () => directorCostBreakdownForDuration({ totalDurationS: conceptDurationS, mode: qualityMode, knobs }),
     [conceptDurationS, qualityMode, knobs],
   );
-  const breakdown = uiMode === "prompt" ? promptBreakdown : uiMode === "advanced" ? conceptBreakdown : sceneBreakdown;
+  // 音声を入れたときは尺＝音声の長さ（どのモードでも。route と同じ）。
+  const audioBreakdown = useMemo(
+    () =>
+      audio
+        ? directorCostBreakdownForDuration({
+            totalDurationS: Math.ceil(audio.durationS),
+            mode: qualityMode,
+            knobs,
+          })
+        : null,
+    [audio, qualityMode, knobs],
+  );
+  // 調整（元の動画から作り直す）は元のジョブの音声・尺を引き継ぐので、今の音声欄は使わない。
+  const useAudio = Boolean(audioBreakdown) && !(uiMode === "prompt" && adjustBase);
+  const breakdown =
+    audioBreakdown && useAudio
+      ? audioBreakdown
+      : uiMode === "prompt"
+        ? promptBreakdown
+        : uiMode === "advanced"
+          ? conceptBreakdown
+          : sceneBreakdown;
   // Advanced（Qwen台本生成）は動画本体とは別のGPUコンテナを1回起動する分の
   // 追加クレジットが乗る（directorPricing.ts::directorQwenScriptSurcharge）。
   const cost = breakdown.credits + (uiMode === "advanced" ? directorQwenScriptSurcharge(knobs) : 0);
@@ -682,6 +770,7 @@ export function DirectorStudioTab() {
         rawDurationS: promptDraftDurationS,
         quality: qualityMode,
         lora: loraSelection,
+        media,
       };
     }
     if (uiMode === "advanced") {
@@ -692,6 +781,7 @@ export function DirectorStudioTab() {
         rawDurationS: conceptDurationS,
         quality: qualityMode,
         lora: loraSelection,
+        media,
       };
     }
     return {
@@ -701,6 +791,7 @@ export function DirectorStudioTab() {
       quality: qualityMode,
       musicDirection: musicDirection.trim(),
       lora: loraSelection,
+      media,
     };
   };
 
@@ -784,6 +875,7 @@ export function DirectorStudioTab() {
               priority: opts.priority,
               queue: opts.queue,
               lora: snapshot.lora,
+              ...snapshot.media,
             })
           : snapshot.uiMode === "advanced"
             ? startDirectorJob({
@@ -795,6 +887,7 @@ export function DirectorStudioTab() {
                 priority: opts.priority,
                 queue: opts.queue,
                 lora: snapshot.lora,
+                ...snapshot.media,
               })
             : startDirectorJob({
                 userId: user.id,
@@ -805,6 +898,7 @@ export function DirectorStudioTab() {
                 priority: opts.priority,
                 queue: opts.queue,
                 lora: snapshot.lora,
+                ...snapshot.media,
               });
     },
     [user],
@@ -1002,8 +1096,9 @@ export function DirectorStudioTab() {
     };
   }, [jobId, markGpuWarm, advanceAndFollow, commitSession]);
 
-  const totalDurationS =
-    uiMode === "prompt"
+  const totalDurationS = useAudio && audioBreakdown
+    ? audioBreakdown.totalDurationS
+    : uiMode === "prompt"
       ? promptBreakdown.totalDurationS
       : uiMode === "advanced"
         ? conceptBreakdown.totalDurationS
@@ -1035,6 +1130,103 @@ export function DirectorStudioTab() {
           入れた画像の見た目（人物・絵柄・服装）のまま動かす機能です。アニメを実写にする・別人に変えるなど、見た目を大きく変える指示は苦手で、途中で崩れることがあります。
           見た目を変えたいときは、先に画像を作り直してから入れてください。
         </p>
+
+        <div>
+          <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">画像の使い方</p>
+          <div className="flex items-center gap-2 rounded-xl border border-border bg-background p-1">
+            {(
+              [
+                { id: "first_frame", label: "最初の場面にする", sub: "画像から動き出す" },
+                { id: "reference", label: "顔写真として使う", sub: "構図は自由・長い動画向き" },
+              ] as const
+            ).map((o) => (
+              <button
+                key={o.id}
+                type="button"
+                onClick={() => setReferenceMode(o.id)}
+                className={`flex flex-1 flex-col items-center justify-center rounded-lg px-2 py-1.5 text-xs font-medium leading-tight transition-colors ${
+                  referenceMode === o.id ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
+                }`}
+              >
+                <span>{o.label}</span>
+                <span className="text-[10px] font-normal opacity-70">{o.sub}</span>
+              </button>
+            ))}
+          </div>
+          {referenceMode === "reference" && (
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <label className="text-xs text-muted">画面の縦横</label>
+              <select
+                value={aspect}
+                onChange={(e) => setAspect(e.target.value as DirectorAspectId)}
+                className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-foreground"
+              >
+                {DIRECTOR_ASPECTS.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          <p className="mt-2 text-[11px] leading-relaxed text-muted">
+            {referenceMode === "reference"
+              ? "画像の人物の顔を手がかりに、場所や構図は文章どおりに作ります。顔がはっきり写った写真がおすすめです。長い動画でも顔が崩れにくくなります。"
+              : "画像がそのまま動画の 1 枚目になり、そこから動き出します。"}
+          </p>
+        </div>
+
+        <div>
+          <p className="mb-2 flex items-center gap-1.5 text-xs font-mono uppercase tracking-widest text-muted">
+            <Music size={12} />
+            音声（任意・歌やセリフ）
+          </p>
+          <input
+            ref={audioInputRef}
+            type="file"
+            accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg"
+            className="hidden"
+            onChange={(e) => {
+              void handleAudioSelected(e.target.files?.[0]);
+              e.target.value = "";
+            }}
+          />
+          {audio ? (
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-border bg-background px-3 py-2">
+              <span className="min-w-0 truncate text-sm text-foreground">
+                {audio.file.name}
+                <span className="ml-2 text-xs text-muted">約{Math.ceil(audio.durationS)}秒</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setAudio(null)}
+                className="shrink-0 text-muted transition-colors hover:text-red-400"
+                aria-label="音声を外す"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => audioInputRef.current?.click()}
+              className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border py-2.5 text-sm text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+            >
+              <Plus size={14} />
+              音声ファイルを選ぶ（{DIRECTOR_MAX_AUDIO_SECONDS}秒まで）
+            </button>
+          )}
+          {audioError && (
+            <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-red-400">
+              <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+              {audioError}
+            </p>
+          )}
+          <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
+            入れた音声をそのまま使い、口の動きを合わせます。動画の長さは音声の長さになります（高速モードでもこの音声が入ります）。
+            歌の動画を作るときは「顔写真として使う」がおすすめです。
+          </p>
+        </div>
 
         {
           // モード切替（2026-09-18追加、同日「プロンプトで作る」を追加）。
@@ -1130,29 +1322,33 @@ export function DirectorStudioTab() {
               placeholder="英語・日本語どちらでも入力できます（日本語は送信時に自動で英訳されます）"
               className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm leading-relaxed text-foreground placeholder:text-muted"
             />
-            <div className="mt-3 flex items-center justify-between gap-3">
-              <label className="text-xs text-muted">尺</label>
-              <select
-                value={promptDraftDurationS}
-                onChange={(e) => setPromptDraftDurationS(Number(e.target.value))}
-                className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-foreground"
-              >
-                {/* 調整で入ったとき、元の動画の尺（シーンモードの 5 秒など）も選べるようにする。 */}
-                {[
-                  ...new Set([
-                    promptDraftDurationS,
-                    ...Array.from(
-                      { length: Math.floor(DIRECTOR_MAX_TOTAL_SECONDS / DIRECTOR_SECONDS_PER_SCENE) },
-                      (_, i) => (i + 1) * DIRECTOR_SECONDS_PER_SCENE,
-                    ),
-                  ]),
-                ].sort((a, b) => a - b).map((s) => (
-                  <option key={s} value={s}>
-                    約{s}秒
-                  </option>
-                ))}
-              </select>
-            </div>
+            {useAudio ? (
+              <p className="mt-3 text-xs text-muted">尺: 音声に合わせて約{totalDurationS}秒</p>
+            ) : (
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <label className="text-xs text-muted">尺</label>
+                <select
+                  value={promptDraftDurationS}
+                  onChange={(e) => setPromptDraftDurationS(Number(e.target.value))}
+                  className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-foreground"
+                >
+                  {/* 調整で入ったとき、元の動画の尺（シーンモードの 5 秒など）も選べるようにする。 */}
+                  {[
+                    ...new Set([
+                      promptDraftDurationS,
+                      ...Array.from(
+                        { length: Math.floor(DIRECTOR_MAX_TOTAL_SECONDS / DIRECTOR_SECONDS_PER_SCENE) },
+                        (_, i) => (i + 1) * DIRECTOR_SECONDS_PER_SCENE,
+                      ),
+                    ]),
+                  ].sort((a, b) => a - b).map((s) => (
+                    <option key={s} value={s}>
+                      約{s}秒
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <HelpNote
               id="director.prompt" title="書き方のコツ（セリフ・日本語）"
               className="mt-2"
@@ -1181,23 +1377,27 @@ export function DirectorStudioTab() {
               placeholder={"やりたいことを一言や箇条書きで（200 字まで）。例:\n・雨の夜の路地裏、ネオン\n・こちらに気づいて振り向き、少し笑う\n・「やっと来たね」と言う"}
               className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm leading-relaxed text-foreground placeholder:text-muted"
             />
-            <div className="mt-3 flex items-center justify-between gap-3">
-              <label className="text-xs text-muted">尺</label>
-              <select
-                value={conceptDurationS}
-                onChange={(e) => setConceptDurationS(Number(e.target.value))}
-                className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-foreground"
-              >
-                {Array.from(
-                  { length: Math.floor(DIRECTOR_MAX_TOTAL_SECONDS / DIRECTOR_SECONDS_PER_SCENE) },
-                  (_, i) => (i + 1) * DIRECTOR_SECONDS_PER_SCENE,
-                ).map((s) => (
-                  <option key={s} value={s}>
-                    約{s}秒
-                  </option>
-                ))}
-              </select>
-            </div>
+            {useAudio ? (
+              <p className="mt-3 text-xs text-muted">尺: 音声に合わせて約{totalDurationS}秒</p>
+            ) : (
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <label className="text-xs text-muted">尺</label>
+                <select
+                  value={conceptDurationS}
+                  onChange={(e) => setConceptDurationS(Number(e.target.value))}
+                  className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-foreground"
+                >
+                  {Array.from(
+                    { length: Math.floor(DIRECTOR_MAX_TOTAL_SECONDS / DIRECTOR_SECONDS_PER_SCENE) },
+                    (_, i) => (i + 1) * DIRECTOR_SECONDS_PER_SCENE,
+                  ).map((s) => (
+                    <option key={s} value={s}>
+                      約{s}秒
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted">
               <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
               細かく書かなくて大丈夫です。AI が参照画像を見たうえで、場面の流れ・動き・カメラ・光・環境音まで台本に書き起こします。
@@ -1211,7 +1411,9 @@ export function DirectorStudioTab() {
                 <Clapperboard size={12} />
                 タイムライン（シーン）
               </p>
-              <span className="text-[11px] text-muted">合計 約{totalDurationS}秒</span>
+              <span className="text-[11px] text-muted">
+                {useAudio ? `音声に合わせて 約${totalDurationS}秒（シーンの秒数は流れの目安）` : `合計 約${totalDurationS}秒`}
+              </span>
             </div>
 
             <div className="flex flex-col gap-3">
@@ -1262,16 +1464,18 @@ export function DirectorStudioTab() {
                     placeholder="例: 振り返って微笑む"
                     className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted"
                   />
-                  <input
-                    type="text"
-                    value={scene.dialogue ?? ""}
-                    onChange={(e) =>
-                      updateScene(i, { dialogue: e.target.value.slice(0, DIRECTOR_DIALOGUE_MAX_LENGTH) || undefined })
-                    }
-                    placeholder="セリフ（任意・リップシンク対応。例: こんにちは）"
-                    className="mt-1.5 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted"
-                  />
-                  {i > 0 && (
+                  {!useAudio && (
+                    <input
+                      type="text"
+                      value={scene.dialogue ?? ""}
+                      onChange={(e) =>
+                        updateScene(i, { dialogue: e.target.value.slice(0, DIRECTOR_DIALOGUE_MAX_LENGTH) || undefined })
+                      }
+                      placeholder="セリフ（任意・リップシンク対応。例: こんにちは）"
+                      className="mt-1.5 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted"
+                    />
+                  )}
+                  {i > 0 && !useAudio && (
                     <label className="mt-2 flex items-center gap-1.5 text-[11px] text-muted">
                       <input
                         type="checkbox"
@@ -1297,18 +1501,20 @@ export function DirectorStudioTab() {
               </button>
             )}
 
-            <div className="mt-3">
-              <label className="mb-1 block text-[11px] font-medium text-muted">
-                音楽・環境音の指示（任意・動画全体に反映）
-              </label>
-              <input
-                type="text"
-                value={musicDirection}
-                onChange={(e) => setMusicDirection(e.target.value.slice(0, DIRECTOR_MUSIC_MAX_LENGTH))}
-                placeholder="例: 明るいアコースティックギターのBGM"
-                className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted"
-              />
-            </div>
+            {!useAudio && (
+              <div className="mt-3">
+                <label className="mb-1 block text-[11px] font-medium text-muted">
+                  音楽・環境音の指示（任意・動画全体に反映）
+                </label>
+                <input
+                  type="text"
+                  value={musicDirection}
+                  onChange={(e) => setMusicDirection(e.target.value.slice(0, DIRECTOR_MUSIC_MAX_LENGTH))}
+                  placeholder="例: 明るいアコースティックギターのBGM"
+                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted"
+                />
+              </div>
+            )}
 
             <HelpNote
               id="director.scenes" title="シーンのつながり方"
@@ -1329,10 +1535,11 @@ export function DirectorStudioTab() {
           <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">画質モード</p>
           {(() => {
             const modeInfo = CINEMATIC_MODE_BY_ID[qualityMode === "quality" ? "vdnQuality" : "vdnFast"];
+            const shape = directorAspectDims(media.referenceMode ?? "first_frame", media.aspect ?? "image", imageDims);
             const dims = cinematicSafeDimensions(
-              imageDims?.width || 1,
-              imageDims?.height || 1,
-              cinematicMegapixels(modeInfo),
+              shape.width,
+              shape.height,
+              cinematicMegapixelsForDuration(modeInfo, totalDurationS),
             );
             return (
               <p className="mb-2 text-[11px] text-muted">
@@ -1340,7 +1547,12 @@ export function DirectorStudioTab() {
                 <span className="font-mono text-foreground">
                   {dims.width}×{dims.height}px
                 </span>
-                {imageDims ? "（参照画像の縦横比に合わせて自動決定）" : "（参照画像の縦横比に合わせて変わります）"}
+                {referenceMode === "reference" && aspect !== "image"
+                  ? ""
+                  : imageDims
+                    ? "（参照画像の縦横比に合わせて自動決定）"
+                    : "（参照画像の縦横比に合わせて変わります）"}
+                {totalDurationS > 34 ? "（長い動画は解像度を下げて作ります）" : ""}
                 ・24fps・さらに高解像度にしたい場合は生成後に「4K 動画超解像」へ
               </p>
             );

@@ -6,7 +6,9 @@ import { downloadStudioUpload, deleteStudioUploads } from "@/lib/studioUploads.s
 import { readImageDimensions } from "@/lib/imageDimensions";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import {
+  DIRECTOR_MAX_AUDIO_SECONDS,
   DIRECTOR_MAX_TOTAL_SECONDS,
+  DIRECTOR_MIN_SCENE_DURATION_S,
   DIRECTOR_MUSIC_MAX_LENGTH,
   DIRECTOR_SECONDS_PER_SCENE,
   directorCostBreakdown,
@@ -15,8 +17,12 @@ import {
   directorPollDeadlineS,
   directorPriorityParallelSurcharge,
   directorQwenScriptSurcharge,
+  directorAspectDims,
+  isDirectorAspectId,
   isDirectorQualityMode,
+  isDirectorReferenceMode,
   validateDirectorScenes,
+  type DirectorAspectId,
   type DirectorQualityMode,
   type DirectorScene,
 } from "@/lib/directorPricing";
@@ -26,15 +32,18 @@ import {
   DirectorPromptError,
   expandDirectorScenes,
   looksJapaneseOutsideDialogue,
+  withConceptNotes,
   withIdentityAnchor,
+  withSoundtrackAnchor,
   translateDirectorPromptToJapanese,
   translateJapanesePromptToEnglish,
   withJapaneseTranslationRequest,
+  type DirectorPromptOptions,
 } from "@/lib/directorPrompt";
 import { buildCinematicWorkflow, CINEMATIC_PROMPT_NODE_ID } from "@/lib/cinematicWorkflow";
 import { headR2, r2UserRoot } from "@/lib/r2.server";
 import { assertOwnedDirectorLoraVolumePath, isOwnedDirectorLoraR2Key } from "@/lib/directorLoraUpload.server";
-import { CINEMATIC_MODE_BY_ID, cinematicMegapixels, cinematicSafeDimensions } from "@/lib/cinematicPricing";
+import { CINEMATIC_MODE_BY_ID, cinematicMegapixelsForDuration, cinematicSafeDimensions } from "@/lib/cinematicPricing";
 import { dispatchDirectorJob, type DirectorDispatchSpec } from "@/lib/directorDispatch.server";
 import { advanceQueue, saveDispatchSpec } from "@/lib/studioQueue.server";
 import { DIRECTOR_LORA_PRESET_IDS } from "@/lib/loraModels";
@@ -118,6 +127,12 @@ export async function POST(request: Request) {
         ? { loraTriggerWord: bi.lora_trigger_word }
         : {}),
       ...(body.variation === "same_seed" && typeof bi.seed === "number" ? { seed: bi.seed } : {}),
+      // 持ち込み音声・参照のしかた（2026-10-05〜）も引き継ぐ。音声があれば尺は音声で決まる。
+      ...(typeof bi.audio_storage_path === "string" && bi.audio_storage_path
+        ? { audioStoragePath: bi.audio_storage_path, audioDurationS: bi.audio_duration_s }
+        : {}),
+      ...(isDirectorReferenceMode(bi.reference_mode) ? { referenceMode: bi.reference_mode } : {}),
+      ...(isDirectorAspectId(bi.aspect) ? { aspect: bi.aspect } : {}),
     };
   }
   const seed =
@@ -133,6 +148,28 @@ export async function POST(request: Request) {
   // 画質モード（2026-09-14、VDN-H3導入に伴い旧speed固定を廃止）。
   // fast=8step蒸留(無音・低コスト)、quality=50step非蒸留(音声あり)。
   const qualityMode: DirectorQualityMode = isDirectorQualityMode(body.quality) ? body.quality : "fast";
+
+  // 参照のしかた（2026-10-05）: reference = 画像を顔写真として参照する（最初のフレームにしない）。縦横は選んだもの。
+  const referenceMode = isDirectorReferenceMode(body.referenceMode) ? body.referenceMode : "first_frame";
+  const aspect: DirectorAspectId = isDirectorAspectId(body.aspect) ? body.aspect : "image";
+
+  // 持ち込み音声（歌・セリフ、2026-10-05）: そのまま使い、口を合わせる。尺は音声の長さ（画面が測った秒数・最長 68 秒）。
+  // 申告より長い音声でも、映像の長さに切り詰められるだけ（ComfyUI の LTXVConcatAVLatent）なので課金は崩れない。
+  const audioStoragePath = typeof body.audioStoragePath === "string" ? body.audioStoragePath.trim() : "";
+  const audioDurationS =
+    audioStoragePath && typeof body.audioDurationS === "number" && Number.isFinite(body.audioDurationS)
+      ? Math.min(DIRECTOR_MAX_AUDIO_SECONDS, Math.max(DIRECTOR_MIN_SCENE_DURATION_S, Math.ceil(body.audioDurationS)))
+      : 0;
+  if (audioStoragePath && !audioDurationS) {
+    return NextResponse.json({ error: "音声の長さを読み取れませんでした。別のファイルでお試しください。" }, { status: 400 });
+  }
+  const audioName = audioStoragePath
+    ? (audioStoragePath.split("/").pop() || "audio.wav").replace(/[^A-Za-z0-9._-]/g, "_")
+    : "";
+  const promptOpts: DirectorPromptOptions = {
+    soundtrack: audioDurationS ? { durationS: audioDurationS } : undefined,
+    referenceMode: referenceMode === "reference",
+  };
 
   // Advanced モード（2026-09-18追加。TODO(advanced-gate): 月額プラン限定に
   // する場合はここで契約状態をチェックする — 今回は未実装、機能本体のみ）:
@@ -166,7 +203,8 @@ export async function POST(request: Request) {
     if (!validated.ok) {
       return NextResponse.json({ error: validated.error }, { status: 400 });
     }
-    scenes = validated.scenes;
+    // 音声を持ち込んだときはセリフ欄を使わない（音声がそのまま声になる）。
+    scenes = audioDurationS ? validated.scenes.map((s) => ({ ...s, dialogue: undefined })) : validated.scenes;
 
     // レッドライン・フィルター（他の生成系エンドポイントと同一の入口対策）。
     // 台詞・音楽指示もユーザー入力テキストなので同じチェックに含める。
@@ -302,7 +340,13 @@ export async function POST(request: Request) {
 
   const knobs = await getPricingKnobs();
   const rawDurationS = typeof body.rawDurationS === "number" ? body.rawDurationS : DIRECTOR_SECONDS_PER_SCENE;
-  const breakdown = isPromptMode || isAdvancedMode
+  const breakdown = audioDurationS
+    ? directorCostBreakdownForDuration({
+        totalDurationS: audioDurationS,
+        mode: qualityMode,
+        knobs,
+      })
+    : isPromptMode || isAdvancedMode
     ? directorCostBreakdownForDuration({
         totalDurationS: Math.min(DIRECTOR_MAX_TOTAL_SECONDS, Math.max(1, rawDurationS)),
         mode: qualityMode,
@@ -392,14 +436,18 @@ export async function POST(request: Request) {
     }
     // 「参照画像の人物のまま」の指示が無ければ先頭に足す（Qwen に回すときはワーカーが書き直すので不要）。
     if (!qwenTextInstruction) combinedPrompt = withIdentityAnchor(combinedPrompt);
+    // 音声を持ち込んだときは長回しの宣言と「口を音声に合わせる」を先頭に（無ければ）。
+    if (!qwenTextInstruction && promptOpts.soundtrack) combinedPrompt = withSoundtrackAnchor(combinedPrompt, promptOpts.soundtrack);
   } else {
     try {
-      combinedPrompt = await expandDirectorScenes(scenes, musicDirectionInput || undefined);
+      combinedPrompt = await expandDirectorScenes(scenes, musicDirectionInput || undefined, promptOpts);
     } catch (err) {
       const e = err as DirectorPromptError;
       if (e.reason !== "refusal") return NextResponse.json({ error: e.message }, { status: statusFor(e) });
       console.warn("[director/generate] Gemini refused the scene synthesis; falling back to the worker-side Qwen");
-      qwenTextInstruction = withJapaneseTranslationRequest(buildSceneDirectorPrompt(scenes, musicDirectionInput || undefined));
+      qwenTextInstruction = withJapaneseTranslationRequest(
+        buildSceneDirectorPrompt(scenes, musicDirectionInput || undefined, promptOpts),
+      );
       combinedPrompt = scenes.map((s) => s.text).join("\n");
     }
   }
@@ -463,15 +511,20 @@ export async function POST(request: Request) {
     lora_upload_r2_key: loraUploadR2KeyRaw || null,
     lora_trigger_word: loraTriggerWord || null,
     base_job_id: baseJobId || null,
+    audio_storage_path: audioStoragePath || null,
+    audio_duration_s: audioDurationS || null,
+    reference_mode: referenceMode,
+    aspect,
   };
   // 出力解像度（2026-09-24、ホスト「生成後の解像度がわからないので記載して」）。
   // buildCinematicWorkflow と同じ式で先に決め、metadata に残して完了画面が読む。
   const rawDimsForMeta = readImageDimensions(imageBuffer);
   const modeForMeta = CINEMATIC_MODE_BY_ID[qualityMode === "quality" ? "vdnQuality" : "vdnFast"];
+  const aspectDims = directorAspectDims(referenceMode, aspect, rawDimsForMeta);
   const outDims = cinematicSafeDimensions(
-    rawDimsForMeta?.width || 1,
-    rawDimsForMeta?.height || 1,
-    cinematicMegapixels(modeForMeta),
+    aspectDims.width,
+    aspectDims.height,
+    cinematicMegapixelsForDuration(modeForMeta, breakdown.totalDurationS),
   );
 
   const { data: jobRow, error: jobError } = await supabaseAdmin
@@ -494,6 +547,8 @@ export async function POST(request: Request) {
         quality_mode: qualityMode,
         priority,
         lora_name: loraName || null,
+        ...(audioDurationS ? { with_audio: true } : {}),
+        ...(referenceMode === "reference" ? { reference_mode: "reference" } : {}),
       },
     })
     .select("id")
@@ -532,6 +587,10 @@ export async function POST(request: Request) {
     jobId,
     loraName,
     seed,
+    audioName: audioName || undefined,
+    referenceMode: referenceMode === "reference",
+    aspectWidth: aspectDims.width,
+    aspectHeight: aspectDims.height,
   });
 
   const spec: DirectorDispatchSpec = {
@@ -540,7 +599,7 @@ export async function POST(request: Request) {
     workflow,
     referenceImageName,
     pollDeadlineS: directorPollDeadlineS(breakdown.totalDurationS, qualityMode),
-    qwenConceptText: isAdvancedMode ? conceptTextInput : undefined,
+    qwenConceptText: isAdvancedMode ? withConceptNotes(conceptTextInput, promptOpts) : undefined,
     qwenTextInstruction,
     qwenPromptNodeId: isAdvancedMode || qwenTextInstruction ? CINEMATIC_PROMPT_NODE_ID : undefined,
     qwenDurationS: isAdvancedMode ? breakdown.totalDurationS : undefined,
@@ -549,6 +608,7 @@ export async function POST(request: Request) {
     loraR2Key,
     loraTriggerWord: loraName ? loraTriggerWord : undefined,
     loraFilename: loraVolumePath || loraR2Key ? loraName : undefined,
+    ...(audioStoragePath ? { audioStoragePath, audioName } : {}),
   };
 
   // --- 予約: 起動の引数を残して、順番が来ていればその場で起動 ----------------

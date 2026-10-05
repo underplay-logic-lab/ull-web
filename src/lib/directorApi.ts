@@ -1,6 +1,12 @@
 import { supabase } from "@/lib/supabaseClient";
 import { uploadStudioAsset } from "@/lib/studioUploads";
-import { isDirectorQualityMode, type DirectorQualityMode, type DirectorScene } from "@/lib/directorPricing";
+import {
+  isDirectorQualityMode,
+  type DirectorAspectId,
+  type DirectorQualityMode,
+  type DirectorReferenceMode,
+  type DirectorScene,
+} from "@/lib/directorPricing";
 
 export type DirectorApiError = Error & { remainingCredits?: number };
 
@@ -51,6 +57,16 @@ export type DirectorStartArgs = (
   queue?: boolean;
   /** LoRA選択（全モード共通、2026-09-18追加）。省略/"none" はLoRAなし。 */
   lora?: DirectorLoraSelection;
+} & DirectorMediaOptions;
+
+/** 全モード共通の素材の指定（2026-10-05）。 */
+export type DirectorMediaOptions = {
+  /** 持ち込み音声（歌・セリフ）。尺は durationS（画面が測った長さ）になる。 */
+  audio?: { file: File; durationS: number } | null;
+  /** 画像の使い方。既定 first_frame（最初のフレーム）。reference は顔写真として参照。 */
+  referenceMode?: DirectorReferenceMode;
+  /** 参照モードの縦横。 */
+  aspect?: DirectorAspectId;
 };
 
 /** LoRAの指定方法。①trained: LoRA Studioで本人が学習済みのMiniMax H3 LoRA
@@ -71,6 +87,12 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
   if (!accessToken) throw new Error("ログインが必要です。");
 
   const { path: storagePath } = await uploadStudioAsset(args.userId, args.image);
+  const audioFields = args.audio
+    ? {
+        audioStoragePath: (await uploadStudioAsset(args.userId, args.audio.file)).path,
+        audioDurationS: args.audio.durationS,
+      }
+    : {};
 
   let loraId: string | undefined;
   let loraUploadR2Key: string | undefined;
@@ -83,7 +105,15 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
   const priority = args.priority ?? false;
   // トリガーワード（2026-10-04）: サーバー／ワーカーが最終の指示文に入っていなければ先頭に足す。
   const loraTriggerWord = args.lora && args.lora.source !== "none" ? args.lora.triggerWord : undefined;
-  const loraFields = { loraId, loraUploadR2Key, loraTriggerWord, ...(args.queue ? { queue: true } : {}) };
+  const loraFields = {
+    loraId,
+    loraUploadR2Key,
+    loraTriggerWord,
+    ...(args.queue ? { queue: true } : {}),
+    ...audioFields,
+    referenceMode: args.referenceMode,
+    aspect: args.aspect,
+  };
   const body =
     "conceptText" in args && args.conceptText !== undefined
       ? {

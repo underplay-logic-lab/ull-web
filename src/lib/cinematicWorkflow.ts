@@ -1,6 +1,6 @@
 import "server-only";
 import type { CinematicMode } from "@/lib/cinematicPricing";
-import { cinematicMegapixels, cinematicSafeDimensions } from "@/lib/cinematicPricing";
+import { cinematicMegapixelsForDuration, cinematicSafeDimensions } from "@/lib/cinematicPricing";
 
 // The "Cinematic Video" tab's ComfyUI API-format graph — MiniMax H3 (BF16,
 // image-to-audio/video) running on the Blackwell/B300 Modal deployment (see
@@ -259,7 +259,33 @@ export type BuildCinematicWorkflowParams = {
    * 省略時はランダム。同じシード＋同じ入力だと ComfyUI のキャッシュで前の結果がそのまま返る（下のコメント）。
    */
   seed?: number;
+  /**
+   * 持ち込み音声（歌・セリフ）の ComfyUI input 名（2026-10-05）。渡すと音声をそのまま固定して、口をそれに合わせる。
+   * 組み方は D:\ComfyUI-ull\prod_hinata_mv_68s_v3.json（本番 B300 で 68 秒を完走）と同じ:
+   *   ① 音声 VAE で潜在にし、ノイズマスク 0（＝作り直さない）で映像の潜在の音声部分を差し替える（LTXVConcatAVLatent。
+   *      長さが違えば本体が切り詰め／末尾を生成で埋める）
+   *   ② MiniMaxH3AddGuide で同じ音声を先頭に固定した条件にする（①だけより口が合う）
+   * MiniMaxH3AddGuide だけだと音声は「参考」扱いで作り直され、冒頭の伴奏中に口が動いた。
+   * 書き出す音声は VAE を通したものではなく元のファイル（音声 VAE を通すと波形が少し変わる）。
+   */
+  audioName?: string;
+  /** true: 画像を最初のフレームではなく顔写真として参照する（MiniMaxH3ReferenceToVideo・本体は ref2va）。 */
+  referenceMode?: boolean;
+  /** 出力の縦横比を決める寸法（参照モードで縦横を選んだとき）。省略時は rawImageWidth/Height。 */
+  aspectWidth?: number;
+  aspectHeight?: number;
 };
+
+/** 参照モードの本体（2026-10-04 に Volume へ追加）。10Eros は最初のフレーム用（FL2VA）なので使えない。 */
+const REF2VA_UNET = "minimax_h3_ref2va_pruned_bf16.safetensors";
+
+/** 参照モードでは画像を <Picture 1> と呼ぶ（最初のフレームの <Image 1> とは別の書き方）。 */
+function toReferencePrompt(prompt: string): string {
+  const p = prompt.replace(/<Image 1>/g, "<Picture 1>");
+  return p.includes("<Picture 1>")
+    ? p
+    : `The person from <Picture 1> (same face, hairstyle and features) appears throughout the video. ${p}`;
+}
 
 export function buildCinematicWorkflow({
   mode,
@@ -273,6 +299,10 @@ export function buildCinematicWorkflow({
   loraName,
   loraStrength,
   seed,
+  audioName,
+  referenceMode,
+  aspectWidth,
+  aspectHeight,
 }: BuildCinematicWorkflowParams): CinematicWorkflow {
   const workflow = structuredClone(WORKFLOW_TEMPLATE) as unknown as CinematicWorkflow;
 
@@ -280,10 +310,11 @@ export function buildCinematicWorkflow({
     workflow["92"].inputs.filename_prefix = `cinematic_video_${jobId}`;
   }
   workflow["114"].inputs.image = referenceImageName;
+  const dimW = aspectWidth && aspectHeight ? aspectWidth : rawImageWidth;
+  const dimH = aspectWidth && aspectHeight ? aspectHeight : rawImageHeight;
+  const mp = cinematicMegapixelsForDuration(mode, durationS);
   const { width: safeWidth, height: safeHeight } =
-    rawImageWidth && rawImageHeight && rawImageWidth > 0 && rawImageHeight > 0
-      ? cinematicSafeDimensions(rawImageWidth, rawImageHeight, cinematicMegapixels(mode))
-      : cinematicSafeDimensions(1, 1, cinematicMegapixels(mode));
+    dimW && dimH && dimW > 0 && dimH > 0 ? cinematicSafeDimensions(dimW, dimH, mp) : cinematicSafeDimensions(1, 1, mp);
   workflow["105:104"].inputs.width = safeWidth;
   workflow["105:104"].inputs.height = safeHeight;
   workflow["105:9"].inputs.steps = mode.steps;
@@ -360,6 +391,65 @@ export function buildCinematicWorkflow({
     };
     workflow["105:124"].inputs.model = ["105:130", 0];
     workflow["105:124"].inputs.allow_compile = false;
+  }
+
+  if (referenceMode) {
+    workflow["105:6"].inputs.unet_name = REF2VA_UNET;
+    const i2v = workflow["105:104"].inputs;
+    workflow["105:104"] = {
+      inputs: {
+        clip: i2v.clip,
+        vae: i2v.vae,
+        audio_vae: ["105:24", 0],
+        prompt: toReferencePrompt(String(i2v.prompt)),
+        width: i2v.width,
+        height: i2v.height,
+        length: i2v.length,
+        ref_image_size: "match",
+        "ref_images.ref_image_1": ["114", 0],
+      },
+      class_type: "MiniMaxH3ReferenceToVideo",
+      _meta: { title: "Reference to Video" },
+    };
+  }
+
+  const trimmedAudioName = audioName?.trim();
+  if (trimmedAudioName) {
+    workflow["200"] = { inputs: { audio: trimmedAudioName }, class_type: "LoadAudio", _meta: { title: "Load Audio" } };
+    workflow["201"] = {
+      inputs: {
+        positive: ["105:104", 0],
+        audio_vae: ["105:24", 0],
+        latent: ["105:104", 1],
+        audio: ["200", 0],
+        frame_idx: 0,
+      },
+      class_type: "MiniMaxH3AddGuide",
+      _meta: { title: "Add Guide (audio)" },
+    };
+    workflow["210"] = {
+      inputs: { audio: ["200", 0], vae: ["105:24", 0] },
+      class_type: "VAEEncodeAudio",
+      _meta: { title: "VAE Encode Audio" },
+    };
+    workflow["211"] = {
+      inputs: { value: 0.0, width: 64, height: 64 },
+      class_type: "SolidMask",
+      _meta: { title: "Mask 0 (keep audio)" },
+    };
+    workflow["212"] = {
+      inputs: { samples: ["210", 0], mask: ["211", 0] },
+      class_type: "SetLatentNoiseMask",
+      _meta: { title: "Set Latent Noise Mask" },
+    };
+    workflow["213"] = {
+      inputs: { video_latent: ["105:104", 1], audio_latent: ["212", 0] },
+      class_type: "LTXVConcatAVLatent",
+      _meta: { title: "Concat AV Latent" },
+    };
+    workflow["105:16"].inputs.conditioning = ["201", 0];
+    workflow["105:14"].inputs.latent_image = ["213", 0];
+    workflow["91"].inputs.audio = ["200", 0];
   }
 
   return workflow;

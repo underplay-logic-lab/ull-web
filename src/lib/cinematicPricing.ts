@@ -221,3 +221,17 @@ export function cinematicMegapixels(mode: CinematicMode): number {
   const edge = floorTo16(mode.baseEdge);
   return (edge * edge) / 1_000_000;
 }
+
+/**
+ * 解像度×尺の上限（メガピクセル×秒、2026-10-05）。B300 実測: 960×544×68 秒（約 35.5）は VRAM 約 222GB で完走、
+ * 1344×768×68 秒（約 70）はメモリ不足。完走した点を上限にして、長い尺ほど解像度を下げる
+ * （1MP なら約 34 秒まではそのまま、68 秒で 960×544 相当）。
+ */
+export const CINEMATIC_MAX_MEGAPIXEL_SECONDS = 36;
+
+/** 尺を考えたメガピクセル。cinematicSafeDimensions に渡す値（画面の表示・route の metadata・ワークフローで共通）。 */
+export function cinematicMegapixelsForDuration(mode: CinematicMode, durationS: number | undefined): number {
+  const base = cinematicMegapixels(mode);
+  if (!durationS || durationS <= 0) return base;
+  return Math.min(base, CINEMATIC_MAX_MEGAPIXEL_SECONDS / durationS);
+}
