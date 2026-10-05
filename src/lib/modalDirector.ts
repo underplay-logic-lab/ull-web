@@ -20,6 +20,8 @@ export type SpawnDirectorJobParams = {
   /** 参照画像の他に ComfyUI の input へ置くファイル（名前 → base64）。持ち込み音声（2026-10-05）。
    * ワーカーは files_b64 の先頭を参照画像として台本 AI に見せるので、参照画像の後ろに並べる。 */
   extraFilesB64?: Record<string, string>;
+  /** Photo Director（2026-10-06）: 全 SaveImage の画像を集めて R2 へ上げる（ワーカーの image_outputs）。 */
+  imageOutputs?: boolean;
   pollDeadlineS: number;
   /**
    * Advanced モード（Qwen3.8-27B-abliteratedによる台本自動生成、
@@ -80,6 +82,7 @@ export async function spawnDirectorJob(params: SpawnDirectorJobParams): Promise<
       files_b64: { [params.referenceImageName]: params.referenceImageB64, ...params.extraFilesB64 },
       skip_torch_compile: true,
       poll_deadline_s: params.pollDeadlineS,
+      ...(params.imageOutputs ? { image_outputs: true } : {}),
       qwen_concept_text: params.qwenConceptText,
       qwen_text_instruction: params.qwenTextInstruction,
       qwen_prompt_node_id: params.qwenPromptNodeId,

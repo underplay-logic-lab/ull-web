@@ -31,6 +31,8 @@ export type KnobKey =
   | "director_qwen_script_credits"
   | "director_extra_ref_rate"
   | "director_ref_video_rate"
+  | "photo_director_base_credits"
+  | "photo_director_per_image_credits"
   | "lora_caption_base"
   | "lora_caption_per_image"
   | "lora_priority_parallel_rate"
@@ -192,6 +194,10 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 参照動画（動き・カメラの手本、2026-10-06）の上乗せ率。通常料金 × ((1 + 参照秒/出力秒)² − 1) × これ（directorRefVideoSurcharge）。
   // 1.0 = 計算量の増え方そのまま（B300 実測: 20 秒＋参照 10 秒で時間 2.0 倍・式は 2.25 倍）。
   director_ref_video_rate: 1,
+  // Photo Director（2026-10-06）: 1 回の基本料＋1 枚ごと。仮値（本番の実測前）。B300 で 1 枚 温まって約 1.5 分（¥30 前後）・
+  // 起動込み 4 分強。参照の読み込みは 1 回で済み、2 枚目以降はサンプリングだけ増える見込み → 実測したら合わせる。
+  photo_director_base_credits: 40,
+  photo_director_per_image_credits: 15,
   // 超解像スタジオ（SeedVR2）: 出力の 100 万画素あたりの消費クレジット。
   // credits = max(upscale_min_credits, ceil(これ × 出力MP × モデル係数))。
   // B300 実測: 出力 ~5MP を warm ~20s / cold ~60s。3 C/MP で 2K プリセット

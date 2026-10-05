@@ -8,6 +8,7 @@ import {
   markLoraJobCompletedFromModal,
 } from "@/lib/loraJobHealth";
 import { isDirectorVideoVolumePath, resolveDirectorVideoUrl } from "@/lib/directorVideoDownload.server";
+import { presignPublishedArtifact } from "@/lib/r2.server";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -195,6 +196,20 @@ export async function GET(request: Request, { params }: RouteParams) {
   // 返す——ブラウザはそのURLへ直接アクセスし、Supabase/Vercelどちらの
   // 帯域も経由しない。旧方式で既に保存済みの行（http(s) URL）はそのまま
   // 素通しする（14日パージで自然に無くなるまでの経過措置）。
+  // Photo Director（2026-10-06）: 静止画はワーカーが R2 へ直接上げ、metadata.image_paths と r2_key_map を残す。
+  // ポーリングのたびに短命の署名 URL を作り直す（結果の URL は使い回さない、studio-tab-patterns §11）。
+  const isPhoto = inputs?.output === "photo";
+  let imageUrls: string[] | null = null;
+  if (isPhoto && effJob.status === "completed") {
+    const meta = effJob.metadata as Record<string, unknown> | null;
+    const paths = Array.isArray(meta?.image_paths) ? (meta.image_paths as unknown[]).filter((p): p is string => typeof p === "string") : [];
+    const urls = await Promise.all(
+      paths.map((p, i) =>
+        presignPublishedArtifact(meta, p, { contentType: "image/png", downloadName: `photo-${String(effJob.id).slice(0, 8)}-${i + 1}.png` }),
+      ),
+    );
+    imageUrls = urls.filter((u): u is string => Boolean(u));
+  }
   let videoUrl = (effJob.video_url as string | null) ?? null;
   if (
     videoUrl &&
@@ -225,6 +240,8 @@ export async function GET(request: Request, { params }: RouteParams) {
     qualityMode,
     extraRefCount,
     refVideoDurationS,
+    output: isPhoto ? "photo" : null,
+    imageUrls,
     // LoRA 学習のベースモデル（完了画面で「動画を作る」を出すかの判定。Director は minimax_h3 だけ使える）。
     targetModel: typeof inputs?.target_model === "string" ? inputs.target_model : null,
     // LoRA のトリガーワード（1 人目＋2 人目以降）。Director へ渡すときに使う。

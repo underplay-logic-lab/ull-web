@@ -538,3 +538,64 @@ export function buildCinematicWorkflow({
 
   return workflow;
 }
+
+/** Photo Director の 1 回あたりの最大枚数（2026-10-06）。台本の読み込み（参照 9 枚の符号化）は 1 回で済み、枚数ぶんはサンプリングだけ増える。 */
+export const PHOTO_MAX_COUNT = 4;
+
+/**
+ * Photo Director（2026-10-06）: 参照モードの Director を長さ 5 フレームで回し、各シードの 1 コマ目を静止画にする。
+ * 本番 B300 で確かめた組み方（D:\ComfyUI-ull\results\prod\a_test\wf_still_bf16_*.json）: length 5・ref_image_size "max"
+ * （参照を 2048px 短辺で読む＝顔が最も写真に近い）・高速モード（VDN 8 step）。
+ * 条件づけ（105:104）は 1 つを共有し、シードだけ違うサンプラーを枚数ぶん並べる（参照の読み込みを 1 回で済ませる）。
+ * 出力は枝ごとの SaveImage。ワーカーは image_outputs=true で全部を集めて R2 へ上げる。
+ */
+export function buildPhotoWorkflow(
+  params: Omit<BuildCinematicWorkflowParams, "referenceMode" | "durationS" | "audioName" | "refVideoName" | "refVideoRole">,
+  count: number,
+): CinematicWorkflow {
+  const n = Math.max(1, Math.min(PHOTO_MAX_COUNT, Math.floor(count)));
+  const seed = params.seed ?? Math.floor(Math.random() * 2 ** 32);
+  const workflow = buildCinematicWorkflow({ ...params, seed, referenceMode: true, durationS: 1 });
+  const cond = workflow["105:104"].inputs;
+  cond.length = 5;
+  cond.ref_image_size = "max";
+  // 動画・音声の書き出しと長さの計算は使わない。
+  for (const id of ["91", "92", "105:23", "105:107", "105:111", "105:15", "105:14", "105:10"]) {
+    delete (workflow as Record<string, unknown>)[id];
+  }
+  const prefix = params.jobId ? `photo_${params.jobId}` : "photo";
+  for (let i = 0; i < n; i++) {
+    workflow[`${600 + i}`] = {
+      inputs: { noise_seed: (seed + i) % 2 ** 32 },
+      class_type: "RandomNoise",
+      _meta: { title: `Noise ${i + 1}` },
+    };
+    workflow[`${610 + i}`] = {
+      inputs: {
+        noise: [`${600 + i}`, 0],
+        guider: ["105:16", 0],
+        sampler: ["105:17", 0],
+        sigmas: ["105:9", 0],
+        latent_image: ["105:104", 1],
+      },
+      class_type: "SamplerCustomAdvanced",
+      _meta: { title: `Sampler ${i + 1}` },
+    };
+    workflow[`${620 + i}`] = {
+      inputs: { samples: [`${610 + i}`, 0], vae: ["105:11", 0] },
+      class_type: "VAEDecode",
+      _meta: { title: `Decode ${i + 1}` },
+    };
+    workflow[`${630 + i}`] = {
+      inputs: { image: [`${620 + i}`, 0], batch_index: 0, length: 1 },
+      class_type: "ImageFromBatch",
+      _meta: { title: `First Frame ${i + 1}` },
+    };
+    workflow[`${640 + i}`] = {
+      inputs: { images: [`${630 + i}`, 0], filename_prefix: `${prefix}_${i + 1}` },
+      class_type: "SaveImage",
+      _meta: { title: `Save Photo ${i + 1}` },
+    };
+  }
+  return workflow;
+}

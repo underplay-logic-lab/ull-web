@@ -129,6 +129,9 @@ export const DIRECTOR_ASPECTS = [
   { id: "16:9", label: "横 16:9", ratio: 16 / 9 },
   { id: "9:16", label: "縦 9:16", ratio: 9 / 16 },
   { id: "1:1", label: "正方形", ratio: 1 },
+  // 2026-10-06: Photo Director で追加（写真でよく使う比）。Director でもそのまま選べる。
+  { id: "3:4", label: "縦 3:4", ratio: 3 / 4 },
+  { id: "4:3", label: "横 4:3", ratio: 4 / 3 },
   { id: "image", label: "画像に合わせる", ratio: 0 },
 ] as const;
 export type DirectorAspectId = (typeof DIRECTOR_ASPECTS)[number]["id"];
@@ -314,4 +317,22 @@ export function validateDirectorScenes(scenes: unknown): { ok: true; scenes: Dir
     return { ok: false, error: `合計尺は最大${DIRECTOR_MAX_TOTAL_SECONDS}秒までです。` };
   }
   return { ok: true, scenes: cleaned };
+}
+
+/** Photo Director の思いつき欄の最大文字数（2026-10-06）。 */
+export const PHOTO_IDEA_MAX_LENGTH = 600;
+
+/**
+ * Photo Director（2026-10-06）の料金: 1 回の基本料（起動・参照の読み込み）＋ 1 枚ごと。追加の参照写真の上乗せは Director と同じ率。
+ * フロント表示と route で同じ関数を使う。knob の既定は本番実測前の仮値（knobDefaults.ts）。
+ */
+export function photoDirectorCredits(count: number, extraRefCount: number, knobs: PricingKnobs = DEFAULT_KNOBS): number {
+  const n = Math.max(1, Math.min(4, Math.floor(count)));
+  const base = Math.ceil(knobs.photo_director_base_credits + knobs.photo_director_per_image_credits * n);
+  return base + directorExtraRefSurcharge(base, extraRefCount, knobs);
+}
+
+/** Photo Director の待ち上限（秒）。温まって 1 枚 約 1.5 分・起動込み 4 分強（2026-10-06 実測）の 2 倍以上を取る。 */
+export function photoDirectorPollDeadlineS(count: number): number {
+  return 900 + 120 * Math.max(1, Math.min(4, Math.floor(count)));
 }

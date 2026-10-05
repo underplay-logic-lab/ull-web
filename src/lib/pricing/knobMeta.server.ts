@@ -142,6 +142,20 @@ const KNOB_TEXT: Record<KnobKey, Omit<KnobMeta, "value">> = {
     description: "動き・カメラの手本の動画を入れたときの上乗せ。通常料金 × ((1 + 参照秒/出力秒)² − 1) × この値（1.0 = 計算量の増え方そのまま。20 秒＋参照 10 秒で +125%）。",
     isPublic: true,
   },
+  photo_director_base_credits: {
+    label: "Photo Director 1 回の基本料",
+    category: "feature_credits",
+    unit: "C",
+    description: "1 回ごとの固定分（GPU の起動・参照写真の読み込み）。合計 = これ + 1 枚ごと × 枚数（＋追加の参照写真の上乗せ）。",
+    isPublic: true,
+  },
+  photo_director_per_image_credits: {
+    label: "Photo Director 1 枚ごと",
+    category: "feature_credits",
+    unit: "C/枚",
+    description: "1 回で出す枚数（1〜4 枚）1 枚ごとの料金。",
+    isPublic: true,
+  },
   director_qwen_script_credits: {
     label: "Cinematic Director Advanced（Qwen台本生成）",
     category: "feature_credits",

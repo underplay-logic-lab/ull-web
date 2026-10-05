@@ -15,6 +15,9 @@ import {
   directorCostBreakdownForDuration,
   directorCreditsWorstCase,
   directorPollDeadlineS,
+  photoDirectorCredits,
+  photoDirectorPollDeadlineS,
+  PHOTO_IDEA_MAX_LENGTH,
   directorPriorityParallelSurcharge,
   directorExtraRefSurcharge,
   directorQwenScriptSurcharge,
@@ -39,6 +42,8 @@ import {
   buildSceneDirectorPrompt,
   DirectorPromptError,
   expandDirectorScenes,
+  expandPhotoIdea,
+  buildPhotoPrompt,
   looksJapaneseOutsideDialogue,
   withConceptNotes,
   withIdentityAnchor,
@@ -48,7 +53,7 @@ import {
   withJapaneseTranslationRequest,
   type DirectorPromptOptions,
 } from "@/lib/directorPrompt";
-import { buildCinematicWorkflow, CINEMATIC_PROMPT_NODE_ID } from "@/lib/cinematicWorkflow";
+import { buildCinematicWorkflow, buildPhotoWorkflow, CINEMATIC_PROMPT_NODE_ID, PHOTO_MAX_COUNT } from "@/lib/cinematicWorkflow";
 import { headR2, r2UserRoot } from "@/lib/r2.server";
 import { assertOwnedDirectorLoraVolumePath, isOwnedDirectorLoraR2Key } from "@/lib/directorLoraUpload.server";
 import { CINEMATIC_MODE_BY_ID, cinematicMegapixelsForDuration, cinematicSafeDimensions } from "@/lib/cinematicPricing";
@@ -101,6 +106,28 @@ export async function POST(request: Request) {
   const baseJobId = typeof body.baseJobId === "string" ? body.baseJobId : "";
   // 予約（2026-10-03、lib/studioQueue.server.ts）: 課金して行を reserved で作り、順番が来たらサーバーが起動する。
   const queue = body.queue === true;
+  // Photo Director（2026-10-06）: 同じ GPU・同じ土台（10Eros）で、参照モードを 5 フレームだけ回して静止画にする。
+  // ジョブは Director と同じ workflow_type "director"（予約の順番・返金・ログ・GPU を共用）で、inputs.output = "photo"。
+  // 使わない欄（シーン・音声・手本・LoRA・作り直し）はここで落とす。
+  const isPhoto = body.output === "photo";
+  const photoIdea = isPhoto && typeof body.photoIdea === "string" ? body.photoIdea.trim().slice(0, PHOTO_IDEA_MAX_LENGTH) : "";
+  const photoCount = isPhoto
+    ? Math.max(1, Math.min(PHOTO_MAX_COUNT, typeof body.photoCount === "number" ? Math.floor(body.photoCount) : 2))
+    : 0;
+  if (isPhoto) {
+    if (baseJobId) return NextResponse.json({ error: "写真は作り直しに対応していません。" }, { status: 400 });
+    if (!photoIdea) return NextResponse.json({ error: "どんな写真にしたいかを書いてください。" }, { status: 400 });
+    body = {
+      storagePath: body.storagePath,
+      referenceMode: "reference",
+      aspect: body.aspect,
+      extraRefPaths: body.extraRefPaths,
+      extraRefRoles: body.extraRefRoles,
+      priority: body.priority,
+      queue: body.queue,
+      seed: body.seed,
+    };
+  }
   let reusingScript = false;
   if (baseJobId) {
     const { data: baseJob } = await supabaseAdmin
@@ -248,7 +275,13 @@ export async function POST(request: Request) {
       : "";
 
   let scenes: DirectorScene[] = [];
-  if (isAdvancedMode) {
+  if (isPhoto) {
+    const policyResult = evaluateContentPolicyMany([photoIdea]);
+    if (policyResult.blocked) {
+      logContentPolicyBlock("director/generate:photo", policyResult, user.id);
+      return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
+    }
+  } else if (isAdvancedMode) {
     const policyResult = evaluateContentPolicyMany([conceptTextInput]);
     if (policyResult.blocked) {
       logContentPolicyBlock("director/generate:advanced", policyResult, user.id);
@@ -412,8 +445,9 @@ export async function POST(request: Request) {
   // Advanced（Qwen台本生成）は動画本体とは別のGPUコンテナを1回起動するので
   // その分を上乗せする（directorPricing.ts参照）。
   const videoCredits = breakdown.credits || directorCreditsWorstCase(knobs);
-  const baseCreditsCost =
-    videoCredits +
+  const baseCreditsCost = isPhoto
+    ? photoDirectorCredits(photoCount, extraRefPaths.length, knobs)
+    : videoCredits +
     directorExtraRefSurcharge(videoCredits, extraRefPaths.length, knobs) +
     directorRefVideoSurcharge(videoCredits, refVideoDurationS, breakdown.totalDurationS, knobs) +
     (isAdvancedMode ? directorQwenScriptSurcharge(knobs) : 0);
@@ -477,7 +511,17 @@ export async function POST(request: Request) {
   let qwenTextInstruction: string | undefined;
   const statusFor = (e: DirectorPromptError) =>
     e.reason === "quota" ? 429 : e.reason === "busy" ? 503 : e.reason === "not_configured" ? 501 : 502;
-  if (isAdvancedMode) {
+  if (isPhoto) {
+    try {
+      combinedPrompt = await expandPhotoIdea(photoIdea, promptOpts.references);
+    } catch (err) {
+      const e = err as DirectorPromptError;
+      if (e.reason !== "refusal") return NextResponse.json({ error: e.message }, { status: statusFor(e) });
+      console.warn("[director/generate] Gemini refused the photo prompt; falling back to the worker-side Qwen");
+      qwenTextInstruction = withJapaneseTranslationRequest(buildPhotoPrompt(photoIdea, promptOpts.references));
+      combinedPrompt = photoIdea;
+    }
+  } else if (isAdvancedMode) {
     combinedPrompt = conceptTextInput;
   } else if (isPromptMode) {
     // 作り直しで台本をそのまま使うときは訳し直さない（セリフが日本語でも、訳し直すと台本が変わる）。
@@ -581,6 +625,7 @@ export async function POST(request: Request) {
     ref_video_role: refVideoPath ? refVideoRole : null,
     ref_video_duration_s: refVideoDurationS || null,
     ref_voice_path: refVoicePath || null,
+    ...(isPhoto ? { output: "photo", photo_idea: photoIdea, photo_count: photoCount } : {}),
   };
   // 出力解像度（2026-09-24、ホスト「生成後の解像度がわからないので記載して」）。
   // buildCinematicWorkflow と同じ式で先に決め、metadata に残して完了画面が読む。
@@ -619,6 +664,7 @@ export async function POST(request: Request) {
         ...(extraRefRoles.some((r) => r !== "person") ? { reference_roles: extraRefRoles } : {}),
         ...(refVideoPath ? { reference_video: refVideoRole, reference_video_s: refVideoDurationS } : {}),
         ...(refVoicePath ? { reference_voice: true } : {}),
+        ...(isPhoto ? { output: "photo", photo_count: photoCount } : {}),
       },
     })
     .select("id")
@@ -646,7 +692,25 @@ export async function POST(request: Request) {
   // 2026-09-13 実障害の修正。渡さないと正方形前提にフォールバックし、
   // 任意アスペクト比の入力で patchify がクラッシュしうる）。
   const rawDims = readImageDimensions(imageBuffer);
-  const workflow = buildCinematicWorkflow({
+  const workflow = isPhoto
+    ? buildPhotoWorkflow(
+        {
+          mode: CINEMATIC_MODE_BY_ID.vdnFast,
+          prompt: combinedPrompt,
+          referenceImageName,
+          promptIsComplete: true,
+          rawImageWidth: rawDims?.width,
+          rawImageHeight: rawDims?.height,
+          jobId,
+          seed,
+          extraReferenceImageNames: extraRefNames,
+          extraReferenceRoles: extraRefRoles,
+          aspectWidth: aspectDims.width,
+          aspectHeight: aspectDims.height,
+        },
+        photoCount,
+      )
+    : buildCinematicWorkflow({
     mode,
     prompt: combinedPrompt,
     referenceImageName,
@@ -673,7 +737,10 @@ export async function POST(request: Request) {
     creditsCost,
     workflow,
     referenceImageName,
-    pollDeadlineS: directorPollDeadlineS(breakdown.totalDurationS, qualityMode, refVideoDurationS),
+    pollDeadlineS: isPhoto
+      ? photoDirectorPollDeadlineS(photoCount)
+      : directorPollDeadlineS(breakdown.totalDurationS, qualityMode, refVideoDurationS),
+    ...(isPhoto ? { imageOutputs: true } : {}),
     qwenConceptText: isAdvancedMode ? withConceptNotes(conceptTextInput, promptOpts) : undefined,
     qwenTextInstruction,
     qwenPromptNodeId: isAdvancedMode || qwenTextInstruction ? CINEMATIC_PROMPT_NODE_ID : undefined,

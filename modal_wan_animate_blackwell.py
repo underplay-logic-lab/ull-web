@@ -357,7 +357,11 @@ image = (
         "sentencepiece",
         "einops",
     )
+    # Photo Director（2026-10-06）: 静止画を GPU コンテナから R2 へ直接上げる（数 MB × 数枚なので
+    # CPU の publish 関数を経由させない）。チェーン末尾に置き既存の重いビルド層を触らない。
+    .pip_install("boto3>=1.35")
     .add_local_python_source("ull_image_prep")
+    .add_local_python_source("ull_r2")
 )
 
 # ULL Cinematic Director "Advanced" 用 VLM のVolume上のパス
@@ -944,6 +948,26 @@ publish_image = (
 )
 
 
+def _publish_photo_images(user_id: str, job_id: str, images: list) -> tuple[list[str], dict]:
+    """Photo Director（2026-10-06）の静止画を R2 へ直接上げる。キーは他の成果物と同じ
+    `<root>/director_results/<job_id>_<n>.png`（ull_r2.key_for_rel）。Next は metadata の
+    r2_key_map から署名する（presignPublishedArtifact）。14 日の削除は R2 のライフサイクル。
+    R2 が使えない・上げられないときは raise（呼び出し側でジョブ失敗＋返金）。"""
+    import ull_r2
+
+    if not ull_r2.r2_enabled():
+        raise RuntimeError("R2 is not enabled; Photo Director needs R2 to store images")
+    rel_paths, key_map = [], {}
+    for i, (data, _name) in enumerate(images):
+        rel = f"{DIRECTOR_RESULTS_SUBDIR}/{user_id or 'anon'}/{job_id}_{i + 1}.png"
+        key = ull_r2.key_for_rel(rel, user_id)
+        ull_r2.put_bytes(data, key, content_type="image/png")
+        rel_paths.append(rel)
+        key_map[rel] = key
+    print(f"[photo] uploaded {len(rel_paths)} image(s) to R2 for job {job_id[:8]}", flush=True)
+    return rel_paths, key_map
+
+
 def _spawn_r2_publish(job_id: str) -> None:
     """Fire-and-forget。失敗しても Volume に残るだけなので絶対に raise しない。"""
     try:
@@ -1345,7 +1369,12 @@ def download_repo_async(download_id: str, repo_id: str, save_dir: str):
     # _supabase_patch_download above) — reused here so run_custom_workflow's
     # async-job branch can report straight to generation_jobs/profiles/
     # active_generation_jobs without a live Next.js request to do it from.
-    secrets=[modal.Secret.from_name("wan-animate-auth"), modal.Secret.from_name("supabase-model-downloads")],
+    # r2-artifacts: Photo Director の静止画を R2 へ直接上げる（2026-10-06）。
+    secrets=[
+        modal.Secret.from_name("wan-animate-auth"),
+        modal.Secret.from_name("supabase-model-downloads"),
+        modal.Secret.from_name("r2-artifacts"),
+    ],
 )
 class WanAnimateBlackwell:
     @modal.enter()
@@ -1522,7 +1551,9 @@ class WanAnimateBlackwell:
             with open(os.path.join(input_dir, filename), "wb") as f:
                 f.write(payload)
 
-    def _run_workflow(self, workflow, files, output_node_id=None, skip_torch_compile=False, poll_deadline_s=550):
+    def _run_workflow(
+        self, workflow, files, output_node_id=None, skip_torch_compile=False, poll_deadline_s=550, collect_images=False
+    ):
         """
         files: list of (filename, bytes) referenced by the workflow's loader
         nodes. output_node_id: if given, that node's output in ComfyUI's
@@ -1532,6 +1563,9 @@ class WanAnimateBlackwell:
         skip_torch_compile: caller opts this job out of the _inject_torch_compile
         pass — for graphs where CUDA graphs / model offload conflict with it
         (CLAUDE.md §1: 本番反映前に実生成での検証を必須).
+        collect_images: True なら全出力ノードの "images"（type=output）を
+        [(bytes, filename), ...] で返す（Photo Director の複数枚、2026-10-06）。
+        1 枚も無ければ失敗にする（output/ の新着ファイルへは逃げない）。
         """
         import uuid
 
@@ -1595,6 +1629,23 @@ class WanAnimateBlackwell:
                         f"status: {json.dumps(status, ensure_ascii=False)}\n"
                         f"outputs so far: {json.dumps(outputs, ensure_ascii=False)}"
                     )
+
+                if collect_images:
+                    collected = []
+                    for node_id in sorted(outputs, key=lambda k: (len(k), k)):
+                        for item in outputs[node_id].get("images", []) or []:
+                            if item.get("type", "output") != "output":
+                                continue
+                            out_path = os.path.join(output_dir, item.get("subfolder", ""), item["filename"])
+                            if os.path.exists(out_path):
+                                with open(out_path, "rb") as f:
+                                    collected.append((f.read(), item["filename"]))
+                    if not collected:
+                        raise RuntimeError(
+                            f"Prompt finished but no output images found.\n"
+                            f"status: {json.dumps(status)}\noutputs: {json.dumps(outputs)}"
+                        )
+                    return collected
 
                 ordered_node_outputs = list(outputs.values())
                 if output_node_id and output_node_id in outputs:
@@ -1979,6 +2030,7 @@ class WanAnimateBlackwell:
         qwen_text_instruction: str = None,
         lora_url: str = None,
         lora_trigger_word: str = None,
+        image_outputs: bool = False,
     ) -> dict:
         """
         Generic counterpart to generate_video for admin-authored Custom
@@ -2147,13 +2199,20 @@ class WanAnimateBlackwell:
 
             self._ensure_comfy_running(exec_config)
             try:
-                result_bytes, filename = self._run_workflow(
+                run_out = self._run_workflow(
                     workflow,
                     files,
                     output_node_id=output_node_id or None,
                     skip_torch_compile=skip_torch_compile,
                     poll_deadline_s=poll_deadline_s,
+                    collect_images=image_outputs,
                 )
+                # Photo Director（image_outputs）は複数枚。以降の共通処理は 1 枚目で回す。
+                image_list = run_out if image_outputs else None
+                result_bytes, filename = run_out[0] if image_outputs else run_out
+                if image_outputs and is_async:
+                    # 失敗したらジョブ失敗（返金）にしたいので、この try の中で上げる。
+                    image_rel_paths, image_key_map = _publish_photo_images(user_id, job_id, image_list)
             finally:
                 # コンテナがwarmで使い回された時に他ジョブのloras/へ残留しない
                 # よう、使い終わったら都度消す（ステージング元(Volume)は
@@ -2197,6 +2256,26 @@ class WanAnimateBlackwell:
             "output_path": output_path,
             "vram_used_gb": _vram_used_gb,
         }
+        if image_outputs:
+            # 同期で呼んだとき（submit_prod.py の確認など）も全部の画像を返す。
+            result["images_base64"] = [base64.b64encode(b).decode("ascii") for b, _n in image_list]
+        if is_async and image_outputs:
+            # Photo Director（2026-10-06）: 静止画は上で R2 へ上げ済み。Volume には残さない。
+            if _vram_thread is not None:
+                _vram_thread.join(timeout=3)
+            _photo_meta = {
+                "gpu_tier": _gpu_tier_label(),
+                "host_ram_peak_gb": _host_ram_peak_gb(),
+                "image_paths": image_rel_paths,
+                "r2_keys": list(image_rel_paths),  # ull_r2.stamp_r2_keys と同じく rel パス（実キーは r2_key_map）
+                "r2_key_map": image_key_map,
+                "artifact_store": "r2",
+            }
+            if _vram_used_gb is not None:
+                _photo_meta["vram_used_gb"] = _vram_used_gb
+            _supabase_patch_job(job_id, {"status": "completed", "completed_at": _now_iso(), "metadata": _photo_meta})
+            _clear_active_job(active_job_id)
+            return result
         if is_async:
             # Volume（director_results/<user_id>/<job_id>.mp4）へ直接保存し、
             # video_url にはURLではなくそのVolume相対パスを永続化する
@@ -2285,6 +2364,7 @@ def custom_workflow_async(item: dict, request: fastapi.Request):
         item.get("qwen_text_instruction"),
         item.get("lora_url"),
         item.get("lora_trigger_word"),
+        item.get("image_outputs", False),
     )
     return {"ok": True, "job_id": job_id, "call_id": call.object_id}
 

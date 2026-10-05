@@ -243,6 +243,63 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
 }
 
 /**
+ * Photo Director（2026-10-06）: 参照写真から静止画を 1〜4 枚。サーバーは Director と同じ route（output: "photo"）で、
+ * ジョブも Director と同じ予約の順番に並ぶ。場所の写真は動画と同じく出力の縦横に切り抜いてから上げる。
+ */
+export async function startPhotoJob(args: {
+  userId: string;
+  image: File;
+  idea: string;
+  count: number;
+  aspect: DirectorAspectId;
+  extraRefs: File[];
+  extraRefRoles: DirectorRefRole[];
+  priority?: boolean;
+  queue?: boolean;
+}): Promise<DirectorStartResult> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) throw new Error("ログインが必要です。");
+
+  const { path: storagePath } = await uploadStudioAsset(args.userId, args.image);
+  const placeRatio = args.extraRefRoles.includes("place") ? await outputAspectRatio(args.aspect, args.image) : 0;
+  const extraRefPaths = await Promise.all(
+    args.extraRefs.slice(0, 8).map(async (f, i) => {
+      const file = placeRatio && args.extraRefRoles[i] === "place" ? await cropToAspect(f, placeRatio) : f;
+      return (await uploadStudioAsset(args.userId, file)).path;
+    }),
+  );
+  const res = await fetch("/api/director/generate", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      output: "photo",
+      storagePath,
+      photoIdea: args.idea,
+      photoCount: args.count,
+      aspect: args.aspect,
+      extraRefPaths,
+      extraRefRoles: args.extraRefRoles.slice(0, 8),
+      priority: args.priority ?? false,
+      ...(args.queue ? { queue: true } : {}),
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    const error: DirectorApiError = new Error(data?.error || "写真の生成に失敗しました。");
+    if (typeof data?.remainingCredits === "number") error.remainingCredits = data.remainingCredits;
+    throw error;
+  }
+  return {
+    jobId: data.jobId as string,
+    reserved: data.reserved === true,
+    creditsCost: data.creditsCost as number,
+    remainingCredits: data.remainingCredits as number,
+    totalDurationS: 0,
+  };
+}
+
+/**
  * 完了した動画を元に作り直す（2026-10-01〜）。参照画像・台本・尺・LoRA はサーバーが元のジョブから引き継ぐ。
  *   new_seed  … 別パターン（台本はそのまま、揺れだけ変える）
  *   same_seed … この動画をもとに調整（同じシードで、rawPrompt を書き換えたり画質を変えたりする）
@@ -509,6 +566,10 @@ export type DirectorJobStatus = {
   extraRefCount: number;
   /** 手本の動画の長さ（秒・無ければ 0）。作り直しの料金表示に上乗せを足す。 */
   refVideoDurationS: number;
+  /** Photo Director のジョブか（2026-10-06）。 */
+  isPhoto: boolean;
+  /** 写真の署名付き URL（完了時のみ・15 分で切れるので使い回さない）。 */
+  imageUrls: string[];
   queue: { queuePosition: number; avgExecutionSeconds: number; estimatedWaitSeconds: number } | null;
 };
 
@@ -560,6 +621,8 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
       typeof data.durationS === "number" ? data.durationS : typeof meta.total_duration_s === "number" ? meta.total_duration_s : null,
     extraRefCount: typeof data.extraRefCount === "number" ? data.extraRefCount : 0,
     refVideoDurationS: typeof data.refVideoDurationS === "number" ? data.refVideoDurationS : 0,
+    isPhoto: data.output === "photo",
+    imageUrls: Array.isArray(data.imageUrls) ? (data.imageUrls as unknown[]).filter((u): u is string => typeof u === "string") : [],
     queue:
       typeof data.queuePosition === "number"
         ? {

@@ -207,13 +207,47 @@ export async function expandDirectorScenes(
   musicDirection?: string,
   opts: DirectorPromptOptions = {},
 ): Promise<string> {
+  return runDirectorPromptGemini(buildSceneDirectorPrompt(scenes, musicDirection, opts), "director_prompt");
+}
+
+/**
+ * Photo Director（2026-10-06）: 日本語の思いつき → 静止画 1 枚の英語プロンプトを書かせる指示文。
+ * 書き出しは本番 B300 で確かめた静止画プロンプト（D:\ComfyUI-ull\results\prod\a_test\wf_still_bf16_*.json）と同じ。
+ * 動画モデルを 5 フレームだけ回すので「動き」を書かせない（ブレ・途中のポーズになる）。
+ */
+export const PHOTO_PROMPT_OPENING = "A single high-quality photograph, perfectly still, sharp focus.";
+
+export function buildPhotoPrompt(idea: string, refs: DirectorReferenceSummary = {}): string {
+  return [
+    "You are an expert photographer writing a prompt for an image model that is given reference pictures.",
+    referenceModeNote(refs),
+    "",
+    "Write ONE English prompt for a single still photograph based on the user's idea below.",
+    `- Start with exactly this sentence: "${PHOTO_PROMPT_OPENING}"`,
+    "- Describe the framing (close-up, bust shot, full body...), pose, expression, clothing, location, lighting and mood as concrete visual details.",
+    "- Describe a frozen moment: no camera movement, no actions that unfold over time, no sound, no dialogue.",
+    "- Refer to the person as \"the person from <Picture 1>\" (or the woman / man from <Picture 1>) and keep the same face and hairstyle.",
+    "- If the user's idea does not say otherwise, make it photorealistic with natural light; if <Picture 1> is an illustration or anime, keep that art style instead.",
+    "- Keep it under 120 words. Output ONLY the prompt — no preamble, no quotes.",
+    "",
+    `User's idea (may be Japanese): ${idea}`,
+  ].join("\n");
+}
+
+export async function expandPhotoIdea(idea: string, refs: DirectorReferenceSummary = {}): Promise<string> {
+  const out = await runDirectorPromptGemini(buildPhotoPrompt(idea, refs), "photo_prompt");
+  return out.startsWith(PHOTO_PROMPT_OPENING) ? out : `${PHOTO_PROMPT_OPENING} ${out}`;
+}
+
+/** Gemini に指示文を渡して 1 本の英語プロンプトを受け取る（シーン合成・写真の共通部分）。断り・枯渇は DirectorPromptError。 */
+async function runDirectorPromptGemini(instruction: string, feature: string): Promise<string> {
   const apiKey = geminiApiKey();
   if (!apiKey) {
     throw new DirectorPromptError("AI 機能が未設定です（GEMINI_API_KEY 未設定）。", "not_configured");
   }
   const genAI = new GoogleGenerativeAI(apiKey);
   try {
-    const raw = await runGeminiText(genAI, buildSceneDirectorPrompt(scenes, musicDirection, opts), false, { feature: "director_prompt" });
+    const raw = await runGeminiText(genAI, instruction, false, { feature });
     const cleaned = raw.trim().replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
     if (!cleaned) {
       throw new DirectorPromptError("プロンプトの合成に失敗しました（空の応答）。", "failed");

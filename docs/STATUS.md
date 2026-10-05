@@ -596,15 +596,18 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    口の動き 公式 2.99 → 10Eros 3.10・顔は 6 コマとも見分けがつかない（比較 `D:/ComfyUI-ull/results/multiref_10eros_vs_official.png`。顔の検出率 56% は横顔のコマが多いだけ）。
    → **参照モードの土台を 10Eros に切り替えて push**（`cinematicWorkflow.ts` の `REF2VA_UNET`）。Photo Director も 10Eros で組む。公式 ref2va bf16 は Volume に残す。
    測定は `D:/ComfyUI-ull/tools/mouth2.py`（venv `tools/mpenv` を作り直した）。**MiniMax Music の重み `music/hf_cache`（約 57GB）は Volume から削除済み**。
-1. **【次の本筋】Photo Director（新タブ・静止画）**: MiniMax H3 の Ref2VA を長さ 5 フレームで回し、1 コマ目を静止画にする（参照 9 枚＝人物・持ち物・場所）。
-   Qwen-Image 2.1（非商用）の代わり。**実測（2026-10-06・同じ参照 9 枚・バストアップ）**: 本番 B300 **bf16・公式 ref2va** で顔が写真にかなり近い・光が自然
-   （`D:\ComfyUI-ull
-esults\still_compare_bf16.png`）。**ローカルの圧縮版（DiT int8＋TE nvfp4）は顔が変わる＝質で却下**。10Eros でも参照は効くが面長・大人びる→公式 ref2va。
-   参照の読み方 match/max の差は小さい（max を既定候補）。1 枚 温まって約 1.5 分（¥30 前後）・起動込み 4 分強 → 1 回で 2〜4 枚まとめて出す。
-   Qwen-Edit 2511 より明確に上（合成感が無い）・Qwen 2.1 に勝てないのは「背景を参照どおりに写す正確さ」だけ。**「Powered by MiniMax H3」の表示義務あり**。
-   名前の案は「📸 Photo Director」（ホストは「新しいコーナーで良い」）。設計: 参照ごとの使い方（人物/持ち物/場所/画風）・縦横・枚数・料金・自動保存・Director へ渡す。
-   ローカル試作のワークフロー `D:\ComfyUI-ull\h3_still_*.json`・本番用 `results\prod_test\wf_still_bf16_*.json`（SaveImage・length 5・欄は 0 始まり）。
-   参考: `MATLOWAI/minimax-h3-fused-turbo-int8-convrot` は「FL2VA＋(Ref2VA−FL2VA) 差分の rank1024 近似＋turbo＋Mystic」の int8＝参照の能力は差分で移植できる（本番は量子化不可で不採用）。
+1. **Photo Director（新タブ「📸 Photo Director」・静止画）: 実装・ワーカーデプロイ・push 済み（2026-10-06）。本番の画面からはまだ 1 本も出していない。**
+   仕組み: Director と同じ route（`/api/director/generate` の `output: "photo"`）・同じ `workflow_type: "director"`（予約の順番・返金・ログ・GPU を共用）・同じ土台 10Eros。
+   `cinematicWorkflow.ts` の `buildPhotoWorkflow` が参照モードを length 5・ref_image_size "max" で組み、条件づけ 1 つにシード違いのサンプラーを 1〜4 本並べ、
+   各 1 コマ目（ImageFromBatch）を SaveImage。ワーカーは `image_outputs` で全部を集め、GPU コンテナから R2 へ直接上げる（`_publish_photo_images`・
+   metadata.image_paths / r2_key_map。GPU image に boto3＋ull_r2、secret r2-artifacts を追加）。台本は Gemini（`expandPhotoIdea`・断られたら Qwen）。
+   画面は `PhotoDirectorTab.tsx`＋参照欄の部品 `RefPhotoPicker.tsx`（使い方の選択つき）。「動画にする」で写真＋人物の参照を Director へ渡す。縦横に 3:4 / 4:3 を追加（Director にも出る）。
+   **本番 B300 実測（ひなた参照 9 枚＝人物 7・ギター・屋上、縦 3:4＝896×1184、4 枚）**: 起動込み 327 秒・ComfyUI 実行 240 秒・VRAM 98GB。
+   サンプリングは 1 枚 16〜21 秒、残りはモデルと参照の読み込み → 2 枚目以降は 1 枚 約 ¥5。4 枚とも同じ人物で表情・角度・ギターの位置が少しずつ違う
+   （`D:/ComfyUI-ull/results/photo_4_grid.png`・ワークフロー `results/prod/a_test/wf_photo_4.json`・投入 `D:/ComfyUI-ull/submit_photo.py`）。
+   **料金は仮の knob**（`photo_director_base_credits` 40・`photo_director_per_image_credits` 15）。原価は起動込み 1 回 ¥85〜100・温まっていれば大幅に安い → ホストが決める。
+   **残り**: ①画面から 1 本（Gemini の写真プロンプト・R2 署名・自動保存・Director へ渡す）②料金の決定 ③Director の参照欄を `RefPhotoPicker` に置き換える（今は同じ見た目の別実装）。
+   経緯: 静止画の検証では公式 ref2va のほうが顔が写真に近かった（10Eros は面長・大人びる）が、10Eros 一本化（0 番）に合わせた。上の 4 枚では違和感なし。
    Qwen-Image 2.1 の商用は model-business@notice.qwencloud.com に申請（条件・料金は非公開・前例も見つからない）→ 急がない。
 2. **Director の参照の「使い方」選び**（人物/持ち物/場所/画風・動画=動き/カメラ・音声=声）: 検証済み（下の 2026-10-05 夜）。Photo Director と共通の部品にする。
    **実装・push 済み（2026-10-06・本番の画面ではまだ試していない）**: 追加の写真ごとに「同じ人物／持ち物／場所／画風」を選ぶ（サムネの下の選択）・

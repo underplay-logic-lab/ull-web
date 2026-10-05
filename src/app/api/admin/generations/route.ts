@@ -245,7 +245,13 @@ export async function GET() {
     // ファイル名が要る署名なので result_path から拾えるときだけ作る。
     const rawResultPath = isLora ? null : firstString(r.result_path);
     let thumbUrl: string | null = null;
-    if (wt === "director") {
+    // Photo Director（2026-10-06）: 同じ director の行で、成果物は R2 の静止画（metadata.image_paths）。
+    const photoPaths = (r.metadata as { image_paths?: unknown } | null)?.image_paths;
+    const isPhoto = wt === "director" && Array.isArray(photoPaths);
+    if (isPhoto) {
+      const first = (photoPaths as unknown[]).find((p): p is string => typeof p === "string");
+      thumbUrl = first ? await presignPublishedArtifact(r.metadata, first, { contentType: "image/png" }) : null;
+    } else if (wt === "director") {
       thumbUrl =
         (await presignPublishedArtifact(r.metadata, `director_results/${r.user_id as string}/${r.id as string}.mp4`)) ??
         signDirectorVideoUrl(r.user_id as string, r.id as string);
@@ -257,7 +263,7 @@ export async function GET() {
     rows.push({
       id: r.id as string,
       kind: isLora ? "lora" : "video",
-      label: isLora ? "LoRA 学習" : `動画 · ${wt || "?"}`,
+      label: isLora ? "LoRA 学習" : isPhoto ? "写真 · photo director" : `動画 · ${wt || "?"}`,
       userId: r.user_id as string,
       userEmail: null,
       status: r.status as string,
