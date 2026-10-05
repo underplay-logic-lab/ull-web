@@ -11,4 +11,6 @@
 // 2026-10-05 ホスト判断で一般に開放: ②は Director に「Powered by MiniMax H3」を常に出すようにした
 // （ライセンスの表示義務）ので伏せる意味が無くなった。①は欄に「H3 用の LoRA だけ」と書いて対応。
 // 顔写真参照＋ひなた LoRA の比較で、LoRA ありの方がはっきり本人に近かった（docs/STATUS.md）。
-export const DIRECTOR_LORA_ENABLED = true;
+// 同日夜に再び閉じた（ホスト判断）: LoRA は口の動きを弱め、参照画像 9 枚（LoRA なし）の方が顔・細部・口のすべてで上だった
+// （ひなた・ゆきのぱすてるで確認、docs/STATUS.md）。Director で似せるのは参照画像で行う。開放中に使ったお客さんは 0 人。
+export const DIRECTOR_LORA_ENABLED = false;
