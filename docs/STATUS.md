@@ -592,9 +592,16 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 （訪問は Cloudflare → Web Analytics、登録は Supabase の Users で見る。Discord の反応はホストが来たら伝える方針なので予定に載せない）
 
 **→ 次の ULL再開で出す上位 3 つ（2026-10-06 未明に更新。この下を先に出す）**
+0. **【再開したら最初に】10Eros 一本化の確認（2026-10-06 未明・ホスト判断「公式と 10Eros の差がほぼ分からない → 1 つなら 10Eros」）**:
+   本番 B300 で「ひなた 9 枚参照・歌固定 20 秒」を**土台だけ 10Eros** にした 1 本を投げた（`D:\ComfyUI-ullesults\prod_test\wf_multiref_A_10eros.json`
+   → `out_multiref_A_10eros.mp4`・ログ `log_mrA_10eros.txt`）。公式 ref2va 版 `out_multiref_A.mp4`（口 2.99）と口の動き・顔を比べる
+   （`D:\ComfyUI-ull	ools\mouth2.py`・使い方は同フォルダの README）。**問題なければ**: ①`cinematicWorkflow.ts` の `REF2VA_UNET` を 10Eros に（参照モードでも
+   土台を切り替えない＝読み込み直しが無くなる）②Photo Director も 10Eros ③公式 ref2va bf16 は残す（ホスト「消すのは minimax music とかで」）。
+   **MiniMax Music の重み `music/hf_cache`（約 57GB）は Volume から削除済み（2026-10-06）**。
 1. **【次の本筋】Photo Director（新タブ・静止画）**: MiniMax H3 の Ref2VA を長さ 5 フレームで回し、1 コマ目を静止画にする（参照 9 枚＝人物・持ち物・場所）。
    Qwen-Image 2.1（非商用）の代わり。**実測（2026-10-06・同じ参照 9 枚・バストアップ）**: 本番 B300 **bf16・公式 ref2va** で顔が写真にかなり近い・光が自然
-   （`D:\ComfyUI-ullesults\still_compare_bf16.png`）。**ローカルの圧縮版（DiT int8＋TE nvfp4）は顔が変わる＝質で却下**。10Eros でも参照は効くが面長・大人びる→公式 ref2va。
+   （`D:\ComfyUI-ull
+esults\still_compare_bf16.png`）。**ローカルの圧縮版（DiT int8＋TE nvfp4）は顔が変わる＝質で却下**。10Eros でも参照は効くが面長・大人びる→公式 ref2va。
    参照の読み方 match/max の差は小さい（max を既定候補）。1 枚 温まって約 1.5 分（¥30 前後）・起動込み 4 分強 → 1 回で 2〜4 枚まとめて出す。
    Qwen-Edit 2511 より明確に上（合成感が無い）・Qwen 2.1 に勝てないのは「背景を参照どおりに写す正確さ」だけ。**「Powered by MiniMax H3」の表示義務あり**。
    名前の案は「📸 Photo Director」（ホストは「新しいコーナーで良い」）。設計: 参照ごとの使い方（人物/持ち物/場所/画風）・縦横・枚数・料金・自動保存・Director へ渡す。
