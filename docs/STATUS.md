@@ -643,6 +643,9 @@ esults\prod_test\`（`wf_multiref_A/B.json`・`out_multiref_A/B.mp4`・比較 `
      **尺**: ComfyUI は指定の長さで必ず打ち切る（設計図のトークン＝長さ×5）→ 60 秒だと最後の行が切れた（ホスト指摘）。
      歌詞の行数×2 小節＋前奏・後奏 4 小節ずつ×1.1 を既定に（ひなたの曲で 85 秒）・`[Outro]` が無ければ足す・末尾の無音を切って 1.5 秒フェード。
      85 秒で 2 本とも自然に終わった（最後の 1 秒が全体より 36〜50dB 小さい）・連続なら 21 秒。途中で切れたら頭を残して延ばす保険は未実装（要れば）。
+     **画面の仕様（2026-10-05 夜・ホスト）**: ①1 回で 3 本くらい出して選ばせる（ElevenLabs 等と同じ。当たり外れが大きい・1 本 1 円以下）
+     ②漢字の読み間違いを防ぐ（「屋上」→「やく…」と歌った）: 送る前に読みにくい語だけかなへ（Director のセリフと同じ考え方）。
+     ひらがな交じりの屋上の歌詞で 10 本（`D:\ComfyUI-ullesultsceooftop_kana\`・seed 11〜20・連続 1 本 10 秒台）→ ホストが選ぶ。
      試作 3 本（ひなたの曲と同じ曲調・歌詞、seed 1〜3）は `D:\ComfyUI-ull
 esultsce\` → ホストが聴いて品質確認。次は画面の設計（曲調・声・歌詞 → 曲 → Director へ渡す）。
 B. **部分作り直し（時間方向）**: ローカルで成立（前半 5 秒を固定して後半を作り直し・つなぎ目自然・同じ部屋で続く）。`D:\ComfyUI-ull\regen_tail_from5s.json`＋
@@ -663,7 +666,8 @@ Director の LoRA 欄は閉じた（`DIRECTOR_LORA_ENABLED=false`・開放中の
 ②人物 6＋場所＋声の手本（ひなたの声 5 秒）でセリフ 8 秒（282 秒）→ 場所どおり・声の高さ 271→276Hz（声質はホストが聴いて判断）。
 **縦長の場所の画像だけのとき左右に黒帯**（1376 幅の中央 1,105px）。→ 実装するなら: 参照ごとに使い方（人物/持ち物/場所/画風・動き/カメラ・声）を選ぶ／
 「同じ人物が <Picture 2>〜」は人物の写真だけに掛ける／場所の画像は出力の縦横比に切り抜く／動きの手本は背景が単純な動画を推奨／動画参照は時間がほぼ倍＝秒数で上乗せ。
-参照欄: `ref_videos.ref_video_0`〜`_2`（LoadVideo→GetVideoComponents）・`ref_audios.ref_audio_0`〜`_2`（`<Audio 1>`）。素材は `D:\ComfyUI-ullesults\prod_test\`（`wf_roles1/2`・`out_roles1/2`）。
+参照欄: `ref_videos.ref_video_0`〜`_2`（LoadVideo→GetVideoComponents）・`ref_audios.ref_audio_0`〜`_2`（`<Audio 1>`）。素材は `D:\ComfyUI-ull
+esults\prod_test\`（`wf_roles1/2`・`out_roles1/2`）。
 
 **2026-10-05 に決めたこと（蒸し返さない）**: minimax の LoRA 学習の既定＝10Eros 土台（`2936a4b`・デプロイ済み）／Director に「Powered by MiniMax H3」を常に表示
 （ライセンス §IV.2・会員限定にしない・CLAUDE.md §2 例外）／YouTube 2 本目 A・B・C 公開・再生リスト「ULL Studio の使い方」https://www.youtube.com/playlist?list=PLegsiqrxEcRI
