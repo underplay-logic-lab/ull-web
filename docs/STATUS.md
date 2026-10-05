@@ -619,8 +619,12 @@ esults\prod_test\cmp_lora.png`・`out_ref_lora.mp4`。→ **Director の LoRA �
      素材 52 枚に口を開けた写真が 0 枚（キャプションで確認）＝癖の元。高品質モードは肌のひび・白い粒を消すが口は戻らない（1.7）。
    - **★ マルチリファレンス（参照画像 9 枚・LoRA なし）が最良**: 口 2.99・顔は LoRA ありと同程度にひなた・396 秒。参照動画（MV 16〜26 秒）を足すと口 3.36・顔同じ・791 秒。
      ⚠️ 参照画像の欄は `ref_images.ref_image_0`〜`_8`（0 始まり、`ref_image_9` は TypeError）・参照動画は `ref_videos.ref_video_0`〜`_2`（2〜15 秒）。
-     素材は `D:\ComfyUI-ullesults\prod_test\`（`wf_multiref_A/B.json`・`out_multiref_A/B.mp4`・比較 `results\multiref_facecrops_AB.png`）。
-     → Director の「顔写真として使う」を最大 9 枚に・素材づくりから 9 枚渡す導線、が次の候補（ホスト判断待ち）。
+     素材は `D:\ComfyUI-ull
+esults\prod_test\`（`wf_multiref_A/B.json`・`out_multiref_A/B.mp4`・比較 `results\multiref_facecrops_AB.png`）。
+     **再現確認**: ひなたのシード 20261005・777 も口 2.52・2.66（LoRA 1.0 は 1.61）・顔もひなた・カット 0。
+     **ゆきのぱすてる（アニメ・細部多め）**: `LoRA素材Kugmented` の顔切り出し（口を開けた表情入り）＋全身・上半身・頭で 9 枚 →
+     絵柄・赤と金の三日月の髪飾り・エルフ耳・紫の目まで出て、口も大きく開いて歌う（506 秒・`out_multiref_yukipas.mp4`）。
+     → **Director で似せるなら LoRA より参照 9 枚**（速い・学習不要・口が動く）。次: 「顔写真として使う」を最大 9 枚に → 素材づくりから 9 枚渡す導線。
    - **未確認**: 参照モード×高品質（50 step）の組み合わせは一度も試していない。
    - **未着手**: 潜在の保存（B の部分作り直しと一緒に入れる）。
    中身（すべてローカルと本番 B300 で動作確認済みの組み方。下の 8 番に経緯）:
