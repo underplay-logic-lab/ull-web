@@ -22,8 +22,15 @@ import {
   isDirectorAspectId,
   isDirectorQualityMode,
   isDirectorReferenceMode,
+  isDirectorRefRole,
+  isDirectorRefVideoRole,
+  directorRefVideoSurcharge,
+  DIRECTOR_REF_VIDEO_MAX_S,
+  DIRECTOR_REF_VIDEO_MIN_S,
   validateDirectorScenes,
   type DirectorAspectId,
+  type DirectorRefRole,
+  type DirectorRefVideoRole,
   type DirectorQualityMode,
   type DirectorScene,
 } from "@/lib/directorPricing";
@@ -135,6 +142,12 @@ export async function POST(request: Request) {
       ...(isDirectorReferenceMode(bi.reference_mode) ? { referenceMode: bi.reference_mode } : {}),
       ...(isDirectorAspectId(bi.aspect) ? { aspect: bi.aspect } : {}),
       ...(Array.isArray(bi.extra_ref_paths) ? { extraRefPaths: bi.extra_ref_paths } : {}),
+      // 参照の使い方・手本の動画と声（2026-10-06〜）。
+      ...(Array.isArray(bi.extra_ref_roles) ? { extraRefRoles: bi.extra_ref_roles } : {}),
+      ...(typeof bi.ref_video_path === "string" && bi.ref_video_path
+        ? { refVideoPath: bi.ref_video_path, refVideoRole: bi.ref_video_role, refVideoDurationS: bi.ref_video_duration_s }
+        : {}),
+      ...(typeof bi.ref_voice_path === "string" && bi.ref_voice_path ? { refVoicePath: bi.ref_voice_path } : {}),
     };
   }
   const seed =
@@ -180,9 +193,38 @@ export async function POST(request: Request) {
   const extraRefNames = extraRefPaths.map(
     (x, i) => `ref${i + 2}_${(x.split("/").pop() || "ref.png").replace(/[^A-Za-z0-9._-]/g, "_")}`,
   );
+  // 足した写真それぞれの使い方（2026-10-06、extraRefPaths と同じ順）。無い・不明は「同じ人物」（従来の動き）。
+  const extraRefRoles: DirectorRefRole[] = extraRefPaths.map((_, i) => {
+    const r = Array.isArray(body.extraRefRoles) ? (body.extraRefRoles as unknown[])[i] : undefined;
+    return isDirectorRefRole(r) ? r : "person";
+  });
+  // 手本の動画（動き／カメラ、2〜15 秒）と声の手本（2026-10-06）。参照モードだけ。長さは画面が測った秒数。
+  // 申告より長い動画でもノードが出力の長さで切り詰めるだけで、上乗せは 15 秒で頭打ちなので課金は崩れない。
+  const refVideoPath =
+    referenceMode === "reference" && typeof body.refVideoPath === "string" ? body.refVideoPath.trim() : "";
+  const refVideoRole: DirectorRefVideoRole = isDirectorRefVideoRole(body.refVideoRole) ? body.refVideoRole : "motion";
+  const refVideoDurationS = refVideoPath
+    ? Math.min(
+        DIRECTOR_REF_VIDEO_MAX_S,
+        Math.max(DIRECTOR_REF_VIDEO_MIN_S, typeof body.refVideoDurationS === "number" && Number.isFinite(body.refVideoDurationS) ? body.refVideoDurationS : DIRECTOR_REF_VIDEO_MAX_S),
+      )
+    : 0;
+  // 歌・セリフを持ち込んだときは声がもう決まっているので、声の手本は使わない。
+  const refVoicePath =
+    referenceMode === "reference" && !audioStoragePath && typeof body.refVoicePath === "string" ? body.refVoicePath.trim() : "";
+  if ([refVideoPath, refVoicePath].some((x) => x && !x.startsWith(`${user.id}/`))) {
+    return NextResponse.json({ error: "参照ファイルの指定が不正です。" }, { status: 400 });
+  }
+  const refVideoName = refVideoPath ? `refvid_${(refVideoPath.split("/").pop() || "ref.mp4").replace(/[^A-Za-z0-9._-]/g, "_")}` : "";
+  const refVoiceName = refVoicePath ? `refvoice_${(refVoicePath.split("/").pop() || "voice.wav").replace(/[^A-Za-z0-9._-]/g, "_")}` : "";
   const promptOpts: DirectorPromptOptions = {
     soundtrack: audioDurationS ? { durationS: audioDurationS } : undefined,
     referenceMode: referenceMode === "reference",
+    references: {
+      roles: extraRefRoles,
+      videoRole: refVideoPath ? refVideoRole : undefined,
+      voice: Boolean(refVoicePath),
+    },
   };
 
   // Advanced モード（2026-09-18追加。TODO(advanced-gate): 月額プラン限定に
@@ -373,6 +415,7 @@ export async function POST(request: Request) {
   const baseCreditsCost =
     videoCredits +
     directorExtraRefSurcharge(videoCredits, extraRefPaths.length, knobs) +
+    directorRefVideoSurcharge(videoCredits, refVideoDurationS, breakdown.totalDurationS, knobs) +
     (isAdvancedMode ? directorQwenScriptSurcharge(knobs) : 0);
   // 「実行中でも並列で今すぐ実行」を選んだ場合の追加コールドスタート分
   // （順番待ち=無料の既定に対するオプトインの上乗せ。CLAUDE.md §6参照）。
@@ -533,6 +576,11 @@ export async function POST(request: Request) {
     reference_mode: referenceMode,
     aspect,
     extra_ref_paths: extraRefPaths.length ? extraRefPaths : null,
+    extra_ref_roles: extraRefPaths.length ? extraRefRoles : null,
+    ref_video_path: refVideoPath || null,
+    ref_video_role: refVideoPath ? refVideoRole : null,
+    ref_video_duration_s: refVideoDurationS || null,
+    ref_voice_path: refVoicePath || null,
   };
   // 出力解像度（2026-09-24、ホスト「生成後の解像度がわからないので記載して」）。
   // buildCinematicWorkflow と同じ式で先に決め、metadata に残して完了画面が読む。
@@ -568,6 +616,9 @@ export async function POST(request: Request) {
         ...(audioDurationS ? { with_audio: true } : {}),
         ...(referenceMode === "reference" ? { reference_mode: "reference" } : {}),
         ...(extraRefPaths.length ? { reference_images: extraRefPaths.length + 1 } : {}),
+        ...(extraRefRoles.some((r) => r !== "person") ? { reference_roles: extraRefRoles } : {}),
+        ...(refVideoPath ? { reference_video: refVideoRole, reference_video_s: refVideoDurationS } : {}),
+        ...(refVoicePath ? { reference_voice: true } : {}),
       },
     })
     .select("id")
@@ -609,6 +660,10 @@ export async function POST(request: Request) {
     audioName: audioName || undefined,
     referenceMode: referenceMode === "reference",
     extraReferenceImageNames: extraRefNames,
+    extraReferenceRoles: extraRefRoles,
+    refVideoName: refVideoName || undefined,
+    refVideoRole: refVideoPath ? refVideoRole : undefined,
+    refVoiceName: refVoiceName || undefined,
     aspectWidth: aspectDims.width,
     aspectHeight: aspectDims.height,
   });
@@ -618,7 +673,7 @@ export async function POST(request: Request) {
     creditsCost,
     workflow,
     referenceImageName,
-    pollDeadlineS: directorPollDeadlineS(breakdown.totalDurationS, qualityMode),
+    pollDeadlineS: directorPollDeadlineS(breakdown.totalDurationS, qualityMode, refVideoDurationS),
     qwenConceptText: isAdvancedMode ? withConceptNotes(conceptTextInput, promptOpts) : undefined,
     qwenTextInstruction,
     qwenPromptNodeId: isAdvancedMode || qwenTextInstruction ? CINEMATIC_PROMPT_NODE_ID : undefined,
@@ -629,7 +684,13 @@ export async function POST(request: Request) {
     loraTriggerWord: loraName ? loraTriggerWord : undefined,
     loraFilename: loraVolumePath || loraR2Key ? loraName : undefined,
     ...(audioStoragePath ? { audioStoragePath, audioName } : {}),
-    ...(extraRefPaths.length ? { extraRefStoragePaths: extraRefPaths, extraRefNames } : {}),
+    // 手本の動画・声も同じ「置き場所と input 名」の並びで渡す（起動の直前に読む）。
+    ...(extraRefPaths.length || refVideoPath || refVoicePath
+      ? {
+          extraRefStoragePaths: [...extraRefPaths, ...(refVideoPath ? [refVideoPath] : []), ...(refVoicePath ? [refVoicePath] : [])],
+          extraRefNames: [...extraRefNames, ...(refVideoName ? [refVideoName] : []), ...(refVoiceName ? [refVoiceName] : [])],
+        }
+      : {}),
   };
 
   // --- 予約: 起動の引数を残して、順番が来ていればその場で起動 ----------------

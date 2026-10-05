@@ -1,10 +1,13 @@
 import { supabase } from "@/lib/supabaseClient";
 import { uploadStudioAsset } from "@/lib/studioUploads";
 import {
+  DIRECTOR_ASPECTS,
   isDirectorQualityMode,
   type DirectorAspectId,
   type DirectorQualityMode,
   type DirectorReferenceMode,
+  type DirectorRefRole,
+  type DirectorRefVideoRole,
   type DirectorScene,
 } from "@/lib/directorPricing";
 
@@ -69,6 +72,12 @@ export type DirectorMediaOptions = {
   aspect?: DirectorAspectId;
   /** 参照モードで足す写真（2 枚目以降・最大 8 枚）。 */
   extraRefs?: File[];
+  /** 足した写真それぞれの使い方（extraRefs と同じ順、2026-10-06）。省略は「同じ人物」。 */
+  extraRefRoles?: DirectorRefRole[];
+  /** 手本の動画（動き／カメラ、2〜15 秒）。durationS は画面が測った長さ。参照モードだけ。 */
+  refVideo?: { file: File; durationS: number; role: DirectorRefVideoRole } | null;
+  /** 声の手本（数秒）。参照モードで、歌・セリフを持ち込まないときだけ。 */
+  refVoice?: File | null;
 };
 
 /** LoRAの指定方法。①trained: LoRA Studioで本人が学習済みのMiniMax H3 LoRA
@@ -83,16 +92,78 @@ export type DirectorLoraSelection =
   | { source: "trained"; loraId: string; triggerWord?: string }
   | { source: "upload"; r2Key: string; triggerWord?: string };
 
+/** 出力の縦横比（幅÷高さ）。「画像に合わせる」は参照画像の比。読めなければ 0（切り抜かない）。 */
+async function outputAspectRatio(aspect: DirectorAspectId, image: File): Promise<number> {
+  const a = DIRECTOR_ASPECTS.find((x) => x.id === aspect);
+  if (a && a.ratio > 0) return a.ratio;
+  try {
+    const bmp = await createImageBitmap(image);
+    const r = bmp.width / bmp.height;
+    bmp.close?.();
+    return r;
+  } catch {
+    return 0;
+  }
+}
+
+/** 画像を指定の縦横比で中央から切り抜いた PNG にする。すでにほぼ同じ比・読めないときは元のまま。 */
+async function cropToAspect(file: File, ratio: number): Promise<File> {
+  try {
+    const bmp = await createImageBitmap(file);
+    const r = bmp.width / bmp.height;
+    if (Math.abs(r - ratio) / ratio < 0.02) {
+      bmp.close?.();
+      return file;
+    }
+    const w = r > ratio ? Math.round(bmp.height * ratio) : bmp.width;
+    const h = r > ratio ? bmp.height : Math.round(bmp.width / ratio);
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext("2d")?.drawImage(bmp, (bmp.width - w) / 2, (bmp.height - h) / 2, w, h, 0, 0, w, h);
+    bmp.close?.();
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) return file;
+    return new File([blob], `${file.name.replace(/\.[^.]+$/, "")}_crop.png`, { type: "image/png" });
+  } catch {
+    return file;
+  }
+}
+
 export async function startDirectorJob(args: DirectorStartArgs): Promise<DirectorStartResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) throw new Error("ログインが必要です。");
 
   const { path: storagePath } = await uploadStudioAsset(args.userId, args.image);
+  // 「場所」の写真は出力の縦横に合わせて中央を切り抜く（2026-10-06）。縦長の場所の写真を横長の動画に使うと、
+  // 写真の幅のまま左右に黒帯が出た（B300 実測・1376 幅の中央 1,105px）。
+  const placeRatio =
+    args.referenceMode === "reference" && args.extraRefRoles?.includes("place")
+      ? await outputAspectRatio(args.aspect ?? "image", args.image)
+      : 0;
   const extraRefPaths =
     args.referenceMode === "reference" && args.extraRefs?.length
-      ? await Promise.all(args.extraRefs.slice(0, 8).map(async (f) => (await uploadStudioAsset(args.userId, f)).path))
+      ? await Promise.all(
+          args.extraRefs.slice(0, 8).map(async (f, i) => {
+            const file = placeRatio && args.extraRefRoles?.[i] === "place" ? await cropToAspect(f, placeRatio) : f;
+            return (await uploadStudioAsset(args.userId, file)).path;
+          }),
+        )
       : undefined;
+  const refMode = args.referenceMode === "reference";
+  const refVideoFields =
+    refMode && args.refVideo
+      ? {
+          refVideoPath: (await uploadStudioAsset(args.userId, args.refVideo.file)).path,
+          refVideoRole: args.refVideo.role,
+          refVideoDurationS: args.refVideo.durationS,
+        }
+      : {};
+  const refVoiceFields =
+    refMode && args.refVoice && !args.audio
+      ? { refVoicePath: (await uploadStudioAsset(args.userId, args.refVoice)).path }
+      : {};
   const audioFields = args.audio
     ? {
         audioStoragePath: (await uploadStudioAsset(args.userId, args.audio.file)).path,
@@ -119,7 +190,9 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
     ...audioFields,
     referenceMode: args.referenceMode,
     aspect: args.aspect,
-    ...(extraRefPaths ? { extraRefPaths } : {}),
+    ...(extraRefPaths ? { extraRefPaths, extraRefRoles: args.extraRefRoles?.slice(0, 8) } : {}),
+    ...refVideoFields,
+    ...refVoiceFields,
   };
   const body =
     "conceptText" in args && args.conceptText !== undefined
@@ -434,6 +507,8 @@ export type DirectorJobStatus = {
   totalDurationS: number | null;
   /** 「顔写真として使う」で足した写真の枚数（作り直しも同じ写真を使うので、料金表示に上乗せを足す）。 */
   extraRefCount: number;
+  /** 手本の動画の長さ（秒・無ければ 0）。作り直しの料金表示に上乗せを足す。 */
+  refVideoDurationS: number;
   queue: { queuePosition: number; avgExecutionSeconds: number; estimatedWaitSeconds: number } | null;
 };
 
@@ -484,6 +559,7 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
     totalDurationS:
       typeof data.durationS === "number" ? data.durationS : typeof meta.total_duration_s === "number" ? meta.total_duration_s : null,
     extraRefCount: typeof data.extraRefCount === "number" ? data.extraRefCount : 0,
+    refVideoDurationS: typeof data.refVideoDurationS === "number" ? data.refVideoDurationS : 0,
     queue:
       typeof data.queuePosition === "number"
         ? {

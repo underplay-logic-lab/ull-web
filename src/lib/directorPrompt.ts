@@ -1,7 +1,12 @@
 import "server-only";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { geminiApiKey, isSafetyRefusal, runGeminiText, type GemErr } from "@/lib/geminiText";
-import { directorCameraLabel, type DirectorScene } from "@/lib/directorPricing";
+import {
+  directorCameraLabel,
+  type DirectorRefRole,
+  type DirectorRefVideoRole,
+  type DirectorScene,
+} from "@/lib/directorPricing";
 import { looksLikeRefusal } from "@/lib/llmRefusal";
 
 // 2026-09-15: MiniMax H3 は音声・映像を同時生成するモデルで、プロンプト内に
@@ -95,13 +100,45 @@ export function soundtrackInstruction(soundtrack: DirectorSoundtrack): string {
 export const REFERENCE_MODE_NOTE =
   "IMPORTANT: The reference image is NOT the first frame of the video. It is an identity reference called <Picture 1>. Refer to the person as \"the person from <Picture 1>\" (same face, hairstyle and features); the composition, pose, framing and setting are free to follow the user's idea.";
 
-export type DirectorPromptOptions = { soundtrack?: DirectorSoundtrack; referenceMode?: boolean };
+/** 参照モードで足した素材の使い方（2026-10-06）。台本 AI に番号と役目を教え、場所・持ち物・手本を台本に織り込ませる。 */
+export type DirectorReferenceSummary = {
+  /** 2 枚目以降の写真の使い方（<Picture 2> から順に）。 */
+  roles?: DirectorRefRole[];
+  videoRole?: DirectorRefVideoRole;
+  voice?: boolean;
+};
+
+export function referenceModeNote(refs: DirectorReferenceSummary = {}): string {
+  const lines = [REFERENCE_MODE_NOTE];
+  const roleText: Record<DirectorRefRole, string> = {
+    person: "another photo of the same person (use it only to keep the identity)",
+    item: "an object the character has or uses — make it appear exactly as shown",
+    place: "the location — set the video in exactly this place",
+    style: "the art style — draw the whole video in this style",
+  };
+  (refs.roles ?? []).forEach((r, i) => lines.push(`- <Picture ${i + 2}> is ${roleText[r]}.`));
+  if (refs.videoRole === "motion") {
+    lines.push("- <Video 1> is a motion reference: the character copies the body movements of the person in <Video 1>; never take that person's face, clothes or the room from <Video 1>.");
+  } else if (refs.videoRole === "camera") {
+    lines.push("- <Video 1> is a camera reference: copy only its camera movement; nothing else from <Video 1> appears.");
+  }
+  if (refs.voice) lines.push("- <Audio 1> is a voice reference: whenever the character speaks or sings, it is in the voice of <Audio 1>.");
+  if (lines.length > 1) lines.push("Mention each of these references by its exact tag (e.g. <Picture 3>) where it matters in the prompt.");
+  return lines.join("\n");
+}
+
+export type DirectorPromptOptions = {
+  soundtrack?: DirectorSoundtrack;
+  referenceMode?: boolean;
+  /** 参照モードの素材の使い方（referenceMode のときだけ見る）。 */
+  references?: DirectorReferenceSummary;
+};
 
 /** おまかせ（ワーカーの Qwen が台本を書く）用: 思いつきの後ろに足す注記。ワーカーを変えずに同じ書き方をさせる。 */
 export function withConceptNotes(conceptText: string, opts: DirectorPromptOptions): string {
   const notes = [
     ...(opts.soundtrack ? [soundtrackInstruction(opts.soundtrack)] : []),
-    ...(opts.referenceMode ? [REFERENCE_MODE_NOTE] : []),
+    ...(opts.referenceMode ? [referenceModeNote(opts.references)] : []),
   ];
   return notes.length ? `${conceptText}\n\n${notes.join("\n\n")}` : conceptText;
 }
@@ -142,7 +179,7 @@ export function buildSceneDirectorPrompt(
     "You are an expert cinematic video director.",
     "The user has provided a sequence of scenes with specific camera movements and actions.",
     ...(soundtrack ? ["", soundtrackInstruction(soundtrack), ""] : []),
-    ...(opts.referenceMode ? [REFERENCE_MODE_NOTE, ""] : []),
+    ...(opts.referenceMode ? [referenceModeNote(opts.references), ""] : []),
     "Combine them into a SINGLE, highly detailed, continuous English prompt optimized for a text-to-video model.",
     "Each scene is marked [SCENE CHANGE] or [CONTINUE] (relative to the scene right before it):",
     "- [SCENE CHANGE]: introduce it as a clear transition to a different moment or setting (e.g. \"Then, in a different moment,\" or \"The scene shifts to...\").",

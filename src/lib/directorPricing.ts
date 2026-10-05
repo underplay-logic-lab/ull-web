@@ -91,6 +91,39 @@ export type DirectorReferenceMode = "first_frame" | "reference";
 export function isDirectorReferenceMode(value: unknown): value is DirectorReferenceMode {
   return value === "first_frame" || value === "reference";
 }
+
+/**
+ * 参照写真（2 枚目以降）ごとの使い方（2026-10-06）。1 枚目は常に「人物」。
+ * B300 実測（2026-10-05 夜・ゆきのぱすてる、docs/STATUS.md）: 持ち物（剣）はずっと参照どおりに手に持ち、
+ * 場所は参照どおりの景色になり、別人の顔は混ざらなかった。
+ */
+export const DIRECTOR_REF_ROLES = [
+  { id: "person", label: "同じ人物", hint: "角度・表情違い" },
+  { id: "item", label: "持ち物", hint: "道具・服・小物" },
+  { id: "place", label: "場所", hint: "背景・景色" },
+  { id: "style", label: "画風", hint: "絵柄・色づかい" },
+] as const;
+export type DirectorRefRole = (typeof DIRECTOR_REF_ROLES)[number]["id"];
+export function isDirectorRefRole(value: unknown): value is DirectorRefRole {
+  return DIRECTOR_REF_ROLES.some((r) => r.id === value);
+}
+
+/** 参照動画の使い方（2026-10-06）。動き＝人の動きを写す／カメラ＝カメラの動きだけを写す。 */
+export const DIRECTOR_REF_VIDEO_ROLES = [
+  { id: "motion", label: "動きの手本", hint: "人の身ぶり・踊りを写す" },
+  { id: "camera", label: "カメラの手本", hint: "カメラの動きだけを写す" },
+] as const;
+export type DirectorRefVideoRole = (typeof DIRECTOR_REF_VIDEO_ROLES)[number]["id"];
+export function isDirectorRefVideoRole(value: unknown): value is DirectorRefVideoRole {
+  return DIRECTOR_REF_VIDEO_ROLES.some((r) => r.id === value);
+}
+/** 参照動画の長さ（MiniMaxH3ReferenceToVideo の想定は 2〜15 秒。長い分はノードが切り詰める）。 */
+export const DIRECTOR_REF_VIDEO_MIN_S = 2;
+export const DIRECTOR_REF_VIDEO_MAX_S = 15;
+export const DIRECTOR_REF_VIDEO_MAX_BYTES = 60 * 1024 * 1024;
+/** 声の手本（2026-10-06）。数秒あれば足りる（実測は 5 秒）。持ち込み音声（歌・セリフ固定）とは併用しない。 */
+export const DIRECTOR_REF_VOICE_MAX_S = 15;
+export const DIRECTOR_REF_VOICE_MAX_BYTES = 10 * 1024 * 1024;
 /** 参照モードの画面の縦横（first_frame は画像の縦横比で決まる）。 */
 export const DIRECTOR_ASPECTS = [
   { id: "16:9", label: "横 16:9", ratio: 16 / 9 },
@@ -217,13 +250,34 @@ export function directorExtraRefSurcharge(baseCredits: number, extraRefCount: nu
   return n > 0 ? Math.ceil(baseCredits * knobs.director_extra_ref_rate * n) : 0;
 }
 
+/**
+ * 参照動画の分の上乗せ（2026-10-06）。参照動画は出力と同じくらいの数のトークンになって全ステップに乗るので、
+ * 注意機構の計算は (出力秒 + 参照秒)² / 出力秒² 倍に近づく。B300 実測: 20 秒＋参照 10 秒で 396s → 791s（式 2.25 倍・実 2.0 倍）、
+ * 38 秒＋参照 18 秒で 1,953s。率（knob）を掛けて「通常料金 × ((1 + 参照秒/出力秒)² − 1) × 率」。フロント表示と route で同じ関数。
+ */
+export function directorRefVideoSurcharge(
+  baseCredits: number,
+  refVideoS: number,
+  outputS: number,
+  knobs: PricingKnobs = DEFAULT_KNOBS,
+): number {
+  const v = Math.min(DIRECTOR_REF_VIDEO_MAX_S, Math.max(0, refVideoS));
+  if (v <= 0 || outputS <= 0) return 0;
+  return Math.ceil(baseCredits * ((1 + v / outputS) ** 2 - 1) * knobs.director_ref_video_rate);
+}
+
 export function directorQwenScriptSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS): number {
   return Math.round(knobs.director_qwen_script_credits);
 }
 
-export function directorPollDeadlineS(totalDurationS: number, mode: DirectorQualityMode = "fast"): number {
+export function directorPollDeadlineS(totalDurationS: number, mode: DirectorQualityMode = "fast", refVideoS = 0): number {
   const secPerVideoSec = mode === "quality" ? 68 : 40;
-  return Math.min(3600, Math.max(300, Math.round(totalDurationS * secPerVideoSec) + 200));
+  // 参照動画があると時間が (1 + 参照秒/出力秒)² 倍近くまで伸びる（directorRefVideoSurcharge）。屋上 38 秒＋18 秒＝1,953s。
+  const v = Math.min(DIRECTOR_REF_VIDEO_MAX_S, Math.max(0, refVideoS));
+  const factor = totalDurationS > 0 ? (1 + v / totalDurationS) ** 2 : 1;
+  // ワーカーのハード上限（7,200s）の手前まで。参照動画なしは従来どおり 3,600s で頭打ち。
+  const cap = v > 0 ? 6600 : 3600;
+  return Math.min(cap, Math.max(300, Math.round(totalDurationS * secPerVideoSec * factor) + 200));
 }
 
 export function validateDirectorScenes(scenes: unknown): { ok: true; scenes: DirectorScene[] } | { ok: false; error: string } {

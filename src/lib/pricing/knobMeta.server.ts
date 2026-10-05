@@ -135,6 +135,13 @@ const KNOB_TEXT: Record<KnobKey, Omit<KnobMeta, "value">> = {
     description: "「顔写真として使う」で 2 枚目以降の写真 1 枚ごとに、動画の料金へ掛けて上乗せする割合（0.04 = 1 枚 4%、8 枚で 32%）。",
     isPublic: true,
   },
+  director_ref_video_rate: {
+    label: "Cinematic Director 参照動画 上乗せ率",
+    category: "feature_credits",
+    unit: "×",
+    description: "動き・カメラの手本の動画を入れたときの上乗せ。通常料金 × ((1 + 参照秒/出力秒)² − 1) × この値（1.0 = 計算量の増え方そのまま。20 秒＋参照 10 秒で +125%）。",
+    isPublic: true,
+  },
   director_qwen_script_credits: {
     label: "Cinematic Director Advanced（Qwen台本生成）",
     category: "feature_credits",

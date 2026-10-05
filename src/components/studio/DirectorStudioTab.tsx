@@ -45,7 +45,17 @@ import {
   directorQwenScriptSurcharge,
   directorAspectDims,
   directorExtraRefSurcharge,
+  directorRefVideoSurcharge,
   directorTotalDurationS,
+  DIRECTOR_REF_ROLES,
+  DIRECTOR_REF_VIDEO_MAX_BYTES,
+  DIRECTOR_REF_VIDEO_MAX_S,
+  DIRECTOR_REF_VIDEO_MIN_S,
+  DIRECTOR_REF_VIDEO_ROLES,
+  DIRECTOR_REF_VOICE_MAX_BYTES,
+  DIRECTOR_REF_VOICE_MAX_S,
+  type DirectorRefRole,
+  type DirectorRefVideoRole,
   type DirectorAspectId,
   type DirectorCameraMoveId,
   type DirectorQualityMode,
@@ -138,11 +148,11 @@ const DIRECTOR_SCENE_DURATION_OPTIONS = Array.from(
   (_, j) => DIRECTOR_MIN_SCENE_DURATION_S + j,
 );
 
-/** 音声ファイルの長さ（秒）をブラウザで測る。読めなければ null。 */
-function measureAudioDuration(file: File): Promise<number | null> {
+/** 音声・動画ファイルの長さ（秒）をブラウザで測る。読めなければ null。 */
+function measureAudioDuration(file: File, kind: "audio" | "video" = "audio"): Promise<number | null> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file);
-    const el = new Audio();
+    const el = kind === "video" ? document.createElement("video") : new Audio();
     const done = (v: number | null) => {
       URL.revokeObjectURL(url);
       resolve(v);
@@ -392,6 +402,52 @@ export function DirectorStudioTab() {
   const [aspect, setAspect] = useState<DirectorAspectId>("16:9");
   // 「顔写真として使う」で足す写真（2 枚目以降・最大 8 枚、2026-10-05）。同じ人物の角度・表情違いを入れるほど似る。
   const [extraRefs, setExtraRefs] = useState<File[]>([]);
+  // 足した写真それぞれの使い方（extraRefs と同じ順、2026-10-06）。人物／持ち物／場所／画風。
+  const [extraRefRoles, setExtraRefRoles] = useState<DirectorRefRole[]>([]);
+  // 手本の動画（動き／カメラ）と声の手本（2026-10-06）。参照モードだけ。
+  const [refVideo, setRefVideo] = useState<{ file: File; durationS: number } | null>(null);
+  const [refVideoRole, setRefVideoRole] = useState<DirectorRefVideoRole>("motion");
+  const [refVoice, setRefVoice] = useState<File | null>(null);
+  const [refMediaError, setRefMediaError] = useState<string | null>(null);
+  const refVideoInputRef = useRef<HTMLInputElement>(null);
+  const refVoiceInputRef = useRef<HTMLInputElement>(null);
+  const handleRefVideoSelected = async (file: File | null | undefined) => {
+    if (!file) return;
+    setRefMediaError(null);
+    if (!file.type.startsWith("video/") && !/\.(mp4|mov|webm|m4v)$/i.test(file.name)) {
+      return setRefMediaError("動画ファイル（MP4・MOV・WebM など）を選んでください。");
+    }
+    if (file.size > DIRECTOR_REF_VIDEO_MAX_BYTES) {
+      return setRefMediaError(
+        `動画が大きすぎます（${Math.round(DIRECTOR_REF_VIDEO_MAX_BYTES / 1024 / 1024)}MB まで）。短く切るか画質を下げてからお試しください。`,
+      );
+    }
+    const d = await measureAudioDuration(file, "video");
+    if (!d) return setRefMediaError("この動画は読み込めませんでした。MP4 に変換してからお試しください。");
+    if (d < DIRECTOR_REF_VIDEO_MIN_S) return setRefMediaError(`手本の動画は ${DIRECTOR_REF_VIDEO_MIN_S} 秒以上にしてください。`);
+    if (d > DIRECTOR_REF_VIDEO_MAX_S + 0.5) {
+      return setRefMediaError(
+        `手本の動画は ${DIRECTOR_REF_VIDEO_MAX_S} 秒までです（このファイルは約 ${Math.round(d)} 秒）。切り詰めてからお試しください。`,
+      );
+    }
+    setRefVideo({ file, durationS: Math.min(DIRECTOR_REF_VIDEO_MAX_S, d) });
+  };
+  const handleRefVoiceSelected = async (file: File | null | undefined) => {
+    if (!file) return;
+    setRefMediaError(null);
+    if (!file.type.startsWith("audio/") && !/\.(wav|mp3|m4a|aac|flac|ogg|opus)$/i.test(file.name)) {
+      return setRefMediaError("声の手本は音声ファイル（WAV・MP3・M4A など）を選んでください。");
+    }
+    if (file.size > DIRECTOR_REF_VOICE_MAX_BYTES) {
+      return setRefMediaError(`声の手本が大きすぎます（${Math.round(DIRECTOR_REF_VOICE_MAX_BYTES / 1024 / 1024)}MB まで）。`);
+    }
+    const d = await measureAudioDuration(file);
+    if (!d) return setRefMediaError("この音声は読み込めませんでした。WAV か MP3 に変換してからお試しください。");
+    if (d > DIRECTOR_REF_VOICE_MAX_S + 0.5) {
+      return setRefMediaError(`声の手本は ${DIRECTOR_REF_VOICE_MAX_S} 秒までです（数秒で足ります）。`);
+    }
+    setRefVoice(file);
+  };
   const [extraRefError, setExtraRefError] = useState<string | null>(null);
   const [extraRefDragging, setExtraRefDragging] = useState(false);
   const extraRefInputRef = useRef<HTMLInputElement>(null);
@@ -410,7 +466,11 @@ export function DirectorStudioTab() {
           ? `追加できるのは 8 枚までです（${ok.length - room} 枚は入れませんでした）。`
           : null,
     );
-    if (ok.length && room > 0) setExtraRefs((prev) => [...prev, ...ok.slice(0, room)]);
+    if (ok.length && room > 0) {
+      const added = ok.slice(0, room);
+      setExtraRefs((prev) => [...prev, ...added]);
+      setExtraRefRoles((prev) => [...prev, ...added.map((): DirectorRefRole => "person")]);
+    }
   };
   // 素材づくりから受け取る（2026-10-05）: 先頭を参照画像、残りを追加の写真にして「顔写真として使う」にする。
   const [handoffNotice, setHandoffNotice] = useState<string | null>(null);
@@ -421,6 +481,7 @@ export function DirectorStudioTab() {
       setImage(h.files[0]);
       setReferenceMode("reference");
       setExtraRefs(h.files.slice(1, 9));
+      setExtraRefRoles(h.files.slice(1, 9).map((): DirectorRefRole => "person"));
       setHandoffNotice(`${h.source}を受け取りました。${h.hint ?? ""}`);
     });
   }, []);
@@ -429,6 +490,9 @@ export function DirectorStudioTab() {
     referenceMode,
     aspect: referenceMode === "reference" ? aspect : "image",
     extraRefs: referenceMode === "reference" ? extraRefs : [],
+    extraRefRoles: referenceMode === "reference" ? extraRefRoles : [],
+    refVideo: referenceMode === "reference" && refVideo ? { ...refVideo, role: refVideoRole } : null,
+    refVoice: referenceMode === "reference" && !audio ? refVoice : null,
   };
 
   // 画質モード（2026-09-14、VDN-H3導入）。fast=8step蒸留・低コスト、
@@ -701,6 +765,9 @@ export function DirectorStudioTab() {
   const cost =
     breakdown.credits +
     directorExtraRefSurcharge(breakdown.credits, extraRefCount, knobs) +
+    (referenceMode === "reference" && refVideo
+      ? directorRefVideoSurcharge(breakdown.credits, refVideo.durationS, breakdown.totalDurationS, knobs)
+      : 0) +
     (uiMode === "advanced" ? directorQwenScriptSurcharge(knobs) : 0);
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
   const busy = phase === "submitting" || phase === "running";
@@ -862,7 +929,11 @@ export function DirectorStudioTab() {
   const regenCost = (() => {
     if (!job?.regenerable || !job.totalDurationS) return 0;
     const v = directorCostBreakdownForDuration({ totalDurationS: job.totalDurationS, mode: job.quality ?? qualityMode, knobs }).credits;
-    return v + directorExtraRefSurcharge(v, job.extraRefCount, knobs);
+    return (
+      v +
+      directorExtraRefSurcharge(v, job.extraRefCount, knobs) +
+      directorRefVideoSurcharge(v, job.refVideoDurationS, job.totalDurationS, knobs)
+    );
   })();
   const handleRegenerate = () => {
     if (!user || !job?.regenerable || busy) return;
@@ -1224,7 +1295,7 @@ export function DirectorStudioTab() {
           {referenceMode === "reference" && (
             <div className="mt-3">
               <p className="mb-1.5 text-[11px] font-medium text-muted">
-                同じ人物の写真を追加（任意・あと {8 - extraRefs.length} 枚まで）
+                写真を追加（任意・あと {8 - extraRefs.length} 枚まで）
               </p>
               <input
                 ref={extraRefInputRef}
@@ -1253,17 +1324,40 @@ export function DirectorStudioTab() {
                 }`}
               >
                 {extraRefUrls.map((u, i) => (
-                  <div key={u} className="relative aspect-square overflow-hidden rounded-lg bg-background">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={u} alt={`追加の写真 ${i + 2}`} className="h-full w-full object-contain" />
-                    <button
-                      type="button"
-                      onClick={() => setExtraRefs((prev) => prev.filter((_, j) => j !== i))}
-                      className="absolute right-1 top-1 rounded bg-black/60 p-0.5 text-white transition-colors hover:bg-black/80"
-                      aria-label={`追加の写真 ${i + 2} を外す`}
+                  <div key={u} className="flex flex-col gap-1">
+                    <div className="relative aspect-square overflow-hidden rounded-lg bg-background">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={u} alt={`追加の写真 ${i + 2}`} className="h-full w-full object-contain" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExtraRefs((prev) => prev.filter((_, j) => j !== i));
+                          setExtraRefRoles((prev) => prev.filter((_, j) => j !== i));
+                        }}
+                        className="absolute right-1 top-1 rounded bg-black/60 p-0.5 text-white transition-colors hover:bg-black/80"
+                        aria-label={`追加の写真 ${i + 2} を外す`}
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                    <select
+                      value={extraRefRoles[i] ?? "person"}
+                      onChange={(e) =>
+                        setExtraRefRoles((prev) => {
+                          const next = [...prev];
+                          next[i] = e.target.value as DirectorRefRole;
+                          return next;
+                        })
+                      }
+                      aria-label={`追加の写真 ${i + 2} の使い方`}
+                      className="w-full rounded-md border border-border bg-surface px-1 py-0.5 text-[10px] text-foreground"
                     >
-                      <X size={12} />
-                    </button>
+                      {DIRECTOR_REF_ROLES.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 ))}
                 {extraRefs.length < 8 && (
@@ -1284,9 +1378,128 @@ export function DirectorStudioTab() {
                 </p>
               )}
               <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
-                角度・表情の違う写真（顔のアップ、横顔、口を開けて笑っている顔など）を足すほど、本人らしさと細部が保たれ、歌うときの口もよく動きます。
-                1 枚足すごとに料金が少し上がります（生成に少し時間がかかるため）。
+                写真ごとに使い方を選べます。「同じ人物」は角度・表情の違う写真（顔のアップ、横顔、口を開けて笑っている顔など）を足すほど、本人らしさと細部が保たれ、歌うときの口もよく動きます。
+                「持ち物」は道具や小物をそのままの形で持たせ、「場所」はその景色の中で撮り、「画風」は絵柄や色づかいを合わせます。
+                場所の写真は動画の縦横に合わせて中央を切り抜きます。1 枚足すごとに料金が少し上がります（生成に少し時間がかかるため）。
               </p>
+
+              <p className="mb-1.5 mt-4 text-[11px] font-medium text-muted">
+                手本の動画（任意・{DIRECTOR_REF_VIDEO_MIN_S}〜{DIRECTOR_REF_VIDEO_MAX_S} 秒）
+              </p>
+              <input
+                ref={refVideoInputRef}
+                type="file"
+                accept="video/*,.mp4,.mov,.webm,.m4v"
+                className="hidden"
+                onChange={(e) => {
+                  void handleRefVideoSelected(e.target.files?.[0]);
+                  e.target.value = "";
+                }}
+              />
+              {refVideo ? (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2 rounded-xl border border-border bg-background px-3 py-2">
+                    <span className="min-w-0 truncate text-sm text-foreground">
+                      {refVideo.file.name}
+                      <span className="ml-2 text-xs text-muted">約{Math.ceil(refVideo.durationS)}秒</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setRefVideo(null)}
+                      className="shrink-0 text-muted transition-colors hover:text-red-400"
+                      aria-label="手本の動画を外す"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2 rounded-xl border border-border bg-background p-1">
+                    {DIRECTOR_REF_VIDEO_ROLES.map((o) => (
+                      <button
+                        key={o.id}
+                        type="button"
+                        onClick={() => setRefVideoRole(o.id)}
+                        className={`flex flex-1 flex-col items-center justify-center rounded-lg px-2 py-1.5 text-xs font-medium leading-tight transition-colors ${
+                          refVideoRole === o.id ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
+                        }`}
+                      >
+                        <span>{o.label}</span>
+                        <span className="text-[10px] font-normal opacity-70">{o.hint}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => refVideoInputRef.current?.click()}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    void handleRefVideoSelected(e.dataTransfer.files?.[0]);
+                  }}
+                  className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border py-2.5 text-sm text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+                >
+                  <Plus size={14} />
+                  動画を選ぶ・ドロップ
+                </button>
+              )}
+              <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
+                身ぶりや踊り、カメラの動きを手本の動画から写します。顔や服は写真のまま変わりません。
+                手本の背景が動画に混ざることがあるので、背景が単純な動画がおすすめです。
+                手本が長いほど生成に時間がかかり、料金も上がります（20 秒の動画に 10 秒の手本で約 2 倍）。
+              </p>
+
+              {!audio && (
+                <>
+                  <p className="mb-1.5 mt-4 text-[11px] font-medium text-muted">声の手本（任意・数秒）</p>
+                  <input
+                    ref={refVoiceInputRef}
+                    type="file"
+                    accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg"
+                    className="hidden"
+                    onChange={(e) => {
+                      void handleRefVoiceSelected(e.target.files?.[0]);
+                      e.target.value = "";
+                    }}
+                  />
+                  {refVoice ? (
+                    <div className="flex items-center justify-between gap-2 rounded-xl border border-border bg-background px-3 py-2">
+                      <span className="min-w-0 truncate text-sm text-foreground">{refVoice.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => setRefVoice(null)}
+                        className="shrink-0 text-muted transition-colors hover:text-red-400"
+                        aria-label="声の手本を外す"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => refVoiceInputRef.current?.click()}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        void handleRefVoiceSelected(e.dataTransfer.files?.[0]);
+                      }}
+                      className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border py-2.5 text-sm text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+                    >
+                      <Plus size={14} />
+                      声の音声を選ぶ・ドロップ（{DIRECTOR_REF_VOICE_MAX_S}秒まで）
+                    </button>
+                  )}
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
+                    セリフをしゃべるとき、この声に寄せます。話し声だけが入った数秒の音声がおすすめです。
+                  </p>
+                </>
+              )}
+              {refMediaError && (
+                <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-red-400">
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                  {refMediaError}
+                </p>
+              )}
             </div>
           )}
           <p className="mt-2 text-[11px] leading-relaxed text-muted">

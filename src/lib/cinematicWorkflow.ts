@@ -1,6 +1,7 @@
 import "server-only";
 import type { CinematicMode } from "@/lib/cinematicPricing";
 import { cinematicMegapixelsForDuration, cinematicSafeDimensions } from "@/lib/cinematicPricing";
+import type { DirectorRefRole, DirectorRefVideoRole } from "@/lib/directorPricing";
 
 // The "Cinematic Video" tab's ComfyUI API-format graph — MiniMax H3 (BF16,
 // image-to-audio/video) running on the Blackwell/B300 Modal deployment (see
@@ -277,6 +278,13 @@ export type BuildCinematicWorkflowParams = {
    * ノードの欄は ref_image_0〜ref_image_8（0 始まり。ref_image_9 は TypeError になる）。
    */
   extraReferenceImageNames?: string[];
+  /** 足した写真それぞれの使い方（extraReferenceImageNames と同じ順、2026-10-06）。省略・不明は「同じ人物」。 */
+  extraReferenceRoles?: DirectorRefRole[];
+  /** 参照動画（動き／カメラの手本、2026-10-06）の ComfyUI input 名と使い方。欄は ref_videos.ref_video_0（<Video 1>）。 */
+  refVideoName?: string;
+  refVideoRole?: DirectorRefVideoRole;
+  /** 声の手本の ComfyUI input 名（2026-10-06）。欄は ref_audios.ref_audio_0（<Audio 1>）。持ち込み音声とは併用しない。 */
+  refVoiceName?: string;
   /** 出力の縦横比を決める寸法（参照モードで縦横を選んだとき）。省略時は rawImageWidth/Height。 */
   aspectWidth?: number;
   aspectHeight?: number;
@@ -288,15 +296,47 @@ const REF2VA_UNET = "minimax_h3_ref2va_pruned_bf16.safetensors";
 /** 参照写真の最大枚数（MiniMaxH3ReferenceToVideo の ref_images の上限）。 */
 export const MAX_REFERENCE_IMAGES = 9;
 
-/** 参照モードでは画像を <Picture 1> と呼ぶ（最初のフレームの <Image 1> とは別の書き方）。
- * 写真が複数あるときは、同じ人物が <Picture 2> 以降にも写っていると添える。 */
-function toReferencePrompt(prompt: string, count = 1): string {
+/**
+ * 参照モードのプロンプト（2026-10-05、使い方の振り分けは 2026-10-06）。画像は <Picture N>（最初のフレームの <Image 1> とは別の書き方）、
+ * 動画は <Video 1>、声は <Audio 1>。書き方は B300 で確かめたもの（D:\ComfyUI-ull\tools\wf_roles.ts）:
+ * 人物の写真が複数なら「同じ人物が <Picture 2>… にも」と添え、持ち物・場所・画風・手本は 1 文ずつ足す。
+ * 台本（Gemini／Qwen）がその番号に既に触れていれば足さない（二重に書かない）。
+ */
+function toReferencePrompt(
+  prompt: string,
+  roles: DirectorRefRole[] = [],
+  refVideoRole?: DirectorRefVideoRole,
+  hasVoice = false,
+): string {
   const p = prompt.replace(/<Image 1>/g, "<Picture 1>");
-  const also = count > 1 ? ` (the same person is also shown in <Picture 2>${count > 2 ? ` to <Picture ${count}>` : ""})` : "";
-  if (!p.includes("<Picture 1>")) {
-    return `The person from <Picture 1>${also} (same face, hairstyle and features) appears throughout the video. ${p}`;
+  const tag = (i: number) => `<Picture ${i + 2}>`;
+  const listTags = (tags: string[]) => (tags.length > 1 ? `${tags.slice(0, -1).join(", ")} and ${tags[tags.length - 1]}` : tags[0]);
+  const people = roles.flatMap((r, i) => (r === "person" ? [tag(i)] : []));
+  const also = people.length ? ` (the same person is also shown in ${listTags(people)})` : "";
+  const notes: string[] = [];
+  roles.forEach((r, i) => {
+    const t = tag(i);
+    if (r === "person" || p.includes(t)) return;
+    if (r === "item") notes.push(`The object from ${t} appears exactly as shown there (same shape, colors and details).`);
+    if (r === "place") notes.push(`The setting is the place shown in ${t} (same scenery, layout and colors).`);
+    if (r === "style") notes.push(`The whole video is drawn in exactly the same art style, colors and rendering as ${t}.`);
+  });
+  if (refVideoRole && !p.includes("<Video 1>")) {
+    notes.push(
+      refVideoRole === "motion"
+        ? "The character's body movements copy the movements of the person in <Video 1> — the gestures and the rhythm — but the face, hair, clothes and the background stay those of the references, never the person or the room from <Video 1>."
+        : "The camera movement copies the camera movement of <Video 1> (its path, speed and framing changes); nothing else from <Video 1> appears — not its people, objects or background.",
+    );
   }
-  return also ? p.replace("<Picture 1>", `<Picture 1>${also}`) : p;
+  if (hasVoice && !p.includes("<Audio 1>")) {
+    notes.push("Whenever the character speaks or sings, it is in exactly the voice of <Audio 1>.");
+  }
+  const extra = notes.length ? ` ${notes.join(" ")}` : "";
+  if (!p.includes("<Picture 1>")) {
+    return `The person from <Picture 1>${also} (same face, hairstyle and features) appears throughout the video.${extra} ${p}`;
+  }
+  const withAlso = also && !people.every((t) => p.includes(t)) ? p.replace("<Picture 1>", `<Picture 1>${also}`) : p;
+  return extra ? `${extra.trim()} ${withAlso}` : withAlso;
 }
 
 export function buildCinematicWorkflow({
@@ -314,6 +354,10 @@ export function buildCinematicWorkflow({
   audioName,
   referenceMode,
   extraReferenceImageNames,
+  extraReferenceRoles,
+  refVideoName,
+  refVideoRole,
+  refVoiceName,
   aspectWidth,
   aspectHeight,
 }: BuildCinematicWorkflowParams): CinematicWorkflow {
@@ -410,18 +454,33 @@ export function buildCinematicWorkflow({
     workflow["105:6"].inputs.unet_name = REF2VA_UNET;
     const i2v = workflow["105:104"].inputs;
     const extras = (extraReferenceImageNames ?? []).filter(Boolean).slice(0, MAX_REFERENCE_IMAGES - 1);
+    const roles = extras.map((_, i) => extraReferenceRoles?.[i] ?? "person");
     const refInputs: Record<string, unknown> = { "ref_images.ref_image_0": ["114", 0] };
     extras.forEach((name, i) => {
       const id = `${301 + i}`;
       workflow[id] = { inputs: { image: name }, class_type: "LoadImage", _meta: { title: `Reference ${i + 2}` } };
       refInputs[`ref_images.ref_image_${i + 1}`] = [id, 0];
     });
+    // 参照動画は映像だけを渡す（ref_video_audios は繋がない＝手本の音は使わない）。24fps 前提のノードなので、
+    // 30fps の動画は少しゆっくりした手本として読まれる（動きの手本としては実害が小さいので変換はしない）。
+    const videoRole = refVideoName ? refVideoRole ?? "motion" : undefined;
+    if (refVideoName) {
+      workflow["320"] = { inputs: { file: refVideoName }, class_type: "LoadVideo", _meta: { title: "Reference Video" } };
+      workflow["321"] = { inputs: { video: ["320", 0] }, class_type: "GetVideoComponents", _meta: { title: "Reference Video Frames" } };
+      refInputs["ref_videos.ref_video_0"] = ["321", 0];
+    }
+    // 持ち込み音声（歌・セリフ固定）があるときは声の手本を使わない（声はその音声で決まっている）。
+    const voiceName = audioName?.trim() ? undefined : refVoiceName;
+    if (voiceName) {
+      workflow["330"] = { inputs: { audio: voiceName }, class_type: "LoadAudio", _meta: { title: "Reference Voice" } };
+      refInputs["ref_audios.ref_audio_0"] = ["330", 0];
+    }
     workflow["105:104"] = {
       inputs: {
         clip: i2v.clip,
         vae: i2v.vae,
         audio_vae: ["105:24", 0],
-        prompt: toReferencePrompt(String(i2v.prompt), extras.length + 1),
+        prompt: toReferencePrompt(String(i2v.prompt), roles, videoRole, Boolean(voiceName)),
         width: i2v.width,
         height: i2v.height,
         length: i2v.length,
