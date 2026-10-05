@@ -271,6 +271,12 @@ export type BuildCinematicWorkflowParams = {
   audioName?: string;
   /** true: 画像を最初のフレームではなく顔写真として参照する（MiniMaxH3ReferenceToVideo・本体は ref2va）。 */
   referenceMode?: boolean;
+  /**
+   * 参照モードで足す写真の ComfyUI input 名（最大 8 枚、2026-10-05）。1 枚目（referenceImageName）と合わせて最大 9 枚。
+   * 同じ人物の角度・表情違いを入れると、LoRA なしで顔・細部が保たれ、口もよく動く（ひなた・ゆきのぱすてるで確認、docs/STATUS.md）。
+   * ノードの欄は ref_image_0〜ref_image_8（0 始まり。ref_image_9 は TypeError になる）。
+   */
+  extraReferenceImageNames?: string[];
   /** 出力の縦横比を決める寸法（参照モードで縦横を選んだとき）。省略時は rawImageWidth/Height。 */
   aspectWidth?: number;
   aspectHeight?: number;
@@ -279,12 +285,18 @@ export type BuildCinematicWorkflowParams = {
 /** 参照モードの本体（2026-10-04 に Volume へ追加）。10Eros は最初のフレーム用（FL2VA）なので使えない。 */
 const REF2VA_UNET = "minimax_h3_ref2va_pruned_bf16.safetensors";
 
-/** 参照モードでは画像を <Picture 1> と呼ぶ（最初のフレームの <Image 1> とは別の書き方）。 */
-function toReferencePrompt(prompt: string): string {
+/** 参照写真の最大枚数（MiniMaxH3ReferenceToVideo の ref_images の上限）。 */
+export const MAX_REFERENCE_IMAGES = 9;
+
+/** 参照モードでは画像を <Picture 1> と呼ぶ（最初のフレームの <Image 1> とは別の書き方）。
+ * 写真が複数あるときは、同じ人物が <Picture 2> 以降にも写っていると添える。 */
+function toReferencePrompt(prompt: string, count = 1): string {
   const p = prompt.replace(/<Image 1>/g, "<Picture 1>");
-  return p.includes("<Picture 1>")
-    ? p
-    : `The person from <Picture 1> (same face, hairstyle and features) appears throughout the video. ${p}`;
+  const also = count > 1 ? ` (the same person is also shown in <Picture 2>${count > 2 ? ` to <Picture ${count}>` : ""})` : "";
+  if (!p.includes("<Picture 1>")) {
+    return `The person from <Picture 1>${also} (same face, hairstyle and features) appears throughout the video. ${p}`;
+  }
+  return also ? p.replace("<Picture 1>", `<Picture 1>${also}`) : p;
 }
 
 export function buildCinematicWorkflow({
@@ -301,6 +313,7 @@ export function buildCinematicWorkflow({
   seed,
   audioName,
   referenceMode,
+  extraReferenceImageNames,
   aspectWidth,
   aspectHeight,
 }: BuildCinematicWorkflowParams): CinematicWorkflow {
@@ -396,17 +409,24 @@ export function buildCinematicWorkflow({
   if (referenceMode) {
     workflow["105:6"].inputs.unet_name = REF2VA_UNET;
     const i2v = workflow["105:104"].inputs;
+    const extras = (extraReferenceImageNames ?? []).filter(Boolean).slice(0, MAX_REFERENCE_IMAGES - 1);
+    const refInputs: Record<string, unknown> = { "ref_images.ref_image_0": ["114", 0] };
+    extras.forEach((name, i) => {
+      const id = `${301 + i}`;
+      workflow[id] = { inputs: { image: name }, class_type: "LoadImage", _meta: { title: `Reference ${i + 2}` } };
+      refInputs[`ref_images.ref_image_${i + 1}`] = [id, 0];
+    });
     workflow["105:104"] = {
       inputs: {
         clip: i2v.clip,
         vae: i2v.vae,
         audio_vae: ["105:24", 0],
-        prompt: toReferencePrompt(String(i2v.prompt)),
+        prompt: toReferencePrompt(String(i2v.prompt), extras.length + 1),
         width: i2v.width,
         height: i2v.height,
         length: i2v.length,
         ref_image_size: "match",
-        "ref_images.ref_image_1": ["114", 0],
+        ...refInputs,
       },
       class_type: "MiniMaxH3ReferenceToVideo",
       _meta: { title: "Reference to Video" },

@@ -44,6 +44,7 @@ import {
   directorPriorityParallelSurcharge,
   directorQwenScriptSurcharge,
   directorAspectDims,
+  directorExtraRefSurcharge,
   directorTotalDurationS,
   type DirectorAspectId,
   type DirectorCameraMoveId,
@@ -388,10 +389,33 @@ export function DirectorStudioTab() {
   // 画像の使い方（2026-10-05）: first_frame = 最初のフレームにする／reference = 顔写真として参照（構図は自由・長尺でも顔を保つ）。
   const [referenceMode, setReferenceMode] = useState<DirectorReferenceMode>("first_frame");
   const [aspect, setAspect] = useState<DirectorAspectId>("16:9");
+  // 「顔写真として使う」で足す写真（2 枚目以降・最大 8 枚、2026-10-05）。同じ人物の角度・表情違いを入れるほど似る。
+  const [extraRefs, setExtraRefs] = useState<File[]>([]);
+  const [extraRefError, setExtraRefError] = useState<string | null>(null);
+  const [extraRefDragging, setExtraRefDragging] = useState(false);
+  const extraRefInputRef = useRef<HTMLInputElement>(null);
+  const extraRefUrls = useMemo(() => extraRefs.map((f) => URL.createObjectURL(f)), [extraRefs]);
+  useEffect(() => () => extraRefUrls.forEach((u) => URL.revokeObjectURL(u)), [extraRefUrls]);
+  const addExtraRefs = (files: FileList | File[] | null | undefined) => {
+    if (!files) return;
+    const list = Array.from(files);
+    const bad = list.filter((f) => !f.type.startsWith("image/"));
+    const ok = list.filter((f) => f.type.startsWith("image/"));
+    const room = 8 - extraRefs.length;
+    setExtraRefError(
+      bad.length
+        ? "画像ファイル（PNG・JPEG・WebP など）を選んでください。"
+        : ok.length > room
+          ? `追加できるのは 8 枚までです（${ok.length - room} 枚は入れませんでした）。`
+          : null,
+    );
+    if (ok.length && room > 0) setExtraRefs((prev) => [...prev, ...ok.slice(0, room)]);
+  };
   const media: DirectorMediaOptions = {
     audio,
     referenceMode,
     aspect: referenceMode === "reference" ? aspect : "image",
+    extraRefs: referenceMode === "reference" ? extraRefs : [],
   };
 
   // 画質モード（2026-09-14、VDN-H3導入）。fast=8step蒸留・低コスト、
@@ -659,7 +683,12 @@ export function DirectorStudioTab() {
           : sceneBreakdown;
   // Advanced（Qwen台本生成）は動画本体とは別のGPUコンテナを1回起動する分の
   // 追加クレジットが乗る（directorPricing.ts::directorQwenScriptSurcharge）。
-  const cost = breakdown.credits + (uiMode === "advanced" ? directorQwenScriptSurcharge(knobs) : 0);
+  // 参照写真の上乗せ（route と同じ関数）。作り直しは元のジョブの写真を使うので、ここでは今の欄の枚数で見積もる。
+  const extraRefCount = referenceMode === "reference" ? extraRefs.length : 0;
+  const cost =
+    breakdown.credits +
+    directorExtraRefSurcharge(breakdown.credits, extraRefCount, knobs) +
+    (uiMode === "advanced" ? directorQwenScriptSurcharge(knobs) : 0);
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
   const busy = phase === "submitting" || phase === "running";
 
@@ -817,10 +846,11 @@ export function DirectorStudioTab() {
 
   // 「別パターンで作り直す」: 台本・参照画像・尺・LoRA・画質はそのまま、シードだけ変える。
   // 前の動画は「前回の結果」として並べて見比べられるよう continuation で出す。
-  const regenCost =
-    job?.regenerable && job.totalDurationS
-      ? directorCostBreakdownForDuration({ totalDurationS: job.totalDurationS, mode: job.quality ?? qualityMode, knobs }).credits
-      : 0;
+  const regenCost = (() => {
+    if (!job?.regenerable || !job.totalDurationS) return 0;
+    const v = directorCostBreakdownForDuration({ totalDurationS: job.totalDurationS, mode: job.quality ?? qualityMode, knobs }).credits;
+    return v + directorExtraRefSurcharge(v, job.extraRefCount, knobs);
+  })();
   const handleRegenerate = () => {
     if (!user || !job?.regenerable || busy) return;
     if (!creditsLoading && (credits ?? 0) < regenCost) return setChargeOpen(true);
@@ -1168,6 +1198,74 @@ export function DirectorStudioTab() {
                   </option>
                 ))}
               </select>
+            </div>
+          )}
+          {referenceMode === "reference" && (
+            <div className="mt-3">
+              <p className="mb-1.5 text-[11px] font-medium text-muted">
+                同じ人物の写真を追加（任意・あと {8 - extraRefs.length} 枚まで）
+              </p>
+              <input
+                ref={extraRefInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  addExtraRefs(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setExtraRefDragging(true);
+                }}
+                onDragLeave={() => setExtraRefDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setExtraRefDragging(false);
+                  addExtraRefs(e.dataTransfer.files);
+                }}
+                className={`grid grid-cols-4 gap-2 rounded-xl border border-dashed p-2 transition-colors sm:grid-cols-5 ${
+                  extraRefDragging ? "border-neon-pink/60 bg-neon-pink/5" : "border-border"
+                }`}
+              >
+                {extraRefUrls.map((u, i) => (
+                  <div key={u} className="relative aspect-square overflow-hidden rounded-lg bg-background">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={u} alt={`追加の写真 ${i + 2}`} className="h-full w-full object-contain" />
+                    <button
+                      type="button"
+                      onClick={() => setExtraRefs((prev) => prev.filter((_, j) => j !== i))}
+                      className="absolute right-1 top-1 rounded bg-black/60 p-0.5 text-white transition-colors hover:bg-black/80"
+                      aria-label={`追加の写真 ${i + 2} を外す`}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+                {extraRefs.length < 8 && (
+                  <button
+                    type="button"
+                    onClick={() => extraRefInputRef.current?.click()}
+                    className="flex aspect-square flex-col items-center justify-center gap-1 rounded-lg border border-border text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
+                  >
+                    <Plus size={14} />
+                    追加・ドロップ
+                  </button>
+                )}
+              </div>
+              {extraRefError && (
+                <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-red-400">
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                  {extraRefError}
+                </p>
+              )}
+              <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
+                角度・表情の違う写真（顔のアップ、横顔、口を開けて笑っている顔など）を足すほど、本人らしさと細部が保たれ、歌うときの口もよく動きます。
+                1 枚足すごとに料金が少し上がります（生成に少し時間がかかるため）。
+              </p>
             </div>
           )}
           <p className="mt-2 text-[11px] leading-relaxed text-muted">

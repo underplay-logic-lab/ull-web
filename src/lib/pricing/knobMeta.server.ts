@@ -128,6 +128,13 @@ const KNOB_TEXT: Record<KnobKey, Omit<KnobMeta, "value">> = {
     description: "LoRA に最適化したキャプション作成の 1 枚あたりの加算",
     isPublic: true,
   },
+  director_extra_ref_rate: {
+    label: "Cinematic Director 参照写真の追加 上乗せ率",
+    category: "feature_credits",
+    unit: "×/枚",
+    description: "「顔写真として使う」で 2 枚目以降の写真 1 枚ごとに、動画の料金へ掛けて上乗せする割合（0.04 = 1 枚 4%、8 枚で 32%）。",
+    isPublic: true,
+  },
   director_qwen_script_credits: {
     label: "Cinematic Director Advanced（Qwen台本生成）",
     category: "feature_credits",

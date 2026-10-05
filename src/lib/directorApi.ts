@@ -67,6 +67,8 @@ export type DirectorMediaOptions = {
   referenceMode?: DirectorReferenceMode;
   /** 参照モードの縦横。 */
   aspect?: DirectorAspectId;
+  /** 参照モードで足す写真（2 枚目以降・最大 8 枚）。 */
+  extraRefs?: File[];
 };
 
 /** LoRAの指定方法。①trained: LoRA Studioで本人が学習済みのMiniMax H3 LoRA
@@ -87,6 +89,10 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
   if (!accessToken) throw new Error("ログインが必要です。");
 
   const { path: storagePath } = await uploadStudioAsset(args.userId, args.image);
+  const extraRefPaths =
+    args.referenceMode === "reference" && args.extraRefs?.length
+      ? await Promise.all(args.extraRefs.slice(0, 8).map(async (f) => (await uploadStudioAsset(args.userId, f)).path))
+      : undefined;
   const audioFields = args.audio
     ? {
         audioStoragePath: (await uploadStudioAsset(args.userId, args.audio.file)).path,
@@ -113,6 +119,7 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
     ...audioFields,
     referenceMode: args.referenceMode,
     aspect: args.aspect,
+    ...(extraRefPaths ? { extraRefPaths } : {}),
   };
   const body =
     "conceptText" in args && args.conceptText !== undefined
@@ -425,6 +432,8 @@ export type DirectorJobStatus = {
   /** 生成時の画質（metadata.quality_mode）。作り直しの料金表示に使う。 */
   quality: DirectorQualityMode | null;
   totalDurationS: number | null;
+  /** 「顔写真として使う」で足した写真の枚数（作り直しも同じ写真を使うので、料金表示に上乗せを足す）。 */
+  extraRefCount: number;
   queue: { queuePosition: number; avgExecutionSeconds: number; estimatedWaitSeconds: number } | null;
 };
 
@@ -474,6 +483,7 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
     quality: isDirectorQualityMode(data.qualityMode) ? data.qualityMode : isDirectorQualityMode(meta.quality_mode) ? meta.quality_mode : null,
     totalDurationS:
       typeof data.durationS === "number" ? data.durationS : typeof meta.total_duration_s === "number" ? meta.total_duration_s : null,
+    extraRefCount: typeof data.extraRefCount === "number" ? data.extraRefCount : 0,
     queue:
       typeof data.queuePosition === "number"
         ? {

@@ -29,6 +29,7 @@ export type KnobKey =
   | "director_priority_parallel_surcharge"
   | "director_priority_parallel_rate"
   | "director_qwen_script_credits"
+  | "director_extra_ref_rate"
   | "lora_caption_base"
   | "lora_caption_per_image"
   | "lora_priority_parallel_rate"
@@ -184,6 +185,9 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 導出: docs/pricing-decision-sheet.md。
   //   ¥1,207/h × 149.3s = ¥50.1 × 3 ÷ 1.66 = 91C（旧 84）
   director_qwen_script_credits: 91,
+  // 「顔写真として使う」で写真を足すときの上乗せ率（追加 1 枚ごと、2026-10-05）。参照はすべてのステップに乗るので重くなる。
+  // B300 実測（20 秒・高速）: 写真 1 枚 約 300s → 9 枚 396s（+32%）≒ 追加 8 枚 × 0.04。
+  director_extra_ref_rate: 0.04,
   // 超解像スタジオ（SeedVR2）: 出力の 100 万画素あたりの消費クレジット。
   // credits = max(upscale_min_credits, ceil(これ × 出力MP × モデル係数))。
   // B300 実測: 出力 ~5MP を warm ~20s / cold ~60s。3 C/MP で 2K プリセット

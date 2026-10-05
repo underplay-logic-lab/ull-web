@@ -183,6 +183,8 @@ export async function GET(request: Request, { params }: RouteParams) {
   // 尺・画質は metadata にも書くが、完了時にワーカーが metadata を丸ごと置き換えて消える。inputs 側は残るのでこちらを返す。
   const durationS = typeof inputs?.total_duration_s === "number" ? inputs.total_duration_s : null;
   const qualityMode = typeof inputs?.quality_mode === "string" ? inputs.quality_mode : null;
+  // 作り直しの料金表示用（参照写真の上乗せ）。metadata は完了時にワーカーが置き換えるので inputs から読む。
+  const extraRefCount = Array.isArray(inputs?.extra_ref_paths) ? inputs.extra_ref_paths.length : 0;
 
   // Director（2026-09-18〜）は video_url にSupabase公開URLではなく
   // Volume相対パス（director_results/<user_id>/<job_id>.mp4）を保存する
@@ -219,6 +221,7 @@ export async function GET(request: Request, { params }: RouteParams) {
     regenerable,
     durationS,
     qualityMode,
+    extraRefCount,
     // LoRA 学習のベースモデル（完了画面で「動画を作る」を出すかの判定。Director は minimax_h3 だけ使える）。
     targetModel: typeof inputs?.target_model === "string" ? inputs.target_model : null,
     // LoRA のトリガーワード（1 人目＋2 人目以降）。Director へ渡すときに使う。

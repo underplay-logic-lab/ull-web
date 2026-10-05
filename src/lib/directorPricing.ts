@@ -211,6 +211,12 @@ export function directorPriorityParallelSurcharge(knobs: PricingKnobs = DEFAULT_
  * 実行するが（二重コールドスタート回避のため、2026-09-18設計変更）、それでも
  * 台本生成ぶんのB300稼働秒数が純増するのでその分を吸収する。knobDefaults.ts
  * 参照 — 実機計測前の暫定値。 */
+/** 「顔写真として使う」で足した写真（2 枚目以降）の分の上乗せ（2026-10-05）。フロント表示と route で同じ関数を使う。 */
+export function directorExtraRefSurcharge(baseCredits: number, extraRefCount: number, knobs: PricingKnobs = DEFAULT_KNOBS): number {
+  const n = Math.max(0, Math.min(8, Math.floor(extraRefCount)));
+  return n > 0 ? Math.ceil(baseCredits * knobs.director_extra_ref_rate * n) : 0;
+}
+
 export function directorQwenScriptSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS): number {
   return Math.round(knobs.director_qwen_script_credits);
 }

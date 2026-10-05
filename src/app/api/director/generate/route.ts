@@ -16,6 +16,7 @@ import {
   directorCreditsWorstCase,
   directorPollDeadlineS,
   directorPriorityParallelSurcharge,
+  directorExtraRefSurcharge,
   directorQwenScriptSurcharge,
   directorAspectDims,
   isDirectorAspectId,
@@ -133,6 +134,7 @@ export async function POST(request: Request) {
         : {}),
       ...(isDirectorReferenceMode(bi.reference_mode) ? { referenceMode: bi.reference_mode } : {}),
       ...(isDirectorAspectId(bi.aspect) ? { aspect: bi.aspect } : {}),
+      ...(Array.isArray(bi.extra_ref_paths) ? { extraRefPaths: bi.extra_ref_paths } : {}),
     };
   }
   const seed =
@@ -166,6 +168,18 @@ export async function POST(request: Request) {
   const audioName = audioStoragePath
     ? (audioStoragePath.split("/").pop() || "audio.wav").replace(/[^A-Za-z0-9._-]/g, "_")
     : "";
+  // 「顔写真として使う」で足す写真（2 枚目以降・最大 8 枚、2026-10-05）。置き場所は送信時に画面が上げた studio_uploads。
+  // 中身は起動の直前に読む（directorDispatch）。参照モード以外では使わない。
+  const extraRefPaths =
+    referenceMode === "reference" && Array.isArray(body.extraRefPaths)
+      ? (body.extraRefPaths as unknown[]).filter((x): x is string => typeof x === "string" && x.trim().length > 0).slice(0, 8)
+      : [];
+  if (extraRefPaths.some((x) => !x.startsWith(`${user.id}/`))) {
+    return NextResponse.json({ error: "参照写真の指定が不正です。" }, { status: 400 });
+  }
+  const extraRefNames = extraRefPaths.map(
+    (x, i) => `ref${i + 2}_${(x.split("/").pop() || "ref.png").replace(/[^A-Za-z0-9._-]/g, "_")}`,
+  );
   const promptOpts: DirectorPromptOptions = {
     soundtrack: audioDurationS ? { durationS: audioDurationS } : undefined,
     referenceMode: referenceMode === "reference",
@@ -355,8 +369,11 @@ export async function POST(request: Request) {
     : directorCostBreakdown({ scenes, mode: qualityMode, knobs });
   // Advanced（Qwen台本生成）は動画本体とは別のGPUコンテナを1回起動するので
   // その分を上乗せする（directorPricing.ts参照）。
+  const videoCredits = breakdown.credits || directorCreditsWorstCase(knobs);
   const baseCreditsCost =
-    (breakdown.credits || directorCreditsWorstCase(knobs)) + (isAdvancedMode ? directorQwenScriptSurcharge(knobs) : 0);
+    videoCredits +
+    directorExtraRefSurcharge(videoCredits, extraRefPaths.length, knobs) +
+    (isAdvancedMode ? directorQwenScriptSurcharge(knobs) : 0);
   // 「実行中でも並列で今すぐ実行」を選んだ場合の追加コールドスタート分
   // （順番待ち=無料の既定に対するオプトインの上乗せ。CLAUDE.md §6参照）。
   // 予約は並列の追加料金を取らない（順番待ち）。
@@ -515,6 +532,7 @@ export async function POST(request: Request) {
     audio_duration_s: audioDurationS || null,
     reference_mode: referenceMode,
     aspect,
+    extra_ref_paths: extraRefPaths.length ? extraRefPaths : null,
   };
   // 出力解像度（2026-09-24、ホスト「生成後の解像度がわからないので記載して」）。
   // buildCinematicWorkflow と同じ式で先に決め、metadata に残して完了画面が読む。
@@ -549,6 +567,7 @@ export async function POST(request: Request) {
         lora_name: loraName || null,
         ...(audioDurationS ? { with_audio: true } : {}),
         ...(referenceMode === "reference" ? { reference_mode: "reference" } : {}),
+        ...(extraRefPaths.length ? { reference_images: extraRefPaths.length + 1 } : {}),
       },
     })
     .select("id")
@@ -589,6 +608,7 @@ export async function POST(request: Request) {
     seed,
     audioName: audioName || undefined,
     referenceMode: referenceMode === "reference",
+    extraReferenceImageNames: extraRefNames,
     aspectWidth: aspectDims.width,
     aspectHeight: aspectDims.height,
   });
@@ -609,6 +629,7 @@ export async function POST(request: Request) {
     loraTriggerWord: loraName ? loraTriggerWord : undefined,
     loraFilename: loraVolumePath || loraR2Key ? loraName : undefined,
     ...(audioStoragePath ? { audioStoragePath, audioName } : {}),
+    ...(extraRefPaths.length ? { extraRefStoragePaths: extraRefPaths, extraRefNames } : {}),
   };
 
   // --- 予約: 起動の引数を残して、順番が来ていればその場で起動 ----------------
