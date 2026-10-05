@@ -232,6 +232,8 @@ export async function POST(request: Request) {
         model_label: model.label,
         media_type: "video",
         priority,
+        // 比較スライダーの元動画（2026-10-05）。リロード後も result API の which=input で取り直せるように残す。
+        input_storage_path: storagePath,
       },
     })
     .select("id")

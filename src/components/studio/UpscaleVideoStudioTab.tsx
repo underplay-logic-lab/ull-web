@@ -35,6 +35,7 @@ import {
   downloadViaBrowser,
   fetchUpscaleVideoResultUrl,
   isUpscaleResultVolumePath,
+  fetchUpscaleVideoInputUrl,
   pollUpscaleJob,
   resolveUpscaleVideoUrl,
   startUpscaleVideoJob,
@@ -172,6 +173,16 @@ function VideoCompare({
   const [pos, setPos] = useState(50);
   const afterRef = useRef<HTMLVideoElement | null>(null);
   const beforeRef = useRef<HTMLVideoElement | null>(null);
+  // 全画面（2026-10-05）: 動画プレーヤーの全画面は結果の動画だけになり比べられないので、枠ごと全画面にする。
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const [isFull, setIsFull] = useState(false);
+  const [aspect, setAspect] = useState<number | null>(null);
+
+  useEffect(() => {
+    const onChange = () => setIsFull(document.fullscreenElement === boxRef.current);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
 
   useEffect(() => {
     const a = afterRef.current;
@@ -205,34 +216,73 @@ function VideoCompare({
     };
   }, [before, after]);
 
+  const toggleFull = () => {
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+    else void boxRef.current?.requestFullscreen().catch(() => {});
+  };
+
   return (
-    <div className="relative select-none overflow-hidden rounded-xl border border-border bg-background">
-      <video ref={afterRef} src={after} controls playsInline className="block w-full" onError={onAfterError} />
+    <div
+      ref={boxRef}
+      className={`select-none overflow-hidden rounded-xl border border-border bg-background ${
+        isFull ? "flex items-center justify-center bg-black" : ""
+      }`}
+    >
+      {/* 全画面では動画の縦横比の箱を画面に収め、元動画を同じ箱にぴったり重ねる。 */}
       <div
-        className="pointer-events-none absolute inset-0 overflow-hidden"
-        style={{ clipPath: `inset(0 ${100 - pos}% 0 0)` }}
+        className="relative"
+        style={
+          isFull && aspect
+            ? { aspectRatio: String(aspect), width: `min(100vw, calc(100vh * ${aspect}))` }
+            : undefined
+        }
       >
-        {/* 比較スライダー: 前後を同じ枠にぴったり重ねるため意図的に cover（縦横比は同じ）。 */}
-        {/* eslint-disable-next-line no-restricted-syntax */}
-        <video ref={beforeRef} src={before} muted playsInline className="absolute inset-0 h-full w-full object-cover" />
+        <video
+          ref={afterRef}
+          src={after}
+          controls
+          controlsList="nofullscreen"
+          playsInline
+          className="block h-full w-full"
+          onError={onAfterError}
+          onLoadedMetadata={(e) => {
+            const v = e.currentTarget;
+            if (v.videoWidth && v.videoHeight) setAspect(v.videoWidth / v.videoHeight);
+          }}
+        />
+        <div
+          className="pointer-events-none absolute inset-0 overflow-hidden"
+          style={{ clipPath: `inset(0 ${100 - pos}% 0 0)` }}
+        >
+          {/* 比較スライダー: 前後を同じ枠にぴったり重ねるため意図的に cover（縦横比は同じ）。 */}
+          {/* eslint-disable-next-line no-restricted-syntax */}
+          <video ref={beforeRef} src={before} muted playsInline className="absolute inset-0 h-full w-full object-cover" />
+        </div>
+        <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">
+          元動画
+        </span>
+        <span className="pointer-events-none absolute right-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">
+          アップスケール後
+        </span>
+        <div className="pointer-events-none absolute inset-y-0 w-0.5 bg-white/80" style={{ left: `${pos}%` }} />
+        {/* controls（下端）と被らないよう、スライダーは上寄りに置く */}
+        <input
+          type="range"
+          min={0}
+          max={100}
+          value={pos}
+          onChange={(e) => setPos(Number(e.target.value))}
+          aria-label="比較スライダー"
+          className="absolute inset-x-0 top-8 mx-auto w-[92%] cursor-ew-resize accent-neon-pink"
+        />
+        <button
+          type="button"
+          onClick={toggleFull}
+          className="absolute right-2 top-14 rounded bg-black/60 px-2 py-1 text-[11px] font-medium text-white transition-colors hover:bg-black/80"
+        >
+          {isFull ? "全画面を閉じる" : "全画面で比べる"}
+        </button>
       </div>
-      <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">
-        元動画
-      </span>
-      <span className="pointer-events-none absolute right-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">
-        アップスケール後
-      </span>
-      <div className="pointer-events-none absolute inset-y-0 w-0.5 bg-white/80" style={{ left: `${pos}%` }} />
-      {/* controls（下端）と被らないよう、スライダーは上寄りに置く */}
-      <input
-        type="range"
-        min={0}
-        max={100}
-        value={pos}
-        onChange={(e) => setPos(Number(e.target.value))}
-        aria-label="比較スライダー"
-        className="absolute inset-x-0 top-8 mx-auto w-[92%] cursor-ew-resize accent-neon-pink"
-      />
     </div>
   );
 }
@@ -670,6 +720,22 @@ export function UpscaleVideoStudioTab() {
       cancelled = true;
     };
   }, [jobId, markGpuWarm, advanceAndFollow, commitSession]);
+
+  // リロード後・別のジョブを開いたときは、比較の元動画をサーバーから取り直す（2026-10-05）。
+  // このセッションで送った分は手元のファイル（object URL）があるのでそのまま。取れなければ単体表示。
+  useEffect(() => {
+    if (job?.status !== "completed" || resultBeforeUrl) return;
+    let cancelled = false;
+    const id = job.id;
+    fetchUpscaleVideoInputUrl(id)
+      .then((url) => {
+        if (!cancelled && url) setResultBeforeUrl(url);
+      })
+      .catch((err) => console.warn("[UpscaleVideoStudioTab] fetchUpscaleVideoInputUrl failed:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, [job?.id, job?.status, resultBeforeUrl]);
 
   // 再生できなかったら URL を取り直す（2 回まで、2026-09-24）。完了直後の Modal URL は
   // R2 への移動で無効になり、R2 の署名 URL も時間で切れるため。

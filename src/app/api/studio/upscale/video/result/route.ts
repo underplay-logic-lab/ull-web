@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { presignPublishedArtifact } from "@/lib/r2.server";
+import { createStudioUploadSignedUrl } from "@/lib/studioUploads.server";
 
 // 超解像動画の結果配信（2026-09-18導入）。
 //
@@ -87,6 +88,22 @@ export async function GET(request: Request): Promise<NextResponse> {
   if (job.user_id !== userId && !isAdmin) {
     return NextResponse.json({ error: "このジョブのダウンロード権限がありません。" }, { status: 403 });
   }
+  // which=input: 比較スライダー用の元動画（2026-10-05）。送信時に残した置き場所を署名して返す。
+  // 置き場所が無い（それより前のジョブ）・14 日で消えた場合は 404 で、画面は単体表示のままにする。
+  if (url.searchParams.get("which") === "input") {
+    const meta = (typeof job.metadata === "string" ? JSON.parse(job.metadata) : job.metadata) as {
+      input_storage_path?: unknown;
+    } | null;
+    const inputPath = typeof meta?.input_storage_path === "string" ? meta.input_storage_path : "";
+    if (!inputPath) return NextResponse.json({ error: "元動画がありません。" }, { status: 404 });
+    try {
+      const downloadUrl = await createStudioUploadSignedUrl(job.user_id, inputPath, DOWNLOAD_TOKEN_TTL_SECONDS);
+      return NextResponse.json({ downloadUrl });
+    } catch {
+      return NextResponse.json({ error: "元動画がありません。" }, { status: 404 });
+    }
+  }
+
   if (job.status !== "completed" || !job.result_url) {
     return NextResponse.json({ error: "この動画はまだ準備できていません。" }, { status: 404 });
   }

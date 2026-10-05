@@ -350,6 +350,20 @@ export async function fetchUpscaleVideoResultUrl(jobId: string, downloadName?: s
   return data.downloadUrl as string;
 }
 
+/** 比較スライダー用の元動画の署名 URL（2026-10-05）。リロード後に取り直す。無ければ null。 */
+export async function fetchUpscaleVideoInputUrl(jobId: string): Promise<string | null> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) return null;
+  const url = new URL("/api/studio/upscale/video/result", window.location.origin);
+  url.searchParams.set("jobId", jobId);
+  url.searchParams.set("which", "input");
+  const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!res.ok) return null;
+  const data = (await res.json().catch(() => null)) as { downloadUrl?: string } | null;
+  return data?.downloadUrl ?? null;
+}
+
 /** job.resultUrl を実際に再生・ダウンロードに使えるURLへ解決する。旧方式
  * （Supabase公開URL / data:）はそのまま返し、新方式（Volume相対パス、
  * 超解像動画の結果、2026-09-18〜）は署名付きModal URLを発行して返す。 */
