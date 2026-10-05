@@ -8,4 +8,7 @@
 // ことになる。ホストは将来「プラン専用機能／特別メンバー限定」として出す案を
 // 検討中。API・worker 側の LoRA 対応（`director_user_loras/`、payload の lora）
 // はそのまま残す。true に戻せば UI は元どおり出る。
-export const DIRECTOR_LORA_ENABLED = false;
+// 2026-10-05 ホスト判断で一般に開放: ②は Director に「Powered by MiniMax H3」を常に出すようにした
+// （ライセンスの表示義務）ので伏せる意味が無くなった。①は欄に「H3 用の LoRA だけ」と書いて対応。
+// 顔写真参照＋ひなた LoRA の比較で、LoRA ありの方がはっきり本人に近かった（docs/STATUS.md）。
+export const DIRECTOR_LORA_ENABLED = true;
