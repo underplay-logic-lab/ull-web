@@ -592,12 +592,10 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 （訪問は Cloudflare → Web Analytics、登録は Supabase の Users で見る。Discord の反応はホストが来たら伝える方針なので予定に載せない）
 
 **→ 次の ULL再開で出す上位 3 つ（2026-10-06 未明に更新。この下を先に出す）**
-0. **【再開したら最初に】10Eros 一本化の確認（2026-10-06 未明・ホスト判断「公式と 10Eros の差がほぼ分からない → 1 つなら 10Eros」）**:
-   本番 B300 で「ひなた 9 枚参照・歌固定 20 秒」を**土台だけ 10Eros** にした 1 本を投げた（`D:\ComfyUI-ullesults\prod_test\wf_multiref_A_10eros.json`
-   → `out_multiref_A_10eros.mp4`・ログ `log_mrA_10eros.txt`）。公式 ref2va 版 `out_multiref_A.mp4`（口 2.99）と口の動き・顔を比べる
-   （`D:\ComfyUI-ull	ools\mouth2.py`・使い方は同フォルダの README）。**問題なければ**: ①`cinematicWorkflow.ts` の `REF2VA_UNET` を 10Eros に（参照モードでも
-   土台を切り替えない＝読み込み直しが無くなる）②Photo Director も 10Eros ③公式 ref2va bf16 は残す（ホスト「消すのは minimax music とかで」）。
-   **MiniMax Music の重み `music/hf_cache`（約 57GB）は Volume から削除済み（2026-10-06）**。
+0. ~~10Eros 一本化の確認~~ **済（2026-10-06）**: 本番 B300・同じワークフローとシードで土台だけ違う A/B（`D:/ComfyUI-ull/results/prod/a_test/out_multiref_A{,_10eros}.mp4`）。
+   口の動き 公式 2.99 → 10Eros 3.10・顔は 6 コマとも見分けがつかない（比較 `D:/ComfyUI-ull/results/multiref_10eros_vs_official.png`。顔の検出率 56% は横顔のコマが多いだけ）。
+   → **参照モードの土台を 10Eros に切り替えて push**（`cinematicWorkflow.ts` の `REF2VA_UNET`）。Photo Director も 10Eros で組む。公式 ref2va bf16 は Volume に残す。
+   測定は `D:/ComfyUI-ull/tools/mouth2.py`（venv `tools/mpenv` を作り直した）。**MiniMax Music の重み `music/hf_cache`（約 57GB）は Volume から削除済み**。
 1. **【次の本筋】Photo Director（新タブ・静止画）**: MiniMax H3 の Ref2VA を長さ 5 フレームで回し、1 コマ目を静止画にする（参照 9 枚＝人物・持ち物・場所）。
    Qwen-Image 2.1（非商用）の代わり。**実測（2026-10-06・同じ参照 9 枚・バストアップ）**: 本番 B300 **bf16・公式 ref2va** で顔が写真にかなり近い・光が自然
    （`D:\ComfyUI-ull

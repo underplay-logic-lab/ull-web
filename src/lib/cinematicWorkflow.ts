@@ -270,7 +270,7 @@ export type BuildCinematicWorkflowParams = {
    * 書き出す音声は VAE を通したものではなく元のファイル（音声 VAE を通すと波形が少し変わる）。
    */
   audioName?: string;
-  /** true: 画像を最初のフレームではなく顔写真として参照する（MiniMaxH3ReferenceToVideo・本体は ref2va）。 */
+  /** true: 画像を最初のフレームではなく顔写真として参照する（MiniMaxH3ReferenceToVideo・本体は 10Eros（REF2VA_UNET））。 */
   referenceMode?: boolean;
   /**
    * 参照モードで足す写真の ComfyUI input 名（最大 8 枚、2026-10-05）。1 枚目（referenceImageName）と合わせて最大 9 枚。
@@ -290,8 +290,13 @@ export type BuildCinematicWorkflowParams = {
   aspectHeight?: number;
 };
 
-/** 参照モードの本体（2026-10-04 に Volume へ追加）。10Eros は最初のフレーム用（FL2VA）なので使えない。 */
-const REF2VA_UNET = "minimax_h3_ref2va_pruned_bf16.safetensors";
+/**
+ * 参照モードの本体（2026-10-06〜 10Eros に一本化）。最初のフレームと同じ重みなので、モードを切り替えても読み込み直しが無い。
+ * 本番 B300 で公式 ref2va bf16 と同じワークフロー・シードで比べ（ひなた 9 枚参照・歌固定 20 秒、
+ * D:\ComfyUI-ull\results\prod\a_test\out_multiref_A{,_10eros}.mp4）、口の動き 2.99 → 3.10・顔は見分けがつかない程度。
+ * 公式 ref2va（minimax_h3_ref2va_pruned_bf16.safetensors）は Volume に残してある（戻すならこの値を変えるだけ）。
+ */
+const REF2VA_UNET = "10Eros_Max_h3_hybrid_beta5.safetensors";
 
 /** 参照写真の最大枚数（MiniMaxH3ReferenceToVideo の ref_images の上限）。 */
 export const MAX_REFERENCE_IMAGES = 9;
