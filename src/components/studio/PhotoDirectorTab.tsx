@@ -92,6 +92,16 @@ async function downloadImage(url: string, filename: string): Promise<void> {
   setTimeout(() => URL.revokeObjectURL(objectUrl), 10_000);
 }
 
+/**
+ * 「どんな写真？」の例文（欄の薄い文字と「うまく書くコツ」の両方に出す）。理想の書き方の見本: 写っている写真を Picture N で指し、
+ * 写り方 → 表情・ポーズ → 服 → 場所 → 光の順に、止まった 1 枚として書く。
+ */
+const PHOTO_IDEA_EXAMPLE = [
+  "例: Picture 1 の人が、Picture 2 のギターを抱えて Picture 3 の屋上のフェンスにもたれている。",
+  "バストアップ。カメラに向かってやさしく笑う。白いシャツにデニム。",
+  "夕方、うしろから柔らかい夕日が当たり、髪のふちが光っている。",
+].join("\n");
+
 function photoFilename(jobId: string, i: number): string {
   return `ull_photo_director_${jobId.slice(0, 8)}_${i + 1}.png`;
 }
@@ -621,7 +631,7 @@ export function PhotoDirectorTab() {
               value={idea}
               onChange={(e) => setIdea(e.target.value.slice(0, PHOTO_IDEA_MAX_LENGTH))}
               rows={4}
-              placeholder="例: 夕方の屋上でギターを抱えて、カメラに向かってやさしく笑うバストアップ"
+              placeholder={PHOTO_IDEA_EXAMPLE}
               className="w-full resize-y rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted/60"
             />
             <p className="mt-1 text-right text-[10px] text-muted">
@@ -634,6 +644,9 @@ export function PhotoDirectorTab() {
             >
               動き（歩く・振り向く）は書かず、止まった 1 枚として書いてください。持ち物や場所は、写真を「持ち物」「場所」で入れると形や景色がそのまま出ます。
             特定の写真を指すときは、サムネの角の名前で「Picture 3 の剣を右手に持つ」のように書いてください。
+            <span className="mt-1.5 block whitespace-pre-line rounded-md border border-border bg-background px-2 py-1.5 text-foreground/80">
+              {PHOTO_IDEA_EXAMPLE}
+            </span>
             </HelpNote>
           </div>
         )}
