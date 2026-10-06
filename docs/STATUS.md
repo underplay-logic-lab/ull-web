@@ -598,13 +598,14 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    測定は `D:/ComfyUI-ull/tools/mouth2.py`（venv `tools/mpenv` を作り直した）。**MiniMax Music の重み `music/hf_cache`（約 57GB）は Volume から削除済み**。
 1. **Photo Director（新タブ「📸 Photo Director」・静止画）: 実装・ワーカーデプロイ・push 済み（2026-10-06）。本番の画面からはまだ 1 本も出していない。**
    仕組み: Director と同じ route（`/api/director/generate` の `output: "photo"`）・同じ `workflow_type: "director"`（予約の順番・返金・ログ・GPU を共用）・同じ土台 10Eros。
-   `cinematicWorkflow.ts` の `buildPhotoWorkflow` が参照モードを length 5・ref_image_size "max" で組み、条件づけ 1 つにシード違いのサンプラーを 1〜4 本並べ、
+   `cinematicWorkflow.ts` の `buildPhotoWorkflow` が参照モードを length 5・ref_image_size "max" で組み、条件づけ 1 つにシード違いのサンプラーを枚数ぶん並べ、
    各 1 コマ目（ImageFromBatch）を SaveImage。ワーカーは `image_outputs` で全部を集め、GPU コンテナから R2 へ直接上げる（`_publish_photo_images`・
    metadata.image_paths / r2_key_map。GPU image に boto3＋ull_r2、secret r2-artifacts を追加）。台本は Gemini（`expandPhotoIdea`・断られたら Qwen）。
    画面は `PhotoDirectorTab.tsx`＋参照欄の部品 `RefPhotoPicker.tsx`（使い方の選択つき）。「動画にする」で写真＋人物の参照を Director へ渡す。縦横に 3:4 / 4:3 を追加（Director にも出る）。
    **本番 B300 実測（ひなた参照 9 枚＝人物 7・ギター・屋上、縦 3:4＝896×1184、4 枚）**: 起動込み 327 秒・ComfyUI 実行 240 秒・VRAM 98GB。
    サンプリングは 1 枚 16〜21 秒、残りはモデルと参照の読み込み → 2 枚目以降は 1 枚 約 ¥5。4 枚とも同じ人物で表情・角度・ギターの位置が少しずつ違う
    （`D:/ComfyUI-ull/results/photo_4_grid.png`・ワークフロー `results/prod/a_test/wf_photo_4.json`・投入 `D:/ComfyUI-ull/submit_photo.py`）。
+   **枚数は 4・6・8 枚（最低 4 枚、2026-10-06 ホスト判断: 当たり外れがあるのでまとめて出し、1 枚あたりの高値感を薄める）**。
    **料金は仮の knob**（`photo_director_base_credits` 40・`photo_director_per_image_credits` 15）。原価は起動込み 1 回 ¥85〜100・温まっていれば大幅に安い → ホストが決める。
    **残り**: ①画面から 1 本（Gemini の写真プロンプト・R2 署名・自動保存・Director へ渡す）②料金の決定 ③Director の参照欄を `RefPhotoPicker` に置き換える（今は同じ見た目の別実装）。
    経緯: 静止画の検証では公式 ref2va のほうが顔が写真に近かった（10Eros は面長・大人びる）が、10Eros 一本化（0 番）に合わせた。上の 4 枚では違和感なし。

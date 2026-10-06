@@ -153,7 +153,7 @@ const KNOB_TEXT: Record<KnobKey, Omit<KnobMeta, "value">> = {
     label: "Photo Director 1 枚ごと",
     category: "feature_credits",
     unit: "C/枚",
-    description: "1 回で出す枚数（1〜4 枚）1 枚ごとの料金。",
+    description: "1 回で出す枚数（4・6・8 枚。最低 4 枚）1 枚ごとの料金。",
     isPublic: true,
   },
   director_qwen_script_credits: {

@@ -16,6 +16,7 @@ import {
   directorCreditsWorstCase,
   directorPollDeadlineS,
   photoDirectorCredits,
+  clampPhotoCount,
   photoDirectorPollDeadlineS,
   PHOTO_IDEA_MAX_LENGTH,
   directorPriorityParallelSurcharge,
@@ -53,7 +54,7 @@ import {
   withJapaneseTranslationRequest,
   type DirectorPromptOptions,
 } from "@/lib/directorPrompt";
-import { buildCinematicWorkflow, buildPhotoWorkflow, CINEMATIC_PROMPT_NODE_ID, PHOTO_MAX_COUNT } from "@/lib/cinematicWorkflow";
+import { buildCinematicWorkflow, buildPhotoWorkflow, CINEMATIC_PROMPT_NODE_ID } from "@/lib/cinematicWorkflow";
 import { headR2, r2UserRoot } from "@/lib/r2.server";
 import { assertOwnedDirectorLoraVolumePath, isOwnedDirectorLoraR2Key } from "@/lib/directorLoraUpload.server";
 import { CINEMATIC_MODE_BY_ID, cinematicMegapixelsForDuration, cinematicSafeDimensions } from "@/lib/cinematicPricing";
@@ -112,7 +113,7 @@ export async function POST(request: Request) {
   const isPhoto = body.output === "photo";
   const photoIdea = isPhoto && typeof body.photoIdea === "string" ? body.photoIdea.trim().slice(0, PHOTO_IDEA_MAX_LENGTH) : "";
   const photoCount = isPhoto
-    ? Math.max(1, Math.min(PHOTO_MAX_COUNT, typeof body.photoCount === "number" ? Math.floor(body.photoCount) : 2))
+    ? clampPhotoCount(body.photoCount)
     : 0;
   if (isPhoto) {
     if (baseJobId) return NextResponse.json({ error: "写真は作り直しに対応していません。" }, { status: 400 });

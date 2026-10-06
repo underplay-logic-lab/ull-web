@@ -14,7 +14,9 @@ import { TopupActions } from "./TopupActions";
 import { RefPhotoPicker, type RefPhoto } from "./RefPhotoPicker";
 import {
   DIRECTOR_ASPECTS,
+  PHOTO_COUNTS,
   PHOTO_IDEA_MAX_LENGTH,
+  PHOTO_MIN_COUNT,
   directorPriorityParallelSurcharge,
   photoDirectorCredits,
   type DirectorAspectId,
@@ -53,7 +55,6 @@ const JOB_KEY = "photo-director-active-job";
 const RESERVED_KEY = "photo-director-reserved-jobs";
 const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_CONSECUTIVE_ERRORS = 8;
-const COUNTS = [1, 2, 3, 4] as const;
 
 type Snapshot = {
   image: File;
@@ -124,7 +125,7 @@ export function PhotoDirectorTab() {
   }, [imageUrl]);
   const [refs, setRefs] = useState<RefPhoto[]>([]);
   const [aspect, setAspect] = useState<DirectorAspectId>("3:4");
-  const [count, setCount] = useState<number>(2);
+  const [count, setCount] = useState<number>(PHOTO_MIN_COUNT);
   const [idea, setIdea] = useState("");
 
   const pickImage = (file: File | null | undefined) => {
@@ -522,7 +523,7 @@ export function PhotoDirectorTab() {
               onChange={(e) => setCount(Number(e.target.value))}
               className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground"
             >
-              {COUNTS.map((n) => (
+              {PHOTO_COUNTS.map((n) => (
                 <option key={n} value={n}>
                   {n} 枚
                 </option>
@@ -531,7 +532,7 @@ export function PhotoDirectorTab() {
           </div>
         </div>
         <p className="-mt-2 text-[11px] leading-relaxed text-muted">
-          同じ指示で少しずつ違う写真を並べて出します。まとめて出すほど 1 枚あたりが安くなります。
+          同じ指示で少しずつ違う写真を並べて出すので、気に入った 1 枚を選べます。まとめて出すほど 1 枚あたりが安くなります。
         </p>
       </div>
 

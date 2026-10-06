@@ -1,7 +1,7 @@
 import "server-only";
 import type { CinematicMode } from "@/lib/cinematicPricing";
 import { cinematicMegapixelsForDuration, cinematicSafeDimensions } from "@/lib/cinematicPricing";
-import type { DirectorRefRole, DirectorRefVideoRole } from "@/lib/directorPricing";
+import { clampPhotoCount, type DirectorRefRole, type DirectorRefVideoRole } from "@/lib/directorPricing";
 
 // The "Cinematic Video" tab's ComfyUI API-format graph — MiniMax H3 (BF16,
 // image-to-audio/video) running on the Blackwell/B300 Modal deployment (see
@@ -539,8 +539,6 @@ export function buildCinematicWorkflow({
   return workflow;
 }
 
-/** Photo Director の 1 回あたりの最大枚数（2026-10-06）。台本の読み込み（参照 9 枚の符号化）は 1 回で済み、枚数ぶんはサンプリングだけ増える。 */
-export const PHOTO_MAX_COUNT = 4;
 
 /**
  * Photo Director（2026-10-06）: 参照モードの Director を長さ 5 フレームで回し、各シードの 1 コマ目を静止画にする。
@@ -553,7 +551,8 @@ export function buildPhotoWorkflow(
   params: Omit<BuildCinematicWorkflowParams, "referenceMode" | "durationS" | "audioName" | "refVideoName" | "refVideoRole">,
   count: number,
 ): CinematicWorkflow {
-  const n = Math.max(1, Math.min(PHOTO_MAX_COUNT, Math.floor(count)));
+  // 参照の読み込み（参照 9 枚の符号化）は 1 回で済み、枚数ぶんはサンプリングだけ増える。ノード id は 600〜647 を使う。
+  const n = clampPhotoCount(count);
   const seed = params.seed ?? Math.floor(Math.random() * 2 ** 32);
   const workflow = buildCinematicWorkflow({ ...params, seed, referenceMode: true, durationS: 1 });
   const cond = workflow["105:104"].inputs;

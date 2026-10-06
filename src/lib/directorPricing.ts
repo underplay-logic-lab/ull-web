@@ -319,6 +319,18 @@ export function validateDirectorScenes(scenes: unknown): { ok: true; scenes: Dir
   return { ok: true, scenes: cleaned };
 }
 
+/**
+ * Photo Director の 1 回の枚数（2026-10-06 ホスト判断: 当たり外れがあるので最低 4 枚。まとめて出して 1 枚あたりの高値感を薄める）。
+ * 1 枚の描画は B300 で 16〜21 秒（参照の読み込みは 1 回だけ）なので、8 枚でも 1〜2 分増えるだけ。
+ */
+export const PHOTO_COUNTS = [4, 6, 8] as const;
+export const PHOTO_MIN_COUNT = 4;
+export const PHOTO_MAX_COUNT = 8;
+export function clampPhotoCount(count: unknown): number {
+  const n = typeof count === "number" && Number.isFinite(count) ? Math.floor(count) : PHOTO_MIN_COUNT;
+  return Math.max(PHOTO_MIN_COUNT, Math.min(PHOTO_MAX_COUNT, n));
+}
+
 /** Photo Director の思いつき欄の最大文字数（2026-10-06）。 */
 export const PHOTO_IDEA_MAX_LENGTH = 600;
 
@@ -327,12 +339,12 @@ export const PHOTO_IDEA_MAX_LENGTH = 600;
  * フロント表示と route で同じ関数を使う。knob の既定は本番実測前の仮値（knobDefaults.ts）。
  */
 export function photoDirectorCredits(count: number, extraRefCount: number, knobs: PricingKnobs = DEFAULT_KNOBS): number {
-  const n = Math.max(1, Math.min(4, Math.floor(count)));
+  const n = clampPhotoCount(count);
   const base = Math.ceil(knobs.photo_director_base_credits + knobs.photo_director_per_image_credits * n);
   return base + directorExtraRefSurcharge(base, extraRefCount, knobs);
 }
 
 /** Photo Director の待ち上限（秒）。温まって 1 枚 約 1.5 分・起動込み 4 分強（2026-10-06 実測）の 2 倍以上を取る。 */
 export function photoDirectorPollDeadlineS(count: number): number {
-  return 900 + 120 * Math.max(1, Math.min(4, Math.floor(count)));
+  return 900 + 120 * clampPhotoCount(count);
 }
