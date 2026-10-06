@@ -1877,7 +1877,11 @@ export function DirectorStudioTab() {
 
         {loraUiEnabled && (
         <div className="rounded-xl border border-border bg-background p-4">
-          <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">LoRA（任意）</p>
+          <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">
+            LoRA（任意）
+            {/* 一般には閉じていて admin にだけ出ている（featureFlags.DIRECTOR_LORA_ENABLED）ことが分かるように。 */}
+            {!DIRECTOR_LORA_ENABLED && <span className="ml-2 rounded bg-amber-500/20 px-1.5 py-px align-middle font-mono text-[9px] font-semibold normal-case tracking-normal text-amber-300">admin</span>}
+          </p>
           <p className="-mt-1 mb-2 text-[11px] leading-relaxed text-muted">
             使えるのは MiniMax H3 用の LoRA だけです（LoRA Studio の「Minimax H3」で学習したもの、または H3 用に作られたファイル）。
             「顔写真として使う」と組み合わせると、本人らしさが一段上がります。

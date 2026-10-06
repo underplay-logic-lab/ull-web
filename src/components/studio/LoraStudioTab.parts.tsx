@@ -5,6 +5,7 @@
 // コンポーネント本体（巨大な状態を持つ単一関数）はリスクが高いため分割せず
 // LoraStudioTab.tsx に残し、ここでは props だけで完結する部分のみを扱う。
 
+import { DIRECTOR_LORA_ENABLED } from "@/lib/featureFlags";
 import { HelpNote } from "./HelpNote";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
@@ -2391,6 +2392,8 @@ export function ProgressPanel({
             >
               <Clapperboard size={13} />
               🎬 LoRA を保存して動画を作る
+              {/* 一般には閉じていて admin にだけ出ている（featureFlags.DIRECTOR_LORA_ENABLED）。 */}
+              {!DIRECTOR_LORA_ENABLED && <span className="rounded bg-black/25 px-1 font-mono text-[9px]">admin</span>}
             </button>
           )}
         </div>
