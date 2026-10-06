@@ -343,12 +343,20 @@ export function SongStudioTab() {
     }
   }, [jobId]);
 
-  const handleDownload = async (i: number) => {
+  const handleDownload = async (i: number, format: "mp3" | "wav" = "mp3") => {
     if (!jobId) return;
     setActionError(null);
-    const url = (await refreshUrls())[i];
+    let url: string | undefined;
+    try {
+      const next = await pollSongJob(jobId);
+      setJob(next);
+      url = format === "wav" ? next.audioWavUrls[i] : next.audioUrls[i];
+    } catch {
+      url = undefined;
+    }
     if (!url) return setActionError("曲の取得に失敗しました。時間をおいてもう一度お試しください。");
-    downloadSong(url, songFilename(jobId, i, job?.seeds[i])).catch((err) => {
+    const name = songFilename(jobId, i, job?.seeds[i]);
+    downloadSong(url, format === "wav" ? name.replace(/\.mp3$/, ".wav") : name).catch((err) => {
       console.error("[SongStudioTab] download failed:", err);
       setActionError("ダウンロードに失敗しました。");
     });
@@ -654,12 +662,22 @@ export function SongStudioTab() {
                 <div className="mt-2 flex gap-2">
                   <button
                     type="button"
-                    onClick={() => void handleDownload(i)}
+                    onClick={() => void handleDownload(i, "mp3")}
                     className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-border bg-background px-2 py-1.5 text-[11px] text-foreground transition-colors hover:border-neon-violet/40"
                   >
                     <Download size={12} />
-                    保存
+                    MP3
                   </button>
+                  {(job?.audioWavUrls.length ?? 0) > i && (
+                    <button
+                      type="button"
+                      onClick={() => void handleDownload(i, "wav")}
+                      className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-border bg-background px-2 py-1.5 text-[11px] text-foreground transition-colors hover:border-neon-violet/40"
+                    >
+                      <Download size={12} />
+                      WAV
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => setClipFor(clipFor === i ? null : i)}

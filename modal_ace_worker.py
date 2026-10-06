@@ -574,7 +574,7 @@ class AceStep:
 
             if not ull_r2.r2_enabled():
                 raise RuntimeError("R2 is not enabled")
-            rels, key_map, songs = [], {}, []
+            rels, wav_rels, key_map, songs = [], [], {}, []
             retried = 0
             for k in range(count):
                 # 声の無い曲（設計図の段階で歌なしになる外れ）はシードを変えて最大 VOCAL_RETRIES 回まで作り直す（原価はこちら持ち）。
@@ -608,6 +608,19 @@ class AceStep:
                 ull_r2.put_file(mp3, key, content_type="audio/mpeg")
                 rels.append(rel)
                 key_map[rel] = key
+                # WAV も（2026-10-06）: 劣化前の FLAC から 48kHz・16bit。MP3 から作ると音質が MP3 のままになるので、ここで作る。
+                wav = res["path"].replace(".flac", ".wav")
+                r = subprocess.run(
+                    ["ffmpeg", "-v", "error", "-y", "-i", res["path"], "-ar", "48000", "-c:a", "pcm_s16le", wav],
+                    capture_output=True, text=True,
+                )
+                if r.returncode != 0:
+                    raise RuntimeError(f"wav encode failed: {r.stderr[-500:]}")
+                wav_rel = f"song_results/{user_id}/{job_id}_{k + 1}.wav"
+                wav_key = ull_r2.key_for_rel(wav_rel, user_id)
+                ull_r2.put_file(wav, wav_key, content_type="audio/wav")
+                wav_rels.append(wav_rel)
+                key_map[wav_rel] = wav_key
                 songs.append({
                     "seed": s,
                     "seconds": res["final_s"],
@@ -624,8 +637,9 @@ class AceStep:
             meta = {
                 "gpu_tier": job.get("gpu_label") or GPU,
                 "audio_paths": rels,
+                "audio_wav_paths": wav_rels,
                 "songs": songs,
-                "r2_keys": list(rels),  # ull_r2.stamp_r2_keys と同じく rel パス（実キーは r2_key_map）
+                "r2_keys": list(rels) + list(wav_rels),  # ull_r2.stamp_r2_keys と同じく rel パス（実キーは r2_key_map）
                 "r2_key_map": key_map,
                 "artifact_store": "r2",
                 "boot_s": self.boot_s,

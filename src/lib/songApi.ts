@@ -53,6 +53,8 @@ export type SongJobStatus = {
   progressPercent: number | null;
   vramUsedGb: number | null;
   audioUrls: string[];
+  /** WAV（無いジョブは空）。並びは audioUrls と同じ。 */
+  audioWavUrls: string[];
   title: string | null;
   lyrics: string | null;
   /** 曲ごとのシード（保存するファイル名に入れる）。 */
@@ -80,6 +82,9 @@ export async function pollSongJob(jobId: string): Promise<SongJobStatus> {
     progressPercent: typeof data.progressPercent === "number" ? data.progressPercent : null,
     vramUsedGb: typeof meta.vram_used_gb === "number" ? meta.vram_used_gb : null,
     audioUrls: Array.isArray(data.audioUrls) ? (data.audioUrls as unknown[]).filter((u): u is string => typeof u === "string") : [],
+    audioWavUrls: Array.isArray(data.audioWavUrls)
+      ? (data.audioWavUrls as unknown[]).filter((u): u is string => typeof u === "string")
+      : [],
     title: (data.songTitle as string | null) ?? null,
     lyrics: (data.songLyrics as string | null) ?? null,
     seeds: Array.isArray(data.songSeeds) ? (data.songSeeds as unknown[]).map((s) => (typeof s === "number" ? s : null)) : [],

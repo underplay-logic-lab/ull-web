@@ -213,6 +213,7 @@ export async function GET(request: Request, { params }: RouteParams) {
   // 曲づくり（2026-10-06）: 曲はワーカーが R2 へ上げ、metadata.audio_paths と r2_key_map を残す。歌詞・タイトルは inputs.plan。
   const isSong = effJob.workflow_type === "song";
   let audioUrls: string[] | null = null;
+  let audioWavUrls: string[] | null = null;
   if (isSong && effJob.status === "completed") {
     const meta = effJob.metadata as Record<string, unknown> | null;
     const paths = Array.isArray(meta?.audio_paths) ? (meta.audio_paths as unknown[]).filter((p): p is string => typeof p === "string") : [];
@@ -222,6 +223,16 @@ export async function GET(request: Request, { params }: RouteParams) {
       ),
     );
     audioUrls = urls.filter((u): u is string => Boolean(u));
+    // WAV（2026-10-06〜のジョブだけ）。並びは audio_paths と同じ。
+    const wavPaths = Array.isArray(meta?.audio_wav_paths)
+      ? (meta.audio_wav_paths as unknown[]).filter((p): p is string => typeof p === "string")
+      : [];
+    const wavUrls = await Promise.all(
+      wavPaths.map((p, i) =>
+        presignPublishedArtifact(meta, p, { contentType: "audio/wav", downloadName: `song-${String(effJob.id).slice(0, 8)}-${i + 1}.wav` }),
+      ),
+    );
+    audioWavUrls = wavUrls.filter((u): u is string => Boolean(u));
   }
   const songPlan = isSong && inputs?.plan && typeof inputs.plan === "object" ? (inputs.plan as Record<string, unknown>) : null;
   // 曲ごとに実際に使ったシード（作り直した曲は作り直し後）。保存するファイル名に入れる（後から同じ声を辿れるように、2026-10-06）。
@@ -262,6 +273,7 @@ export async function GET(request: Request, { params }: RouteParams) {
     output: isPhoto ? "photo" : null,
     imageUrls,
     audioUrls,
+    audioWavUrls,
     songTitle: typeof songPlan?.title === "string" ? songPlan.title : null,
     songLyrics: typeof songPlan?.lyrics === "string" ? songPlan.lyrics : null,
     songSeeds,
