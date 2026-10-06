@@ -20,7 +20,7 @@ import {
   DIRECTOR_ASPECTS,
   PHOTO_COUNTS,
   PHOTO_IDEA_MAX_LENGTH,
-  PHOTO_MIN_COUNT,
+  PHOTO_DEFAULT_COUNT,
   PHOTO_PROMPT_MAX_LENGTH,
   directorPriorityParallelSurcharge,
   directorAspectDims,
@@ -171,7 +171,7 @@ export function PhotoDirectorTab() {
     };
   }, [image]);
   const [aspect, setAspect] = useState<DirectorAspectId>("3:4");
-  const [count, setCount] = useState<number>(PHOTO_MIN_COUNT);
+  const [count, setCount] = useState<number>(PHOTO_DEFAULT_COUNT);
   const outDims = useMemo(() => {
     const shape = directorAspectDims("reference", aspect, imageDims);
     return photoOutputDimensions(shape.width, shape.height);
@@ -743,11 +743,15 @@ export function PhotoDirectorTab() {
               onChange={(e) => setCount(Number(e.target.value))}
               className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground"
             >
-              {PHOTO_COUNTS.map((n) => (
-                <option key={n} value={n}>
-                  {n} 枚
-                </option>
-              ))}
+              {PHOTO_COUNTS.map((n) => {
+                // 1 枚あたりの値段も出す（まとめて出すほど安い＝4 枚以上へ自然に誘う）。制限解除の上乗せは枚数に関係ないので含めない。
+                const c = photoDirectorCredits(n, refs.length, knobs);
+                return (
+                  <option key={n} value={n}>
+                    {n} 枚（{c}C{n > 1 ? `・1 枚あたり ${Math.round(c / n)}C` : ""}）
+                  </option>
+                );
+              })}
             </select>
           </div>
         </div>

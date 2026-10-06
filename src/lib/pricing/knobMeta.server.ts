@@ -195,7 +195,7 @@ const KNOB_TEXT: Record<KnobKey, Omit<KnobMeta, "value">> = {
     label: "Photo Director 1 枚ごと",
     category: "feature_credits",
     unit: "C/枚",
-    description: "1 回で出す枚数（4・6・8 枚。最低 4 枚）1 枚ごとの料金。",
+    description: "1 回で出す枚数（1・2・4・8 枚）1 枚ごとの料金。描画＋デコード 約 22 秒分（H200・2.5MP・参照 9 枚）。",
     isPublic: true,
   },
   director_unrestricted_script_credits: {
