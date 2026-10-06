@@ -34,6 +34,9 @@ CLAUDE.md §5（商用利用・SaaS再頒布・地域制限の3点を満たす�
   （声を取り出して聞き取り、歌詞と照合）。2026-10-06 に HF の cardData で確認。生成物には含まれない。
 - **ScragVAE（`scragnog/Ace-Step-1.5-ScragVAE`・MIT・rev 0547ba3）**: 曲づくりの VAE（音に戻す部分）。ACE-Step 公式ドキュメント（ALT_VAE.md）が
   差し替え候補として載せるコミュニティ製の調整版。diffusers 形式を ComfyUI 形式に変換して使う（`scripts/ace_scragvae_convert.py`）。2026-10-06 確認。
+- **Fizgig H3 Still（`shootthesound/ComfyUI-Fizgig-H3-Still`・MIT・コミット 10d5171）**: Photo Director の 1 コマ静止画用 ComfyUI ノード 2 つ
+  （`modal_wan_animate_blackwell.py` の image に同梱）。モデルを含まないコードだけ。2026-10-06 確認。
+- **Wan2.1-VACE-1.3B（`Wan-AI/Wan2.1-VACE-1.3B`）**: Apache-2.0（2026-10-06 に HF の cardData で確認）。動画→アニメのローカル試作だけ（不採用・本番未使用）。
 - **Qwen-Image / Qwen-Image-Edit-2511**: Apache-2.0。現行の画像編集・リスタイルの基盤。
 - **Microsoft TRELLIS / TRELLIS.2（`microsoft/TRELLIS.2-4B`）**: MIT。image→3D の第一候補（非商用レンダラ依存は上記のとおり回避）。
 - **Qwen3.8-27B-abliterated（`hotdogs/Qwen3.8-27B-abliterated`、base `Qwen/Qwen3.8-27B`）**: Apache-2.0（モデルカードの

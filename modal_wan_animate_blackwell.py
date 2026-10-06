@@ -360,6 +360,16 @@ image = (
     # Photo Director（2026-10-06）: 静止画を GPU コンテナから R2 へ直接上げる（数 MB × 数枚なので
     # CPU の publish 関数を経由させない）。チェーン末尾に置き既存の重いビルド層を触らない。
     .pip_install("boto3>=1.35")
+    # Photo Director（2026-10-06）: MiniMax H3 で本当に 1 コマだけの静止画を作るノード 2 つ（Still Latent / Still Decode）。
+    # 5 コマの動画の 1 コマ目を抜く従来の方法より細部が残り、標準の VAE Decode で 1 コマを戻したときの縞も出ない。
+    # shootthesound/ComfyUI-Fizgig-H3-Still・MIT・追加モデルなし・依存なし（ComfyUI 内蔵の H3 対応だけを使う）。
+    # 内部の _adaptive_decode / _finalize_pixels を直接呼ぶので、ComfyUI のピン（v0.35.1）を上げるときは動作を確かめる。
+    # コミット固定（10d5171、2026-10-06 確認）。チェーン末尾に置き既存の重いビルド層を触らない。
+    .run_commands(
+        f"git clone https://github.com/shootthesound/ComfyUI-Fizgig-H3-Still.git"
+        f" {COMFY_DIR}/custom_nodes/ComfyUI-Fizgig-H3-Still"
+        f" && cd {COMFY_DIR}/custom_nodes/ComfyUI-Fizgig-H3-Still && git checkout 10d5171",
+    )
     .add_local_python_source("ull_image_prep")
     .add_local_python_source("ull_r2")
 )
