@@ -599,6 +599,9 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
   基準の声は元の 5 秒から少しずれる（0.850）→ 基準を決めて以後それを使う運用。`voicefix/hinata_voice.pt`。ひなたは Gemini に作らせた架空の人物（権利の心配なし）。
   次: ホストが聴いて判断 → 採用ならライセンスを docs に・オリジナルの声を作る工程（候補を作って選ぶ）・話者照合で外れを自動で作り直す・本番は安い GPU。
   ほか未着手: MV モード（節ごとに場面を変えて Director で作りつなぐ・ホスト「場面が変わるのは普通」）。
+  **動画→アニメ（2026-10-06 夕方・ローカル試作で方向が決まった）**: パラパラ漫画を試した結果、ホストの判断は「動画をそのままアニメにする方が価値がある」・
+  おまけで「アニメ調を間引いてパラパラにする」。コマ単位の描き直し（WAI-Illustrious＋canny・img2img 0.88・同シード）は人物が揃うが、色・目・背景がコマごとに揺れる
+  → 24fps の本番は動画 AI で時間方向に揃える必要あり（未着手・ライセンスも未確認）。試作と設定: `D:/ComfyUI-ull/results/flipbook/`・`tools/flipbook_anime.py`・メモリ mobile-lite-tier-quantization。
 0. ~~10Eros 一本化の確認~~ **済（2026-10-06）**: 本番 B300・同じワークフローとシードで土台だけ違う A/B（`D:/ComfyUI-ull/results/prod/a_test/out_multiref_A{,_10eros}.mp4`）。
    口の動き 公式 2.99 → 10Eros 3.10・顔は 6 コマとも見分けがつかない（比較 `D:/ComfyUI-ull/results/multiref_10eros_vs_official.png`。顔の検出率 56% は横顔のコマが多いだけ）。
    → **参照モードの土台を 10Eros に切り替えて push**（`cinematicWorkflow.ts` の `REF2VA_UNET`）。Photo Director も 10Eros で組む。公式 ref2va bf16 は Volume に残す。
