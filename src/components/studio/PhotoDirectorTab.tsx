@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, Camera, Clapperboard, Download, ImagePlus, LogIn, Pencil, Sparkles, X, Zap } from "lucide-react";
+import { AlertTriangle, Camera, Clapperboard, Download, ImagePlus, LogIn, Maximize2, Pencil, Sparkles, X, Zap } from "lucide-react";
 import { CopyButton } from "./CopyButton";
 import { PromptLanguageSwitch } from "./PromptLanguageSwitch";
 import { HelpNote } from "./HelpNote";
@@ -518,6 +518,23 @@ export function PhotoDirectorTab() {
   };
 
   const hasText = promptDraft != null ? promptDraft.trim().length > 0 : idea.trim().length > 0;
+  // 出来た写真を超解像タブへ（Multi-Angle と同じまとめ渡し・URL は押した時点で取り直す）。
+  const handleToUpscale = async (i: number) => {
+    if (!jobId) return;
+    setActionError(null);
+    try {
+      const url = (await refreshUrls())[i];
+      if (!url) throw new Error("no url");
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const photo = new File([await res.blob()], photoFilename(jobId, i), { type: "image/png" });
+      requestStudioBatchHandoff({ files: [photo], source: "Photo Director の写真", hint: "4K・8K などに拡大できます。" }, "upscale");
+    } catch (err) {
+      console.error("[PhotoDirectorTab] upscale handoff failed:", err);
+      setActionError("超解像へ渡せませんでした。もう一度お試しください。");
+    }
+  };
+
   const canRun = Boolean(image) && hasText && !refsLoading && phase !== "submitting";
   const chargeFirst = Boolean(user) && insufficientCredits && !busy;
   const imageUrls = job?.isPhoto ? job.imageUrls : [];
@@ -877,6 +894,14 @@ export function PhotoDirectorTab() {
                     >
                       <Clapperboard size={12} />
                       動画にする
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleToUpscale(i)}
+                      className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-border bg-surface px-2 py-1.5 text-[11px] text-foreground transition-colors hover:border-neon-violet/40"
+                    >
+                      <Maximize2 size={12} />
+                      超解像
                     </button>
                   </div>
                 </div>
