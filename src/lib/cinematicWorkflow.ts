@@ -541,7 +541,10 @@ export function buildCinematicWorkflow({
 
 
 /**
- * Photo Director（2026-10-06）: 参照モードの Director を長さ 5 フレームで回し、各シードの 1 コマ目を静止画にする。
+ * Photo Director（2026-10-06）: 参照モードの Director の条件づけ（参照 9 枚まで）で、本当に 1 コマだけの静止画を作る。
+ * 2026-10-06 夜〜 Fizgig H3 Still（ワーカーの image に同梱・MIT）: サンプラーの潜在を FizgigH3StillLatent（1 コマ）にし、
+ * FizgigH3StillDecode で戻す（1 コマを 5 コマ分に複製して戻し、落ち着いた 3 コマ目を取る＝標準の VAE Decode で出る縞が出ない）。
+ * それまでは長さ 5 フレームの動画を作って 1 コマ目を抜いていた（下の length 5 はその名残で、条件づけの長さとしてだけ使う）。
  * 本番 B300 で確かめた組み方（D:\ComfyUI-ull\results\prod\a_test\wf_still_bf16_*.json）: length 5・ref_image_size "max"
  * （参照を 2048px 短辺で読む＝顔が最も写真に近い）・高速モード（VDN 8 step）。
  * 条件づけ（105:104）は 1 つを共有し、シードだけ違うサンプラーを枚数ぶん並べる（参照の読み込みを 1 回で済ませる）。
@@ -570,6 +573,12 @@ export function buildPhotoWorkflow(
     delete (workflow as Record<string, unknown>)[id];
   }
   const prefix = params.jobId ? `photo_${params.jobId}` : "photo";
+  // 1 コマの潜在（条件づけと同じ幅・高さ）。シードごとのサンプラーで共有する（中身はゼロなので共有して問題ない）。
+  workflow["650"] = {
+    inputs: { width: cond.width, height: cond.height, batch_size: 1 },
+    class_type: "FizgigH3StillLatent",
+    _meta: { title: "Still Latent (1 frame)" },
+  };
   for (let i = 0; i < n; i++) {
     workflow[`${600 + i}`] = {
       inputs: { noise_seed: (seed + i) % 2 ** 32 },
@@ -582,23 +591,18 @@ export function buildPhotoWorkflow(
         guider: ["105:16", 0],
         sampler: ["105:17", 0],
         sigmas: ["105:9", 0],
-        latent_image: ["105:104", 1],
+        latent_image: ["650", 0],
       },
       class_type: "SamplerCustomAdvanced",
       _meta: { title: `Sampler ${i + 1}` },
     };
     workflow[`${620 + i}`] = {
       inputs: { samples: [`${610 + i}`, 0], vae: ["105:11", 0] },
-      class_type: "VAEDecode",
-      _meta: { title: `Decode ${i + 1}` },
-    };
-    workflow[`${630 + i}`] = {
-      inputs: { image: [`${620 + i}`, 0], batch_index: 0, length: 1 },
-      class_type: "ImageFromBatch",
-      _meta: { title: `First Frame ${i + 1}` },
+      class_type: "FizgigH3StillDecode",
+      _meta: { title: `Still Decode ${i + 1}` },
     };
     workflow[`${640 + i}`] = {
-      inputs: { images: [`${630 + i}`, 0], filename_prefix: `${prefix}_${i + 1}` },
+      inputs: { images: [`${620 + i}`, 0], filename_prefix: `${prefix}_${i + 1}` },
       class_type: "SaveImage",
       _meta: { title: `Save Photo ${i + 1}` },
     };
