@@ -592,6 +592,13 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 （訪問は Cloudflare → Web Analytics、登録は Supabase の Users で見る。Discord の反応はホストが来たら伝える方針なので予定に載せない）
 
 **→ 次の ULL再開で出す上位 3 つ（2026-10-06 未明に更新。この下を先に出す）**
+**2026-10-06 夕方の追記（セリフの声・ローカル試験）**: 短編動画のセリフを、専用の読み上げ AI で先に作って Director に持ち込む構想（同じ声・セリフだけ作り直せる）。
+  ローカル RTX 5070 Ti（`D:/ComfyUI-ull/tts/`）で比較: **Chatterbox 多言語（MIT）は漢字かな交じりを正しく読む**・1 本 2〜4 秒・VRAM 3.6GB（出力に不可聴の透かし PerthNet）。
+  Fun-CosyVoice3（Apache-2.0）は漢字の日本語が崩れる（カナ入力なら読める）・感情を文章で指示できる。商用不可: F5-TTS・XTTS-v2、避ける: Style-Bert-VITS2（AGPL）。
+  **声の固定**: Chatterbox の手本→特徴（Conditionals）をファイルに保存し使い回すと 10 本の話者照合（Resemblyzer）が平均 0.888・最低 0.855（毎回 5 秒を手本: 0.873 / 0.829）。
+  基準の声は元の 5 秒から少しずれる（0.850）→ 基準を決めて以後それを使う運用。`voicefix/hinata_voice.pt`。ひなたは Gemini に作らせた架空の人物（権利の心配なし）。
+  次: ホストが聴いて判断 → 採用ならライセンスを docs に・オリジナルの声を作る工程（候補を作って選ぶ）・話者照合で外れを自動で作り直す・本番は安い GPU。
+  ほか未着手: MV モード（節ごとに場面を変えて Director で作りつなぐ・ホスト「場面が変わるのは普通」）。
 0. ~~10Eros 一本化の確認~~ **済（2026-10-06）**: 本番 B300・同じワークフローとシードで土台だけ違う A/B（`D:/ComfyUI-ull/results/prod/a_test/out_multiref_A{,_10eros}.mp4`）。
    口の動き 公式 2.99 → 10Eros 3.10・顔は 6 コマとも見分けがつかない（比較 `D:/ComfyUI-ull/results/multiref_10eros_vs_official.png`。顔の検出率 56% は横顔のコマが多いだけ）。
    → **参照モードの土台を 10Eros に切り替えて push**（`cinematicWorkflow.ts` の `REF2VA_UNET`）。Photo Director も 10Eros で組む。公式 ref2va bf16 は Volume に残す。
