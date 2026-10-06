@@ -12,6 +12,8 @@ GPU の AceStep.run_job が N 曲を続けて作り、MP3 にして R2 へ直接
   - ACE-Step 1.5 XL turbo（`ACE-Step/acestep-v15-xl-turbo`）・言語モデル `acestep-5Hz-lm-0.6B` / `-4B`: MIT（2026-10-05 確認）。
     README に「権利処理済みのデータで学習・生成した曲は商用利用可」。地域制限・表示義務なし。
   - 重みは ComfyUI 用のまとめ直し `Comfy-Org/ace_step_1.5_ComfyUI_files`（Apache-2.0、リビジョン固定）。
+  - 歌っているかの判定（2026-10-06）: Demucs `htdemucs`（MIT）で声を取り出し、Whisper `openai/whisper-large-v3-turbo`（MIT、
+    2026-10-06 確認）で聞き取って歌詞と照合する。fp16（量子化しない）。
   - 推論は ComfyUI 本体のノードだけ（TextEncodeAceStepAudio1.5 ほか、カスタムノードなし）。BF16（CLAUDE.md §1）。
     組み方はローカルで歌唱 MV の曲を作った D:\\ComfyUI-ull\\ace_hinata_song_60s.json と同じ（8 step・cfg 1・shift 3）。
 
@@ -57,6 +59,8 @@ DIT_SETTINGS = {
 if DIT not in DIT_SETTINGS:
     raise ValueError(f"ACE_DIT must be one of {list(DIT_SETTINGS)}")
 
+WHISPER_REPO = "openai/whisper-large-v3-turbo"
+WHISPER_REVISION = "41f01f3fe87f28c78e2fbf8b568835947dd65ed9"  # MIT（2026-10-06 確認）
 HF_REPO = "Comfy-Org/ace_step_1.5_ComfyUI_files"
 HF_REVISION = "6707deb277e9e0907fd9c14ce6b6f1d695c6a3fc"
 # (リポジトリ内のパス, ComfyUI のモデル種別フォルダ)
@@ -95,6 +99,11 @@ image = (
     # torch / torchaudio は上で入れた cu130 版が条件を満たすので入れ替わらない（入れ替わったら probe で分かる）。
     .pip_install("demucs==4.1.0")
     .run_commands('python -c "from demucs.pretrained import get_model; get_model(\'htdemucs\')"')
+    # Whisper（歌詞を歌っているかの判定）と、日本語をひらがなにそろえる pykakasi。重みはビルド時に焼く（CPU）。
+    .pip_install("pykakasi")
+    .run_commands(
+        f'python -c "from huggingface_hub import snapshot_download; snapshot_download(\'{WHISPER_REPO}\', revision=\'{WHISPER_REVISION}\')"'
+    )
     .add_local_python_source("ull_r2")
 )
 
@@ -115,6 +124,10 @@ def probe() -> dict:
     from demucs.pretrained import get_model
 
     get_model("htdemucs")  # ビルド時に焼いた重みが読めるか（ネットに取りに行かない）
+    import pykakasi  # noqa: F401
+    from huggingface_hub import snapshot_download
+
+    snapshot_download(WHISPER_REPO, revision=WHISPER_REVISION, local_files_only=True)  # 焼いた Whisper の重み
     out = {"torch": torch.__version__, "cuda_build": torch.version.cuda, "comfyui": ref, "nodes": nodes, "weights": weights, "demucs": "ok"}
     print(json.dumps(out, ensure_ascii=False, indent=1), flush=True)
     return out
@@ -257,9 +270,94 @@ def finish_audio(src: str, dst: str) -> dict:
 # 手元の試作（D:/ComfyUI-ull/tools/vocal_check2.py）で、声の無い曲 0.4%・普通の曲 48% / 73% とはっきり分かれた。
 # 30%（2026-10-06）: 10% だとハミングだけの曲（14.6%）が通った（ホスト指摘）。普通に歌った曲は 48〜81%。
 VOCAL_MIN_RATIO = 0.30
+# 歌詞の一致率（2026-10-06）: 声の割合だけでは全編ハミングを見抜けない（ハミングも「声」）。取り出した声を Whisper で聞き取り、
+# 歌詞と両方ひらがな（英語は英字）にして文字 2-gram の一致率を見る。手元の試作（D:/ComfyUI-ull/tools/lyric_check.py）で
+# ちゃんと歌った曲 70〜79%・声なし 1.9%・ハミングだけ 1.1%。Whisper は歌の無いところで決まり文句をでっち上げるが歌詞と一致しない。
+LYRIC_MIN_MATCH = 0.30
 # 作り直しの上限（何番までか別）。長いほど外れが多い（2 番の構成で 6 回中 4 回）。上限まで外れたら一番歌っていた回を残す。
 VOCAL_RETRIES = {1: 2, 2: 3, 3: 4}
 _DEMUCS = None
+_WHISPER = None
+_KAKASI = None
+
+
+def _vocal_stem(path: str):
+    """Demucs で声のパートを取り出す: (声のモノラル波形, 元のモノラル波形, サンプルレート)。"""
+    import numpy as np
+    import torch
+    from demucs.apply import apply_model
+    from demucs.pretrained import get_model
+
+    global _DEMUCS
+    if _DEMUCS is None:
+        _DEMUCS = get_model("htdemucs").eval().to("cuda" if torch.cuda.is_available() else "cpu")
+    m = _DEMUCS
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", path, "-ac", "2", "-ar", str(m.samplerate), "-f", "f32le", "-"], capture_output=True
+    ).stdout
+    wav = torch.from_numpy(np.frombuffer(raw, dtype=np.float32).copy()).view(-1, 2).T
+    dev = next(m.parameters()).device
+    with torch.no_grad():
+        src = apply_model(m, wav[None].to(dev), device=dev, split=True, overlap=0.1)[0].cpu()
+    return src[m.sources.index("vocals")].mean(0).numpy(), wav.mean(0).numpy(), m.samplerate
+
+
+def _normalize_lyrics(text: str, language: str) -> str:
+    """照合用に文字をそろえる。日本語はひらがなだけ、それ以外は英字の小文字だけ。"""
+    import re
+
+    if language == "ja":
+        global _KAKASI
+        if _KAKASI is None:
+            import pykakasi
+
+            _KAKASI = pykakasi.kakasi()
+        text = "".join(x["hira"] for x in _KAKASI.convert(text))
+        return re.sub(r"[^ぁ-ゖー]", "", text)
+    return re.sub(r"[^a-z]", "", text.lower())
+
+
+def lyric_match(path: str, lyrics: str, language: str = "ja") -> dict:
+    """歌詞を歌っているか: 声の割合（Demucs）と、聞き取った文字と歌詞の一致率（Whisper）。"""
+    import numpy as np
+    import torch
+    from scipy.signal import resample_poly
+
+    voc, mix, sr = _vocal_stem(path)
+    win = sr // 2
+    n = len(voc) // win
+    ratio = 0.0
+    if n:
+        rest = mix - voc
+        v = np.sqrt((voc[: n * win].reshape(n, win) ** 2).mean(1) + 1e-12)
+        r = np.sqrt((rest[: n * win].reshape(n, win) ** 2).mean(1) + 1e-12)
+        ratio = float((20 * np.log10(v / (r + 1e-9)) > -12).mean())
+
+    global _WHISPER
+    if _WHISPER is None:
+        from transformers import pipeline
+
+        _WHISPER = pipeline(
+            "automatic-speech-recognition",
+            model=WHISPER_REPO,
+            revision=WHISPER_REVISION,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+        )
+    v16 = resample_poly(voc, 16000, sr).astype(np.float32)
+    out = _WHISPER(
+        {"raw": v16, "sampling_rate": 16000},
+        chunk_length_s=30,
+        batch_size=8,
+        generate_kwargs={"language": language, "task": "transcribe"},
+    )
+    heard = out.get("text", "") if isinstance(out, dict) else ""
+    sung = "\n".join(l for l in lyrics.splitlines() if not l.strip().startswith("["))
+    ref, got = _normalize_lyrics(sung, language), _normalize_lyrics(heard, language)
+    rg = {ref[i : i + 2] for i in range(len(ref) - 1)}
+    hg = {got[i : i + 2] for i in range(len(got) - 1)}
+    match = len(rg & hg) / max(1, len(rg))
+    return {"match": match, "vocal_ratio": ratio, "heard": heard[:200]}
 
 
 def vocal_ratio(path: str) -> float:
@@ -485,15 +583,19 @@ class AceStep:
                 for attempt in range(max_retries + 1):
                     s_try = seed + k + attempt * 1000
                     r_try = self._make_song({**job["params"], "seed": s_try, "dit": "sft"})
-                    ratio_try = vocal_ratio(r_try["path"])
-                    print(f"[song] #{k + 1} seed {s_try} vocal {ratio_try:.1%}", flush=True)
+                    chk = lyric_match(r_try["path"], job["params"].get("lyrics", ""), job["params"].get("language", "ja"))
+                    ratio_try = chk["match"]
+                    print(
+                        f"[song] #{k + 1} seed {s_try} lyric {ratio_try:.1%} vocal {chk['vocal_ratio']:.1%} heard={chk['heard'][:40]!r}",
+                        flush=True,
+                    )
                     if best is None or ratio_try > best[2]:
-                        best = (s_try, r_try, ratio_try)
-                    if ratio_try >= VOCAL_MIN_RATIO:
+                        best = (s_try, r_try, ratio_try, chk)
+                    if ratio_try >= LYRIC_MIN_MATCH:
                         break
                     if attempt < max_retries:
                         retried += 1
-                s, res, ratio = best
+                s, res, ratio, chk = best
                 mp3 = res["path"].replace(".flac", ".mp3")
                 r = subprocess.run(
                     ["ffmpeg", "-v", "error", "-y", "-i", res["path"], "-c:a", "libmp3lame", "-b:a", "256k", mp3],
@@ -510,7 +612,8 @@ class AceStep:
                     "seed": s,
                     "seconds": res["final_s"],
                     "elapsed_s": res["elapsed_s"],
-                    "vocal_ratio": round(ratio, 3),
+                    "lyric_match": round(ratio, 3),
+                    "vocal_ratio": round(chk["vocal_ratio"], 3),
                     "cut_off": res.get("cut_off"),
                 })
                 _patch_job(job_id, {
