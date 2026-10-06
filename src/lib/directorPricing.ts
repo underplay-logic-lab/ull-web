@@ -145,7 +145,9 @@ export function directorAspectDims(
   image: { width: number; height: number } | null | undefined,
 ): { width: number; height: number } {
   const a = DIRECTOR_ASPECTS.find((x) => x.id === aspect);
-  if (referenceMode === "reference" && a && a.ratio > 0) return { width: a.ratio, height: 1 };
+  // 比率だけを 1000 倍の整数で渡す。{ ratio, 1 } で渡すと cinematicSafeDimensions が各辺を「最低 1」に切り上げるため、
+  // 縦長（9:16 = 0.5625×1・3:4）が正方形 1024×1024 になっていた（2026-10-06 発覚・横長は無事）。
+  if (referenceMode === "reference" && a && a.ratio > 0) return { width: Math.round(a.ratio * 1000), height: 1000 };
   return { width: image?.width || 1, height: image?.height || 1 };
 }
 
