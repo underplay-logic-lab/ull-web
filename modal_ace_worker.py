@@ -12,6 +12,7 @@ GPU の AceStep.run_job が N 曲を続けて作り、MP3 にして R2 へ直接
   - ACE-Step 1.5 XL turbo（`ACE-Step/acestep-v15-xl-turbo`）・言語モデル `acestep-5Hz-lm-0.6B` / `-4B`: MIT（2026-10-05 確認）。
     README に「権利処理済みのデータで学習・生成した曲は商用利用可」。地域制限・表示義務なし。
   - 重みは ComfyUI 用のまとめ直し `Comfy-Org/ace_step_1.5_ComfyUI_files`（Apache-2.0、リビジョン固定）。
+  - VAE（音に戻す部分）は ScragVAE（`scragnog/Ace-Step-1.5-ScragVAE`・MIT・rev 0547ba3、2026-10-06 確認）。公式ガイドが載せる差し替え候補。
   - 歌っているかの判定（2026-10-06）: Demucs `htdemucs`（MIT）で声を取り出し、Whisper `openai/whisper-large-v3-turbo`（MIT、
     2026-10-06 確認）で聞き取って歌詞と照合する。fp16（量子化しない）。
   - 推論は ComfyUI 本体のノードだけ（TextEncodeAceStepAudio1.5 ほか、カスタムノードなし）。BF16（CLAUDE.md §1）。
@@ -395,7 +396,9 @@ def build_workflow(p: dict) -> dict:
     d = DIT_SETTINGS[p.get("dit") or "sft"]
     return {
         "104": {"class_type": "UNETLoader", "inputs": {"unet_name": d["unet"], "weight_dtype": "default"}},
-        "106": {"class_type": "VAELoader", "inputs": {"vae_name": "ace_1.5_vae.safetensors"}},
+        # VAE は ScragVAE（2026-10-06 ホスト判断: 公式と聴き比べて音に厚みがある）。公式は ace_1.5_vae.safetensors。
+        # 配布は diffusers 形式なので scripts/ace_scragvae_convert.py で ComfyUI 形式に変換して Volume に置いた（precache の対象外）。
+        "106": {"class_type": "VAELoader", "inputs": {"vae_name": "ace_1.5_scragvae_bf16.safetensors"}},
         "105": {
             "class_type": "DualCLIPLoader",
             "inputs": {

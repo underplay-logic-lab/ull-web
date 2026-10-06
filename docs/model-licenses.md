@@ -32,6 +32,8 @@ CLAUDE.md §5（商用利用・SaaS再頒布・地域制限の3点を満たす�
   ComfyUI 用のまとめ直し `Comfy-Org/ace_step_1.5_ComfyUI_files` は Apache-2.0。地域制限・表示義務なし。
 - **Demucs `htdemucs`（MIT）／Whisper `openai/whisper-large-v3-turbo`（MIT・リビジョン 41f01f3）**: 曲づくりで「歌詞を歌っているか」の判定に使う
   （声を取り出して聞き取り、歌詞と照合）。2026-10-06 に HF の cardData で確認。生成物には含まれない。
+- **ScragVAE（`scragnog/Ace-Step-1.5-ScragVAE`・MIT・rev 0547ba3）**: 曲づくりの VAE（音に戻す部分）。ACE-Step 公式ドキュメント（ALT_VAE.md）が
+  差し替え候補として載せるコミュニティ製の調整版。diffusers 形式を ComfyUI 形式に変換して使う（`scripts/ace_scragvae_convert.py`）。2026-10-06 確認。
 - **Qwen-Image / Qwen-Image-Edit-2511**: Apache-2.0。現行の画像編集・リスタイルの基盤。
 - **Microsoft TRELLIS / TRELLIS.2（`microsoft/TRELLIS.2-4B`）**: MIT。image→3D の第一候補（非商用レンダラ依存は上記のとおり回避）。
 - **Qwen3.8-27B-abliterated（`hotdogs/Qwen3.8-27B-abliterated`、base `Qwen/Qwen3.8-27B`）**: Apache-2.0（モデルカードの
