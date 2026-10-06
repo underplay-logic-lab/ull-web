@@ -2,6 +2,8 @@
 
 import { CopyButton } from "./CopyButton";
 import { HelpNote } from "./HelpNote";
+import { PromptLanguageSwitch } from "./PromptLanguageSwitch";
+import { RefPhotoPicker, type RefPhoto } from "./RefPhotoPicker";
 import { RestrictedChoiceModal, UnrestrictedToggle } from "./RestrictedChoiceModal";
 import { TopupActions } from "./TopupActions";
 import { PrevResultPanel } from "@/components/studio/PrevResultPanel";
@@ -49,14 +51,12 @@ import {
   directorExtraRefSurcharge,
   directorRefVideoSurcharge,
   directorTotalDurationS,
-  DIRECTOR_REF_ROLES,
   DIRECTOR_REF_VIDEO_MAX_BYTES,
   DIRECTOR_REF_VIDEO_MAX_S,
   DIRECTOR_REF_VIDEO_MIN_S,
   DIRECTOR_REF_VIDEO_ROLES,
   DIRECTOR_REF_VOICE_MAX_BYTES,
   DIRECTOR_REF_VOICE_MAX_S,
-  type DirectorRefRole,
   type DirectorRefVideoRole,
   type DirectorAspectId,
   type DirectorCameraMoveId,
@@ -389,9 +389,10 @@ export function DirectorStudioTab() {
   const [referenceMode, setReferenceMode] = useState<DirectorReferenceMode>("first_frame");
   const [aspect, setAspect] = useState<DirectorAspectId>("16:9");
   // 「顔写真として使う」で足す写真（2 枚目以降・最大 8 枚、2026-10-05）。同じ人物の角度・表情違いを入れるほど似る。
-  const [extraRefs, setExtraRefs] = useState<File[]>([]);
-  // 足した写真それぞれの使い方（extraRefs と同じ順、2026-10-06）。人物／持ち物／場所／画風。
-  const [extraRefRoles, setExtraRefRoles] = useState<DirectorRefRole[]>([]);
+  // 足した写真と、それぞれの使い方（人物／持ち物／場所／画風）。欄は Photo Director と共通の RefPhotoPicker。
+  const [refs, setRefs] = useState<RefPhoto[]>([]);
+  const extraRefs = useMemo(() => refs.map((r) => r.file), [refs]);
+  const extraRefRoles = useMemo(() => refs.map((r) => r.role), [refs]);
   // 手本の動画（動き／カメラ）と声の手本（2026-10-06）。参照モードだけ。
   const [refVideo, setRefVideo] = useState<{ file: File; durationS: number } | null>(null);
   const [refVideoRole, setRefVideoRole] = useState<DirectorRefVideoRole>("motion");
@@ -436,30 +437,6 @@ export function DirectorStudioTab() {
     }
     setRefVoice(file);
   };
-  const [extraRefError, setExtraRefError] = useState<string | null>(null);
-  const [extraRefDragging, setExtraRefDragging] = useState(false);
-  const extraRefInputRef = useRef<HTMLInputElement>(null);
-  const extraRefUrls = useMemo(() => extraRefs.map((f) => URL.createObjectURL(f)), [extraRefs]);
-  useEffect(() => () => extraRefUrls.forEach((u) => URL.revokeObjectURL(u)), [extraRefUrls]);
-  const addExtraRefs = (files: FileList | File[] | null | undefined) => {
-    if (!files) return;
-    const list = Array.from(files);
-    const bad = list.filter((f) => !f.type.startsWith("image/"));
-    const ok = list.filter((f) => f.type.startsWith("image/"));
-    const room = 8 - extraRefs.length;
-    setExtraRefError(
-      bad.length
-        ? "画像ファイル（PNG・JPEG・WebP など）を選んでください。"
-        : ok.length > room
-          ? `追加できるのは 8 枚までです（${ok.length - room} 枚は入れませんでした）。`
-          : null,
-    );
-    if (ok.length && room > 0) {
-      const added = ok.slice(0, room);
-      setExtraRefs((prev) => [...prev, ...added]);
-      setExtraRefRoles((prev) => [...prev, ...added.map((): DirectorRefRole => "person")]);
-    }
-  };
   // 素材づくりから受け取る（2026-10-05）: 先頭を参照画像、残りを追加の写真にして「顔写真として使う」にする。
   const [handoffNotice, setHandoffNotice] = useState<string | null>(null);
   useEffect(() => {
@@ -468,8 +445,7 @@ export function DirectorStudioTab() {
     queueMicrotask(() => {
       setImage(h.files[0]);
       setReferenceMode("reference");
-      setExtraRefs(h.files.slice(1, 9));
-      setExtraRefRoles(h.files.slice(1, 9).map((): DirectorRefRole => "person"));
+      setRefs(h.files.slice(1, 9).map((file): RefPhoto => ({ file, role: "person" })));
       setHandoffNotice(`${h.source}を受け取りました。${h.hint ?? ""}`);
     });
   }, []);
@@ -512,6 +488,7 @@ export function DirectorStudioTab() {
   const [promptDraft, setPromptDraft] = useState("");
   // 編集で読み込んだジョブの英語の原文（日本語訳を読み込んだときに戻せるように）。
   const [promptEnglish, setPromptEnglish] = useState<string | null>(null);
+  const [promptJa, setPromptJa] = useState<string | null>(null);
   const [promptDraftDurationS, setPromptDraftDurationS] = useState(DIRECTOR_SECONDS_PER_SCENE);
   // 「この動画をもとに調整する」（2026-10-01〜）: 完了した動画から入ったときだけ持つ。
   // この間は元の動画と同じシード・同じ参照画像で作り直す（画像の入れ直しは不要）。
@@ -835,6 +812,7 @@ export function DirectorStudioTab() {
     if (!job?.combinedPrompt) return;
     setPromptDraft(job.combinedPromptJa || job.combinedPrompt);
     setPromptEnglish(job.combinedPrompt);
+    setPromptJa(job.combinedPromptJa);
     setPromptDraftDurationS(job.totalDurationS ?? DIRECTOR_SECONDS_PER_SCENE);
     setAdjustBase(
       job.status === "completed" && job.regenerable ? { jobId: job.jobId, seed: job.seed, english: job.combinedPrompt } : null,
@@ -848,6 +826,8 @@ export function DirectorStudioTab() {
   }, [job]);
   const exitPromptMode = useCallback(() => {
     setAdjustBase(null);
+    setPromptEnglish(null);
+    setPromptJa(null);
     setUiMode("advanced");
   }, []);
 
@@ -1339,98 +1319,17 @@ export function DirectorStudioTab() {
           )}
           {referenceMode === "reference" && (
             <div className="mt-3">
-              <p className="mb-1.5 text-[11px] font-medium text-muted">
-                写真を追加（任意・あと {8 - extraRefs.length} 枚まで）
-              </p>
-              <input
-                ref={extraRefInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={(e) => {
-                  addExtraRefs(e.target.files);
-                  e.target.value = "";
-                }}
+              <RefPhotoPicker
+                value={refs}
+                onChange={setRefs}
+                help={
+                  <>
+                    写真ごとに使い方を選べます。「同じ人物」は角度・表情の違う写真（顔のアップ、横顔、口を開けて笑っている顔など）を足すほど、本人らしさと細部が保たれ、歌うときの口もよく動きます。
+                    「持ち物」は道具や小物をそのままの形で持たせ、「場所」はその景色の中で撮り、「画風」は絵柄や色づかいを合わせます。
+                    場所の写真は動画の縦横に合わせて中央を切り抜きます。1 枚足すごとに料金が少し上がります（生成に少し時間がかかるため）。
+                  </>
+                }
               />
-              <div
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setExtraRefDragging(true);
-                }}
-                onDragLeave={() => setExtraRefDragging(false)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setExtraRefDragging(false);
-                  addExtraRefs(e.dataTransfer.files);
-                }}
-                className={`grid grid-cols-4 gap-2 rounded-xl border border-dashed p-2 transition-colors sm:grid-cols-5 ${
-                  extraRefDragging ? "border-neon-pink/60 bg-neon-pink/5" : "border-border"
-                }`}
-              >
-                {extraRefUrls.map((u, i) => (
-                  <div key={u} className="flex flex-col gap-1">
-                    <div className="relative aspect-square overflow-hidden rounded-lg bg-background">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={u} alt={`追加の写真 ${i + 2}`} className="h-full w-full object-contain" />
-                      {/* プロンプトで指すときの名前（サーバーが「Picture 2」「2枚目」なども <Picture 2> にそろえる）。 */}
-                      <span className="absolute left-1 top-1 rounded bg-black/60 px-1 py-px font-mono text-[9px] leading-tight text-white">
-                        Picture {i + 2}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setExtraRefs((prev) => prev.filter((_, j) => j !== i));
-                          setExtraRefRoles((prev) => prev.filter((_, j) => j !== i));
-                        }}
-                        className="absolute right-1 top-1 rounded bg-black/60 p-0.5 text-white transition-colors hover:bg-black/80"
-                        aria-label={`追加の写真 ${i + 2} を外す`}
-                      >
-                        <X size={12} />
-                      </button>
-                    </div>
-                    <select
-                      value={extraRefRoles[i] ?? "person"}
-                      onChange={(e) =>
-                        setExtraRefRoles((prev) => {
-                          const next = [...prev];
-                          next[i] = e.target.value as DirectorRefRole;
-                          return next;
-                        })
-                      }
-                      aria-label={`追加の写真 ${i + 2} の使い方`}
-                      className="w-full rounded-md border border-border bg-surface px-1 py-0.5 text-[10px] text-foreground"
-                    >
-                      {DIRECTOR_REF_ROLES.map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {r.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                ))}
-                {extraRefs.length < 8 && (
-                  <button
-                    type="button"
-                    onClick={() => extraRefInputRef.current?.click()}
-                    className="flex aspect-square flex-col items-center justify-center gap-1 rounded-lg border border-border text-[10px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
-                  >
-                    <Plus size={14} />
-                    追加・ドロップ
-                  </button>
-                )}
-              </div>
-              {extraRefError && (
-                <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-red-400">
-                  <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-                  {extraRefError}
-                </p>
-              )}
-              <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
-                写真ごとに使い方を選べます。「同じ人物」は角度・表情の違う写真（顔のアップ、横顔、口を開けて笑っている顔など）を足すほど、本人らしさと細部が保たれ、歌うときの口もよく動きます。
-                「持ち物」は道具や小物をそのままの形で持たせ、「場所」はその景色の中で撮り、「画風」は絵柄や色づかいを合わせます。
-                場所の写真は動画の縦横に合わせて中央を切り抜きます。1 枚足すごとに料金が少し上がります（生成に少し時間がかかるため）。
-              </p>
 
               <p className="mb-1.5 mt-4 text-[11px] font-medium text-muted">
                 手本の動画（任意・{DIRECTOR_REF_VIDEO_MIN_S}〜{DIRECTOR_REF_VIDEO_MAX_S} 秒）
@@ -1690,16 +1589,7 @@ export function DirectorStudioTab() {
                 <span>
                   元の動画と同じシード・同じ参照画像で作り直します（画像の入れ直しは不要）。
                   セリフの一言や光の加減など、小さな変更に向いています。カメラの向きや動きを変えると、別の動画になります。
-                  元の言い回しを変えたくないときは英語の原文を直してください（日本語のまま直すと、全文が訳し直されて言い回しも変わります）。
-                  {promptDraft !== adjustBase.english && (
-                    <button
-                      type="button"
-                      onClick={() => setPromptDraft(adjustBase.english)}
-                      className="ml-1 text-neon-pink underline transition-colors hover:opacity-80"
-                    >
-                      英語の原文に切り替える
-                    </button>
-                  )}
+                  元の言い回しを変えたくないときは、下の切り替えで英語の原文を直してください（日本語のまま直すと、全文が訳し直されて言い回しも変わります）。
                 </span>
                 <button
                   type="button"
@@ -1710,6 +1600,9 @@ export function DirectorStudioTab() {
                 </button>
               </div>
             )}
+            {promptEnglish && (
+              <PromptLanguageSwitch ja={promptJa} en={promptEnglish} draft={promptDraft} onPick={setPromptDraft} />
+            )}
             <textarea
               ref={promptEditorRef}
               value={promptDraft}
@@ -1718,20 +1611,7 @@ export function DirectorStudioTab() {
               placeholder="英語・日本語どちらでも入力できます（日本語は送信時に自動で英訳されます）"
               className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm leading-relaxed text-foreground placeholder:text-muted"
             />
-            {/* 日本語を直すと英訳の AI を通る（制限ワードなら解除の確認＋追加料金）。英語の原文なら AI を通さずそのまま使う。
-                調整（adjustBase）のときは上の案内に同じボタンがあるので出さない。 */}
-            {!adjustBase && promptEnglish && promptDraft !== promptEnglish && (
-              <p className="mt-1 text-[11px] leading-relaxed text-muted">
-                日本語を直すと送るときに英訳します。英語の原文を直すと AI を通さずにそのまま使います（表現の制限にかからず、追加料金もかかりません）。
-                <button
-                  type="button"
-                  onClick={() => setPromptDraft(promptEnglish)}
-                  className="ml-1 text-neon-pink underline transition-colors hover:opacity-80"
-                >
-                  英語の原文に切り替える
-                </button>
-              </p>
-            )}
+
             {useAudio ? (
               <p className="mt-3 text-xs text-muted">尺: 音声に合わせて約{totalDurationS}秒</p>
             ) : (

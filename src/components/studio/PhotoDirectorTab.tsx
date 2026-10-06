@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, Camera, Clapperboard, Download, ImagePlus, LogIn, Pencil, Sparkles, X, Zap } from "lucide-react";
 import { CopyButton } from "./CopyButton";
+import { PromptLanguageSwitch } from "./PromptLanguageSwitch";
 import { HelpNote } from "./HelpNote";
 import { TopupActions } from "./TopupActions";
 import { RefPhotoPicker, type RefPhoto } from "./RefPhotoPicker";
@@ -180,6 +181,7 @@ export function PhotoDirectorTab() {
   const [promptSource, setPromptSource] = useState<"job" | "direct">("direct");
   // 前のジョブの英語の原文（日本語訳を読み込んだときに「英語の原文に切り替える」で戻せるように）。
   const [promptEnglish, setPromptEnglish] = useState<string | null>(null);
+  const [promptJa, setPromptJa] = useState<string | null>(null);
   const promptEditorRef = useRef<HTMLTextAreaElement>(null);
   // 編集して作り直すときは、元のジョブの写真も欄へ読み戻す（外す・足す・役目を変えるのは普段どおり）。
   const [refsLoading, setRefsLoading] = useState(false);
@@ -492,6 +494,7 @@ export function PhotoDirectorTab() {
     if (!job?.combinedPrompt || !jobId) return;
     setPromptSource("job");
     setPromptEnglish(job.combinedPrompt);
+    setPromptJa(job.combinedPromptJa);
     setPromptDraft((job.combinedPromptJa || job.combinedPrompt).slice(0, PHOTO_PROMPT_MAX_LENGTH));
     setTimeout(() => {
       promptEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -642,6 +645,14 @@ export function PhotoDirectorTab() {
             <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">
               {promptSource === "job" ? "プロンプト（前の写真から）" : "プロンプト（直接書く）"}
             </p>
+            {promptSource === "job" && promptEnglish && (
+              <PromptLanguageSwitch
+                ja={promptJa?.slice(0, PHOTO_PROMPT_MAX_LENGTH) ?? null}
+                en={promptEnglish.slice(0, PHOTO_PROMPT_MAX_LENGTH)}
+                draft={promptDraft}
+                onPick={setPromptDraft}
+              />
+            )}
             <textarea
               ref={promptEditorRef}
               value={promptDraft}
@@ -655,18 +666,9 @@ export function PhotoDirectorTab() {
             </p>
             <p className="text-[11px] leading-relaxed text-muted">
               {promptSource === "job"
-                ? "書き換えたいところだけ直してください。日本語のままで大丈夫です（送るときに英語へ直します）。英語の原文を直すと AI を通さずにそのまま使うので、表現の制限にかからず、制限解除の追加料金もかかりません。"
+                ? "書き換えたいところだけ直してください。"
                 : "英語で書くと、AI の書き起こしを通さずにそのまま使います（日本語が混ざると英語へ直してから使います）。写真は <Picture 1> のようにサムネの角の名前で指してください。"}
             </p>
-            {promptSource === "job" && promptEnglish && promptDraft !== promptEnglish && (
-              <button
-                type="button"
-                onClick={() => setPromptDraft(promptEnglish.slice(0, PHOTO_PROMPT_MAX_LENGTH))}
-                className="mt-1 text-[11px] text-neon-pink underline transition-colors hover:opacity-80"
-              >
-                英語の原文に切り替える
-              </button>
-            )}
             {(refsLoading || refsNotice) && (
               <p className="mt-1 text-[11px] leading-relaxed text-neon-violet">{refsLoading ? "元の写真を読み込んでいます…" : refsNotice}</p>
             )}

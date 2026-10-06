@@ -1,9 +1,9 @@
 "use client";
 
 // 参照写真の追加欄（2 枚目以降・最大 8 枚）と、写真ごとの使い方（人物／持ち物／場所／画風）。
-// Photo Director（2026-10-06）で使う。Director の「顔写真として使う」の欄と同じ見た目・同じ意味。
+// Photo Director と Director の「顔写真として使う」で共用（2026-10-06〜。別々に書いていて修正漏れが出たため一本化）。
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, Plus, X } from "lucide-react";
 import { DIRECTOR_REF_ROLES, type DirectorRefRole } from "@/lib/directorPricing";
 
@@ -15,10 +15,13 @@ export function RefPhotoPicker({
   value,
   onChange,
   label = "写真を追加（任意）",
+  help,
 }: {
   value: RefPhoto[];
   onChange: (next: RefPhoto[]) => void;
   label?: string;
+  /** 欄の下の説明（タブごとに言い回しが違う。省略時は写真向けの文）。 */
+  help?: ReactNode;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -122,9 +125,13 @@ export function RefPhotoPicker({
         </p>
       )}
       <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
-        写真ごとに使い方を選べます。「同じ人物」は角度・表情の違う写真を足すほど本人らしさと細部が保たれます。
-        「持ち物」は道具や小物をそのままの形で、「場所」はその景色の中で、「画風」は絵柄や色づかいを合わせます。
-        場所の写真は出来上がりの縦横に合わせて中央を切り抜きます。1 枚足すごとに料金が少し上がります。
+        {help ?? (
+          <>
+            写真ごとに使い方を選べます。「同じ人物」は角度・表情の違う写真を足すほど本人らしさと細部が保たれます。
+            「持ち物」は道具や小物をそのままの形で、「場所」はその景色の中で、「画風」は絵柄や色づかいを合わせます。
+            場所の写真は出来上がりの縦横に合わせて中央を切り抜きます。1 枚足すごとに料金が少し上がります。
+          </>
+        )}
       </p>
     </div>
   );
