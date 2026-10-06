@@ -37,12 +37,27 @@ COMFY_DIR = "/root/comfy/ComfyUI"
 COMFY_PORT = 8188
 COMFYUI_REF = os.environ.get("ACE_COMFYUI_REF", "v0.38.2")
 GPU = os.environ.get("ACE_GPU", "L4")
+# 本体（2026-10-06）: turbo（8 step・CFG なし・蒸留）／sft（50 step・CFG 7・shift 3、公式の「最高品質」）。
+# turbo は 10 曲に 1 曲しか使えない崩れ方だった（ホスト評価）→ sft で同じ歌詞・同じシードを比べる。
+# 推奨値は公式 ACE-Step-1.5 の docs/en/API.md（inference_steps: base 32〜64・guidance_scale 7.0・shift 3.0）と
+# acestep/core/generation/handler/generate_music.py（turbo は CFG を 1.0 に固定する）。
+# ⚠️ env はコンテナに届かない（Modal は手元の env を引き継がない）。ACE_DIT は手元の main が読み、
+# params["dit"] としてコンテナへ渡す（2026-10-06、env だけで切り替えたら turbo のまま 10 本回った）。
+DIT = os.environ.get("ACE_DIT", "turbo")
+DIT_SETTINGS = {
+    "turbo": {"unet": "acestep_v1.5_xl_turbo_bf16.safetensors", "steps": 8, "cfg": 1.0, "shift": 3},
+    "sft": {"unet": "acestep_v1.5_xl_sft_bf16.safetensors", "steps": 50, "cfg": 7.0, "shift": 3},
+}
+if DIT not in DIT_SETTINGS:
+    raise ValueError(f"ACE_DIT must be one of {list(DIT_SETTINGS)}")
 
 HF_REPO = "Comfy-Org/ace_step_1.5_ComfyUI_files"
 HF_REVISION = "6707deb277e9e0907fd9c14ce6b6f1d695c6a3fc"
 # (リポジトリ内のパス, ComfyUI のモデル種別フォルダ)
 WEIGHTS = [
     ("split_files/diffusion_models/acestep_v1.5_xl_turbo_bf16.safetensors", "diffusion_models"),
+    # XL SFT（`ACE-Step/acestep-v15-xl-sft`・MIT、2026-10-06 確認）。
+    ("split_files/diffusion_models/acestep_v1.5_xl_sft_bf16.safetensors", "diffusion_models"),
     ("split_files/text_encoders/qwen_0.6b_ace15.safetensors", "text_encoders"),
     ("split_files/text_encoders/qwen_4b_ace15.safetensors", "text_encoders"),
     ("split_files/vae/ace_1.5_vae.safetensors", "vae"),
@@ -206,8 +221,9 @@ def build_workflow(p: dict) -> dict:
     """ace_hinata_song_60s.json と同じ組み方。p: tags / lyrics / seconds / bpm / keyscale / language / timesignature / seed。"""
     seconds = float(p.get("seconds", 60))
     seed = int(p.get("seed", 1))
+    d = DIT_SETTINGS[p.get("dit") or "turbo"]
     return {
-        "104": {"class_type": "UNETLoader", "inputs": {"unet_name": "acestep_v1.5_xl_turbo_bf16.safetensors", "weight_dtype": "default"}},
+        "104": {"class_type": "UNETLoader", "inputs": {"unet_name": d["unet"], "weight_dtype": "default"}},
         "106": {"class_type": "VAELoader", "inputs": {"vae_name": "ace_1.5_vae.safetensors"}},
         "105": {
             "class_type": "DualCLIPLoader",
@@ -240,7 +256,7 @@ def build_workflow(p: dict) -> dict:
             },
         },
         "47": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["94", 0]}},
-        "78": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["104", 0], "shift": 3}},
+        "78": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["104", 0], "shift": d["shift"]}},
         "3": {
             "class_type": "KSampler",
             "inputs": {
@@ -249,8 +265,8 @@ def build_workflow(p: dict) -> dict:
                 "negative": ["47", 0],
                 "latent_image": ["98", 0],
                 "seed": seed,
-                "steps": 8,
-                "cfg": 1,
+                "steps": d["steps"],
+                "cfg": d["cfg"],
                 "sampler_name": "euler",
                 "scheduler": "simple",
                 "denoise": 1,
@@ -339,6 +355,7 @@ class AceStep:
             "elapsed_s": elapsed,
             "boot_s": self.boot_s,
             "gpu": GPU,
+            "dit": params.get("dit") or "turbo",
             "seconds": params["seconds"],
             "auto_seconds": params["auto_seconds"],
             **info,
@@ -361,6 +378,7 @@ def main(out_dir: str = "./ace_out", seconds: float = 0.0, seed: int = 1, workfl
         "language": enc.get("language", "ja"),
         "timesignature": enc.get("timesignature", "4"),
         "seed": seed,
+        "dit": DIT,
     }
     dst = pathlib.Path(out_dir).expanduser()
     dst.mkdir(parents=True, exist_ok=True)
@@ -371,7 +389,7 @@ def main(out_dir: str = "./ace_out", seconds: float = 0.0, seed: int = 1, workfl
         res = worker.generate.remote({**params, "seed": seed + k})
         total = time.time() - t
         tag = "auto" if res["auto_seconds"] else f"{int(seconds)}s"
-        out = dst / f"ace_{GPU}_{tag}{int(res['seconds'])}s_seed{seed + k}_{res['filename']}"
+        out = dst / f"ace_{GPU}_{res['dit']}_{tag}{int(res['seconds'])}s_seed{seed + k}_{res['filename']}"
         out.write_bytes(res["audio"])
         print(
             f"[main] #{k + 1} gpu={res['gpu']} generate={res['elapsed_s']}s boot={res['boot_s']}s "
