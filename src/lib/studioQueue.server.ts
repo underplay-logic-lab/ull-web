@@ -9,6 +9,8 @@ import {
   type UpscaleVideoSpec,
 } from "@/lib/upscaleDispatch.server";
 import { dispatchDirectorJob, type DirectorDispatchSpec } from "@/lib/directorDispatch.server";
+import { dispatchSongJob, type SongDispatchSpec } from "@/lib/modalSong";
+import { rememberGenerationCall } from "@/lib/modalCallRecord.server";
 import { deleteStudioUploads } from "@/lib/studioUploads.server";
 
 /**
@@ -22,9 +24,10 @@ import { deleteStudioUploads } from "@/lib/studioUploads.server";
  *      画面が完了を見たとき／画面を開いたとき。
  * 始まったら完走のルールは不変。取り消せるのは reserved のうちだけ（全額返金・行ごと消す）。
  */
-export type QueueKind = "angle" | "upscale_image" | "upscale_video" | "director";
+export type QueueKind = "angle" | "upscale_image" | "upscale_video" | "director" | "song";
 
-export const QUEUE_KINDS: QueueKind[] = ["angle", "upscale_image", "upscale_video", "director"];
+// "song"（曲づくり、2026-10-06）は supabase/migrations/20260896000000_song_studio_queue.sql の適用が要る（kind の制約・取り出し・トリガー）。
+export const QUEUE_KINDS: QueueKind[] = ["angle", "upscale_image", "upscale_video", "director", "song"];
 
 export function isQueueKind(v: unknown): v is QueueKind {
   return typeof v === "string" && (QUEUE_KINDS as string[]).includes(v);
@@ -75,6 +78,15 @@ const KINDS: Partial<Record<QueueKind, KindDef>> = {
     match: { workflow_type: "director" },
     dispatch: (jobId, userId, spec) => dispatchDirectorJob(jobId, userId, spec as DirectorDispatchSpec),
     // 参照画像は作り直し用に 14 日残す（取り消しても消さない。作り直しの元が同じ画像のこともある）。
+    uploads: () => [],
+  },
+  song: {
+    table: "generation_jobs",
+    match: { workflow_type: "song" },
+    dispatch: async (jobId, userId, spec) => {
+      const { callId } = await dispatchSongJob(jobId, userId, spec as SongDispatchSpec);
+      await rememberGenerationCall(jobId, callId);
+    },
     uploads: () => [],
   },
 };

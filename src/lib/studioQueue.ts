@@ -2,7 +2,7 @@ import { supabase } from "@/lib/supabaseClient";
 
 // 予約（順番待ち）をサーバー側で流す仕組みの画面側（2026-10-03、lib/studioQueue.server.ts）。
 // 予約は DB（status 'reserved'）にあるので、リロード・タブを閉じても消えない。
-export type StudioQueueKind = "angle" | "upscale_image" | "upscale_video" | "director";
+export type StudioQueueKind = "angle" | "upscale_image" | "upscale_video" | "director" | "song";
 
 async function authHeader(): Promise<Record<string, string> | null> {
   const { data } = await supabase.auth.getSession();

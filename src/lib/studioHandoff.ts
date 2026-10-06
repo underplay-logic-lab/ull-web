@@ -200,3 +200,20 @@ export function clearDirectorLora(): void {
     // noop
   }
 }
+
+// --- 曲づくりの曲を Director の「音声（任意）」へ渡す（2026-10-06）---
+// 受け取った Director は歌を固定して口を合わせる（尺＝曲の長さ）。顔写真として使うのがおすすめなので、画面側で案内する。
+let pendingDirectorAudio: File | null = null;
+
+export function sendAudioToDirector(file: File): void {
+  if (typeof window === "undefined") return;
+  pendingDirectorAudio = file;
+  window.dispatchEvent(new CustomEvent(STUDIO_TAB_EVENT, { detail: { tab: "director" } }));
+}
+
+/** 渡された曲を取り出して消す。無ければ null。 */
+export function takeDirectorAudio(): File | null {
+  const f = pendingDirectorAudio;
+  pendingDirectorAudio = null;
+  return f;
+}

@@ -33,6 +33,10 @@ export type KnobKey =
   | "director_extra_ref_rate"
   | "director_ref_video_rate"
   | "photo_director_base_credits"
+  | "song_base_credits"
+  | "song_per_track_credits"
+  | "song_priority_parallel_rate"
+  | "song_priority_parallel_surcharge"
   | "photo_director_per_image_credits"
   | "lora_caption_base"
   | "lora_caption_per_image"
@@ -203,6 +207,13 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 内訳は B300 の実測（1 枚の描画 16〜21s）から 1 枚 30s と多めに見て ¥6.4×3÷1.66 = 12C、残り 65s を基本 25C。
   // 温まっていれば起動・読み込みが無いので利益が厚くなる。8 枚の実測が出たら 1 枚ごとを合わせる。
   photo_director_base_credits: 25,
+  // 曲づくり（2026-10-06）: 1 回の基本料＋1 曲ごと。原価 3.0×。L40S（¥331/h）・100 秒の曲で
+  // 1 曲 24 秒 ≒ ¥2.2 ×3 ÷1.66 ≒ 4C、起動・読み込み 約 55 秒 ≒ ¥5 ×3 ÷1.66 ≒ 9C（docs/STATUS.md）。
+  song_base_credits: 9,
+  song_per_track_credits: 4,
+  // 並列の追加料金は全タブ共通の「通常料金 × 率 ＋ 固定」（CLAUDE.md §6-7）。
+  song_priority_parallel_rate: 1.0,
+  song_priority_parallel_surcharge: 50,
   photo_director_per_image_credits: 12,
   // 超解像スタジオ（SeedVR2）: 出力の 100 万画素あたりの消費クレジット。
   // credits = max(upscale_min_credits, ceil(これ × 出力MP × モデル係数))。

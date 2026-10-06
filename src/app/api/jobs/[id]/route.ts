@@ -210,6 +210,20 @@ export async function GET(request: Request, { params }: RouteParams) {
     );
     imageUrls = urls.filter((u): u is string => Boolean(u));
   }
+  // 曲づくり（2026-10-06）: 曲はワーカーが R2 へ上げ、metadata.audio_paths と r2_key_map を残す。歌詞・タイトルは inputs.plan。
+  const isSong = effJob.workflow_type === "song";
+  let audioUrls: string[] | null = null;
+  if (isSong && effJob.status === "completed") {
+    const meta = effJob.metadata as Record<string, unknown> | null;
+    const paths = Array.isArray(meta?.audio_paths) ? (meta.audio_paths as unknown[]).filter((p): p is string => typeof p === "string") : [];
+    const urls = await Promise.all(
+      paths.map((p, i) =>
+        presignPublishedArtifact(meta, p, { contentType: "audio/mpeg", downloadName: `song-${String(effJob.id).slice(0, 8)}-${i + 1}.mp3` }),
+      ),
+    );
+    audioUrls = urls.filter((u): u is string => Boolean(u));
+  }
+  const songPlan = isSong && inputs?.plan && typeof inputs.plan === "object" ? (inputs.plan as Record<string, unknown>) : null;
   let videoUrl = (effJob.video_url as string | null) ?? null;
   if (
     videoUrl &&
@@ -242,6 +256,9 @@ export async function GET(request: Request, { params }: RouteParams) {
     refVideoDurationS,
     output: isPhoto ? "photo" : null,
     imageUrls,
+    audioUrls,
+    songTitle: typeof songPlan?.title === "string" ? songPlan.title : null,
+    songLyrics: typeof songPlan?.lyrics === "string" ? songPlan.lyrics : null,
     // LoRA 学習のベースモデル（完了画面で「動画を作る」を出すかの判定。Director は minimax_h3 だけ使える）。
     targetModel: typeof inputs?.target_model === "string" ? inputs.target_model : null,
     // LoRA のトリガーワード（1 人目＋2 人目以降）。Director へ渡すときに使う。

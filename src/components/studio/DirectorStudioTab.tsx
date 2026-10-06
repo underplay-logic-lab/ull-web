@@ -99,6 +99,7 @@ import {
   peekDirectorLora,
   requestStudioHandoff,
   takeStudioBatchHandoff,
+  takeDirectorAudio,
   type DirectorLoraHandoff,
 } from "@/lib/studioHandoff";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
@@ -488,6 +489,17 @@ export function DirectorStudioTab() {
       setHandoffNotice(`${h.source}を受け取りました。${h.hint ?? ""}`);
     });
   }, []);
+  // 曲づくりから曲を受け取る（2026-10-06）: 音声欄に入れて、歌の動画向きの「顔写真として使う」にする。
+  const [pendingAudio] = useState<File | null>(() => takeDirectorAudio());
+  useEffect(() => {
+    if (!pendingAudio) return;
+    // 受け取りは開いたときの 1 回だけ（state の更新は効果の外＝マイクロタスクで）。
+    queueMicrotask(() => {
+      setReferenceMode("reference");
+      setHandoffNotice("曲づくりの曲を音声に入れました。歌う人の顔写真を入れてください。");
+      void handleAudioSelected(pendingAudio);
+    });
+  }, [pendingAudio]);
   const media: DirectorMediaOptions = {
     audio,
     referenceMode,

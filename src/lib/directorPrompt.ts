@@ -239,8 +239,8 @@ export async function expandPhotoIdea(idea: string, refs: DirectorReferenceSumma
   return out.startsWith(PHOTO_PROMPT_OPENING) ? out : `${PHOTO_PROMPT_OPENING} ${out}`;
 }
 
-/** Gemini に指示文を渡して 1 本の英語プロンプトを受け取る（シーン合成・写真の共通部分）。断り・枯渇は DirectorPromptError。 */
-async function runDirectorPromptGemini(instruction: string, feature: string): Promise<string> {
+/** Gemini に指示文を渡して文章を受け取る（シーン合成・写真・曲づくりの歌詞の共通部分）。断り・枯渇は DirectorPromptError。 */
+export async function runDirectorPromptGemini(instruction: string, feature: string): Promise<string> {
   const apiKey = geminiApiKey();
   if (!apiKey) {
     throw new DirectorPromptError("AI 機能が未設定です（GEMINI_API_KEY 未設定）。", "not_configured");

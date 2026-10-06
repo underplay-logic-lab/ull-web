@@ -6,6 +6,7 @@ import { CreditsBadge } from "@/components/CreditsBadge";
 import { CustomWorkflowsTab } from "@/components/studio/CustomWorkflowsTab";
 import { DirectorStudioTab } from "@/components/studio/DirectorStudioTab";
 import { PhotoDirectorTab } from "@/components/studio/PhotoDirectorTab";
+import { SongStudioTab } from "@/components/studio/SongStudioTab";
 import { LoraStudioTab } from "@/components/studio/LoraStudioTab";
 import { MultiAngleStudioTab } from "@/components/studio/MultiAngleStudioTab";
 import { UpscaleStudioTab } from "@/components/studio/UpscaleStudioTab";
@@ -23,7 +24,7 @@ import { ParallelDownloadIndicator } from "@/components/studio/ParallelDownloadI
 // 2026-09-09: Wan Animate 2 / Cinematic Video タブは廃止。汎用の動画・特殊要望は
 // すべて「特化ワークフロー」で対応する方針（管理者がワークフローを登録）。
 // 2026-09-12: 動画超解像（v1・最小スコープ）を専用タブとして追加。
-type StudioTab = "image" | "custom" | "lora" | "angle" | "dataset" | "upscale" | "upscale_video" | "director" | "photo";
+type StudioTab = "image" | "custom" | "lora" | "angle" | "dataset" | "upscale" | "upscale_video" | "director" | "photo" | "song";
 
 // 2026-09-24: 特化ワークフローは admin だけに表示し、末尾へ寄せた（ホスト判断:
 // ComfyUI で作り込んだワークフローの展開先として用意したが、まだ効果的な
@@ -37,6 +38,8 @@ const STUDIO_TABS: { id: StudioTab; label: string; adminOnly?: boolean }[] = [
   { id: "director", label: "🎥 Cinematic Director" },
   // 2026-10-06: 同じ土台で静止画（ホスト「新しいコーナーで良い」）。Director の隣に置く。
   { id: "photo", label: "📸 Photo Director" },
+  // 2026-10-06: 曲づくり（できた曲を Director の音声へ渡して歌の動画に）。
+  { id: "song", label: "🎵 曲づくり" },
   { id: "upscale_video", label: "🎬 4K動画超解像" },
   { id: "upscale", label: "✨ 4K/8K超解像" },
   { id: "angle", label: "🎭 マルチアングル" },
@@ -251,6 +254,11 @@ export function Studio() {
                 siteKey="studio_desc_photo"
                 fallback="人物の写真と、持ち物・場所の写真、どんな 1 枚にしたいかを書くだけ。その人のまま、狙いどおりの写真を作ります。"
               />
+            ) : activeTab === "song" ? (
+              <EditableText
+                siteKey="studio_desc_song"
+                fallback="思いつきを書くだけで、歌入りの曲を何曲もまとめて作れます。気に入った曲は、そのまま歌う動画にできます。"
+              />
             ) : activeTab === "lora" ? (
               <EditableText
                 siteKey="studio_desc_lora"
@@ -306,6 +314,8 @@ export function Studio() {
           <DirectorStudioTab />
         ) : shownTab === "photo" ? (
           <PhotoDirectorTab />
+        ) : shownTab === "song" ? (
+          <SongStudioTab />
         ) : shownTab === "lora" ? null : (
           <ImageGenMaintenancePlaceholder />
         )}
