@@ -213,8 +213,9 @@ def finish_audio(src: str, dst: str) -> dict:
     end_at = dur
     if starts and (len(ends) < len(starts) or ends[-1] >= dur - 0.05):
         end_at = max(5.0, starts[-1] + 0.3)
-    # 末尾に無音が無い＝曲の途中で打ち切られた。ぶつ切りに聞こえないよう長めにフェードする（2026-10-06）。
-    cut_off = end_at >= dur - 0.05
+    # 末尾に無音が無く、最後の 1 秒も大きい音のまま＝曲の途中で打ち切られた。ぶつ切りに聞こえないよう長めにフェードする（2026-10-06）。
+    # モデル自身がゆっくりフェードして終わると無音の区間が 0.5 秒に満たず「無音なし」になるので、最後の音量も見る。
+    cut_off = end_at >= dur - 0.05 and (whole_db is None or tail_db is None or tail_db > whole_db - 20)
     fade = min(4.0 if cut_off else 1.5, end_at / 4)
     r = run([
         "ffmpeg", "-v", "error", "-y", "-i", src, "-t", f"{end_at:.3f}",
