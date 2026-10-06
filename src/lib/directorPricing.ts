@@ -276,6 +276,11 @@ export function directorUnrestrictedScriptSurcharge(knobs: PricingKnobs = DEFAUL
   return Math.round(knobs.director_unrestricted_script_credits);
 }
 
+/** Photo Director の制限なしモードの追加料金（H200 で Qwen を読む分。動画の B300 とは別）。 */
+export function photoUnrestrictedScriptSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS): number {
+  return Math.round(knobs.photo_unrestricted_script_credits);
+}
+
 export function directorQwenScriptSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS): number {
   return Math.round(knobs.director_qwen_script_credits);
 }

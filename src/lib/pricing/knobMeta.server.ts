@@ -199,10 +199,17 @@ const KNOB_TEXT: Record<KnobKey, Omit<KnobMeta, "value">> = {
     isPublic: true,
   },
   director_unrestricted_script_credits: {
-    label: "Director / Photo 制限なしモード",
+    label: "Cinematic Director 制限なしモード",
     category: "feature_credits",
     unit: "C",
     description: "台本・英訳・写真の指示文を、表現の制限のない AI（GPU 上）で書くときの追加料金。断られたときの「制限を解除」と、最初から選んだときの両方。",
+    isPublic: true,
+  },
+  photo_unrestricted_script_credits: {
+    label: "Photo Director 制限なしモード",
+    category: "feature_credits",
+    unit: "C",
+    description: "Photo Director で指示文を表現の制限のない AI（GPU 上）で書くときの追加料金。H200 実測（約 80 秒）から。",
     isPublic: true,
   },
   director_qwen_script_credits: {

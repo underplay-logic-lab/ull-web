@@ -98,7 +98,10 @@ export function soundtrackInstruction(soundtrack: DirectorSoundtrack): string {
 
 /** 顔写真として参照するモード（2026-10-05）。画像は最初のフレームではないので、構図・場所は自由に書かせる。 */
 export const REFERENCE_MODE_NOTE =
-  "IMPORTANT: The reference image is NOT the first frame of the video. It is an identity reference called <Picture 1>. Refer to the person as \"the person from <Picture 1>\" (same face, hairstyle and features); the composition, pose, framing and setting are free to follow the user's idea.";
+  "IMPORTANT: The reference image is NOT the first frame of the video. It is an identity reference called <Picture 1>. Refer to the person as \"the person from <Picture 1>\" (same face, hairstyle and features); the composition, pose, framing and setting are free to follow the user's idea. " +
+  // 2026-10-06 夜: 書き手の AI は参照を見ていないので、アニメ・2.5 次元の参照でも実写の言葉を足して実写に寄せていた。
+  "You cannot see <Picture 1>: it may be a photo, anime, an illustration or anything in between. Unless the user asks for a specific style, " +
+  "do not write words about medium or realism (photo, photorealistic, realistic, live-action, anime, illustration, skin pores, 3D render) — the model keeps the look of <Picture 1> by itself.";
 
 /** 参照モードで足した素材の使い方（2026-10-06）。台本 AI に番号と役目を教え、場所・持ち物・手本を台本に織り込ませる。 */
 export type DirectorReferenceSummary = {
@@ -215,19 +218,28 @@ export async function expandDirectorScenes(
  * 書き出しは本番 B300 で確かめた静止画プロンプト（D:\ComfyUI-ull\results\prod\a_test\wf_still_bf16_*.json）と同じ。
  * 動画モデルを 5 フレームだけ回すので「動き」を書かせない（ブレ・途中のポーズになる）。
  */
-export const PHOTO_PROMPT_OPENING = "A single high-quality photograph, perfectly still, sharp focus.";
+// 2026-10-06 夜: "photograph" をやめて中立な "still image" に。書き出しが「写真」だと、アニメ・2.5 次元の参照でも実写に寄った
+// （ホスト報告）。プロンプトを書く AI（Gemini・Qwen）は参照を見ていないので、絵柄は言葉にせず参照を見ている H3 に任せる。
+export const PHOTO_PROMPT_OPENING = "A single high-quality still image, perfectly still, sharp focus.";
+/** 2026-10-06 夜までの書き出し（前のジョブのプロンプトを英語のまま直したときに二重に付けないため）。 */
+const PHOTO_PROMPT_OPENING_LEGACY = "A single high-quality photograph, perfectly still, sharp focus.";
+/** 絵柄の指定が無いときに入れる一文（PHOTO_PROMPT_OPENING の直後）。 */
+export const PHOTO_SAME_STYLE_SENTENCE = "Same art style, rendering and texture as <Picture 1>.";
 
 export function buildPhotoPrompt(idea: string, refs: DirectorReferenceSummary = {}): string {
   return [
-    "You are an expert photographer writing a prompt for an image model that is given reference pictures.",
+    "You are an expert visual director writing a prompt for an image model that is given reference pictures. You cannot see the pictures.",
     referenceModeNote(refs),
     "",
-    "Write ONE English prompt for a single still photograph based on the user's idea below.",
+    "Write ONE English prompt for a single still image based on the user's idea below.",
     `- Start with exactly this sentence: "${PHOTO_PROMPT_OPENING}"`,
     "- Describe the framing (close-up, bust shot, full body...), pose, expression, clothing, location, lighting and mood as concrete visual details.",
     "- Describe a frozen moment: no camera movement, no actions that unfold over time, no sound, no dialogue.",
     "- Refer to the person as \"the person from <Picture 1>\" (or the woman / man from <Picture 1>) and keep the same face and hairstyle.",
-    "- If the user's idea does not say otherwise, make it photorealistic with natural light; if <Picture 1> is an illustration or anime, keep that art style instead.",
+    "- Art style: you cannot see <Picture 1>, so it may be a photo, anime, an illustration or anything in between. Unless the user's idea explicitly asks for a style",
+    "  (e.g. anime, photorealistic, watercolor, oil painting), put exactly this sentence right after the first one: " + `"${PHOTO_SAME_STYLE_SENTENCE}"`,
+    "  and never use words about medium or realism (photo, photograph, photorealistic, realistic, lens, anime, illustration, skin pores, 3D render).",
+    "  If the user does ask for a style, describe that style instead and do not write that sentence.",
     "- Keep it under 120 words. Output ONLY the prompt — no preamble, no quotes.",
     "",
     `User's idea (may be Japanese): ${idea}`,
@@ -236,12 +248,14 @@ export function buildPhotoPrompt(idea: string, refs: DirectorReferenceSummary = 
 
 /** 編集して渡された写真のプロンプトに、静止画の書き出し（PHOTO_PROMPT_OPENING）が無ければ先頭に足す。 */
 export function withPhotoOpening(prompt: string): string {
-  return prompt.includes(PHOTO_PROMPT_OPENING) ? prompt : `${PHOTO_PROMPT_OPENING} ${prompt}`;
+  return prompt.includes(PHOTO_PROMPT_OPENING) || prompt.includes(PHOTO_PROMPT_OPENING_LEGACY)
+    ? prompt
+    : `${PHOTO_PROMPT_OPENING} ${prompt}`;
 }
 
 export async function expandPhotoIdea(idea: string, refs: DirectorReferenceSummary = {}): Promise<string> {
   const out = await runDirectorPromptGemini(buildPhotoPrompt(idea, refs), "photo_prompt");
-  return out.startsWith(PHOTO_PROMPT_OPENING) ? out : `${PHOTO_PROMPT_OPENING} ${out}`;
+  return withPhotoOpening(out);
 }
 
 /** Gemini に指示文を渡して文章を受け取る（シーン合成・写真・曲づくりの歌詞の共通部分）。断り・枯渇は DirectorPromptError。 */

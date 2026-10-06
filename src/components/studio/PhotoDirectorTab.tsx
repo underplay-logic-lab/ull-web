@@ -23,7 +23,7 @@ import {
   PHOTO_PROMPT_MAX_LENGTH,
   directorPriorityParallelSurcharge,
   directorAspectDims,
-  directorUnrestrictedScriptSurcharge,
+  photoUnrestrictedScriptSurcharge,
   photoDirectorCredits,
   type DirectorAspectId,
 } from "@/lib/directorPricing";
@@ -105,9 +105,10 @@ const PHOTO_IDEA_EXAMPLE = [
 
 /** 「直接書く」の欄の薄い文字。思いつき欄の例文と同じ中身を、モデルに渡す英語の形で（先頭の一文は無ければサーバーが足す）。 */
 const PHOTO_DIRECT_PROMPT_EXAMPLE =
-  "A single high-quality photograph, perfectly still, sharp focus. Bust shot of the person from <Picture 1>, holding the guitar from " +
+  "A single high-quality still image, perfectly still, sharp focus. Same art style, rendering and texture as <Picture 1>. " +
+  "Bust shot of the person from <Picture 1>, holding the guitar from " +
   "<Picture 2> and leaning on the fence of the rooftop from <Picture 3>, smiling gently at the camera. White shirt and denim. " +
-  "Evening, soft sunlight from behind rims the hair with light. Photorealistic, natural colors.";
+  "Evening, soft sunlight from behind rims the hair with light.";
 
 function photoFilename(jobId: string, i: number): string {
   return `ull_photo_director_${jobId.slice(0, 8)}_${i + 1}.png`;
@@ -200,7 +201,7 @@ export function PhotoDirectorTab() {
     setImage(file);
   };
 
-  const unrestrictedSurcharge = directorUnrestrictedScriptSurcharge(knobs);
+  const unrestrictedSurcharge = photoUnrestrictedScriptSurcharge(knobs);
   // AI（英訳・書き起こし）を通すときだけ制限解除の上乗せがかかる。英語だけのプロンプトはそのまま使うので不要（route と同じ判定）。
   const photoNeedsAi = promptDraft == null || /[ぁ-んァ-ヶ一-龯]/.test(promptDraft);
   const cost = photoDirectorCredits(count, refs.length, knobs) + (unrestricted && photoNeedsAi ? unrestrictedSurcharge : 0);
@@ -693,6 +694,7 @@ export function PhotoDirectorTab() {
             >
               動き（歩く・振り向く）は書かず、止まった 1 枚として書いてください。持ち物や場所は、写真を「持ち物」「場所」で入れると形や景色がそのまま出ます。
             特定の写真を指すときは、サムネの角の名前で「Picture 3 の剣を右手に持つ」のように書いてください。
+            絵柄（写真・アニメ・その中間）は入れた写真のままになります。変えたいときだけ「アニメ調で」「実写で」のように書いてください（見た目を大きく変えるのは苦手で、効きが弱いことがあります）。
             <span className="mt-1.5 block whitespace-pre-line rounded-md border border-border bg-background px-2 py-1.5 text-foreground/80">
               {PHOTO_IDEA_EXAMPLE}
             </span>

@@ -30,6 +30,7 @@ export type KnobKey =
   | "director_priority_parallel_rate"
   | "director_qwen_script_credits"
   | "director_unrestricted_script_credits"
+  | "photo_unrestricted_script_credits"
   | "director_extra_ref_rate"
   | "director_ref_video_rate"
   | "photo_director_base_credits"
@@ -198,6 +199,10 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 制限なしモード（2026-10-06 ホスト判断）: 表現の制限がある AI に断られた・最初から選んだとき、GPU 上の制限のない AI で
   // 台本／英訳／写真の指示文を書く分。読み込む AI はおまかせ（上）と同じなので同じ額から始める。
   director_unrestricted_script_credits: 91,
+  // Photo Director の制限なしモード（2026-10-06 夜に分離）。H200 実測: Qwen の読み込み＋書き起こしで ComfyUI の開始が
+  // 約 80 秒遅れた（制限解除あり eac3f0f3: 107s／なし 3e62c2ce: 約 28s、どちらも冷えた状態）。
+  // ¥772/h × 80s = ¥17 × 3 ÷ 1.66 = 31C。動画（B300）の上は 9 月の 149s 由来で、B300 で測り直したら下げる。
+  photo_unrestricted_script_credits: 31,
   // 「顔写真として使う」で写真を足すときの上乗せ率（追加 1 枚ごと、2026-10-05）。参照はすべてのステップに乗るので重くなる。
   // B300 実測（20 秒・高速）: 写真 1 枚 約 300s → 9 枚 396s（+32%）≒ 追加 8 枚 × 0.04。
   director_extra_ref_rate: 0.04,
