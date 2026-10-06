@@ -102,6 +102,12 @@ const PHOTO_IDEA_EXAMPLE = [
   "夕方、うしろから柔らかい夕日が当たり、髪のふちが光っている。",
 ].join("\n");
 
+/** 「直接書く」の欄の薄い文字。思いつき欄の例文と同じ中身を、モデルに渡す英語の形で（先頭の一文は無ければサーバーが足す）。 */
+const PHOTO_DIRECT_PROMPT_EXAMPLE =
+  "A single high-quality photograph, perfectly still, sharp focus. Bust shot of the person from <Picture 1>, holding the guitar from " +
+  "<Picture 2> and leaning on the fence of the rooftop from <Picture 3>, smiling gently at the camera. White shirt and denim. " +
+  "Evening, soft sunlight from behind rims the hair with light. Photorealistic, natural colors.";
+
 function photoFilename(jobId: string, i: number): string {
   return `ull_photo_director_${jobId.slice(0, 8)}_${i + 1}.png`;
 }
@@ -170,6 +176,8 @@ export function PhotoDirectorTab() {
   const [idea, setIdea] = useState("");
   // null = 思いつきから書き起こす（通常）。文字列 = 前のジョブのプロンプトを編集して使う（2026-10-06 ホスト要望）。
   const [promptDraft, setPromptDraft] = useState<string | null>(null);
+  // 編集欄の中身の出どころ: 前のジョブのプロンプト（job）か、最初から直接書く（direct、2026-10-06）。
+  const [promptSource, setPromptSource] = useState<"job" | "direct">("direct");
   const promptEditorRef = useRef<HTMLTextAreaElement>(null);
   // 編集して作り直すときは、元のジョブの写真も欄へ読み戻す（外す・足す・役目を変えるのは普段どおり）。
   const [refsLoading, setRefsLoading] = useState(false);
@@ -478,6 +486,7 @@ export function PhotoDirectorTab() {
   // 使われたプロンプトを引き継いで編集する。日本語訳があればそちらを既定に（送るときにサーバーが英訳する）。
   const enterPromptMode = async () => {
     if (!job?.combinedPrompt || !jobId) return;
+    setPromptSource("job");
     setPromptDraft((job.combinedPromptJa || job.combinedPrompt).slice(0, PHOTO_PROMPT_MAX_LENGTH));
     setTimeout(() => {
       promptEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -592,33 +601,57 @@ export function PhotoDirectorTab() {
 
         <RefPhotoPicker value={refs} onChange={setRefs} />
 
+        {/* 書き方の切り替え（Director の「おまかせ／直接書く」と同じ考え方）。 */}
+        <div className="flex items-center gap-2 rounded-xl border border-border bg-background p-1">
+          <button
+            type="button"
+            onClick={() => {
+              setPromptDraft(null);
+              setRefsNotice(null);
+            }}
+            className={`flex flex-1 flex-col items-center justify-center rounded-lg px-2 py-1.5 text-xs font-medium leading-tight transition-colors ${
+              promptDraft == null ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
+            }`}
+          >
+            <span>思いつきから</span>
+            <span className="text-[10px] font-normal opacity-70">おすすめ</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (promptDraft != null) return;
+              setPromptSource("direct");
+              setPromptDraft("");
+            }}
+            className={`flex flex-1 flex-col items-center justify-center rounded-lg px-2 py-1.5 text-xs font-medium leading-tight transition-colors ${
+              promptDraft != null ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
+            }`}
+          >
+            <span>直接書く</span>
+            <span className="text-[10px] font-normal opacity-70">上級者向け</span>
+          </button>
+        </div>
+
         {promptDraft != null ? (
           <div>
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-xs font-mono uppercase tracking-widest text-muted">プロンプト（前の写真から）</p>
-              <button
-                type="button"
-                onClick={() => {
-                  setPromptDraft(null);
-                  setRefsNotice(null);
-                }}
-                className="text-[11px] text-muted underline-offset-2 transition-colors hover:text-foreground hover:underline"
-              >
-                思いつきから作るに戻す
-              </button>
-            </div>
+            <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">
+              {promptSource === "job" ? "プロンプト（前の写真から）" : "プロンプト（直接書く）"}
+            </p>
             <textarea
               ref={promptEditorRef}
               value={promptDraft}
               onChange={(e) => setPromptDraft(e.target.value.slice(0, PHOTO_PROMPT_MAX_LENGTH))}
               rows={8}
+              placeholder={PHOTO_DIRECT_PROMPT_EXAMPLE}
               className="w-full resize-y rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted/60"
             />
             <p className="mt-1 text-right text-[10px] text-muted">
               {promptDraft.length} / {PHOTO_PROMPT_MAX_LENGTH}
             </p>
             <p className="text-[11px] leading-relaxed text-muted">
-              書き換えたいところだけ直してください。日本語のままで大丈夫です（送るときに英語へ直します）。
+              {promptSource === "job"
+                ? "書き換えたいところだけ直してください。日本語のままで大丈夫です（送るときに英語へ直します）。"
+                : "英語で書くと、AI の書き起こしを通さずにそのまま使います（日本語が混ざると英語へ直してから使います）。写真は <Picture 1> のようにサムネの角の名前で指してください。"}
             </p>
             {(refsLoading || refsNotice) && (
               <p className="mt-1 text-[11px] leading-relaxed text-neon-violet">{refsLoading ? "元の写真を読み込んでいます…" : refsNotice}</p>
