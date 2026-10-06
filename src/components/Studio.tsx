@@ -38,7 +38,7 @@ const STUDIO_TABS: { id: StudioTab; label: string; adminOnly?: boolean }[] = [
   { id: "director", label: "🎥 Cinematic Director" },
   // 2026-10-06: 同じ土台で静止画（ホスト「新しいコーナーで良い」）。Director の隣に置く。
   { id: "photo", label: "📸 Photo Director" },
-  // 2026-10-06: 曲づくり（できた曲を Director の音声へ渡して歌の動画に）。
+  // 2026-10-06: 曲づくり（できた曲の一部＝最長 68 秒を切り出して Director の音声へ渡せる）。
   { id: "song", label: "🎵 曲づくり" },
   { id: "upscale_video", label: "🎬 4K動画超解像" },
   { id: "upscale", label: "✨ 4K/8K超解像" },
@@ -257,7 +257,7 @@ export function Studio() {
             ) : activeTab === "song" ? (
               <EditableText
                 siteKey="studio_desc_song"
-                fallback="思いつきを書くだけで、歌入りの曲を何曲もまとめて作れます。気に入った曲は、そのまま歌う動画にできます。"
+                fallback="思いつきを書くだけで、歌入りの曲を何曲もまとめて作れます。気に入った曲のサビなどを切り出して、歌う動画の音声にも使えます。"
               />
             ) : activeTab === "lora" ? (
               <EditableText

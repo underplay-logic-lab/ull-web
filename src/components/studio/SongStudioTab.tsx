@@ -1,7 +1,8 @@
 "use client";
 
 // 🎵 曲づくり（2026-10-06）: 思いつき（または手書きの歌詞）から、歌入りの曲を 3〜10 本まとめて作って選ぶ。
-// 当たり外れがあるのでまとめて出す（ホスト判断）。できた曲は Director の「音声」へ渡して歌の動画にできる。
+// 当たり外れがあるのでまとめて出す（ホスト判断）。曲の一部（最長 68 秒＝Director の音声の上限）を切り出して Director へ渡せる。
+// 曲まるごとの動画は不可: 1 番だけでも 100 秒前後あり、分割して作ってつなぐと区切りごとに顔・場所が変わり、5 分なら数千円になる（ホスト判断で見送り）。
 // Studio タブの標準（CLAUDE.md §6）: リロードで消えない・見つからない専用エラー・VRAM バッジ・起動待ち表示・
 // 実行中は順番待ち／並列・URL を使い回さない・完了したら自動保存。使うモデルの名前は出さない（§2）。
 
@@ -34,6 +35,8 @@ import GenerationCaveat from "@/components/studio/GenerationCaveat";
 import { armAutoDownload, runAutoDownload, takeAutoDownload } from "@/lib/autoDownload";
 import { advanceStudioQueue, cancelStudioQueue } from "@/lib/studioQueue";
 import { sendAudioToDirector } from "@/lib/studioHandoff";
+import { clipToWav } from "@/lib/audioClip";
+import { DIRECTOR_MAX_AUDIO_SECONDS } from "@/lib/directorPricing";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
@@ -349,18 +352,28 @@ export function SongStudioTab() {
     });
   };
 
+  // 一部を切り出して Director へ（最長 68 秒）。範囲は曲ごとに選ぶ。
+  const [clipFor, setClipFor] = useState<number | null>(null);
+  const [clipStart, setClipStart] = useState(0);
+  const [clipLen, setClipLen] = useState(30);
+  const [clipping, setClipping] = useState(false);
   const handleToDirector = async (i: number) => {
     if (!jobId) return;
     setActionError(null);
+    setClipping(true);
     try {
       const url = (await refreshUrls())[i];
       if (!url) throw new Error("no url");
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      sendAudioToDirector(new File([await res.blob()], songFilename(jobId, i), { type: "audio/mpeg" }));
+      const len = Math.max(3, Math.min(DIRECTOR_MAX_AUDIO_SECONDS, clipLen));
+      const { file } = await clipToWav(await res.blob(), Math.max(0, clipStart), len, songFilename(jobId, i).replace(".mp3", `_${clipStart}s.wav`));
+      sendAudioToDirector(file);
     } catch (err) {
       console.error("[SongStudioTab] handoff failed:", err);
       setActionError("Director へ渡せませんでした。もう一度お試しください。");
+    } finally {
+      setClipping(false);
     }
   };
 
@@ -647,13 +660,54 @@ export function SongStudioTab() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => void handleToDirector(i)}
+                    onClick={() => setClipFor(clipFor === i ? null : i)}
                     className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-border bg-background px-2 py-1.5 text-[11px] text-foreground transition-colors hover:border-neon-violet/40"
                   >
                     <Clapperboard size={12} />
-                    この曲で動画を作る
+                    一部を動画の音声に
                   </button>
                 </div>
+                {clipFor === i && (
+                  <div className="mt-2 space-y-2 rounded-lg border border-border bg-background p-2 text-[11px] text-muted">
+                    <p>
+                      歌う動画の音声は {DIRECTOR_MAX_AUDIO_SECONDS} 秒までです。使う範囲（サビなど）を選んで、Cinematic Director へ渡します。
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-1">
+                        開始
+                        <input
+                          type="number"
+                          min={0}
+                          value={clipStart}
+                          onChange={(e) => setClipStart(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+                          className="w-16 rounded-md border border-border bg-surface px-1.5 py-0.5 text-foreground"
+                        />
+                        秒から
+                      </label>
+                      <label className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min={3}
+                          max={DIRECTOR_MAX_AUDIO_SECONDS}
+                          value={clipLen}
+                          onChange={(e) =>
+                            setClipLen(Math.max(3, Math.min(DIRECTOR_MAX_AUDIO_SECONDS, Math.floor(Number(e.target.value) || 0))))
+                          }
+                          className="w-16 rounded-md border border-border bg-surface px-1.5 py-0.5 text-foreground"
+                        />
+                        秒間
+                      </label>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={clipping}
+                      onClick={() => void handleToDirector(i)}
+                      className="w-full rounded-lg bg-gradient-to-r from-neon-pink to-neon-violet px-3 py-1.5 text-[11px] font-semibold text-background disabled:opacity-50"
+                    >
+                      {clipping ? "切り出し中..." : "この範囲を Director へ渡す"}
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
             {job?.lyrics && (
