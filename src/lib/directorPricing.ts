@@ -338,6 +338,8 @@ export function clampPhotoCount(count: unknown): number {
 
 /** Photo Director の思いつき欄の最大文字数（2026-10-06）。 */
 export const PHOTO_IDEA_MAX_LENGTH = 600;
+/** 「前のプロンプトを編集して作る」欄の最大文字数（英語の完成文が 120 語前後・日本語訳はもっと短い）。 */
+export const PHOTO_PROMPT_MAX_LENGTH = 2000;
 
 /**
  * Photo Director（2026-10-06）の料金: 1 回の基本料（起動・参照の読み込み）＋ 1 枚ごと。追加の参照写真の上乗せは Director と同じ率。

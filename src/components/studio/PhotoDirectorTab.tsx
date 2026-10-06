@@ -8,7 +8,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, Camera, Clapperboard, Download, ImagePlus, LogIn, Sparkles, X, Zap } from "lucide-react";
+import { AlertTriangle, Camera, Clapperboard, Download, ImagePlus, LogIn, Pencil, Sparkles, X, Zap } from "lucide-react";
+import { CopyButton } from "./CopyButton";
 import { HelpNote } from "./HelpNote";
 import { TopupActions } from "./TopupActions";
 import { RefPhotoPicker, type RefPhoto } from "./RefPhotoPicker";
@@ -18,6 +19,7 @@ import {
   PHOTO_COUNTS,
   PHOTO_IDEA_MAX_LENGTH,
   PHOTO_MIN_COUNT,
+  PHOTO_PROMPT_MAX_LENGTH,
   directorPriorityParallelSurcharge,
   directorUnrestrictedScriptSurcharge,
   photoDirectorCredits,
@@ -62,6 +64,8 @@ const POLL_MAX_CONSECUTIVE_ERRORS = 8;
 type Snapshot = {
   image: File;
   idea: string;
+  /** 前のプロンプトを編集して作るとき（Director の「このプロンプトを編集して再生成」と同じ）。 */
+  prompt?: string;
   count: number;
   aspect: DirectorAspectId;
   refs: RefPhoto[];
@@ -131,6 +135,9 @@ export function PhotoDirectorTab() {
   const [aspect, setAspect] = useState<DirectorAspectId>("3:4");
   const [count, setCount] = useState<number>(PHOTO_MIN_COUNT);
   const [idea, setIdea] = useState("");
+  // null = 思いつきから書き起こす（通常）。文字列 = 前のジョブのプロンプトを編集して使う（2026-10-06 ホスト要望）。
+  const [promptDraft, setPromptDraft] = useState<string | null>(null);
+  const promptEditorRef = useRef<HTMLTextAreaElement>(null);
   // 制限なしモード（2026-10-06）: 最初から選ぶスイッチと、断られたときの「解除しますか？」。
   const [unrestricted, setUnrestricted] = useState(false);
   const [restrictedRetry, setRestrictedRetry] = useState<{ snapshot: Snapshot; opts: { priority?: boolean; queue?: boolean } } | null>(null);
@@ -171,12 +178,21 @@ export function PhotoDirectorTab() {
       setImageError("人物の写真を入れてください。");
       return null;
     }
-    if (!idea.trim()) {
-      setErrorMessage("どんな写真にしたいかを書いてください。");
+    const prompt = promptDraft?.trim() ?? "";
+    if (promptDraft != null ? !prompt : !idea.trim()) {
+      setErrorMessage(promptDraft != null ? "プロンプトを書いてください。" : "どんな写真にしたいかを書いてください。");
       setPhase("error");
       return null;
     }
-    return { image, idea: idea.trim(), count, aspect, refs, scriptEngine: unrestricted ? "unrestricted" : "standard" };
+    return {
+      image,
+      idea: idea.trim(),
+      ...(promptDraft != null ? { prompt } : {}),
+      count,
+      aspect,
+      refs,
+      scriptEngine: unrestricted ? "unrestricted" : "standard",
+    };
   };
 
   const start = useCallback(
@@ -186,6 +202,7 @@ export function PhotoDirectorTab() {
         userId: user.id,
         image: s.image,
         idea: s.idea,
+        prompt: s.prompt,
         count: s.count,
         aspect: s.aspect,
         extraRefs: s.refs.map((r) => r.file),
@@ -422,7 +439,18 @@ export function PhotoDirectorTab() {
     }
   };
 
-  const canRun = Boolean(image) && idea.trim().length > 0 && phase !== "submitting";
+  // 使われたプロンプトを引き継いで編集する。日本語訳があればそちらを既定に（送るときにサーバーが英訳する）。
+  const enterPromptMode = () => {
+    if (!job?.combinedPrompt) return;
+    setPromptDraft((job.combinedPromptJa || job.combinedPrompt).slice(0, PHOTO_PROMPT_MAX_LENGTH));
+    setTimeout(() => {
+      promptEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      promptEditorRef.current?.focus({ preventScroll: true });
+    }, 50);
+  };
+
+  const hasText = promptDraft != null ? promptDraft.trim().length > 0 : idea.trim().length > 0;
+  const canRun = Boolean(image) && hasText && phase !== "submitting";
   const chargeFirst = Boolean(user) && insufficientCredits && !busy;
   const imageUrls = job?.isPhoto ? job.imageUrls : [];
 
@@ -513,26 +541,55 @@ export function PhotoDirectorTab() {
 
         <RefPhotoPicker value={refs} onChange={setRefs} />
 
-        <div>
-          <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">どんな写真？</p>
-          <textarea
-            value={idea}
-            onChange={(e) => setIdea(e.target.value.slice(0, PHOTO_IDEA_MAX_LENGTH))}
-            rows={4}
-            placeholder="例: 夕方の屋上でギターを抱えて、カメラに向かってやさしく笑うバストアップ"
-            className="w-full resize-y rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted/60"
-          />
-          <p className="mt-1 text-right text-[10px] text-muted">
-            {idea.length} / {PHOTO_IDEA_MAX_LENGTH}
-          </p>
-          <HelpNote
-            id="photo.idea"
-            title="うまく書くコツ"
-            summary="写り方（顔のアップ・バストアップ・全身）、表情、服、場所、光の感じを書くと狙いどおりになりやすいです。"
-          >
-            動き（歩く・振り向く）は書かず、止まった 1 枚として書いてください。持ち物や場所は、写真を「持ち物」「場所」で入れると形や景色がそのまま出ます。
-          </HelpNote>
-        </div>
+        {promptDraft != null ? (
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-xs font-mono uppercase tracking-widest text-muted">プロンプト（前の写真から）</p>
+              <button
+                type="button"
+                onClick={() => setPromptDraft(null)}
+                className="text-[11px] text-muted underline-offset-2 transition-colors hover:text-foreground hover:underline"
+              >
+                思いつきから作るに戻す
+              </button>
+            </div>
+            <textarea
+              ref={promptEditorRef}
+              value={promptDraft}
+              onChange={(e) => setPromptDraft(e.target.value.slice(0, PHOTO_PROMPT_MAX_LENGTH))}
+              rows={8}
+              className="w-full resize-y rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted/60"
+            />
+            <p className="mt-1 text-right text-[10px] text-muted">
+              {promptDraft.length} / {PHOTO_PROMPT_MAX_LENGTH}
+            </p>
+            <p className="text-[11px] leading-relaxed text-muted">
+              書き換えたいところだけ直してください。日本語のままで大丈夫です（送るときに英語へ直します）。
+              人物や参照の写真は、いま上の欄に入っているものを使います。
+            </p>
+          </div>
+        ) : (
+          <div>
+            <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">どんな写真？</p>
+            <textarea
+              value={idea}
+              onChange={(e) => setIdea(e.target.value.slice(0, PHOTO_IDEA_MAX_LENGTH))}
+              rows={4}
+              placeholder="例: 夕方の屋上でギターを抱えて、カメラに向かってやさしく笑うバストアップ"
+              className="w-full resize-y rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted/60"
+            />
+            <p className="mt-1 text-right text-[10px] text-muted">
+              {idea.length} / {PHOTO_IDEA_MAX_LENGTH}
+            </p>
+            <HelpNote
+              id="photo.idea"
+              title="うまく書くコツ"
+              summary="写り方（顔のアップ・バストアップ・全身）、表情、服、場所、光の感じを書くと狙いどおりになりやすいです。"
+            >
+              動き（歩く・振り向く）は書かず、止まった 1 枚として書いてください。持ち物や場所は、写真を「持ち物」「場所」で入れると形や景色がそのまま出ます。
+            </HelpNote>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -701,6 +758,42 @@ export function PhotoDirectorTab() {
           </div>
         )}
         {actionError && <p className="text-xs text-red-400">{actionError}</p>}
+
+        {/* 使われたプロンプト（Director と同じ）。台本は投入時に決まっているので、生成中から出して「編集して次を作る」に使える。 */}
+        {job?.isPhoto && job.combinedPrompt && (
+          <div className="rounded-xl border border-border bg-background p-3">
+            <div className="flex flex-col gap-3">
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="text-[11px] font-mono uppercase tracking-widest text-muted">生成に使われたプロンプト（英語）</span>
+                  <CopyButton text={job.combinedPrompt} label="コピー" />
+                </div>
+                <p className="max-h-32 overflow-y-auto rounded-lg border border-border bg-surface p-2.5 text-[12px] leading-relaxed text-muted">
+                  {job.combinedPrompt}
+                </p>
+              </div>
+              {job.combinedPromptJa && (
+                <div>
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-[11px] font-mono uppercase tracking-widest text-muted">日本語訳</span>
+                    <CopyButton text={job.combinedPromptJa} label="コピー" />
+                  </div>
+                  <p className="max-h-32 overflow-y-auto rounded-lg border border-border bg-surface p-2.5 text-[12px] leading-relaxed text-muted">
+                    {job.combinedPromptJa}
+                  </p>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={enterPromptMode}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-neon-violet/40"
+              >
+                <Pencil size={14} />
+                {busy ? "このプロンプトを編集して次を予約" : "このプロンプトを編集して作り直す"}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

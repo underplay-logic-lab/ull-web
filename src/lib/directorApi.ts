@@ -264,6 +264,8 @@ export async function startPhotoJob(args: {
   userId: string;
   image: File;
   idea: string;
+  /** 前のプロンプトを編集して作るとき（日本語でも可・サーバーが英訳）。あれば idea より優先。 */
+  prompt?: string;
   count: number;
   aspect: DirectorAspectId;
   extraRefs: File[];
@@ -291,6 +293,7 @@ export async function startPhotoJob(args: {
       output: "photo",
       storagePath,
       photoIdea: args.idea,
+      ...(args.prompt ? { photoPrompt: args.prompt } : {}),
       photoCount: args.count,
       aspect: args.aspect,
       extraRefPaths,

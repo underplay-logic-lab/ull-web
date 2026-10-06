@@ -19,6 +19,7 @@ import {
   clampPhotoCount,
   photoDirectorPollDeadlineS,
   PHOTO_IDEA_MAX_LENGTH,
+  PHOTO_PROMPT_MAX_LENGTH,
   directorPriorityParallelSurcharge,
   directorExtraRefSurcharge,
   directorQwenScriptSurcharge,
@@ -48,6 +49,7 @@ import {
   buildPhotoPrompt,
   looksJapaneseOutsideDialogue,
   withConceptNotes,
+  withPhotoOpening,
   withIdentityAnchor,
   withSoundtrackAnchor,
   translateDirectorPromptToJapanese,
@@ -116,7 +118,12 @@ export async function POST(request: Request) {
   // ジョブは Director と同じ workflow_type "director"（予約の順番・返金・ログ・GPU を共用）で、inputs.output = "photo"。
   // 使わない欄（シーン・音声・手本・LoRA・作り直し）はここで落とす。
   const isPhoto = body.output === "photo";
-  const photoIdea = isPhoto && typeof body.photoIdea === "string" ? body.photoIdea.trim().slice(0, PHOTO_IDEA_MAX_LENGTH) : "";
+  // 「前のプロンプトを編集して作る」（2026-10-06、Director の「このプロンプトを編集して再生成」と同じ）: 完成したプロンプトを
+  // そのまま（日本語なら英訳して）使い、思いつきからの書き起こしは飛ばす。
+  const photoPrompt =
+    isPhoto && typeof body.photoPrompt === "string" ? body.photoPrompt.trim().slice(0, PHOTO_PROMPT_MAX_LENGTH) : "";
+  const photoIdea =
+    photoPrompt || (isPhoto && typeof body.photoIdea === "string" ? body.photoIdea.trim().slice(0, PHOTO_IDEA_MAX_LENGTH) : "");
   const photoCount = isPhoto
     ? clampPhotoCount(body.photoCount)
     : 0;
@@ -535,7 +542,24 @@ export async function POST(request: Request) {
       },
       { status: 409 },
     );
-  if (isPhoto) {
+  if (isPhoto && photoPrompt) {
+    if (looksJapaneseOutsideDialogue(photoPrompt)) {
+      if (unrestricted) {
+        qwenTextInstruction = withJapaneseTranslationRequest(buildJapaneseTranslationPrompt(photoPrompt));
+        combinedPrompt = photoPrompt;
+      } else {
+        try {
+          combinedPrompt = withPhotoOpening(await translateJapanesePromptToEnglish(photoPrompt));
+        } catch (err) {
+          const e = err as DirectorPromptError;
+          if (e.reason !== "refusal") return NextResponse.json({ error: e.message }, { status: statusFor(e) });
+          return restricted();
+        }
+      }
+    } else {
+      combinedPrompt = withPhotoOpening(photoPrompt);
+    }
+  } else if (isPhoto) {
     if (unrestricted) {
       qwenTextInstruction = withJapaneseTranslationRequest(buildPhotoPrompt(photoIdea, promptOpts.references));
       combinedPrompt = photoIdea;
@@ -656,7 +680,7 @@ export async function POST(request: Request) {
     ref_video_role: refVideoPath ? refVideoRole : null,
     ref_video_duration_s: refVideoDurationS || null,
     ref_voice_path: refVoicePath || null,
-    ...(isPhoto ? { output: "photo", photo_idea: photoIdea, photo_count: photoCount } : {}),
+    ...(isPhoto ? { output: "photo", photo_idea: photoIdea, photo_prompt_mode: Boolean(photoPrompt), photo_count: photoCount } : {}),
   };
   // 出力解像度（2026-09-24、ホスト「生成後の解像度がわからないので記載して」）。
   // buildCinematicWorkflow と同じ式で先に決め、metadata に残して完了画面が読む。

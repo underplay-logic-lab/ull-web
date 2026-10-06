@@ -1,5 +1,6 @@
 "use client";
 
+import { CopyButton } from "./CopyButton";
 import { HelpNote } from "./HelpNote";
 import { RestrictedChoiceModal, UnrestrictedToggle } from "./RestrictedChoiceModal";
 import { TopupActions } from "./TopupActions";
@@ -12,7 +13,6 @@ import {
   AlertTriangle,
   Check,
   Clapperboard,
-  Copy,
   Download,
   Music,
   ImagePlus,
@@ -312,28 +312,6 @@ type PersistedJob = { jobId: string };
 // の思いつきを渡し、台本を自動で書き起こしてもらうモード（2026-09-18追加）。
 // "prompt" と違い、結果画面からの遷移ではなくユーザーが最初から選ぶ。
 type UiMode = "scenes" | "prompt" | "advanced";
-
-function CopyButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      type="button"
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(text);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        } catch (err) {
-          console.error("[DirectorStudioTab] clipboard copy failed:", err);
-        }
-      }}
-      className="flex items-center gap-1 rounded-lg border border-border bg-surface px-2 py-1 text-[11px] text-muted transition-colors hover:border-neon-violet/40 hover:text-foreground"
-    >
-      {copied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
-      {copied ? "コピーしました" : label}
-    </button>
-  );
-}
 
 /** 保存するファイル名。シードが分かれば入れる（あとでどの条件の動画か分かるように、2026-10-01〜）。 */
 function directorFilename(seed: number | null): string {

@@ -234,6 +234,11 @@ export function buildPhotoPrompt(idea: string, refs: DirectorReferenceSummary = 
   ].join("\n");
 }
 
+/** 編集して渡された写真のプロンプトに、静止画の書き出し（PHOTO_PROMPT_OPENING）が無ければ先頭に足す。 */
+export function withPhotoOpening(prompt: string): string {
+  return prompt.includes(PHOTO_PROMPT_OPENING) ? prompt : `${PHOTO_PROMPT_OPENING} ${prompt}`;
+}
+
 export async function expandPhotoIdea(idea: string, refs: DirectorReferenceSummary = {}): Promise<string> {
   const out = await runDirectorPromptGemini(buildPhotoPrompt(idea, refs), "photo_prompt");
   return out.startsWith(PHOTO_PROMPT_OPENING) ? out : `${PHOTO_PROMPT_OPENING} ${out}`;
