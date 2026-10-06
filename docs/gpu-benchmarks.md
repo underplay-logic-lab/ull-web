@@ -2115,3 +2115,22 @@ v7 の中間チェックポイント 13 本（475MB × 13 = 6.2GB）を Modal �
   単発・バッチとも `_resolve_image_gpu_tier` → `UPSCALE_IMAGE_MODEL_GPU`。env `SEEDVR2_IMAGE_GPU_ESRGAN/SWINIR` で戻せる。
 - 同日の結果確認間隔 2 秒 → 0.25 秒（1 枚あたり平均 1 秒の待ちを削減）は維持。
 
+
+## 19. Photo Director（MiniMax H3 参照モード・5 フレームの静止画）の GPU を B300 → H200 へ（2026-10-06）
+
+同じワークフロー（`D:/ComfyUI-ull/results/prod/a_test/wf_photo_4.json`・ひなた参照 9 枚＝人物 7・ギター・屋上・縦 3:4＝896×1184・4 枚・
+シード同じ・VDN 8 step・ref_image_size max）を本番ワーカーへ `D:/ComfyUI-ull/submit_photo.py`（`GPU=H200` で with_options）で投げた。
+
+| GPU | attention | 起動込み | ComfyUI 実行 | VRAM | 単価/h | 1 回の原価 |
+|---|---|---|---|---|---|---|
+| B300 | SageAttention | 327s | 240s | 98.2GB | ¥1,207 | ¥110 |
+| H200 | **SDPA**（Sage 無効） | **185s** | **141s** | 97.9GB | ¥772 | **¥40** |
+
+- **H200 + SageAttention は落ちる**: 今の image の SageAttention は Blackwell 向けのビルドだけで、`SM90 kernel is not available`
+  （1 回目のサンプラーは SDPA に逃げたが 2 本目で AssertionError、§4 の留保どおり）。→ 写真のワークフローは `sage_attention: "disabled"`。
+- **「Sage なしは約 3 倍遅い」（§6）は今回起きなかった**: 描画は 1 枚 16〜21s（B300）に対し、全体は H200 の方が速い。原価の大半が
+  起動・重みの読み込み（DiT 49GB・テキストエンコーダ 38GB）と参照 9 枚の読み込みで、attention の差が効く描画が小さいため。
+- ⚠️ B300 の回はデプロイ直後の初回（新しい image 層の取得あり）なので、差の全部が GPU の差ではない。それでも原価は H200 が明確に安い。
+- 画質は同じシードで見分けがつかない（`D:/ComfyUI-ull/results/photo_4_b300_vs_h200.png`）。
+- → **Photo Director は H200**（`PHOTO_GPU`・ワーカーの `custom_workflow_async` の `gpu`）。Director の動画は B300 のまま（UX 上の理由・CLAUDE.md §1）。
+  料金は H200 の原価 ×3（knobDefaults.ts の photo_director_*）。1 枚ごとの描画時間は H200 で未測（8 枚で測れば分かる）。

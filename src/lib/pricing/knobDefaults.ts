@@ -29,6 +29,7 @@ export type KnobKey =
   | "director_priority_parallel_surcharge"
   | "director_priority_parallel_rate"
   | "director_qwen_script_credits"
+  | "director_unrestricted_script_credits"
   | "director_extra_ref_rate"
   | "director_ref_video_rate"
   | "photo_director_base_credits"
@@ -188,16 +189,21 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 導出: docs/pricing-decision-sheet.md。
   //   ¥1,207/h × 149.3s = ¥50.1 × 3 ÷ 1.66 = 91C（旧 84）
   director_qwen_script_credits: 91,
+  // 制限なしモード（2026-10-06 ホスト判断）: 表現の制限がある AI に断られた・最初から選んだとき、GPU 上の制限のない AI で
+  // 台本／英訳／写真の指示文を書く分。読み込む AI はおまかせ（上）と同じなので同じ額から始める。
+  director_unrestricted_script_credits: 91,
   // 「顔写真として使う」で写真を足すときの上乗せ率（追加 1 枚ごと、2026-10-05）。参照はすべてのステップに乗るので重くなる。
   // B300 実測（20 秒・高速）: 写真 1 枚 約 300s → 9 枚 396s（+32%）≒ 追加 8 枚 × 0.04。
   director_extra_ref_rate: 0.04,
   // 参照動画（動き・カメラの手本、2026-10-06）の上乗せ率。通常料金 × ((1 + 参照秒/出力秒)² − 1) × これ（directorRefVideoSurcharge）。
   // 1.0 = 計算量の増え方そのまま（B300 実測: 20 秒＋参照 10 秒で時間 2.0 倍・式は 2.25 倍）。
   director_ref_video_rate: 1,
-  // Photo Director（2026-10-06）: 1 回の基本料＋1 枚ごと。仮値（本番の実測前）。B300 で 1 枚 温まって約 1.5 分（¥30 前後）・
-  // 起動込み 4 分強。参照の読み込みは 1 回で済み、2 枚目以降はサンプリングだけ増える見込み → 実測したら合わせる。
-  photo_director_base_credits: 40,
-  photo_director_per_image_credits: 15,
+  // Photo Director（2026-10-06）: 1 回の基本料＋1 枚ごと。原価 3.0×（ローンチ価格の標準、上の Director と同じ）。
+  // H200（¥772/h）実測・ひなた参照 9 枚・4 枚: 起動込み 185s = ¥39.7 → ×3 = ¥119 ÷ 1.66 = 72C（4 枚）。
+  // 内訳は B300 の実測（1 枚の描画 16〜21s）から 1 枚 30s と多めに見て ¥6.4×3÷1.66 = 12C、残り 65s を基本 25C。
+  // 温まっていれば起動・読み込みが無いので利益が厚くなる。8 枚の実測が出たら 1 枚ごとを合わせる。
+  photo_director_base_credits: 25,
+  photo_director_per_image_credits: 12,
   // 超解像スタジオ（SeedVR2）: 出力の 100 万画素あたりの消費クレジット。
   // credits = max(upscale_min_credits, ceil(これ × 出力MP × モデル係数))。
   // B300 実測: 出力 ~5MP を warm ~20s / cold ~60s。3 C/MP で 2K プリセット

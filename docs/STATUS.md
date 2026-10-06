@@ -606,8 +606,16 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    サンプリングは 1 枚 16〜21 秒、残りはモデルと参照の読み込み → 2 枚目以降は 1 枚 約 ¥5。4 枚とも同じ人物で表情・角度・ギターの位置が少しずつ違う
    （`D:/ComfyUI-ull/results/photo_4_grid.png`・ワークフロー `results/prod/a_test/wf_photo_4.json`・投入 `D:/ComfyUI-ull/submit_photo.py`）。
    **枚数は 4・6・8 枚（最低 4 枚、2026-10-06 ホスト判断: 当たり外れがあるのでまとめて出し、1 枚あたりの高値感を薄める）**。
-   **料金は仮の knob**（`photo_director_base_credits` 40・`photo_director_per_image_credits` 15）。原価は起動込み 1 回 ¥85〜100・温まっていれば大幅に安い → ホストが決める。
-   **残り**: ①画面から 1 本（Gemini の写真プロンプト・R2 署名・自動保存・Director へ渡す）②料金の決定 ③Director の参照欄を `RefPhotoPicker` に置き換える（今は同じ見た目の別実装）。
+   **GPU は H200 に変更（2026-10-06）**: 同じ 4 枚で B300 327s・¥110 に対し H200（SageAttention なし）185s・¥40、画質は見分けがつかない
+   （docs/gpu-benchmarks.md §19。今の image の SageAttention は Blackwell 用だけで H200 では落ちる → 写真は sage を切る）。
+   ワーカーの `custom_workflow_async` が `gpu: "H200"` を受けて `with_options` で起動（デプロイ済み・画面からの初回で動作確認する）。
+   **料金は原価 3 倍**（全部 3 倍が標準）: 基本 25C ＋ 1 枚 12C（4 枚 73C・6 枚 97C・8 枚 121C）。1 枚ごとは H200 で未測（8 枚で測る）。
+   **残り**: ①画面から 1 本（H200 で起動するか・Gemini の写真プロンプト・R2 署名・自動保存・Director へ渡す）②8 枚で 1 枚ごとの時間を測って単価を合わせる
+   ③Director の参照欄を `RefPhotoPicker` に置き換える（今は同じ見た目の別実装）。
+   **制限なしモード（2026-10-06 ホスト判断）**: 台本・英訳・写真の指示文で Gemini に断られたら、黙って Qwen に回すのをやめ、
+   409 code "restricted" を返して「制限に抵触しました。制限を解除しますか？（+91C）」を出す（課金前・`RestrictedChoiceModal.tsx`）。
+   最初から選ぶスイッチも（Director はシーンで組むとき・Photo は常に）。knob `director_unrestricted_script_credits` 91C（おまかせの Qwen と同額から）。
+   おまかせ（Advanced）は元から制限なしの AI なので変更なし。LoRA のキャプション（断られた画像は学習ワーカーの VLM へ）は対象外のまま。
    経緯: 静止画の検証では公式 ref2va のほうが顔が写真に近かった（10Eros は面長・大人びる）が、10Eros 一本化（0 番）に合わせた。上の 4 枚では違和感なし。
    Qwen-Image 2.1 の商用は model-business@notice.qwencloud.com に申請（条件・料金は非公開・前例も見つからない）→ 急がない。
 2. **Director の参照の「使い方」選び**（人物/持ち物/場所/画風・動画=動き/カメラ・音声=声）: 検証済み（下の 2026-10-05 夜）。Photo Director と共通の部品にする。

@@ -12,12 +12,14 @@ import { AlertTriangle, Camera, Clapperboard, Download, ImagePlus, LogIn, Sparkl
 import { HelpNote } from "./HelpNote";
 import { TopupActions } from "./TopupActions";
 import { RefPhotoPicker, type RefPhoto } from "./RefPhotoPicker";
+import { RestrictedChoiceModal, UnrestrictedToggle } from "./RestrictedChoiceModal";
 import {
   DIRECTOR_ASPECTS,
   PHOTO_COUNTS,
   PHOTO_IDEA_MAX_LENGTH,
   PHOTO_MIN_COUNT,
   directorPriorityParallelSurcharge,
+  directorUnrestrictedScriptSurcharge,
   photoDirectorCredits,
   type DirectorAspectId,
 } from "@/lib/directorPricing";
@@ -27,6 +29,7 @@ import {
   startPhotoJob,
   type DirectorApiError,
   type DirectorJobStatus,
+  type DirectorScriptEngine,
 } from "@/lib/directorApi";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
@@ -62,6 +65,7 @@ type Snapshot = {
   count: number;
   aspect: DirectorAspectId;
   refs: RefPhoto[];
+  scriptEngine: DirectorScriptEngine;
 };
 
 function sleep(ms: number): Promise<void> {
@@ -127,6 +131,9 @@ export function PhotoDirectorTab() {
   const [aspect, setAspect] = useState<DirectorAspectId>("3:4");
   const [count, setCount] = useState<number>(PHOTO_MIN_COUNT);
   const [idea, setIdea] = useState("");
+  // 制限なしモード（2026-10-06）: 最初から選ぶスイッチと、断られたときの「解除しますか？」。
+  const [unrestricted, setUnrestricted] = useState(false);
+  const [restrictedRetry, setRestrictedRetry] = useState<{ snapshot: Snapshot; opts: { priority?: boolean; queue?: boolean } } | null>(null);
 
   const pickImage = (file: File | null | undefined) => {
     if (!file) return;
@@ -138,7 +145,8 @@ export function PhotoDirectorTab() {
     setImage(file);
   };
 
-  const cost = photoDirectorCredits(count, refs.length, knobs);
+  const unrestrictedSurcharge = directorUnrestrictedScriptSurcharge(knobs);
+  const cost = photoDirectorCredits(count, refs.length, knobs) + (unrestricted ? unrestrictedSurcharge : 0);
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
 
   // --- ジョブ ---
@@ -168,7 +176,7 @@ export function PhotoDirectorTab() {
       setPhase("error");
       return null;
     }
-    return { image, idea: idea.trim(), count, aspect, refs };
+    return { image, idea: idea.trim(), count, aspect, refs, scriptEngine: unrestricted ? "unrestricted" : "standard" };
   };
 
   const start = useCallback(
@@ -182,6 +190,7 @@ export function PhotoDirectorTab() {
         aspect: s.aspect,
         extraRefs: s.refs.map((r) => r.file),
         extraRefRoles: s.refs.map((r) => r.role),
+        scriptEngine: s.scriptEngine,
         ...opts,
       });
     },
@@ -204,6 +213,11 @@ export function PhotoDirectorTab() {
     } catch (err) {
       const e = err as DirectorApiError;
       if (typeof e.remainingCredits === "number") broadcastCreditsUpdate(user.id, e.remainingCredits);
+      if (e.code === "restricted") {
+        setPhase("idle");
+        setRestrictedRetry({ snapshot: s, opts });
+        return;
+      }
       setPhase("error");
       setErrorMessage(e.message || "ジョブの作成に失敗しました。");
       if (e.message?.includes("クレジット")) setChargeOpen(true);
@@ -255,6 +269,11 @@ export function PhotoDirectorTab() {
     if (!s || !user) return;
     setQueueChoiceOpen(false);
     if (insufficientCredits) return setChargeOpen(true);
+    await reserve(s);
+  };
+
+  const reserve = async (s: Snapshot) => {
+    if (!user) return;
     setQueueError(null);
     setReserving((n) => n + 1);
     try {
@@ -268,7 +287,8 @@ export function PhotoDirectorTab() {
     } catch (err) {
       const e = err as DirectorApiError;
       if (typeof e.remainingCredits === "number") broadcastCreditsUpdate(user.id, e.remainingCredits);
-      setQueueError(e.message || "予約に失敗しました。");
+      if (e.code === "restricted") setRestrictedRetry({ snapshot: s, opts: { queue: true } });
+      else setQueueError(e.message || "予約に失敗しました。");
     } finally {
       setReserving((n) => n - 1);
     }
@@ -410,6 +430,19 @@ export function PhotoDirectorTab() {
     <div className="grid gap-6 lg:grid-cols-2">
       <LoginModal open={loginOpen} onClose={() => setLoginOpen(false)} />
       <InsufficientCreditsModal open={chargeOpen} onClose={() => setChargeOpen(false)} credits={credits} cost={cost} />
+      <RestrictedChoiceModal
+        open={restrictedRetry != null}
+        surcharge={unrestrictedSurcharge}
+        onCancel={() => setRestrictedRetry(null)}
+        onUnlock={() => {
+          const r = restrictedRetry;
+          setRestrictedRetry(null);
+          if (!r) return;
+          const s: Snapshot = { ...r.snapshot, scriptEngine: "unrestricted" };
+          if (r.opts.queue) void reserve(s);
+          else void runGenerate(s, r.opts);
+        }}
+      />
       <QueueChoiceModal
         open={queueChoiceOpen}
         surcharge={directorPriorityParallelSurcharge(knobs, cost)}
@@ -534,6 +567,7 @@ export function PhotoDirectorTab() {
         <p className="-mt-2 text-[11px] leading-relaxed text-muted">
           同じ指示で少しずつ違う写真を並べて出すので、気に入った 1 枚を選べます。まとめて出すほど 1 枚あたりが安くなります。
         </p>
+        <UnrestrictedToggle checked={unrestricted} onChange={setUnrestricted} surcharge={unrestrictedSurcharge} />
       </div>
 
       {/* --- 実行と結果 --- */}

@@ -2343,7 +2343,15 @@ def custom_workflow_async(item: dict, request: fastapi.Request):
     if not job_id:
         raise fastapi.HTTPException(status_code=400, detail="job_id is required.")
 
-    call = WanAnimateBlackwell().run_custom_workflow.spawn(
+    # GPU の差し替え（2026-10-06〜 Photo Director は H200）: 同じクラスを with_options で別の GPU に載せる。
+    # 本番 B300 と同じ 4 枚で比べ、H200（SageAttention なし）は起動込み 185s・原価 約 ¥40（B300 は 327s・約 ¥110）。
+    # 今の image の SageAttention は Blackwell 向けだけなので、H200 で動かすワークフローは sage_attention を切っておくこと
+    # （buildPhotoWorkflow がそうしている）。許すのは下の一覧だけ。
+    gpu = item.get("gpu")
+    if gpu not in (None, "", "H200"):
+        raise fastapi.HTTPException(status_code=400, detail=f"gpu not allowed: {gpu!r}")
+    cls = WanAnimateBlackwell.with_options(gpu=gpu) if gpu else WanAnimateBlackwell
+    call = cls().run_custom_workflow.spawn(
         item["workflow_json"],
         item["files_b64"],
         item.get("exec_config"),

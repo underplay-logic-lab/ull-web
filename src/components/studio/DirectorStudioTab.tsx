@@ -1,6 +1,7 @@
 "use client";
 
 import { HelpNote } from "./HelpNote";
+import { RestrictedChoiceModal, UnrestrictedToggle } from "./RestrictedChoiceModal";
 import { TopupActions } from "./TopupActions";
 import { PrevResultPanel } from "@/components/studio/PrevResultPanel";
 
@@ -43,6 +44,7 @@ import {
   directorCostBreakdownForDuration,
   directorPriorityParallelSurcharge,
   directorQwenScriptSurcharge,
+  directorUnrestrictedScriptSurcharge,
   directorAspectDims,
   directorExtraRefSurcharge,
   directorRefVideoSurcharge,
@@ -72,6 +74,7 @@ import {
   uploadDirectorLoraFile,
   forgetUploadedDirectorLora,
   type DirectorApiError,
+  type DirectorScriptEngine,
   type DirectorJobStatus,
   type DirectorLoraSelection,
   type DirectorMediaOptions,
@@ -706,7 +709,17 @@ export function DirectorStudioTab() {
         quality?: DirectorQualityMode;
         /** 持ち込み LoRA は使ったら消すので、作り直しでは今アップロードした分を使う（2026-10-04）。 */
         lora?: DirectorLoraSelection;
+        scriptEngine?: DirectorScriptEngine;
       };
+  // 制限なしモード（2026-10-06）: シーンで組むときに最初から選ぶスイッチと、断られたときの「解除しますか？」。
+  const [unrestricted, setUnrestricted] = useState(false);
+  const [restrictedRetry, setRestrictedRetry] = useState<{
+    snapshot: QueuedSnapshot;
+    opts: { priority?: boolean; continuation?: boolean; queue?: boolean };
+  } | null>(null);
+  const unrestrictedSurcharge = directorUnrestrictedScriptSurcharge(knobs);
+  const withEngine = (s: QueuedSnapshot, engine: DirectorScriptEngine): QueuedSnapshot =>
+    s.uiMode === "regen" ? { ...s, scriptEngine: engine } : { ...s, media: { ...s.media, scriptEngine: engine } };
   // 予約（順番待ち）はサーバー側（2026-10-03、lib/studioQueue.server.ts）。予約した時点で課金してジョブ行を
   // reserved で作り、前のジョブが終わるとサーバーが起動する（タブを閉じても進む）。それまでは画面のメモリにだけあり、
   // 閉じると消えていた。reservedIds = DB の reserved（古い順・表示用）。
@@ -768,7 +781,8 @@ export function DirectorStudioTab() {
     (referenceMode === "reference" && refVideo
       ? directorRefVideoSurcharge(breakdown.credits, refVideo.durationS, breakdown.totalDurationS, knobs)
       : 0) +
-    (uiMode === "advanced" ? directorQwenScriptSurcharge(knobs) : 0);
+    (uiMode === "advanced" ? directorQwenScriptSurcharge(knobs) : 0) +
+    (unrestricted && uiMode === "scenes" ? unrestrictedSurcharge : 0);
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
   const busy = phase === "submitting" || phase === "running";
 
@@ -859,7 +873,7 @@ export function DirectorStudioTab() {
         ? conceptText.trim().length > 0
         : scenes.every((s) => s.text.trim().length > 0));
 
-  const buildSnapshot = (): QueuedSnapshot | null => {
+  const buildSnapshotRaw = (): QueuedSnapshot | null => {
     if (adjusting && adjustBase) {
       return {
         uiMode: "regen",
@@ -903,6 +917,12 @@ export function DirectorStudioTab() {
       lora: loraSelection,
       media,
     };
+  };
+
+  // 制限なしのスイッチ（シーンで組むときだけ）を入れて送る内容を決める。
+  const buildSnapshot = (): QueuedSnapshot | null => {
+    const s = buildSnapshotRaw();
+    return s && unrestricted && uiMode === "scenes" ? withEngine(s, "unrestricted") : s;
   };
 
   const handleRun = () => {
@@ -979,6 +999,7 @@ export function DirectorStudioTab() {
             priority: opts.priority,
             queue: opts.queue,
             lora: snapshot.lora,
+            scriptEngine: snapshot.scriptEngine,
           })
         : snapshot.uiMode === "prompt"
           ? startDirectorJob({
@@ -1044,6 +1065,11 @@ export function DirectorStudioTab() {
         console.error("[DirectorStudioTab] start failed:", e);
         const remaining = e.remainingCredits;
         if (typeof remaining === "number") broadcastCreditsUpdate(user.id, remaining);
+        if (e.code === "restricted") {
+          setPhase("idle");
+          setRestrictedRetry({ snapshot, opts });
+          return;
+        }
         setPhase("error");
         setErrorMessage(e.message || "ジョブの作成に失敗しました。");
         if (e.message?.includes("クレジット")) setChargeOpen(true);
@@ -1100,6 +1126,11 @@ export function DirectorStudioTab() {
     if (!snapshot || !user) return;
     setQueueChoiceOpen(false);
     if (insufficientCredits) return setChargeOpen(true);
+    await reserveSnapshot(snapshot);
+  };
+
+  const reserveSnapshot = async (snapshot: QueuedSnapshot) => {
+    if (!user) return;
     setQueueError(null);
     setReserving((n) => n + 1);
     try {
@@ -1117,7 +1148,8 @@ export function DirectorStudioTab() {
       const e = err as DirectorApiError;
       console.error("[DirectorStudioTab] reserve failed:", e);
       if (typeof e.remainingCredits === "number") broadcastCreditsUpdate(user.id, e.remainingCredits);
-      setQueueError(e.message || "予約に失敗しました。");
+      if (e.code === "restricted") setRestrictedRetry({ snapshot, opts: { queue: true } });
+      else setQueueError(e.message || "予約に失敗しました。");
       forgetUploadedLoraIfGone(e.message);
     } finally {
       setReserving((n) => n - 1);
@@ -1223,6 +1255,19 @@ export function DirectorStudioTab() {
     <div className="grid gap-6 lg:grid-cols-2">
       <LoginModal open={loginOpen} onClose={() => setLoginOpen(false)} />
       <InsufficientCreditsModal open={chargeOpen} onClose={() => setChargeOpen(false)} credits={credits} cost={cost} />
+      <RestrictedChoiceModal
+        open={restrictedRetry != null}
+        surcharge={unrestrictedSurcharge}
+        onCancel={() => setRestrictedRetry(null)}
+        onUnlock={() => {
+          const r = restrictedRetry;
+          setRestrictedRetry(null);
+          if (!r) return;
+          const s = withEngine(r.snapshot, "unrestricted");
+          if (r.opts.queue) void reserveSnapshot(s);
+          else void runGenerate(s, { priority: r.opts.priority, continuation: r.opts.continuation });
+        }}
+      />
       <QueueChoiceModal
         open={queueChoiceOpen}
         surcharge={directorPriorityParallelSurcharge(knobs, cost)}
@@ -2108,6 +2153,11 @@ export function DirectorStudioTab() {
             </span>
           </div>
 
+          {uiMode === "scenes" && (
+            <div className="mt-3">
+              <UnrestrictedToggle checked={unrestricted} onChange={setUnrestricted} surcharge={unrestrictedSurcharge} />
+            </div>
+          )}
           {!user ? (
             <button
               type="button"

@@ -11,7 +11,14 @@ import {
   type DirectorScene,
 } from "@/lib/directorPricing";
 
-export type DirectorApiError = Error & { remainingCredits?: number };
+/**
+ * code "restricted"（2026-10-06）: 表現の制限がある AI に断られた（課金前）。画面は「制限を解除しますか？（+unrestrictedSurcharge C）」を出し、
+ * 同じ内容を scriptEngine: "unrestricted" で送り直す。
+ */
+export type DirectorApiError = Error & { remainingCredits?: number; code?: "restricted"; unrestrictedSurcharge?: number };
+
+/** 台本・英訳・写真の指示文を書く AI。unrestricted = 制限なし（追加料金）。 */
+export type DirectorScriptEngine = "standard" | "unrestricted";
 
 export type DirectorStartResult = {
   jobId: string;
@@ -78,6 +85,8 @@ export type DirectorMediaOptions = {
   refVideo?: { file: File; durationS: number; role: DirectorRefVideoRole } | null;
   /** 声の手本（数秒）。参照モードで、歌・セリフを持ち込まないときだけ。 */
   refVoice?: File | null;
+  /** 制限なしモード（2026-10-06）。 */
+  scriptEngine?: DirectorScriptEngine;
 };
 
 /** LoRAの指定方法。①trained: LoRA Studioで本人が学習済みのMiniMax H3 LoRA
@@ -193,6 +202,7 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
     ...(extraRefPaths ? { extraRefPaths, extraRefRoles: args.extraRefRoles?.slice(0, 8) } : {}),
     ...refVideoFields,
     ...refVoiceFields,
+    ...(args.scriptEngine === "unrestricted" ? { scriptEngine: "unrestricted" } : {}),
   };
   const body =
     "conceptText" in args && args.conceptText !== undefined
@@ -231,6 +241,10 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
   if (!res.ok) {
     const error: DirectorApiError = new Error(data?.error || "動画生成に失敗しました。");
     if (typeof data?.remainingCredits === "number") error.remainingCredits = data.remainingCredits;
+    if (data?.code === "restricted") {
+      error.code = "restricted";
+      error.unrestrictedSurcharge = typeof data.unrestrictedSurcharge === "number" ? data.unrestrictedSurcharge : 0;
+    }
     throw error;
   }
   return {
@@ -256,6 +270,7 @@ export async function startPhotoJob(args: {
   extraRefRoles: DirectorRefRole[];
   priority?: boolean;
   queue?: boolean;
+  scriptEngine?: DirectorScriptEngine;
 }): Promise<DirectorStartResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -282,12 +297,17 @@ export async function startPhotoJob(args: {
       extraRefRoles: args.extraRefRoles.slice(0, 8),
       priority: args.priority ?? false,
       ...(args.queue ? { queue: true } : {}),
+      ...(args.scriptEngine === "unrestricted" ? { scriptEngine: "unrestricted" } : {}),
     }),
   });
   const data = await res.json();
   if (!res.ok) {
     const error: DirectorApiError = new Error(data?.error || "写真の生成に失敗しました。");
     if (typeof data?.remainingCredits === "number") error.remainingCredits = data.remainingCredits;
+    if (data?.code === "restricted") {
+      error.code = "restricted";
+      error.unrestrictedSurcharge = typeof data.unrestrictedSurcharge === "number" ? data.unrestrictedSurcharge : 0;
+    }
     throw error;
   }
   return {
@@ -314,6 +334,7 @@ export async function regenerateDirectorJob(args: {
   queue?: boolean;
   /** 今アップロードした持ち込み LoRA（元のジョブの分は使い終わって消えている）。 */
   lora?: DirectorLoraSelection;
+  scriptEngine?: DirectorScriptEngine;
 }): Promise<DirectorStartResult> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -332,6 +353,10 @@ export async function regenerateDirectorJob(args: {
   if (!res.ok) {
     const error: DirectorApiError = new Error(data?.error || "動画生成に失敗しました。");
     if (typeof data?.remainingCredits === "number") error.remainingCredits = data.remainingCredits;
+    if (data?.code === "restricted") {
+      error.code = "restricted";
+      error.unrestrictedSurcharge = typeof data.unrestrictedSurcharge === "number" ? data.unrestrictedSurcharge : 0;
+    }
     throw error;
   }
   return {

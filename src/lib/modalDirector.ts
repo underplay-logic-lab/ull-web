@@ -22,6 +22,8 @@ export type SpawnDirectorJobParams = {
   extraFilesB64?: Record<string, string>;
   /** Photo Director（2026-10-06）: 全 SaveImage の画像を集めて R2 へ上げる（ワーカーの image_outputs）。 */
   imageOutputs?: boolean;
+  /** GPU の差し替え（2026-10-06〜 Photo Director は "H200"）。省略時はクラス既定の B300/B200。 */
+  gpu?: "H200";
   pollDeadlineS: number;
   /**
    * Advanced モード（Qwen3.8-27B-abliteratedによる台本自動生成、
@@ -83,6 +85,7 @@ export async function spawnDirectorJob(params: SpawnDirectorJobParams): Promise<
       skip_torch_compile: true,
       poll_deadline_s: params.pollDeadlineS,
       ...(params.imageOutputs ? { image_outputs: true } : {}),
+      ...(params.gpu ? { gpu: params.gpu } : {}),
       qwen_concept_text: params.qwenConceptText,
       qwen_text_instruction: params.qwenTextInstruction,
       qwen_prompt_node_id: params.qwenPromptNodeId,

@@ -547,6 +547,9 @@ export function buildCinematicWorkflow({
  * 条件づけ（105:104）は 1 つを共有し、シードだけ違うサンプラーを枚数ぶん並べる（参照の読み込みを 1 回で済ませる）。
  * 出力は枝ごとの SaveImage。ワーカーは image_outputs=true で全部を集めて R2 へ上げる。
  */
+/** Photo Director を動かす GPU（2026-10-06 実測で決定。ワーカーの custom_workflow_async が許す値だけ）。 */
+export const PHOTO_GPU = "H200";
+
 export function buildPhotoWorkflow(
   params: Omit<BuildCinematicWorkflowParams, "referenceMode" | "durationS" | "audioName" | "refVideoName" | "refVideoRole">,
   count: number,
@@ -558,6 +561,10 @@ export function buildPhotoWorkflow(
   const cond = workflow["105:104"].inputs;
   cond.length = 5;
   cond.ref_image_size = "max";
+  // 写真は H200 で動かす（PHOTO_GPU）。今の image の SageAttention は Blackwell 向けだけで、H200 では
+  // "SM90 kernel is not available" で落ちる（2026-10-06 実際に落ちた）→ PyTorch 標準の計算にする。
+  // それでも B300（SageAttention あり）より起動込みで速かった（185s 対 327s、docs/gpu-benchmarks.md）。
+  workflow["105:124"].inputs.sage_attention = "disabled";
   // 動画・音声の書き出しと長さの計算は使わない。
   for (const id of ["91", "92", "105:23", "105:107", "105:111", "105:15", "105:14", "105:10"]) {
     delete (workflow as Record<string, unknown>)[id];

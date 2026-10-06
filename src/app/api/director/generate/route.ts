@@ -22,6 +22,7 @@ import {
   directorPriorityParallelSurcharge,
   directorExtraRefSurcharge,
   directorQwenScriptSurcharge,
+  directorUnrestrictedScriptSurcharge,
   directorAspectDims,
   isDirectorAspectId,
   isDirectorQualityMode,
@@ -54,7 +55,7 @@ import {
   withJapaneseTranslationRequest,
   type DirectorPromptOptions,
 } from "@/lib/directorPrompt";
-import { buildCinematicWorkflow, buildPhotoWorkflow, CINEMATIC_PROMPT_NODE_ID } from "@/lib/cinematicWorkflow";
+import { buildCinematicWorkflow, buildPhotoWorkflow, CINEMATIC_PROMPT_NODE_ID, PHOTO_GPU } from "@/lib/cinematicWorkflow";
 import { headR2, r2UserRoot } from "@/lib/r2.server";
 import { assertOwnedDirectorLoraVolumePath, isOwnedDirectorLoraR2Key } from "@/lib/directorLoraUpload.server";
 import { CINEMATIC_MODE_BY_ID, cinematicMegapixelsForDuration, cinematicSafeDimensions } from "@/lib/cinematicPricing";
@@ -107,6 +108,10 @@ export async function POST(request: Request) {
   const baseJobId = typeof body.baseJobId === "string" ? body.baseJobId : "";
   // 予約（2026-10-03、lib/studioQueue.server.ts）: 課金して行を reserved で作り、順番が来たらサーバーが起動する。
   const queue = body.queue === true;
+  // 制限なしモード（2026-10-06 ホスト判断）: 台本・英訳・写真の指示文を、表現の制限がある AI（Gemini）ではなく
+  // GPU 上の制限のない AI（Qwen abliterated）で書く。追加料金（knob director_unrestricted_script_credits）。
+  // 指定が無いときに Gemini に断られたら、勝手に切り替えず 409 code "restricted" を返して画面に選ばせる（課金前）。
+  const unrestrictedRequested = body.scriptEngine === "unrestricted";
   // Photo Director（2026-10-06）: 同じ GPU・同じ土台（10Eros）で、参照モードを 5 フレームだけ回して静止画にする。
   // ジョブは Director と同じ workflow_type "director"（予約の順番・返金・ログ・GPU を共用）で、inputs.output = "photo"。
   // 使わない欄（シーン・音声・手本・LoRA・作り直し）はここで落とす。
@@ -446,12 +451,20 @@ export async function POST(request: Request) {
   // Advanced（Qwen台本生成）は動画本体とは別のGPUコンテナを1回起動するので
   // その分を上乗せする（directorPricing.ts参照）。
   const videoCredits = breakdown.credits || directorCreditsWorstCase(knobs);
+  // 台本 AI を使う経路（写真・シーン・日本語の直接入力の英訳）。おまかせは元から制限なしの AI。
+  const needsScriptAi =
+    isPhoto ||
+    (!isAdvancedMode && !isPromptMode) ||
+    (isPromptMode && !reusingScript && looksJapaneseOutsideDialogue(rawPromptInput));
+  const unrestricted = unrestrictedRequested && needsScriptAi;
+  const unrestrictedSurcharge = directorUnrestrictedScriptSurcharge(knobs);
   const baseCreditsCost = isPhoto
     ? photoDirectorCredits(photoCount, extraRefPaths.length, knobs)
     : videoCredits +
     directorExtraRefSurcharge(videoCredits, extraRefPaths.length, knobs) +
     directorRefVideoSurcharge(videoCredits, refVideoDurationS, breakdown.totalDurationS, knobs) +
-    (isAdvancedMode ? directorQwenScriptSurcharge(knobs) : 0);
+    (isAdvancedMode ? directorQwenScriptSurcharge(knobs) : 0) +
+    (unrestricted ? unrestrictedSurcharge : 0);
   // 「実行中でも並列で今すぐ実行」を選んだ場合の追加コールドスタート分
   // （順番待ち=無料の既定に対するオプトインの上乗せ。CLAUDE.md §6参照）。
   // 予約は並列の追加料金を取らない（順番待ち）。
@@ -512,29 +525,45 @@ export async function POST(request: Request) {
   let qwenTextInstruction: string | undefined;
   const statusFor = (e: DirectorPromptError) =>
     e.reason === "quota" ? 429 : e.reason === "busy" ? 503 : e.reason === "not_configured" ? 501 : 502;
+  const restricted = () =>
+    NextResponse.json(
+      {
+        code: "restricted",
+        error: "表現の制限に引っかかりました。制限を解除して作り直せます。",
+        unrestrictedSurcharge,
+        remainingCredits: currentCredits,
+      },
+      { status: 409 },
+    );
   if (isPhoto) {
-    try {
-      combinedPrompt = await expandPhotoIdea(photoIdea, promptOpts.references);
-    } catch (err) {
-      const e = err as DirectorPromptError;
-      if (e.reason !== "refusal") return NextResponse.json({ error: e.message }, { status: statusFor(e) });
-      console.warn("[director/generate] Gemini refused the photo prompt; falling back to the worker-side Qwen");
+    if (unrestricted) {
       qwenTextInstruction = withJapaneseTranslationRequest(buildPhotoPrompt(photoIdea, promptOpts.references));
       combinedPrompt = photoIdea;
+    } else {
+      try {
+        combinedPrompt = await expandPhotoIdea(photoIdea, promptOpts.references);
+      } catch (err) {
+        const e = err as DirectorPromptError;
+        if (e.reason !== "refusal") return NextResponse.json({ error: e.message }, { status: statusFor(e) });
+        return restricted();
+      }
     }
   } else if (isAdvancedMode) {
     combinedPrompt = conceptTextInput;
   } else if (isPromptMode) {
     // 作り直しで台本をそのまま使うときは訳し直さない（セリフが日本語でも、訳し直すと台本が変わる）。
     if (!reusingScript && looksJapaneseOutsideDialogue(rawPromptInput)) {
-      try {
-        combinedPrompt = await translateJapanesePromptToEnglish(rawPromptInput);
-      } catch (err) {
-        const e = err as DirectorPromptError;
-        if (e.reason !== "refusal") return NextResponse.json({ error: e.message }, { status: statusFor(e) });
-        console.warn("[director/generate] Gemini refused the translation; falling back to the worker-side Qwen");
+      if (unrestricted) {
         qwenTextInstruction = withJapaneseTranslationRequest(buildJapaneseTranslationPrompt(rawPromptInput));
         combinedPrompt = rawPromptInput;
+      } else {
+        try {
+          combinedPrompt = await translateJapanesePromptToEnglish(rawPromptInput);
+        } catch (err) {
+          const e = err as DirectorPromptError;
+          if (e.reason !== "refusal") return NextResponse.json({ error: e.message }, { status: statusFor(e) });
+          return restricted();
+        }
       }
     } else {
       combinedPrompt = rawPromptInput;
@@ -543,17 +572,18 @@ export async function POST(request: Request) {
     if (!qwenTextInstruction) combinedPrompt = withIdentityAnchor(combinedPrompt);
     // 音声を持ち込んだときは長回しの宣言と「口を音声に合わせる」を先頭に（無ければ）。
     if (!qwenTextInstruction && promptOpts.soundtrack) combinedPrompt = withSoundtrackAnchor(combinedPrompt, promptOpts.soundtrack);
+  } else if (unrestricted) {
+    qwenTextInstruction = withJapaneseTranslationRequest(
+      buildSceneDirectorPrompt(scenes, musicDirectionInput || undefined, promptOpts),
+    );
+    combinedPrompt = scenes.map((s) => s.text).join("\n");
   } else {
     try {
       combinedPrompt = await expandDirectorScenes(scenes, musicDirectionInput || undefined, promptOpts);
     } catch (err) {
       const e = err as DirectorPromptError;
       if (e.reason !== "refusal") return NextResponse.json({ error: e.message }, { status: statusFor(e) });
-      console.warn("[director/generate] Gemini refused the scene synthesis; falling back to the worker-side Qwen");
-      qwenTextInstruction = withJapaneseTranslationRequest(
-        buildSceneDirectorPrompt(scenes, musicDirectionInput || undefined, promptOpts),
-      );
-      combinedPrompt = scenes.map((s) => s.text).join("\n");
+      return restricted();
     }
   }
 
@@ -655,7 +685,8 @@ export async function POST(request: Request) {
         prompt_mode: isPromptMode,
         advanced_mode: isAdvancedMode,
         // Gemini に断られて GPU 上の Qwen で合成した印（集計・調査用）。
-        ...(qwenTextInstruction ? { prompt_fallback: "qwen" } : {}),
+        // 制限なしモード（GPU 上の Qwen で書いた）の印（集計・調査用）。
+        ...(qwenTextInstruction ? { script_engine: "unrestricted" } : {}),
         quality_mode: qualityMode,
         priority,
         lora_name: loraName || null,
@@ -741,7 +772,7 @@ export async function POST(request: Request) {
     pollDeadlineS: isPhoto
       ? photoDirectorPollDeadlineS(photoCount)
       : directorPollDeadlineS(breakdown.totalDurationS, qualityMode, refVideoDurationS),
-    ...(isPhoto ? { imageOutputs: true } : {}),
+    ...(isPhoto ? { imageOutputs: true, gpu: PHOTO_GPU } : {}),
     qwenConceptText: isAdvancedMode ? withConceptNotes(conceptTextInput, promptOpts) : undefined,
     qwenTextInstruction,
     qwenPromptNodeId: isAdvancedMode || qwenTextInstruction ? CINEMATIC_PROMPT_NODE_ID : undefined,

@@ -269,6 +269,11 @@ export function directorRefVideoSurcharge(
   return Math.ceil(baseCredits * ((1 + v / outputS) ** 2 - 1) * knobs.director_ref_video_rate);
 }
 
+/** 制限なしモード（2026-10-06）: 台本・英訳・写真の指示文を GPU 上の制限のない AI で書く分の上乗せ。 */
+export function directorUnrestrictedScriptSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS): number {
+  return Math.round(knobs.director_unrestricted_script_credits);
+}
+
 export function directorQwenScriptSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS): number {
   return Math.round(knobs.director_qwen_script_credits);
 }

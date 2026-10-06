@@ -156,6 +156,13 @@ const KNOB_TEXT: Record<KnobKey, Omit<KnobMeta, "value">> = {
     description: "1 回で出す枚数（4・6・8 枚。最低 4 枚）1 枚ごとの料金。",
     isPublic: true,
   },
+  director_unrestricted_script_credits: {
+    label: "Director / Photo 制限なしモード",
+    category: "feature_credits",
+    unit: "C",
+    description: "台本・英訳・写真の指示文を、表現の制限のない AI（GPU 上）で書くときの追加料金。断られたときの「制限を解除」と、最初から選んだときの両方。",
+    isPublic: true,
+  },
   director_qwen_script_credits: {
     label: "Cinematic Director Advanced（Qwen台本生成）",
     category: "feature_credits",
