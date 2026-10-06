@@ -278,7 +278,13 @@ export async function POST(request: Request) {
   // プロンプトモード（結果画面に表示された合成済みプロンプトをコピペ・微修正
   // して直接投げる経路、2026-09-14）: rawPrompt が非空文字列ならシーン
   // ビルダーを完全に迂回し、Gemini合成もスキップしてそのまま使う。
-  const rawPromptInput = typeof body.rawPrompt === "string" ? body.rawPrompt.trim() : "";
+  // 参照モードの直接入力: 「Picture 2」「2枚目の写真」などの指し方を <Picture 2> にそろえる（Photo Director と同じ）。
+  const rawPromptInput =
+    typeof body.rawPrompt === "string"
+      ? referenceMode === "reference"
+        ? normalizeReferenceTags(body.rawPrompt.trim(), 1 + extraRefPaths.length)
+        : body.rawPrompt.trim()
+      : "";
   const isPromptMode = !isAdvancedMode && rawPromptInput.length > 0;
 
   // 音楽・環境音の指示（任意、2026-09-15追加。シーンビルダー限定 — プロンプト

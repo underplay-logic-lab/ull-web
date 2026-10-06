@@ -184,11 +184,14 @@ function ImageDropzone({
   previewUrl,
   onFileSelected,
   onClear,
+  badge,
 }: {
   file: File | null;
   previewUrl: string | null;
   onFileSelected: (file: File) => void;
   onClear: () => void;
+  /** 角に出す名前（顔写真として使うときの「Picture 1」）。 */
+  badge?: string;
 }) {
   const [isDragging, setIsDragging] = useState(false);
   const [rejectError, setRejectError] = useState<string | null>(null);
@@ -229,6 +232,9 @@ function ImageDropzone({
         <div className="relative overflow-hidden rounded-xl border border-border bg-background">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={previewUrl} alt="参照画像" className="mx-auto max-h-72 w-auto object-contain" />
+          {badge && (
+            <span className="absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[10px] text-white">{badge}</span>
+          )}
           <button
             type="button"
             onClick={onClear}
@@ -504,6 +510,8 @@ export function DirectorStudioTab() {
   // 直接書くモードは上級者向けと明記する。1 文だけで 15 秒を作り、後半で別人になった実例を受けて）。
   const [uiMode, setUiMode] = useState<UiMode>("advanced");
   const [promptDraft, setPromptDraft] = useState("");
+  // 編集で読み込んだジョブの英語の原文（日本語訳を読み込んだときに戻せるように）。
+  const [promptEnglish, setPromptEnglish] = useState<string | null>(null);
   const [promptDraftDurationS, setPromptDraftDurationS] = useState(DIRECTOR_SECONDS_PER_SCENE);
   // 「この動画をもとに調整する」（2026-10-01〜）: 完了した動画から入ったときだけ持つ。
   // この間は元の動画と同じシード・同じ参照画像で作り直す（画像の入れ直しは不要）。
@@ -826,6 +834,7 @@ export function DirectorStudioTab() {
   const enterPromptMode = useCallback(() => {
     if (!job?.combinedPrompt) return;
     setPromptDraft(job.combinedPromptJa || job.combinedPrompt);
+    setPromptEnglish(job.combinedPrompt);
     setPromptDraftDurationS(job.totalDurationS ?? DIRECTOR_SECONDS_PER_SCENE);
     setAdjustBase(
       job.status === "completed" && job.regenerable ? { jobId: job.jobId, seed: job.seed, english: job.combinedPrompt } : null,
@@ -1283,6 +1292,7 @@ export function DirectorStudioTab() {
           previewUrl={imagePreview}
           onFileSelected={setImage}
           onClear={() => setImage(null)}
+          badge={referenceMode === "reference" ? "Picture 1" : undefined}
         />
         <p className="-mt-3 text-[11px] leading-relaxed text-muted">
           入れた画像の見た目（人物・絵柄・服装）のまま動かす機能です。アニメを実写にする・別人に変えるなど、見た目を大きく変える指示は苦手で、途中で崩れることがあります。
@@ -1363,6 +1373,10 @@ export function DirectorStudioTab() {
                     <div className="relative aspect-square overflow-hidden rounded-lg bg-background">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={u} alt={`追加の写真 ${i + 2}`} className="h-full w-full object-contain" />
+                      {/* プロンプトで指すときの名前（サーバーが「Picture 2」「2枚目」なども <Picture 2> にそろえる）。 */}
+                      <span className="absolute left-1 top-1 rounded bg-black/60 px-1 py-px font-mono text-[9px] leading-tight text-white">
+                        Picture {i + 2}
+                      </span>
                       <button
                         type="button"
                         onClick={() => {
@@ -1704,6 +1718,20 @@ export function DirectorStudioTab() {
               placeholder="英語・日本語どちらでも入力できます（日本語は送信時に自動で英訳されます）"
               className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm leading-relaxed text-foreground placeholder:text-muted"
             />
+            {/* 日本語を直すと英訳の AI を通る（制限ワードなら解除の確認＋追加料金）。英語の原文なら AI を通さずそのまま使う。
+                調整（adjustBase）のときは上の案内に同じボタンがあるので出さない。 */}
+            {!adjustBase && promptEnglish && promptDraft !== promptEnglish && (
+              <p className="mt-1 text-[11px] leading-relaxed text-muted">
+                日本語を直すと送るときに英訳します。英語の原文を直すと AI を通さずにそのまま使います（表現の制限にかからず、追加料金もかかりません）。
+                <button
+                  type="button"
+                  onClick={() => setPromptDraft(promptEnglish)}
+                  className="ml-1 text-neon-pink underline transition-colors hover:opacity-80"
+                >
+                  英語の原文に切り替える
+                </button>
+              </p>
+            )}
             {useAudio ? (
               <p className="mt-3 text-xs text-muted">尺: 音声に合わせて約{totalDurationS}秒</p>
             ) : (
@@ -2218,10 +2246,25 @@ export function DirectorStudioTab() {
         )}
 
         {phase === "error" && errorMessage && (
-          <p className="flex items-start gap-1.5 rounded-xl border border-red-500/40 bg-red-500/5 px-3 py-2.5 text-[12px] leading-relaxed text-red-300">
+          <div className="flex items-start gap-1.5 rounded-xl border border-red-500/40 bg-red-500/5 px-3 py-2.5 text-[12px] leading-relaxed text-red-300">
             <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-            {errorMessage}
-          </p>
+            <span className="flex-1">{errorMessage}</span>
+            {/* 閉じたら覚えているジョブも忘れる（失敗の表示はリロードでも残る作りなので、消す手段をここに置く）。 */}
+            <button
+              type="button"
+              onClick={() => {
+                setPhase("idle");
+                setErrorMessage(null);
+                setJob(null);
+                setJobId(null);
+                saveFormState(JOB_KEY, { jobId: "" });
+              }}
+              aria-label="エラーを閉じる"
+              className="shrink-0 text-red-300/70 transition-colors hover:text-red-200"
+            >
+              <X size={14} />
+            </button>
+          </div>
         )}
 
         {phase === "done" && job?.videoUrl && (
