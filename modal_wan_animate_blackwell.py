@@ -509,8 +509,13 @@ MODEL_SUBFOLDERS = ("diffusion_models", "text_encoders", "vae", "clip_vision", "
 # loaded model gets evicted on every load rather than just the minimum
 # needed. That fights VRAM residency instead of helping it, so it's left
 # off; --gpu-only alone already keeps weights off the CPU.
+#
+# 2026-10-06: --gpu-only をやめて通常モードへ（B300 も、ホスト判断「OOM は起きると面倒なので保険で」）。--gpu-only は
+# UNETLoader が DiT を ComfyUI のメモリ管理を通さず GPU へ直接読むため、テキストエンコーダ 49GB 等を載せたままだと
+# 読み込み順しだいで溢れる（H200 で実際に OOM、ジョブ eac3f0f3）。通常モードなら必要なときだけ CPU（ピン留め）へ退避し、
+# 載せ直しは数秒の見込み。空いた分は高解像度・長尺の余裕になる。
 BLACKWELL_EXEC_CONFIG = {
-    "gpu_only": True,
+    "gpu_only": False,
     "use_sage_attention": True,
 }
 
@@ -1439,10 +1444,9 @@ class WanAnimateBlackwell:
         import subprocess
 
         cfg = exec_config if exec_config is not None else BLACKWELL_EXEC_CONFIG
-        # Blackwell 以外（Photo Director の H200、2026-10-06〜）: --gpu-only は「全モデルを GPU に置きっぱなし」で
-        # 288GB 前提。141GB の H200 ではテキストエンコーダ 49GB を降ろさないまま DiT を GPU へ直接読み、読み込み順
-        # しだいで OOM した（ジョブ eac3f0f3）。通常モードにして ComfyUI に都度降ろさせる。SageAttention も
-        # Blackwell 向けビルドだけなので外す（写真のワークフローは元から sage_attention: "disabled"）。
+        # Blackwell 以外（Photo Director の H200、2026-10-06〜）: SageAttention は Blackwell 向けビルドだけなので外す
+        # （写真のワークフローは元から sage_attention: "disabled"）。全モデル常駐（gpu_only / high_vram）も 141GB では
+        # 溢れるので、呼び出し側が何を渡しても通常モードにする。
         if _gpu_tier_label() not in ("B300", "B200", "unknown"):
             cfg = {**cfg, "gpu_only": False, "high_vram": False, "use_sage_attention": False}
         normalized = (
