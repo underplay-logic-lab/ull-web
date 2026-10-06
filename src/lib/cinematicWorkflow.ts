@@ -570,6 +570,8 @@ export function buildPhotoWorkflow(
   const photoDims = shapeW && shapeH && shapeW > 0 && shapeH > 0 ? photoOutputDimensions(shapeW, shapeH) : photoOutputDimensions(1, 1);
   cond.width = photoDims.width;
   cond.height = photoDims.height;
+  // 「画風」の写真で足す一文は動画向けの言い回し（toReferencePrompt）。写真では image に直す。
+  cond.prompt = String(cond.prompt).replace("The whole video is drawn", "The whole image is drawn");
   // 写真は H200 で動かす（PHOTO_GPU）。今の image の SageAttention は Blackwell 向けだけで、H200 では
   // "SM90 kernel is not available" で落ちる（2026-10-06 実際に落ちた）→ PyTorch 標準の計算にする。
   // それでも B300（SageAttention あり）より起動込みで速かった（185s 対 327s、docs/gpu-benchmarks.md）。
