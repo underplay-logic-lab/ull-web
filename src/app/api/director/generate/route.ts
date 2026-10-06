@@ -466,8 +466,9 @@ export async function POST(request: Request) {
     (isPromptMode && !reusingScript && looksJapaneseOutsideDialogue(rawPromptInput));
   const unrestricted = unrestrictedRequested && needsScriptAi;
   const unrestrictedSurcharge = directorUnrestrictedScriptSurcharge(knobs);
+  // 写真にも制限解除の上乗せを足す（2026-10-06 まで抜けていて、画面は 167C と出すのに 76C しか引いていなかった。ジョブ eac3f0f3）。
   const baseCreditsCost = isPhoto
-    ? photoDirectorCredits(photoCount, extraRefPaths.length, knobs)
+    ? photoDirectorCredits(photoCount, extraRefPaths.length, knobs) + (unrestricted ? unrestrictedSurcharge : 0)
     : videoCredits +
     directorExtraRefSurcharge(videoCredits, extraRefPaths.length, knobs) +
     directorRefVideoSurcharge(videoCredits, refVideoDurationS, breakdown.totalDurationS, knobs) +

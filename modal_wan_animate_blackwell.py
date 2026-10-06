@@ -1832,6 +1832,20 @@ class WanAnimateBlackwell:
         return {"ok": True, "count": len(matches), "matches": matches}
 
     # --- ULL Cinematic Director "Advanced"（Qwen台本自動生成） ----------------
+    def _unload_qwen(self):
+        """_ensure_qwen_loaded で載せた Qwen を GPU から外す（次に要るときは読み直し）。"""
+        if getattr(self, "_qwen_model", None) is None:
+            return
+        import gc
+
+        import torch
+
+        self._qwen_model = None
+        self._qwen_processor = None
+        gc.collect()
+        torch.cuda.empty_cache()
+        print(f"[director-script] unloaded VLM (gpu={_gpu_tier_label()})", flush=True)
+
     def _ensure_qwen_loaded(self):
         """Qwen3.8-27B-abliterated を初回呼び出し時だけロードし、self に
         キャッシュする（modal_train_minimax_lora.py::_run_captioning と同じ
@@ -2118,6 +2132,11 @@ class WanAnimateBlackwell:
                     if not ref_image_bytes:
                         raise RuntimeError("qwen_concept_text requires at least one reference file")
                     script = self._generate_director_script(ref_image_bytes, qwen_concept_text, qwen_duration_s or 15)
+                # Blackwell 以外（H200 の Photo Director）では Qwen（27B bf16・約 54GB）を残さない。ComfyUI は別プロセスなので
+                # ここで握ったままの分は ComfyUI から見えず、TE 49GB＋DiT 49GB と合わせて 141GB を超えて OOM した
+                # （2026-10-06 ジョブ eac3f0f3、制限解除の写真）。B300 は 288GB あるので次の依頼に備えて残す（従来どおり）。
+                if _gpu_tier_label() not in ("B300", "B200", "unknown"):
+                    self._unload_qwen()
                 if qwen_prompt_node_id not in workflow:
                     raise RuntimeError(f"qwen_prompt_node_id {qwen_prompt_node_id!r} not found in workflow")
                 # LoRA のトリガーワード（2026-10-04）: Qwen が書いた文に無ければ先頭に足す（Next の Gemini 経路と同じ）。
