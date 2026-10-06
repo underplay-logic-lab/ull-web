@@ -29,6 +29,7 @@ export function ImageLightbox({
   onClose,
   onCaptionChange,
   disabled = false,
+  showCaption = true,
 }: {
   items: LightboxItem[];
   index: number;
@@ -36,6 +37,8 @@ export function ImageLightbox({
   onClose: () => void;
   onCaptionChange?: (id: string, caption: string) => void;
   disabled?: boolean;
+  /** false で下の「学習用タグ」欄を出さない（生成結果を見るだけのタブ用、2026-10-06）。 */
+  showCaption?: boolean;
 }) {
   const item = items[index];
   const stageRef = useRef<HTMLDivElement>(null);
@@ -244,12 +247,13 @@ export function ImageLightbox({
         className="border-t border-white/10 bg-black/60 px-4 py-3"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-1 flex items-center justify-between text-[10px] text-white/50">
-          <span>英語タグ / English（学習に使用）</span>
+        <div className={`flex items-center justify-between text-[10px] text-white/50 ${showCaption ? "mb-1" : ""}`}>
+          <span>{showCaption ? "英語タグ / English（学習に使用）" : item.name}</span>
           {items.length > 1 && (
             <span className="hidden sm:inline">◀ ▶ / ←→ キーで前後の画像・ホイールで拡大・ドラッグで移動</span>
           )}
         </div>
+        {showCaption && (
         <textarea
           value={item.caption}
           onChange={(e) => onCaptionChange?.(item.id, e.target.value)}
@@ -258,6 +262,7 @@ export function ImageLightbox({
           rows={2}
           className="w-full resize-none rounded-lg border border-white/15 bg-white/5 px-3 py-2 font-mono text-xs text-white outline-none transition-colors focus:border-neon-violet/60 disabled:opacity-60"
         />
+        )}
         {item.captionJa?.trim() ? (
           <p className="mt-1.5 line-clamp-2 text-[11px] text-white/50">{item.captionJa}</p>
         ) : null}

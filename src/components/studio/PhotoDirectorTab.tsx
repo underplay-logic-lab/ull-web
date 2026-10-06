@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, Camera, Clapperboard, Download, ImagePlus, LogIn, Maximize2, Pencil, Sparkles, X, Zap } from "lucide-react";
 import { CopyButton } from "./CopyButton";
+import { ImageLightbox } from "./ImageLightbox";
 import { PromptLanguageSwitch } from "./PromptLanguageSwitch";
 import { HelpNote } from "./HelpNote";
 import { TopupActions } from "./TopupActions";
@@ -217,6 +218,7 @@ export function PhotoDirectorTab() {
   const elapsedMs = useElapsedTimer(phase === "running" && job?.status === "processing");
   const { isWarm: gpuWarm, remainingMs: gpuWarmMs, markWarm: markGpuWarm } = useLocalWarmCountdown(30);
   const reloadsRef = useRef<Record<number, number>>({});
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   // 予約（サーバー側の順番待ち）。
   const trackedRef = useRef<string[]>(loadFormState<{ ids: string[] }>(RESERVED_KEY)?.ids ?? []);
@@ -870,7 +872,9 @@ export function PhotoDirectorTab() {
                   <img
                     src={u}
                     alt={`写真 ${i + 1}`}
-                    className="w-full rounded-lg bg-surface object-contain"
+                    onClick={() => setLightboxIndex(i)}
+                    title="クリックで拡大"
+                    className="w-full cursor-zoom-in rounded-lg bg-surface object-contain"
                     onError={() => {
                       const n = reloadsRef.current[i] ?? 0;
                       if (n >= 2) return;
@@ -920,6 +924,15 @@ export function PhotoDirectorTab() {
           </div>
         )}
         {actionError && <p className="text-xs text-red-400">{actionError}</p>}
+        {lightboxIndex != null && imageUrls[lightboxIndex] && (
+          <ImageLightbox
+            items={imageUrls.map((url, i) => ({ id: String(i), url, name: `写真 ${i + 1} / ${imageUrls.length}`, caption: "" }))}
+            index={lightboxIndex}
+            onIndexChange={setLightboxIndex}
+            onClose={() => setLightboxIndex(null)}
+            showCaption={false}
+          />
+        )}
 
         {/* 使われたプロンプト（Director と同じ）。台本は投入時に決まっているので、生成中から出して「編集して次を作る」に使える。 */}
         {job?.isPhoto && job.combinedPrompt && (
