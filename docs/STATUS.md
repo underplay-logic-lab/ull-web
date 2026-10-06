@@ -591,7 +591,27 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 （「やりたいことが叶う・要望で育てるサイト」。料金など細かい話はしない）。新規登録（Google・メール）・パスワード再設定・決済は確認済み。
 （訪問は Cloudflare → Web Analytics、登録は Supabase の Users で見る。Discord の反応はホストが来たら伝える方針なので予定に載せない）
 
-**→ 次の ULL再開で出す上位 3 つ（2026-10-06 未明に更新。この下を先に出す）**
+**→ 次の ULL再開で出す上位 3 つ（2026-10-07 未明に更新。この 3 つを先に出す）**
+- **A. 曲づくりの声の固定 → RVC（声の変換）をローカルで試す**（次の作業・ホスト了承済みの方向）:
+  参照音声（ReferenceTimbreAudio）で固定する方法は 6 回の試験で不安定と判断（下の「曲づくりの声の検証」）。→ 曲は自由に作り、Demucs で歌を取り出し、
+  RVC で**ひなたの声**へ変換して伴奏と混ぜ戻す。学習データ＝マスター `D:/ComfyUI-ull/results/ace_local/master/hinata68_master.flac` の歌（約 1 分）。
+  先に §5 のライセンス確認（RVC 本体・HuBERT/ContentVec・RMVPE）。変換して聴く候補: `results/ace_local/exp4/s9_v30` 等・`exp6/noref_s9`。
+- **B. Director の実地検証 1 本でまとめて確認**: 参照の使い方（剣＝持ち物・場所・動きの手本・背景が単純な手本動画）＋ B300 の通常モード（--gpu-only をやめた）の速さ＋
+  おまかせか制限解除で Qwen の時間（動画の 91C を測り直す。H200 写真では約 80 秒→写真は 31C に下げ済み）。
+- **C. 検討待ち**: MiniMax H3 Fun ControlNet（骨格・深度で 1 コマずつ縛る＝Wan Animate 相当、ライセンス未確認）／動画でもアニメの参照が実写に寄る（写真と同じ「絵柄」選択を入れるか）／
+  実写の参照の「アニメ化」ボタン（本番 2511 は TE abliterated・角度 LoRA 融合で未確認）／セリフの読み上げは GPT-SoVITS が次の候補（Chatterbox・CosyVoice は不合格）。
+
+**曲づくりの声の検証（2026-10-06〜07・ローカル）**: 環境 = `D:/ComfyUI2`（8188 で動いているのはこちら。custom_nodes もここ）＋本番と同じ XL SFT＋ScragVAE
+（どちらも手元に配置済み・85 秒の曲が約 20 秒・VRAM 約 12GB）。スクリプト `D:/ComfyUI-ull/tools/ace_local.py`（本番の build_workflow を流用）・`ace_vocals.py`（mpenv）・
+`ace_voice_sim.py`（tts/cbenv の Resemblyzer）。結果 `D:/ComfyUI-ull/results/ace_local/exp1〜6`。
+- タグの声の書き分け（息まじり・ハスキー等）はシード違い程度の差しか出ない。「young girl」と書くと歌が入らない。Resemblyzer の類似度は歌声だと 0.9 前後に固まり判定に使えない（耳で判断）。
+- 参照音声の不協和音の原因: ComfyUI（model_base.ACEStep15.extra_conds）が参照を入れると audio_codes を渡さず、モデルが参照から設計図を作る＝参照曲のカバーになる。
+  → 自作ノード `D:/ComfyUI2/custom_nodes/ull_ace_timbre`（UllAceTimbreKeepCodes・参照は音色だけ・設計図は歌詞から）で不協和音は消えたが、
+  共鳴音・高音の荒れ・音が小さくなる・手本に寄らない、が回ごとに出て安定せず（手本＝歌だけの方がまし。伴奏なしで作った手本も不安定）。
+- ひなたの 68 秒の曲は **turbo・シード 1・公式 VAE**（タグが具体的: clear young Japanese female vocals, vocal-forward mix 等）＝当たりを 1 発目で引いたと推測。
+  **マスター**: `ext68_codes0_v0.38.2_3` の 60 秒以降をシード 12 で作り直し（`results/ace_local/tail60/`）＋冒頭 0〜0.28 秒の息継ぎを無音に → `results/ace_local/master/hinata68_master.{flac,wav}`。
+
+**（以下は 2026-10-06 の記録）**
 **2026-10-06 夕方の追記（セリフの声・ローカル試験）**: 短編動画のセリフを、専用の読み上げ AI で先に作って Director に持ち込む構想（同じ声・セリフだけ作り直せる）。
   **→ ホストが聴いて判定（2026-10-06 夕方）: Chatterbox は全然ダメ（日本語になっていない）・CosyVoice は聞き取れるが違和感がある程度。どちらも不採用寄り。**
   （下の「正しく読む」は Claude の機械的な確認で、耳での判定ではなかった。セリフの音声は**ホストが聴くまで良し悪しを書かない**）
