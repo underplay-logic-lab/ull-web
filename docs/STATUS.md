@@ -625,7 +625,9 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    **枚数は 1・2・4・8 枚（既定 4、ホスト判断）**: 1 枚 54C・2 枚 63C・4 枚 81C・8 枚 117C。選択肢に 1 枚あたりの値段を出して 4 枚以上へ誘う。
    **絵柄（2026-10-06 夜）**: 土台 10Eros は実写寄りで、アニメの参照でも実写になる（健全な題材でも）。公式 ref2va は絵柄を保つが性器の描写が
    不十分でホスト不採用。→ 「絵柄: 入れた写真のまま／アニメ・イラスト」の選択を追加し、アニメは強い一文（PHOTO_ANIME_SENTENCE）を必ず入れる。
-   実写の参照（形の手本など）を足すと実写に戻る。比較 `D:/ComfyUI-ull/results/anime_test/{ab,c,d,e}_grid.png`。後がけの Illustrious は未試行（予備案）。
+   実写の参照（形の手本など）を足すと実写に戻る → 先にアニメ化（ホストがローカルの公式 2511 で `Change the art style of this image to Japanese anime.
+   2D cel-shaded anime illustration with bold black outlines and flat colors.`）すればアニメになるが「リアル調のアニメ」止まり。一文を強めても差はわずか、
+   出力への 2511 の後がけもほぼ変化なし＝今の土台の上限として区切り（強めた一文と禁止語だけ入れた）。比較 `D:/ComfyUI-ull/results/anime_test/*_grid.png`。
    → 実写の参照を先にアニメ化する案: ホストがローカルの**公式 Qwen-Image-Edit-2511**で成功（「ちょっと微妙」だがアニメ調になった）。効いた指示:
    `Change the art style of this image to Japanese anime. 2D cel-shaded anime illustration with bold black outlines and flat colors.`
    （「形をそのまま保て」を強く書くと変わらなかった）。本番化するなら追加写真のサムネに「アニメ化」ボタン（絵柄＝アニメのときだけ）→

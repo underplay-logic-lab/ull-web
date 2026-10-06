@@ -230,6 +230,10 @@ export const PHOTO_SAME_STYLE_SENTENCE = "Same art style, rendering and texture 
  * アニメの参照でも実写になる。H200 試験でこの一文を入れると輪郭線と平塗りのアニメ寄りになった（実写の参照を足すと実写に戻る）。
  */
 export const PHOTO_ANIME_SENTENCE =
+  "Anime screencap, flat 2D cel shading with minimal shadows, solid flat colors, clean black lineart, simple coloring exactly like <Picture 1>; " +
+  "no soft gradients, no detailed skin rendering, not a photo, not realistic.";
+/** 2026-10-06 夜まで入れていた一文（前のジョブのプロンプトを直したときに二重に入れないため）。 */
+const PHOTO_ANIME_SENTENCE_V1 =
   "Anime screencap, 2D cel shading, flat colors, clean black lineart, same art style as <Picture 1>; not a photo, not realistic.";
 export type PhotoStyle = "match" | "anime";
 
@@ -237,6 +241,7 @@ export type PhotoStyle = "match" | "anime";
 export function withPhotoStyle(prompt: string, style: PhotoStyle): string {
   const p = withPhotoOpening(prompt);
   if (style !== "anime" || p.includes(PHOTO_ANIME_SENTENCE)) return p;
+  if (p.includes(PHOTO_ANIME_SENTENCE_V1)) return p.replace(PHOTO_ANIME_SENTENCE_V1, PHOTO_ANIME_SENTENCE);
   const body = p.replace(PHOTO_SAME_STYLE_SENTENCE, "").trim();
   for (const opening of [PHOTO_PROMPT_OPENING, PHOTO_PROMPT_OPENING_LEGACY]) {
     if (body.startsWith(opening)) return `${opening}
@@ -260,7 +265,8 @@ export function buildPhotoPrompt(idea: string, refs: DirectorReferenceSummary = 
     ...(style === "anime"
       ? [
           `- Art style: the user chose anime. Put exactly this sentence right after the first one: "${PHOTO_ANIME_SENTENCE}"`,
-          "  and never use words that push toward a photo (photo, photograph, photorealistic, realistic, lens, skin pores, 3D render).",
+          "  and never use words that push toward a photo (photo, photograph, photorealistic, realistic, lens, skin pores, 3D render)",
+          "  or toward fine realistic rendering (detailed anatomy, skin texture, highlighted contours, clinical, studio lighting). Describe the lighting simply as flat and even.",
         ]
       : [
           "- Art style: you cannot see <Picture 1>, so it may be a photo, anime, an illustration or anything in between. Unless the user's idea explicitly asks for a style",
