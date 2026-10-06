@@ -50,7 +50,9 @@ import {
   buildPhotoPrompt,
   looksJapaneseOutsideDialogue,
   withConceptNotes,
-  withPhotoOpening,
+  withPhotoStyle,
+  PHOTO_ANIME_SENTENCE,
+  type PhotoStyle,
   normalizeReferenceTags,
   withIdentityAnchor,
   withSoundtrackAnchor,
@@ -121,6 +123,8 @@ export async function POST(request: Request) {
   // GPU 上の制限のない AI（Qwen abliterated）で書く。追加料金（knob director_unrestricted_script_credits）。
   // 指定が無いときに Gemini に断られたら、勝手に切り替えず 409 code "restricted" を返して画面に選ばせる（課金前）。
   const unrestrictedRequested = body.scriptEngine === "unrestricted";
+  // 写真の絵柄（2026-10-06 夜）: "anime" ならアニメの一文を必ず入れる（10Eros は実写寄り）。写真の body を組み直す前に読む。
+  const photoStyle: PhotoStyle = body.photoStyle === "anime" ? "anime" : "match";
   // Photo Director（2026-10-06）: 同じ GPU・同じ土台（10Eros）で、参照モードを 5 フレームだけ回して静止画にする。
   // ジョブは Director と同じ workflow_type "director"（予約の順番・返金・ログ・GPU を共用）で、inputs.output = "photo"。
   // 使わない欄（シーン・音声・手本・LoRA・作り直し）はここで落とす。
@@ -563,11 +567,16 @@ export async function POST(request: Request) {
   if (isPhoto && photoPromptTagged) {
     if (looksJapaneseOutsideDialogue(photoPromptTagged)) {
       if (unrestricted) {
-        qwenTextInstruction = withJapaneseTranslationRequest(buildJapaneseTranslationPrompt(photoPromptTagged));
+        qwenTextInstruction = withJapaneseTranslationRequest(
+          buildJapaneseTranslationPrompt(photoPromptTagged) +
+            (photoStyle === "anime" ? `
+
+Begin the English prompt with exactly: "${PHOTO_ANIME_SENTENCE}"` : ""),
+        );
         combinedPrompt = photoPromptTagged;
       } else {
         try {
-          combinedPrompt = withPhotoOpening(await translateJapanesePromptToEnglish(photoPromptTagged));
+          combinedPrompt = withPhotoStyle(await translateJapanesePromptToEnglish(photoPromptTagged), photoStyle);
         } catch (err) {
           const e = err as DirectorPromptError;
           if (e.reason !== "refusal") return NextResponse.json({ error: e.message }, { status: statusFor(e) });
@@ -575,15 +584,15 @@ export async function POST(request: Request) {
         }
       }
     } else {
-      combinedPrompt = withPhotoOpening(photoPromptTagged);
+      combinedPrompt = withPhotoStyle(photoPromptTagged, photoStyle);
     }
   } else if (isPhoto) {
     if (unrestricted) {
-      qwenTextInstruction = withJapaneseTranslationRequest(buildPhotoPrompt(photoIdeaTagged, promptOpts.references));
+      qwenTextInstruction = withJapaneseTranslationRequest(buildPhotoPrompt(photoIdeaTagged, promptOpts.references, photoStyle));
       combinedPrompt = photoIdeaTagged;
     } else {
       try {
-        combinedPrompt = await expandPhotoIdea(photoIdeaTagged, promptOpts.references);
+        combinedPrompt = await expandPhotoIdea(photoIdeaTagged, promptOpts.references, photoStyle);
       } catch (err) {
         const e = err as DirectorPromptError;
         if (e.reason !== "refusal") return NextResponse.json({ error: e.message }, { status: statusFor(e) });
@@ -698,7 +707,7 @@ export async function POST(request: Request) {
     ref_video_role: refVideoPath ? refVideoRole : null,
     ref_video_duration_s: refVideoDurationS || null,
     ref_voice_path: refVoicePath || null,
-    ...(isPhoto ? { output: "photo", photo_idea: photoIdea, photo_prompt_mode: Boolean(photoPrompt), photo_count: photoCount } : {}),
+    ...(isPhoto ? { output: "photo", photo_idea: photoIdea, photo_prompt_mode: Boolean(photoPrompt), photo_style: photoStyle, photo_count: photoCount } : {}),
   };
   // 出力解像度（2026-09-24、ホスト「生成後の解像度がわからないので記載して」）。
   // buildCinematicWorkflow と同じ式で先に決め、metadata に残して完了画面が読む。

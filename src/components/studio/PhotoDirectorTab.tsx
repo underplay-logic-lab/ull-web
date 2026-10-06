@@ -71,6 +71,7 @@ type Snapshot = {
   idea: string;
   /** 前のプロンプトを編集して作るとき（Director の「このプロンプトを編集して再生成」と同じ）。 */
   prompt?: string;
+  photoStyle: "match" | "anime";
   count: number;
   aspect: DirectorAspectId;
   refs: RefPhoto[];
@@ -190,6 +191,8 @@ export function PhotoDirectorTab() {
   const [refsNotice, setRefsNotice] = useState<string | null>(null);
   // 制限なしモード（2026-10-06）: 最初から選ぶスイッチと、断られたときの「解除しますか？」。
   const [unrestricted, setUnrestricted] = useState(false);
+  // 絵柄（2026-10-06 夜）: 土台が実写寄りなので、アニメにしたいときは明示してもらう。
+  const [photoStyle, setPhotoStyle] = useState<"match" | "anime">("match");
   const [restrictedRetry, setRestrictedRetry] = useState<{ snapshot: Snapshot; opts: { priority?: boolean; queue?: boolean } } | null>(null);
 
   const pickImage = (file: File | null | undefined) => {
@@ -241,6 +244,7 @@ export function PhotoDirectorTab() {
       image,
       idea: idea.trim(),
       ...(promptDraft != null ? { prompt } : {}),
+      photoStyle,
       count,
       aspect,
       refs,
@@ -256,6 +260,7 @@ export function PhotoDirectorTab() {
         image: s.image,
         idea: s.idea,
         prompt: s.prompt,
+        photoStyle: s.photoStyle,
         count: s.count,
         aspect: s.aspect,
         extraRefs: s.refs.map((r) => r.file),
@@ -713,7 +718,7 @@ export function PhotoDirectorTab() {
             >
               動き（歩く・振り向く）は書かず、止まった 1 枚として書いてください。持ち物や場所は、写真を「持ち物」「場所」で入れると形や景色がそのまま出ます。
             特定の写真を指すときは、サムネの角の名前で「Picture 3 の剣を右手に持つ」のように書いてください。
-            絵柄（写真・アニメ・その中間）は入れた写真のままになります。変えたいときだけ「アニメ調で」「実写で」のように書いてください（見た目を大きく変えるのは苦手で、効きが弱いことがあります）。
+            アニメ・イラストの絵柄にしたいときは、下の「絵柄」で「アニメ・イラスト」を選んでください（書くだけだと実写に寄りやすいです）。
             <span className="mt-1.5 block whitespace-pre-line rounded-md border border-border bg-background px-2 py-1.5 text-foreground/80">
               {PHOTO_IDEA_EXAMPLE}
             </span>
@@ -764,6 +769,33 @@ export function PhotoDirectorTab() {
         <p className="-mt-2 text-[11px] leading-relaxed text-muted">
           同じ指示で少しずつ違う写真を並べて出すので、気に入った 1 枚を選べます。まとめて出すほど 1 枚あたりが安くなります。
         </p>
+        <div>
+          <label className="mb-1 block text-xs text-muted">絵柄</label>
+          <div className="flex items-center gap-1 rounded-xl border border-border bg-background p-1">
+            {(
+              [
+                ["match", "入れた写真のまま"],
+                ["anime", "アニメ・イラスト"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setPhotoStyle(id)}
+                className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors ${
+                  photoStyle === id ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1 text-[11px] leading-relaxed text-muted">
+            {photoStyle === "anime"
+              ? "アニメ・イラストの絵柄で描くよう強く指定します。実写の写真を参照に入れると、そちらに引っぱられて実写に寄ることがあります。"
+              : "実写寄りに描く傾向があります。アニメ・イラストの写真から作るときは「アニメ・イラスト」を選んでください。"}
+          </p>
+        </div>
         <UnrestrictedToggle checked={unrestricted} onChange={setUnrestricted} surcharge={unrestrictedSurcharge} />
       </div>
 

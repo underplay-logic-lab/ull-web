@@ -225,8 +225,29 @@ export const PHOTO_PROMPT_OPENING = "A single high-quality still image, perfectl
 const PHOTO_PROMPT_OPENING_LEGACY = "A single high-quality photograph, perfectly still, sharp focus.";
 /** 絵柄の指定が無いときに入れる一文（PHOTO_PROMPT_OPENING の直後）。 */
 export const PHOTO_SAME_STYLE_SENTENCE = "Same art style, rendering and texture as <Picture 1>.";
+/**
+ * 絵柄「アニメ・イラスト」を選んだときに必ず入れる一文（2026-10-06 夜）。土台の 10Eros は実写寄りで、「同じ絵柄で」だけでは
+ * アニメの参照でも実写になる。H200 試験でこの一文を入れると輪郭線と平塗りのアニメ寄りになった（実写の参照を足すと実写に戻る）。
+ */
+export const PHOTO_ANIME_SENTENCE =
+  "Anime screencap, 2D cel shading, flat colors, clean black lineart, same art style as <Picture 1>; not a photo, not realistic.";
+export type PhotoStyle = "match" | "anime";
 
-export function buildPhotoPrompt(idea: string, refs: DirectorReferenceSummary = {}): string {
+/** 写真の絵柄の一文をそろえる（書き出しが無ければ足し、アニメなら「同じ絵柄で」を外してアニメの一文を書き出しの直後へ）。 */
+export function withPhotoStyle(prompt: string, style: PhotoStyle): string {
+  const p = withPhotoOpening(prompt);
+  if (style !== "anime" || p.includes(PHOTO_ANIME_SENTENCE)) return p;
+  const body = p.replace(PHOTO_SAME_STYLE_SENTENCE, "").trim();
+  for (const opening of [PHOTO_PROMPT_OPENING, PHOTO_PROMPT_OPENING_LEGACY]) {
+    if (body.startsWith(opening)) return `${opening}
+${PHOTO_ANIME_SENTENCE}
+${body.slice(opening.length).trim()}`;
+  }
+  return `${PHOTO_ANIME_SENTENCE}
+${body}`;
+}
+
+export function buildPhotoPrompt(idea: string, refs: DirectorReferenceSummary = {}, style: PhotoStyle = "match"): string {
   return [
     "You are an expert visual director writing a prompt for an image model that is given reference pictures. You cannot see the pictures.",
     referenceModeNote(refs),
@@ -236,10 +257,17 @@ export function buildPhotoPrompt(idea: string, refs: DirectorReferenceSummary = 
     "- Describe the framing (close-up, bust shot, full body...), pose, expression, clothing, location, lighting and mood as concrete visual details.",
     "- Describe a frozen moment: no camera movement, no actions that unfold over time, no sound, no dialogue.",
     "- Refer to the person as \"the person from <Picture 1>\" (or the woman / man from <Picture 1>) and keep the same face and hairstyle.",
-    "- Art style: you cannot see <Picture 1>, so it may be a photo, anime, an illustration or anything in between. Unless the user's idea explicitly asks for a style",
-    "  (e.g. anime, photorealistic, watercolor, oil painting), put exactly this sentence right after the first one: " + `"${PHOTO_SAME_STYLE_SENTENCE}"`,
-    "  and never use words about medium or realism (photo, photograph, photorealistic, realistic, lens, anime, illustration, skin pores, 3D render).",
-    "  If the user does ask for a style, describe that style instead and do not write that sentence.",
+    ...(style === "anime"
+      ? [
+          `- Art style: the user chose anime. Put exactly this sentence right after the first one: "${PHOTO_ANIME_SENTENCE}"`,
+          "  and never use words that push toward a photo (photo, photograph, photorealistic, realistic, lens, skin pores, 3D render).",
+        ]
+      : [
+          "- Art style: you cannot see <Picture 1>, so it may be a photo, anime, an illustration or anything in between. Unless the user's idea explicitly asks for a style",
+          "  (e.g. anime, photorealistic, watercolor, oil painting), put exactly this sentence right after the first one: " + `"${PHOTO_SAME_STYLE_SENTENCE}"`,
+          "  and never use words about medium or realism (photo, photograph, photorealistic, realistic, lens, anime, illustration, skin pores, 3D render).",
+          "  If the user does ask for a style, describe that style instead and do not write that sentence.",
+        ]),
     "- Keep it under 120 words. Output ONLY the prompt — no preamble, no quotes.",
     "",
     `User's idea (may be Japanese): ${idea}`,
@@ -253,9 +281,13 @@ export function withPhotoOpening(prompt: string): string {
     : `${PHOTO_PROMPT_OPENING} ${prompt}`;
 }
 
-export async function expandPhotoIdea(idea: string, refs: DirectorReferenceSummary = {}): Promise<string> {
-  const out = await runDirectorPromptGemini(buildPhotoPrompt(idea, refs), "photo_prompt");
-  return withPhotoOpening(out);
+export async function expandPhotoIdea(
+  idea: string,
+  refs: DirectorReferenceSummary = {},
+  style: PhotoStyle = "match",
+): Promise<string> {
+  const out = await runDirectorPromptGemini(buildPhotoPrompt(idea, refs, style), "photo_prompt");
+  return withPhotoStyle(out, style);
 }
 
 /** Gemini に指示文を渡して文章を受け取る（シーン合成・写真・曲づくりの歌詞の共通部分）。断り・枯渇は DirectorPromptError。 */

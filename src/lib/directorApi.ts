@@ -266,6 +266,8 @@ export async function startPhotoJob(args: {
   idea: string;
   /** 前のプロンプトを編集して作るとき（日本語でも可・サーバーが英訳）。あれば idea より優先。 */
   prompt?: string;
+  /** 絵柄（"anime" ならアニメの一文を必ず入れる）。 */
+  photoStyle?: "match" | "anime";
   count: number;
   aspect: DirectorAspectId;
   extraRefs: File[];
@@ -294,6 +296,7 @@ export async function startPhotoJob(args: {
       storagePath,
       photoIdea: args.idea,
       ...(args.prompt ? { photoPrompt: args.prompt } : {}),
+      ...(args.photoStyle === "anime" ? { photoStyle: "anime" } : {}),
       photoCount: args.count,
       aspect: args.aspect,
       extraRefPaths,
