@@ -138,7 +138,8 @@ def precache() -> dict:
 # 歌の途中で時間切れになった（ホスト指摘）。余った分は後奏になり末尾の無音は切るので、長めに見積もる方が安全（1 曲 1 円未満）。
 LINE_BARS = 4
 INTRO_BARS = 4
-OUTRO_BARS = 4
+# 後奏 8 小節（2026-10-06）: 4 小節だと「歌い終わった瞬間に終わる」「無理やり歌い切る」があった（ホスト指摘）。
+OUTRO_BARS = 8
 DURATION_MARGIN = 1.1
 MAX_SECONDS = 240.0
 
@@ -169,7 +170,8 @@ def prepare_params(p: dict) -> dict:
     q["lyrics"] = lyrics
     tags = str(q.get("tags", "")).strip()
     if "ending" not in tags.lower():
-        tags = f"{tags}, natural ending with a short outro" if tags else "natural ending with a short outro"
+        ending = "instrumental outro after the last line, gentle fade-out ending"
+        tags = f"{tags}, {ending}" if tags else ending
     q["tags"] = tags
     sec = q.get("seconds")
     q["auto_seconds"] = not sec or sec == "auto" or float(sec) <= 0
@@ -194,8 +196,9 @@ def finish_audio(src: str, dst: str) -> dict:
 
     whole_db = vol([])
     tail_db = vol(["-sseof", "-1"])
-    # 末尾の無音（-50dB 以下が 0.5 秒以上）の始まり。
-    sil = run(["ffmpeg", "-v", "info", "-i", src, "-af", "silencedetect=noise=-50dB:d=0.5", "-f", "null", "-"]).stderr
+    # 末尾の無音（-42dB 以下が 0.5 秒以上）の始まり。-50dB だと -45dB 前後の小さな残り音を切り残し、
+    # 「急に切れて無音が続く」になった（2026-10-06、40 秒・seed 11 で 29.6 秒以降が -45dB）。
+    sil = run(["ffmpeg", "-v", "info", "-i", src, "-af", "silencedetect=noise=-42dB:d=0.5", "-f", "null", "-"]).stderr
     starts = [float(x) for x in re.findall(r"silence_start: ([\d.]+)", sil)]
     ends = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", sil)]
     end_at = dur
@@ -279,6 +282,19 @@ def build_workflow(p: dict) -> dict:
     }
 
 
+def add_reference_audio(w: dict, ref_name: str) -> dict:
+    """同じ声で別の曲（2026-10-06・試作）: ComfyUI 本体の ReferenceTimbreAudio（実験扱い）で参照音声を条件に足す。
+    ⚠️ comfy/model_base.py（ACE-Step 1.5 の extra_conds）は参照音声があると is_covers=True にして、歌詞から作る
+    曲の設計図（audio codes）を渡さない＝「カバー」寄りになる。声だけ移るのか曲ごと似るのかは実測で見る。"""
+    w["120"] = {"class_type": "LoadAudio", "inputs": {"audio": ref_name}}
+    w["121"] = {"class_type": "VAEEncodeAudio", "inputs": {"audio": ["120", 0], "vae": ["106", 0]}}
+    w["122"] = {"class_type": "ReferenceTimbreAudio", "inputs": {"conditioning": ["94", 0], "latent": ["121", 0]}}
+    w["123"] = {"class_type": "ReferenceTimbreAudio", "inputs": {"conditioning": ["47", 0], "latent": ["121", 0]}}
+    w["3"]["inputs"]["positive"] = ["122", 0]
+    w["3"]["inputs"]["negative"] = ["123", 0]
+    return w
+
+
 @app.cls(
     image=image,
     gpu=GPU,
@@ -318,12 +334,18 @@ class AceStep:
         import requests
 
         params = prepare_params(params)
+        workflow = build_workflow(params)
+        if params.get("ref_audio"):
+            ref_name = f"ref_{uuid.uuid4().hex[:8]}.flac"
+            pathlib.Path(COMFY_DIR, "input").mkdir(parents=True, exist_ok=True)
+            pathlib.Path(COMFY_DIR, "input", ref_name).write_bytes(params["ref_audio"])
+            workflow = add_reference_audio(workflow, ref_name)
         out_dir = pathlib.Path(COMFY_DIR, "output")
         pre = {str(p) for p in out_dir.rglob("*") if p.is_file()}
         t = time.time()
         r = requests.post(
             f"http://127.0.0.1:{COMFY_PORT}/prompt",
-            json={"prompt": build_workflow(params), "client_id": str(uuid.uuid4())},
+            json={"prompt": workflow, "client_id": str(uuid.uuid4())},
             timeout=30,
         )
         if not r.ok:
@@ -356,7 +378,8 @@ class AceStep:
             "filename": pathlib.Path(finished).name,
             "elapsed_s": elapsed,
             "boot_s": self.boot_s,
-            "gpu": GPU,
+            # GPU の名前はコンテナでは分からない（env が届かない）ので、手元の main が渡したものを返す。
+            "gpu": params.get("gpu") or GPU,
             "dit": params.get("dit") or "turbo",
             "seconds": params["seconds"],
             "auto_seconds": params["auto_seconds"],
@@ -365,7 +388,7 @@ class AceStep:
 
 
 @app.local_entrypoint()
-def main(out_dir: str = "./ace_out", seconds: float = 0.0, seed: int = 1, workflow: str = "", count: int = 1):
+def main(out_dir: str = "./ace_out", seconds: float = 0.0, seed: int = 1, workflow: str = "", count: int = 1, ref: str = ""):
     """試作: ローカルの ACE ワークフロー（既定はひなたの曲）から曲調・歌詞を読み、同じ条件で 1 本作る。"""
     src = workflow or r"D:\ComfyUI-ull\ace_hinata_song_60s.json"
     w = json.loads(pathlib.Path(src).read_text(encoding="utf-8"))
@@ -381,6 +404,8 @@ def main(out_dir: str = "./ace_out", seconds: float = 0.0, seed: int = 1, workfl
         "timesignature": enc.get("timesignature", "4"),
         "seed": seed,
         "dit": DIT,
+        "gpu": GPU,
+        **({"ref_audio": pathlib.Path(ref).read_bytes()} if ref else {}),
     }
     dst = pathlib.Path(out_dir).expanduser()
     dst.mkdir(parents=True, exist_ok=True)
