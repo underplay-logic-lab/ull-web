@@ -77,6 +77,10 @@ export function RefPhotoPicker({
             <div className="relative aspect-square overflow-hidden rounded-lg bg-background">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={u} alt={`追加の写真 ${i + 2}`} className="h-full w-full object-contain" />
+              {/* プロンプトで指すときの名前（<Picture N>。サーバーが「Picture 2」「2枚目」なども同じタグにそろえる）。 */}
+              <span className="absolute left-1 top-1 rounded bg-black/60 px-1 py-px font-mono text-[9px] leading-tight text-white">
+                Picture {i + 2}
+              </span>
               <button
                 type="button"
                 onClick={() => onChange(value.filter((_, j) => j !== i))}

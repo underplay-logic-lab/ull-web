@@ -261,7 +261,11 @@ export async function GET(request: Request, { params }: RouteParams) {
     progressPercent: effJob.progress_percent ?? null,
     progressMessage: effJob.progress_message ?? null,
     resultPath: effJob.result_path ?? null,
-    metadata: effJob.metadata ?? null,
+    // 出力解像度は route が metadata と inputs の両方に書く。写真の完了時はワーカーが metadata を置き換えて消すので inputs で補う。
+    metadata:
+      effJob.metadata && typeof inputs?.out_width === "number" && (effJob.metadata as Record<string, unknown>).out_width == null
+        ? { ...(effJob.metadata as Record<string, unknown>), out_width: inputs.out_width, out_height: inputs.out_height }
+        : (effJob.metadata ?? null),
     combinedPrompt,
     combinedPromptJa,
     seed,

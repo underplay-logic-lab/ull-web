@@ -21,6 +21,7 @@ import {
   PHOTO_MIN_COUNT,
   PHOTO_PROMPT_MAX_LENGTH,
   directorPriorityParallelSurcharge,
+  directorAspectDims,
   directorUnrestrictedScriptSurcharge,
   photoDirectorCredits,
   type DirectorAspectId,
@@ -35,6 +36,7 @@ import {
   type DirectorScriptEngine,
 } from "@/lib/directorApi";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
+import { CINEMATIC_MODE_BY_ID, cinematicMegapixelsForDuration, cinematicSafeDimensions } from "@/lib/cinematicPricing";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { VramBadge } from "@/components/studio/VramBadge";
 import AutoDownloadToggle from "@/components/studio/AutoDownloadToggle";
@@ -133,8 +135,28 @@ export function PhotoDirectorTab() {
     if (imageUrl) URL.revokeObjectURL(imageUrl);
   }, [imageUrl]);
   const [refs, setRefs] = useState<RefPhoto[]>([]);
+  // 出力解像度の予告（route・buildPhotoWorkflow と同じ式: 高速モード・1 秒扱い）。「画像に合わせる」は人物の写真の縦横を使う。
+  const [measured, setMeasured] = useState<{ file: File; width: number; height: number } | null>(null);
+  const imageDims = image && measured?.file === image ? measured : null;
+  useEffect(() => {
+    if (!image) return;
+    let cancelled = false;
+    createImageBitmap(image)
+      .then((bmp) => {
+        if (!cancelled) setMeasured({ file: image, width: bmp.width, height: bmp.height });
+        bmp.close?.();
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [image]);
   const [aspect, setAspect] = useState<DirectorAspectId>("3:4");
   const [count, setCount] = useState<number>(PHOTO_MIN_COUNT);
+  const outDims = useMemo(() => {
+    const shape = directorAspectDims("reference", aspect, imageDims);
+    return cinematicSafeDimensions(shape.width, shape.height, cinematicMegapixelsForDuration(CINEMATIC_MODE_BY_ID.vdnFast, 1));
+  }, [aspect, imageDims]);
   const [idea, setIdea] = useState("");
   // null = 思いつきから書き起こす（通常）。文字列 = 前のジョブのプロンプトを編集して使う（2026-10-06 ホスト要望）。
   const [promptDraft, setPromptDraft] = useState<string | null>(null);
@@ -517,6 +539,7 @@ export function PhotoDirectorTab() {
             <div className="relative overflow-hidden rounded-xl border border-border bg-background">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={imageUrl} alt="人物の写真" className="mx-auto max-h-72 w-full object-contain" />
+              <span className="absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[10px] text-white">Picture 1</span>
               <button
                 type="button"
                 onClick={() => setImage(null)}
@@ -610,6 +633,7 @@ export function PhotoDirectorTab() {
               summary="写り方（顔のアップ・バストアップ・全身）、表情、服、場所、光の感じを書くと狙いどおりになりやすいです。"
             >
               動き（歩く・振り向く）は書かず、止まった 1 枚として書いてください。持ち物や場所は、写真を「持ち物」「場所」で入れると形や景色がそのまま出ます。
+            特定の写真を指すときは、サムネの角の名前で「Picture 3 の剣を右手に持つ」のように書いてください。
             </HelpNote>
           </div>
         )}
@@ -644,6 +668,12 @@ export function PhotoDirectorTab() {
             </select>
           </div>
         </div>
+        <p className="-mt-2 text-[11px] text-muted">
+          出力解像度:{" "}
+          <span className="font-mono text-foreground">
+            {aspect === "image" && !imageDims ? "人物の写真を入れると表示します" : `${outDims.width}×${outDims.height}px`}
+          </span>
+        </p>
         <p className="-mt-2 text-[11px] leading-relaxed text-muted">
           同じ指示で少しずつ違う写真を並べて出すので、気に入った 1 枚を選べます。まとめて出すほど 1 枚あたりが安くなります。
         </p>
@@ -773,6 +803,11 @@ export function PhotoDirectorTab() {
                 </div>
               ))}
             </div>
+            {job?.outWidth != null && job.outHeight != null && (
+              <p className="mt-2 text-center text-[11px] text-muted">
+                解像度: <span className="font-mono text-foreground">{job.outWidth}×{job.outHeight}px</span>
+              </p>
+            )}
             {job?.vramUsedGb != null && (
               <div className="mt-3 flex justify-center">
                 <VramBadge gb={job.vramUsedGb} />

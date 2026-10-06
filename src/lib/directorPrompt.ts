@@ -388,6 +388,19 @@ export async function translateJapanesePromptToEnglish(japanesePrompt: string): 
   }
 }
 
+/**
+ * 参照写真の指し方の揺れを、モデルが読むタグ <Picture N> にそろえる（2026-10-06）。画面のサムネには「Picture N」と出しているが、
+ * 「picture2」「画像2」「2枚目の写真」などで書かれても効くように。N が写真の枚数を超えるもの・タグ以外の数字は触らない。
+ */
+export function normalizeReferenceTags(text: string, pictureCount: number): string {
+  const tag = (n: string, whole: string) => (Number(n) >= 1 && Number(n) <= pictureCount ? `<Picture ${n}>` : whole);
+  return text
+    .replace(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xfee0))
+    .replace(/<\s*picture\s*([1-9])\s*>|(?<![a-z])picture\s*([1-9])(?![0-9])/gi, (m, a, b) => tag(a ?? b, m))
+    .replace(/(?:画像|写真)\s*([1-9])(?![0-9])/g, (m, n) => tag(n, m))
+    .replace(/(?<![0-9])([1-9])\s*(?:枚目の(?:画像|写真)|枚目|の画像|の写真)/g, (m, n) => tag(n, m));
+}
+
 /** プロンプトモードの日本語 → 英語の指示文（Gemini に断られたときは同じ文を Qwen に渡す）。 */
 export function buildJapaneseTranslationPrompt(japanesePrompt: string): string {
   return [
@@ -405,6 +418,7 @@ export function buildJapaneseTranslationPrompt(japanesePrompt: string): string {
     // 2026-09-19: buildSceneDirectorPromptに追加したのと同じ読みやすさの
     // 例外（全文ひらがな化は禁止・単語単位のみ）。
     "Readability exception: within that Japanese dialogue line's exact words, you may rewrite an individual word into hiragana if it is prone to being misread by the video model's speech engine (a rare kanji reading, an ambiguous compound, an uncommon proper noun) — but leave ordinary, easily-read words in their natural kanji form. Do NOT rewrite the whole line into hiragana (this flattens natural pitch accent and sounds worse, not better).",
+    "Reference tags such as <Picture 1>, <Picture 2>, <Video 1> and <Audio 1> point at the input files: keep every one of them exactly as written (same angle brackets, word and number), at the matching place in the English prompt.",
     "Output ONLY the translated prompt (with any <d>[Japanese]...</d> tag embedded as described, if present) — no preamble, no extra quotes wrapping the whole output.",
     "",
     japanesePrompt,

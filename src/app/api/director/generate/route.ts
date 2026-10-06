@@ -50,6 +50,7 @@ import {
   looksJapaneseOutsideDialogue,
   withConceptNotes,
   withPhotoOpening,
+  normalizeReferenceTags,
   withIdentityAnchor,
   withSoundtrackAnchor,
   translateDirectorPromptToJapanese,
@@ -542,14 +543,17 @@ export async function POST(request: Request) {
       },
       { status: 409 },
     );
-  if (isPhoto && photoPrompt) {
-    if (looksJapaneseOutsideDialogue(photoPrompt)) {
+  // 「Picture 2」「2枚目の写真」などの指し方を <Picture 2> にそろえる（人物の写真 1 枚＋参照の枚数まで）。
+  const photoPromptTagged = normalizeReferenceTags(photoPrompt, 1 + extraRefPaths.length);
+  const photoIdeaTagged = normalizeReferenceTags(photoIdea, 1 + extraRefPaths.length);
+  if (isPhoto && photoPromptTagged) {
+    if (looksJapaneseOutsideDialogue(photoPromptTagged)) {
       if (unrestricted) {
-        qwenTextInstruction = withJapaneseTranslationRequest(buildJapaneseTranslationPrompt(photoPrompt));
-        combinedPrompt = photoPrompt;
+        qwenTextInstruction = withJapaneseTranslationRequest(buildJapaneseTranslationPrompt(photoPromptTagged));
+        combinedPrompt = photoPromptTagged;
       } else {
         try {
-          combinedPrompt = withPhotoOpening(await translateJapanesePromptToEnglish(photoPrompt));
+          combinedPrompt = withPhotoOpening(await translateJapanesePromptToEnglish(photoPromptTagged));
         } catch (err) {
           const e = err as DirectorPromptError;
           if (e.reason !== "refusal") return NextResponse.json({ error: e.message }, { status: statusFor(e) });
@@ -557,15 +561,15 @@ export async function POST(request: Request) {
         }
       }
     } else {
-      combinedPrompt = withPhotoOpening(photoPrompt);
+      combinedPrompt = withPhotoOpening(photoPromptTagged);
     }
   } else if (isPhoto) {
     if (unrestricted) {
-      qwenTextInstruction = withJapaneseTranslationRequest(buildPhotoPrompt(photoIdea, promptOpts.references));
-      combinedPrompt = photoIdea;
+      qwenTextInstruction = withJapaneseTranslationRequest(buildPhotoPrompt(photoIdeaTagged, promptOpts.references));
+      combinedPrompt = photoIdeaTagged;
     } else {
       try {
-        combinedPrompt = await expandPhotoIdea(photoIdea, promptOpts.references);
+        combinedPrompt = await expandPhotoIdea(photoIdeaTagged, promptOpts.references);
       } catch (err) {
         const e = err as DirectorPromptError;
         if (e.reason !== "refusal") return NextResponse.json({ error: e.message }, { status: statusFor(e) });
@@ -692,6 +696,8 @@ export async function POST(request: Request) {
     aspectDims.height,
     cinematicMegapixelsForDuration(modeForMeta, breakdown.totalDurationS),
   );
+  // inputs にも残す（写真の完了時はワーカーが metadata を丸ごと置き換えるので、/api/jobs/[id] がこちらで補う）。
+  Object.assign(directorInputsSnapshot, { out_width: outDims.width, out_height: outDims.height });
 
   const { data: jobRow, error: jobError } = await supabaseAdmin
     .from("generation_jobs")
