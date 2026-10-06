@@ -27,6 +27,7 @@ import {
 } from "@/lib/directorPricing";
 import {
   DirectorJobNotFoundError,
+  loadPhotoJobRefs,
   pollDirectorJob,
   startPhotoJob,
   type DirectorApiError,
@@ -138,6 +139,9 @@ export function PhotoDirectorTab() {
   // null = 思いつきから書き起こす（通常）。文字列 = 前のジョブのプロンプトを編集して使う（2026-10-06 ホスト要望）。
   const [promptDraft, setPromptDraft] = useState<string | null>(null);
   const promptEditorRef = useRef<HTMLTextAreaElement>(null);
+  // 編集して作り直すときは、元のジョブの写真も欄へ読み戻す（外す・足す・役目を変えるのは普段どおり）。
+  const [refsLoading, setRefsLoading] = useState(false);
+  const [refsNotice, setRefsNotice] = useState<string | null>(null);
   // 制限なしモード（2026-10-06）: 最初から選ぶスイッチと、断られたときの「解除しますか？」。
   const [unrestricted, setUnrestricted] = useState(false);
   const [restrictedRetry, setRestrictedRetry] = useState<{ snapshot: Snapshot; opts: { priority?: boolean; queue?: boolean } } | null>(null);
@@ -440,17 +444,31 @@ export function PhotoDirectorTab() {
   };
 
   // 使われたプロンプトを引き継いで編集する。日本語訳があればそちらを既定に（送るときにサーバーが英訳する）。
-  const enterPromptMode = () => {
-    if (!job?.combinedPrompt) return;
+  const enterPromptMode = async () => {
+    if (!job?.combinedPrompt || !jobId) return;
     setPromptDraft((job.combinedPromptJa || job.combinedPrompt).slice(0, PHOTO_PROMPT_MAX_LENGTH));
     setTimeout(() => {
       promptEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
       promptEditorRef.current?.focus({ preventScroll: true });
     }, 50);
+    setRefsNotice(null);
+    setRefsLoading(true);
+    try {
+      const loaded = await loadPhotoJobRefs(jobId);
+      setImageError(null);
+      setImage(loaded.image);
+      setRefs(loaded.refs);
+      setRefsNotice(`元の写真（人物 1 枚${loaded.refs.length ? `＋参照 ${loaded.refs.length} 枚` : ""}）を読み込みました。要らない写真は × で外せます。`);
+    } catch (err) {
+      console.error("[PhotoDirectorTab] load refs failed:", err);
+      setRefsNotice("元の写真を読み込めませんでした。いま欄にある写真を使います（入れ直しもできます）。");
+    } finally {
+      setRefsLoading(false);
+    }
   };
 
   const hasText = promptDraft != null ? promptDraft.trim().length > 0 : idea.trim().length > 0;
-  const canRun = Boolean(image) && hasText && phase !== "submitting";
+  const canRun = Boolean(image) && hasText && !refsLoading && phase !== "submitting";
   const chargeFirst = Boolean(user) && insufficientCredits && !busy;
   const imageUrls = job?.isPhoto ? job.imageUrls : [];
 
@@ -547,7 +565,10 @@ export function PhotoDirectorTab() {
               <p className="text-xs font-mono uppercase tracking-widest text-muted">プロンプト（前の写真から）</p>
               <button
                 type="button"
-                onClick={() => setPromptDraft(null)}
+                onClick={() => {
+                  setPromptDraft(null);
+                  setRefsNotice(null);
+                }}
                 className="text-[11px] text-muted underline-offset-2 transition-colors hover:text-foreground hover:underline"
               >
                 思いつきから作るに戻す
@@ -565,8 +586,10 @@ export function PhotoDirectorTab() {
             </p>
             <p className="text-[11px] leading-relaxed text-muted">
               書き換えたいところだけ直してください。日本語のままで大丈夫です（送るときに英語へ直します）。
-              人物や参照の写真は、いま上の欄に入っているものを使います。
             </p>
+            {(refsLoading || refsNotice) && (
+              <p className="mt-1 text-[11px] leading-relaxed text-neon-violet">{refsLoading ? "元の写真を読み込んでいます…" : refsNotice}</p>
+            )}
           </div>
         ) : (
           <div>
@@ -785,8 +808,9 @@ export function PhotoDirectorTab() {
               )}
               <button
                 type="button"
-                onClick={enterPromptMode}
-                className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-neon-violet/40"
+                onClick={() => void enterPromptMode()}
+                disabled={refsLoading}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-neon-violet/40 disabled:cursor-wait disabled:opacity-60"
               >
                 <Pencil size={14} />
                 {busy ? "このプロンプトを編集して次を予約" : "このプロンプトを編集して作り直す"}

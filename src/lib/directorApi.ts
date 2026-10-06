@@ -661,3 +661,31 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
         : null,
   };
 }
+
+/** Photo Director の「編集して作り直す」: 元のジョブの人物の写真と参照写真を File として取り戻す（2026-10-06）。 */
+export async function loadPhotoJobRefs(
+  jobId: string,
+): Promise<{ image: File; refs: { file: File; role: DirectorRefRole }[] }> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) throw new Error("ログインが必要です。");
+
+  const res = await fetch(`/api/director/photo-refs/${jobId}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    cache: "no-store",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || "元の写真を読み込めませんでした。");
+
+  const toFile = async (item: { url: string; name: string }): Promise<File> => {
+    const r = await fetch(item.url);
+    if (!r.ok) throw new Error(`元の写真を読み込めませんでした (${r.status})`);
+    const blob = await r.blob();
+    // 保存名の先頭の UUID（uploadStudioAsset が付ける）は外して見せる。
+    const name = item.name.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/i, "");
+    return new File([blob], name || "photo.png", { type: blob.type || "image/png" });
+  };
+  const refItems = (data.refs ?? []) as { url: string; name: string; role: DirectorRefRole }[];
+  const [image, ...refFiles] = await Promise.all([toFile(data.main), ...refItems.map(toFile)]);
+  return { image, refs: refFiles.map((file, i) => ({ file, role: refItems[i].role })) };
+}
