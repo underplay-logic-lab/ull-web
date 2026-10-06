@@ -609,6 +609,18 @@ export class DirectorJobNotFoundError extends Error {
   }
 }
 
+/**
+ * ワーカーが書く失敗理由は ComfyUI の生の例外（内部パス・メモリの数字・ノード名）のことがあり、お客さんに見せる文面ではない
+ * （2026-10-06、写真の OOM でそのまま出た）。技術的なものは定型文に置き換える。生の文は admin の画面とログで見る。
+ * こちらで書いた日本語の理由（「参照画像の取得に失敗しました」など）はそのまま出す。
+ */
+function userFacingJobError(raw: string | null): string | null {
+  if (!raw) return raw;
+  const technical = /ComfyUI|Traceback|status_str|out of memory|OutOfMemory|CUDA|Exception|Error:|\{"|\/root\//i.test(raw);
+  if (!technical && /[ぁ-んァ-ン一-龯]/.test(raw)) return raw;
+  return "生成の途中でサーバー側のエラーが起きたため中止しました。使ったクレジットはお返ししています。お手数ですが、もう一度お試しください。";
+}
+
 export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus> {
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -636,7 +648,7 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
     jobId: data.jobId as string,
     status: data.status as DirectorJobStatus["status"],
     videoUrl: (data.videoUrl as string | null) ?? null,
-    errorMessage: (data.errorMessage as string | null) ?? null,
+    errorMessage: userFacingJobError((data.errorMessage as string | null) ?? null),
     vramUsedGb,
     outWidth: typeof meta.out_width === "number" ? meta.out_width : null,
     outHeight: typeof meta.out_height === "number" ? meta.out_height : null,

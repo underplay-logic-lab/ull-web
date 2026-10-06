@@ -805,10 +805,25 @@ export function PhotoDirectorTab() {
         )}
 
         {phase === "error" && errorMessage && (
-          <p className="flex items-start gap-1.5 rounded-xl border border-red-500/40 bg-red-500/5 px-3 py-2.5 text-[12px] leading-relaxed text-red-300">
+          <div className="flex items-start gap-1.5 rounded-xl border border-red-500/40 bg-red-500/5 px-3 py-2.5 text-[12px] leading-relaxed text-red-300">
             <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-            {errorMessage}
-          </p>
+            <span className="flex-1">{errorMessage}</span>
+            {/* 閉じたら覚えているジョブも忘れる（失敗の表示はリロードでも残る作りなので、消す手段をここに置く）。 */}
+            <button
+              type="button"
+              onClick={() => {
+                setPhase("idle");
+                setErrorMessage(null);
+                setJob(null);
+                setJobId(null);
+                saveFormState(JOB_KEY, { jobId: "" });
+              }}
+              aria-label="エラーを閉じる"
+              className="shrink-0 text-red-300/70 transition-colors hover:text-red-200"
+            >
+              <X size={14} />
+            </button>
+          </div>
         )}
 
         {phase === "done" && imageUrls.length > 0 && (
