@@ -642,6 +642,8 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    手元: 歌った曲 70〜79%・声なし 1.9%・ハミングだけ 1.1%。本番 1 番 3 曲: 83% 前後・作り直し 0・打ち切り 0・1 曲 約 20 秒＋判定（`results/ace/e2e_song3/`）。
    **VAE を ScragVAE に（2026-10-06 ホスト判断「音に厚みがある」）**: 同じ潜在を公式と ScragVAE で戻して聴き比べ（`results/ace/vae_ab/`）。
    diffusers 形式を `scripts/ace_scragvae_convert.py` で ComfyUI 形式へ（公式で 365 個値一致を確認）→ Volume `ace_step/vae/`。WAV も保存（MP3 / WAV）・ファイル名にシード。
+   **同じシード＋別の歌詞で声は引き継がれない（2026-10-06・未聴）**: 声の高さの中央値 基準 372Hz → 同じ seed 301 で 147Hz / 300Hz、別の seed 777 は 331Hz / 331Hz。
+   歌詞で設計図が変わり声も決まり直す → 「この声で別の曲」はシードでは作れない見込み（`results/ace/seed_voice/`・`D:/ComfyUI-ull/tools/voice_feat.py`）。
    **ComfyUI は長さぴったりに設計図を作らせる**（`ace15.py` の min_tokens = max_tokens）→ 長さを余らせるとサビを繰り返して歌い切った直後に終わる。
    余裕 1.2 倍・後奏は `[Outro - instrumental, fade out]`・間奏 `[Instrumental]` も小節に数える。それでも打ち切りは残る（4 秒フェードでごまかす）。
    経緯: 当初は保留（2026-10-06 ホスト評価「10 曲に 1 曲くらいしかまともでない＝商品としていまいち」）。
