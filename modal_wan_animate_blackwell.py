@@ -2132,11 +2132,11 @@ class WanAnimateBlackwell:
                     if not ref_image_bytes:
                         raise RuntimeError("qwen_concept_text requires at least one reference file")
                     script = self._generate_director_script(ref_image_bytes, qwen_concept_text, qwen_duration_s or 15)
-                # Blackwell 以外（H200 の Photo Director）では Qwen（27B bf16・約 54GB）を残さない。ComfyUI は別プロセスなので
-                # ここで握ったままの分は ComfyUI から見えず、TE 49GB＋DiT 49GB と合わせて 141GB を超えて OOM した
-                # （2026-10-06 ジョブ eac3f0f3、制限解除の写真）。B300 は 288GB あるので次の依頼に備えて残す（従来どおり）。
-                if _gpu_tier_label() not in ("B300", "B200", "unknown"):
-                    self._unload_qwen()
+                # 書き終えたら Qwen（27B bf16・約 54GB）を GPU に残さない（GPU を問わず、2026-10-06 ホスト判断）。ComfyUI は別プロセス
+                # なので、ここで握ったままの分は ComfyUI から見えない。H200 では TE 49GB＋DiT 49GB と合わせて 141GB を超えて OOM した
+                # （ジョブ eac3f0f3、制限解除の写真）。B300 でも空けた分が長尺・高解像度の余裕になる。残す利点は温まったコンテナに
+                # 続けて Qwen の依頼が来たときの読み直しだけ（scaledown 30 秒なので稀）。
+                self._unload_qwen()
                 if qwen_prompt_node_id not in workflow:
                     raise RuntimeError(f"qwen_prompt_node_id {qwen_prompt_node_id!r} not found in workflow")
                 # LoRA のトリガーワード（2026-10-04）: Qwen が書いた文に無ければ先頭に足す（Next の Gemini 経路と同じ）。
