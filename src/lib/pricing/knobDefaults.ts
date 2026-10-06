@@ -208,6 +208,8 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // H200（¥772/h）実測・ひなた参照 9 枚・4 枚: 起動込み 185s = ¥39.7 → ×3 = ¥119 ÷ 1.66 = 72C（4 枚）。
   // 内訳は B300 の実測（1 枚の描画 16〜21s）から 1 枚 30s と多めに見て ¥6.4×3÷1.66 = 12C、残り 65s を基本 25C。
   // 温まっていれば起動・読み込みが無いので利益が厚くなる。8 枚の実測が出たら 1 枚ごとを合わせる。
+  // 2026-10-06 夜: Fizgig＋2.5MP（1376×1824）に変更。H200 実測 起動込み 205s = ¥44 → ×3 = ¥132 ÷ 1.66 = 80C（4 枚）。
+  // 基本 25C は据え置き、1 枚 12C → 14C（4 枚 81C・6 枚 109C・8 枚 137C）。
   photo_director_base_credits: 25,
   // 曲づくり（2026-10-06）: 1 回の基本料＋1 曲ごと。原価 3.0×。L40S（¥331/h）・100 秒の曲で
   // 1 曲 24 秒 ≒ ¥2.2 ×3 ÷1.66 ≒ 4C、起動・読み込み 約 55 秒 ≒ ¥5 ×3 ÷1.66 ≒ 9C（docs/STATUS.md）。
@@ -222,7 +224,7 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 並列の追加料金は全タブ共通の「通常料金 × 率 ＋ 固定」（CLAUDE.md §6-7）。
   song_priority_parallel_rate: 1.0,
   song_priority_parallel_surcharge: 50,
-  photo_director_per_image_credits: 12,
+  photo_director_per_image_credits: 14,
   // 超解像スタジオ（SeedVR2）: 出力の 100 万画素あたりの消費クレジット。
   // credits = max(upscale_min_credits, ceil(これ × 出力MP × モデル係数))。
   // B300 実測: 出力 ~5MP を warm ~20s / cold ~60s。3 C/MP で 2K プリセット

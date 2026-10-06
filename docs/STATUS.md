@@ -621,7 +621,10 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    **GPU は H200 に変更（2026-10-06）**: 同じ 4 枚で B300 327s・¥110 に対し H200（SageAttention なし）185s・¥40、画質は見分けがつかない
    （docs/gpu-benchmarks.md §19。今の image の SageAttention は Blackwell 用だけで H200 では落ちる → 写真は sage を切る）。
    ワーカーの `custom_workflow_async` が `gpu: "H200"` を受けて `with_options` で起動（デプロイ済み・画面からの初回で動作確認する）。
-   **料金は原価 3 倍**（全部 3 倍が標準）: 基本 25C ＋ 1 枚 12C（4 枚 73C・6 枚 97C・8 枚 121C）。1 枚ごとは H200 で未測（8 枚で測る）。
+   **料金は原価 3 倍**（全部 3 倍が標準）: 基本 25C ＋ 1 枚 14C（4 枚 81C・6 枚 109C・8 枚 137C、2026-10-06 夜に 12C→14C）。1 枚ごとは H200 で未測（8 枚で測る）。
+   **2026-10-06 夜: Fizgig H3 Still（MIT）で本当に 1 コマの静止画に・出力 2.5MP（3:4 = 1376×1824、PHOTO_MEGAPIXELS）**。H200 実測 起動込み 205s・VRAM 97.7GB
+   （1MP の 5 コマ版 185s・97.9GB）。比較 `D:/ComfyUI-ull/results/photo_before_after_fizgig*.png`（ホスト「差はよくわからない」が推奨どおり採用）。
+   H200 の初回 OOM は残っていた Qwen（制限解除）と --gpu-only が原因 → 両方修正済み（docs/gpu-benchmarks.md §19）。
    **プロンプトの編集（2026-10-06・push 済み・未確認）**: Director と同じく、使われたプロンプト（英語・日本語訳）を結果の下に出し
    「このプロンプトを編集して作り直す／次を予約」で欄に読み込む（日本語のままで可・route の `photoPrompt` が英訳し、思いつきからの書き起こしは飛ばす）。
    写真も元のジョブから欄へ読み戻す（`/api/director/photo-refs/[id]` が人物＋参照の短命 URL と役目を返し、画面が File にして入れる。× で外せる・送るときに再アップロード）。読めなければ今の欄のまま。CopyButton は `studio/CopyButton.tsx` に共通化。

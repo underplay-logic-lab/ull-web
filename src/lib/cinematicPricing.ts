@@ -230,6 +230,17 @@ export function cinematicMegapixels(mode: CinematicMode): number {
 export const CINEMATIC_MAX_MEGAPIXEL_SECONDS = 36;
 
 /** 尺を考えたメガピクセル。cinematicSafeDimensions に渡す値（画面の表示・route の metadata・ワークフローで共通）。 */
+/**
+ * Photo Director の出力の画素数（2026-10-06〜）。Fizgig H3 Still は「3MP くらいから真価が出る・小さいと弱い」（作者）。
+ * H200 実測（参照 9 枚・4 枚）: 1376×1824（2.5MP）で起動込み 205s・VRAM 97.7GB（1MP の 5 コマ版は 185s・97.9GB）。
+ */
+export const PHOTO_MEGAPIXELS = 2.5;
+
+/** Photo Director の出力解像度（縦横の比 → 2.5MP 前後・32 の倍数）。route・ワークフロー・画面の予告で共用。 */
+export function photoOutputDimensions(shapeWidth: number, shapeHeight: number): { width: number; height: number } {
+  return cinematicSafeDimensions(shapeWidth, shapeHeight, PHOTO_MEGAPIXELS);
+}
+
 export function cinematicMegapixelsForDuration(mode: CinematicMode, durationS: number | undefined): number {
   const base = cinematicMegapixels(mode);
   if (!durationS || durationS <= 0) return base;

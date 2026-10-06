@@ -1,6 +1,6 @@
 import "server-only";
 import type { CinematicMode } from "@/lib/cinematicPricing";
-import { cinematicMegapixelsForDuration, cinematicSafeDimensions } from "@/lib/cinematicPricing";
+import { cinematicMegapixelsForDuration, cinematicSafeDimensions, photoOutputDimensions } from "@/lib/cinematicPricing";
 import { clampPhotoCount, type DirectorRefRole, type DirectorRefVideoRole } from "@/lib/directorPricing";
 
 // The "Cinematic Video" tab's ComfyUI API-format graph — MiniMax H3 (BF16,
@@ -564,6 +564,12 @@ export function buildPhotoWorkflow(
   const cond = workflow["105:104"].inputs;
   cond.length = 5;
   cond.ref_image_size = "max";
+  // 出力は動画の解像度（約 1MP）ではなく写真用の 2.5MP（PHOTO_MEGAPIXELS）。縦横の比は動画と同じ決め方。
+  const shapeW = params.aspectWidth && params.aspectHeight ? params.aspectWidth : params.rawImageWidth;
+  const shapeH = params.aspectWidth && params.aspectHeight ? params.aspectHeight : params.rawImageHeight;
+  const photoDims = shapeW && shapeH && shapeW > 0 && shapeH > 0 ? photoOutputDimensions(shapeW, shapeH) : photoOutputDimensions(1, 1);
+  cond.width = photoDims.width;
+  cond.height = photoDims.height;
   // 写真は H200 で動かす（PHOTO_GPU）。今の image の SageAttention は Blackwell 向けだけで、H200 では
   // "SM90 kernel is not available" で落ちる（2026-10-06 実際に落ちた）→ PyTorch 標準の計算にする。
   // それでも B300（SageAttention あり）より起動込みで速かった（185s 対 327s、docs/gpu-benchmarks.md）。

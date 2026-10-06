@@ -61,7 +61,12 @@ import {
 import { buildCinematicWorkflow, buildPhotoWorkflow, CINEMATIC_PROMPT_NODE_ID, PHOTO_GPU } from "@/lib/cinematicWorkflow";
 import { headR2, r2UserRoot } from "@/lib/r2.server";
 import { assertOwnedDirectorLoraVolumePath, isOwnedDirectorLoraR2Key } from "@/lib/directorLoraUpload.server";
-import { CINEMATIC_MODE_BY_ID, cinematicMegapixelsForDuration, cinematicSafeDimensions } from "@/lib/cinematicPricing";
+import {
+  CINEMATIC_MODE_BY_ID,
+  cinematicMegapixelsForDuration,
+  cinematicSafeDimensions,
+  photoOutputDimensions,
+} from "@/lib/cinematicPricing";
 import { dispatchDirectorJob, type DirectorDispatchSpec } from "@/lib/directorDispatch.server";
 import { advanceQueue, saveDispatchSpec } from "@/lib/studioQueue.server";
 import { DIRECTOR_LORA_PRESET_IDS } from "@/lib/loraModels";
@@ -699,11 +704,13 @@ export async function POST(request: Request) {
   const rawDimsForMeta = readImageDimensions(imageBuffer);
   const modeForMeta = CINEMATIC_MODE_BY_ID[qualityMode === "quality" ? "vdnQuality" : "vdnFast"];
   const aspectDims = directorAspectDims(referenceMode, aspect, rawDimsForMeta);
-  const outDims = cinematicSafeDimensions(
-    aspectDims.width,
-    aspectDims.height,
-    cinematicMegapixelsForDuration(modeForMeta, breakdown.totalDurationS),
-  );
+  const outDims = isPhoto
+    ? photoOutputDimensions(aspectDims.width, aspectDims.height)
+    : cinematicSafeDimensions(
+        aspectDims.width,
+        aspectDims.height,
+        cinematicMegapixelsForDuration(modeForMeta, breakdown.totalDurationS),
+      );
   // inputs にも残す（写真の完了時はワーカーが metadata を丸ごと置き換えるので、/api/jobs/[id] がこちらで補う）。
   Object.assign(directorInputsSnapshot, { out_width: outDims.width, out_height: outDims.height });
 

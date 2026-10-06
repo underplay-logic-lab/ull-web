@@ -37,7 +37,7 @@ import {
   type DirectorScriptEngine,
 } from "@/lib/directorApi";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
-import { CINEMATIC_MODE_BY_ID, cinematicMegapixelsForDuration, cinematicSafeDimensions } from "@/lib/cinematicPricing";
+import { photoOutputDimensions } from "@/lib/cinematicPricing";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { VramBadge } from "@/components/studio/VramBadge";
 import AutoDownloadToggle from "@/components/studio/AutoDownloadToggle";
@@ -152,7 +152,7 @@ export function PhotoDirectorTab() {
     if (imageUrl) URL.revokeObjectURL(imageUrl);
   }, [imageUrl]);
   const [refs, setRefs] = useState<RefPhoto[]>([]);
-  // 出力解像度の予告（route・buildPhotoWorkflow と同じ式: 高速モード・1 秒扱い）。「画像に合わせる」は人物の写真の縦横を使う。
+  // 出力解像度の予告（route・buildPhotoWorkflow と同じ photoOutputDimensions・約 2.5MP）。「画像に合わせる」は人物の写真の縦横を使う。
   const [measured, setMeasured] = useState<{ file: File; width: number; height: number } | null>(null);
   const imageDims = image && measured?.file === image ? measured : null;
   useEffect(() => {
@@ -172,7 +172,7 @@ export function PhotoDirectorTab() {
   const [count, setCount] = useState<number>(PHOTO_MIN_COUNT);
   const outDims = useMemo(() => {
     const shape = directorAspectDims("reference", aspect, imageDims);
-    return cinematicSafeDimensions(shape.width, shape.height, cinematicMegapixelsForDuration(CINEMATIC_MODE_BY_ID.vdnFast, 1));
+    return photoOutputDimensions(shape.width, shape.height);
   }, [aspect, imageDims]);
   const [idea, setIdea] = useState("");
   // null = 思いつきから書き起こす（通常）。文字列 = 前のジョブのプロンプトを編集して使う（2026-10-06 ホスト要望）。
