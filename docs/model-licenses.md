@@ -34,6 +34,10 @@ CLAUDE.md §5（商用利用・SaaS再頒布・地域制限の3点を満たす�
   （声を取り出して聞き取り、歌詞と照合）。2026-10-06 に HF の cardData で確認。生成物には含まれない。
 - **ScragVAE（`scragnog/Ace-Step-1.5-ScragVAE`・MIT・rev 0547ba3）**: 曲づくりの VAE（音に戻す部分）。ACE-Step 公式ドキュメント（ALT_VAE.md）が
   差し替え候補として載せるコミュニティ製の調整版。diffusers 形式を ComfyUI 形式に変換して使う（`scripts/ace_scragvae_convert.py`）。2026-10-06 確認。
+- **RVC（声の変換・曲の歌声をひなたの声へ。ローカル試験中）**: 本体 `RVC-Project/Retrieval-based-Voice-Conversion-WebUI` **MIT**・
+  学習済みの土台（pretrained v2）は VCTK 約 50 時間で学習（VCTK は CC BY 4.0）・特徴抽出 ContentVec（`auspicious3000/contentvec`）**MIT**・
+  音程抽出 RMVPE（`Dream-High/RMVPE`）**Apache-2.0**・実行環境 Applio（`IAHispano/Applio`、rev 324f4d8）**MIT**。2026-10-07 に GitHub で確認。
+  変換に使う声（ひなた）は架空の人物で権利の心配なし。
 - **Fizgig H3 Still（`shootthesound/ComfyUI-Fizgig-H3-Still`・MIT・コミット 10d5171）**: Photo Director の 1 コマ静止画用 ComfyUI ノード 2 つ
   （`modal_wan_animate_blackwell.py` の image に同梱）。モデルを含まないコードだけ。2026-10-06 確認。
 - **Wan2.1-VACE-1.3B（`Wan-AI/Wan2.1-VACE-1.3B`）**: Apache-2.0（2026-10-06 に HF の cardData で確認）。動画→アニメのローカル試作だけ（不採用・本番未使用）。

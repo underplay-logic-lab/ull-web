@@ -595,7 +595,13 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 - **A. 曲づくりの声の固定 → RVC（声の変換）をローカルで試す**（次の作業・ホスト了承済みの方向）:
   参照音声（ReferenceTimbreAudio）で固定する方法は 6 回の試験で不安定と判断（下の「曲づくりの声の検証」）。→ 曲は自由に作り、Demucs で歌を取り出し、
   RVC で**ひなたの声**へ変換して伴奏と混ぜ戻す。学習データ＝マスター `D:/ComfyUI-ull/results/ace_local/master/hinata68_master.flac` の歌（約 1 分）。
-  先に §5 のライセンス確認（RVC 本体・HuBERT/ContentVec・RMVPE）。変換して聴く候補: `results/ace_local/exp4/s9_v30` 等・`exp6/noref_s9`。
+  ライセンス確認は済（2026-10-07、全部 MIT/Apache・`docs/model-licenses.md`）。
+  **2026-10-07 未明: 学習と変換まで済・ホストの試聴待ち**。Applio（`D:/ComfyUI-ull/rvc/Applio`・.venv py3.12・torch 2.11 cu128）で
+  マスターの歌（Demucs で分離・68 秒→23 片）を 40k・rmvpe・contentvec・batch 8・300 epoch（RTX 5070 Ti で約 8 分・1 epoch 1.5 秒）。
+  聴くもの: `D:/ComfyUI-ull/results/rvc/{e300,e200}/{s9_v30,noref_s9}_mix.flac`（元は `results/ace_local/exp4/s9_v30.flac`・`exp6/noref_s9.flac`）。
+  手順: `tools/rvc_split.py`（mpenv・歌と伴奏）→ `tools/rvc_convert.sh <pth> <index> <out> <曲名>`（変換・音量合わせ・混ぜ戻し）。
+  罠: Applio は `assets/config.json`（画面版の初回起動で作られる）が無いと最後の重み書き出しに失敗し、os._exit でエラーも消える
+  → 作成済み＋`rvc/extract_weights.py` で `G_<step>.pth` から書き出す。core.py は Applio の中から呼ぶ。RVC の出力は元より約 6dB 小さい。変換して聴く候補: `results/ace_local/exp4/s9_v30` 等・`exp6/noref_s9`。
 - **B. Director の実地検証 1 本でまとめて確認**: 参照の使い方（剣＝持ち物・場所・動きの手本・背景が単純な手本動画）＋ B300 の通常モード（--gpu-only をやめた）の速さ＋
   おまかせか制限解除で Qwen の時間（動画の 91C を測り直す。H200 写真では約 80 秒→写真は 31C に下げ済み）。
 - **C. 検討待ち**: MiniMax H3 Fun ControlNet（骨格・深度で 1 コマずつ縛る＝Wan Animate 相当、ライセンス未確認）／動画でもアニメの参照が実写に寄る（写真と同じ「絵柄」選択を入れるか）／
