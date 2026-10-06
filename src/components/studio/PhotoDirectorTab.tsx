@@ -178,6 +178,8 @@ export function PhotoDirectorTab() {
   const [promptDraft, setPromptDraft] = useState<string | null>(null);
   // 編集欄の中身の出どころ: 前のジョブのプロンプト（job）か、最初から直接書く（direct、2026-10-06）。
   const [promptSource, setPromptSource] = useState<"job" | "direct">("direct");
+  // 前のジョブの英語の原文（日本語訳を読み込んだときに「英語の原文に切り替える」で戻せるように）。
+  const [promptEnglish, setPromptEnglish] = useState<string | null>(null);
   const promptEditorRef = useRef<HTMLTextAreaElement>(null);
   // 編集して作り直すときは、元のジョブの写真も欄へ読み戻す（外す・足す・役目を変えるのは普段どおり）。
   const [refsLoading, setRefsLoading] = useState(false);
@@ -197,7 +199,9 @@ export function PhotoDirectorTab() {
   };
 
   const unrestrictedSurcharge = directorUnrestrictedScriptSurcharge(knobs);
-  const cost = photoDirectorCredits(count, refs.length, knobs) + (unrestricted ? unrestrictedSurcharge : 0);
+  // AI（英訳・書き起こし）を通すときだけ制限解除の上乗せがかかる。英語だけのプロンプトはそのまま使うので不要（route と同じ判定）。
+  const photoNeedsAi = promptDraft == null || /[ぁ-んァ-ヶ一-龯]/.test(promptDraft);
+  const cost = photoDirectorCredits(count, refs.length, knobs) + (unrestricted && photoNeedsAi ? unrestrictedSurcharge : 0);
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
 
   // --- ジョブ ---
@@ -487,6 +491,7 @@ export function PhotoDirectorTab() {
   const enterPromptMode = async () => {
     if (!job?.combinedPrompt || !jobId) return;
     setPromptSource("job");
+    setPromptEnglish(job.combinedPrompt);
     setPromptDraft((job.combinedPromptJa || job.combinedPrompt).slice(0, PHOTO_PROMPT_MAX_LENGTH));
     setTimeout(() => {
       promptEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -650,9 +655,18 @@ export function PhotoDirectorTab() {
             </p>
             <p className="text-[11px] leading-relaxed text-muted">
               {promptSource === "job"
-                ? "書き換えたいところだけ直してください。日本語のままで大丈夫です（送るときに英語へ直します）。"
+                ? "書き換えたいところだけ直してください。日本語のままで大丈夫です（送るときに英語へ直します）。英語の原文を直すと AI を通さずにそのまま使うので、表現の制限にかからず、制限解除の追加料金もかかりません。"
                 : "英語で書くと、AI の書き起こしを通さずにそのまま使います（日本語が混ざると英語へ直してから使います）。写真は <Picture 1> のようにサムネの角の名前で指してください。"}
             </p>
+            {promptSource === "job" && promptEnglish && promptDraft !== promptEnglish && (
+              <button
+                type="button"
+                onClick={() => setPromptDraft(promptEnglish.slice(0, PHOTO_PROMPT_MAX_LENGTH))}
+                className="mt-1 text-[11px] text-neon-pink underline transition-colors hover:opacity-80"
+              >
+                英語の原文に切り替える
+              </button>
+            )}
             {(refsLoading || refsNotice) && (
               <p className="mt-1 text-[11px] leading-relaxed text-neon-violet">{refsLoading ? "元の写真を読み込んでいます…" : refsNotice}</p>
             )}

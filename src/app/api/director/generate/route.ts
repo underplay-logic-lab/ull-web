@@ -460,8 +460,9 @@ export async function POST(request: Request) {
   // その分を上乗せする（directorPricing.ts参照）。
   const videoCredits = breakdown.credits || directorCreditsWorstCase(knobs);
   // 台本 AI を使う経路（写真・シーン・日本語の直接入力の英訳）。おまかせは元から制限なしの AI。
+  // 写真で英語のプロンプトを直接渡したとき（直接書く・英語の原文を直した）は AI を通さないので、制限解除の上乗せも取らない。
   const needsScriptAi =
-    isPhoto ||
+    (isPhoto && (!photoPrompt || looksJapaneseOutsideDialogue(photoPrompt))) ||
     (!isAdvancedMode && !isPromptMode) ||
     (isPromptMode && !reusingScript && looksJapaneseOutsideDialogue(rawPromptInput));
   const unrestricted = unrestrictedRequested && needsScriptAi;
