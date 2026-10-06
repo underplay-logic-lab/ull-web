@@ -35,6 +35,8 @@ export type KnobKey =
   | "photo_director_base_credits"
   | "song_base_credits"
   | "song_per_track_credits"
+  | "song_per_track_credits_2"
+  | "song_per_track_credits_3"
   | "song_priority_parallel_rate"
   | "song_priority_parallel_surcharge"
   | "photo_director_per_image_credits"
@@ -210,7 +212,13 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 曲づくり（2026-10-06）: 1 回の基本料＋1 曲ごと。原価 3.0×。L40S（¥331/h）・100 秒の曲で
   // 1 曲 24 秒 ≒ ¥2.2 ×3 ÷1.66 ≒ 4C、起動・読み込み 約 55 秒 ≒ ¥5 ×3 ÷1.66 ≒ 9C（docs/STATUS.md）。
   song_base_credits: 9,
-  song_per_track_credits: 4,
+  // 1 曲ごと＝長さ別（2026-10-06）。声の無い曲（ハミングだけを含む）は自動で作り直すので、その見込みを含める。
+  //   1 番（約 100 秒）: 20 秒 ≒ ¥1.84 × 作り直し込み 1.3 回 × 3 ÷ 1.66 ≒ 5C
+  //   2 番（約 230 秒）: 43 秒 ≒ ¥4.0 × 2 回 × 3 ÷ 1.66 ≒ 15C（実測 6 回中 4 回が外れ）
+  //   3 番（約 340 秒）: 65 秒 ≒ ¥6.0 × 2.5 回 × 3 ÷ 1.66 ≒ 27C（未実測・2 番から外挿）
+  song_per_track_credits: 5,
+  song_per_track_credits_2: 15,
+  song_per_track_credits_3: 27,
   // 並列の追加料金は全タブ共通の「通常料金 × 率 ＋ 固定」（CLAUDE.md §6-7）。
   song_priority_parallel_rate: 1.0,
   song_priority_parallel_surcharge: 50,

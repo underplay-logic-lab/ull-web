@@ -20,6 +20,7 @@ export async function startSongJob(args: {
   style?: string;
   voice: SongVoiceId;
   count: number;
+  parts?: number;
   priority?: boolean;
   queue?: boolean;
 }): Promise<{ jobId: string; reserved: boolean; creditsCost: number; remainingCredits: number; plan: SongPlanView | null }> {

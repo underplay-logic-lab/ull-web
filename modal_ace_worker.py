@@ -91,6 +91,10 @@ image = (
         f"printf 'ace:\\n  base_path: {ACE_DIR}\\n  diffusion_models: diffusion_models\\n"
         f"  text_encoders: text_encoders\\n  vae: vae\\n' > {COMFY_DIR}/extra_model_paths.yaml"
     )
+    # 歌が入っているかの判定（2026-10-06）: Demucs（htdemucs・MIT）で歌を分けて割合を測る。重みはビルド時に焼く（CPU）。
+    # torch / torchaudio は上で入れた cu130 版が条件を満たすので入れ替わらない（入れ替わったら probe で分かる）。
+    .pip_install("demucs==4.1.0")
+    .run_commands('python -c "from demucs.pretrained import get_model; get_model(\'htdemucs\')"')
     .add_local_python_source("ull_r2")
 )
 
@@ -108,7 +112,10 @@ def probe() -> dict:
         name: os.path.getsize(p) if os.path.exists(p := f"{ACE_DIR}/{kind}/{pathlib.Path(name).name}") else None
         for name, kind in WEIGHTS
     }
-    out = {"torch": torch.__version__, "cuda_build": torch.version.cuda, "comfyui": ref, "nodes": nodes, "weights": weights}
+    from demucs.pretrained import get_model
+
+    get_model("htdemucs")  # ビルド時に焼いた重みが読めるか（ネットに取りに行かない）
+    out = {"torch": torch.__version__, "cuda_build": torch.version.cuda, "comfyui": ref, "nodes": nodes, "weights": weights, "demucs": "ok"}
     print(json.dumps(out, ensure_ascii=False, indent=1), flush=True)
     return out
 
@@ -147,10 +154,12 @@ LINE_BARS = 4
 INTRO_BARS = 4
 # 後奏 8 小節（2026-10-06）: 4 小節だと「歌い終わった瞬間に終わる」「無理やり歌い切る」があった（ホスト指摘）。
 OUTRO_BARS = 8
-# 余裕 1.5 倍（2026-10-06）: 1.1 倍・後奏 8 小節の 100 秒でも 6 本中 3 本が末尾まで鳴ったまま（＝打ち切り）だった。
-# モデルは前奏・間奏・後奏を長めに取る。余った分は末尾の無音として切るので、長めにする方が安全（1 曲 ¥1 弱の増え）。
-DURATION_MARGIN = 1.5
-MAX_SECONDS = 240.0
+# 余裕 1.2 倍（2026-10-06）: 1.1 倍では打ち切りが出た。1.5 倍にしたら、ComfyUI は指定の長さぴったりに設計図を作らせる
+# （comfy/text_encoders/ace15.py の min_tokens = max_tokens = 長さ×5）ので、余った長さをサビの繰り返しで埋め、
+# 最後の歌の直後に終わった（ホスト指摘）。長さは歌詞の構成（間奏・後奏のタグも数える）で決め、余裕は控えめにする。
+DURATION_MARGIN = 1.2
+INSTRUMENTAL_BARS = 8  # [Instrumental]（間奏）1 つあたり
+MAX_SECONDS = 360.0  # 3 番まで（約 340 秒）が入る長さ（2026-10-06）
 
 
 def lyric_lines(lyrics: str) -> list[str]:
@@ -166,7 +175,8 @@ def estimate_seconds(lyrics: str, bpm: int, timesignature: str = "4") -> float:
         return 60.0
     beats = int(timesignature) if str(timesignature).isdigit() else 4
     bar_s = beats * 60.0 / max(40, int(bpm))
-    secs = (len(lines) * LINE_BARS + INTRO_BARS + OUTRO_BARS) * bar_s * DURATION_MARGIN
+    interludes = sum(1 for ln in lyrics.splitlines() if ln.strip().lower().startswith("[instrumental"))
+    secs = (len(lines) * LINE_BARS + INTRO_BARS + OUTRO_BARS + interludes * INSTRUMENTAL_BARS) * bar_s * DURATION_MARGIN
     return float(min(MAX_SECONDS, max(30, math.ceil(secs / 5) * 5)))
 
 
@@ -174,8 +184,16 @@ def prepare_params(p: dict) -> dict:
     """seconds が 0・"auto"・未指定なら歌詞から決める。歌詞の最後に [Outro] が無ければ足す（終わり方を作らせる）。"""
     q = dict(p)
     lyrics = str(q.get("lyrics", "")).rstrip()
-    if lyric_lines(lyrics) and not lyrics.splitlines()[-1].strip().lower().startswith("[outro"):
-        lyrics += "\n\n[Outro]"
+    # 後奏は「楽器だけ・フェードアウト」と明示する（公式ガイド: タグに説明を足せる `[Chorus - anthemic]`）。
+    # 素の [Outro] だと、最後の歌の直後に終わる曲があった（2026-10-06）。
+    outro = "[Outro - instrumental, fade out]"
+    if lyric_lines(lyrics):
+        body = lyrics.splitlines()
+        if body and body[-1].strip().lower().startswith("[outro"):
+            body[-1] = outro
+            lyrics = "\n".join(body)
+        else:
+            lyrics += f"\n\n{outro}"
     q["lyrics"] = lyrics
     tags = str(q.get("tags", "")).strip()
     if "ending" not in tags.lower():
@@ -233,6 +251,43 @@ def finish_audio(src: str, dst: str) -> dict:
         "ended_abruptly": abrupt,
         "cut_off": cut_off,
     }
+
+
+# 歌が入っているか（2026-10-06）: 出来た曲を Demucs（htdemucs）で歌と伴奏に分け、0.5 秒ごとに「歌が伴奏の -12dB 以上」の割合。
+# 手元の試作（D:/ComfyUI-ull/tools/vocal_check2.py）で、声の無い曲 0.4%・普通の曲 48% / 73% とはっきり分かれた。
+# 30%（2026-10-06）: 10% だとハミングだけの曲（14.6%）が通った（ホスト指摘）。普通に歌った曲は 48〜81%。
+VOCAL_MIN_RATIO = 0.30
+# 作り直しの上限（何番までか別）。長いほど外れが多い（2 番の構成で 6 回中 4 回）。上限まで外れたら一番歌っていた回を残す。
+VOCAL_RETRIES = {1: 2, 2: 3, 3: 4}
+_DEMUCS = None
+
+
+def vocal_ratio(path: str) -> float:
+    import numpy as np
+    import torch
+    from demucs.apply import apply_model
+    from demucs.pretrained import get_model
+
+    global _DEMUCS
+    if _DEMUCS is None:
+        _DEMUCS = get_model("htdemucs").eval().to("cuda" if torch.cuda.is_available() else "cpu")
+    m = _DEMUCS
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", path, "-ac", "2", "-ar", str(m.samplerate), "-f", "f32le", "-"], capture_output=True
+    ).stdout
+    wav = torch.from_numpy(np.frombuffer(raw, dtype=np.float32).copy()).view(-1, 2).T
+    dev = next(m.parameters()).device
+    with torch.no_grad():
+        src = apply_model(m, wav[None].to(dev), device=dev, split=True, overlap=0.1)[0].cpu()
+    voc = src[m.sources.index("vocals")].mean(0).numpy()
+    rest = wav.mean(0).numpy() - voc
+    win = m.samplerate // 2
+    n = len(voc) // win
+    if n == 0:
+        return 0.0
+    v = np.sqrt((voc[: n * win].reshape(n, win) ** 2).mean(1) + 1e-12)
+    r = np.sqrt((rest[: n * win].reshape(n, win) ** 2).mean(1) + 1e-12)
+    return float((20 * np.log10(v / (r + 1e-9)) > -12).mean())
 
 
 def build_workflow(p: dict) -> dict:
@@ -422,8 +477,23 @@ class AceStep:
             if not ull_r2.r2_enabled():
                 raise RuntimeError("R2 is not enabled")
             rels, key_map, songs = [], {}, []
+            retried = 0
             for k in range(count):
-                res = self._make_song({**job["params"], "seed": seed + k, "dit": "sft"})
+                # 声の無い曲（設計図の段階で歌なしになる外れ）はシードを変えて最大 VOCAL_RETRIES 回まで作り直す（原価はこちら持ち）。
+                max_retries = VOCAL_RETRIES.get(int(job.get("parts") or 1), 2)
+                best = None
+                for attempt in range(max_retries + 1):
+                    s_try = seed + k + attempt * 1000
+                    r_try = self._make_song({**job["params"], "seed": s_try, "dit": "sft"})
+                    ratio_try = vocal_ratio(r_try["path"])
+                    print(f"[song] #{k + 1} seed {s_try} vocal {ratio_try:.1%}", flush=True)
+                    if best is None or ratio_try > best[2]:
+                        best = (s_try, r_try, ratio_try)
+                    if ratio_try >= VOCAL_MIN_RATIO:
+                        break
+                    if attempt < max_retries:
+                        retried += 1
+                s, res, ratio = best
                 mp3 = res["path"].replace(".flac", ".mp3")
                 r = subprocess.run(
                     ["ffmpeg", "-v", "error", "-y", "-i", res["path"], "-c:a", "libmp3lame", "-b:a", "256k", mp3],
@@ -436,7 +506,13 @@ class AceStep:
                 ull_r2.put_file(mp3, key, content_type="audio/mpeg")
                 rels.append(rel)
                 key_map[rel] = key
-                songs.append({"seed": seed + k, "seconds": res["final_s"], "elapsed_s": res["elapsed_s"]})
+                songs.append({
+                    "seed": s,
+                    "seconds": res["final_s"],
+                    "elapsed_s": res["elapsed_s"],
+                    "vocal_ratio": round(ratio, 3),
+                    "cut_off": res.get("cut_off"),
+                })
                 _patch_job(job_id, {
                     "progress_message": f"{k + 1}/{count} 曲",
                     "progress_percent": int((k + 1) * 100 / count),
@@ -450,6 +526,7 @@ class AceStep:
                 "r2_key_map": key_map,
                 "artifact_store": "r2",
                 "boot_s": self.boot_s,
+                "vocal_retries": retried,
             }
             gb = _vram_used_gb()
             if gb is not None:

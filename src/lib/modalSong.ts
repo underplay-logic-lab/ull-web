@@ -18,6 +18,8 @@ export type SongJobParams = {
 export type SongDispatchSpec = {
   creditsCost: number;
   count: number;
+  /** 何番まで（1〜3）。ワーカーは長いほど作り直しの上限を多く取る。 */
+  parts?: number;
   seed: number;
   params: SongJobParams;
 };
@@ -34,6 +36,7 @@ export async function dispatchSongJob(jobId: string, userId: string, spec: SongD
       user_id: userId,
       credits_cost: spec.creditsCost,
       count: spec.count,
+      parts: spec.parts ?? 1,
       seed: spec.seed,
       params: { timesignature: "4", ...spec.params },
     }),

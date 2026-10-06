@@ -150,10 +150,24 @@ const KNOB_TEXT: Record<KnobKey, Omit<KnobMeta, "value">> = {
     isPublic: true,
   },
   song_per_track_credits: {
-    label: "曲づくり 1 曲ごと",
+    label: "曲づくり 1 曲ごと（1 番だけ）",
     category: "feature_credits",
     unit: "C/曲",
-    description: "1 回で作る曲数（3〜10 曲）1 曲ごとの料金。",
+    description: "1 番だけ（約 1 分半）の 1 曲ごとの料金。声の無い曲の作り直しの見込みを含む。",
+    isPublic: true,
+  },
+  song_per_track_credits_2: {
+    label: "曲づくり 1 曲ごと（2 番まで）",
+    category: "feature_credits",
+    unit: "C/曲",
+    description: "2 番まで（約 4 分）の 1 曲ごとの料金。長いほど声の無い外れが増えるので作り直しの見込みを多めに含む。",
+    isPublic: true,
+  },
+  song_per_track_credits_3: {
+    label: "曲づくり 1 曲ごと（3 番まで）",
+    category: "feature_credits",
+    unit: "C/曲",
+    description: "3 番まで（約 5〜6 分）の 1 曲ごとの料金。",
     isPublic: true,
   },
   song_priority_parallel_rate: {

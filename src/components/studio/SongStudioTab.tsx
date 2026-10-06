@@ -15,6 +15,10 @@ import {
   SONG_LYRICS_MAX_LENGTH,
   SONG_MAX_COUNT,
   SONG_MIN_COUNT,
+  SONG_PARTS,
+  clampSongParts,
+  songPartsFromLyrics,
+  type SongParts,
   SONG_STYLE_MAX_LENGTH,
   SONG_VOICES,
   songCredits,
@@ -46,7 +50,7 @@ const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_CONSECUTIVE_ERRORS = 8;
 const COUNTS = Array.from({ length: SONG_MAX_COUNT - SONG_MIN_COUNT + 1 }, (_, i) => SONG_MIN_COUNT + i);
 
-type Snapshot = { mode: Mode; idea: string; lyrics: string; style: string; voice: SongVoiceId; count: number };
+type Snapshot = { mode: Mode; idea: string; lyrics: string; style: string; voice: SongVoiceId; count: number; parts: SongParts };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -92,7 +96,13 @@ export function SongStudioTab() {
   const [style, setStyle] = useState("");
   const [voice, setVoice] = useState<SongVoiceId>("female");
   const [count, setCount] = useState<number>(SONG_MIN_COUNT);
-  const cost = songCredits(count, knobs);
+  // 長さ（何番まで）。手書きの歌詞は行数で決まる（サーバーと同じ関数）。
+  const [partsChoice, setPartsChoice] = useState<SongParts>(1);
+  const parts: SongParts = mode === "lyrics" ? songPartsFromLyrics(lyrics) : partsChoice;
+  const partInfo = SONG_PARTS.find((p) => p.id === parts) ?? SONG_PARTS[0];
+  const cost = songCredits(count, parts, knobs);
+  // 待ち時間の目安（作り直しの見込み込み・起動 1〜2 分は別）。
+  const estMinutes = Math.max(1, Math.round(partInfo.minutesPerSong * count));
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
   const lyricLines = useMemo(
     () => lyrics.split("\n").filter((l) => l.trim() && !l.trim().startsWith("[")).length,
@@ -126,7 +136,7 @@ export function SongStudioTab() {
       setErrorMessage("歌詞を入れてください。");
       return null;
     }
-    return { mode, idea: idea.trim(), lyrics: lyrics.trim(), style: style.trim(), voice, count };
+    return { mode, idea: idea.trim(), lyrics: lyrics.trim(), style: style.trim(), voice, count, parts };
   };
 
   const start = useCallback(
@@ -138,6 +148,7 @@ export function SongStudioTab() {
         style: s.style || undefined,
         voice: s.voice,
         count: s.count,
+        parts: s.parts,
         ...opts,
       }),
     [],
@@ -409,7 +420,7 @@ export function SongStudioTab() {
               {idea.length} / {SONG_IDEA_MAX_LENGTH}
             </p>
             <p className="text-[11px] leading-relaxed text-muted">
-              場面・気持ち・誰に向けた歌かを書くと、歌詞にしやすくなります。歌詞は AI が 8〜12 行で書きます。
+              場面・気持ち・誰に向けた歌かを書くと、歌詞にしやすくなります。歌詞は選んだ長さに合わせて AI が書きます（1 番＝8 行）。
             </p>
           </div>
         ) : (
@@ -422,15 +433,16 @@ export function SongStudioTab() {
               placeholder={"[Verse]\nかいだんを かけあがって\nとびらを そっと あけたら\n…\n\n[Chorus]\nゆうやけの おくじょうで ならすよ\n…"}
               className="w-full resize-y rounded-xl border border-border bg-background px-3 py-2 font-mono text-sm text-foreground placeholder:text-muted/60"
             />
-            <p className={`mt-1 text-right text-[10px] ${lyricLines > 0 && (lyricLines < 6 || lyricLines > 16) ? "text-amber-400" : "text-muted"}`}>
-              {lyricLines} 行
+            <p className={`mt-1 text-right text-[10px] ${lyricLines > 0 && (lyricLines < 6 || lyricLines > 30) ? "text-amber-400" : "text-muted"}`}>
+              {lyricLines} 行（{partInfo.label}）
             </p>
             <HelpNote
               id="song.lyrics"
               title="うまくいく歌詞の目安"
-              summary="8〜12 行・1 行 15 音くらいまで・[Verse]（A メロ）と [Chorus]（サビ）を分けると、まとまった曲になりやすいです。"
+              summary="1 番は A メロ 4 行＋サビ 4 行が目安。1 行は短く（8〜12 音くらい）、[Verse]（A メロ）と [Chorus]（サビ）を分けると、まとまった曲になりやすいです。"
             >
-              4 行だけだと短すぎて、曲の長さが余ったり途中で終わったりしやすくなります。読み間違えやすい漢字は自動でかなに直します。
+              10 行までは 1 番だけ、20 行までは 2 番まで、それより多いと 3 番までの長さと料金になります。2 番以降の間に [Instrumental]（間奏）を入れるのがおすすめです。
+              4 行だけだと短すぎて、曲の長さが余りやすくなります。読み間違えやすい漢字は自動でかなに直します。
               実在の歌手名や、既存の曲の歌詞は使わないでください。
             </HelpNote>
           </div>
@@ -476,8 +488,34 @@ export function SongStudioTab() {
             </select>
           </div>
         </div>
+        <div>
+          <label className="mb-1 block text-xs text-muted">曲の長さ</label>
+          {mode === "idea" ? (
+            <div className="flex items-center gap-2 rounded-xl border border-border bg-background p-1">
+              {SONG_PARTS.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setPartsChoice(clampSongParts(p.id))}
+                  className={`flex flex-1 flex-col items-center justify-center rounded-lg px-2 py-1.5 text-xs font-medium leading-tight transition-colors ${
+                    partsChoice === p.id ? "bg-neon-violet/15 text-foreground" : "text-muted hover:text-foreground"
+                  }`}
+                >
+                  <span>{p.label}</span>
+                  <span className="text-[10px] font-normal opacity-70">{p.length}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="rounded-xl border border-border bg-background px-3 py-2 text-xs text-foreground">
+              {partInfo.label}（{partInfo.length}）<span className="ml-1 text-muted">— 歌詞の行数から決まります</span>
+            </p>
+          )}
+        </div>
         <p className="-mt-2 text-[11px] leading-relaxed text-muted">
-          同じ歌詞・曲調で、少しずつ違う曲をまとめて作るので、気に入った 1 曲を選べます。当たり外れがあるので、多めに作るのがおすすめです。
+          同じ歌詞・曲調で、少しずつ違う曲をまとめて作るので、気に入った 1 曲を選べます。
+          声が入らなかった曲（ハミングだけの曲を含む）は自動で作り直します。その分は料金に含まれています。
+          長い曲ほど作り直しが増え、時間がかかります（{count} 曲で約 {estMinutes} 分〜。初回は GPU の起動に 1〜2 分）。
         </p>
       </div>
 

@@ -1,11 +1,12 @@
 import "server-only";
 import { runDirectorPromptGemini, DirectorPromptError } from "@/lib/directorPrompt";
-import { SONG_VOICES, type SongVoiceId } from "@/lib/songPricing";
+import { SONG_VOICES, type SongParts, type SongVoiceId } from "@/lib/songPricing";
 
 // 曲づくり（2026-10-06）: 思いつき（または手書きの歌詞）から、歌詞・曲調のタグ・BPM・キーを Gemini に作らせる。
 // 指針（docs/STATUS.md の試作から）:
-//   - 歌詞は 8〜12 行・[Verse] / [Chorus] など構成つき（4 行・40 秒は歌の途中で時間切れ、8 行はまとまりが良かった）
-//   - 1 行は 15 音前後まで
+//   - 歌詞は 2 番まで（[Verse] → [Chorus] → [Instrumental] → [Verse] → [Chorus] → [Outro - instrumental, fade out]）
+//     （4 行は短すぎ、8 行・135 秒はモデルが長さを埋めるためにサビを繰り返し、歌い切った瞬間に終わった。2026-10-06）
+//   - 1 行は短く（公式ガイド ACE-Step docs/en/ace_step_musicians_guide.md「6〜10 音節」→ 日本語は 8〜12 音）
 //   - 読み間違えやすい語だけかなへ（「屋上」を「やく…」と歌った。全部かなにすると抑揚が崩れるので語単位）
 // 断られたら DirectorPromptError(reason "refusal")。曲づくりには制限なしの AI が無いので、画面は「歌詞を自分で書く」へ案内する。
 
@@ -25,7 +26,18 @@ function voiceTag(voice: SongVoiceId): string {
   return SONG_VOICES.find((v) => v.id === voice)?.tag ?? SONG_VOICES[0].tag;
 }
 
-export function buildSongPlanPrompt(input: { idea?: string; lyrics?: string; style?: string; voice: SongVoiceId }): string {
+/** 何番までかに応じた構成（1 番 / 2 番 / 3 番）。サビは毎回同じ 4 行、A メロは毎回新しい 4 行。 */
+function structureFor(parts: SongParts): string {
+  const blocks: string[] = ["[Intro] (no lyrics)"];
+  for (let i = 0; i < parts; i++) {
+    if (i > 0) blocks.push("[Instrumental] (no lyrics)");
+    blocks.push(i === 0 ? "[Verse] 4 lines" : "[Verse] 4 new lines", i === 0 ? "[Chorus] 4 lines" : "[Chorus] the same 4 lines");
+  }
+  blocks.push("[Outro - instrumental, fade out] (no lyrics)");
+  return `${blocks.join(", ")}. ${parts * 8} sung lines in total.`;
+}
+
+export function buildSongPlanPrompt(input: { idea?: string; lyrics?: string; style?: string; voice: SongVoiceId; parts?: SongParts }): string {
   const hasLyrics = Boolean(input.lyrics?.trim());
   return [
     "You are a professional songwriter and producer preparing input for a text-to-music model that sings lyrics.",
@@ -35,13 +47,13 @@ export function buildSongPlanPrompt(input: { idea?: string; lyrics?: string; sty
     hasLyrics
       ? [
           "The user wrote the lyrics. Keep every word and line exactly as written, in the same order.",
-          "Only (1) add section tags such as [Intro], [Verse], [Chorus], [Bridge], [Outro] on their own lines if they are missing, and (2) apply the readability rule below.",
+          "Only (1) add section tags such as [Intro], [Verse], [Chorus], [Bridge], [Instrumental] on their own lines if they are missing, (2) make the last tag [Outro - instrumental, fade out] with no lyrics after it, and (3) apply the readability rule below.",
         ].join("\n")
       : [
           "Write original song lyrics from the user's idea.",
           "- Language: the language of the idea (Japanese if the idea is Japanese).",
-          "- Structure: [Intro] (empty), then [Verse] 4 lines, [Chorus] 4 lines; for a longer song add [Verse] and [Chorus] again (8 to 12 sung lines in total), then [Outro] (empty).",
-          "- Each line short and singable: about 15 syllables (morae) or fewer. Natural, emotional, concrete images; avoid clichés.",
+          `- Structure (use exactly these tags, each on its own line): ${structureFor(input.parts ?? 1)}`,
+          "- Each line short and singable: 6 to 10 syllables (for Japanese, about 8 to 12 morae). Natural, emotional, concrete images; avoid clichés.",
           "- Do not use names of real artists or quote existing songs.",
         ].join("\n"),
     KANA_RULE,
@@ -82,7 +94,7 @@ function parsePlan(raw: string): SongPlan {
   };
 }
 
-export async function planSong(input: { idea?: string; lyrics?: string; style?: string; voice: SongVoiceId }): Promise<SongPlan> {
+export async function planSong(input: { idea?: string; lyrics?: string; style?: string; voice: SongVoiceId; parts?: SongParts }): Promise<SongPlan> {
   const raw = await runDirectorPromptGemini(buildSongPlanPrompt(input), "song_plan");
   const plan = parsePlan(raw);
   // 声の指定は必ず入れる（Gemini が落とすことがある）。

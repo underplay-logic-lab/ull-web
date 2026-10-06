@@ -8,6 +8,8 @@ import {
   SONG_LYRICS_MAX_LENGTH,
   SONG_STYLE_MAX_LENGTH,
   clampSongCount,
+  clampSongParts,
+  songPartsFromLyrics,
   isSongVoiceId,
   songCredits,
   songPriorityParallelSurcharge,
@@ -48,6 +50,8 @@ export async function POST(request: Request) {
   const style = typeof body.style === "string" ? body.style.trim().slice(0, SONG_STYLE_MAX_LENGTH) : "";
   const voice = isSongVoiceId(body.voice) ? body.voice : "female";
   const count = clampSongCount(body.count);
+  // 長さ（何番まで）。手書きの歌詞は行数で決める（フロントの表示と同じ関数）。
+  const parts = mode === "lyrics" ? songPartsFromLyrics(lyricsIn) : clampSongParts(body.parts);
   const queue = body.queue === true;
   const priority = !queue && body.priority === true;
   if (mode === "idea" && !idea) return NextResponse.json({ error: "どんな曲にしたいかを書いてください。" }, { status: 400 });
@@ -60,7 +64,7 @@ export async function POST(request: Request) {
   }
 
   const knobs = await getPricingKnobs();
-  const baseCost = songCredits(count, knobs);
+  const baseCost = songCredits(count, parts, knobs);
   const creditsCost = priority ? baseCost + songPriorityParallelSurcharge(knobs, baseCost) : baseCost;
 
   const { data: profile, error: profileError } = await getOrCreateProfile(user.id, "credits, credits_expire_at");
@@ -85,7 +89,7 @@ export async function POST(request: Request) {
   // 歌詞・曲調を整える（課金前）。手書きの歌詞で断られたら、歌詞はそのまま・曲調は選んだ声と既定で作る（書いた本人の歌詞なので止めない）。
   let plan: SongPlan;
   try {
-    plan = await planSong({ idea, lyrics: mode === "lyrics" ? lyricsIn : undefined, style, voice });
+    plan = await planSong({ idea, lyrics: mode === "lyrics" ? lyricsIn : undefined, style, voice, parts });
   } catch (err) {
     const e = err as DirectorPromptError;
     if (mode === "lyrics" && e.reason === "refusal") {
@@ -123,8 +127,8 @@ export async function POST(request: Request) {
       status: queue ? "reserved" : "queued",
       workflow_type: "song",
       credits_cost: creditsCost,
-      inputs: { mode, idea: idea || null, style: style || null, voice, count, seed, plan },
-      metadata: { count, priority },
+      inputs: { mode, idea: idea || null, style: style || null, voice, count, parts, seed, plan },
+      metadata: { count, parts, priority },
     })
     .select("id")
     .single();
@@ -136,6 +140,7 @@ export async function POST(request: Request) {
   const spec: SongDispatchSpec = {
     creditsCost,
     count,
+    parts,
     seed,
     params: { tags: plan.tags, lyrics: plan.lyrics, bpm: plan.bpm, keyscale: plan.keyscale, language: plan.language },
   };
