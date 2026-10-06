@@ -626,6 +626,10 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    **絵柄（2026-10-06 夜）**: 土台 10Eros は実写寄りで、アニメの参照でも実写になる（健全な題材でも）。公式 ref2va は絵柄を保つが性器の描写が
    不十分でホスト不採用。→ 「絵柄: 入れた写真のまま／アニメ・イラスト」の選択を追加し、アニメは強い一文（PHOTO_ANIME_SENTENCE）を必ず入れる。
    実写の参照（形の手本など）を足すと実写に戻る。比較 `D:/ComfyUI-ull/results/anime_test/{ab,c,d,e}_grid.png`。後がけの Illustrious は未試行（予備案）。
+   → 実写の参照を先にアニメ化する案: ホストがローカルの**公式 Qwen-Image-Edit-2511**で成功（「ちょっと微妙」だがアニメ調になった）。効いた指示:
+   `Change the art style of this image to Japanese anime. 2D cel-shaded anime illustration with bold black outlines and flat colors.`
+   （「形をそのまま保て」を強く書くと変わらなかった）。本番化するなら追加写真のサムネに「アニメ化」ボタン（絵柄＝アニメのときだけ）→
+   Multi-Angle ワーカーに上の指示で通す。本番は TE が abliterated 版・角度 LoRA 融合なので、そのままで効くかは未確認（Illustrious 後がけは顔が変わる懸念で後回し）。
    構図を AI に書き分けさせる案は試した（構図はばらけるが 4 枚で 303s・約 117C）が、ホスト判断で不採用（「欲しい 1 枚を書いて頼むもの」・シード違いでも光や表情が違う）。
    **2026-10-06 夜: Fizgig H3 Still（MIT）で本当に 1 コマの静止画に・出力 2.5MP（3:4 = 1376×1824、PHOTO_MEGAPIXELS）**。H200 実測 起動込み 205s・VRAM 97.7GB
    （1MP の 5 コマ版 185s・97.9GB）。比較 `D:/ComfyUI-ull/results/photo_before_after_fizgig*.png`（ホスト「差はよくわからない」が推奨どおり採用）。
