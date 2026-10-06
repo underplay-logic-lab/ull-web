@@ -2134,3 +2134,8 @@ v7 の中間チェックポイント 13 本（475MB × 13 = 6.2GB）を Modal �
 - 画質は同じシードで見分けがつかない（`D:/ComfyUI-ull/results/photo_4_b300_vs_h200.png`）。
 - → **Photo Director は H200**（`PHOTO_GPU`・ワーカーの `custom_workflow_async` の `gpu`）。Director の動画は B300 のまま（UX 上の理由・CLAUDE.md §1）。
   料金は H200 の原価 ×3（knobDefaults.ts の photo_director_*）。1 枚ごとの描画時間は H200 で未測（8 枚で測れば分かる）。
+- ⚠️ **本番の画面からの初回は H200 で OOM した（2026-10-06 夕方・ジョブ eac3f0f3）**: ワーカーは GPU を問わず ComfyUI を `--gpu-only`
+  （全モデル常駐・288GB 前提）で起動していた。テキストエンコーダ 49GB＋VAE 5GB を載せたまま UNETLoader が DiT を GPU へ直接読み、
+  141GB を超えた。上の測定で通ったのは DiT が先に読まれた**順番の運**（実行順はワークフローの形で変わる）。上の「テキストエンコーダ 38GB」も誤りで実際は 49GB。
+  → Blackwell 以外は `--gpu-only`・HIGH_VRAM・SageAttention を外した通常モードで起動（af50f8d・デプロイ済み・画面からの再試験待ち）。
+  通常モードだと降ろしたモデルは CPU メモリ（ピン留め）へ退避するので、次のジョブの載せ直しは数秒の見込み（未測）。
