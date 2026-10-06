@@ -1439,6 +1439,12 @@ class WanAnimateBlackwell:
         import subprocess
 
         cfg = exec_config if exec_config is not None else BLACKWELL_EXEC_CONFIG
+        # Blackwell 以外（Photo Director の H200、2026-10-06〜）: --gpu-only は「全モデルを GPU に置きっぱなし」で
+        # 288GB 前提。141GB の H200 ではテキストエンコーダ 49GB を降ろさないまま DiT を GPU へ直接読み、読み込み順
+        # しだいで OOM した（ジョブ eac3f0f3）。通常モードにして ComfyUI に都度降ろさせる。SageAttention も
+        # Blackwell 向けビルドだけなので外す（写真のワークフローは元から sage_attention: "disabled"）。
+        if _gpu_tier_label() not in ("B300", "B200", "unknown"):
+            cfg = {**cfg, "gpu_only": False, "high_vram": False, "use_sage_attention": False}
         normalized = (
             bool(cfg.get("disable_smart_memory", False)),
             bool(cfg.get("cpu_vae", False)),
