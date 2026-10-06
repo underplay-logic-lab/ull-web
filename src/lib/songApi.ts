@@ -55,6 +55,8 @@ export type SongJobStatus = {
   audioUrls: string[];
   title: string | null;
   lyrics: string | null;
+  /** 曲ごとのシード（保存するファイル名に入れる）。 */
+  seeds: (number | null)[];
 };
 
 export class SongJobNotFoundError extends Error {
@@ -80,6 +82,7 @@ export async function pollSongJob(jobId: string): Promise<SongJobStatus> {
     audioUrls: Array.isArray(data.audioUrls) ? (data.audioUrls as unknown[]).filter((u): u is string => typeof u === "string") : [],
     title: (data.songTitle as string | null) ?? null,
     lyrics: (data.songLyrics as string | null) ?? null,
+    seeds: Array.isArray(data.songSeeds) ? (data.songSeeds as unknown[]).map((s) => (typeof s === "number" ? s : null)) : [],
   };
 }
 

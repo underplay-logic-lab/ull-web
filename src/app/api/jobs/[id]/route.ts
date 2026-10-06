@@ -224,6 +224,11 @@ export async function GET(request: Request, { params }: RouteParams) {
     audioUrls = urls.filter((u): u is string => Boolean(u));
   }
   const songPlan = isSong && inputs?.plan && typeof inputs.plan === "object" ? (inputs.plan as Record<string, unknown>) : null;
+  // 曲ごとに実際に使ったシード（作り直した曲は作り直し後）。保存するファイル名に入れる（後から同じ声を辿れるように、2026-10-06）。
+  const songSeeds =
+    isSong && Array.isArray((effJob.metadata as { songs?: unknown } | null)?.songs)
+      ? ((effJob.metadata as { songs: { seed?: unknown }[] }).songs.map((s) => (typeof s?.seed === "number" ? s.seed : null)))
+      : null;
   let videoUrl = (effJob.video_url as string | null) ?? null;
   if (
     videoUrl &&
@@ -259,6 +264,7 @@ export async function GET(request: Request, { params }: RouteParams) {
     audioUrls,
     songTitle: typeof songPlan?.title === "string" ? songPlan.title : null,
     songLyrics: typeof songPlan?.lyrics === "string" ? songPlan.lyrics : null,
+    songSeeds,
     // LoRA 学習のベースモデル（完了画面で「動画を作る」を出すかの判定。Director は minimax_h3 だけ使える）。
     targetModel: typeof inputs?.target_model === "string" ? inputs.target_model : null,
     // LoRA のトリガーワード（1 人目＋2 人目以降）。Director へ渡すときに使う。

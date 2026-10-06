@@ -59,8 +59,9 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function songFilename(jobId: string, i: number): string {
-  return `ull_song_${jobId.slice(0, 8)}_${i + 1}.mp3`;
+/** 保存するファイル名。シードが分かれば入れる（後から同じ声で作れるか試すとき辿れるように、2026-10-06）。 */
+function songFilename(jobId: string, i: number, seed?: number | null): string {
+  return `ull_song_${jobId.slice(0, 8)}_${i + 1}${seed ? `_s${seed}` : ""}.mp3`;
 }
 
 function InsufficientCreditsModal({ open, onClose, credits, cost }: { open: boolean; onClose: () => void; credits: number | null; cost: number }) {
@@ -292,8 +293,9 @@ export function SongStudioTab() {
             if (next.audioUrls.length && takeAutoDownload(jobId)) {
               runAutoDownload("SongStudioTab", async () => {
                 // 署名は 15 分で切れるので保存する時点で取り直す（CLAUDE.md §6-11）。
-                const fresh = (await pollSongJob(jobId)).audioUrls;
-                for (let i = 0; i < fresh.length; i++) await downloadSong(fresh[i], songFilename(jobId, i));
+                const fresh = await pollSongJob(jobId);
+                for (let i = 0; i < fresh.audioUrls.length; i++)
+                  await downloadSong(fresh.audioUrls[i], songFilename(jobId, i, fresh.seeds[i]));
               });
             }
             void advanceAndFollow(true);
@@ -346,7 +348,7 @@ export function SongStudioTab() {
     setActionError(null);
     const url = (await refreshUrls())[i];
     if (!url) return setActionError("曲の取得に失敗しました。時間をおいてもう一度お試しください。");
-    downloadSong(url, songFilename(jobId, i)).catch((err) => {
+    downloadSong(url, songFilename(jobId, i, job?.seeds[i])).catch((err) => {
       console.error("[SongStudioTab] download failed:", err);
       setActionError("ダウンロードに失敗しました。");
     });
@@ -367,7 +369,7 @@ export function SongStudioTab() {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const len = Math.max(3, Math.min(DIRECTOR_MAX_AUDIO_SECONDS, clipLen));
-      const { file } = await clipToWav(await res.blob(), Math.max(0, clipStart), len, songFilename(jobId, i).replace(".mp3", `_${clipStart}s.wav`));
+      const { file } = await clipToWav(await res.blob(), Math.max(0, clipStart), len, songFilename(jobId, i, job?.seeds[i]).replace(".mp3", `_from${clipStart}s.wav`));
       sendAudioToDirector(file);
     } catch (err) {
       console.error("[SongStudioTab] handoff failed:", err);
