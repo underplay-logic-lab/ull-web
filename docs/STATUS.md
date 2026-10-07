@@ -631,6 +631,11 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
   **ACE＝シンプル・聞き取れるが AI／ボカロ声が強い・たまにひなた原曲のような良い声**。一長一短。MiniMax の曲調の振り幅次第。
   ホストの理想案: **曲と伴奏は MiniMax → ACE で声を固める**。試作 `results/mm2ace/`: MiniMax s33 を土台に ACE（マスターのタグ・歌詞）で作り変え
   → ACE の歌だけ取り出し MiniMax の伴奏と混ぜる（`mm33_ace_d{50,60}_mix.flac`）。MiniMax の歌と同じ音 d50 71%／d60 41%（d60 は伴奏とずれる恐れ）→ 試聴待ち。
+  → ホスト: d60 はバラバラ・d50 は噛み合う。マスターのシードは 1（今回も 1）だが長さ・土台が違うと同じ声にならない（シードで声は持ち込めない）。
+  → 延長の流用: **マスターのサビ 15 秒（49〜64 秒）を前に付けて残し、後ろの MiniMax 部分だけ d50 で作り変え**（ひなたの声を聞きながら歌い直させる）→
+  先頭 15 秒を切って MiniMax の伴奏と混ぜる `results/mm2ace/pre_s{1,2,3}_mix.flac`（同じ音 76/66/68%）・つなぎ目込みは `pre_s*_full.flac`
+  → ホスト「前回とほぼ変わらない」＝ d50 では声は土台（MiniMax）と ACE の癖で決まり、前に付けた手本はほぼ効かない。
+  **声の固定はここまでの手（参照音声・RVC・Seed-VC・タグ・シード・手本の前置き）では成立せず**。
   手順: `tools/rvc_split.py`（mpenv・歌と伴奏）→ `tools/rvc_convert.sh <pth> <index> <out> <曲名>`（変換・音量合わせ・混ぜ戻し）。
   罠: Applio は `assets/config.json`（画面版の初回起動で作られる）が無いと最後の重み書き出しに失敗し、os._exit でエラーも消える
   → 作成済み＋`rvc/extract_weights.py` で `G_<step>.pth` から書き出す。core.py は Applio の中から呼ぶ。RVC の出力は元より約 6dB 小さい。変換して聴く候補: `results/ace_local/exp4/s9_v30` 等・`exp6/noref_s9`。
