@@ -90,12 +90,16 @@ def plan_window(
     max_window_s: float,
     preroll_s: float = 3.0,
     postroll_s: float = 2.0,
+    seam_start: str = "blend",
+    seam_end: str = "blend",
 ) -> dict:
     """作り直す区間 [rs, re) と、ComfyUI で処理する窓 [ws, ws+frames) を決める（フレーム単位）。
 
     - 窓は 17k+5 フレーム（モデルの長さの刻み）。動画の末尾を越える分は最後のコマを伸ばして埋め、貼り戻しで捨てる。
     - 窓が max_window_s を超えるなら、作り直す区間の終わりを手前に詰める（残りは元のまま・後ろの境目も潜在でなじむ）。
     - 貼り戻しの切れ目 cut_a / cut_b は区間から SPLICE_MARGIN_FRAMES 離した「残す部分」の中。
+    - seam_start / seam_end = "cut" はその側に元の映像を渡さない（助走・余白なし）＝新しいショットとして作り、境目は映画のカットになる。
+      終わり側のカットは、窓が 17k+5 に切り上がって区間の後ろへはみ出した分も作り直し（マスク 1）、貼り戻しで捨てる。
     """
     n = total_frames
     if n < FPS:
@@ -106,8 +110,10 @@ def plan_window(
     re = n if end_s is None or end_s < 0 else min(n, int(round(end_s * FPS)))
     if re <= rs:
         raise ValueError("終了秒は開始秒より後にしてください")
-    pre_f = int(round(preroll_s * FPS))
-    post_f = int(round(postroll_s * FPS))
+    if seam_start not in ("blend", "cut") or seam_end not in ("blend", "cut"):
+        raise ValueError("seam must be 'blend' or 'cut'")
+    pre_f = 0 if seam_start == "cut" else int(round(preroll_s * FPS))
+    post_f = 0 if seam_end == "cut" else int(round(postroll_s * FPS))
     max_f = int(max_window_s * FPS)
     ws = max(0, rs - pre_f)
     while True:
@@ -120,6 +126,7 @@ def plan_window(
         raise ValueError("作り直す区間が短すぎるか窓の上限が小さすぎます")
     pad = max(0, ws + frames - n)
     to_end = re == n
+    end_cut = seam_end == "cut" and not to_end
     return {
         "total_frames": n,
         "regen_start": rs,
@@ -130,11 +137,39 @@ def plan_window(
         "pad_frames": pad,
         # ComfyUI の窓の中での秒（ULLVideoTimeMask / ULLH3AudioTimeMask に渡す）
         "rel_start_s": (rs - ws) / FPS,
-        "rel_end_s": -1.0 if to_end else (re - ws) / FPS,
+        "rel_end_s": -1.0 if to_end or end_cut else (re - ws) / FPS,
         "win_seconds": frames / FPS,
-        "cut_a": max(ws, rs - SPLICE_MARGIN_FRAMES),
-        "cut_b": n if to_end else min(ws + frames - pad, re + SPLICE_MARGIN_FRAMES),
+        "seam_start": seam_start,
+        "seam_end": "cut" if end_cut else "blend",
+        "cut_a": rs if seam_start == "cut" else max(ws, rs - SPLICE_MARGIN_FRAMES),
+        "cut_b": n if to_end else re if end_cut else min(ws + frames - pad, re + SPLICE_MARGIN_FRAMES),
     }
+
+
+def detect_cuts(path: str, plan: dict, threshold: float = 0.12) -> list[float]:
+    """貼り戻した動画の、作り直した区間の中にあるカット（場面の急な切り替わり）の秒を返す。
+    「カット」を選んだ境目そのもの（前後 2 フレーム）は意図したものなので数えない。
+    2026-10-07 の試験: 終了点が元の動きと食い違うと、モデルが区間の中にカットを入れて帳尻を合わせた（scene 0.15 超）。
+    うまくいった 3 本は 0.10 でも 0 件。"""
+    out = subprocess.run(
+        ["ffmpeg", "-v", "info", "-i", path, "-an", "-vf", f"select='gt(scene,{threshold})',showinfo", "-f", "null", "-"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    ).stderr
+    a, b = plan["cut_a"], plan["cut_b"]
+    skip = []
+    if plan.get("seam_start") == "cut":
+        skip.append(a)
+    if plan.get("seam_end") == "cut":
+        skip.append(b)
+    cuts = []
+    for line in out.splitlines():
+        if "pts_time:" not in line:
+            continue
+        t = float(line.split("pts_time:")[1].split()[0])
+        f = int(round(t * FPS))
+        if a <= f <= b and not any(abs(f - s) <= 2 for s in skip):
+            cuts.append(round(t, 2))
+    return cuts
 
 
 def cut_window(norm: str, plan: dict, out_video: str, out_audio: str, out_ref_png: str) -> None:

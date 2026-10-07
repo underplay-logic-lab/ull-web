@@ -593,7 +593,14 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 
 **→ 次の ULL再開で出す上位 3 つ（2026-10-07 夜に更新。この 3 つを先に出す）**
 - **A. 動画の部分修正タブ（新規・ホスト決定 2026-10-07）**: 区間（開始〜終了秒・終了空欄＝最後まで）を作り直す Studio の新タブ。入力＝Director の動画／持ち込み動画。
-  Director の結果からこのタブへ飛ぶ。**①②済（2026-10-07 夜・未コミット）→ 次は③タブ実装**。着手前に `docs/studio-tab-patterns.md`。
+  Director の結果からこのタブへ飛ぶ。**①②③済（2026-10-07 夜）→ 次はホストが本番で 1 本試す（タブは admin 限定で公開済み）→ 問題なければ一般公開**
+  （`Studio.tsx` の `adminOnly` と、Director の結果の「一部の区間を作り直す」ボタンの `isAdmin` を外す）。
+  - ③の中身: タブ `VideoFixTab.tsx`（元の動画＝Director の結果か持ち込み・開始/終了秒＋「今の位置」・境目「なじませる/カット」・音声 2 択・
+    指示文・参照写真・カットの警告・続けて直す・別のパターン）／API `/api/director/video-fix`（workflow_type director・inputs.output video_fix・
+    予約と並列は Director と共用）／`videoFixPlan.ts`（窓の計算＝ull_video_fix.py と一致を確認済・GPU の振り分け・料金）／
+    knob `video_fix_per_second`（8C/秒・**ホスト確認待ち**）・`video_fix_max_window_s`（30）・`video_fix_pro6000_max_mps`（11）・`video_fix_h200_max_mps`（22）。
+    ワーカー: 境目のカット（助走・余白なし）・貼り戻し後のカット検出（scene>0.12・試験 3 本で正しく判定）・RTX-PRO-6000 を許可・デプロイ済。
+  - 未確認: Director の結果を Volume から読む経路（完了直後で R2 へ移る前）・持ち込み動画（寸法が 32 の倍数でない・30fps）・B300 に回る大きい窓。
   - 済: 自作ノード `comfy_nodes/ull_time_mask/`（ULLVideoTimeMask＋ULLH3AudioTimeMask・40 コマ/秒）を Director ワーカーの image へ（デプロイ済）。
     前後処理 `ull_video_fix.py`（24fps・32 の倍数へ正規化→窓＝助走 3 秒＋区間＋余白 2 秒・17k+5 フレーム→貼り戻し。切れ目は区間から 12 フレーム外）。
     ワーカー `run_custom_workflow(video_fix=…)`（R2 から取得・窓の長さ/寸法/区間をノード 105:111・105:104・404・412 へ書き込み・貼り戻し）。

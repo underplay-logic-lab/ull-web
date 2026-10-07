@@ -21,6 +21,7 @@ import {
   LogIn,
   Pencil,
   RefreshCw,
+  Scissors,
   Plus,
   Sparkles,
   Trash2,
@@ -98,6 +99,7 @@ import {
   clearDirectorLora,
   peekDirectorLora,
   requestStudioHandoff,
+  sendVideoToFix,
   takeStudioBatchHandoff,
   takeDirectorAudio,
   type DirectorLoraHandoff,
@@ -2204,6 +2206,18 @@ export function DirectorStudioTab() {
               <Sparkles size={14} />
               この動画を 4K 動画超解像へ
             </button>
+            {/* 気になる区間だけ作り直す（2026-10-07〜）。動画は渡さずジョブ id だけ（サーバーが R2／Volume から読む）。
+                ホストが本番で確かめるまで admin だけ（Studio.tsx のタブと同じ）。 */}
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => job.jobId && sendVideoToFix({ jobId: job.jobId, durationS: job.totalDurationS })}
+                className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-neon-violet/40"
+              >
+                <Scissors size={14} />
+                一部の区間を作り直す
+              </button>
+            )}
             <div className="mt-2 flex items-center justify-center gap-3 text-[11px] text-muted">
               {job.outWidth && job.outHeight && (
                 <span>

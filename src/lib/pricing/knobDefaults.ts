@@ -34,6 +34,10 @@ export type KnobKey =
   | "director_extra_ref_rate"
   | "director_ref_video_rate"
   | "photo_director_base_credits"
+  | "video_fix_per_second"
+  | "video_fix_max_window_s"
+  | "video_fix_pro6000_max_mps"
+  | "video_fix_h200_max_mps"
   | "song_base_credits"
   | "song_per_track_credits"
   | "song_per_track_credits_2"
@@ -209,6 +213,18 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 参照動画（動き・カメラの手本、2026-10-06）の上乗せ率。通常料金 × ((1 + 参照秒/出力秒)² − 1) × これ（directorRefVideoSurcharge）。
   // 1.0 = 計算量の増え方そのまま（B300 実測: 20 秒＋参照 10 秒で時間 2.0 倍・式は 2.25 倍）。
   director_ref_video_rate: 1,
+  // 動画の部分修正（2026-10-07〜）: 処理する窓（作り直す区間＋前後の手がかり）の秒数 1 秒あたり。
+  // 実測（MV v3・960×544・高速 8 step）: RTX PRO 6000（$3.03/h）窓 20 秒 351s ＝ ¥50 → ¥2.5/秒。
+  // 大きい窓は H200・B300 に回り、1 秒あたりの原価が上がる（B300 で 1MP・30 秒なら ¥6〜7/秒の見込み）。
+  // B300 の場合でも原価 2 倍以上・PRO 6000 なら約 5 倍になる 8C/秒から始める（ホスト確認待ち）。
+  video_fix_per_second: 8,
+  // 窓の最長（秒）。これとは別に、窓のメガピクセル秒は Director 全体の上限（CINEMATIC_MAX_MEGAPIXEL_SECONDS＝B300 実測）まで。
+  video_fix_max_window_s: 30,
+  // GPU の振り分け（窓のメガピクセル秒＝秒 × 画素数/100 万）。VRAM ≒ 固定 約 44GB（TE は ComfyUI が自動で外す）＋ 約 4GB/MP·秒。
+  // 実測: PRO 6000 窓 20 秒・960×544（10.5）で最大 88〜90GB／H200 窓 16.5 秒（8.6）で 118.5GB（TE が残ったまま）。
+  // これ以下なら RTX PRO 6000（96GB）、次に H200（141GB）、超えたら B300。本番の VRAM 最大を見て詰める。
+  video_fix_pro6000_max_mps: 11,
+  video_fix_h200_max_mps: 22,
   // Photo Director（2026-10-06）: 1 回の基本料＋1 枚ごと。原価 3.0×（ローンチ価格の標準、上の Director と同じ）。
   // H200（¥772/h）実測・ひなた参照 9 枚・4 枚: 起動込み 185s = ¥39.7 → ×3 = ¥119 ÷ 1.66 = 72C（4 枚）。
   // 内訳は B300 の実測（1 枚の描画 16〜21s）から 1 枚 30s と多めに見て ¥6.4×3÷1.66 = 12C、残り 65s を基本 25C。

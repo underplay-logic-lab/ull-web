@@ -7,7 +7,7 @@
 // 受け取る側はマウント時に 1 回だけ取り出して消す（再読み込みで二重に
 // 取り込まない）。Studio.tsx が `ull:studio-tab` を拾って goTab する。
 
-export type StudioHandoffTab = "upscale" | "upscale_video" | "lora" | "angle" | "dataset" | "director";
+export type StudioHandoffTab = "upscale" | "upscale_video" | "lora" | "angle" | "dataset" | "director" | "video_fix";
 
 export type StudioHandoff = {
   kind: "image" | "video";
@@ -198,6 +198,37 @@ export function clearDirectorLora(): void {
     window.sessionStorage.removeItem(DIRECTOR_LORA_KEY);
   } catch {
     // noop
+  }
+}
+
+// --- Director の動画を「動画の部分修正」へ渡す（2026-10-07）---
+// 動画そのものは渡さず、ジョブ id だけ（元の動画はサーバーが R2／Volume から読む）。再読み込みで二重に取り込まないよう、取り出したら消す。
+export type VideoFixSourceHandoff = { jobId: string; durationS: number | null };
+const VIDEO_FIX_KEY = "ull_video_fix_source";
+
+export function sendVideoToFix(handoff: VideoFixSourceHandoff): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(VIDEO_FIX_KEY, JSON.stringify(handoff));
+  } catch {
+    // 書けなくてもタブ切替だけは行う。
+  }
+  window.dispatchEvent(new CustomEvent(VIDEO_FIX_EVENT, { detail: handoff }));
+  window.dispatchEvent(new CustomEvent(STUDIO_TAB_EVENT, { detail: { tab: "video_fix" } }));
+}
+
+/** 部分修正タブが開いたまま渡されたとき用（マウント済みのタブはこのイベントで受け取る）。 */
+export const VIDEO_FIX_EVENT = "ull:video-fix-source";
+
+export function takeVideoFixSource(): VideoFixSourceHandoff | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(VIDEO_FIX_KEY);
+    window.sessionStorage.removeItem(VIDEO_FIX_KEY);
+    const v = raw ? (JSON.parse(raw) as VideoFixSourceHandoff) : null;
+    return v && typeof v.jobId === "string" ? v : null;
+  } catch {
+    return null;
   }
 }
 

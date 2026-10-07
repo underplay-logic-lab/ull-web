@@ -22,8 +22,13 @@ export type SpawnDirectorJobParams = {
   extraFilesB64?: Record<string, string>;
   /** Photo Director（2026-10-06）: 全 SaveImage の画像を集めて R2 へ上げる（ワーカーの image_outputs）。 */
   imageOutputs?: boolean;
-  /** GPU の差し替え（2026-10-06〜 Photo Director は "H200"）。省略時はクラス既定の B300/B200。 */
-  gpu?: "H200";
+  /** GPU の差し替え（2026-10-06〜 Photo Director は "H200"、動画の部分修正は窓の大きさで選ぶ）。省略時はクラス既定の B300/B200。 */
+  gpu?: "H200" | "RTX-PRO-6000";
+  /**
+   * 動画の部分修正（2026-10-07〜）。ワーカーの _video_fix_prepare へそのまま渡す（snake_case）。
+   * 元の動画は source_url（R2 の署名付き URL）か source_volume_path（Director の結果がまだ Volume にあるとき）。
+   */
+  videoFix?: Record<string, unknown>;
   pollDeadlineS: number;
   /**
    * Advanced モード（Qwen3.8-27B-abliteratedによる台本自動生成、
@@ -81,11 +86,15 @@ export async function spawnDirectorJob(params: SpawnDirectorJobParams): Promise<
       user_id: params.userId,
       credits_cost: params.creditsCost,
       workflow_json: JSON.stringify(params.workflow),
-      files_b64: { [params.referenceImageName]: params.referenceImageB64, ...params.extraFilesB64 },
+      files_b64: {
+        ...(params.referenceImageName ? { [params.referenceImageName]: params.referenceImageB64 } : {}),
+        ...params.extraFilesB64,
+      },
       skip_torch_compile: true,
       poll_deadline_s: params.pollDeadlineS,
       ...(params.imageOutputs ? { image_outputs: true } : {}),
       ...(params.gpu ? { gpu: params.gpu } : {}),
+      ...(params.videoFix ? { video_fix: params.videoFix } : {}),
       qwen_concept_text: params.qwenConceptText,
       qwen_text_instruction: params.qwenTextInstruction,
       qwen_prompt_node_id: params.qwenPromptNodeId,

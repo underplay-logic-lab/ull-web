@@ -277,6 +277,11 @@ function publishedKeyOf(meta: unknown, relPath: string): string {
   return isSafeR2Key(mapped) ? mapped : relPath;
 }
 
+/** The R2 key of a published `relPath`, or null when the row says it is not in R2 (yet). */
+export function publishedR2Key(meta: unknown, relPath: string): string | null {
+  return isPublishedToR2(meta, relPath) ? publishedKeyOf(meta, relPath) : null;
+}
+
 /** Presigned GET for `relPath` when the row says it lives in R2, else null
  * (caller falls back to the Modal signed link). Never throws. */
 export async function presignPublishedArtifact(

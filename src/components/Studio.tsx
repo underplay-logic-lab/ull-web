@@ -6,6 +6,7 @@ import { CreditsBadge } from "@/components/CreditsBadge";
 import { CustomWorkflowsTab } from "@/components/studio/CustomWorkflowsTab";
 import { DirectorStudioTab } from "@/components/studio/DirectorStudioTab";
 import { PhotoDirectorTab } from "@/components/studio/PhotoDirectorTab";
+import { VideoFixTab } from "@/components/studio/VideoFixTab";
 import { SongStudioTab } from "@/components/studio/SongStudioTab";
 import { LoraStudioTab } from "@/components/studio/LoraStudioTab";
 import { MultiAngleStudioTab } from "@/components/studio/MultiAngleStudioTab";
@@ -24,7 +25,18 @@ import { ParallelDownloadIndicator } from "@/components/studio/ParallelDownloadI
 // 2026-09-09: Wan Animate 2 / Cinematic Video タブは廃止。汎用の動画・特殊要望は
 // すべて「特化ワークフロー」で対応する方針（管理者がワークフローを登録）。
 // 2026-09-12: 動画超解像（v1・最小スコープ）を専用タブとして追加。
-type StudioTab = "image" | "custom" | "lora" | "angle" | "dataset" | "upscale" | "upscale_video" | "director" | "photo" | "song";
+type StudioTab =
+  | "image"
+  | "custom"
+  | "lora"
+  | "angle"
+  | "dataset"
+  | "upscale"
+  | "upscale_video"
+  | "director"
+  | "video_fix"
+  | "photo"
+  | "song";
 
 // 2026-09-24: 特化ワークフローは admin だけに表示し、末尾へ寄せた（ホスト判断:
 // ComfyUI で作り込んだワークフローの展開先として用意したが、まだ効果的な
@@ -36,6 +48,8 @@ const STUDIO_TABS: { id: StudioTab; label: string; adminOnly?: boolean }[] = [
   // 2026-09-24 ホスト: メインは Cinematic Director（先頭に置き、開いたときに最初に出す）。
   // 2026-09-25 ホスト指定の並び: Director → 動画超解像 → 画像超解像 → マルチアングル → LoRA。
   { id: "director", label: "🎥 Cinematic Director" },
+  // 2026-10-07: 動画の一部の区間だけを作り直す（Director の結果からも飛べる）。ホストが本番で確かめるまで admin だけ。
+  { id: "video_fix", label: "✂️ 動画の部分修正", adminOnly: true },
   // 2026-10-06: 同じ土台で静止画（ホスト「新しいコーナーで良い」）。Director の隣に置く。
   { id: "photo", label: "📸 Photo Director" },
   // 2026-10-06: 曲づくり（できた曲の一部＝最長 68 秒を切り出して Director の音声へ渡せる）。
@@ -140,7 +154,15 @@ export function Studio() {
   useEffect(() => {
     const onSwitch = (e: Event) => {
       const tab = (e as CustomEvent<{ tab: StudioHandoffTab }>).detail?.tab;
-      if (tab === "upscale" || tab === "upscale_video" || tab === "lora" || tab === "angle" || tab === "dataset" || tab === "director")
+      if (
+        tab === "upscale" ||
+        tab === "upscale_video" ||
+        tab === "lora" ||
+        tab === "angle" ||
+        tab === "dataset" ||
+        tab === "director" ||
+        tab === "video_fix"
+      )
         goTab(tab);
     };
     window.addEventListener(STUDIO_TAB_EVENT, onSwitch);
@@ -249,6 +271,11 @@ export function Studio() {
                 siteKey="studio_desc_director"
                 fallback="参照画像と、やりたいことの要点を書くだけ。AI が台本にして、最大60秒の動画を生成します。場面ごとに組み立てたり、文章を直接書いたりもできます。"
               />
+            ) : activeTab === "video_fix" ? (
+              <EditableText
+                siteKey="studio_desc_video_fix"
+                fallback="できた動画の気になる区間だけを作り直します。前後の映像につながるようになじませるか、カットで切り替えるかを選べます。歌やセリフはそのまま残せます。"
+              />
             ) : activeTab === "photo" ? (
               <EditableText
                 siteKey="studio_desc_photo"
@@ -276,6 +303,12 @@ export function Studio() {
           {activeTab === "director" && (
             <p className="mt-2 text-[11px] font-medium tracking-wide text-foreground/80">
               Cinematic Director — Powered by MiniMax H3
+            </p>
+          )}
+          {/* 動画の部分修正も同じ MiniMax H3（10Eros）で作り直すので同じ表示義務（2026-10-07）。 */}
+          {activeTab === "video_fix" && (
+            <p className="mt-2 text-[11px] font-medium tracking-wide text-foreground/80">
+              Video Fix — Powered by MiniMax H3
             </p>
           )}
           {/* Photo Director も同じ MiniMax H3（10Eros）で作るので同じ表示義務（2026-10-06）。 */}
@@ -312,6 +345,8 @@ export function Studio() {
           <UpscaleVideoStudioTab />
         ) : shownTab === "director" ? (
           <DirectorStudioTab />
+        ) : shownTab === "video_fix" ? (
+          <VideoFixTab />
         ) : shownTab === "photo" ? (
           <PhotoDirectorTab />
         ) : shownTab === "song" ? (

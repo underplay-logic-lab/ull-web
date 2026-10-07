@@ -26,7 +26,7 @@ type Located = { store: "r2"; key: string } | { store: "modal" };
 /** storagePath がどちらのストアにあるかを解決する。R2 の資格情報がある限り
  * HEAD 1 回で確認し（安価）、無ければ Modal 経路。HEAD 自体の失敗も Modal へ
  * 倒す（ストレージ層の不調でジョブを止めない）。 */
-async function locateStudioUpload(userId: string, storagePath: string): Promise<Located> {
+export async function locateStudioUpload(userId: string, storagePath: string): Promise<Located> {
   assertOwnedPath(userId, storagePath);
   if (!r2Configured()) return { store: "modal" };
   const filename = storagePath.slice(userId.length + 1);

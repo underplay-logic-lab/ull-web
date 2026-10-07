@@ -23,6 +23,11 @@ export type DirectorDispatchSpec = Omit<
   extraRefNames?: string[];
   /** 学習済み LoRA・持ち込み LoRA の R2 キー。起動の直前に署名する（予約の間に期限が切れないように）。 */
   loraR2Key?: string;
+  /**
+   * 動画の部分修正（2026-10-07〜）: 元の動画の置き場所（R2 のキーか、Director の結果の Volume のパス）と、ワーカーへ渡す指定。
+   * 参照画像（storagePath）は無くてよい（作り直しの直前のコマをワーカーが切り出して 1 枚目にする）。
+   */
+  videoFixSource?: { r2Key?: string; volumePath?: string };
 };
 
 /** imageB64 を渡せばそれを使い（その場で起動する通常の生成）、無ければ storagePath から読み直す（予約からの起動）。 */
@@ -32,8 +37,8 @@ export async function dispatchDirectorJob(
   spec: DirectorDispatchSpec,
   imageB64?: string,
 ): Promise<void> {
-  const { storagePath, loraR2Key, audioStoragePath, audioName, extraRefStoragePaths, extraRefNames, ...rest } = spec;
-  const b64 = imageB64 ?? (await downloadStudioUpload(userId, storagePath)).toString("base64");
+  const { storagePath, loraR2Key, audioStoragePath, audioName, extraRefStoragePaths, extraRefNames, videoFixSource, ...rest } = spec;
+  const b64 = imageB64 ?? (storagePath ? (await downloadStudioUpload(userId, storagePath)).toString("base64") : "");
   // 参照写真の後ろに音声（ワーカーは files_b64 の先頭を参照画像として扱う）。
   const extraFilesB64: Record<string, string> = {};
   const refs = (extraRefStoragePaths ?? []).map((p, i) => [p, extraRefNames?.[i]] as const);
@@ -46,6 +51,15 @@ export async function dispatchDirectorJob(
   }
   // ワーカーはコールドスタート後に取りに行くので、署名は長め（1 時間）。
   const loraUrl = loraR2Key ? await presignR2Get(loraR2Key, { expiresIn: 60 * 60 }) : undefined;
+  const videoFix =
+    rest.videoFix && videoFixSource
+      ? {
+          ...rest.videoFix,
+          ...(videoFixSource.r2Key
+            ? { source_url: await presignR2Get(videoFixSource.r2Key, { expiresIn: 60 * 60 }) }
+            : { source_volume_path: videoFixSource.volumePath }),
+        }
+      : undefined;
   const { callId } = await spawnDirectorJob({
     ...rest,
     jobId,
@@ -53,6 +67,7 @@ export async function dispatchDirectorJob(
     referenceImageB64: b64,
     extraFilesB64: Object.keys(extraFilesB64).length ? extraFilesB64 : undefined,
     loraUrl,
+    videoFix,
   });
   // admin の中止ボタンが Modal の実行まで止められるよう、実行 id を残す（best-effort）。
   await rememberGenerationCall(jobId, callId);

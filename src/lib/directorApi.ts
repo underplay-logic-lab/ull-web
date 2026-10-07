@@ -330,6 +330,62 @@ export async function startPhotoJob(args: {
  *   new_seed  … 別パターン（台本はそのまま、揺れだけ変える）
  *   same_seed … この動画をもとに調整（同じシードで、rawPrompt を書き換えたり画質を変えたりする）
  */
+/** 動画の部分修正（2026-10-07〜）。元の動画は Director の結果（sourceJobId）か持ち込み（file＋画面が測った長さ・大きさ）。 */
+export async function startVideoFixJob(args: {
+  userId: string;
+  source: { jobId: string } | { file: File; durationS: number; width: number; height: number };
+  startS: number;
+  endS: number | null;
+  seamStart: "blend" | "cut";
+  seamEnd: "blend" | "cut";
+  keepAudio: boolean;
+  prompt: string;
+  extraRefs: File[];
+  extraRefRoles: DirectorRefRole[];
+  priority?: boolean;
+  queue?: boolean;
+  seed?: number;
+}): Promise<DirectorStartResult> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) throw new Error("ログインが必要です。");
+  const src =
+    "jobId" in args.source
+      ? { sourceJobId: args.source.jobId }
+      : {
+          storagePath: (await uploadStudioAsset(args.userId, args.source.file)).path,
+          durationS: args.source.durationS,
+          width: args.source.width,
+          height: args.source.height,
+        };
+  const extraRefPaths = await Promise.all(args.extraRefs.slice(0, 8).map(async (f) => (await uploadStudioAsset(args.userId, f)).path));
+  const res = await fetch("/api/director/video-fix", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...src,
+      startS: args.startS,
+      endS: args.endS,
+      seamStart: args.seamStart,
+      seamEnd: args.seamEnd,
+      keepAudio: args.keepAudio,
+      prompt: args.prompt,
+      extraRefPaths,
+      extraRefRoles: args.extraRefRoles.slice(0, 8),
+      priority: args.priority ?? false,
+      ...(args.queue ? { queue: true } : {}),
+      ...(args.seed ? { seed: args.seed } : {}),
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    const error: DirectorApiError = new Error(data?.error || "部分修正の開始に失敗しました。");
+    if (typeof data?.remainingCredits === "number") error.remainingCredits = data.remainingCredits;
+    throw error;
+  }
+  return data as DirectorStartResult;
+}
+
 export async function regenerateDirectorJob(args: {
   baseJobId: string;
   variation: "new_seed" | "same_seed";
@@ -601,6 +657,10 @@ export type DirectorJobStatus = {
   isPhoto: boolean;
   /** 写真の署名付き URL（完了時のみ・15 分で切れるので使い回さない）。 */
   imageUrls: string[];
+  /** 動画の部分修正のジョブか（2026-10-07）。 */
+  isVideoFix: boolean;
+  /** 部分修正で作り直した区間に入ったカットの秒（無ければ []・未検出や旧ジョブは null）。 */
+  videoFixCuts: number[] | null;
   queue: { queuePosition: number; avgExecutionSeconds: number; estimatedWaitSeconds: number } | null;
 };
 
@@ -666,6 +726,11 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
     refVideoDurationS: typeof data.refVideoDurationS === "number" ? data.refVideoDurationS : 0,
     isPhoto: data.output === "photo",
     imageUrls: Array.isArray(data.imageUrls) ? (data.imageUrls as unknown[]).filter((u): u is string => typeof u === "string") : [],
+    isVideoFix: data.output === "video_fix",
+    videoFixCuts: (() => {
+      const cuts = (meta as { video_fix?: { cuts?: unknown } }).video_fix?.cuts;
+      return Array.isArray(cuts) ? cuts.filter((c): c is number => typeof c === "number") : null;
+    })(),
     queue:
       typeof data.queuePosition === "number"
         ? {

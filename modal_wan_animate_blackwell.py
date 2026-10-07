@@ -1011,8 +1011,9 @@ VIDEO_FIX_AUDIO_MASK_NODE = "412"
 def _video_fix_prepare(workflow: dict, spec: dict, tag: str) -> dict:
     """元の動画を取ってきて整え、窓を切り出し、ワークフローに窓の長さ・寸法・区間を書き込む。
 
-    spec: source_url（R2 の署名付き URL）・start_s・end_s（-1 で最後まで）・max_window_s・max_pixels・max_source_s・
-          keep_audio・video_name / audio_name / ref_name（ワークフローの LoadVideo / LoadAudio / LoadImage と同じ名前）。
+    spec: source_url（R2 の署名付き URL）か source_volume_path（Director の結果 director_results/<uid>/<job>.mp4）・
+          start_s・end_s（-1 で最後まで）・seam_start / seam_end（"blend" なじませる／"cut" カット）・max_window_s・max_pixels・
+          max_source_s・keep_audio・video_name / audio_name / ref_name（ワークフローの LoadVideo / LoadAudio / LoadImage と同じ名前）。
     窓の上限 max_window_s は Next が料金を決めた秒数。ここで超えることはない（ull_video_fix.plan_window が区間を詰める）。
     """
     import tempfile
@@ -1020,25 +1021,37 @@ def _video_fix_prepare(workflow: dict, spec: dict, tag: str) -> dict:
     import requests as _requests
     import ull_video_fix as vf
 
-    url = spec["source_url"]
-    host = (urlparse(url).hostname or "").lower()
-    if urlparse(url).scheme != "https" or not host.endswith(".r2.cloudflarestorage.com"):
-        raise RuntimeError(f"video_fix source host not allowed: {host!r}")
     work = tempfile.mkdtemp(prefix=f"vfix_{tag[:8]}_")
     src = os.path.join(work, "src")
     t0 = time.time()
-    with _requests.get(url, stream=True, timeout=(15, 120)) as r:
-        r.raise_for_status()
-        with open(src, "wb") as f:
-            for chunk in r.iter_content(chunk_size=4 * 1024 * 1024):
-                if chunk:
-                    f.write(chunk)
+    vol_rel = spec.get("source_volume_path")
+    if vol_rel:
+        # Director の結果がまだ R2 へ移っていないとき（完了直後）。同じ Volume を読む。
+        if not re.fullmatch(r"director_results/[A-Za-z0-9-]+/[A-Za-z0-9-]+\.mp4", vol_rel):
+            raise RuntimeError(f"video_fix source path not allowed: {vol_rel!r}")
+        _reload_volume("video-fix")
+        import shutil
+
+        shutil.copyfile(os.path.join(MODELS_DIR, vol_rel), src)
+    else:
+        url = spec["source_url"]
+        host = (urlparse(url).hostname or "").lower()
+        if urlparse(url).scheme != "https" or not host.endswith(".r2.cloudflarestorage.com"):
+            raise RuntimeError(f"video_fix source host not allowed: {host!r}")
+        with _requests.get(url, stream=True, timeout=(15, 120)) as r:
+            r.raise_for_status()
+            with open(src, "wb") as f:
+                for chunk in r.iter_content(chunk_size=4 * 1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
     norm = os.path.join(work, "norm.mp4")
     info = vf.normalize(src, norm, max_pixels=int(spec["max_pixels"]), max_seconds=float(spec["max_source_s"]))
     end_s = spec.get("end_s")
     plan = vf.plan_window(
         info["frames"], float(spec["start_s"]), None if end_s is None or float(end_s) < 0 else float(end_s),
         max_window_s=float(spec["max_window_s"]),
+        seam_start=spec.get("seam_start") or "blend",
+        seam_end=spec.get("seam_end") or "blend",
     )
     win_v, win_a, ref = (os.path.join(work, x) for x in ("win.mp4", "win.wav", "ref.png"))
     vf.cut_window(norm, plan, win_v, win_a, ref)
@@ -1083,9 +1096,15 @@ def _video_fix_splice(ctx: dict, window_bytes: bytes) -> bytes:
         dst = os.path.join(work, "spliced.mp4")
         t0 = time.time()
         vf.splice(ctx["norm"], win_out, ctx["plan"], ctx["keep_audio"], dst)
+        # 作り直した区間にカットが入っていないか（入っていれば結果画面で案内する）。失敗しても結果は返す。
+        try:
+            ctx["cuts"] = vf.detect_cuts(dst, ctx["plan"])
+        except Exception as exc:  # noqa: BLE001
+            print(f"[video-fix] cut detection skipped: {exc!r}", flush=True)
+            ctx["cuts"] = None
         with open(dst, "rb") as f:
             data = f.read()
-        print(f"[video-fix] spliced -> {len(data) / 1e6:.1f}MB ({time.time() - t0:.1f}s)", flush=True)
+        print(f"[video-fix] spliced -> {len(data) / 1e6:.1f}MB, cuts {ctx['cuts']} ({time.time() - t0:.1f}s)", flush=True)
         return data
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -2453,6 +2472,14 @@ class WanAnimateBlackwell:
             if _vram_used_gb is not None:
                 _completed_fields["metadata"]["vram_used_gb"] = _vram_used_gb
             _completed_fields["metadata"]["host_ram_peak_gb"] = _host_ram_peak_gb()
+            if _vfix_ctx:
+                # 動画の部分修正: 窓・区間（フレーム）と、作り直した区間に入ったカットの秒（無ければ []・検出失敗は null）。
+                _p = _vfix_ctx["plan"]
+                _completed_fields["metadata"]["video_fix"] = {
+                    "win_start": _p["win_start"], "win_frames": _p["win_frames"],
+                    "regen_start": _p["regen_start"], "regen_end": _p["regen_end"],
+                    "cuts": _vfix_ctx.get("cuts"),
+                }
             print(f"[director] {job_id} {_host_ram_report()}", flush=True)
             _supabase_patch_job(job_id, _completed_fields)
             if saved_rel_path:
@@ -2502,8 +2529,10 @@ def custom_workflow_async(item: dict, request: fastapi.Request):
     # 本番 B300 と同じ 4 枚で比べ、H200（SageAttention なし）は起動込み 185s・原価 約 ¥40（B300 は 327s・約 ¥110）。
     # 今の image の SageAttention は Blackwell 向けだけなので、H200 で動かすワークフローは sage_attention を切っておくこと
     # （buildPhotoWorkflow がそうしている）。許すのは下の一覧だけ。
+    # 動画の部分修正（2026-10-07〜）は窓の大きさで RTX PRO 6000 → H200 → 既定（B300）を選ぶ（src/lib/videoFixPricing.ts）。
+    # RTX PRO 6000 は Blackwell（sm_120）で SageAttention もビルド対象（TORCH_CUDA_ARCH_LIST 12.0）。
     gpu = item.get("gpu")
-    if gpu not in (None, "", "H200"):
+    if gpu not in (None, "", "H200", "RTX-PRO-6000"):
         raise fastapi.HTTPException(status_code=400, detail=f"gpu not allowed: {gpu!r}")
     cls = WanAnimateBlackwell.with_options(gpu=gpu) if gpu else WanAnimateBlackwell
     call = cls().run_custom_workflow.spawn(

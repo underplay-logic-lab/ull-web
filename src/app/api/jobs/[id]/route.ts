@@ -274,7 +274,7 @@ export async function GET(request: Request, { params }: RouteParams) {
     qualityMode,
     extraRefCount,
     refVideoDurationS,
-    output: isPhoto ? "photo" : null,
+    output: isPhoto ? "photo" : inputs?.output === "video_fix" ? "video_fix" : null,
     imageUrls,
     audioUrls,
     audioWavUrls,
