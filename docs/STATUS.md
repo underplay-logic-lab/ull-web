@@ -605,7 +605,17 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
   → ホスト案で**マスターを延長して 3 番を作り歌を増やす**: `tools/ace_extend.py`（マスターを 125 秒へ・0〜66 秒固定・3 番＋ブリッジ＋サビを足す・turbo・1 本 6〜8 秒）。
   `results/ace_local/ext/ext125_s{21..24}.flac`（s21 は延長部 66〜125 秒の 92% で歌っている）→ ホスト: s23 が一番違う・他は同程度（3 番で曲調が変わるので声か曲調か判別しにくい）。
   → s21/s22/s24 の 66 秒以降を足して **hinata_v2**（歌 約 4 分・84 片・300 epoch・約 20 分）→ `results/rvc/v2_e300/{s9_v30,s8_noref,s10_v30}_mix.flac`（IR 0.5）→ 試聴待ち。
-  まだ違えば: 延長をさらに重ねて増やす／Seed-VC（ライセンス未確認）。
+  → ホスト「似ていない・音量が中盤から上下して不安定（こちらが大問題）」。原因: RVC が音量を自分で決める（s9_v30 は 40 秒以降 -6〜-20dB）。
+  `--volume-envelope 0`（元の歌の音量に合わせる）で揺れ ±5.1→±1.7dB（`results/rvc/v2_e300_ve0/`）。似ていない方は RVC の限界と判断。
+  次の候補 Seed-VC（歌声対応・少ないデータで追加学習可）は **GPL-3.0** → サーバーで動かすだけなら配布にあたらない解釈が一般的だが前例なし＝ホスト判断待ち。
+  → ホスト「試して」。Seed-VC（`D:/ComfyUI-ull/rvc/seed-vc`・rev 51383ef・.venv py3.11＋torch 2.11 cu128・inference.py の保存を soundfile に差し替え）。
+  歌声モデル whisper_base_f0_44k を hinata_v2 の 84 片で追加学習（batch 4・1500 step・約 16 分）。変換は 68 秒で約 107 秒（RTF 1.57）。
+  **比べ方を変えた（ホスト案）**: マスターと同じ歌詞・タグでシードだけ変えた「同じ曲・別の声」`results/ace_local/samesong/same_s{31..34}.flac` を
+  変換 → `results/samesong/{rvc,seedvc}/same_s*_mix.flac`。ただしシード違いはメロディーも変わる（マスターと同じ音 17%）。
+  → ホスト「元のメロディーのまま歌わせられないか」→ マスターを土台に denoise 0.5/0.6/0.7＋声のタグを「ハスキーな大人の女性」に（同じ音 87%/79%/36%）。
+  `results/ace_local/samemelody/mel_d{50,60}.flac` を `results/samemelody/{rvc,seedvc}/mel_d*_mix.flac` に変換 → マスターと聴き比べ待ち。
+  → ホスト「難しい。別の歌い手も含めサビはみんな同じに聞こえる。マスターは少し優しい雰囲気の声」。＝同じタグなら声質の差は小さく、
+  違いは歌い方（優しさ）＝声の変換（音色を移す技術）では直せない種類。RVC／Seed-VC の路線はここで区切り（判断はホスト）。
   手順: `tools/rvc_split.py`（mpenv・歌と伴奏）→ `tools/rvc_convert.sh <pth> <index> <out> <曲名>`（変換・音量合わせ・混ぜ戻し）。
   罠: Applio は `assets/config.json`（画面版の初回起動で作られる）が無いと最後の重み書き出しに失敗し、os._exit でエラーも消える
   → 作成済み＋`rvc/extract_weights.py` で `G_<step>.pth` から書き出す。core.py は Applio の中から呼ぶ。RVC の出力は元より約 6dB 小さい。変換して聴く候補: `results/ace_local/exp4/s9_v30` 等・`exp6/noref_s9`。
