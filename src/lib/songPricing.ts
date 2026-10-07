@@ -18,10 +18,11 @@ export function clampSongCount(count: unknown): number {
  * 長いほど「声が入らない」外れが増える（2 番の構成で 6 回中 4 回がハミングだけ・声なし）ので、1 曲の単価に作り直しの見込みを含める。
  * minutes は 1 回あたりの作曲時間の目安（L40S 実測: 100 秒の曲 20 秒・230 秒の曲 43 秒）× 作り直しの見込み。
  */
+// 長さは 2026-10-08 の見積もり（1 行 2 小節）での目安: 1 番 75 秒・2 番 140 秒・3 番 205 秒（BPM 108 の試験）。
 export const SONG_PARTS = [
-  { id: 1, label: "1 番だけ", length: "約 1 分半", minutesPerSong: 0.5 },
-  { id: 2, label: "2 番まで", length: "約 4 分", minutesPerSong: 1.5 },
-  { id: 3, label: "3 番まで", length: "約 5〜6 分", minutesPerSong: 2.7 },
+  { id: 1, label: "1 番だけ", length: "約 1 分強", minutesPerSong: 0.5 },
+  { id: 2, label: "2 番まで", length: "約 2 分半", minutesPerSong: 1.5 },
+  { id: 3, label: "3 番まで", length: "約 3 分半", minutesPerSong: 2.7 },
 ] as const;
 export type SongParts = (typeof SONG_PARTS)[number]["id"];
 export function clampSongParts(v: unknown): SongParts {

@@ -12,7 +12,7 @@ GPU の AceStep.run_job が N 曲を続けて作り、MP3 にして R2 へ直接
   - ACE-Step 1.5 XL turbo（`ACE-Step/acestep-v15-xl-turbo`）・言語モデル `acestep-5Hz-lm-0.6B` / `-4B`: MIT（2026-10-05 確認）。
     README に「権利処理済みのデータで学習・生成した曲は商用利用可」。地域制限・表示義務なし。
   - 重みは ComfyUI 用のまとめ直し `Comfy-Org/ace_step_1.5_ComfyUI_files`（Apache-2.0、リビジョン固定）。
-  - VAE（音に戻す部分）は ScragVAE（`scragnog/Ace-Step-1.5-ScragVAE`・MIT・rev 0547ba3、2026-10-06 確認）。公式ガイドが載せる差し替え候補。
+  - VAE（音に戻す部分）は公式（2026-10-08 に戻した）。10-06〜07 は ScragVAE（`scragnog/Ace-Step-1.5-ScragVAE`・MIT・rev 0547ba3）。
   - 歌っているかの判定（2026-10-06）: Demucs `htdemucs`（MIT）で声を取り出し、Whisper `openai/whisper-large-v3-turbo`（MIT、
     2026-10-06 確認）で聞き取って歌詞と照合する。fp16（量子化しない）。
   - 推論は ComfyUI 本体のノードだけ（TextEncodeAceStepAudio1.5 ほか、カスタムノードなし）。BF16（CLAUDE.md §1）。
@@ -164,7 +164,10 @@ def precache() -> dict:
 # 前奏・後奏が入らないため。→ 歌詞から長さを見積もり、少し長めにする（余った分は後奏になる）。
 # 歌詞 1 行 ≒ 4 小節（2026-10-06）。2 小節（ひなたの曲・BPM 128 でぎりぎり歌い切れた 1 例）では、屋上の 4 行・BPM 120・40 秒が
 # 歌の途中で時間切れになった（ホスト指摘）。余った分は後奏になり末尾の無音は切るので、長めに見積もる方が安全（1 曲 1 円未満）。
-LINE_BARS = 4
+# 2026-10-07: 4 → 2。実測で 1 行 ≒ 2 小節（8 行・BPM 108 が 1 分弱で歌い終わる・ひなたの 16 行は 68 秒で歌い切る）。
+# 4 小節だと長さが約 2 倍になり、①歌い終わってから長い伴奏が続いて途中で切れる ②**歌が入らない曲が増える**（同じ歌詞・シードで
+# 120 秒はほぼ歌なし・75 秒は 8 本すべて歌った。D:/ComfyUI-ull/results/ace_len75/）。2 番 140 秒・3 番 205 秒も全部歌った（ace_parts/）。
+LINE_BARS = 2
 INTRO_BARS = 4
 # 後奏 8 小節（2026-10-06）: 4 小節だと「歌い終わった瞬間に終わる」「無理やり歌い切る」があった（ホスト指摘）。
 OUTRO_BARS = 8
@@ -210,6 +213,9 @@ def prepare_params(p: dict) -> dict:
             lyrics += f"\n\n{outro}"
     q["lyrics"] = lyrics
     tags = str(q.get("tags", "")).strip()
+    # 歌を前に出す（ひなたの曲のタグにあった・2026-10-08 から自動で足す）。
+    if "vocal-forward" not in tags.lower():
+        tags = f"{tags}, vocal-forward mix" if tags else "vocal-forward mix"
     if "ending" not in tags.lower():
         ending = "instrumental outro after the last line, gentle fade-out ending"
         tags = f"{tags}, {ending}" if tags else ending
@@ -243,7 +249,9 @@ def finish_audio(src: str, dst: str) -> dict:
     starts = [float(x) for x in re.findall(r"silence_start: ([\d.]+)", sil)]
     ends = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", sil)]
     end_at = dur
-    if starts and (len(ends) < len(starts) or ends[-1] >= dur - 0.05):
+    # 末尾の無音のあと、最後の 1 秒未満にだけ小さな音（ノイズ）が残ることがある（2026-10-07、75 秒の曲で 69.8〜74.6 秒が無音・
+    # 最後の 0.4 秒だけ音）。それも末尾の無音として切る（ホスト指摘「急に終わって無音が 5 秒くらい続く」）。
+    if starts and (len(ends) < len(starts) or ends[-1] >= dur - 1.0):
         end_at = max(5.0, starts[-1] + 0.3)
     # 末尾に無音が無く、最後の 1 秒も大きい音のまま＝曲の途中で打ち切られた。ぶつ切りに聞こえないよう長めにフェードする（2026-10-06）。
     # モデル自身がゆっくりフェードして終わると無音の区間が 0.5 秒に満たず「無音なし」になるので、最後の音量も見る。
@@ -396,9 +404,9 @@ def build_workflow(p: dict) -> dict:
     d = DIT_SETTINGS[p.get("dit") or "sft"]
     return {
         "104": {"class_type": "UNETLoader", "inputs": {"unet_name": d["unet"], "weight_dtype": "default"}},
-        # VAE は ScragVAE（2026-10-06 ホスト判断: 公式と聴き比べて音に厚みがある）。公式は ace_1.5_vae.safetensors。
-        # 配布は diffusers 形式なので scripts/ace_scragvae_convert.py で ComfyUI 形式に変換して Volume に置いた（precache の対象外）。
-        "106": {"class_type": "VAELoader", "inputs": {"vae_name": "ace_1.5_scragvae_bf16.safetensors"}},
+        # 10-06〜10-07 は ScragVAE（音に厚みがある）だった。Volume には残っている（scripts/ace_scragvae_convert.py で変換したもの）。
+        # 2026-10-08: 公式 VAE に戻した（ホスト「シャカシャカした音が減った」・同じ潜在で聴き比べ D:/ComfyUI-ull/results/ace_vae_dit/）。
+        "106": {"class_type": "VAELoader", "inputs": {"vae_name": "ace_1.5_vae.safetensors"}},
         "105": {
             "class_type": "DualCLIPLoader",
             "inputs": {
@@ -585,7 +593,9 @@ class AceStep:
                 best = None
                 for attempt in range(max_retries + 1):
                     s_try = seed + k + attempt * 1000
-                    r_try = self._make_song({**job["params"], "seed": s_try, "dit": "sft"})
+                    # 2026-10-08: SFT → turbo（ホスト「声は明らかに turbo が良い・SFT は AI っぽい妙な高音」。ひなたの曲も turbo＋公式 VAE。
+                    # 10-06 に SFT へ替えた理由「まともな曲の割合」は、長さの見積もりが約 2 倍だった影響が大きかった＝LINE_BARS で直した）。
+                    r_try = self._make_song({**job["params"], "seed": s_try, "dit": "turbo"})
                     chk = lyric_match(r_try["path"], job["params"].get("lyrics", ""), job["params"].get("language", "ja"))
                     ratio_try = chk["match"]
                     print(
