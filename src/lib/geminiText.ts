@@ -50,10 +50,9 @@ const THINKING_RE = /thinking|thinkingbudget|thinkingconfig/i;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// gemini-2.x "think" by default and burn the output budget on hidden
-// reasoning — thinkingBudget:0 turns it off. That knob is 2.x-only: 3.x
-// rejects it (400, uses thinkingLevel instead), so only send it for a 2.x
-// id or the flash-latest/-lite aliases (which currently point at 2.5).
+// 3.x の思考は thinkingLevel で抑える（thinkingBudget は 2.x 専用で、2.x は全部廃止済み。
+// 次の世代からは thinkingBudget も temperature/topP/topK も送ると 400 になる — Google の
+// 告知 2026-10-07。3.6 Flash 以降は temperature を送っても既定値で動いていた）。
 // thinkingConfig isn't in this SDK version's types; the field is forwarded
 // to v1beta verbatim. `dropThinking` is set on a 400-retry (see runGeminiText).
 // `jsonArray`: false = free-form text; true = JSON array of strings;
@@ -64,27 +63,15 @@ type JsonMode = boolean | "enja";
 function genConfig(model: string, jsonArray: JsonMode, dropThinking: boolean): GenerationConfig {
   // Generous cap: a truncated response trips a full-call MAX_TOKENS retry
   // (a big chunk of the old caption latency). The EN+JA batch needs headroom.
-  // 構造化出力（キャプション／翻訳／タグ抽出）は「同じ入力なら同じ答え」で
-  // あってほしい決定的なタスクなので温度0（2026-09-21、ホスト指摘「解析結果が
-  // 毎回変わる」）。自由文（jsonArray=false）は従来どおり少しだけ揺らす。
-  //
-  // ⚠️ 2026-09-22 に「165枚中144枚が安全性で拒否される」事故が起きた際、
-  // 温度0を疑って一度0.2へ戻したが**誤診だった**。コミット時刻で確認すると、
-  // 温度0の導入後にも165枚の解析が全て成功しており、実際の原因は同日の
-  // CAPTION_BATCH_SIZE 4->12（1枚の拒否で12枚が巻き添え）だった。
-  // 温度0はこの件と無関係なので維持する。
+  // temperature は送らない（2026-10-07）。以前は構造化出力を温度0・自由文を0.2にしていたが、
+  // 3.6 Flash 以降は無視されており、次の世代では送ると 400 になる。
   const cfg: Record<string, unknown> = {
-    temperature: jsonArray ? 0 : 0.2,
     maxOutputTokens: 16384,
   };
   if (!dropThinking) {
-    // The -latest aliases (flash / flash-lite / pro) now resolve to 3.x
-    // models, which REJECT thinkingBudget:0 with a 400 ("invalid argument")
-    // and want thinkingLevel instead. Only genuine 2.x ids take the budget.
-    if (/^gemini-3\./.test(model) || /^gemini-(flash|pro)(-lite)?-latest$/.test(model)) {
+    // -latest の別名（flash / flash-lite / pro）は 3.x 以降を指す。
+    if (/^gemini-[3-9]\./.test(model) || /^gemini-(flash|pro)(-lite)?-latest$/.test(model)) {
       cfg.thinkingConfig = { thinkingLevel: "LOW" };
-    } else if (/^gemini-2\./.test(model)) {
-      cfg.thinkingConfig = { thinkingBudget: 0 };
     }
   }
   if (jsonArray === "enja") {
