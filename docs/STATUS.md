@@ -615,7 +615,22 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
   → ホスト「元のメロディーのまま歌わせられないか」→ マスターを土台に denoise 0.5/0.6/0.7＋声のタグを「ハスキーな大人の女性」に（同じ音 87%/79%/36%）。
   `results/ace_local/samemelody/mel_d{50,60}.flac` を `results/samemelody/{rvc,seedvc}/mel_d*_mix.flac` に変換 → マスターと聴き比べ待ち。
   → ホスト「難しい。別の歌い手も含めサビはみんな同じに聞こえる。マスターは少し優しい雰囲気の声」。＝同じタグなら声質の差は小さく、
-  違いは歌い方（優しさ）＝声の変換（音色を移す技術）では直せない種類。RVC／Seed-VC の路線はここで区切り（判断はホスト）。
+  違いは歌い方（優しさ）＝声の変換（音色を移す技術）では直せない種類。RVC／Seed-VC の路線はここで区切り。
+  → 次: タグに歌い方の言葉（a: gentle tender singing, soft warm delivery ／ b: soft gentle … sweet soothing tone, intimate, warm）。
+  シードは same_s31〜33 と揃えて比較 `results/ace_local/gentle/gentle{a,b}_s{31..33}.flac`（どれも歌っている・b がやや暗め）→ 試聴待ち。
+  ホスト「samemelody の方がよい」→ マスター土台 denoise 0.5/0.6 で orig/a/b（`results/ace_local/gentle_mel/`・シード 41）。メロディーは 87%/79% 一致だが
+  **タグはほとんど効かない**（orig との波形相関 0.94〜0.98）＝メロディーを残す強さではタグの出番が少ない。試聴待ち。
+**MiniMax Music 3 をローカル ComfyUI で再評価（2026-10-07 午後・ホストが試して「普通に使える」）**: ホストの出力 `D:/ComfyUI2/output/20261007/audio/`
+  （テンプレ／歌詞を日本語に。DiT fp16＋音楽専用 VAE `minimax_music3_dav`＋TE `pruned_int8`・30 step・CFG 1.7・60 秒が約 80 秒）。前回（10-02）は diffusers の公式一式（VAE も同梱の専用品）。
+  前回の不採用理由「性別・テンポが効かない」を同じワークフローで測定（`D:/ComfyUI-ull/results/mmmusic/`・シード 7）:
+  **性別は効く**（女声 D♯4 314Hz ／男声 F♯3〜G3 185〜193Hz）・**テンポは効かない**（78→140 BPM 指定で実測 96→103・83→86。ただし指示文の lo-fi・laid-back と矛盾する指定）。
+  ACE との比較（ホスト依頼）: ひなたの歌詞・曲調で MiniMax をシード 31〜33（上限 75 秒）→ `D:/ComfyUI-ull/results/compare_mm_ace/`（ACE は master と same_s31〜33）。
+  声の高さ MiniMax G4/E4/F4（シードでぶれる）・ACE E4/F4/F♯4。3 本とも 75 秒の上限まで＝最後が切れている可能性。声の固定は**仕組みが無い**
+  （ノード入力は指示文・歌詞・シード・長さだけ・公式にも参照音声／続き作り／LoRA の記載なし。8B の言語モデルが設計図を書く方式）→ 指示文の声の説明とシードだけ。試聴待ち。
+  → ホスト評価: **MiniMax＝本格的（基本 jazz っぽい）・伴奏がしっかり・日本語は断然上・長さは守らない（指定の約 2 倍のペース）**。
+  **ACE＝シンプル・聞き取れるが AI／ボカロ声が強い・たまにひなた原曲のような良い声**。一長一短。MiniMax の曲調の振り幅次第。
+  ホストの理想案: **曲と伴奏は MiniMax → ACE で声を固める**。試作 `results/mm2ace/`: MiniMax s33 を土台に ACE（マスターのタグ・歌詞）で作り変え
+  → ACE の歌だけ取り出し MiniMax の伴奏と混ぜる（`mm33_ace_d{50,60}_mix.flac`）。MiniMax の歌と同じ音 d50 71%／d60 41%（d60 は伴奏とずれる恐れ）→ 試聴待ち。
   手順: `tools/rvc_split.py`（mpenv・歌と伴奏）→ `tools/rvc_convert.sh <pth> <index> <out> <曲名>`（変換・音量合わせ・混ぜ戻し）。
   罠: Applio は `assets/config.json`（画面版の初回起動で作られる）が無いと最後の重み書き出しに失敗し、os._exit でエラーも消える
   → 作成済み＋`rvc/extract_weights.py` で `G_<step>.pth` から書き出す。core.py は Applio の中から呼ぶ。RVC の出力は元より約 6dB 小さい。変換して聴く候補: `results/ace_local/exp4/s9_v30` 等・`exp6/noref_s9`。
