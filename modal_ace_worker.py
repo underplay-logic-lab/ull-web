@@ -579,7 +579,8 @@ class AceStep:
         job_id, user_id = job["job_id"], job["user_id"]
         count = max(1, min(10, int(job.get("count", 3))))
         seed = int(job.get("seed", 1))
-        _patch_job(job_id, {"status": "processing", "started_at": _now_iso(), "progress_message": f"0/{count} 曲"})
+        # 進み具合は「作っている曲の番号」（2026-10-08 ホスト指摘: 完成数だと 1 曲目の間が 0/3・最後の 3/3 は完了に切り替わって見えない）。
+        _patch_job(job_id, {"status": "processing", "started_at": _now_iso(), "progress_message": f"1/{count} 曲目"})
         try:
             import ull_r2
 
@@ -643,7 +644,7 @@ class AceStep:
                     "cut_off": res.get("cut_off"),
                 })
                 _patch_job(job_id, {
-                    "progress_message": f"{k + 1}/{count} 曲",
+                    "progress_message": f"{min(k + 2, count)}/{count} 曲目",
                     "progress_percent": int((k + 1) * 100 / count),
                     "metadata": {"vram_used_gb": _vram_used_gb()},
                 })

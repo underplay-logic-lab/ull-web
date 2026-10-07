@@ -650,7 +650,7 @@ export function SongStudioTab() {
                 <audio
                   src={u}
                   controls
-                  preload="none"
+                  preload="metadata"
                   className="w-full"
                   onError={() => {
                     const n = reloadsRef.current[i] ?? 0;
