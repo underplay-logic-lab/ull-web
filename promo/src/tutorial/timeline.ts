@@ -37,6 +37,9 @@ export type Edit = {
   noZoom?: [number, number][]; // この区間（録画の秒）は寄らない
   cuts?: [number, number][]; // この区間（録画の秒）を切り落とす（操作のやり直し等）
   bgm?: string | null; // BGM（public からのパス）。省略で共通の BGM、null で無し
+  realtime?: [number, number][]; // この区間（録画の秒）は操作が無くても早送りしない（曲を聴かせる所など）
+  // 録画に音は入らないので、聴かせたい音を後から重ねる（2026-10-08、曲づくり）。at は録画の秒・from は音のファイルの秒。
+  sounds?: { at: number; src: string; from?: number; dur: number; volume?: number }[];
 };
 
 // 録画の区間 [from, to)（秒）を speed 倍で流す。
@@ -67,6 +70,11 @@ function buildRange(s: Session, edit: Edit, start: number, end: number): Segment
     .filter((e) => e.type !== "move")
     .map((e) => e.t / 1000)
     .filter((t) => t > start && t < end);
+  // 早送りしない区間は、操作が続いているのと同じ扱いにする（idleGap より細かく点を打つ）。
+  for (const [a, b] of edit.realtime ?? []) {
+    for (let t = a; t <= b; t += Math.max(0.5, o.idleGap / 2)) if (t > start && t < end) acts.push(t);
+  }
+  acts.sort((x, y) => x - y);
   const points = [start, ...acts, end];
   const segs: Segment[] = [];
   let cur = start;

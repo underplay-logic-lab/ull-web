@@ -76,6 +76,21 @@ export function Tutorial({ session, data }: TutorialProps) {
     .filter((t, i, a) => toSource(segs, t).speed <= 1.01 && (i === 0 || t - a[i - 1] > 0.05))
     .map((t) => Math.round(t * fps));
 
+  // 重ねた音（曲など）が鳴っている間は BGM を消す（前後 0.5 秒かけて下げる・戻す）。
+  const soundWindows = (edit.sounds ?? []).map((snd) => {
+    const a = toOutput(segs, snd.at) * fps;
+    return [a, a + snd.dur * fps] as const;
+  });
+  const bgmDuck = (f: number) => {
+    const ramp = fps * 0.5;
+    let k = 1;
+    for (const [a, b] of soundWindows) {
+      const d = f < a ? (a - f) / ramp : f > b ? (f - b) / ramp : 0;
+      k = Math.min(k, Math.min(1, d));
+    }
+    return k;
+  };
+
   const caption = edit.captions.find((c, i) => {
     const from = toOutput(segs, c.at);
     const next = edit.captions[i + 1];
@@ -107,6 +122,7 @@ export function Tutorial({ session, data }: TutorialProps) {
           loop
           volume={(f) =>
             BGM_VOLUME *
+            bgmDuck(f) *
             Math.min(
               interpolate(f, [0, fps * 1.5], [0, 1], { extrapolateRight: "clamp" }),
               interpolate(f, [durationInFrames - fps * 2.5, durationInFrames - 1], [1, 0], { extrapolateLeft: "clamp" }),
@@ -114,6 +130,26 @@ export function Tutorial({ session, data }: TutorialProps) {
           }
         />
       )}
+      {(edit.sounds ?? []).map((snd, i) => {
+        const from = Math.round(toOutput(segs, snd.at) * fps);
+        const len = Math.round(snd.dur * fps);
+        const fade = Math.round(fps * 0.6);
+        return (
+          <Sequence key={`snd${i}`} from={from} durationInFrames={len}>
+            <Audio
+              src={staticFile(snd.src)}
+              trimBefore={Math.round((snd.from ?? 0) * fps)}
+              volume={(f) =>
+                (snd.volume ?? 1) *
+                Math.min(
+                  interpolate(f, [0, fade], [0, 1], { extrapolateRight: "clamp" }),
+                  interpolate(f, [len - fade, len - 1], [1, 0], { extrapolateLeft: "clamp" }),
+                )
+              }
+            />
+          </Sequence>
+        );
+      })}
       {clickFrames.map((f, i) => (
         <Sequence key={i} from={f} durationInFrames={Math.round(fps * 0.4)}>
           <Audio src={staticFile(CLICK_SRC)} volume={CLICK_VOLUME} />
