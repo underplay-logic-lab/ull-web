@@ -640,6 +640,15 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
   アニソン 86 秒（テンポ 170→172）・ロック 142 秒（140→117）・バラード 126 秒（72→161＝倍で数えた可能性）・シティポップ 121 秒（112→117）・
   EDM 99 秒（150→185・最後が大きい音のまま）。**5 本とも上限前に自分で曲を終えた**（150 秒の余裕で最後まで入る）。1 本 2〜3 分（5070 Ti）。
   曲調ごと書けばテンポも大筋は従う（前回の 140 BPM 無効は lo-fi の指示文と矛盾していたため）。
+  → ホスト: どちらも幅あり・MiniMax は凝っていて日本語が流暢・声のバリエーションあり。**声が固定できれば ACE 一択**。
+  **ACE-Step の LoRA（公式 Side-Step・MIT）**: `D:/ComfyUI-ull/acestep/ACE-Step-1.5`（uv sync・torch 2.7.1 cu128・重みは XL turbo＋vae＋Qwen3-Embedding のみ）。
+  データ＝マスター＋延長の後半 7 本（`acestep/dataset/hinata`・3 番の歌詞 2 種）・`train.py fixed --base-model xl_turbo`・rank 64/alpha 128・lr 1e-4・300 epoch・
+  `--offload-encoder`（VRAM 12.9GB・1 epoch 5 秒・約 25 分）。パスは repo 内でないと弾かれる（`work/`）。ComfyUI へは `tools/ace_lora_to_comfy.py`
+  （**名前に decoder. を補う**。1 回目は抜けて全部無視＝"lora key not loaded"・ComfyUI は同名 LoRA をキャッシュするので名前を変える）。
+  5 ジャンルを LoRA 付きで `results/ace_lora/e300/`（150 版は rock/ballad）・LoRA なしは `results/ace_genres/`。テンポは指定どおり → 試聴待ち。
+  **セリフ: GPT-SoVITS（MIT・v2ProPlus）**: `D:/ComfyUI-ull/tts/GPT-SoVITS`（py3.11・torch 2.11 cu128・jieba_fast は jieba で代用・pyopenjtalk は pyopenjtalk-plus）。
+  手本 5 秒（`ref_voice_hinata.wav`「こんにちは、ひなたです。」）だけで前回と同じ 5 文 → `D:/ComfyUI-ull/results/gsv/zs_cut1/`（`tts/gsv_test.py`）。
+  **区切りは cut1**（cut5 は読点ごとに切って文が抜けた）。聞き取り（機械）では全文読めている → ホストが聴いて判断。学習済み部品 chinese-hubert-base のライセンスは未確認。
   → ホスト: **幅はある・全部バラバラ**・バラードは 80 程度・EDM もちゃんと終わる・ロックは 142 秒で歌はだいぶ前に終わる（わざと？）。「ACE はシティポップ寄りでは」。
   → ACE の曲調の振り幅は**未試験だった**（exp1 は声の書き分けだけ・曲調は全部 J-pop アコギ）→ 同じ 5 ジャンル・同じ歌詞・turbo・シード 1 で
   `D:/ComfyUI-ull/results/ace_genres/`（テンポ 172/144/72→144 倍数え/112/152＝ほぼ指定どおり・1 本数秒）→ 試聴待ち。
