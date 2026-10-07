@@ -370,7 +370,15 @@ image = (
         f" {COMFY_DIR}/custom_nodes/ComfyUI-Fizgig-H3-Still"
         f" && cd {COMFY_DIR}/custom_nodes/ComfyUI-Fizgig-H3-Still && git checkout 10d5171",
     )
+    # 動画の部分修正（2026-10-07）: 自作ノード（ULLVideoTimeMask・ULLH3AudioTimeMask）。リポジトリの comfy_nodes/ が正。
+    # 小さいファイル 1 つなのでチェーン末尾に copy で置く（直しても上の重いビルド層は作り直さない）。
+    .add_local_dir(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "comfy_nodes", "ull_time_mask"),
+        f"{COMFY_DIR}/custom_nodes/ull_time_mask",
+        copy=True,
+    )
     .add_local_python_source("ull_image_prep")
+    .add_local_python_source("ull_video_fix")
     .add_local_python_source("ull_r2")
 )
 
@@ -990,6 +998,97 @@ def _spawn_r2_publish(job_id: str) -> None:
         print(f"[r2] publish spawned for director job {job_id[:8]}", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[r2] publish spawn failed for director job {job_id[:8]}: {exc!r}", flush=True)
+
+
+# 動画の部分修正（2026-10-07）: ワークフローのうちワーカーが値を書き込むノード（src/lib/videoFixWorkflow.ts と同じ契約）。
+# 窓の長さ・寸法・区間は元の動画を読んで初めて決まるので、Next ではなくここで決めて書き込む。
+VIDEO_FIX_DURATION_NODE = "105:111"
+VIDEO_FIX_I2V_NODE = "105:104"
+VIDEO_FIX_VIDEO_MASK_NODE = "404"
+VIDEO_FIX_AUDIO_MASK_NODE = "412"
+
+
+def _video_fix_prepare(workflow: dict, spec: dict, tag: str) -> dict:
+    """元の動画を取ってきて整え、窓を切り出し、ワークフローに窓の長さ・寸法・区間を書き込む。
+
+    spec: source_url（R2 の署名付き URL）・start_s・end_s（-1 で最後まで）・max_window_s・max_pixels・max_source_s・
+          keep_audio・video_name / audio_name / ref_name（ワークフローの LoadVideo / LoadAudio / LoadImage と同じ名前）。
+    窓の上限 max_window_s は Next が料金を決めた秒数。ここで超えることはない（ull_video_fix.plan_window が区間を詰める）。
+    """
+    import tempfile
+
+    import requests as _requests
+    import ull_video_fix as vf
+
+    url = spec["source_url"]
+    host = (urlparse(url).hostname or "").lower()
+    if urlparse(url).scheme != "https" or not host.endswith(".r2.cloudflarestorage.com"):
+        raise RuntimeError(f"video_fix source host not allowed: {host!r}")
+    work = tempfile.mkdtemp(prefix=f"vfix_{tag[:8]}_")
+    src = os.path.join(work, "src")
+    t0 = time.time()
+    with _requests.get(url, stream=True, timeout=(15, 120)) as r:
+        r.raise_for_status()
+        with open(src, "wb") as f:
+            for chunk in r.iter_content(chunk_size=4 * 1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+    norm = os.path.join(work, "norm.mp4")
+    info = vf.normalize(src, norm, max_pixels=int(spec["max_pixels"]), max_seconds=float(spec["max_source_s"]))
+    end_s = spec.get("end_s")
+    plan = vf.plan_window(
+        info["frames"], float(spec["start_s"]), None if end_s is None or float(end_s) < 0 else float(end_s),
+        max_window_s=float(spec["max_window_s"]),
+    )
+    win_v, win_a, ref = (os.path.join(work, x) for x in ("win.mp4", "win.wav", "ref.png"))
+    vf.cut_window(norm, plan, win_v, win_a, ref)
+    print(
+        f"[video-fix] source {os.path.getsize(src) / 1e6:.1f}MB -> {info['width']}x{info['height']} "
+        f"{info['frames']}f; window {plan['win_start']}+{plan['win_frames']}f (pad {plan['pad_frames']}), "
+        f"regen {plan['regen_start']}-{plan['regen_end']}f, cut {plan['cut_a']}-{plan['cut_b']} ({time.time() - t0:.1f}s)",
+        flush=True,
+    )
+
+    for node_id in (VIDEO_FIX_DURATION_NODE, VIDEO_FIX_I2V_NODE, VIDEO_FIX_VIDEO_MASK_NODE):
+        if node_id not in workflow:
+            raise RuntimeError(f"video_fix: node {node_id!r} not found in workflow")
+    workflow[VIDEO_FIX_DURATION_NODE]["inputs"]["value"] = plan["win_seconds"]
+    workflow[VIDEO_FIX_I2V_NODE]["inputs"]["width"] = info["width"]
+    workflow[VIDEO_FIX_I2V_NODE]["inputs"]["height"] = info["height"]
+    for node_id in (VIDEO_FIX_VIDEO_MASK_NODE, VIDEO_FIX_AUDIO_MASK_NODE):
+        if node_id in workflow:
+            workflow[node_id]["inputs"]["regen_start_seconds"] = plan["rel_start_s"]
+            workflow[node_id]["inputs"]["regen_end_seconds"] = plan["rel_end_s"]
+
+    def _read(p):
+        with open(p, "rb") as f:
+            return f.read()
+
+    files = [(spec["video_name"], _read(win_v)), (spec["audio_name"], _read(win_a))]
+    if spec.get("ref_name"):
+        files.append((spec["ref_name"], _read(ref)))
+    return {"work": work, "norm": norm, "plan": plan, "keep_audio": bool(spec.get("keep_audio", True)), "files": files}
+
+
+def _video_fix_splice(ctx: dict, window_bytes: bytes) -> bytes:
+    import shutil
+
+    import ull_video_fix as vf
+
+    work = ctx["work"]
+    try:
+        win_out = os.path.join(work, "window_out.mp4")
+        with open(win_out, "wb") as f:
+            f.write(window_bytes)
+        dst = os.path.join(work, "spliced.mp4")
+        t0 = time.time()
+        vf.splice(ctx["norm"], win_out, ctx["plan"], ctx["keep_audio"], dst)
+        with open(dst, "rb") as f:
+            data = f.read()
+        print(f"[video-fix] spliced -> {len(data) / 1e6:.1f}MB ({time.time() - t0:.1f}s)", flush=True)
+        return data
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 @app.function(
@@ -2065,6 +2164,7 @@ class WanAnimateBlackwell:
         lora_url: str = None,
         lora_trigger_word: str = None,
         image_outputs: bool = False,
+        video_fix: dict = None,
     ) -> dict:
         """
         Generic counterpart to generate_video for admin-authored Custom
@@ -2236,6 +2336,15 @@ class WanAnimateBlackwell:
                 _shutil.copy2(src_path, _staged_lora_path)
                 print(f"[director-lora] staged user LoRA -> {_staged_lora_path}", flush=True)
 
+            _vfix_ctx = None
+            if video_fix:
+                if is_async:
+                    _supabase_patch_job(job_id, {"progress_message": "元の動画を読み込み中..."})
+                _vfix_ctx = _video_fix_prepare(workflow, video_fix, job_id or str(int(time.time())))
+                files.extend(_vfix_ctx["files"])
+                if is_async:
+                    _supabase_patch_job(job_id, {"progress_message": "動画を生成中..."})
+
             self._ensure_comfy_running(exec_config)
             try:
                 run_out = self._run_workflow(
@@ -2249,6 +2358,9 @@ class WanAnimateBlackwell:
                 # Photo Director（image_outputs）は複数枚。以降の共通処理は 1 枚目で回す。
                 image_list = run_out if image_outputs else None
                 result_bytes, filename = run_out[0] if image_outputs else run_out
+                if _vfix_ctx:
+                    # 窓の結果を元の動画に貼り戻す（ここで失敗してもジョブ失敗＝返金にしたいので try の中）。
+                    result_bytes = _video_fix_splice(_vfix_ctx, result_bytes)
                 if image_outputs and is_async:
                     # 失敗したらジョブ失敗（返金）にしたいので、この try の中で上げる。
                     image_rel_paths, image_key_map = _publish_photo_images(user_id, job_id, image_list)
@@ -2263,6 +2375,10 @@ class WanAnimateBlackwell:
                         os.remove(_staged_lora_path)
                     except OSError:
                         pass
+                if _vfix_ctx:  # 貼り戻しまで行かずに失敗したときの後始末（成功時は _video_fix_splice が消し済み）
+                    import shutil as _shutil_vfix
+
+                    _shutil_vfix.rmtree(_vfix_ctx["work"], ignore_errors=True)
         except Exception as exc:
             if _vram_stop is not None:
                 _vram_stop.set()
@@ -2412,6 +2528,7 @@ def custom_workflow_async(item: dict, request: fastapi.Request):
         item.get("lora_url"),
         item.get("lora_trigger_word"),
         item.get("image_outputs", False),
+        item.get("video_fix"),
     )
     return {"ok": True, "job_id": job_id, "call_id": call.object_id}
 
