@@ -599,6 +599,13 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
   **2026-10-07 未明: 学習と変換まで済・ホストの試聴待ち**。Applio（`D:/ComfyUI-ull/rvc/Applio`・.venv py3.12・torch 2.11 cu128）で
   マスターの歌（Demucs で分離・68 秒→23 片）を 40k・rmvpe・contentvec・batch 8・300 epoch（RTX 5070 Ti で約 8 分・1 epoch 1.5 秒）。
   聴くもの: `D:/ComfyUI-ull/results/rvc/{e300,e200}/{s9_v30,noref_s9}_mix.flac`（元は `results/ace_local/exp4/s9_v30.flac`・`exp6/noref_s9.flac`）。
+  ホスト（1 回目）: 元の曲より似てきた。noref_s9 の途切れは元から（歌のある時間 15%・変換で消えたのは s9_v30 と同じ 7〜8%）＝試験曲に向かない。
+  2 回目: 索引の効き（IR）0.75/1.0 を s9_v30 で（`e300_ir075`・`e300_ir100`）＋別の曲 `e300/{s8_noref,s10_v30}_mix.flac`（IR 0.5）
+  → ホスト「どれも違う」（ひなたに聞こえない）。原因は学習データ不足（RVC は普通 10〜30 分）。
+  → ホスト案で**マスターを延長して 3 番を作り歌を増やす**: `tools/ace_extend.py`（マスターを 125 秒へ・0〜66 秒固定・3 番＋ブリッジ＋サビを足す・turbo・1 本 6〜8 秒）。
+  `results/ace_local/ext/ext125_s{21..24}.flac`（s21 は延長部 66〜125 秒の 92% で歌っている）→ ホスト: s23 が一番違う・他は同程度（3 番で曲調が変わるので声か曲調か判別しにくい）。
+  → s21/s22/s24 の 66 秒以降を足して **hinata_v2**（歌 約 4 分・84 片・300 epoch・約 20 分）→ `results/rvc/v2_e300/{s9_v30,s8_noref,s10_v30}_mix.flac`（IR 0.5）→ 試聴待ち。
+  まだ違えば: 延長をさらに重ねて増やす／Seed-VC（ライセンス未確認）。
   手順: `tools/rvc_split.py`（mpenv・歌と伴奏）→ `tools/rvc_convert.sh <pth> <index> <out> <曲名>`（変換・音量合わせ・混ぜ戻し）。
   罠: Applio は `assets/config.json`（画面版の初回起動で作られる）が無いと最後の重み書き出しに失敗し、os._exit でエラーも消える
   → 作成済み＋`rvc/extract_weights.py` で `G_<step>.pth` から書き出す。core.py は Applio の中から呼ぶ。RVC の出力は元より約 6dB 小さい。変換して聴く候補: `results/ace_local/exp4/s9_v30` 等・`exp6/noref_s9`。
