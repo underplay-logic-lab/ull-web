@@ -649,6 +649,10 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
   **セリフ: GPT-SoVITS（MIT・v2ProPlus）**: `D:/ComfyUI-ull/tts/GPT-SoVITS`（py3.11・torch 2.11 cu128・jieba_fast は jieba で代用・pyopenjtalk は pyopenjtalk-plus）。
   手本 5 秒（`ref_voice_hinata.wav`「こんにちは、ひなたです。」）だけで前回と同じ 5 文 → `D:/ComfyUI-ull/results/gsv/zs_cut1/`（`tts/gsv_test.py`）。
   **区切りは cut1**（cut5 は読点ごとに切って文が抜けた）。聞き取り（機械）では全文読めている → ホストが聴いて判断。学習済み部品 chinese-hubert-base のライセンスは未確認。
+  → ホスト: **一番ちゃんと発声している**・ただ声がとても小さい・ハモったような変な音が入ることがある。手本 5 秒のうち発話は約 2 秒だけ（推奨 3〜10 秒）。
+  → 音量を整えた版 `results/gsv/zs_cut1_norm/`（loudnorm -16 LUFS）・手本を intro の 7 秒（GPT-SoVITS 自身の出力）に替えた版 `results/gsv/ref12/norm/` → 試聴待ち。
+  ACE の LoRA → ホスト: ノイズ・不協和音が付いて回る・150 の方が良い・**効くほどオリジナルの良さを壊す**（動画の LoRA で動きが鈍るのと同じ）。
+  **方針（ホスト 2026-10-07）: 歌声は固定しない（素材のまま・七色の歌声の体）。セリフの声は固定する**（GPT-SoVITS の路線）。
   → ホスト: **幅はある・全部バラバラ**・バラードは 80 程度・EDM もちゃんと終わる・ロックは 142 秒で歌はだいぶ前に終わる（わざと？）。「ACE はシティポップ寄りでは」。
   → ACE の曲調の振り幅は**未試験だった**（exp1 は声の書き分けだけ・曲調は全部 J-pop アコギ）→ 同じ 5 ジャンル・同じ歌詞・turbo・シード 1 で
   `D:/ComfyUI-ull/results/ace_genres/`（テンポ 172/144/72→144 倍数え/112/152＝ほぼ指定どおり・1 本数秒）→ 試聴待ち。
