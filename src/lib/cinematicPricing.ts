@@ -106,7 +106,7 @@ export const CINEMATIC_MODES: CinematicMode[] = [
   {
     id: "vdnQuality",
     label: "Quality",
-    tagline: "高品質・音声付き",
+    tagline: "高品質・細部がきれい", // 2026-10-08: Fast も音声ありなので「音声付き」は違いにならない
     // 2026-09-13: 実機 elapsed=681.3s（1024px相当・50step非蒸留）から
     // 原価≈¥213/15秒。原価の約3倍 ≈ ¥639 ÷ 1.66 ≈ 385C。
     credits: 385,

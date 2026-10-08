@@ -1875,6 +1875,10 @@ export function DirectorStudioTab() {
               );
             })}
           </div>
+          {/* 2026-10-08 ホスト: 粗い元を 4K にすると肌の荒れ等も拡大されるので、超解像にかけるなら Quality を勧める。 */}
+          <p className="mt-2 text-[11px] leading-relaxed text-muted">
+            あとで「4K 動画超解像」にかける予定なら Quality がおすすめです（肌の荒れや細かい粒が出にくく、拡大してもきれいに仕上がります）。
+          </p>
         </div>
 
         {loraUiEnabled && (
