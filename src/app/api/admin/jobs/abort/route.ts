@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { refundCredits } from "@/lib/credits.server";
 import { requireAdmin } from "@/lib/adminApiGuard";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { cancelLoraTrainingCall } from "@/lib/modalLoraTrain";
@@ -94,10 +95,8 @@ export async function POST(request: Request) {
   // 返金は行を閉じられたときだけ（ワーカーが同時に完了を書いたら触らない）。
   let refunded = 0;
   if (closed && refundAmount > 0 && userId) {
-    const { data } = await supabaseAdmin.from("profiles").select("credits").eq("id", userId).single();
-    const current = (data?.credits as number | null) ?? 0;
-    const { error } = await supabaseAdmin.from("profiles").update({ credits: current + refundAmount }).eq("id", userId);
-    if (error) console.error("[admin/jobs/abort] refund failed:", userId, refundAmount, error.message);
+    // その場で足す（読んでから書くと、間の引き落としを消してしまう・2026-10-09）。
+    if ((await refundCredits(userId, refundAmount)) === null) console.error("[admin/jobs/abort] refund failed:", userId, refundAmount);
     else refunded = refundAmount;
   }
 

@@ -1027,22 +1027,14 @@ def _append_angle_result(job_id: str, image_url: str, label: str = "") -> bool:
 def _refund_credits(user_id: str, amount: int) -> None:
     if not user_id or not amount or amount <= 0:
         return
+    # その場で足す（DB の refund_profile_credits・migration 20260897000000。読んでから足すと、間の引き落としを消してしまう・2026-10-09）。
     try:
         res = _supabase_request(
-            "GET", "/rest/v1/profiles", params={"id": f"eq.{user_id}", "select": "credits"}
+            "POST", "/rest/v1/rpc/refund_profile_credits", json={"p_user_id": user_id, "p_amount": int(amount)}
         )
         if res is None:
-            return
+            raise RuntimeError("no response")
         res.raise_for_status()
-        rows = res.json()
-        current = (rows[0].get("credits") if rows else None) or 0
-        _supabase_request(
-            "PATCH",
-            "/rest/v1/profiles",
-            params={"id": f"eq.{user_id}"},
-            json={"credits": current + amount},
-            headers={"Prefer": "return=minimal"},
-        )
         print(f"[angle-job] refunded {amount} credits to {user_id}", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[angle-job] failed to refund {amount} credits to {user_id}: {exc}", flush=True)

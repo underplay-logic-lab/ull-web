@@ -715,14 +715,13 @@ def _patch_job(job_id: str, fields: dict) -> None:
 
 
 def _refund(user_id: str, amount: int) -> None:
-    """失敗したジョブの全額返金（読んでから足す。Director のワーカーと同じ作法）。"""
+    """失敗したジョブの全額返金。その場で足す（DB の refund_profile_credits・migration 20260897000000。読んでから足すと、間の引き落としを消してしまう・2026-10-09）。"""
     if not user_id or amount <= 0:
         return
     try:
-        rows = _sb("GET", "/rest/v1/profiles", params={"id": f"eq.{user_id}", "select": "credits"}).json()
-        current = (rows[0].get("credits") if rows else None) or 0
-        _sb("PATCH", "/rest/v1/profiles", params={"id": f"eq.{user_id}"}, json={"credits": current + amount},
-            headers={"Prefer": "return=minimal"})
+        r = _sb("POST", "/rest/v1/rpc/refund_profile_credits", json={"p_user_id": user_id, "p_amount": int(amount)})
+        if not r.ok:
+            raise RuntimeError(f"HTTP {r.status_code} {r.text[:200]}")
     except Exception as exc:  # noqa: BLE001
         print(f"[song] refund {amount} to {user_id[:8]} failed: {exc!r}", flush=True)
 

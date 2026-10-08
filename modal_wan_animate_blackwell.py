@@ -1300,27 +1300,17 @@ def _refund_credits(user_id: str, amount: int) -> None:
     since returned its response by the time a failure is detected here, so
     this is what actually issues the refund (mirrors the synchronous
     snapshot-restore refund /api/generate/cinematic used to do inline,
-    same read-then-write race tradeoff and all)."""
+    2026-10-09〜 DB の関数でその場で足す＝読んでから書く競合は無くなった)."""
     if not user_id or amount <= 0:
         return
+    # その場で足す（DB の refund_profile_credits・migration 20260897000000。読んでから足すと、間の引き落としを消してしまう・2026-10-09）。
     try:
-        res = _supabase_request(
-            "GET",
-            "/rest/v1/profiles",
-            params={"id": f"eq.{user_id}", "select": "credits"},
+        res = _supabase_request_checked(
+            "POST", "/rest/v1/rpc/refund_profile_credits", json={"p_user_id": user_id, "p_amount": int(amount)}
         )
         if res is None:
-            return
+            raise RuntimeError("no response")
         res.raise_for_status()
-        rows = res.json()
-        current = (rows[0].get("credits") if rows else None) or 0
-        _supabase_request_checked(
-            "PATCH",
-            "/rest/v1/profiles",
-            params={"id": f"eq.{user_id}"},
-            json={"credits": current + amount},
-            headers={"Prefer": "return=minimal"},
-        )
     except Exception as exc:  # noqa: BLE001 — best-effort, never propagate
         print(f"[generation_jobs] failed to refund {amount} credits to {user_id} (after retries): {exc}")
 

@@ -2142,3 +2142,18 @@ v7 の中間チェックポイント 13 本（475MB × 13 = 6.2GB）を Modal �
   **真因の訂正（同日）**: このジョブは制限解除モードで、台本を書いた Qwen（27B bf16・約 54GB）が**ワーカー本体のプロセス**に
   残っていた（次の依頼に備えてキャッシュする作り）。ComfyUI は別プロセスなので見えず、「PyTorch 89GB なのに空き 0」の残り約 50GB は Qwen。
   → 台本を書いたら Qwen を解放（`_unload_qwen`・a4119ef、同日 B300 も含め GPU を問わずに変更＝ホスト判断「空けば大きなことができる」）。**制限解除＋H200 の組み合わせを最初に試すときはここを疑う。**
+
+
+---
+
+## CLAUDE.md から移した記録（2026-10-09・35KB の上限のため）
+
+Blackwell の実例（CLAUDE.md §1 から移動）: - ⚠️ **「Blackwellは常に最速」という思い込みを持たない。** Qwen-Image-Edit の A100 6倍退行、超解像2Kで B300 < H200、Multi-Angle で B300 のコールドだけ異常に重い等、世代通りの序列にならない実例が複数ある。GPU選定は必ず**1回あたりの実コスト（時間単価×所要時間）**で判断する。→ `docs/gpu-benchmarks.md`
+
+ソースビルドのコスト（CLAUDE.md §1 から移動）: ### ソースビルドのコスト `flash_attn` 等のソースビルドは **GPU課金ではないが安くはない**（1回 約$3.72 の実績）。また **`MAX_JOBS` を絞っても課金は減らず、むしろビルド時間が伸びて悪化する**（Modalはビルドマシンの専有時間で課金し、こちらの並列度設定では課金対象のマシンサイズが変わらないため）。重いビルドの前後は `modal billing report` / `modal billing rates` で実額を確認して自衛すること。
+
+デプロイ中のジョブ: 2026-09-23 Multi-Angle で B200/B300 が 3 台空起動、うち 2 台はメモリ不足で強制終了。
+
+GPU 監視の旧記述（CLAUDE.md §1 から移動）: - **時間のかかるGPUジョブ（数分以上）は、GPU使用率・VRAM使用量を定期的にログへ出す監視スレッドを標準で仕込む。** バックグラウンドスレッドで `nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits` を8〜10秒間隔で叩き `[gpu_monitor] t=12.3s util=97% vram=52.3/183.0GB temp=68C` のような1行を毎回print。この監視ロジック自体の動作確認は最安GPU tier（T4等）で先に行う。**部品は共通の `ull_gpu_monitor.GpuMonitor`（ピークも取れる・完了時に `vram_peak_gb` へ）を使い、新規ワーカーも最初から入れる**（2026-10-08、Director に無く 213GB のピークを目で読んだ）。 - ただし**人間が手動でsmoke/デバッグを見守る場面では、Modalダッシュボードの「Logs」タブにGPU使用率バーが既に出ている**ため自前実装は不要。自前実装が要るのは完了後にテキストログだけを遡って解析する運用（admin画面等）に限られる。
+
+subprocess の理由（CLAUDE.md §1 から移動）: 多くの外部スクリプトは起動直後に実際の設定値（`Namespace(...)` 等）を1行ログに出すため、溜め込む実装だと「最初の数分でログを確認する」という原則自体が実行不可能になる。`subprocess.Popen` + 1行ずつ `print(..., flush=True)`（または `capture_output=False`）にする。

@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { debitCredits, refundCredits } from "@/lib/credits.server";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
@@ -213,13 +214,19 @@ export async function POST(request: Request) {
     );
   }
 
-  const debitedCredits = currentCredits - totalCredits;
-  const { error: debitError } = await supabaseAdmin
-    .from("profiles")
-    .update({ credits: debitedCredits })
-    .eq("id", user.id);
-  if (debitError) {
-    console.error("[studio/upscale/batch] failed to debit credits:", debitError.message);
+  // クレジットはその場で引く（確かめるのと引くのを 1 回の操作に。同時に送られても 1 本分の料金で何本も作れない・2026-10-09）。
+  let debitedCredits: number;
+  try {
+    const after = await debitCredits(user.id, totalCredits);
+    if (after === null) {
+      return NextResponse.json(
+        { error: "クレジットが不足しています。チャージしてから再度お試しください。", remainingCredits: currentCredits },
+        { status: 402 },
+      );
+    }
+    debitedCredits = after;
+  } catch (err) {
+    console.error("[studio/upscale/batch] failed to debit credits:", err);
     return NextResponse.json({ error: "クレジットの処理に失敗しました。" }, { status: 500 });
   }
 
@@ -253,7 +260,7 @@ export async function POST(request: Request) {
 
   if (jobError || !jobRows || jobRows.length !== prepared.length) {
     console.error("[studio/upscale/batch] failed to create job rows:", jobError?.message);
-    await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+    await refundCredits(user.id, totalCredits);
     return NextResponse.json(
       { error: "ジョブの作成に失敗しました。", remainingCredits: currentCredits },
       { status: 500 },
@@ -294,7 +301,7 @@ export async function POST(request: Request) {
     } catch (err) {
       console.error("[studio/upscale/batch] save spec failed:", (err as Error).message);
       await supabaseAdmin.from("upscale_jobs").delete().in("id", jobIds);
-      await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+      await refundCredits(user.id, totalCredits);
       return NextResponse.json(
         { error: "予約に失敗しました。しばらくしてから再度お試しください。", remainingCredits: currentCredits },
         { status: 500 },
@@ -324,7 +331,7 @@ export async function POST(request: Request) {
       .from("upscale_jobs")
       .update({ status: "failed", error_message: `ジョブの起動に失敗しました: ${message}`.slice(0, 500) })
       .in("id", jobIds);
-    await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+    await refundCredits(user.id, totalCredits);
     return NextResponse.json(
       {
         error: "バッチジョブの起動に失敗しました。しばらくしてから再度お試しください。",

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { debitCredits, refundCredits } from "@/lib/credits.server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
@@ -117,9 +118,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
   }
 
-  const debited = currentCredits - creditsCost;
-  const { error: debitError } = await supabaseAdmin.from("profiles").update({ credits: debited }).eq("id", user.id);
-  if (debitError) return NextResponse.json({ error: "クレジットの処理に失敗しました。" }, { status: 500 });
+  // クレジットはその場で引く（確かめるのと引くのを 1 回の操作に。同時に送られても 1 本分の料金で何本も作れない・2026-10-09）。
+  let debited: number;
+  try {
+    const after = await debitCredits(user.id, creditsCost);
+    if (after === null) {
+      return NextResponse.json(
+        { error: "クレジットが不足しています。チャージしてから再度お試しください。", remainingCredits: currentCredits },
+        { status: 402 },
+      );
+    }
+    debited = after;
+  } catch (err) {
+    console.error("[song/generate] failed to debit credits:", err);
+    return NextResponse.json({ error: "クレジットの処理に失敗しました。" }, { status: 500 });
+  }
 
   const seed = 1 + Math.floor(Math.random() * 2 ** 31);
   const { data: jobRow, error: jobError } = await supabaseAdmin
@@ -135,7 +148,7 @@ export async function POST(request: Request) {
     .select("id")
     .single();
   if (jobError || !jobRow) {
-    await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+    await refundCredits(user.id, creditsCost);
     return NextResponse.json({ error: "ジョブの作成に失敗しました。", remainingCredits: currentCredits }, { status: 500 });
   }
   const jobId = jobRow.id as string;
@@ -153,7 +166,7 @@ export async function POST(request: Request) {
     } catch (err) {
       console.error("[song/generate] save spec failed:", (err as Error).message);
       await supabaseAdmin.from("generation_jobs").delete().eq("id", jobId);
-      await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+      await refundCredits(user.id, creditsCost);
       return NextResponse.json(
         { error: "予約に失敗しました。しばらくしてから再度お試しください。", remainingCredits: currentCredits },
         { status: 500 },
@@ -173,7 +186,7 @@ export async function POST(request: Request) {
       .from("generation_jobs")
       .update({ status: "failed", error_message: message.slice(0, 2000), metadata: { count, refunded: true } })
       .eq("id", jobId);
-    await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+    await refundCredits(user.id, creditsCost);
     return NextResponse.json({ error: "生成の開始に失敗しました。", remainingCredits: currentCredits }, { status: 502 });
   }
   return NextResponse.json({ jobId, reserved: false, creditsCost, remainingCredits: debited, plan });

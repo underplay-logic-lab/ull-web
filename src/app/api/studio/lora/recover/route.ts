@@ -1,4 +1,5 @@
 import { NextResponse, after } from "next/server";
+import { refundCredits as refundProfileCredits } from "@/lib/credits.server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getAdminEmails } from "@/lib/adminAuth";
@@ -89,11 +90,10 @@ async function updateJob(id: string, fields: Record<string, unknown>): Promise<v
   }
 }
 
+// その場で足す（読んでから書くと、間の引き落としを消してしまう・2026-10-09）。
 async function refundCredits(userId: string, amount: number): Promise<void> {
   if (amount <= 0) return;
-  const { data } = await supabaseAdmin.from("profiles").select("credits").eq("id", userId).single();
-  const current = (data?.credits as number | null) ?? 0;
-  await supabaseAdmin.from("profiles").update({ credits: current + amount }).eq("id", userId);
+  await refundProfileCredits(userId, amount);
 }
 
 // fc-... only — a Supabase UUID here would just whiff against Modal.

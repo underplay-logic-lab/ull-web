@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { debitCredits, refundCredits } from "@/lib/credits.server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
@@ -692,13 +693,19 @@ Begin the English prompt with exactly: "${PHOTO_ANIME_SENTENCE}"` : ""),
   const combinedPromptJa =
     isAdvancedMode || qwenTextInstruction ? null : await translateDirectorPromptToJapanese(combinedPrompt);
 
-  const debitedCredits = currentCredits - creditsCost;
-  const { error: debitError } = await supabaseAdmin
-    .from("profiles")
-    .update({ credits: debitedCredits })
-    .eq("id", user.id);
-  if (debitError) {
-    console.error("[director/generate] failed to debit credits:", debitError.message);
+  // クレジットはその場で引く（確かめるのと引くのを 1 回の操作に。同時に送られても 1 本分の料金で何本も作れない・2026-10-09）。
+  let debitedCredits: number;
+  try {
+    const after = await debitCredits(user.id, creditsCost);
+    if (after === null) {
+      return NextResponse.json(
+        { error: "クレジットが不足しています。チャージしてから再度お試しください。", remainingCredits: currentCredits },
+        { status: 402 },
+      );
+    }
+    debitedCredits = after;
+  } catch (err) {
+    console.error("[director/generate] failed to debit credits:", err);
     return NextResponse.json({ error: "クレジットの処理に失敗しました。" }, { status: 500 });
   }
 
@@ -783,7 +790,7 @@ Begin the English prompt with exactly: "${PHOTO_ANIME_SENTENCE}"` : ""),
 
   if (jobError || !jobRow) {
     console.error("[director/generate] failed to create job row:", jobError?.message);
-    await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+    await refundCredits(user.id, creditsCost);
     return NextResponse.json(
       { error: "ジョブの作成に失敗しました。", remainingCredits: currentCredits },
       { status: 500 },
@@ -880,7 +887,7 @@ Begin the English prompt with exactly: "${PHOTO_ANIME_SENTENCE}"` : ""),
     } catch (err) {
       console.error("[director/generate] save spec failed:", (err as Error).message);
       await supabaseAdmin.from("generation_jobs").delete().eq("id", jobId);
-      await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+      await refundCredits(user.id, creditsCost);
       return NextResponse.json(
         { error: "予約に失敗しました。しばらくしてから再度お試しください。", remainingCredits: currentCredits },
         { status: 500 },
@@ -905,7 +912,7 @@ Begin the English prompt with exactly: "${PHOTO_ANIME_SENTENCE}"` : ""),
       .from("generation_jobs")
       .update({ status: "failed", error_message: message.slice(0, 2000) })
       .eq("id", jobId);
-    await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+    await refundCredits(user.id, creditsCost);
     // 作り直しのときは元のジョブの参照画像なので消さない（元から作り直せなくなる）。
     if (!baseJobId) deleteStudioUploads([storagePath]);
     return NextResponse.json(

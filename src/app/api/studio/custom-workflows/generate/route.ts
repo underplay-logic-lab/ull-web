@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { debitCredits, refundCredits } from "@/lib/credits.server";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
@@ -312,14 +313,19 @@ export async function POST(request: Request) {
     );
   }
 
-  const debitedCredits = currentCredits - generationCost;
-  const { error: debitError } = await supabaseAdmin
-    .from("profiles")
-    .update({ credits: debitedCredits })
-    .eq("id", user.id);
-
-  if (debitError) {
-    console.error("[studio/custom-workflows/generate] failed to debit credits:", debitError.message);
+  // クレジットはその場で引く（確かめるのと引くのを 1 回の操作に。同時に送られても 1 本分の料金で何本も作れない・2026-10-09）。
+  let debitedCredits: number;
+  try {
+    const after = await debitCredits(user.id, generationCost);
+    if (after === null) {
+      return NextResponse.json(
+        { error: "クレジットが不足しています。チャージしてから再度お試しください。", remainingCredits: currentCredits },
+        { status: 402 },
+      );
+    }
+    debitedCredits = after;
+  } catch (err) {
+    console.error("[studio/custom-workflows/generate] failed to debit credits:", err);
     return NextResponse.json({ error: "クレジットの処理に失敗しました。" }, { status: 500 });
   }
 
@@ -392,13 +398,7 @@ export async function POST(request: Request) {
   } catch (err) {
     console.error("[studio/custom-workflows/generate] generation failed:", err);
 
-    const { error: refundError } = await supabaseAdmin
-      .from("profiles")
-      .update({ credits: currentCredits })
-      .eq("id", user.id);
-    if (refundError) {
-      console.error("[studio/custom-workflows/generate] failed to refund credits after error:", refundError.message);
-    }
+    await refundCredits(user.id, generationCost); // 失敗は refundCredits がログに残す
 
     await logGenerationActivity({
       userId: user.id,

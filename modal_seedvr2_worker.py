@@ -1590,20 +1590,14 @@ def _refund_upscale_credits(user_id: str, amount: int) -> None:
     """失敗ジョブの返金（best-effort・最大 1 回）。profiles.credits に加算。"""
     if not user_id or not amount or amount <= 0:
         return
+    # その場で足す（DB の refund_profile_credits・migration 20260897000000。読んでから足すと、間の引き落としを消してしまう・2026-10-09）。
     try:
         res = _supabase_request(
-            "GET", "/rest/v1/profiles",
-            params={"id": f"eq.{user_id}", "select": "credits"},
+            "POST", "/rest/v1/rpc/refund_profile_credits",
+            json={"p_user_id": user_id, "p_amount": int(amount)},
         )
-        if res is None or not res.ok or not res.json():
-            return
-        current = res.json()[0].get("credits") or 0
-        _supabase_request(
-            "PATCH", "/rest/v1/profiles",
-            params={"id": f"eq.{user_id}"},
-            json={"credits": current + int(amount)},
-            headers={"Prefer": "return=minimal"},
-        )
+        if res is None or not res.ok:
+            raise RuntimeError(f"HTTP {getattr(res, 'status_code', None)}")
         print(f"[upscale-job] refunded {amount}C to {user_id}", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[upscale-job] refund failed {user_id}: {exc}", flush=True)

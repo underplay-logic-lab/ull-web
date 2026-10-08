@@ -85,13 +85,11 @@ def _sb(method: str, path: str, params: dict | None = None, body=None, prefer: s
 
 
 def _refund(user_id: str, credits: int) -> None:
-    """解析が失敗したら引き落とし分を返す（route と同じく profiles.credits を読んで足す）。"""
+    """解析が失敗したら引き落とし分を返す。その場で足す（DB の refund_profile_credits・migration 20260897000000。読んでから足すと、間の引き落としを消してしまう・2026-10-09）。"""
     if not user_id or not credits:
         return
     try:
-        rows = _sb("GET", "/rest/v1/profiles", {"id": f"eq.{user_id}", "select": "credits"}) or [{}]
-        cur = int(rows[0].get("credits") or 0)
-        _sb("PATCH", "/rest/v1/profiles", {"id": f"eq.{user_id}"}, {"credits": cur + credits}, "return=minimal")
+        _sb("POST", "/rest/v1/rpc/refund_profile_credits", None, {"p_user_id": user_id, "p_amount": int(credits)})
         print(f"[caption] refunded {credits}C to {user_id[:8]}", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[caption] refund FAILED user={user_id[:8]} {credits}C: {exc!r}", flush=True)

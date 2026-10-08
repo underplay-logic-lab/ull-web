@@ -1,4 +1,5 @@
 import { NextResponse, after } from "next/server";
+import { debitCredits, refundCredits } from "@/lib/credits.server";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
@@ -617,13 +618,19 @@ async function handlePost(request: Request): Promise<NextResponse> {
     );
   }
 
-  const debitedCredits = currentCredits - chargedCredits;
-  const { error: debitError } = await supabaseAdmin
-    .from("profiles")
-    .update({ credits: debitedCredits })
-    .eq("id", user.id);
-  if (debitError) {
-    console.error("[studio/lora/train] failed to debit credits:", debitError.message);
+  // クレジットはその場で引く（確かめるのと引くのを 1 回の操作に。同時に送られても 1 本分の料金で何本も作れない・2026-10-09）。
+  let debitedCredits: number;
+  try {
+    const after = await debitCredits(user.id, chargedCredits);
+    if (after === null) {
+      return NextResponse.json(
+        { error: "クレジットが不足しています。チャージしてから再度お試しください。", remainingCredits: currentCredits },
+        { status: 402 },
+      );
+    }
+    debitedCredits = after;
+  } catch (err) {
+    console.error("[studio/lora/train] failed to debit credits:", err);
     return NextResponse.json({ error: "クレジットの処理に失敗しました。" }, { status: 500 });
   }
 
@@ -752,7 +759,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
       details: jobInsertError?.details,
       hint: jobInsertError?.hint,
     });
-    await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+    await refundCredits(user.id, chargedCredits);
     return NextResponse.json(
       {
         error: "ジョブの作成に失敗しました。",
@@ -784,7 +791,7 @@ async function handlePost(request: Request): Promise<NextResponse> {
         updated_at: new Date().toISOString(),
       })
       .eq("id", jobId);
-    await supabaseAdmin.from("profiles").update({ credits: currentCredits }).eq("id", user.id);
+    await refundCredits(user.id, chargedCredits);
     return NextResponse.json(
       {
         error: "ジョブの作成に失敗しました。",

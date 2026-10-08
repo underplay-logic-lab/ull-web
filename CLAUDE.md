@@ -83,7 +83,7 @@ ULL Studio の差別化は「ローカルPCでも他のSaaSでも不可能な処
 - **標準GPU**: **Blackwell**（`GPU_REQUEST = ["b300", "b200"]` または `"b200"`）。
 - **量子化禁止**: 推論・学習とも **BF16 フル精度を既定**とし、量子化（fp8 / int8 / int4 / NF4 / GGUF 等）およびモデルオフロード（CPU offload / sequential offload）は原則使用しない。使う場合は実機計測で品質・速度の劣化がないことを示したうえでホスト承認を得ること。**例外は「無圧縮版が使えないとき」だけ**（ローダーが量子化レイアウト決め打ちの arch 等。こちらの選択ではないので承認不要。学習 dtype と出力 LoRA は bf16 のまま）→ `docs/gpu-benchmarks.md` §14.8.5。
 - **tier の梯子は「RTX PRO 6000（〜96GB）→ H200（〜141GB）→ B300/B200」の3段**（2026-09-23 実測で確定、`docs/gpu-benchmarks.md` §14.26〜14.28）。L40S / A100 は世代差で速度が1.6〜2.3倍落ちて原価で負け、H100 は RTX PRO 6000 と同速で高い。新機能は VRAM が収まる最下段から **1本測ってから**切り替える（決め打ちしない）。動画生成（Director 系）は UX 上の理由で B300 固定のまま。
-- ⚠️ **「Blackwellは常に最速」という思い込みを持たない。** Qwen-Image-Edit の A100 6倍退行、超解像2Kで B300 < H200、Multi-Angle で B300 のコールドだけ異常に重い等、世代通りの序列にならない実例が複数ある。GPU選定は必ず**1回あたりの実コスト（時間単価×所要時間）**で判断する。→ `docs/gpu-benchmarks.md`
+- ⚠️ **「Blackwellは常に最速」という思い込みを持たない。** 世代通りの序列にならない実例が複数ある。GPU選定は必ず**1回あたりの実コスト（時間単価×所要時間）**で判断する。→ `docs/gpu-benchmarks.md`
 
 ### GPU は「GPU が必須な本番処理」でのみ使う（必須）
 
@@ -94,9 +94,8 @@ ULL Studio の差別化は「ローカルPCでも他のSaaSでも不可能な処
 - 新規ワーカーの立ち上げは「**CPU で import と資産準備がグリーン → はじめて GPU 実行**」の順を厳守する。`modal run` で GPU クラスを直接叩くと、crash-loop 時に Modal がコンテナ起動を繰り返し **GPU 課金が垂れ流しになる**（`retries=0` では止まらない）。
 - バックグラウンドで GPU ジョブを投げたら **放置しない**。最初の数分でログを確認し、crash-loop していたら即 kill する。
 - **「GPUの存在自体は必要だが計算力は不要」なケースは最安のGPU tierを使う。** ComfyUI 本体の `comfy.model_management` が import 時点で `torch.cuda.current_device()` を呼ぶため、ノード存在確認・`/object_info` 取得のようなプローブでもGPUドライバは必須（CPU専用では `RuntimeError: Found no NVIDIA driver`）。ただし Blackwell の性能は一切使わないので、本番用クラスを流用して B300 を起動せず、Modal で選べる最安 tier を使う。
-- **GPU関数が外部スクリプトを `subprocess` で呼ぶ実装は、必ず標準出力をリアルタイムでストリームすること**（`subprocess.run(capture_output=True)` で溜め込んで最後に一括printするのは**禁止**）。多くの外部スクリプトは起動直後に実際の設定値（`Namespace(...)` 等）を1行ログに出すため、溜め込む実装だと「最初の数分でログを確認する」という原則自体が実行不可能になる。`subprocess.Popen` + 1行ずつ `print(..., flush=True)`（または `capture_output=False`）にする。
-- **時間のかかるGPUジョブ（数分以上）は、GPU使用率・VRAM使用量を定期的にログへ出す監視スレッドを標準で仕込む。** バックグラウンドスレッドで `nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits` を8〜10秒間隔で叩き `[gpu_monitor] t=12.3s util=97% vram=52.3/183.0GB temp=68C` のような1行を毎回print。この監視ロジック自体の動作確認は最安GPU tier（T4等）で先に行う。**部品は共通の `ull_gpu_monitor.GpuMonitor`（ピークも取れる・完了時に `vram_peak_gb` へ）を使い、新規ワーカーも最初から入れる**（2026-10-08、Director に無く 213GB のピークを目で読んだ）。
-  - ただし**人間が手動でsmoke/デバッグを見守る場面では、Modalダッシュボードの「Logs」タブにGPU使用率バーが既に出ている**ため自前実装は不要。自前実装が要るのは完了後にテキストログだけを遡って解析する運用（admin画面等）に限られる。
+- **GPU関数が外部スクリプトを `subprocess` で呼ぶ実装は、必ず標準出力をリアルタイムでストリームすること**（`subprocess.run(capture_output=True)` で溜め込んで最後に一括printするのは**禁止**）。`subprocess.Popen` + 1行ずつ `print(..., flush=True)`（または `capture_output=False`）にする（溜め込むと「最初の数分でログを確認する」原則が守れない）。
+- **時間のかかるGPUジョブ（数分以上）は、共通の `ull_gpu_monitor.GpuMonitor` で囲む**（10 秒ごとの `[gpu_monitor]` の 1 行・完了時に `vram_peak_gb`）。新規ワーカーも最初から入れる。人が見守るだけなら Modal の Logs タブの GPU バーで足りる。
 
 ### GPU コンテナ ライフサイクル標準
 
@@ -128,7 +127,7 @@ env={"CXX_APPEND_FLAGS": "-std=c++20", "NVCC_APPEND_FLAGS": "-std=c++20"}
 
 ### ソースビルドのコスト
 
-`flash_attn` 等のソースビルドは **GPU課金ではないが安くはない**（1回 約$3.72 の実績）。また **`MAX_JOBS` を絞っても課金は減らず、むしろビルド時間が伸びて悪化する**（Modalはビルドマシンの専有時間で課金し、こちらの並列度設定では課金対象のマシンサイズが変わらないため）。重いビルドの前後は `modal billing report` / `modal billing rates` で実額を確認して自衛すること。
+`flash_attn` 等のソースビルドは GPU 課金でなくても安くない。**`MAX_JOBS` を絞っても課金は減らない**（ビルド機の専有時間で課金）。前後で `modal billing report` を確認する。
 
 ### ComfyUI コアのバージョン運用
 
@@ -138,7 +137,7 @@ env={"CXX_APPEND_FLAGS": "-std=c++20", "NVCC_APPEND_FLAGS": "-std=c++20"}
 
 ### 大容量バイナリは Supabase を経由させず Modal 側で直接やり取りする（2026-09-18導入・必須）
 
-Supabase Free の月間送信量5GBは、動画・画像を配信するというこのサービスの根幹機能だけで構造的に超過する（実測）。
+Supabase Free の送信量（月 5GB）は動画・画像の配信だけで超える。
 
 - **標準パターン**: 大容量ファイル（生成結果の動画・画像、ユーザーが持ち込む大きな入力ファイル）は、**Supabase Storage を一切経由せず、ブラウザ⇔Modal間で直接やり取りする**。Supabase は「ジョブの状態・メタデータ・小さなテキスト」だけを持つ薄い層に徹させる。
 - **認証**: `MODAL_AUTH_TOKEN` そのものはブラウザに渡さない。Next.js 側が短命のHMAC署名付きトークンを発行し、Modal 側で再計算・検証する。
@@ -148,13 +147,15 @@ Supabase Free の月間送信量5GBは、動画・画像を配信するという
 
 > 手本にするコード・経緯・ハマりどころは `docs/studio-tab-patterns.md` の同名の節。
 
+**Modal の公開入口は必ず認証**: `fastapi_endpoint` は最初にトークン／署名を確認。`web_server` を `requires_proxy_auth=False` で公開しない（共有 Volume 経由で本番に仕込める。`docs/security-audit.md`）。
+
 ### デプロイ
 
 バッチ文字化けを防ぐため、必ず `PYTHONIOENCODING=utf-8 PYTHONUTF8=1 modal deploy ...` を使用すること。
 
 Modalジョブを完全に止めたい時は `modal container stop` ではなく **`modal app stop -y <app_id>`** を使う（`container stop` は別コンテナで再スケジュールしてしまう）。
 
-**GPU ワーカーのデプロイは、そのアプリでジョブが動いていないとき（`modal container list` で確認）に行う。** 実行中にデプロイすると、Modal が動いている台数分の新バージョンのコンテナを先回りで起動し、重いモデルを読み込むだけで捨てる（2026-09-23 Multi-Angle で B200/B300 が 3 台空起動、うち 2 台はメモリ不足で強制終了）。
+**GPU ワーカーのデプロイは、そのアプリでジョブが動いていないとき（`modal container list` で確認）に行う。** 実行中にデプロイすると、Modal が動いている台数分の新バージョンのコンテナを先回りで起動し、重いモデルを読み込むだけで捨てる。
 
 ---
 
@@ -185,6 +186,8 @@ Modalジョブを完全に止めたい時は `modal container stop` ではなく
   - **実測が出たら `LORA_SPI_BASELINE`、価格水準を動かすなら単価 knob を触る。係数の手校正はもう不要。**
 - **原価割れ損切り（cost-guard）**: `src/lib/pricing/costGuard.server.ts` が knob からジョブの許容GPU秒を算出し、Next API が payload で Modal ワーカーへ渡す（LoRA: `cost_cap_seconds`、Angle: `max_allowed_time`）。ワーカー側の env override と `LORA_ABS_MAX_RUN_S` ハード上限は不変で残す。
 - **LoRA 中間チェックポイント**: `save_every` は250刻み（短いランは25%刻み）、5,000step超は**保存20回で頭打ち**。中間 `.safetensors` を永続化し、完了画面で個別ダウンロードを可能にする。Modal Volume は 1TiB/月まで無料・超過 $0.09/GiB/月なので容量より **ファイル数**（v1は推奨5万・ハード50万 inode）に注意する。
+
+- **クレジットの増減は DB 関数でその場で 1 回に**（API: `credits.server.ts` の `debitCredits`／`refundCredits`、ワーカー: rpc `refund_profile_credits`）。「読む → 足し引きして書く」は禁止（同時送信の二重使用。`docs/security-audit.md`）。
 
 > ⚠️ **クレジット計算式を変更するときは、それを参照している全ての cost-guard / timeout 計算に影響が及んでいないか必ず確認すること。** 課金式とタイムアウト式が消費クレジット経由で密結合しており、片方を変えてもう片方が壊れた事故がある（`docs/gpu-benchmarks.md` §8）。LoRA については両者が同じ見積もり関数を共有するよう作り直して、この事故クラスを構造的に潰してある（2026-09-20）。
 

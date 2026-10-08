@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { debitCredits, refundCredits } from "@/lib/credits.server";
 import { createClient } from "@supabase/supabase-js";
 import { buildVisionPrompt } from "@/lib/loraCaptionVision";
 import { CONTENT_POLICY_BLOCK_MESSAGE } from "@/lib/contentPolicy";
@@ -7,7 +8,6 @@ import { presignR2Put, r2KeyForRel, r2UploadsEnabled } from "@/lib/r2.server";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { forbiddenCaptionTerms, loraCaptionPrice } from "@/lib/loraCaptionSpec";
 import { getOrCreateProfile } from "@/lib/profile";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 // LoRA キャプション解析の自前 VLM 経路（2026-09-24、docs/gpu-benchmarks.md §17）。
 // Gemini の route（../caption）は 4 枚ずつ画像本体を受けるが、こちらは全枚数をまとめて GPU に渡すので
@@ -45,12 +45,16 @@ async function currentCredits(userId: string): Promise<number | null> {
   return expired ? 0 : ((data?.credits as number | null | undefined) ?? 0);
 }
 
+// 引き落とし・返金はその場で 1 回の操作（同時送信の二重使用を防ぐ・2026-10-09）。
 async function adjustCredits(userId: string, delta: number): Promise<boolean> {
-  const cur = await currentCredits(userId);
-  if (cur === null || cur + delta < 0) return false;
-  const { error } = await supabaseAdmin.from("profiles").update({ credits: cur + delta }).eq("id", userId);
-  if (error) console.error("[lora/caption-vlm] credit update failed:", error.message);
-  return !error;
+  try {
+    if (delta < 0) return (await debitCredits(userId, -delta)) !== null;
+    await refundCredits(userId, delta);
+    return true;
+  } catch (err) {
+    console.error("[lora/caption-vlm] credit update failed:", err);
+    return false;
+  }
 }
 
 const DISPATCH_URL =
