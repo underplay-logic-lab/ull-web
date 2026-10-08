@@ -40,6 +40,9 @@ export type Edit = {
   realtime?: [number, number][]; // この区間（録画の秒）は操作が無くても早送りしない（曲を聴かせる所など）
   // 録画に音は入らないので、聴かせたい音を後から重ねる（2026-10-08、曲づくり）。at は録画の秒・from は音のファイルの秒。
   sounds?: { at: number; src: string; from?: number; dur: number; volume?: number }[];
+  // 生成した動画そのものを全画面で重ねる（2026-10-08、Director の回）。録画の中の小さな再生枠を拡大するとぼやけるので、
+  // ファイルを本来の画質で見せる。at は録画の秒・from は動画の秒。音は sounds で別に重ねる（ここは音なし）。
+  videos?: { at: number; src: string; from?: number; dur: number }[];
 };
 
 // 録画の区間 [from, to)（秒）を speed 倍で流す。

@@ -1,4 +1,4 @@
-import { AbsoluteFill, Audio, Img, interpolate, Sequence, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
+import { AbsoluteFill, Audio, Img, interpolate, OffthreadVideo, Sequence, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 import type { CalculateMetadataFunction } from "remotion";
 import { color, fontFamily } from "../theme";
 import {
@@ -111,6 +111,34 @@ export function Tutorial({ session, data }: TutorialProps) {
 
       {cursor && <Cursor {...toScreen(cursor.x, cursor.y)} />}
       {ripple && <Ripple {...toScreen(ripple.x, ripple.y)} age={(srcT * 1000 - ripple.t) / 450} />}
+
+      {(edit.videos ?? []).map((v, i) => {
+        // 全画面で重ねる動画（音なし・前後 0.4 秒で溶かす）。カーソルと寄りは隠れる。
+        const from = Math.round(toOutput(segs, v.at) * fps);
+        const len = Math.round(v.dur * fps);
+        const fade = Math.round(fps * 0.4);
+        return (
+          <Sequence key={`vid${i}`} from={from} durationInFrames={len}>
+            <AbsoluteFill
+              style={{
+                background: "#000",
+                opacity: interpolate(frame - from, [0, fade, len - fade, len - 1], [0, 1, 1, 0], {
+                  extrapolateLeft: "clamp",
+                  extrapolateRight: "clamp",
+                }),
+              }}
+            >
+              <OffthreadVideo
+                src={staticFile(v.src)}
+                muted
+                trimBefore={Math.round((v.from ?? 0) * fps)}
+                style={{ width: "100%", height: "100%", objectFit: "contain" }}
+              />
+            </AbsoluteFill>
+          </Sequence>
+        );
+      })}
+
 
       {speed > 1.5 && <FastForward speed={speed} />}
       {caption && <CaptionBar key={caption.at} text={caption.text} />}
