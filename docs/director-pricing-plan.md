@@ -1,6 +1,7 @@
-# Director の料金を「推定 GPU 秒」に・解像度を選べるように（案・2026-10-08）
+# Director の料金を「推定 GPU 秒」に・解像度を選べるように（2026-10-08・**実装済み f9d3605**）
 
-ホスト判断待ちの案。決まったら STATUS と `src/lib/directorPricing.ts` に反映し、この文書は経緯として残す。
+決めたこと: 掛け率 3 倍のまま・解像度は 540p／768p の 2 段・参照の上乗せは式に吸収・768p×Quality の長い動画も選べる（ワーカー上限 4 時間）。
+実装: `directorEstimate`（`src/lib/directorPricing.ts`）・knob `director_*`（係数）・`DIRECTOR_RESOLUTIONS`（`cinematicPricing.ts`）。以下は設計の経緯。
 
 ## なぜ変えるか
 
