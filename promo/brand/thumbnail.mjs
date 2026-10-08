@@ -33,6 +33,31 @@ if (kind === "song") {
   );
   process.exit(0);
 }
+// Cinematic Director（2026-10-09）: 左に元の写真と曲、右に出来た動画のコマを大きく。
+//   node brand/thumbnail.mjs director <元の写真> <動画のコマ(16:9)>
+if (kind === "director") {
+  if (!face || !resultsDir) {
+    console.error("使い方: node brand/thumbnail.mjs director <元の写真> <動画のコマ>");
+    process.exit(1);
+  }
+  const uri = (p) => `data:image/${p.endsWith(".png") ? "png" : "jpeg"};base64,${fs.readFileSync(p).toString("base64")}`;
+  await shoot(
+    "director",
+    `<h1>写真と曲から、<br><span class="num">1</span> 分の一発撮り</h1>
+    <div class="row">
+      <div class="src"><img class="face" src="${uri(face)}"><div class="song">♪ 曲 68 秒</div></div>
+      <div class="arrow">→</div>
+      <div class="out"><img src="${uri(resultsDir)}"><div class="badge">カット無し・68 秒</div></div>
+    </div>`,
+    `.src { height: 100%; display: flex; flex-direction: column; gap: 10px; }
+     .src .face { flex: 1; min-height: 0; }
+     .song { font-size: 26px; text-align: center; padding: 8px 14px; border: 1px solid #ffffff2a; border-radius: 8px; background: #141416; }
+     .out { flex: 1; height: 100%; position: relative; }
+     .out img { width: 100%; height: 100%; object-fit: cover; border-radius: 10px; outline: 1px solid #ffffff22; }
+     .badge { position: absolute; left: 14px; bottom: 14px; font-size: 26px; padding: 6px 14px; border-radius: 6px; background: #0b0b0ccc; }`,
+  );
+  process.exit(0);
+}
 // 種類ごとの見出しと、右側に並べる枚数・並べ方（2026-10-05 に 2 本目 A・B・C の分を追加）。
 const KINDS = {
   angle: { title: `顔 <span class="num">1</span> 枚 から、<span class="num">8</span> 方向`, n: 8, cols: 4 },
