@@ -605,7 +605,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    ホスト（s11 を試聴）「ハスキーは分かりにくいがそれなりに変化はある」→ **「声の感じ（任意）」欄＋例ボタン（押すと欄に足す）を実装**
    （`SONG_VOICE_STYLE_EXAMPLES`・Gemini が英語の声の言葉にして既定 tag の clear young 等と置き換え・性別の語は必ず残す・girl/child は禁止）。
    続き: 本番の Gemini が出した声のタグ（`voice_tags2/gemini_tags.json`・例 もっと力強く→more powerful energetic resonant）で同条件 15 曲
-   `D:/ComfyUI-ull/results/voice_tags2/`（前回 `voice_tags/0base_s*` と同じ曲調・歌詞・シード）→ ホストの試聴待ち。高さは G4 前後に揃い差は出ない（メロディーで決まる）。
+   `D:/ComfyUI-ull/results/voice_tags2/`（前回 `voice_tags/0base_s*` と同じ曲調・歌詞・シード）→ ホスト「確実に言葉に反応している・『もっと』は弱いかも・言葉なので使ってもらえばよい」＝**完了**。高さは G4 前後に揃い差は出ない（メロディーで決まる）。
    **（10-08）ComfyUI v0.35.1→v0.39.2 の changelog（H3 関連）**: ピーク VRAM 削減 `2d6b73283`（v0.39.0）は埋め込みの一時テンソルを先に捨てるだけ＝
    本番の窓（固定 約 93GB）に対して 1〜2GB 規模の見込みで、GPU 段や窓の上限は変わらない。H3 の VAE 最適化・使用量減（v0.36.0 `b2e31e894`・`f14bbe286`）と
    タイルのつなぎ目のなじませ（v0.38.0 `fc584aaa2`）は画質・VAE のメモリに効く可能性 → 版上げするならここが本命（CLAUDE.md の 3 段階の検証が要る・今は急がない）。
