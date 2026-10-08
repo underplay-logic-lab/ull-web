@@ -377,7 +377,7 @@ image = (
         f"{COMFY_DIR}/custom_nodes/ull_time_mask",
         copy=True,
     )
-    .add_local_python_source("ull_image_prep")
+    .add_local_python_source("ull_image_prep", "ull_gpu_monitor")
     .add_local_python_source("ull_video_fix")
     .add_local_python_source("ull_r2")
 )
@@ -2222,6 +2222,11 @@ class WanAnimateBlackwell:
         # metadata.vram_used_gb へ PATCH する（cinematic の行は metadata を
         # 他に使っていないので丸ごと上書きで可）。model_downloads の
         # _poll_progress と同じ daemon スレッド方式。
+        # GPU 監視（2026-10-08・ull_gpu_monitor）: 10 秒ごとに [gpu_monitor] の 1 行・ピークを vram_peak_gb に残す。
+        # 画面のライブ表示（下の _poll_vram）はその時点の値なので、ピークはこちらで取る。直接呼んだ試験でも動く。
+        from ull_gpu_monitor import GpuMonitor
+
+        _gpu_mon = GpuMonitor(f"director {job_id or ''}".strip()).__enter__()
         _vram_stop = None
         _vram_thread = None
         if is_async:
@@ -2401,6 +2406,7 @@ class WanAnimateBlackwell:
         except Exception as exc:
             if _vram_stop is not None:
                 _vram_stop.set()
+            _gpu_mon.__exit__(None, None, None)
             self._append_log("failed", time.time() - started, error=str(exc)[:500])
             if is_async:
                 _supabase_patch_job(
@@ -2409,7 +2415,7 @@ class WanAnimateBlackwell:
                         "status": "failed",
                         "error_message": str(exc)[:2000],
                         "completed_at": _now_iso(),
-                        "metadata": {"gpu_tier": _gpu_tier_label()},
+                        "metadata": {"gpu_tier": _gpu_tier_label(), "vram_peak_gb": _gpu_mon.peak_gb},
                     },
                 )
                 _refund_credits(user_id, credits_cost)
@@ -2417,6 +2423,7 @@ class WanAnimateBlackwell:
             raise
         if _vram_stop is not None:
             _vram_stop.set()
+        _gpu_mon.__exit__(None, None, None)
         self._append_log("success", time.time() - started, filename=filename)
         if save_to_volume:
             self._save_output_to_volume(filename, result_bytes)
@@ -2429,6 +2436,7 @@ class WanAnimateBlackwell:
             "gpu_tier": GPU_TIER,
             "output_path": output_path,
             "vram_used_gb": _vram_used_gb,
+            "vram_peak_gb": _gpu_mon.peak_gb,
         }
         if image_outputs:
             # 同期で呼んだとき（submit_prod.py の確認など）も全部の画像を返す。
@@ -2447,6 +2455,7 @@ class WanAnimateBlackwell:
             }
             if _vram_used_gb is not None:
                 _photo_meta["vram_used_gb"] = _vram_used_gb
+            _photo_meta["vram_peak_gb"] = _gpu_mon.peak_gb
             _supabase_patch_job(job_id, {"status": "completed", "completed_at": _now_iso(), "metadata": _photo_meta})
             _clear_active_job(active_job_id)
             return result
@@ -2471,6 +2480,7 @@ class WanAnimateBlackwell:
             }
             if _vram_used_gb is not None:
                 _completed_fields["metadata"]["vram_used_gb"] = _vram_used_gb
+            _completed_fields["metadata"]["vram_peak_gb"] = _gpu_mon.peak_gb
             _completed_fields["metadata"]["host_ram_peak_gb"] = _host_ram_peak_gb()
             if _vfix_ctx:
                 # 動画の部分修正: 窓・区間（フレーム）と、作り直した区間に入ったカットの秒（無ければ []・検出失敗は null）。

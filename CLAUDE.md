@@ -95,7 +95,7 @@ ULL Studio の差別化は「ローカルPCでも他のSaaSでも不可能な処
 - バックグラウンドで GPU ジョブを投げたら **放置しない**。最初の数分でログを確認し、crash-loop していたら即 kill する。
 - **「GPUの存在自体は必要だが計算力は不要」なケースは最安のGPU tierを使う。** ComfyUI 本体の `comfy.model_management` が import 時点で `torch.cuda.current_device()` を呼ぶため、ノード存在確認・`/object_info` 取得のようなプローブでもGPUドライバは必須（CPU専用では `RuntimeError: Found no NVIDIA driver`）。ただし Blackwell の性能は一切使わないので、本番用クラスを流用して B300 を起動せず、Modal で選べる最安 tier を使う。
 - **GPU関数が外部スクリプトを `subprocess` で呼ぶ実装は、必ず標準出力をリアルタイムでストリームすること**（`subprocess.run(capture_output=True)` で溜め込んで最後に一括printするのは**禁止**）。多くの外部スクリプトは起動直後に実際の設定値（`Namespace(...)` 等）を1行ログに出すため、溜め込む実装だと「最初の数分でログを確認する」という原則自体が実行不可能になる。`subprocess.Popen` + 1行ずつ `print(..., flush=True)`（または `capture_output=False`）にする。
-- **時間のかかるGPUジョブ（数分以上）は、GPU使用率・VRAM使用量を定期的にログへ出す監視スレッドを標準で仕込む。** バックグラウンドスレッドで `nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits` を8〜10秒間隔で叩き `[gpu_monitor] t=12.3s util=97% vram=52.3/183.0GB temp=68C` のような1行を毎回print。この監視ロジック自体の動作確認は最安GPU tier（T4等）で先に行う。
+- **時間のかかるGPUジョブ（数分以上）は、GPU使用率・VRAM使用量を定期的にログへ出す監視スレッドを標準で仕込む。** バックグラウンドスレッドで `nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits` を8〜10秒間隔で叩き `[gpu_monitor] t=12.3s util=97% vram=52.3/183.0GB temp=68C` のような1行を毎回print。この監視ロジック自体の動作確認は最安GPU tier（T4等）で先に行う。**部品は共通の `ull_gpu_monitor.GpuMonitor`（ピークも取れる・完了時に `vram_peak_gb` へ）を使い、新規ワーカーも最初から入れる**（2026-10-08、Director に無く 213GB のピークを目で読んだ）。
   - ただし**人間が手動でsmoke/デバッグを見守る場面では、Modalダッシュボードの「Logs」タブにGPU使用率バーが既に出ている**ため自前実装は不要。自前実装が要るのは完了後にテキストログだけを遡って解析する運用（admin画面等）に限られる。
 
 ### GPU コンテナ ライフサイクル標準

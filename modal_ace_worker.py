@@ -105,7 +105,7 @@ image = (
     .run_commands(
         f'python -c "from huggingface_hub import snapshot_download; snapshot_download(\'{WHISPER_REPO}\', revision=\'{WHISPER_REVISION}\')"'
     )
-    .add_local_python_source("ull_r2")
+    .add_local_python_source("ull_r2", "ull_gpu_monitor")
 )
 
 
@@ -581,6 +581,10 @@ class AceStep:
         seed = int(job.get("seed", 1))
         # 進み具合は「作っている曲の番号」（2026-10-08 ホスト指摘: 完成数だと 1 曲目の間が 0/3・最後の 3/3 は完了に切り替わって見えない）。
         _patch_job(job_id, {"status": "processing", "started_at": _now_iso(), "progress_message": f"1/{count} 曲目"})
+        # GPU 監視（2026-10-08・ull_gpu_monitor）: [gpu_monitor] の 1 行とピーク（vram_peak_gb）。
+        from ull_gpu_monitor import GpuMonitor
+
+        mon = GpuMonitor(f"song {job_id[:8]}").__enter__()
         try:
             import ull_r2
 
@@ -662,16 +666,19 @@ class AceStep:
             gb = _vram_used_gb()
             if gb is not None:
                 meta["vram_used_gb"] = gb
+            mon.__exit__(None, None, None)
+            meta["vram_peak_gb"] = mon.peak_gb
             _patch_job(job_id, {"status": "completed", "completed_at": _now_iso(), "progress_percent": 100, "metadata": meta})
             print(f"[song] job {job_id[:8]} done: {count} song(s)", flush=True)
             return {"ok": True, "count": count}
         except Exception as exc:
             print(f"[song] job {job_id[:8]} failed: {exc!r}", flush=True)
+            mon.__exit__(None, None, None)
             _patch_job(job_id, {
                 "status": "failed",
                 "error_message": str(exc)[:2000],
                 "completed_at": _now_iso(),
-                "metadata": {"gpu_tier": job.get("gpu_label") or GPU, "refunded": True},
+                "metadata": {"gpu_tier": job.get("gpu_label") or GPU, "refunded": True, "vram_peak_gb": mon.peak_gb},
             })
             _refund(user_id, int(job.get("credits_cost") or 0))
             raise

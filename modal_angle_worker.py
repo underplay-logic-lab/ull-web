@@ -743,7 +743,7 @@ image = (
         "pose_landmarker_heavy.task', '/opt/pose_landmarker_heavy.task')\"",
     )
     # 全ワーカー共通の入力画像正規化レイヤー（_load_ref_image が使う）。
-    .add_local_python_source("ull_image_prep")
+    .add_local_python_source("ull_image_prep", "ull_gpu_monitor")
 )
 
 # CPU プリキャッシュ / ローカルディスパッチ用の軽量 image。
@@ -915,6 +915,19 @@ def _supabase_request_checked(method: str, path: str, attempts: int = 3, backoff
         if attempt < attempts:
             time.sleep(backoff_s * attempt)
     raise last_exc if last_exc is not None else RuntimeError("unknown Supabase request failure")
+
+
+def _merge_angle_metadata(job_id: str, extra: dict) -> None:
+    """metadata に extra を足す（PATCH は jsonb 丸ごと置き換えなので、今の値を読んでから足して書く）。best-effort。"""
+    if not job_id:
+        return
+    try:
+        res = _supabase_request("GET", "/rest/v1/angle_jobs", params={"id": f"eq.{job_id}", "select": "metadata"})
+        rows = res.json() if res is not None and res.ok else []
+        meta = rows[0].get("metadata") if rows and isinstance(rows[0].get("metadata"), dict) else {}
+        _patch_angle_job(job_id, {"metadata": {**meta, **extra}})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[angle-job] failed to merge metadata for {job_id}: {exc}", flush=True)
 
 
 def _patch_angle_job(job_id: str, fields: dict) -> None:
@@ -2271,6 +2284,10 @@ class QwenImageEditWorker:
 
         watchdog = threading.Thread(target=_watchdog, name="angle-watchdog", daemon=True)
         watchdog.start()
+        # GPU 監視（2026-10-08・ull_gpu_monitor）: [gpu_monitor] の 1 行とピーク（vram_peak_gb）。下の finally で止める。
+        from ull_gpu_monitor import GpuMonitor
+
+        gpu_mon = GpuMonitor(f"angle {job_id}").__enter__()
         print(
             f"[angle-job] {job_id} watchdog armed: freeze>{WATCHDOG_FREEZE_S}s, "
             f"cost-cap={'off' if max_allowed_time is None else f'{int(max_allowed_time)}s'}, "
@@ -2461,13 +2478,14 @@ class QwenImageEditWorker:
                 {
                     "status": "failed",
                     "error_message": str(exc)[:500],
-                    "metadata": {"gpu_tier": _gpu_tier_label()},
+                    "metadata": {"gpu_tier": _gpu_tier_label(), "vram_peak_gb": gpu_mon.peak_gb},
                 },
             )
             _refund_remaining("exception")  # 生成できた分だけ課金、残りは返金
             return {"ok": False, "error": str(exc), "completed": done}
         finally:
             # 監視スレッドを安全に終了（正常完了・例外の両方でここを通る）。
+            gpu_mon.__exit__(None, None, None)
             watchdog_stop.set()
             watchdog.join(timeout=WATCHDOG_POLL_S + 2)
             try:
@@ -2502,6 +2520,7 @@ class QwenImageEditWorker:
                 f"{missing}件は生成後の記録に失敗したため、該当分のクレジットを返金しました。"
             )[:500]
         _patch_angle_job(job_id, completed_fields)
+        _merge_angle_metadata(job_id, {"vram_peak_gb": gpu_mon.peak_gb})
         if done < n_total:
             _refund_remaining("db-write-failed")
         if done > 0:

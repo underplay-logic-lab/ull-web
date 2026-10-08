@@ -282,7 +282,7 @@ train_image = (
     )
     # R2 成果物ストア（ull_r2.py、2026-09-23）
     .pip_install("boto3>=1.35")
-    .add_local_python_source("ull_r2")
+    .add_local_python_source("ull_r2", "ull_gpu_monitor")
 )
 
 SDXL_BASE_REPO = "stabilityai/stable-diffusion-xl-base-1.0"
@@ -1781,6 +1781,10 @@ def train_sdxl_lora_job(params: dict) -> dict:
         log("sd-scripts を起動します（以降はその標準出力をそのまま流します）")
 
         _patch_job(job_id, {"progress_percent": 15, "progress_message": "学習開始"})
+        # GPU 監視（2026-10-08・ull_gpu_monitor）: 10 秒ごとの [gpu_monitor] の 1 行（ピークは従来どおり vram_peak）。
+        from ull_gpu_monitor import GpuMonitor
+
+        _gpu_mon = GpuMonitor(f"sdxl {job_id}").__enter__()
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         last_progress_patch = 0.0
         tail_lines: list[str] = []
@@ -1879,8 +1883,10 @@ def train_sdxl_lora_job(params: dict) -> dict:
             except Exception as commit_exc:  # noqa: BLE001
                 print(f"[sdxl] salvage commit skipped: {commit_exc}", flush=True)
             print(f"[sdxl] salvaged {len(salvaged)} checkpoint(s)", flush=True)
+            _gpu_mon.__exit__(None, None, None)
             raise SafetyLimitError(aborted, kind="cost", checkpoints=salvaged)
         returncode = proc.wait()
+        _gpu_mon.__exit__(None, None, None)
         if returncode != 0:
             raise RuntimeError(f"sd-scripts exited {returncode}:\n" + "\n".join(tail_lines[-40:]))
 
@@ -2211,7 +2217,7 @@ train_image_blackwell = (
     .pip_install("Pillow", "requests")
     .env({"HF_HOME": f"{MODELS_DIR}/hf_home_sdxl"})
     .pip_install("boto3>=1.35")
-    .add_local_python_source("ull_r2")
+    .add_local_python_source("ull_r2", "ull_gpu_monitor")
 )
 _BLACKWELL_TIERS = {"rtx_pro_6000", "b300", "b200"}
 _raw_train_sdxl = train_sdxl_lora_job.get_raw_f()

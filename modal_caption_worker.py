@@ -44,7 +44,7 @@ gpu_image = (
         index_url="https://download.pytorch.org/whl/cu130",
     )
     .pip_install("transformers==5.5.3", "accelerate", "pillow", "boto3>=1.35", "requests", "fastapi[standard]")
-    .add_local_python_source("ull_r2")
+    .add_local_python_source("ull_r2", "ull_gpu_monitor")
 )
 endpoint_image = modal.Image.debian_slim(python_version="3.13").pip_install("fastapi[standard]")
 
@@ -287,6 +287,10 @@ class CaptionVLM:
                  "load_s": self.load_s, "started_at": time.time()}
         jobs[key] = state
         t0 = time.time()
+        # GPU 監視（2026-10-08・ull_gpu_monitor）: [gpu_monitor] の 1 行とピーク（state の vram_peak_gb）。
+        from ull_gpu_monitor import GpuMonitor
+
+        gpu_mon = GpuMonitor(f"caption {key}").__enter__()
         try:
             def _fetch(k: str):
                 try:
@@ -354,11 +358,14 @@ class CaptionVLM:
             _log_generation(key, "failed", float(self.load_s or 0) + (time.time() - t0), 0, _gpu_label(),
                             str(state.get("error") or ""))
         finally:
+            gpu_mon.__exit__(None, None, None)
+            state["vram_peak_gb"] = gpu_mon.peak_gb
+            jobs[key] = state
             try:
                 ull_r2.delete_keys(keys)  # 縮小画像は解析が済めば要らない
             except Exception as exc:  # noqa: BLE001
                 print(f"[caption] input cleanup skipped: {exc!r}", flush=True)
-        return {"status": state["status"], "total": total}
+        return {"status": state["status"], "total": total, "vram_peak_gb": gpu_mon.peak_gb}
 
 
 @app.function(

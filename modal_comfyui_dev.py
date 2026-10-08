@@ -134,6 +134,7 @@ image = (
         f" {COMFY_DIR}/custom_nodes/ComfyUI-Manager",
         f"pip install --no-cache-dir -r {COMFY_DIR}/custom_nodes/ComfyUI-Manager/requirements.txt",
     )
+    .add_local_python_source("ull_gpu_monitor")
 )
 
 
@@ -317,6 +318,10 @@ def comfyui_server():
 
     _wait_until_ready(proc, READY_TIMEOUT_SECONDS)
     control_dict[READY_AT_KEY] = time.time()
+    # GPU 監視（2026-10-08・ull_gpu_monitor）: 起動中ずっと 10 秒ごとに [gpu_monitor] の 1 行（コンテナと一緒に止まる）。
+    from ull_gpu_monitor import GpuMonitor
+
+    GpuMonitor("comfyui-dev").__enter__()
     print(f"[INFO] ComfyUI server is fully ready on port {COMFYUI_PORT}.")
 
 

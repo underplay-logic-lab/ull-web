@@ -195,7 +195,7 @@ app = modal.App("ull-lora-worker")
 
 # Helper modules split out of this file (2026-09-24). This module imports them at top level,
 # so EVERY image a function of this app runs on must ship them (add_local_python_source).
-_LORA_WORKER_MODULES = ("lora_worker_core", "lora_worker_models", "lora_worker_train", "lora_worker_endpoints")
+_LORA_WORKER_MODULES = ("lora_worker_core", "lora_worker_models", "lora_worker_train", "lora_worker_endpoints", "ull_gpu_monitor")
 
 image = (
     # Aligned with modal_wan_animate_blackwell.py's proven Blackwell setup:

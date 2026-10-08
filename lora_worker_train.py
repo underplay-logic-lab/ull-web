@@ -1819,6 +1819,10 @@ except Exception as _e:  # noqa: BLE001
         except Exception as _ke:  # noqa: BLE001
             print(f"[stage2] subprocess kill: {_ke}", flush=True)
 
+    # GPU 監視（2026-10-08・ull_gpu_monitor）: 10 秒ごとの [gpu_monitor] の 1 行（ピークは従来どおり _track_vram_peak）。
+    from ull_gpu_monitor import GpuMonitor
+
+    _gpu_mon = GpuMonitor(f"lora {job_id}").__enter__()
     try:
         with open(log_path, "w", encoding="utf-8") as log_file:
             # `-u` + PYTHONUNBUFFERED (above) + line-buffered text pipe.
@@ -2081,6 +2085,7 @@ except Exception as _e:  # noqa: BLE001
             else:
                 returncode = proc.wait()
     finally:
+        _gpu_mon.__exit__(None, None, None)
         if state["step"] > 0 or cache_state["active"] or log_ring:
             _push(force=True)
         if _ckpt_commit_timer[0] is not None:

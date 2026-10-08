@@ -1056,7 +1056,7 @@ image = (
             "PYTHONUNBUFFERED": "1",
         }
     )
-    .add_local_python_source("ull_image_prep")
+    .add_local_python_source("ull_image_prep", "ull_gpu_monitor")
 )
 
 # CPU プリキャッシュ用の軽量 image（重い DL を GPU にやらせない — CLAUDE.md §1）。
@@ -1147,6 +1147,11 @@ class _VramPeak:
     def __enter__(self):
         import threading
 
+        # 共通の GPU 監視（2026-10-08・ull_gpu_monitor）: 10 秒ごとの [gpu_monitor] の 1 行（全ワーカー共通の書式）。
+        # ピークはここの 0.5 秒間隔の値を使う（従来どおり）。
+        from ull_gpu_monitor import GpuMonitor
+
+        self._mon = GpuMonitor("upscale").__enter__()
         self._stop = threading.Event()
 
         def _loop():
@@ -1164,6 +1169,8 @@ class _VramPeak:
             self._stop.set()
         if self._thr:
             self._thr.join(timeout=2)
+        if getattr(self, "_mon", None) is not None:
+            self._mon.__exit__(None, None, None)
         return False
 
 
