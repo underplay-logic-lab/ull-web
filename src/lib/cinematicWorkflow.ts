@@ -103,7 +103,7 @@ const WORKFLOW_TEMPLATE = {
     _meta: { title: "KSamplerSelect" },
   },
   "105:9": {
-    inputs: { scheduler: "beta", steps: 4, denoise: 1, model: ["105:121", 0] },
+    inputs: { scheduler: "beta", steps: 4, denoise: 1, model: ["105:124", 0] },
     class_type: "BasicScheduler",
     _meta: { title: "BasicScheduler" },
   },
@@ -119,7 +119,7 @@ const WORKFLOW_TEMPLATE = {
     _meta: { title: "SamplerCustomAdvanced" },
   },
   "105:16": {
-    inputs: { model: ["105:121", 0], conditioning: ["105:104", 0] },
+    inputs: { model: ["105:124", 0], conditioning: ["105:104", 0] },
     class_type: "BasicGuider",
     _meta: { title: "Basic Guider" },
   },
@@ -166,17 +166,9 @@ const WORKFLOW_TEMPLATE = {
     class_type: "PrimitiveFloat",
     _meta: { title: "Float (duration)" },
   },
-  "105:121": {
-    inputs: {
-      reuse_threshold: 0.3,
-      start_percent: 0.2,
-      end_percent: 0.9,
-      verbose: false,
-      model: ["105:124", 0],
-    },
-    class_type: "EasyCache",
-    _meta: { title: "EasyCache" },
-  },
+  // EasyCache（105:121）は外した（2026-10-08 ホスト判断）。20 秒・Quality・同じシードの あり／なし 比較で、ありは手の動きの破綻が
+  // 目立った（D:/ComfyUI-ull/results/prod/easycache/）。時間はありの方が 34% 短いが、品質を優先し Fast も含め全モードで使わない
+  // （速さは step 数の違いだけにする）。サンプラーとガイダーは Sage のパッチ（105:124）から直接受ける。
   "105:124": {
     inputs: { sage_attention: "auto", allow_compile: true, model: ["105:125", 0] },
     class_type: "PathchSageAttentionKJ",
