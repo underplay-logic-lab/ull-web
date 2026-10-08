@@ -75,6 +75,7 @@
   時刻は edit.json のテロップを `toOutput(buildSegments(...))` で書き出し後の秒へ）・タグ・投稿設定（AI の使用＝はい・埋め込み許可）。
   **次の回へのリンクは説明欄に書かない**（再生リストで回す。2026-10-08 ホスト）。
 - 済（2026-10-08）: 曲づくり＝ https://youtu.be/PDD-UU6L75I （5:00・`src/lib/tutorialVideos.ts` の `song`）。
+- 済（2026-10-09）: Cinematic Director＝ https://youtu.be/zrO661jI5T4 （2:37・`director`）。録画 `hinata-director4`（768p・Fast・参照 7 枚・リアル路線の台本）・結果 8230ab57 を全画面で重ねた（edit.json の videos）。
 - 選んだ曲（何回目の何曲目か・切り出した秒）を STATUS に残す（次の回の素材）。
 
 ---
