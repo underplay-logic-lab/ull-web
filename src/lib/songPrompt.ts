@@ -22,8 +22,23 @@ export type SongPlan = {
 const KANA_RULE =
   "Readability: the singing model often misreads kanji. Rewrite only individual words that are hard to read (rare readings, ambiguous compounds, uncommon proper nouns) into hiragana; keep ordinary words in kanji. Never rewrite whole lines into hiragana.";
 
-function voiceTag(voice: SongVoiceId): string {
-  return SONG_VOICES.find((v) => v.id === voice)?.tag ?? SONG_VOICES[0].tag;
+function voiceOf(voice: SongVoiceId) {
+  return SONG_VOICES.find((v) => v.id === voice) ?? SONG_VOICES[0];
+}
+
+type PlanInput = { idea?: string; lyrics?: string; style?: string; voice: SongVoiceId; voiceStyle?: string; parts?: SongParts };
+
+/** 声の指示。「声の感じ」が書かれていれば既定の tag（clear young 等）の代わりに、それを英語の声の言葉にさせる（2026-10-08）。 */
+function vocalInstruction(input: PlanInput): string {
+  const v = voiceOf(input.voice);
+  const vs = input.voiceStyle?.trim();
+  if (!vs) return `The vocal MUST be: ${v.tag}. Do not mention real artists.`;
+  return [
+    `The vocal MUST be ${v.base}, with this voice character requested by the user (may be Japanese): "${vs}".`,
+    `Translate it into a few concrete English words about timbre and delivery placed right before "${v.base}" (e.g. "powerful belting", "soft breathy", "husky raspy", "cute sweet high-pitched", "calm mature low").`,
+    // 「young girl」と書くと歌が入らなかった（2026-10-06 の試験）。
+    "Keep degree words (\"more\", \"slightly\", \"very\") as intensity. Never use \"girl\", \"boy\" or \"child\". Do not mention real artists.",
+  ].join("\n");
 }
 
 /** 何番までかに応じた構成（1 番 / 2 番 / 3 番）。サビは毎回同じ 4 行、A メロは毎回新しい 4 行。 */
@@ -37,7 +52,7 @@ function structureFor(parts: SongParts): string {
   return `${blocks.join(", ")}. ${parts * 8} sung lines in total.`;
 }
 
-export function buildSongPlanPrompt(input: { idea?: string; lyrics?: string; style?: string; voice: SongVoiceId; parts?: SongParts }): string {
+export function buildSongPlanPrompt(input: PlanInput): string {
   const hasLyrics = Boolean(input.lyrics?.trim());
   return [
     "You are a professional songwriter and producer preparing input for a text-to-music model that sings lyrics.",
@@ -59,7 +74,7 @@ export function buildSongPlanPrompt(input: { idea?: string; lyrics?: string; sty
     KANA_RULE,
     "",
     "tags: one English comma-separated list for the music model: genre, mood, main instruments, tempo feel, production, and the vocal.",
-    `The vocal MUST be: ${voiceTag(input.voice)}. Do not mention real artists.`,
+    vocalInstruction(input),
     "bpm: an integer between 70 and 160 that suits the song. keyscale: like \"G major\" or \"A minor\".",
     "language: ISO code of the lyrics, e.g. \"ja\" or \"en\".",
     "",
@@ -94,11 +109,16 @@ function parsePlan(raw: string): SongPlan {
   };
 }
 
-export async function planSong(input: { idea?: string; lyrics?: string; style?: string; voice: SongVoiceId; parts?: SongParts }): Promise<SongPlan> {
+export async function planSong(input: PlanInput): Promise<SongPlan> {
   const raw = await runDirectorPromptGemini(buildSongPlanPrompt(input), "song_plan");
   const plan = parsePlan(raw);
   // 声の指定は必ず入れる（Gemini が落とすことがある）。
-  const vt = voiceTag(input.voice);
-  if (!plan.tags.toLowerCase().includes(vt.toLowerCase())) plan.tags = `${plan.tags}, ${vt}`;
+  // 声の感じを書いたときは言い回しが毎回変わるので、性別の語（female / male）があるかだけ見る。
+  const v = voiceOf(input.voice);
+  if (input.voiceStyle?.trim()) {
+    if (!new RegExp(`\\b${v.id}\\b`, "i").test(plan.tags)) plan.tags = `${plan.tags}, ${v.base}`;
+  } else if (!plan.tags.toLowerCase().includes(v.tag.toLowerCase())) {
+    plan.tags = `${plan.tags}, ${v.tag}`;
+  }
   return plan;
 }

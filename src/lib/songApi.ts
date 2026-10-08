@@ -19,6 +19,7 @@ export async function startSongJob(args: {
   lyrics?: string;
   style?: string;
   voice: SongVoiceId;
+  voiceStyle?: string;
   count: number;
   parts?: number;
   priority?: boolean;

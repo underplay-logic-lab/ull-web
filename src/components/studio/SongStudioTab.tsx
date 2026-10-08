@@ -22,6 +22,8 @@ import {
   type SongParts,
   SONG_STYLE_MAX_LENGTH,
   SONG_VOICES,
+  SONG_VOICE_STYLE_EXAMPLES,
+  SONG_VOICE_STYLE_MAX_LENGTH,
   songCredits,
   songPriorityParallelSurcharge,
   type SongVoiceId,
@@ -53,7 +55,7 @@ const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_CONSECUTIVE_ERRORS = 8;
 const COUNTS = Array.from({ length: SONG_MAX_COUNT - SONG_MIN_COUNT + 1 }, (_, i) => SONG_MIN_COUNT + i);
 
-type Snapshot = { mode: Mode; idea: string; lyrics: string; style: string; voice: SongVoiceId; count: number; parts: SongParts };
+type Snapshot = { mode: Mode; idea: string; lyrics: string; style: string; voice: SongVoiceId; voiceStyle: string; count: number; parts: SongParts };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -99,6 +101,7 @@ export function SongStudioTab() {
   const [lyrics, setLyrics] = useState("");
   const [style, setStyle] = useState("");
   const [voice, setVoice] = useState<SongVoiceId>("female");
+  const [voiceStyle, setVoiceStyle] = useState("");
   const [count, setCount] = useState<number>(SONG_MIN_COUNT);
   // 長さ（何番まで）。手書きの歌詞は行数で決まる（サーバーと同じ関数）。
   const [partsChoice, setPartsChoice] = useState<SongParts>(1);
@@ -140,7 +143,7 @@ export function SongStudioTab() {
       setErrorMessage("歌詞を入れてください。");
       return null;
     }
-    return { mode, idea: idea.trim(), lyrics: lyrics.trim(), style: style.trim(), voice, count, parts };
+    return { mode, idea: idea.trim(), lyrics: lyrics.trim(), style: style.trim(), voice, voiceStyle: voiceStyle.trim(), count, parts };
   };
 
   const start = useCallback(
@@ -151,6 +154,7 @@ export function SongStudioTab() {
         lyrics: s.mode === "lyrics" ? s.lyrics : undefined,
         style: s.style || undefined,
         voice: s.voice,
+        voiceStyle: s.voiceStyle || undefined,
         count: s.count,
         parts: s.parts,
         ...opts,
@@ -510,6 +514,34 @@ export function SongStudioTab() {
               ))}
             </select>
           </div>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-muted">声の感じ（任意）</label>
+          <input
+            value={voiceStyle}
+            onChange={(e) => setVoiceStyle(e.target.value.slice(0, SONG_VOICE_STYLE_MAX_LENGTH))}
+            placeholder="例: 力強く、少しハスキーに"
+            className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground placeholder:text-muted/60"
+          />
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            {SONG_VOICE_STYLE_EXAMPLES.map((w) => (
+              <button
+                key={w}
+                type="button"
+                onClick={() =>
+                  setVoiceStyle((cur) =>
+                    cur.includes(w) ? cur : (cur.trim() ? `${cur.trim()}、${w}` : w).slice(0, SONG_VOICE_STYLE_MAX_LENGTH),
+                  )
+                }
+                className="rounded-full border border-border px-2.5 py-0.5 text-xs text-muted hover:border-foreground/40 hover:text-foreground"
+              >
+                + {w}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1 text-xs text-muted">
+            声の雰囲気の目安です。「もっと力強く」「少しだけかわいく」のように加減も書けます。曲によって効き方は変わります。
+          </p>
         </div>
         <div>
           <label className="mb-1 block text-xs text-muted">曲の長さ</label>

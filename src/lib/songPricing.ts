@@ -38,11 +38,19 @@ export const SONG_IDEA_MAX_LENGTH = 600;
 export const SONG_LYRICS_MAX_LENGTH = 1500;
 export const SONG_STYLE_MAX_LENGTH = 300;
 
-/** 声（タグに足す英語）。 */
+/** 声（タグに足す英語）。tag は「声の感じ」が空のときの既定、base は声の感じを書いたときも必ず残す部分。 */
 export const SONG_VOICES = [
-  { id: "female", label: "女性ボーカル", tag: "clear young Japanese female vocals" },
-  { id: "male", label: "男性ボーカル", tag: "warm Japanese male vocals" },
+  { id: "female", label: "女性ボーカル", tag: "clear young Japanese female vocals", base: "Japanese female vocals" },
+  { id: "male", label: "男性ボーカル", tag: "warm Japanese male vocals", base: "Japanese male vocals" },
 ] as const;
+
+/**
+ * 声の感じ（任意・2026-10-08）。日本語で書いてもらい、Gemini が英語の声のタグに直して既定の tag と置き換える。
+ * 手元の試験（D:/ComfyUI-ull/results/voice_tags/）で「力強い・やさしい・かわいい」は耳で分かる程度に効いた（ハスキーは弱め）。
+ * 例のボタンは押すと欄に足される＝書き方の手本（「もっと力強く」等の加減も書ける）。
+ */
+export const SONG_VOICE_STYLE_MAX_LENGTH = 100;
+export const SONG_VOICE_STYLE_EXAMPLES = ["やさしく", "力強く", "ハスキー", "かわいく", "落ち着いた"] as const;
 export type SongVoiceId = (typeof SONG_VOICES)[number]["id"];
 export function isSongVoiceId(v: unknown): v is SongVoiceId {
   return SONG_VOICES.some((x) => x.id === v);

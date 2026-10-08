@@ -7,6 +7,7 @@ import {
   SONG_IDEA_MAX_LENGTH,
   SONG_LYRICS_MAX_LENGTH,
   SONG_STYLE_MAX_LENGTH,
+  SONG_VOICE_STYLE_MAX_LENGTH,
   clampSongCount,
   clampSongParts,
   songPartsFromLyrics,
@@ -49,6 +50,7 @@ export async function POST(request: Request) {
   const lyricsIn = typeof body.lyrics === "string" ? body.lyrics.trim().slice(0, SONG_LYRICS_MAX_LENGTH) : "";
   const style = typeof body.style === "string" ? body.style.trim().slice(0, SONG_STYLE_MAX_LENGTH) : "";
   const voice = isSongVoiceId(body.voice) ? body.voice : "female";
+  const voiceStyle = typeof body.voiceStyle === "string" ? body.voiceStyle.trim().slice(0, SONG_VOICE_STYLE_MAX_LENGTH) : "";
   const count = clampSongCount(body.count);
   // 長さ（何番まで）。手書きの歌詞は行数で決める（フロントの表示と同じ関数）。
   const parts = mode === "lyrics" ? songPartsFromLyrics(lyricsIn) : clampSongParts(body.parts);
@@ -57,7 +59,7 @@ export async function POST(request: Request) {
   if (mode === "idea" && !idea) return NextResponse.json({ error: "どんな曲にしたいかを書いてください。" }, { status: 400 });
   if (mode === "lyrics" && !lyricsIn) return NextResponse.json({ error: "歌詞を入れてください。" }, { status: 400 });
 
-  const policy = evaluateContentPolicyMany([idea, lyricsIn, style].filter(Boolean));
+  const policy = evaluateContentPolicyMany([idea, lyricsIn, style, voiceStyle].filter(Boolean));
   if (policy.blocked) {
     logContentPolicyBlock("song/generate", policy, user.id);
     return NextResponse.json({ error: CONTENT_POLICY_BLOCK_MESSAGE }, { status: 400 });
@@ -89,7 +91,7 @@ export async function POST(request: Request) {
   // 歌詞・曲調を整える（課金前）。手書きの歌詞で断られたら、歌詞はそのまま・曲調は選んだ声と既定で作る（書いた本人の歌詞なので止めない）。
   let plan: SongPlan;
   try {
-    plan = await planSong({ idea, lyrics: mode === "lyrics" ? lyricsIn : undefined, style, voice, parts });
+    plan = await planSong({ idea, lyrics: mode === "lyrics" ? lyricsIn : undefined, style, voice, voiceStyle, parts });
   } catch (err) {
     const e = err as DirectorPromptError;
     if (mode === "lyrics" && e.reason === "refusal") {
@@ -127,7 +129,7 @@ export async function POST(request: Request) {
       status: queue ? "reserved" : "queued",
       workflow_type: "song",
       credits_cost: creditsCost,
-      inputs: { mode, idea: idea || null, style: style || null, voice, count, parts, seed, plan },
+      inputs: { mode, idea: idea || null, style: style || null, voice, voiceStyle: voiceStyle || null, count, parts, seed, plan },
       metadata: { count, parts, priority },
     })
     .select("id")
