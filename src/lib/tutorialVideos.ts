@@ -19,4 +19,5 @@ export const TUTORIAL_VIDEOS: Partial<Record<string, TutorialVideo[]>> = {
     { youtubeId: "LtYgcKU_hJw", length: "4分", label: "作り方" },
     { youtubeId: "S7YOU78KkPk", length: "2分半", label: "学び直し" },
   ],
+  song: [{ youtubeId: "PDD-UU6L75I", length: "5分" }],
 };

@@ -593,6 +593,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 
 **→→ 次の ULL再開で出す上位 3 つ（2026-10-08 未明に更新・これを最初に出す。下の「上位 3 つ（10-07 夜）」は古い）**
 1. **曲づくりの説明動画を仕上げる**（ホスト OK 済みの確認版 `promo/out/song-preview.mp4`・BGM あり・曲の間は BGM を下げる）:
+   **済（2026-10-08）: YouTube 公開 PDD-UU6L75I・曲づくりタブに「使い方の動画」。次の回へは説明欄でなく再生リストで回す。**
    `cd promo && npx remotion render Tutorial out/song-4k.mp4 --props='{"session":"hinata-song2"}' --scale=2 --crf=16`（4K）→
    YouTube のタイトル・説明文・チャプター案を Claude が作る → ホストが投稿（AI の使用＝はい・埋め込み許可）→ `src/lib/tutorialVideos.ts` の `song` に ID → push。
    編集設定は `promo/public/rec/hinata-song2/edit.json`（`realtime`＝早送りしない区間・`sounds`＝後から重ねる曲。曲は `promo/public/audio/song-tutorial/`）。
