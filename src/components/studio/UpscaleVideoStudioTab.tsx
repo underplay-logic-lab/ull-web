@@ -363,7 +363,7 @@ function VideoDropzone({
             アップスケールしたい動画をドロップ / 選択
           </span>
           <span className="text-[11px] text-muted">
-            最大{UPSCALE_VIDEO_MAX_SECONDS}秒・短い素材ほど高速に仕上がります
+            24fps なら最大{UPSCALE_VIDEO_MAX_SECONDS}秒（30fps は60秒）・短い素材ほど高速に仕上がります
           </span>
         </button>
       )}
@@ -987,7 +987,7 @@ export function UpscaleVideoStudioTab() {
             id="upscale-video.limits"
             textClass="text-[11px] text-muted"
             icon={<Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />}
-            summary={`最大${UPSCALE_VIDEO_MAX_SECONDS}秒・音声はそのまま維持されます。すでに4K相当以上の動画は対応していません。`}
+            summary={`24fps なら最大${UPSCALE_VIDEO_MAX_SECONDS}秒（30fps は60秒・上限は ${UPSCALE_VIDEO_MAX_FRAMES} コマ）・音声はそのまま維持されます。すでに4K相当以上の動画は対応していません。`}
           >
             動画超解像は最小構成の提供です。解像度が高いほど、またフレーム数が多い動画ほど処理時間・消費クレジットが増えます。
           </HelpNote>

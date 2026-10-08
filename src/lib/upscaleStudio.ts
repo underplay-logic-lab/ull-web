@@ -377,8 +377,13 @@ export function upscalePriorityParallelSurcharge(knobs: PricingKnobs = DEFAULT_K
 // （modal_seedvr2_worker.py の UPSCALE_VIDEO_MAX_SECONDS / _FRAMES と一致させる
 // こと）。
 
-/** 入力動画の尺上限（秒）。超過はアップロード前にクライアントで弾く。 */
-export const UPSCALE_VIDEO_MAX_SECONDS = 60;
+/**
+ * 入力動画の尺上限（秒）。超過はアップロード前にクライアントで弾く。
+ * 2026-10-08: 本当の制約は処理時間＝コマ数なので、判定はコマ数（下の 1,800）が主。秒は fps が低い動画の
+ * 歯止めとして「24fps で 1,800 コマ」＝75 秒に（Director の出力は 24fps・68 秒まで＝そのまま 4K にかけられる）。
+ * 30fps は従来どおり 60 秒、60fps は 30 秒でコマ数の方が先に効く。
+ */
+export const UPSCALE_VIDEO_MAX_SECONDS = 75;
 /** 入力動画のフレーム数上限。fps が高い動画はこちらで先に頭打ちになりうる。 */
 export const UPSCALE_VIDEO_MAX_FRAMES = 1800;
 /** 入力動画ファイルサイズ上限。 */

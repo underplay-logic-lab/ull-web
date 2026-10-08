@@ -13,6 +13,7 @@ import {
   DEFAULT_UPSCALE_VIDEO_PRESET,
   UPSCALE_VIDEO_MODELS,
   UPSCALE_VIDEO_MAX_SECONDS,
+  UPSCALE_VIDEO_MAX_FRAMES,
   UPSCALE_VIDEO_PRESETS,
   getUpscaleModel,
   getUpscaleVideoPreset,
@@ -120,6 +121,14 @@ export async function POST(request: Request) {
   if (hasValidMeta && durationSec > UPSCALE_VIDEO_MAX_SECONDS + 0.5) {
     return NextResponse.json(
       { error: `動画は${UPSCALE_VIDEO_MAX_SECONDS}秒以内にしてください（${durationSec.toFixed(1)}秒でした）。` },
+      { status: 400 },
+    );
+  }
+  // コマ数が主の上限（2026-10-08）。ワーカーでも同じ判定をするが、GPU を起動する前にここで止める。
+  if (hasValidMeta && fps > 0 && Math.round(durationSec * fps) > UPSCALE_VIDEO_MAX_FRAMES) {
+    const maxS = Math.floor(UPSCALE_VIDEO_MAX_FRAMES / fps);
+    return NextResponse.json(
+      { error: `この動画（${Math.round(fps)}fps）は${maxS}秒までです（${durationSec.toFixed(1)}秒でした）。上限は ${UPSCALE_VIDEO_MAX_FRAMES} コマです。` },
       { status: 400 },
     );
   }

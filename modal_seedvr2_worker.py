@@ -346,7 +346,8 @@ def _torch_compile_enabled() -> bool:
 # 動画で実質3秒・60fpsで1.5秒しか受け付けられずコンセプト（できないことを
 # やる代わり相応の対価を取る。CLAUDE.md §0）と矛盾していたため、実測値に
 # 基づき引き上げた。フロント（upscaleStudio.ts）の同名定数と値を合わせること。
-UPSCALE_VIDEO_MAX_SECONDS = _env_int("SEEDVR2_VIDEO_MAX_SECONDS", 60)
+# 2026-10-08: 判定はコマ数（下の 1,800）が主。秒は「24fps で 1,800 コマ」＝75 秒の歯止め（src/lib/upscaleStudio.ts と揃える）。
+UPSCALE_VIDEO_MAX_SECONDS = _env_int("SEEDVR2_VIDEO_MAX_SECONDS", 75)
 UPSCALE_VIDEO_MAX_FRAMES = _env_int("SEEDVR2_VIDEO_MAX_FRAMES", 1800)
 
 # 2026-09-12: 「入力×倍率」から HD(短辺1280)/2K(短辺1920)/4K(短辺2160) の
