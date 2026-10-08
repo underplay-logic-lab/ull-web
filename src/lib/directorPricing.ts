@@ -290,8 +290,9 @@ export function directorPollDeadlineS(totalDurationS: number, mode: DirectorQual
   // 参照動画があると時間が (1 + 参照秒/出力秒)² 倍近くまで伸びる（directorRefVideoSurcharge）。屋上 38 秒＋18 秒＝1,953s。
   const v = Math.min(DIRECTOR_REF_VIDEO_MAX_S, Math.max(0, refVideoS));
   const factor = totalDurationS > 0 ? (1 + v / totalDurationS) ** 2 : 1;
-  // ワーカーのハード上限（7,200s）の手前まで。参照動画なしは従来どおり 3,600s で頭打ち。
-  const cap = v > 0 ? 6600 : 3600;
+  // ワーカーのハード上限（7,200s）の手前まで。2026-10-08: 参照動画なしも 6,600s に（Quality 68 秒・960×544 は
+  // B300 で 1 step 約 70 秒＝サンプリングだけで約 58 分。3,600s だと完成直前に期限切れになる）。
+  const cap = 6600;
   return Math.min(cap, Math.max(300, Math.round(totalDurationS * secPerVideoSec * factor) + 200));
 }
 
