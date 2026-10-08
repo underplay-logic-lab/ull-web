@@ -219,6 +219,65 @@ export function directorCostBreakdownForDuration(args: {
   return { credits: Math.max(floor, raw), totalDurationS, perSecond };
 }
 
+/**
+ * 推定 GPU 秒から料金・待ち時間の上限を出す（2026-10-08〜・docs/director-pricing-plan.md・ホスト了承）。
+ * 画面の表示・API の課金・待ち時間の上限で同じ関数を使う（LoRA と同じ「課金と見積もりは同じ関数」）。
+ * - 1 step の秒数は、モデルが扱う列（動画＋参照写真＋参照動画＋文章）の数で決まる。参照写真の割合の上乗せはこの式に吸収した。
+ * - GPU は B300（Director は当面すべて B300）。係数は knob（実績が増えたら knob だけ直す）。
+ */
+export type DirectorEstimate = {
+  /** 推定 GPU 秒（起動・読み込み・書き出しを含む）。 */
+  gpuSeconds: number;
+  /** 料金（台本 AI・制限解除・並列の上乗せは含まない）。 */
+  credits: number;
+  /** 動画の大きさ（MP·秒）。 */
+  megapixelSeconds: number;
+  /** ワーカーが完成を待つ上限（秒）。 */
+  pollDeadlineS: number;
+};
+
+/** ワーカー（modal_wan_animate_blackwell.py）の関数の上限 4 時間の手前。 */
+export const DIRECTOR_POLL_DEADLINE_MAX_S = 14_000;
+
+export function directorEstimate(
+  args: {
+    width: number;
+    height: number;
+    durationS: number;
+    mode: DirectorQualityMode;
+    /** 参照写真の枚数（「顔写真として使う」の 1 枚目を含む。最初の場面にするモードは 0）。 */
+    refImages?: number;
+    /** 参照動画の秒数（動き・カメラの手本）。 */
+    refVideoS?: number;
+  },
+  knobs: PricingKnobs = DEFAULT_KNOBS,
+): DirectorEstimate {
+  const mp = (Math.max(0, args.width) * Math.max(0, args.height)) / 1_000_000;
+  const durationS = Math.max(0, args.durationS || 0);
+  const megapixelSeconds = mp * durationS;
+  const refVideoS = Math.min(DIRECTOR_REF_VIDEO_MAX_S, Math.max(0, args.refVideoS || 0));
+  const tokens =
+    knobs.director_tokens_per_mps * mp * (durationS + refVideoS) +
+    knobs.director_ref_image_tokens * Math.max(0, Math.floor(args.refImages || 0)) +
+    knobs.director_text_tokens;
+  const stepS = knobs.director_step_s_ref * (tokens / knobs.director_step_ref_tokens) ** knobs.director_step_exp;
+  const steps = args.mode === "quality" ? 50 : 8;
+  const gpuSeconds = Math.round(knobs.director_fixed_s + knobs.director_fixed_s_per_mps * megapixelSeconds + steps * stepS);
+  const floor = Math.max(1, Math.round(knobs.director_min_credits));
+  const credits = Math.max(floor, Math.ceil(gpuSeconds * knobs.director_credits_per_gpu_s));
+  // 待ち時間の上限は推定の 1.5 倍＋5 分（CLAUDE.md §0「多めに」）。ワーカーの上限 4 時間の手前で頭打ち。
+  const pollDeadlineS = Math.min(DIRECTOR_POLL_DEADLINE_MAX_S, Math.max(600, Math.round(gpuSeconds * 1.5 + 300)));
+  return { gpuSeconds, credits, megapixelSeconds, pollDeadlineS };
+}
+
+/** 推定 GPU 秒を画面向けの目安に（「約 36 分」「約 3 時間」）。起動待ちも含む。 */
+export function directorTimeLabel(gpuSeconds: number): string {
+  const min = Math.max(1, Math.round(gpuSeconds / 60));
+  if (min < 60) return `約 ${min} 分`;
+  const h = gpuSeconds / 3600;
+  return h < 1.25 ? "約 1 時間" : `約 ${Math.round(h * 2) / 2} 時間`;
+}
+
 /** 尺不明時（見積り不能）の上限課金 — 最大尺・最も高い quality モードで計算
  * （過小課金を避ける）。 */
 export function directorCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): number {

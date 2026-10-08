@@ -223,11 +223,27 @@ export function cinematicMegapixels(mode: CinematicMode): number {
 }
 
 /**
- * 解像度×尺の上限（メガピクセル×秒、2026-10-05）。B300 実測: 960×544×68 秒（約 35.5）は VRAM 約 222GB で完走、
- * 1344×768×68 秒（約 70）はメモリ不足。完走した点を上限にして、長い尺ほど解像度を下げる
- * （1MP なら約 34 秒まではそのまま、68 秒で 960×544 相当）。
+ * 解像度×尺の上限（メガピクセル×秒）。2026-10-05 は 36（`--gpu-only` で 1344×768×68 秒が OOM したため長い尺ほど解像度を下げていた）。
+ * 2026-10-08: 通常モードの B300 で 1376×768×68 秒（約 71.9）が完走・ピーク 約 213GB → **75** に。これで 768p でも 68 秒まで解像度を下げない。
+ * 部分修正（videoFixPlan）の窓もこの上限を使うが、窓は最長 30 秒なので影響しない。
  */
-export const CINEMATIC_MAX_MEGAPIXEL_SECONDS = 36;
+export const CINEMATIC_MAX_MEGAPIXEL_SECONDS = 75;
+
+/**
+ * Director の解像度の段（2026-10-08・docs/director-pricing-plan.md）。540p（安い・速い）と 768p（標準＝従来の短い動画と同じ約 1MP）。
+ * 720p は 768p と画素数で 17% しか違わない・480p は 540p より 1〜3 割安いだけ・1080p は上限と学習解像度の都合で入れない。
+ */
+export type DirectorResolution = "540p" | "768p";
+export const DIRECTOR_RESOLUTIONS: { id: DirectorResolution; label: string; sub: string }[] = [
+  { id: "540p", label: "540p", sub: "速い・お手頃" },
+  { id: "768p", label: "768p", sub: "標準" },
+];
+export const DEFAULT_DIRECTOR_RESOLUTION: DirectorResolution = "768p";
+export function isDirectorResolution(v: unknown): v is DirectorResolution {
+  return v === "540p" || v === "768p";
+}
+/** 540p の画素数（16:9 で 960×544）。 */
+const DIRECTOR_540P_MEGAPIXELS = 0.5224;
 
 /** 尺を考えたメガピクセル。cinematicSafeDimensions に渡す値（画面の表示・route の metadata・ワークフローで共通）。 */
 /**
@@ -241,8 +257,12 @@ export function photoOutputDimensions(shapeWidth: number, shapeHeight: number): 
   return cinematicSafeDimensions(shapeWidth, shapeHeight, PHOTO_MEGAPIXELS);
 }
 
-export function cinematicMegapixelsForDuration(mode: CinematicMode, durationS: number | undefined): number {
-  const base = cinematicMegapixels(mode);
+export function cinematicMegapixelsForDuration(
+  mode: CinematicMode,
+  durationS: number | undefined,
+  resolution: DirectorResolution = DEFAULT_DIRECTOR_RESOLUTION,
+): number {
+  const base = resolution === "540p" ? Math.min(DIRECTOR_540P_MEGAPIXELS, cinematicMegapixels(mode)) : cinematicMegapixels(mode);
   if (!durationS || durationS <= 0) return base;
   return Math.min(base, CINEMATIC_MAX_MEGAPIXEL_SECONDS / durationS);
 }

@@ -1494,7 +1494,9 @@ def download_repo_async(download_id: str, repo_id: str, save_dir: str):
     # 2700s超、Attentionの非線形性を考えると更に伸びうる。GPUタイムアウトは
     # 「多めに設定する」方針（CLAUDE.md §0） — 上限を伸ばすこと自体はコスト
     # ゼロ（実際にその時間動いた分だけ課金される）なので、ここは安全側に倒す。
-    timeout=7200,
+    # 2026-10-08: 7200s → 14400s（4 時間）。解像度を選べるようにし、768p・Quality・68 秒（推定 約 3 時間）を選べるようにした
+    # （ホスト判断）。待ち時間の上限は route の directorEstimate が「推定 × 1.5（最大 14,000 秒）」で渡す。
+    timeout=14400,
     scaledown_window=30,
     volumes={MODELS_DIR: vol},
     # supabase-model-downloads: despite the name, this is just generic

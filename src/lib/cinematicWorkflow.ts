@@ -1,5 +1,5 @@
 import "server-only";
-import type { CinematicMode } from "@/lib/cinematicPricing";
+import type { CinematicMode, DirectorResolution } from "@/lib/cinematicPricing";
 import { cinematicMegapixelsForDuration, cinematicSafeDimensions, photoOutputDimensions } from "@/lib/cinematicPricing";
 import { clampPhotoCount, type DirectorRefRole, type DirectorRefVideoRole } from "@/lib/directorPricing";
 
@@ -204,6 +204,8 @@ export type CinematicWorkflow = Record<
 
 export type BuildCinematicWorkflowParams = {
   mode: CinematicMode;
+  /** 解像度の段（2026-10-08・540p／768p）。省略時は 768p（従来の短い動画と同じ約 1MP）。 */
+  resolution?: DirectorResolution;
   prompt?: string | null;
   referenceImageName: string;
   /**
@@ -341,6 +343,7 @@ export function buildCinematicWorkflow({
   prompt,
   referenceImageName,
   durationS,
+  resolution,
   promptIsComplete,
   rawImageWidth,
   rawImageHeight,
@@ -366,7 +369,7 @@ export function buildCinematicWorkflow({
   workflow["114"].inputs.image = referenceImageName;
   const dimW = aspectWidth && aspectHeight ? aspectWidth : rawImageWidth;
   const dimH = aspectWidth && aspectHeight ? aspectHeight : rawImageHeight;
-  const mp = cinematicMegapixelsForDuration(mode, durationS);
+  const mp = cinematicMegapixelsForDuration(mode, durationS, resolution);
   const { width: safeWidth, height: safeHeight } =
     dimW && dimH && dimW > 0 && dimH > 0 ? cinematicSafeDimensions(dimW, dimH, mp) : cinematicSafeDimensions(1, 1, mp);
   workflow["105:104"].inputs.width = safeWidth;

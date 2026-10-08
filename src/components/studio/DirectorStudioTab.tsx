@@ -49,8 +49,8 @@ import {
   directorQwenScriptSurcharge,
   directorUnrestrictedScriptSurcharge,
   directorAspectDims,
-  directorExtraRefSurcharge,
-  directorRefVideoSurcharge,
+  directorEstimate,
+  directorTimeLabel,
   directorTotalDurationS,
   DIRECTOR_REF_VIDEO_MAX_BYTES,
   DIRECTOR_REF_VIDEO_MAX_S,
@@ -65,7 +65,14 @@ import {
   type DirectorReferenceMode,
   type DirectorScene,
 } from "@/lib/directorPricing";
-import { CINEMATIC_MODE_BY_ID, cinematicMegapixelsForDuration, cinematicSafeDimensions } from "@/lib/cinematicPricing";
+import {
+  CINEMATIC_MODE_BY_ID,
+  cinematicMegapixelsForDuration,
+  cinematicSafeDimensions,
+  DEFAULT_DIRECTOR_RESOLUTION,
+  DIRECTOR_RESOLUTIONS,
+  type DirectorResolution,
+} from "@/lib/cinematicPricing";
 import {
   pollDirectorJob,
   DirectorJobNotFoundError,
@@ -390,6 +397,8 @@ export function DirectorStudioTab() {
   // 画像の使い方（2026-10-05）: first_frame = 最初のフレームにする／reference = 顔写真として参照（構図は自由・長尺でも顔を保つ）。
   const [referenceMode, setReferenceMode] = useState<DirectorReferenceMode>("first_frame");
   const [aspect, setAspect] = useState<DirectorAspectId>("16:9");
+  // 解像度の段（2026-10-08・540p／768p）。料金と時間の目安はこれと画質・長さ・参照で決まる（directorEstimate）。
+  const [resolution, setResolution] = useState<DirectorResolution>(DEFAULT_DIRECTOR_RESOLUTION);
   // 「顔写真として使う」で足す写真（2 枚目以降・最大 8 枚、2026-10-05）。同じ人物の角度・表情違いを入れるほど似る。
   // 足した写真と、それぞれの使い方（人物／持ち物／場所／画風）。欄は Photo Director と共通の RefPhotoPicker。
   const [refs, setRefs] = useState<RefPhoto[]>([]);
@@ -470,6 +479,7 @@ export function DirectorStudioTab() {
     extraRefRoles: referenceMode === "reference" ? extraRefRoles : [],
     refVideo: referenceMode === "reference" && refVideo ? { ...refVideo, role: refVideoRole } : null,
     refVoice: referenceMode === "reference" && !audio ? refVoice : null,
+    resolution,
   };
 
   // 画質モード（2026-09-14、VDN-H3導入）。fast=8step蒸留・低コスト、
@@ -750,14 +760,30 @@ export function DirectorStudioTab() {
           : sceneBreakdown;
   // Advanced（Qwen台本生成）は動画本体とは別のGPUコンテナを1回起動する分の
   // 追加クレジットが乗る（directorPricing.ts::directorQwenScriptSurcharge）。
-  // 参照写真の上乗せ（route と同じ関数）。作り直しは元のジョブの写真を使うので、ここでは今の欄の枚数で見積もる。
-  const extraRefCount = referenceMode === "reference" ? extraRefs.length : 0;
+  // 料金は推定 GPU 秒 × 単価（2026-10-08〜・route と同じ関数・同じ寸法）。参照写真・手本の動画は式の中（列の数）。
+  const costShape = directorAspectDims(referenceMode, referenceMode === "reference" ? aspect : "image", imageDims);
+  const costDims = cinematicSafeDimensions(
+    costShape.width,
+    costShape.height,
+    cinematicMegapixelsForDuration(
+      CINEMATIC_MODE_BY_ID[qualityMode === "quality" ? "vdnQuality" : "vdnFast"],
+      breakdown.totalDurationS,
+      resolution,
+    ),
+  );
+  const estimate = directorEstimate(
+    {
+      width: costDims.width,
+      height: costDims.height,
+      durationS: breakdown.totalDurationS,
+      mode: qualityMode,
+      refImages: referenceMode === "reference" ? 1 + extraRefs.length : 0,
+      refVideoS: referenceMode === "reference" && refVideo ? refVideo.durationS : 0,
+    },
+    knobs,
+  );
   const cost =
-    breakdown.credits +
-    directorExtraRefSurcharge(breakdown.credits, extraRefCount, knobs) +
-    (referenceMode === "reference" && refVideo
-      ? directorRefVideoSurcharge(breakdown.credits, refVideo.durationS, breakdown.totalDurationS, knobs)
-      : 0) +
+    estimate.credits +
     (uiMode === "advanced" ? directorQwenScriptSurcharge(knobs) : 0) +
     (unrestricted && uiMode === "scenes" ? unrestrictedSurcharge : 0);
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
@@ -929,12 +955,18 @@ export function DirectorStudioTab() {
   // 前の動画は「前回の結果」として並べて見比べられるよう continuation で出す。
   const regenCost = (() => {
     if (!job?.regenerable || !job.totalDurationS) return 0;
-    const v = directorCostBreakdownForDuration({ totalDurationS: job.totalDurationS, mode: job.quality ?? qualityMode, knobs }).credits;
-    return (
-      v +
-      directorExtraRefSurcharge(v, job.extraRefCount, knobs) +
-      directorRefVideoSurcharge(v, job.refVideoDurationS, job.totalDurationS, knobs)
-    );
+    // 元のジョブと同じ大きさ・参照で作り直す（route が元のジョブから引き継ぐ）。寸法が無い古いジョブは 768p で見積もる。
+    return directorEstimate(
+      {
+        width: job.outWidth ?? 1376,
+        height: job.outHeight ?? 768,
+        durationS: job.totalDurationS,
+        mode: job.quality ?? qualityMode,
+        refImages: job.refImageCount,
+        refVideoS: job.refVideoDurationS,
+      },
+      knobs,
+    ).credits;
   })();
   const handleRegenerate = () => {
     if (!user || !job?.regenerable || busy) return;
@@ -1824,14 +1856,32 @@ export function DirectorStudioTab() {
       {/* ── 右: アクション / 結果 ───────────────────────────── */}
       <div className="flex flex-col gap-4">
         <div className="rounded-xl border border-border bg-background p-4">
-          <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">画質モード</p>
+          <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">画質と解像度</p>
+          {/* 解像度の段（2026-10-08）。長い動画でも自動では下げない。料金と時間の目安は下に出す。 */}
+          <div className="mb-2 grid grid-cols-2 gap-2">
+            {DIRECTOR_RESOLUTIONS.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => setResolution(r.id)}
+                className={`rounded-xl border px-3 py-2 text-left transition-colors ${
+                  resolution === r.id
+                    ? "border-neon-violet/60 bg-neon-violet/10"
+                    : "border-border bg-surface hover:border-neon-violet/30"
+                }`}
+              >
+                <span className="block text-sm font-semibold text-foreground">{r.label}</span>
+                <span className="block text-[11px] text-muted">{r.sub}</span>
+              </button>
+            ))}
+          </div>
           {(() => {
             const modeInfo = CINEMATIC_MODE_BY_ID[qualityMode === "quality" ? "vdnQuality" : "vdnFast"];
             const shape = directorAspectDims(media.referenceMode ?? "first_frame", media.aspect ?? "image", imageDims);
             const dims = cinematicSafeDimensions(
               shape.width,
               shape.height,
-              cinematicMegapixelsForDuration(modeInfo, totalDurationS),
+              cinematicMegapixelsForDuration(modeInfo, totalDurationS, resolution),
             );
             return (
               <p className="mb-2 text-[11px] text-muted">
@@ -1844,7 +1894,6 @@ export function DirectorStudioTab() {
                   : imageDims
                     ? "（参照画像の縦横比に合わせて自動決定）"
                     : "（参照画像の縦横比に合わせて変わります）"}
-                {totalDurationS > 34 ? "（長い動画は解像度を下げて作ります）" : ""}
                 ・24fps・さらに高解像度にしたい場合は生成後に「4K 動画超解像」へ
               </p>
             );
@@ -1876,8 +1925,16 @@ export function DirectorStudioTab() {
             })}
           </div>
           {/* 2026-10-08 ホスト: 粗い元を 4K にすると肌の荒れ等も拡大されるので、超解像にかけるなら Quality を勧める。 */}
-          <p className="mt-2 text-[11px] leading-relaxed text-muted">
+          {/* 時間の目安と料金（推定 GPU 秒・route と同じ式）。起動待ちを含む。 */}
+          <p className="mt-2 text-xs text-foreground">
+            目安の時間 <span className="font-mono">{directorTimeLabel(estimate.gpuSeconds)}</span>
+            <span className="mx-2 text-muted">・</span>
+            料金 <span className="font-mono">{estimate.credits.toLocaleString()}C</span>
+            <span className="text-[11px] text-muted">（動画の分）</span>
+          </p>
+          <p className="mt-1 text-[11px] leading-relaxed text-muted">
             あとで「4K 動画超解像」にかける予定なら Quality がおすすめです（肌の荒れや細かい粒が出にくく、拡大してもきれいに仕上がります）。
+            Quality で 768p の長い動画は数時間かかります。
           </p>
         </div>
 

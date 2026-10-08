@@ -10,6 +10,7 @@ import {
   type DirectorRefVideoRole,
   type DirectorScene,
 } from "@/lib/directorPricing";
+import { isDirectorResolution, type DirectorResolution } from "@/lib/cinematicPricing";
 
 /**
  * code "restricted"（2026-10-06）: 表現の制限がある AI に断られた（課金前）。画面は「制限を解除しますか？（+unrestrictedSurcharge C）」を出し、
@@ -77,6 +78,8 @@ export type DirectorMediaOptions = {
   referenceMode?: DirectorReferenceMode;
   /** 参照モードの縦横。 */
   aspect?: DirectorAspectId;
+  /** 解像度の段（2026-10-08・540p／768p）。省略時は 768p。 */
+  resolution?: DirectorResolution;
   /** 参照モードで足す写真（2 枚目以降・最大 8 枚）。 */
   extraRefs?: File[];
   /** 足した写真それぞれの使い方（extraRefs と同じ順、2026-10-06）。省略は「同じ人物」。 */
@@ -199,6 +202,7 @@ export async function startDirectorJob(args: DirectorStartArgs): Promise<Directo
     ...audioFields,
     referenceMode: args.referenceMode,
     aspect: args.aspect,
+    ...(args.resolution ? { resolution: args.resolution } : {}),
     ...(extraRefPaths ? { extraRefPaths, extraRefRoles: args.extraRefRoles?.slice(0, 8) } : {}),
     ...refVideoFields,
     ...refVoiceFields,
@@ -651,8 +655,12 @@ export type DirectorJobStatus = {
   totalDurationS: number | null;
   /** 「顔写真として使う」で足した写真の枚数（作り直しも同じ写真を使うので、料金表示に上乗せを足す）。 */
   extraRefCount: number;
-  /** 手本の動画の長さ（秒・無ければ 0）。作り直しの料金表示に上乗せを足す。 */
+  /** 手本の動画の長さ（秒・無ければ 0）。作り直しの料金表示に使う。 */
   refVideoDurationS: number;
+  /** 解像度の段（2026-10-08〜のジョブだけ）。作り直しも同じ段で作る。 */
+  resolution: DirectorResolution | null;
+  /** 参照写真の枚数（1 枚目を含む・最初の場面にするモードは 0）。作り直しの料金表示に使う。 */
+  refImageCount: number;
   /** Photo Director のジョブか（2026-10-06）。 */
   isPhoto: boolean;
   /** 写真の署名付き URL（完了時のみ・15 分で切れるので使い回さない）。 */
@@ -713,8 +721,8 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
     videoUrl: (data.videoUrl as string | null) ?? null,
     errorMessage: userFacingJobError((data.errorMessage as string | null) ?? null),
     vramUsedGb,
-    outWidth: typeof meta.out_width === "number" ? meta.out_width : null,
-    outHeight: typeof meta.out_height === "number" ? meta.out_height : null,
+    outWidth: typeof meta.out_width === "number" ? meta.out_width : typeof data.outWidthIn === "number" ? data.outWidthIn : null,
+    outHeight: typeof meta.out_height === "number" ? meta.out_height : typeof data.outHeightIn === "number" ? data.outHeightIn : null,
     combinedPrompt: (data.combinedPrompt as string | null) ?? null,
     combinedPromptJa: (data.combinedPromptJa as string | null) ?? null,
     seed: typeof data.seed === "number" ? data.seed : null,
@@ -724,6 +732,8 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
       typeof data.durationS === "number" ? data.durationS : typeof meta.total_duration_s === "number" ? meta.total_duration_s : null,
     extraRefCount: typeof data.extraRefCount === "number" ? data.extraRefCount : 0,
     refVideoDurationS: typeof data.refVideoDurationS === "number" ? data.refVideoDurationS : 0,
+    resolution: isDirectorResolution(data.resolution) ? data.resolution : null,
+    refImageCount: typeof data.refImageCount === "number" ? data.refImageCount : 0,
     isPhoto: data.output === "photo",
     imageUrls: Array.isArray(data.imageUrls) ? (data.imageUrls as unknown[]).filter((u): u is string => typeof u === "string") : [],
     isVideoFix: data.output === "video_fix",

@@ -26,6 +26,15 @@ export type KnobKey =
   | "director_per_second_fast"
   | "director_per_second_quality"
   | "director_min_credits"
+  | "director_credits_per_gpu_s"
+  | "director_step_s_ref"
+  | "director_step_ref_tokens"
+  | "director_step_exp"
+  | "director_fixed_s"
+  | "director_fixed_s_per_mps"
+  | "director_tokens_per_mps"
+  | "director_ref_image_tokens"
+  | "director_text_tokens"
   | "director_priority_parallel_surcharge"
   | "director_priority_parallel_rate"
   | "director_qwen_script_credits"
@@ -171,6 +180,21 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   //   ¥1,207/h × 681.3s ÷ 15s = ¥15.23/秒 × 3 ÷ 1.66 = 27.5C/秒（旧 25.7）
   director_per_second_quality: 27.5,
   director_min_credits: 5,
+  // 2026-10-08〜 Director の料金は「推定 GPU 秒 × 単価」（docs/director-pricing-plan.md・ホスト了承）。上の C/秒 は使わない（戻すとき用に残す）。
+  // 単価 = B300 ¥1,207/h × 3 倍 ÷ ¥1.66/C。
+  director_credits_per_gpu_s: 0.606,
+  // 1 step の秒数 = director_step_s_ref × (全体の列 ÷ director_step_ref_tokens) ^ director_step_exp。
+  // 実測（B300・VDN・EasyCache なし）: 960×544×68 秒・参照 9 枚＝266,798 列で 70 秒／1376×768×68 秒・参照 7 枚＝約 51.5 万列で 207 秒 → 乗数 約 1.65。
+  director_step_s_ref: 70,
+  director_step_ref_tokens: 266800,
+  director_step_exp: 1.65,
+  // 固定分（起動・読み込み・書き出し）= director_fixed_s + director_fixed_s_per_mps × 動画の MP·秒。
+  director_fixed_s: 90,
+  director_fixed_s_per_mps: 5.4,
+  // 列の数: 動画 1 MP·秒あたり（540p×68 秒＝35.5 MP·秒で 245,820 列）・参照写真 1 枚・文章。
+  director_tokens_per_mps: 6925,
+  director_ref_image_tokens: 1740,
+  director_text_tokens: 5300,
   // 2026-09-23: 全タブ共通「通常料金 × 率 + 固定」（src/lib/pricing/parallelSurcharge.ts）。
   director_priority_parallel_rate: 1.0,
   // 2026-09-14 は固定 115C（理論値）。2026-09-23 に全タブ共通の「率 + 固定 50C」へ

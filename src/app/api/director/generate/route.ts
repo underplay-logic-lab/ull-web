@@ -14,14 +14,13 @@ import {
   directorCostBreakdown,
   directorCostBreakdownForDuration,
   directorCreditsWorstCase,
-  directorPollDeadlineS,
   photoDirectorCredits,
   clampPhotoCount,
   photoDirectorPollDeadlineS,
   PHOTO_IDEA_MAX_LENGTH,
   PHOTO_PROMPT_MAX_LENGTH,
   directorPriorityParallelSurcharge,
-  directorExtraRefSurcharge,
+  directorEstimate,
   directorQwenScriptSurcharge,
   directorUnrestrictedScriptSurcharge,
   photoUnrestrictedScriptSurcharge,
@@ -31,7 +30,6 @@ import {
   isDirectorReferenceMode,
   isDirectorRefRole,
   isDirectorRefVideoRole,
-  directorRefVideoSurcharge,
   DIRECTOR_REF_VIDEO_MAX_S,
   DIRECTOR_REF_VIDEO_MIN_S,
   validateDirectorScenes,
@@ -67,6 +65,8 @@ import { assertOwnedDirectorLoraVolumePath, isOwnedDirectorLoraR2Key } from "@/l
 import {
   CINEMATIC_MODE_BY_ID,
   cinematicMegapixelsForDuration,
+  DEFAULT_DIRECTOR_RESOLUTION,
+  isDirectorResolution,
   cinematicSafeDimensions,
   photoOutputDimensions,
 } from "@/lib/cinematicPricing";
@@ -192,6 +192,12 @@ export async function POST(request: Request) {
         : {}),
       ...(isDirectorReferenceMode(bi.reference_mode) ? { referenceMode: bi.reference_mode } : {}),
       ...(isDirectorAspectId(bi.aspect) ? { aspect: bi.aspect } : {}),
+      // 解像度の段（2026-10-08〜）。記録の無い古いジョブは出力の大きさから決める（長い動画は自動で 540p 相当に下がっていた）。
+      ...(isDirectorResolution(bi.resolution)
+        ? { resolution: bi.resolution }
+        : typeof bi.out_width === "number" && typeof bi.out_height === "number"
+          ? { resolution: bi.out_width * bi.out_height < 700_000 ? "540p" : "768p" }
+          : {}),
       ...(Array.isArray(bi.extra_ref_paths) ? { extraRefPaths: bi.extra_ref_paths } : {}),
       // 参照の使い方・手本の動画と声（2026-10-06〜）。
       ...(Array.isArray(bi.extra_ref_roles) ? { extraRefRoles: bi.extra_ref_roles } : {}),
@@ -218,6 +224,8 @@ export async function POST(request: Request) {
   // 参照のしかた（2026-10-05）: reference = 画像を顔写真として参照する（最初のフレームにしない）。縦横は選んだもの。
   const referenceMode = isDirectorReferenceMode(body.referenceMode) ? body.referenceMode : "first_frame";
   const aspect: DirectorAspectId = isDirectorAspectId(body.aspect) ? body.aspect : "image";
+  // 解像度の段（2026-10-08・540p／768p）。長い動画でも自動では下げない（上限 75 MP·秒の範囲で選んだまま）。
+  const resolution = isDirectorResolution(body.resolution) ? body.resolution : DEFAULT_DIRECTOR_RESOLUTION;
 
   // 持ち込み音声（歌・セリフ、2026-10-05）: そのまま使い、口を合わせる。尺は音声の長さ（画面が測った秒数・最長 68 秒）。
   // 申告より長い音声でも、映像の長さに切り詰められるだけ（ComfyUI の LTXVConcatAVLatent）なので課金は崩れない。
@@ -474,7 +482,31 @@ export async function POST(request: Request) {
     : directorCostBreakdown({ scenes, mode: qualityMode, knobs });
   // Advanced（Qwen台本生成）は動画本体とは別のGPUコンテナを1回起動するので
   // その分を上乗せする（directorPricing.ts参照）。
-  const videoCredits = breakdown.credits || directorCreditsWorstCase(knobs);
+  // 出力解像度（2026-09-24、ホスト「生成後の解像度がわからないので記載して」）。料金の式が解像度を使うので先に決める
+  // （2026-10-08〜。buildCinematicWorkflow と同じ式・同じ解像度の段）。
+  const rawDimsForMeta = readImageDimensions(imageBuffer);
+  const modeForMeta = CINEMATIC_MODE_BY_ID[qualityMode === "quality" ? "vdnQuality" : "vdnFast"];
+  const aspectDims = directorAspectDims(referenceMode, aspect, rawDimsForMeta);
+  const outDims = isPhoto
+    ? photoOutputDimensions(aspectDims.width, aspectDims.height)
+    : cinematicSafeDimensions(
+        aspectDims.width,
+        aspectDims.height,
+        cinematicMegapixelsForDuration(modeForMeta, breakdown.totalDurationS, resolution),
+      );
+  // 料金は推定 GPU 秒 × 単価（2026-10-08〜・docs/director-pricing-plan.md）。参照写真・参照動画は割合の上乗せではなく式の中（列の数）。
+  const estimate = directorEstimate(
+    {
+      width: outDims.width,
+      height: outDims.height,
+      durationS: breakdown.totalDurationS,
+      mode: qualityMode,
+      refImages: referenceMode === "reference" ? 1 + extraRefPaths.length : 0,
+      refVideoS: refVideoDurationS,
+    },
+    knobs,
+  );
+  const videoCredits = breakdown.totalDurationS > 0 ? estimate.credits : directorCreditsWorstCase(knobs);
   // 台本 AI を使う経路（写真・シーン・日本語の直接入力の英訳）。おまかせは元から制限なしの AI。
   // 写真で英語のプロンプトを直接渡したとき（直接書く・英語の原文を直した）は AI を通さないので、制限解除の上乗せも取らない。
   const needsScriptAi =
@@ -487,8 +519,6 @@ export async function POST(request: Request) {
   const baseCreditsCost = isPhoto
     ? photoDirectorCredits(photoCount, extraRefPaths.length, knobs) + (unrestricted ? unrestrictedSurcharge : 0)
     : videoCredits +
-    directorExtraRefSurcharge(videoCredits, extraRefPaths.length, knobs) +
-    directorRefVideoSurcharge(videoCredits, refVideoDurationS, breakdown.totalDurationS, knobs) +
     (isAdvancedMode ? directorQwenScriptSurcharge(knobs) : 0) +
     (unrestricted ? unrestrictedSurcharge : 0);
   // 「実行中でも並列で今すぐ実行」を選んだ場合の追加コールドスタート分
@@ -709,20 +739,14 @@ Begin the English prompt with exactly: "${PHOTO_ANIME_SENTENCE}"` : ""),
     ref_voice_path: refVoicePath || null,
     ...(isPhoto ? { output: "photo", photo_idea: photoIdea, photo_prompt_mode: Boolean(photoPrompt), photo_style: photoStyle, photo_count: photoCount } : {}),
   };
-  // 出力解像度（2026-09-24、ホスト「生成後の解像度がわからないので記載して」）。
-  // buildCinematicWorkflow と同じ式で先に決め、metadata に残して完了画面が読む。
-  const rawDimsForMeta = readImageDimensions(imageBuffer);
-  const modeForMeta = CINEMATIC_MODE_BY_ID[qualityMode === "quality" ? "vdnQuality" : "vdnFast"];
-  const aspectDims = directorAspectDims(referenceMode, aspect, rawDimsForMeta);
-  const outDims = isPhoto
-    ? photoOutputDimensions(aspectDims.width, aspectDims.height)
-    : cinematicSafeDimensions(
-        aspectDims.width,
-        aspectDims.height,
-        cinematicMegapixelsForDuration(modeForMeta, breakdown.totalDurationS),
-      );
+  // 出力解像度は料金の前で決めた outDims（metadata に残して完了画面が読む）。
   // inputs にも残す（写真の完了時はワーカーが metadata を丸ごと置き換えるので、/api/jobs/[id] がこちらで補う）。
-  Object.assign(directorInputsSnapshot, { out_width: outDims.width, out_height: outDims.height });
+  Object.assign(directorInputsSnapshot, {
+    out_width: outDims.width,
+    out_height: outDims.height,
+    resolution,
+    estimated_gpu_s: isPhoto ? null : estimate.gpuSeconds,
+  });
 
   const { data: jobRow, error: jobError } = await supabaseAdmin
     .from("generation_jobs")
@@ -802,6 +826,7 @@ Begin the English prompt with exactly: "${PHOTO_ANIME_SENTENCE}"` : ""),
     prompt: combinedPrompt,
     referenceImageName,
     durationS: breakdown.totalDurationS,
+    resolution,
     promptIsComplete: true,
     rawImageWidth: rawDims?.width,
     rawImageHeight: rawDims?.height,
@@ -826,7 +851,7 @@ Begin the English prompt with exactly: "${PHOTO_ANIME_SENTENCE}"` : ""),
     referenceImageName,
     pollDeadlineS: isPhoto
       ? photoDirectorPollDeadlineS(photoCount)
-      : directorPollDeadlineS(breakdown.totalDurationS, qualityMode, refVideoDurationS),
+      : estimate.pollDeadlineS,
     ...(isPhoto ? { imageOutputs: true, gpu: PHOTO_GPU } : {}),
     qwenConceptText: isAdvancedMode ? withConceptNotes(conceptTextInput, promptOpts) : undefined,
     qwenTextInstruction,

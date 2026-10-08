@@ -188,6 +188,11 @@ export async function GET(request: Request, { params }: RouteParams) {
   const extraRefCount = Array.isArray(inputs?.extra_ref_paths) ? inputs.extra_ref_paths.length : 0;
   // 手本の動画の長さ（2026-10-06。作り直しも同じ動画を使うので上乗せを足す）。
   const refVideoDurationS = typeof inputs?.ref_video_duration_s === "number" ? inputs.ref_video_duration_s : 0;
+  // 作り直しの料金（推定 GPU 秒・2026-10-08〜）に要るもの: 解像度の段・出力の寸法・参照写真の枚数（1 枚目を含む）。
+  const resolution = typeof inputs?.resolution === "string" ? inputs.resolution : null;
+  const outWidthIn = typeof inputs?.out_width === "number" ? inputs.out_width : null;
+  const outHeightIn = typeof inputs?.out_height === "number" ? inputs.out_height : null;
+  const refImageCount = inputs?.reference_mode === "reference" ? 1 + extraRefCount : 0;
 
   // Director（2026-09-18〜）は video_url にSupabase公開URLではなく
   // Volume相対パス（director_results/<user_id>/<job_id>.mp4）を保存する
@@ -274,6 +279,10 @@ export async function GET(request: Request, { params }: RouteParams) {
     qualityMode,
     extraRefCount,
     refVideoDurationS,
+    resolution,
+    outWidthIn,
+    outHeightIn,
+    refImageCount,
     output: isPhoto ? "photo" : inputs?.output === "video_fix" ? "video_fix" : null,
     imageUrls,
     audioUrls,
