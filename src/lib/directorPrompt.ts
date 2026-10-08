@@ -341,7 +341,16 @@ export async function runDirectorPromptGemini(instruction: string, feature: stri
 /** 合成済み英語プロンプトをユーザー向けに日本語訳する（コピペ用UI表示のため）。
  * ベストエフォート — 失敗しても生成自体は止めない設計なので、呼び出し側は
  * null を「翻訳なし」として扱い、英語原文だけ表示すればよい。 */
+// 表示用のおまけなので、Gemini が混んでいても送信を止めない（2026-10-08: 混雑時の再試行で route の 60 秒を超え、
+// 画面に "Unexpected token '<'" が出てジョブが作られなかった）。間に合わなければ訳なしで進む。
+const JA_TRANSLATE_TIMEOUT_MS = 12_000;
+
 export async function translateDirectorPromptToJapanese(englishPrompt: string): Promise<string | null> {
+  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), JA_TRANSLATE_TIMEOUT_MS));
+  return Promise.race([translateDirectorPromptToJapaneseUnbounded(englishPrompt), timeout]);
+}
+
+async function translateDirectorPromptToJapaneseUnbounded(englishPrompt: string): Promise<string | null> {
   const apiKey = geminiApiKey();
   if (!apiKey) return null;
   try {
