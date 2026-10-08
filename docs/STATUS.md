@@ -787,6 +787,10 @@ B300 でないとできないのは長い一発撮りだけで需要は不明 �
 - **D. 検討待ち**: MiniMax H3 Fun ControlNet（骨格・深度で 1 コマずつ縛る＝Wan Animate 相当。**10-08 確認: H3 と同じライセンスで新たな制約なし・本番のピン v0.35.1 で対応済み**＝使うと決めれば版上げ不要）／動画でもアニメの参照が実写に寄る（写真と同じ「絵柄」選択を入れるか）／
   実写の参照の「アニメ化」ボタン（本番 2511 は TE abliterated・角度 LoRA 融合で未確認）／セリフの読み上げは GPT-SoVITS が次の候補（Chatterbox・CosyVoice は不合格）。
 
+**（10-08）turbo で参照音声（自作ノード UllAceTimbreKeepCodes・音色だけ）を再試験**: 前回（exp3〜6）は全部 SFT だった。
+`D:/ComfyUI-ull/results/timbre_turbo/out/`（手本なし／男性／ひなたの声の音程 +5＝ヘリウム／−6＝太い声／ひなたそのまま × シード 31〜33・タグは女性）。
+ホスト: **同じ声にはならない・特徴は引き継ぐ**（男性の手本でも完全に女性の声＝タグが勝つ・ヘリウムはヘリウム・下げたのは少し低い・ひなたそのままは聞き分けにくい）。
+荒れの指摘は無し。→ **声の固定はここで区切り（turbo でも不成立）**。手本で寄せる機能は効きが分かりにくいので入れない（言葉で寄せる「声の感じ」欄で足りる）。
 **曲づくりの声の検証（2026-10-06〜07・ローカル）**: 環境 = `D:/ComfyUI2`（8188 で動いているのはこちら。custom_nodes もここ）＋本番と同じ XL SFT＋ScragVAE
 （どちらも手元に配置済み・85 秒の曲が約 20 秒・VRAM 約 12GB）。スクリプト `D:/ComfyUI-ull/tools/ace_local.py`（本番の build_workflow を流用）・`ace_vocals.py`（mpenv）・
 `ace_voice_sim.py`（tts/cbenv の Resemblyzer）。結果 `D:/ComfyUI-ull/results/ace_local/exp1〜6`。
