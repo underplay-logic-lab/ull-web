@@ -85,7 +85,8 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-type VideoMeta = { duration: number; width: number; height: number; fps: number };
+// fpsMeasured: ブラウザで fps が実測できたか（2026-10-08）。多くのブラウザは読み込み直後に取れず FALLBACK_FPS（30）になる。
+type VideoMeta = { duration: number; width: number; height: number; fps: number; fpsMeasured: boolean };
 
 /** <video> には fps を直接読む標準 API が無い。captureStream() の track
  * settings から取れれば実測、取れなければ FALLBACK_FPS で保守的に見積もる
@@ -102,11 +103,15 @@ async function readVideoMeta(file: File): Promise<VideoMeta | null> {
 
     video.onloadedmetadata = () => {
       let fps = FALLBACK_FPS;
+      let fpsMeasured = false;
       try {
         const stream = (video as HTMLVideoElement & { captureStream?: () => MediaStream }).captureStream?.();
         const track = stream?.getVideoTracks?.()[0];
         const settings = track?.getSettings?.();
-        if (settings?.frameRate && settings.frameRate > 0) fps = settings.frameRate;
+        if (settings?.frameRate && settings.frameRate > 0) {
+          fps = settings.frameRate;
+          fpsMeasured = true;
+        }
       } catch {
         // captureStream 非対応ブラウザは fallback のまま
       }
@@ -115,6 +120,7 @@ async function readVideoMeta(file: File): Promise<VideoMeta | null> {
         width: video.videoWidth || 0,
         height: video.videoHeight || 0,
         fps,
+        fpsMeasured,
       };
       cleanup();
       resolve(meta.duration > 0 && meta.width > 0 ? meta : null);
@@ -507,7 +513,9 @@ export function UpscaleVideoStudioTab() {
       setVideo(null);
       return;
     }
-    const maxSec = effectiveMaxSeconds(meta.fps);
+    // fps が実測できないときは仮の 30fps でコマ数を判定しない（24fps の 68 秒が「60 秒以内」で弾かれた、2026-10-08）。
+    // 秒の上限だけ見て、コマ数（1,800）はサーバーの ffprobe 実測で判定する（GPU を起動する前に止まる）。
+    const maxSec = meta.fpsMeasured ? effectiveMaxSeconds(meta.fps) : UPSCALE_VIDEO_MAX_SECONDS;
     if (meta.duration > maxSec + 0.3) {
       setVideoError(
         `この動画（約${meta.fps.toFixed(0)}fps）は${maxSec.toFixed(1)}秒以内にしてください（${meta.duration.toFixed(1)}秒でした）。`,
