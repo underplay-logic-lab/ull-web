@@ -16,6 +16,9 @@ CLAUDE.md §5（商用利用・SaaS再頒布・地域制限の3点を満たす�
   地域除外（EU・英国・韓国・米国。**ホストがリスク許容済み**）。**⚠️「商用製品の UI に 'MiniMax H3' を目立つように表示する義務」**があり、
   CLAUDE.md §2（モデル名を出さない）と衝突 → **Director に「Cinematic Director — Powered by MiniMax H3」を常に表示して満たす（2026-10-05 ホスト判断・会員限定にしない）**。
   生成物を公の場に出すときは「機械生成」と明示する義務（Exhibit A 12）。MiniMax の名前を出すのは推奨止まり。
+- **MiniMax H3 Fun ControlNet Union（`alibaba-pai/MiniMax-H3-Fun-Controlnet-Union`／`-2.0`、2026-10-08 に HF の README・タグで確認）**: H3 の派生として
+  **MiniMax H3 Community License そのもの**＝H3 本体と同じ扱い（地域除外はホストがリスク許容済み・UI 表示は Director の「Powered by MiniMax H3」で満たす）。新たな制約なし。
+  ComfyUI は v0.35.0 から対応（`comfy/ldm/minimax/controlnet.py`・model patch 方式）＝本番のピン v0.35.1 のままで使える。
 - **10Eros（`TenStrip/10Eros-Max`、Director の土台・Hybrid Beta5）**: MiniMax H3 Community License ＋ 作者の README「LTX 2.3・Wan 2.2・Krea 2 から
   特徴を移植しているので、その部分にはそれぞれのライセンスも及ぶ」。**最も厳しいのは Krea 2 Community License**（商用無料は会社の年商 100 万ドル未満・
   名称／表記／帰属／利用規定／コンテンツフィルタの義務）。LTX 2.x は年商 1,000 万ドル未満なら無料・Wan 2.2 は Apache-2.0。「20 個以上の LoRA のマージ」で
