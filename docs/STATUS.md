@@ -798,7 +798,7 @@ B300 でないとできないのは長い一発撮りだけで需要は不明 �
   → 作成済み＋`rvc/extract_weights.py` で `G_<step>.pth` から書き出す。core.py は Applio の中から呼ぶ。RVC の出力は元より約 6dB 小さい。変換して聴く候補: `results/ace_local/exp4/s9_v30` 等・`exp6/noref_s9`。
 - **C. Director の実地検証 1 本でまとめて確認**: 参照の使い方（剣＝持ち物・場所・動きの手本・背景が単純な手本動画）＋ B300 の通常モード（--gpu-only をやめた）の速さ＋
   おまかせか制限解除で Qwen の時間（動画の 91C を測り直す。H200 写真では約 80 秒→写真は 31C に下げ済み）。
-- **D. 検討待ち**: 漫画の背景（同じ部屋を角度違いで線画に。10-08 Gemini 案の WorldGen は中核が FLUX.1-dev＝商用不可で不採用・やるなら Qwen-Image＋線画化で組み、FLUX を使わない 3D 化を別に探す）／MiniMax H3 Fun ControlNet（骨格・深度で 1 コマずつ縛る＝Wan Animate 相当。**10-08 確認: H3 と同じライセンスで新たな制約なし・本番のピン v0.35.1 で対応済み**＝使うと決めれば版上げ不要）／動画でもアニメの参照が実写に寄る（写真と同じ「絵柄」選択を入れるか）／
+- **D. 検討待ち**: 漫画の背景（同じ部屋を角度違いで線画に。WorldGen は中核が FLUX.1-dev＝不可。組み直すなら FLUX.1 schnell（Apache）→パノラマ→深度→点群→gsplat→死角の描き足し→線画。深度は Depth Anything v2 **Small（Apache）だけ可・Large は CC-BY-NC**・パノラマ LoRA のライセンスと schnell への効きは要確認。難所は死角の描き足し。B300 は不要。やるなら手元で無料の試作から・優先度は 3 段構成と超解像の安いタイプの後）／MiniMax H3 Fun ControlNet（骨格・深度で 1 コマずつ縛る＝Wan Animate 相当。**10-08 確認: H3 と同じライセンスで新たな制約なし・本番のピン v0.35.1 で対応済み**＝使うと決めれば版上げ不要）／動画でもアニメの参照が実写に寄る（写真と同じ「絵柄」選択を入れるか）／
   実写の参照の「アニメ化」ボタン（本番 2511 は TE abliterated・角度 LoRA 融合で未確認）／セリフの読み上げは GPT-SoVITS が次の候補（Chatterbox・CosyVoice は不合格）。
 
 **（10-08）turbo で参照音声（自作ノード UllAceTimbreKeepCodes・音色だけ）を再試験**: 前回（exp3〜6）は全部 SFT だった。
