@@ -597,7 +597,7 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    `cd promo && npx remotion render Tutorial out/song-4k.mp4 --props='{"session":"hinata-song2"}' --scale=2 --crf=16`（4K）→
    YouTube のタイトル・説明文・チャプター案を Claude が作る → ホストが投稿（AI の使用＝はい・埋め込み許可）→ `src/lib/tutorialVideos.ts` の `song` に ID → push。
    編集設定は `promo/public/rec/hinata-song2/edit.json`（`realtime`＝早送りしない区間・`sounds`＝後から重ねる曲。曲は `promo/public/audio/song-tutorial/`）。
-2. **Cinematic Director の説明動画（2 本目）**: Claude が台本を `docs/tutorial-scripts.md` に足す → 撮る。**Quality**（4K 超解像の素材にするため）・曲は曲づくりの回で作ったもの。
+2. **Cinematic Director の説明動画（2 本目）**: **10-08: 台本・プロンプト・参照 9 枚（Gemini 製・全身と後ろ姿入り `promo/public/refs/hinata/director/`）用意済み＝`docs/tutorial-scripts.md` の 2 → ホストが録画。68 秒の台本の守られ方と LoRA なし×Quality の口も同時に確かめる。** 以下は元のメモ: Claude が台本を `docs/tutorial-scripts.md` に足す → 撮る。**Quality**（4K 超解像の素材にするため）・曲は曲づくりの回で作ったもの。
    ⚠️ 曲づくり→Director の受け渡しはブラウザの中だけなので、録画を閉じた時点で消えている → 録画の頭で曲づくりタブの結果から「一部を動画の音声に」→ Director へ渡し直す
    （曲づくりの結果はリロードしても出る。使う曲は 2 回目のジョブ c47fc3f4 か 1 回目 1ca5144f の気に入った方）。続けて 3 部分修正（崩れたら直す回）→ 4 超解像。
    **（10-08 追加）曲づくりに「声の感じ」を足すか**: turbo で声質タグ 5 種×シード 3 を手元で作成 `D:/ComfyUI-ull/results/voice_tags/`（spec.json）→ ホストの試聴待ち。
