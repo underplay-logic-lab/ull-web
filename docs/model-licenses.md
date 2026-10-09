@@ -23,6 +23,11 @@ CLAUDE.md §5（商用利用・SaaS再頒布・地域制限の3点を満たす�
   特徴を移植しているので、その部分にはそれぞれのライセンスも及ぶ」。**最も厳しいのは Krea 2 Community License**（商用無料は会社の年商 100 万ドル未満・
   名称／表記／帰属／利用規定／コンテンツフィルタの義務）。LTX 2.x は年商 1,000 万ドル未満なら無料・Wan 2.2 は Apache-2.0。「20 個以上の LoRA のマージ」で
   元 LoRA の出所は不明。NSFW タグ付き。Director で既に本番利用しているので、LoRA 学習の土台にしても新たなリスクは増えない（2026-10-05）。
+- **顔入れ替え（`modal_faceswap_worker.py`、2026-10-09）**: Krea 2 Turbo（Krea 2 Community License・上の 10Eros と同じ義務。§4.2 のコンテンツフィルタは
+  許可制＋同意の注意書きで対応）・BFS Head Swap v1.1（MIT・有名人／同意のない人に使わない）・comfyui-krea2edit（Apache-2.0）・
+  TE `Huihui-Qwen3-VL-4B-Instruct-abliterated`（Apache-2.0。Krea とは別のモデルの差し替えなので §4.1(c) には当たらない）。
+  **⚠️ `uzumix/krea2filterbypass3`（ライセンス記載なし・中身は txtfusion.projector の 12 値）**: turbo の抑制を外して咥えている構図の口元を保つ。
+  Krea 2 Community License §4.1(c)「security, usage restrictions … を回避・除去しない」に抵触し得る → **ホストがリスク許容（2026-10-09）**。
 - **Qwen-Image 2.1（`Qwen/Qwen-Image-2.1`）**: **Qwen Research License = 非商用のみ**（§2a "FOR NON-COMMERCIAL PURPOSES ONLY"、
   §2b 商用は model-business@notice.qwencloud.com に申請。2026-10-04 に HF の LICENSE 原文で確認）。生成物の商用可否は明記なし →
   宣伝動画の素材にも使わない。**初代 Qwen-Image / Qwen-Image-Edit 2509・2511 は Apache-2.0 で可のまま**（2.1 で変わった）。

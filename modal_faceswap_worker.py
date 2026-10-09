@@ -11,6 +11,8 @@ GPU の FaceSwap.run_job が入れ替えを 1 人ずつ順に行い（2 人目�
     実装する義務**・Krea は 30 日前の通知で終了できる → 一般公開せず許可制にして影響を局所化（ホスト判断 2026-10-09）。
   - TE の既定は abliterated 版 `Huihui-Qwen3-VL-4B-Instruct-abliterated`（`huihui-ai/...`・Apache-2.0、2026-10-09 確認）。
     ComfyUI 用の 1 ファイル版（`ahmed22xa/Huihui-Qwen3-VL-4B-Instruct-abliterated-comfy`）をホストが Volume の faceswap/text_encoders/ へ置いた（precache の対象外）。
+  - krea2filterbypass3（`uzumix/krea2filterbypass3.safetensors`・ライセンス記載なし、2026-10-09）: turbo の抑制を外す LoRA。
+    Krea 2 Community License 4.1(c) に抵触し得るが、ホストがリスクを許容（2026-10-09）。
   - BFS Head Swap v1.1 for Krea 2（`Alissonerdx/BFS-Best-Face-Swap`・MIT、2026-10-09 確認）。作者条件: 有名人・同意のない人には使わない。
   - カスタムノード comfyui-krea2edit（`lbouaraba/comfyui-krea2edit`・Apache-2.0、2026-10-09 確認、コミット固定）。
   - 推論は BF16（CLAUDE.md §1）。手元の評価（5070 Ti）は fp8 だった。
@@ -50,6 +52,11 @@ GPU = os.environ.get("FACESWAP_GPU", "RTX-PRO-6000")
 
 KREA_REPO = "Comfy-Org/Krea-2"
 KREA_REVISION = "eb1eddd3983a54678545a9b2c178c5853b30f7be"
+# Krea 2 turbo の抑制（成人向けの構図で口元の接触などを弱めて描き直す）を外す LoRA。中身は txtfusion.projector の 12 個の値だけ。
+# 咥えている構図で口が閉じる問題を解決（ホストが手元で実証 2026-10-09）。プロンプトは変えない（ホスト判断）。
+# ライセンス記載なし・Krea 2 Community License 4.1(c) に抵触し得る → ホストがリスクを許容（2026-10-09）。
+BYPASS_REPO = "uzumix/krea2filterbypass3.safetensors"
+BYPASS_REVISION = "66f26e38045ad7f34fd93e87ca6e7206552c7080"
 BFS_REPO = "Alissonerdx/BFS-Best-Face-Swap"
 BFS_REVISION = "0ca3913ade4b4ada458d60c232354e8586c4c181"
 # (HF リポジトリ, リビジョン, リポジトリ内のパス, ComfyUI のモデル種別フォルダ)
@@ -58,6 +65,7 @@ WEIGHTS = [
     (KREA_REPO, KREA_REVISION, "text_encoders/qwen3vl_4b_bf16.safetensors", "text_encoders"),
     (KREA_REPO, KREA_REVISION, "vae/qwen_image_vae.safetensors", "vae"),
     (BFS_REPO, BFS_REVISION, "bfs_head_swap_v1.1_krea2.safetensors", "loras"),
+    (BYPASS_REPO, BYPASS_REVISION, "krea2filterbypass3.safetensors", "loras"),
 ]
 
 # 入れ替えの設定（ジョブの settings で上書きできるのはここにあるキーだけ）。
@@ -66,6 +74,8 @@ SETTINGS = {
     "unet": "krea2_turbo_bf16.safetensors",
     "lora": "bfs_head_swap_v1.1_krea2.safetensors",
     "lora_strength": 1.0,
+    # BFS の後ろに重ねる LoRA（[ファイル名, 強さ]）。
+    "extra_loras": [["krea2filterbypass3.safetensors", 1.0]],
     # 既定は abliterated 版（ホスト判断 2026-10-09。公式との比較で見た目ほぼ同じ）。公式に戻すなら "qwen3vl_4b_bf16.safetensors"。
     "text_encoder": "Huihui-Qwen3-VL-4B-Instruct-abliterated.safetensors",
     "vae": "qwen_image_vae.safetensors",
@@ -221,9 +231,16 @@ def prepare_face(raw: bytes, s: dict, gray: bool):
 def build_workflow(s: dict, body_name: str, face_name: str, w: int, h: int, side: str, seed: int) -> dict:
     """手元 swap.py::wf_krea と同じ組み方（BF16 の重みに替えただけ）。side は "" / left / right。"""
     prompt = s["prompt_side"].format(side=side) if side else s["prompt"]
+    # 追加の LoRA を BFS の後ろに順につなぐ（ノード id は 2a, 2b, …）。
+    extra, model_out = {}, "2"
+    for i, (name, strength) in enumerate(s.get("extra_loras") or []):
+        nid = f"2{chr(97 + i)}"
+        extra[nid] = {"class_type": "LoraLoaderModelOnly", "inputs": {"model": [model_out, 0], "lora_name": name, "strength_model": float(strength)}}
+        model_out = nid
     return {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": s["unet"], "weight_dtype": "default"}},
         "2": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["1", 0], "lora_name": s["lora"], "strength_model": float(s["lora_strength"])}},
+        **extra,
         "5": {"class_type": "CLIPLoader", "inputs": {"clip_name": s["text_encoder"], "type": "krea2", "device": "default"}},
         "6": {"class_type": "VAELoader", "inputs": {"vae_name": s["vae"]}},
         "10": {"class_type": "LoadImage", "inputs": {"image": body_name}},
@@ -232,7 +249,7 @@ def build_workflow(s: dict, body_name: str, face_name: str, w: int, h: int, side
         "13": {"class_type": "VAEEncode", "inputs": {"pixels": ["11", 0], "vae": ["6", 0]}},
         "30": {"class_type": "EmptySD3LatentImage", "inputs": {"width": w, "height": h, "batch_size": 1}},
         "3": {"class_type": "Krea2EditModelPatch", "inputs": {
-            "model": ["2", 0], "source_latent": ["12", 0], "source_latent_b": ["13", 0], "ref_boost": float(s["ref_boost"]),
+            "model": [model_out, 0], "source_latent": ["12", 0], "source_latent_b": ["13", 0], "ref_boost": float(s["ref_boost"]),
             "ref_boost_a": 1.0, "fit_mode": "fit", "vae": ["6", 0], "source_image": ["10", 0], "source_image_b": ["11", 0],
             "target_latent": ["30", 0]}},
         "20": {"class_type": "Krea2EditGroundedEncode", "inputs": {

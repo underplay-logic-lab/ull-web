@@ -50,6 +50,9 @@
 - TE（Qwen3-VL-4B abliterated）は ComfyUI の TextGenerate で画像を読める（2〜4 秒・拒否なし）。「短い一言だけ・説明不要」と頼むと空を返す。
   「In one sentence, describe what the person's mouth is doing and whether anything is in or touching it.」なら正確。
 
+**→ 解決（2026-10-09 夜）: `krea2filterbypass3` LoRA を BFS に重ねる（強さ 1.0・プロンプトは変えない）**。ホストが手元で実証し、本番のワーカーに入れた。
+口が閉じるのは turbo に仕込まれた抑制で、プロンプトの問題ではなかった（後ろに文を足しても効かなかったのと合う）。ライセンスの扱いは `docs/model-licenses.md`。
+
 ## 動画の人物入れ替え（`D:\ComfyUI-ull\charswap\csw.py`・`D:\ComfyUI2\output\charswap\strip_*.jpg`）
 H3 Ref2VA int8・576×768・5 秒・20 step・手元 1 本 約 9 分。元動画は手元の画像から FL2VA で作成。
 | | 実写→ひなた | 実写→アニメ顔 | アニメ→アニメ |
