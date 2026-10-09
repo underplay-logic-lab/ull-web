@@ -235,6 +235,10 @@ export async function POST(request: Request) {
     audioStoragePath && typeof body.audioDurationS === "number" && Number.isFinite(body.audioDurationS)
       ? Math.min(DIRECTOR_MAX_AUDIO_SECONDS, Math.max(DIRECTOR_MIN_SCENE_DURATION_S, Math.ceil(body.audioDurationS)))
       : 0;
+  // 本人のファイルかを課金の前に確かめる（2026-10-09 点検。読むときにも確かめるが、それだと課金してから失敗する）。
+  if ([storagePath, audioStoragePath].some((x) => x && !x.startsWith(`${user.id}/`))) {
+    return NextResponse.json({ error: "ファイルの指定が不正です。" }, { status: 400 });
+  }
   if (audioStoragePath && !audioDurationS) {
     return NextResponse.json({ error: "音声の長さを読み取れませんでした。別のファイルでお試しください。" }, { status: 400 });
   }
