@@ -714,7 +714,6 @@ export function DirectorStudioTab() {
     snapshot: QueuedSnapshot;
     opts: { priority?: boolean; continuation?: boolean; queue?: boolean };
   } | null>(null);
-  const unrestrictedSurcharge = directorUnrestrictedScriptSurcharge(knobs);
   const withEngine = (s: QueuedSnapshot, engine: DirectorScriptEngine): QueuedSnapshot =>
     s.uiMode === "regen" ? { ...s, scriptEngine: engine } : { ...s, media: { ...s.media, scriptEngine: engine } };
   // 予約（順番待ち）はサーバー側（2026-10-03、lib/studioQueue.server.ts）。予約した時点で課金してジョブ行を
@@ -792,9 +791,11 @@ export function DirectorStudioTab() {
     },
     knobs,
   );
+  // 台本 AI は動画と同じ GPU で動くので、上乗せも GPU の単価に合わせる（route と同じ）。
+  const unrestrictedSurcharge = directorUnrestrictedScriptSurcharge(knobs, estimate.gpu);
   const cost =
     estimate.credits +
-    (uiMode === "advanced" ? directorQwenScriptSurcharge(knobs) : 0) +
+    (uiMode === "advanced" ? directorQwenScriptSurcharge(knobs, estimate.gpu) : 0) +
     (unrestricted && uiMode === "scenes" ? unrestrictedSurcharge : 0);
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
   const busy = phase === "submitting" || phase === "running";

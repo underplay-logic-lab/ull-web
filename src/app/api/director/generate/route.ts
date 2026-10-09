@@ -519,12 +519,12 @@ export async function POST(request: Request) {
     (!isAdvancedMode && !isPromptMode) ||
     (isPromptMode && !reusingScript && looksJapaneseOutsideDialogue(rawPromptInput));
   const unrestricted = unrestrictedRequested && needsScriptAi;
-  const unrestrictedSurcharge = isPhoto ? photoUnrestrictedScriptSurcharge(knobs) : directorUnrestrictedScriptSurcharge(knobs);
+  const unrestrictedSurcharge = isPhoto ? photoUnrestrictedScriptSurcharge(knobs) : directorUnrestrictedScriptSurcharge(knobs, estimate.gpu);
   // 写真にも制限解除の上乗せを足す（2026-10-06 まで抜けていて、画面は 167C と出すのに 76C しか引いていなかった。ジョブ eac3f0f3）。
   const baseCreditsCost = isPhoto
     ? photoDirectorCredits(photoCount, extraRefPaths.length, knobs) + (unrestricted ? unrestrictedSurcharge : 0)
     : videoCredits +
-    (isAdvancedMode ? directorQwenScriptSurcharge(knobs) : 0) +
+    (isAdvancedMode ? directorQwenScriptSurcharge(knobs, estimate.gpu) : 0) +
     (unrestricted ? unrestrictedSurcharge : 0);
   // 「実行中でも並列で今すぐ実行」を選んだ場合の追加コールドスタート分
   // （順番待ち=無料の既定に対するオプトインの上乗せ。CLAUDE.md §6参照）。

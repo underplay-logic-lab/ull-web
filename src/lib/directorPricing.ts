@@ -363,8 +363,19 @@ export function directorRefVideoSurcharge(
 }
 
 /** 制限なしモード（2026-10-06）: 台本・英訳・写真の指示文を GPU 上の制限のない AI で書く分の上乗せ。 */
-export function directorUnrestrictedScriptSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS): number {
-  return Math.round(knobs.director_unrestricted_script_credits);
+export function directorUnrestrictedScriptSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS, gpu: DirectorGpu = "B300"): number {
+  return directorScriptCreditsOnGpu(knobs.director_unrestricted_script_credits, gpu, knobs);
+}
+
+/**
+ * 台本 AI（Qwen 27B）の上乗せを、動画を作る GPU の単価に合わせる（2026-10-09）。knob の額は B300 で約 150 秒の分。
+ * 台本 AI は動画と同じコンテナ（＝同じ GPU）で動くので、安い GPU では安くなる（PRO 6000 で 67 秒・H200 で 87 秒の実測。
+ * 150 秒のまま単価だけ替えるので、どの GPU でも原価の 3 倍以上）。91C → H200 59C・RTX PRO 6000 39C。
+ */
+function directorScriptCreditsOnGpu(b300Credits: number, gpu: DirectorGpu, knobs: PricingKnobs): number {
+  if (gpu === "B300") return Math.round(b300Credits);
+  const rate = gpu === "H200" ? knobs.director_credits_per_gpu_s_h200 : knobs.director_credits_per_gpu_s_pro6000;
+  return Math.ceil((b300Credits * rate) / knobs.director_credits_per_gpu_s);
 }
 
 /** Photo Director の制限なしモードの追加料金（H200 で Qwen を読む分。動画の B300 とは別）。 */
@@ -372,8 +383,8 @@ export function photoUnrestrictedScriptSurcharge(knobs: PricingKnobs = DEFAULT_K
   return Math.round(knobs.photo_unrestricted_script_credits);
 }
 
-export function directorQwenScriptSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS): number {
-  return Math.round(knobs.director_qwen_script_credits);
+export function directorQwenScriptSurcharge(knobs: PricingKnobs = DEFAULT_KNOBS, gpu: DirectorGpu = "B300"): number {
+  return directorScriptCreditsOnGpu(knobs.director_qwen_script_credits, gpu, knobs);
 }
 
 export function directorPollDeadlineS(totalDurationS: number, mode: DirectorQualityMode = "fast", refVideoS = 0): number {
