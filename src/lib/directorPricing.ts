@@ -239,6 +239,9 @@ export type DirectorEstimate = {
 /** ワーカー（modal_wan_animate_blackwell.py）の関数の上限 4 時間の手前。 */
 export const DIRECTOR_POLL_DEADLINE_MAX_S = 14_000;
 
+/** 参照動画を読む大きさ（ComfyUI の MiniMax H3 ノード: 短辺 768・面積の上限 768×1344）の画素数（MP）。 */
+const DIRECTOR_REF_VIDEO_CANVAS_MP = (768 * 1344) / 1_000_000;
+
 export function directorEstimate(
   args: {
     width: number;
@@ -255,9 +258,12 @@ export function directorEstimate(
   const mp = (Math.max(0, args.width) * Math.max(0, args.height)) / 1_000_000;
   const durationS = Math.max(0, args.durationS || 0);
   const megapixelSeconds = mp * durationS;
-  const refVideoS = Math.min(DIRECTOR_REF_VIDEO_MAX_S, Math.max(0, args.refVideoS || 0));
+  // 参照動画は出力の解像度に関係なく短辺 768（上限 768×1344）に合わせて読まれ、出力の長さで切られる
+  // （ComfyUI comfy_extras/nodes_minimax_h3.py の adapt_canvas・frames[:frame_count]）。2026-10-09 まで出力の画素数で
+  // 数えていて、540p では列を約半分に見積もっていた。参照動画の縦横比は分からないので上限の 768×1344 で数える。
+  const refVideoS = Math.min(DIRECTOR_REF_VIDEO_MAX_S, durationS, Math.max(0, args.refVideoS || 0));
   const tokens =
-    knobs.director_tokens_per_mps * mp * (durationS + refVideoS) +
+    knobs.director_tokens_per_mps * (mp * durationS + DIRECTOR_REF_VIDEO_CANVAS_MP * refVideoS) +
     knobs.director_ref_image_tokens * Math.max(0, Math.floor(args.refImages || 0)) +
     knobs.director_text_tokens;
   const stepS = knobs.director_step_s_ref * (tokens / knobs.director_step_ref_tokens) ** knobs.director_step_exp;
