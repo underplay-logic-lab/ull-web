@@ -41,6 +41,15 @@
   見分けやすい参照に替えたら両方とも入れ替わった。
 - 気になる点: 元の髪の一部（ポニーテールの根元など）が後ろに残ることがある。回数を重ねると漫画のスクリーントーンが少し荒れる。
 
+## 口元を保つ試み（2026-10-09 夜・手元・`D:/ComfyUI-ull/bfs/keepmouth.py`・`D:/ComfyUI2/output/bfs/nsfw/km_*`）
+本番で「咥えている構図が、入れ替え後に口を閉じる」と指摘（ホスト）。turbo＋TE abliterated・参照はひなた・シード 47／11。
+- 決まり文句だけ／「口の開き・舌・口に入っている物は元のまま」の一文を足す／それに TE の自動説明を足す → **3 通りとも口が閉じ、物は口の外**。
+  表情も参照寄り（元の眉を寄せた半目 → 穏やかな微笑み）。後ろに文を足す方式は効かなかった。
+- LoRA の強さ 0.7 でも閉じたまま、0.5 は顔に緑の点が出て壊れる。
+- 前後・上下の構図は、位置の言い方（手前／奥・上／下）だけで正しい人が入れ替わった（`boxswap.py`）。切り出し→貼り戻しは髪の境目が出る・隣の人を巻き込むので不採用。
+- TE（Qwen3-VL-4B abliterated）は ComfyUI の TextGenerate で画像を読める（2〜4 秒・拒否なし）。「短い一言だけ・説明不要」と頼むと空を返す。
+  「In one sentence, describe what the person's mouth is doing and whether anything is in or touching it.」なら正確。
+
 ## 動画の人物入れ替え（`D:\ComfyUI-ull\charswap\csw.py`・`D:\ComfyUI2\output\charswap\strip_*.jpg`）
 H3 Ref2VA int8・576×768・5 秒・20 step・手元 1 本 約 9 分。元動画は手元の画像から FL2VA で作成。
 | | 実写→ひなた | 実写→アニメ顔 | アニメ→アニメ |
