@@ -204,13 +204,18 @@ export async function GET(request: Request, { params }: RouteParams) {
   // Photo Director（2026-10-06）: 静止画はワーカーが R2 へ直接上げ、metadata.image_paths と r2_key_map を残す。
   // ポーリングのたびに短命の署名 URL を作り直す（結果の URL は使い回さない、studio-tab-patterns §11）。
   const isPhoto = inputs?.output === "photo";
+  // 顔入れ替え（2026-10-09）も同じ形（metadata.image_paths と r2_key_map）。
+  const isFaceSwap = effJob.workflow_type === "face_swap";
   let imageUrls: string[] | null = null;
-  if (isPhoto && effJob.status === "completed") {
+  if ((isPhoto || isFaceSwap) && effJob.status === "completed") {
     const meta = effJob.metadata as Record<string, unknown> | null;
     const paths = Array.isArray(meta?.image_paths) ? (meta.image_paths as unknown[]).filter((p): p is string => typeof p === "string") : [];
     const urls = await Promise.all(
       paths.map((p, i) =>
-        presignPublishedArtifact(meta, p, { contentType: "image/png", downloadName: `photo-${String(effJob.id).slice(0, 8)}-${i + 1}.png` }),
+        presignPublishedArtifact(meta, p, {
+          contentType: "image/png",
+          downloadName: `${isFaceSwap ? "faceswap" : "photo"}-${String(effJob.id).slice(0, 8)}-${i + 1}.png`,
+        }),
       ),
     );
     imageUrls = urls.filter((u): u is string => Boolean(u));

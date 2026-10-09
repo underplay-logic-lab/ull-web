@@ -8,6 +8,7 @@ import { DirectorStudioTab } from "@/components/studio/DirectorStudioTab";
 import { PhotoDirectorTab } from "@/components/studio/PhotoDirectorTab";
 import { VideoFixTab } from "@/components/studio/VideoFixTab";
 import { SongStudioTab } from "@/components/studio/SongStudioTab";
+import { FaceSwapTab } from "@/components/studio/FaceSwapTab";
 import { LoraStudioTab } from "@/components/studio/LoraStudioTab";
 import { MultiAngleStudioTab } from "@/components/studio/MultiAngleStudioTab";
 import { UpscaleStudioTab } from "@/components/studio/UpscaleStudioTab";
@@ -15,6 +16,8 @@ import { UpscaleVideoStudioTab } from "@/components/studio/UpscaleVideoStudioTab
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { claimStudioStorage } from "@/lib/studioStorageOwner";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
+import { useFeatures } from "@/hooks/useFeatures";
+import type { FeatureKey } from "@/lib/features";
 import { EditableText } from "@/components/EditableText";
 import { STUDIO_TAB_EVENT, type StudioHandoffTab } from "@/lib/studioHandoff";
 import { DatasetBuilderTab } from "@/components/studio/DatasetBuilderTab";
@@ -36,12 +39,14 @@ type StudioTab =
   | "director"
   | "video_fix"
   | "photo"
-  | "song";
+  | "song"
+  | "face_swap";
 
 // 2026-09-24: 特化ワークフローは admin だけに表示し、末尾へ寄せた（ホスト判断:
 // ComfyUI で作り込んだワークフローの展開先として用意したが、まだ効果的な
 // 使い方に至っていない。一般ユーザーには出さず、admin の実験用に残す）。
-const STUDIO_TABS: { id: StudioTab; label: string; adminOnly?: boolean }[] = [
+// feature: 許可制のタブ（2026-10-09、user_feature_grants）。許可された人と admin にだけ出す。
+const STUDIO_TABS: { id: StudioTab; label: string; adminOnly?: boolean; feature?: FeatureKey }[] = [
   // "image" (画像生成) is temporarily hidden from navigation — the engine
   // behind it is mid-swap and ImageGenMaintenancePlaceholder is the only
   // thing it currently renders. Re-add here once the new engine ships.
@@ -54,6 +59,8 @@ const STUDIO_TABS: { id: StudioTab; label: string; adminOnly?: boolean }[] = [
   { id: "photo", label: "📸 Photo Director" },
   // 2026-10-06: 曲づくり（できた曲の一部＝最長 68 秒を切り出して Director の音声へ渡せる）。
   { id: "song", label: "🎵 曲づくり" },
+  // 2026-10-09: 顔入れ替え（お客さん＝AI 漫画家の要望・ライセンス上の義務があるので許可制）。
+  { id: "face_swap", label: "🔁 顔入れ替え", feature: "face_swap_head" },
   { id: "upscale_video", label: "🎬 4K動画超解像" },
   { id: "upscale", label: "✨ 4K/8K超解像" },
   { id: "angle", label: "🎭 マルチアングル" },
@@ -129,7 +136,17 @@ export function Studio() {
     };
   }, [user, userLoading]);
   const { isAdmin } = useIsAdmin(user);
-  const visibleTabs = STUDIO_TABS.filter((tab) => !tab.adminOnly || isAdmin);
+  const { features } = useFeatures();
+  // 見せないタブ: admin 限定（admin 以外）と、許可制で許可の無い人（admin は全部見える）。
+  const isHiddenTab = useCallback(
+    (id: StudioTab) => {
+      const t = STUDIO_TABS.find((x) => x.id === id);
+      if (!t || isAdmin) return false;
+      return Boolean(t.adminOnly) || (t.feature ? !features.includes(t.feature) : false);
+    },
+    [isAdmin, features],
+  );
+  const visibleTabs = STUDIO_TABS.filter((tab) => !isHiddenTab(tab.id));
 
   // LoRA Studio だけは一度開いたら**アンマウントしない**（2026-09-21）。
   // このタブはユーザーがローカルから取り込んだ File と object URL を
@@ -141,13 +158,13 @@ export function Studio() {
   // 一度でも lora を開いたか。タブ遷移は必ず goTab を通す。
   const goTab = useCallback(
     (id: StudioTab) => {
-      // admin 限定タブは非 admin からの遷移（LoRA 完了画面の旧導線等）でも開かない。
-      if (STUDIO_TABS.find((t) => t.id === id)?.adminOnly && !isAdmin) return;
+      // admin 限定・許可制のタブは、見えない人からの遷移（LoRA 完了画面の旧導線等）でも開かない。
+      if (isHiddenTab(id)) return;
       if (id === "lora") setLoraMounted(true);
       setActiveTab(id);
       writeTabToUrl(id);
     },
-    [isAdmin],
+    [isHiddenTab],
   );
 
   // 他タブからの「この結果を超解像へ」導線（src/lib/studioHandoff.ts）。
@@ -170,7 +187,7 @@ export function Studio() {
   }, [goTab]);
 
   // admin 判定が false のまま admin 限定タブに居る状態（ログアウト等）は既定へ戻す。
-  const activeIsHidden = Boolean(STUDIO_TABS.find((t) => t.id === activeTab)?.adminOnly) && !isAdmin;
+  const activeIsHidden = isHiddenTab(activeTab);
   const shownTab: StudioTab = activeIsHidden ? DEFAULT_TAB : activeTab;
 
   // タブを切り替えると中身の高さが大きく変わるため、スクロール位置を据え置くと
@@ -286,6 +303,11 @@ export function Studio() {
                 siteKey="studio_desc_song"
                 fallback="思いつきを書くだけで、歌入りの曲を何曲もまとめて作れます。気に入った曲のサビなどを切り出して、歌う動画の音声にも使えます。"
               />
+            ) : activeTab === "face_swap" ? (
+              <EditableText
+                siteKey="studio_desc_face_swap"
+                fallback="入れ替え先の画像と、顔の画像を入れるだけ。顔と髪型を入れ替え、体・服・ポーズ・背景はそのまま残します。白黒の漫画にも使えます。"
+              />
             ) : activeTab === "lora" ? (
               <EditableText
                 siteKey="studio_desc_lora"
@@ -351,6 +373,8 @@ export function Studio() {
           <PhotoDirectorTab />
         ) : shownTab === "song" ? (
           <SongStudioTab />
+        ) : shownTab === "face_swap" ? (
+          <FaceSwapTab />
         ) : shownTab === "lora" ? null : (
           <ImageGenMaintenancePlaceholder />
         )}

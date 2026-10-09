@@ -61,6 +61,10 @@ export type KnobKey =
   | "song_per_track_credits_3"
   | "song_priority_parallel_rate"
   | "song_priority_parallel_surcharge"
+  | "face_swap_base_credits"
+  | "face_swap_per_person_credits"
+  | "face_swap_priority_parallel_rate"
+  | "face_swap_priority_parallel_surcharge"
   | "photo_director_per_image_credits"
   | "lora_caption_base"
   | "lora_caption_per_image"
@@ -301,6 +305,13 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 並列の追加料金は全タブ共通の「通常料金 × 率 ＋ 固定」（CLAUDE.md §6-7）。
   song_priority_parallel_rate: 1.0,
   song_priority_parallel_surcharge: 50,
+  // 顔入れ替え（2026-10-09・許可制）: 1 回の基本料＋入れ替える人数ごと。原価 3.0×。RTX PRO 6000（$3.03/h ≒ ¥455/h）。
+  // 2026-10-09 実測（1MP・10 step・BF16、VRAM 33GB）: 冷えた状態から 1 人目の完了まで 55 秒、温まっていれば 1 人 12.5 秒。
+  // 基本 = 起動・読み込みの 42 秒＋終わった後の待機 30 秒 = 72 秒 ≒ ¥9.1 ×3 ÷1.66 ≒ 17C、1 人 13 秒 ≒ ¥1.6 ×3 ÷1.66 ≒ 3C。
+  face_swap_base_credits: 17,
+  face_swap_per_person_credits: 3,
+  face_swap_priority_parallel_rate: 1.0,
+  face_swap_priority_parallel_surcharge: 50,
   photo_director_per_image_credits: 9,
   // 超解像スタジオ（SeedVR2）: 出力の 100 万画素あたりの消費クレジット。
   // credits = max(upscale_min_credits, ceil(これ × 出力MP × モデル係数))。

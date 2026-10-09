@@ -10,6 +10,7 @@ import {
 } from "@/lib/upscaleDispatch.server";
 import { dispatchDirectorJob, type DirectorDispatchSpec } from "@/lib/directorDispatch.server";
 import { dispatchSongJob, type SongDispatchSpec } from "@/lib/modalSong";
+import { dispatchFaceSwapJob, type FaceSwapDispatchSpec } from "@/lib/modalFaceSwap";
 import { rememberGenerationCall } from "@/lib/modalCallRecord.server";
 import { deleteStudioUploads } from "@/lib/studioUploads.server";
 
@@ -24,10 +25,11 @@ import { deleteStudioUploads } from "@/lib/studioUploads.server";
  *      画面が完了を見たとき／画面を開いたとき。
  * 始まったら完走のルールは不変。取り消せるのは reserved のうちだけ（全額返金・行ごと消す）。
  */
-export type QueueKind = "angle" | "upscale_image" | "upscale_video" | "director" | "song";
+export type QueueKind = "angle" | "upscale_image" | "upscale_video" | "director" | "song" | "face_swap";
 
 // "song"（曲づくり、2026-10-06）は supabase/migrations/20260896000000_song_studio_queue.sql の適用が要る（kind の制約・取り出し・トリガー）。
-export const QUEUE_KINDS: QueueKind[] = ["angle", "upscale_image", "upscale_video", "director", "song"];
+// "face_swap"（顔入れ替え、2026-10-09）は supabase/migrations/20260900000000_face_swap_jobs.sql の適用が要る（同上）。
+export const QUEUE_KINDS: QueueKind[] = ["angle", "upscale_image", "upscale_video", "director", "song", "face_swap"];
 
 export function isQueueKind(v: unknown): v is QueueKind {
   return typeof v === "string" && (QUEUE_KINDS as string[]).includes(v);
@@ -87,6 +89,16 @@ const KINDS: Partial<Record<QueueKind, KindDef>> = {
       const { callId } = await dispatchSongJob(jobId, userId, spec as SongDispatchSpec);
       await rememberGenerationCall(jobId, callId);
     },
+    uploads: () => [],
+  },
+  face_swap: {
+    table: "generation_jobs",
+    match: { workflow_type: "face_swap" },
+    dispatch: async (jobId, userId, spec) => {
+      const { callId } = await dispatchFaceSwapJob(jobId, userId, spec as FaceSwapDispatchSpec);
+      await rememberGenerationCall(jobId, callId);
+    },
+    // 同じ画像で入れ替え直すことがあるので消さない（R2 の 14 日の期限で消える）。
     uploads: () => [],
   },
 };
