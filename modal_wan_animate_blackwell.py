@@ -1240,6 +1240,68 @@ def _stream_director_video(file_path: str, *, request: fastapi.Request):
     )
 
 
+_MODEL_FILE_EXTS = (".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf")
+_MODEL_SUBDIRS = (
+    "diffusion_models", "unet", "text_encoders", "clip", "vae", "loras", "checkpoints",
+    "audio_encoders", "latent_upscale_models", "upscale_models", "clip_vision", "model_patches",
+)
+
+
+def _start_model_prefetch(workflow: dict):
+    """ワークフローが使うモデルのファイルを裏で読んでページキャッシュに載せる（2026-10-09）。
+
+    冷えたコンテナでは「指示文の AI → ComfyUI 起動 → TE → 本体」が順番に Volume を読み、
+    読み込みの速さのばらつきで同じ仕事が 170〜300 秒にぶれていた（Photo 1 枚・H200）。
+    指示文の AI や ComfyUI の起動と重ねて先に読んでおき、後の読み込みをメモリから読むだけにする。
+    温まったコンテナでは既にキャッシュにあるので一瞬で終わる。失敗しても何もしない（fail-open）。
+    """
+    import threading
+
+    names = set()
+    for node in (workflow or {}).values():
+        for v in ((node or {}).get("inputs") or {}).values():
+            if isinstance(v, str) and v.lower().endswith(_MODEL_FILE_EXTS):
+                names.add(v)
+    paths = []
+    for name in sorted(names):
+        for sub in _MODEL_SUBDIRS:
+            cand = os.path.join(MODELS_DIR, sub, name)
+            if os.path.isfile(cand):
+                paths.append(cand)
+                break
+    if not paths:
+        return
+
+    def _read(path, totals):
+        try:
+            with open(path, "rb", buffering=0) as f:
+                while True:
+                    chunk = f.read(16 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    totals[0] += len(chunk)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[prefetch] {os.path.basename(path)} skipped: {exc!r}", flush=True)
+
+    def _run():
+        t0 = time.time()
+        totals = [0]
+        workers = [threading.Thread(target=_read, args=(p, totals), daemon=True) for p in paths]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join()
+        dt = time.time() - t0
+        print(
+            f"[prefetch] {len(paths)} files {totals[0] / 1e9:.1f}GB in {dt:.1f}s "
+            f"({totals[0] / 1e9 / max(dt, 0.001):.2f}GB/s)",
+            flush=True,
+        )
+
+    print(f"[prefetch] start: {', '.join(os.path.basename(p) for p in paths)}", flush=True)
+    threading.Thread(target=_run, name="model-prefetch", daemon=True).start()
+
+
 def _current_effective_vram_gb():
     """Device-global effective VRAM in use, in GB — just the one number, no
     total / denominator and no GPU model name (the client renders it as a
@@ -2238,6 +2300,22 @@ class WanAnimateBlackwell:
         try:
             workflow = json.loads(workflow_json)
             files = [(name, base64.b64decode(b64)) for name, b64 in files_b64.items()]
+            _start_model_prefetch(workflow)
+            # 指示文の AI（数十秒）の間に ComfyUI を並行で起動する（2026-10-09）。ComfyUI はモデルを最初の
+            # 生成まで読まないので、AI と VRAM を取り合わない。下の本来の呼び出しの前に必ず join する
+            # （起動途中に同じ処理が重なると「フラグ違い」と見て再起動してしまう）。
+            _comfy_boot = None
+            if (qwen_concept_text or qwen_text_instruction) and qwen_prompt_node_id and not video_fix:
+                import threading as _threading
+
+                def _boot_comfy():
+                    try:
+                        self._ensure_comfy_running(exec_config)
+                    except Exception as exc:  # noqa: BLE001 — 下の本来の呼び出しでやり直す
+                        print(f"[director] early ComfyUI boot failed (retrying later): {exc!r}", flush=True)
+
+                _comfy_boot = _threading.Thread(target=_boot_comfy, name="comfy-boot", daemon=True)
+                _comfy_boot.start()
 
             # ULL Cinematic Director "Advanced"（Qwen3.8-27B-abliteratedに
             # よる台本自動生成、2026-09-18導入）: 別GPU（H100/A100）を新たに
@@ -2361,6 +2439,8 @@ class WanAnimateBlackwell:
                 if is_async:
                     _supabase_patch_job(job_id, {"progress_message": "動画を生成中..."})
 
+            if _comfy_boot is not None:
+                _comfy_boot.join()
             self._ensure_comfy_running(exec_config)
             try:
                 run_out = self._run_workflow(
