@@ -42,6 +42,7 @@ import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
 import { useLocalWarmCountdown } from "@/hooks/useLocalWarmCountdown";
+import { PrevResultPanel } from "@/components/studio/PrevResultPanel";
 import {
   QueueChoiceModal,
   QueuedNextBanner,
@@ -370,6 +371,12 @@ export function VideoFixTab() {
   const { isWarm: gpuWarm, remainingMs: gpuWarmMs, markWarm: markGpuWarm } = useLocalWarmCountdown(30);
   const resultReloadsRef = useRef(0);
 
+  // 前の結果（2026-10-09、studio-tab-patterns §7）: 予約した次の生成が始まっても直前の完了分を別枠で見せる（PrevResultPanel）。
+  const [peekId, setPeekId] = useState<string | null>(null);
+  const jobRefForPeek = useRef<typeof job>(null);
+  useEffect(() => {
+    jobRefForPeek.current = job;
+  }, [job]);
   const trackedRef = useRef<string[]>(loadFormState<{ ids: string[] }>(RESERVED_KEY)?.ids ?? []);
   const [reservedIds, setReservedIds] = useState<string[]>([]);
   const [reserving, setReserving] = useState(0);
@@ -456,6 +463,8 @@ export function VideoFixTab() {
   };
 
   const followJob = useCallback((id: string) => {
+    const prevJob = jobRefForPeek.current;
+    if (prevJob && prevJob.status === "completed") setPeekId(prevJob.jobId);
     trackedRef.current = trackedRef.current.filter((x) => x !== id);
     saveFormState(RESERVED_KEY, { ids: trackedRef.current });
     resultReloadsRef.current = 0;
@@ -1035,6 +1044,15 @@ export function VideoFixTab() {
           </div>
         )}
         {actionError && <p className="text-xs text-red-400">{actionError}</p>}
+        {peekId && peekId !== jobId && (
+          <PrevResultPanel
+            key={peekId}
+            kind="video"
+            resolveUrl={async () => (await pollDirectorJob(peekId)).videoUrl}
+            onDownload={(url) => downloadDirectorVideo(url, fixFilename(peekId))}
+            onClose={() => setPeekId(null)}
+          />
+        )}
       </div>
     </div>
   );

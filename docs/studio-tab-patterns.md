@@ -143,6 +143,11 @@ Cinematic Director（`DirectorStudioTab.tsx` / `src/app/api/director/generate/ro
 
 「順番待ち（無料・既定）」と「並列実行（追加料金）」を選ばせる。
 
+**予約した次のジョブが始まっても、前の結果を消さない**（2026-09-29 に Director・超解像で対応、2026-10-09 に顔入れ替え・曲づくり・
+Photo Director・部分修正で同じ漏れを踏んだ）。`followJob` で `setJob(null)` する直前に、完了していた前のジョブの id を
+`setPeekId` で覚え、共有の `PrevResultPanel`（画像・動画・音声、複数の結果は `resolveUrls`）で別枠に出す。
+手本は `FaceSwapTab.tsx`（`peekId` / `jobRefForPeek`）。Multi-Angle は独自の peek を持つ。
+
 1. **warmカウントダウン**: 共有フック `src/hooks/useLocalWarmCountdown.ts`
    （`markWarm()` をジョブ完了時に呼ぶ、DB・共有状態不要のタブ内ローカル実装。
    旧 `gpu_warm_status` 共有テーブル方式は 2026-09-12 に横取り問題で全廃止済み）を使い、

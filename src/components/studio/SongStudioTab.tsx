@@ -44,6 +44,7 @@ import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
 import { useLocalWarmCountdown } from "@/hooks/useLocalWarmCountdown";
+import { PrevResultPanel } from "@/components/studio/PrevResultPanel";
 import { QueueChoiceModal, QueuedNextBanner, QueueNextButtonLabel, WarmCountdownBanner } from "@/components/studio/QueueChoiceModal";
 
 type Phase = "idle" | "submitting" | "running" | "done" | "error";
@@ -127,6 +128,12 @@ export function SongStudioTab() {
   const elapsedMs = useElapsedTimer(phase === "running" && job?.status === "processing");
   const { isWarm: gpuWarm, remainingMs: gpuWarmMs, markWarm: markGpuWarm } = useLocalWarmCountdown(30);
 
+  // 前の結果（2026-10-09、studio-tab-patterns §7）: 予約した次の生成が始まっても直前の完了分を別枠で見せる（PrevResultPanel）。
+  const [peekId, setPeekId] = useState<string | null>(null);
+  const jobRefForPeek = useRef<typeof job>(null);
+  useEffect(() => {
+    jobRefForPeek.current = job;
+  }, [job]);
   const trackedRef = useRef<string[]>(loadFormState<{ ids: string[] }>(RESERVED_KEY)?.ids ?? []);
   const [reservedIds, setReservedIds] = useState<string[]>([]);
   const [reserving, setReserving] = useState(0);
@@ -199,6 +206,8 @@ export function SongStudioTab() {
   };
 
   const followJob = useCallback((id: string) => {
+    const prevJob = jobRefForPeek.current;
+    if (prevJob && prevJob.status === "completed") setPeekId(prevJob.jobId);
     trackedRef.current = trackedRef.current.filter((x) => x !== id);
     saveFormState(RESERVED_KEY, { ids: trackedRef.current });
     setErrorMessage(null);
@@ -776,6 +785,15 @@ export function SongStudioTab() {
           </div>
         )}
         {actionError && <p className="text-xs text-red-400">{actionError}</p>}
+        {peekId && peekId !== jobId && (
+          <PrevResultPanel
+            key={peekId}
+            kind="audio"
+            resolveUrls={async () => (await pollSongJob(peekId)).audioUrls}
+            onDownload={async (url, i) => downloadSong(url, songFilename(peekId, i, (await pollSongJob(peekId)).seeds[i]))}
+            onClose={() => setPeekId(null)}
+          />
+        )}
       </div>
     </div>
   );

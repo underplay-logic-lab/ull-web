@@ -34,6 +34,7 @@ import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
 import { useElapsedTimer, formatElapsedSeconds } from "@/hooks/useElapsedTimer";
 import { useLocalWarmCountdown } from "@/hooks/useLocalWarmCountdown";
+import { PrevResultPanel } from "@/components/studio/PrevResultPanel";
 import { QueueChoiceModal, QueuedNextBanner, QueueNextButtonLabel, WarmCountdownBanner } from "@/components/studio/QueueChoiceModal";
 
 type Phase = "idle" | "submitting" | "running" | "done" | "error";
@@ -217,6 +218,12 @@ export function FaceSwapTab() {
   const elapsedMs = useElapsedTimer(phase === "running" && job?.status === "processing");
   const { isWarm: gpuWarm, remainingMs: gpuWarmMs, markWarm: markGpuWarm } = useLocalWarmCountdown(30);
 
+  // 前の結果（2026-10-09、studio-tab-patterns §7）: 予約した次の生成が始まっても直前の完了分を別枠で見せる（PrevResultPanel）。
+  const [peekId, setPeekId] = useState<string | null>(null);
+  const jobRefForPeek = useRef<typeof job>(null);
+  useEffect(() => {
+    jobRefForPeek.current = job;
+  }, [job]);
   const trackedRef = useRef<string[]>(loadFormState<{ ids: string[] }>(RESERVED_KEY)?.ids ?? []);
   const [reservedIds, setReservedIds] = useState<string[]>([]);
   const [reserving, setReserving] = useState(0);
@@ -286,6 +293,8 @@ export function FaceSwapTab() {
   };
 
   const followJob = useCallback((id: string) => {
+    const prevJob = jobRefForPeek.current;
+    if (prevJob && prevJob.status === "completed") setPeekId(prevJob.jobId);
     trackedRef.current = trackedRef.current.filter((x) => x !== id);
     saveFormState(RESERVED_KEY, { ids: trackedRef.current });
     setErrorMessage(null);
@@ -660,6 +669,15 @@ export function FaceSwapTab() {
           </div>
         )}
         {actionError && <p className="text-xs text-red-400">{actionError}</p>}
+        {peekId && peekId !== jobId && (
+          <PrevResultPanel
+            key={peekId}
+            kind="image"
+            resolveUrl={async () => (await pollFaceSwapJob(peekId)).imageUrls[0] ?? null}
+            onDownload={async (url) => saveBlob(await fetchFaceSwapImage(url), resultFilename(peekId))}
+            onClose={() => setPeekId(null)}
+          />
+        )}
       </div>
     </div>
   );
