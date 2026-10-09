@@ -89,9 +89,41 @@ export type StartUpscaleVideoJobResult = {
   creditsCost: number;
 };
 
+export type ProbedUpscaleVideo = {
+  width: number;
+  height: number;
+  fps: number;
+  duration: number;
+  frameCount: number;
+};
+
+/** 選んだ動画を先にアップロードし、サーバーで ffprobe して実際の fps・コマ数を返す（2026-10-09）。
+ * 画面の料金の目安を実際の課金と揃えるため。meta は測れなかったとき null（目安はブラウザの値のまま）。
+ * 返した storagePath は startUpscaleVideoJob に渡せば再アップロードしない。 */
+export async function uploadAndProbeUpscaleVideo(
+  userId: string,
+  video: File,
+): Promise<{ storagePath: string; meta: ProbedUpscaleVideo | null }> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) throw new Error("ログインが必要です。");
+
+  const { path: storagePath } = await uploadStudioAsset(userId, video);
+  const res = await fetch("/api/studio/upscale/video/probe", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ storagePath }),
+  });
+  const data = await res.json().catch(() => null);
+  const meta = res.ok && data?.meta ? (data.meta as ProbedUpscaleVideo) : null;
+  return { storagePath, meta };
+}
+
 export async function startUpscaleVideoJob(params: {
   userId: string;
   video: File;
+  /** uploadAndProbeUpscaleVideo で上げ済みならその path（再アップロードしない）。 */
+  storagePath?: string;
   modelKey: string;
   presetId: string;
   durationSec: number;
@@ -107,7 +139,7 @@ export async function startUpscaleVideoJob(params: {
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) throw new Error("ログインが必要です。");
 
-  const { path: storagePath } = await uploadStudioAsset(params.userId, params.video);
+  const storagePath = params.storagePath ?? (await uploadStudioAsset(params.userId, params.video)).path;
 
   const res = await fetch("/api/studio/upscale/video/generate", {
     method: "POST",

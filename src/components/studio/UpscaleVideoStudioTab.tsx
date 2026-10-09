@@ -38,6 +38,7 @@ import {
   pollUpscaleJob,
   resolveUpscaleVideoUrl,
   startUpscaleVideoJob,
+  uploadAndProbeUpscaleVideo,
   UpscaleJobNotFoundError,
   type UpscaleApiError,
   type UpscaleJob,
@@ -406,6 +407,16 @@ export function UpscaleVideoStudioTab() {
   const videoPreview = useObjectUrl(video);
   const [videoError, setVideoError] = useState<string | null>(null);
   const [videoMeta, setVideoMeta] = useState<VideoMeta | null>(null);
+  // サーバーで測った fps か（2026-10-09）。選んだ時点で裏でアップロードして ffprobe し、料金の目安を実際の課金に揃える。
+  // probing の間とサーバーで測れなかったときは、ブラウザの目安（fps 30 の仮定）のまま。
+  // 測り終えた動画（成功／失敗）。「測り中」はここから導く（effect の中で直接 setState しない）。
+  const [probeDone, setProbeDone] = useState<{ file: File; ok: boolean } | null>(null);
+  // 選んだ動画の先行アップロード（送信時に再アップロードしない）。file が今の動画と同じときだけ使う。
+  const preUploadRef = useRef<{
+    file: File;
+    probe: ReturnType<typeof uploadAndProbeUpscaleVideo>;
+    path: Promise<string | null>;
+  } | null>(null);
 
   const [modelKey, setModelKey] = useState<string>(DEFAULT_UPSCALE_MODEL);
   const [presetId, setPresetId] = useState<UpscaleVideoPresetId>(DEFAULT_UPSCALE_VIDEO_PRESET);
@@ -461,6 +472,8 @@ export function UpscaleVideoStudioTab() {
     fps: number;
     width: number;
     height: number;
+    /** 先行アップロード済みの path（失敗・未完了なら null → 送信時にアップロードする）。 */
+    storagePath: Promise<string | null> | null;
   };
   // 予約（順番待ち）はサーバー側（2026-10-03、lib/studioQueue.server.ts）。予約した時点で課金してジョブ行を
   // reserved で作り、前のジョブが終わるとサーバーが起動する（タブを閉じても進む）。それまでは画面のメモリにだけあり、
@@ -484,6 +497,7 @@ export function UpscaleVideoStudioTab() {
   const handleVideoSelected = useCallback(async (file: File) => {
     setVideoError(null);
     setVideoMeta(null);
+    preUploadRef.current = null;
     if (file.size > UPSCALE_VIDEO_MAX_BYTES) {
       setVideoError(`動画ファイルが大きすぎます。${Math.floor(UPSCALE_VIDEO_MAX_BYTES / 1024 / 1024)}MB 以下の動画を選んでください。`);
       return;
@@ -517,10 +531,53 @@ export function UpscaleVideoStudioTab() {
     setVideoMeta(meta);
   }, []);
 
+  // 選んだ動画を裏でアップロードしてサーバーで測る（ログインと動画がそろった時点で 1 回。Director からの受け渡しは
+  // ログインの読み込みより先に来ることがあるので、選んだ処理の中ではなくここで待つ）。送信はこの間も押せる
+  // （そのときは上げ終わるのを待って同じ path を使う）。
+  const userId = user?.id ?? null;
+  const metaReady = videoMeta !== null;
+  useEffect(() => {
+    if (!userId || !video || !metaReady) return;
+    let cancelled = false;
+    if (preUploadRef.current?.file !== video) {
+      const probe = uploadAndProbeUpscaleVideo(userId, video);
+      preUploadRef.current = { file: video, probe, path: probe.then((r) => r.storagePath).catch(() => null) };
+    }
+    preUploadRef.current.probe
+      .then(({ meta: probed }) => {
+        if (cancelled) return;
+        if (!probed) return setProbeDone({ file: video, ok: false });
+        setVideoMeta({ duration: probed.duration, width: probed.width, height: probed.height, fps: probed.fps });
+        setProbeDone({ file: video, ok: true });
+        if (probed.frameCount > UPSCALE_VIDEO_MAX_FRAMES) {
+          const maxS = Math.floor(UPSCALE_VIDEO_MAX_FRAMES / probed.fps);
+          setVideoError(
+            `この動画（${Math.round(probed.fps)}fps）は${maxS}秒までです（${probed.duration.toFixed(1)}秒でした）。上限は ${UPSCALE_VIDEO_MAX_FRAMES} コマです。`,
+          );
+        }
+      })
+      .catch((err) => {
+        console.warn("[UpscaleVideoStudioTab] pre-upload/probe failed:", err);
+        if (!cancelled) setProbeDone({ file: video, ok: false });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, video, metaReady]);
+  const fpsSource: "browser" | "probing" | "server" =
+    video && probeDone?.file === video
+      ? probeDone.ok
+        ? "server"
+        : "browser"
+      : userId && video && metaReady
+        ? "probing"
+        : "browser";
+
   const handleClearVideo = useCallback(() => {
     setVideo(null);
     setVideoMeta(null);
     setVideoError(null);
+    preUploadRef.current = null;
   }, []);
 
   // 他タブ（Cinematic Director の動画）からの「動画超解像へ」導線: マウント時に
@@ -568,6 +625,7 @@ export function UpscaleVideoStudioTab() {
           fps: snapshot.fps,
           width: snapshot.width,
           height: snapshot.height,
+          storagePath: (await snapshot.storagePath) ?? undefined,
           priority: opts.priority,
         });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
@@ -808,6 +866,7 @@ export function UpscaleVideoStudioTab() {
       fps: videoMeta.fps,
       width: videoMeta.width,
       height: videoMeta.height,
+      storagePath: preUploadRef.current?.file === video ? preUploadRef.current.path : null,
     };
   };
 
@@ -850,6 +909,7 @@ export function UpscaleVideoStudioTab() {
         fps: snap.fps,
         width: snap.width,
         height: snap.height,
+        storagePath: (await snap.storagePath) ?? undefined,
         queue: true,
       });
       broadcastCreditsUpdate(user.id, res.remainingCredits);
@@ -913,7 +973,17 @@ export function UpscaleVideoStudioTab() {
           {videoMeta && (
             <p className="-mt-3 text-[11px] text-muted">
               入力 {videoMeta.width}×{videoMeta.height}px ・ {videoMeta.duration.toFixed(1)}秒 ・
-              約{videoMeta.fps.toFixed(0)}fps（推定{breakdown.frameCount}フレーム）
+              {fpsSource === "server" ? (
+                <>
+                  {Number(videoMeta.fps.toFixed(2))}fps（{breakdown.frameCount}フレーム）
+                </>
+              ) : fpsSource === "probing" ? (
+                <>約{videoMeta.fps.toFixed(0)}fps（フレーム数を確認中…）</>
+              ) : (
+                <>
+                  約{videoMeta.fps.toFixed(0)}fps（推定{breakdown.frameCount}フレーム）
+                </>
+              )}
               {breakdown.outputWidth > 0 && (
                 <>
                   {" → "}出力 {breakdown.outputWidth}×{breakdown.outputHeight}px

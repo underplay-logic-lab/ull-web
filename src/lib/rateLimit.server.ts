@@ -9,6 +9,9 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 /** 有料の外部 AI（Gemini）を料金なしで呼ぶ API の共通の枠: 1 人 1 時間 300 回（普通の使い方は数十回）。 */
 export const GEMINI_FREE_LIMIT = { bucket: "gemini_free", windowS: 3600, max: 300 } as const;
 
+/** 動画超解像の「選んだ動画を測る」（Modal の CPU 関数・料金なし）: 1 人 1 時間 120 回（1 回選ぶごとに 1 回）。 */
+export const VIDEO_PROBE_LIMIT = { bucket: "video_probe", windowS: 3600, max: 120 } as const;
+
 /** 上限以内なら null、超えたら 429 の応答を返す（呼び出し元はそのまま return する）。 */
 export async function rateLimitResponse(
   userId: string,
