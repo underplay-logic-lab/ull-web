@@ -330,9 +330,11 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 導出: docs/pricing-decision-sheet.md。
   //   RTX PRO 6000 ¥515/h × 1.298s = ¥0.186 × 3 ÷ 1.66 = 0.34C/frame（旧 0.30）
   upscale_video_per_frame: 0.34,
-  // Real-ESRGAN の動画（2026-10-09〜）: 60C ＋ 0.17C/コマ。RTX PRO 6000 実測 0.48 秒/コマ＋起動 約 5 分。
-  // 5 秒 約 80C（原価の 2.6 倍）・20 秒 約 142C（3.0 倍）・68 秒 約 338C（3.5 倍）。
-  upscale_video_esrgan_base_credits: 60,
+  // Real-ESRGAN の動画（2026-10-09〜）: 20C ＋ 0.17C/コマ。RTX PRO 6000 実測 0.48 秒/コマ（HD/2K/4K で同じ）。
+  // 固定分は当初「起動 約 5 分」で 60C にしたが、本番 fbbcd9a1（10 秒・243 コマ・4K）は受付→完了 2 分 24 秒で
+  // 固定分は約 30 秒（待機 30 秒込みで約 55 秒）→ 6〜7 倍取っていて HD は SeedVR2（88C）より高かった。
+  // 20C で 10 秒 62C（原価 約 ¥25 の 4.2 倍）・68 秒 299C（約 ¥120 の 4.1 倍）。3.7 秒未満だけ HD の SeedVR2 が数 C 安い。
+  upscale_video_esrgan_base_credits: 20,
   upscale_video_esrgan_per_frame: 0.17,
   upscale_video_min_credits: 20,
   // 2026-09-17 GPU tier切り替え（HD: L40S→RTX PRO 6000、2K: H200→RTX
