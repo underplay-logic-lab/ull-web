@@ -592,6 +592,12 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 2. 1 枚の背景から 3D（image-blaster）→ 中身は World Labs Marble 等の有料 API でモデルではない → 別案（Multi-Angle を背景に／Director のカメラ移動／Marble 直契約／HunyuanWorld を調べる）。
 3. 動画の人物入れ替え（MiniMax-H3-Character-Swap-LoRA）→ 次に手元で試す（動画版 BFS の H3／LTX 2.5 も並べる）。
 あわせて: 人ごとに機能を許可する仕組み・Qwen Image 2.1 のお試し枠（以前のクライアント案件）をこの機会に実装する（ホスト 10-09）。
+→ **（10-09 夜）機能の許可の仕組みを実装**: 表 `user_feature_grants`（**マイグレーション `20260899000000_user_feature_grants.sql` は未適用・ホストが当てる**）・
+  機能の一覧 `src/lib/features.ts`（`face_swap_head`・`qwen21_trial`）・判定 `features.server.ts`（`requireFeature`・admin は全部可・DB 失敗は不可）・
+  `GET /api/me/features`＋`useFeatures()`（タブの出し分け用）・admin「機能の許可」タブ（メールで付与・期限・取り消し）。
+  **方針（ホスト 10-09）**: 顔入れ替えは「髪型ごと」＝Krea 2 turbo＋BFS を許可した人だけ（ホスト評価で一番まとも・顔も髪型もひなた）。
+  Klein 4B は「似ない中途半端な入れ替え」で不採用。Qwen 2.1 は許可した人だけのお試し。動画の人物入れ替えは見送り。
+  次: 顔入れ替えのワーカー（Krea 2 turbo＋BFS v1.1・TE とプロンプトは設定で差し替え可能に）とタブ。
 別件: 10-09 に BPO（ワンプラットフォーム）から没入型 5 面投影の技術協力の営業メール。話は聞く予定・後回し。
 
 **★ 2026-10-01 にローンチした**（天赦日×一粒万倍日）。顔アップ 1 枚 → 素材づくり → 45 枚 → LoRA（minimax 既定・約 30 分）→ 動画で、
