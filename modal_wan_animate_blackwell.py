@@ -2300,6 +2300,15 @@ class WanAnimateBlackwell:
         try:
             workflow = json.loads(workflow_json)
             files = [(name, base64.b64decode(b64)) for name, b64 in files_b64.items()]
+            # Photo（2026-10-09）: ComfyUI 既定の dynamic VRAM（comfy-aimdo）は重みをテンソルごとにファイルから GPU へ
+            # 直接読み、Volume（ネットワーク越し）では 0.5〜1GB/s しか出ず、1 枚の 8〜9 割が読み込み待ちだった
+            # （v0.35.1 comfy/memory_management.py read_file_to_device）。従来の読み込みに戻す（足りなければ CPU へ逃がす
+            # 通常モードの性質はそのまま）。env PHOTO_DYNAMIC_VRAM=1 で元に戻せる。
+            if image_outputs and os.environ.get("PHOTO_DYNAMIC_VRAM", "0") != "1":
+                _base_cfg = exec_config if exec_config is not None else BLACKWELL_EXEC_CONFIG
+                _extra = str(_base_cfg.get("extra_args") or "")
+                if "--disable-dynamic-vram" not in _extra:
+                    exec_config = {**_base_cfg, "extra_args": f"{_extra} --disable-dynamic-vram".strip()}
             # モデルの先読み（_start_model_prefetch）は 2026-10-09 に試して逆効果（Photo 1 枚 349s・本来の読み込みも
             # 速くならず、イメージの import と回線を取り合った）。呼ばない。関数は記録として残す。
             # 指示文の AI（数十秒）の間に ComfyUI を並行で起動する（2026-10-09）。ComfyUI はモデルを最初の
