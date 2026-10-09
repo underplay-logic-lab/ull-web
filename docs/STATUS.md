@@ -587,13 +587,14 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
 **▶ ULL再開はここから（2026-10-02 夜に整理。まずこの「上位 3 つ」を提示する）**
 
 **今の上位 3 つ（2026-10-09 夜に更新・これを出す）**
-1. **顔入れ替えのワーカーとタブ**（お客さん＝AI 漫画家の要望 1）: Krea 2 turbo＋BFS v1.1 を `face_swap_head` の許可制で。白黒の参照は自動で白黒・2 人以上は左右で指定して 1 人ずつ・
-   TE とプロンプトはワーカーの設定で差し替え可能に（中身はホストが決める）。CPU で import と資産 → RTX PRO 6000 で 1 本測る。Studio タブ 13 項目。詳細 `docs/face-swap-eval.md`。
+1. **顔入れ替え — 公開済み（作り直さない）。残りは本番の確認 1 本と、お客さんへの許可の付与だけ**（お客さん＝AI 漫画家の要望 1・詳細 `docs/face-swap-eval.md`）
    → **（10-09 夜）実装・実測・公開済み（845999b）**: ワーカー `modal_faceswap_worker.py`（デプロイ済み）・API `/api/studio/face-swap`・タブ `FaceSwapTab.tsx`（許可制）・
    料金 knob `face_swap_*`（基本 17C＋1 人 3C）・マイグレーション `20260900000000_face_swap_jobs.sql`（適用済み）。RTX PRO 6000 実測: 冷えて 55 秒・温まって 1 人 12.5 秒・
    VRAM 33GB（abliterated TE も載せて 41.6GB）。白黒の自動判定・2 人の左右とも OK。TE は公式／abliterated（`Huihui-Qwen3-VL-4B-Instruct-abliterated`、Volume の
    `faceswap/text_encoders/`）で見た目ほぼ同じ → **既定は abliterated（ホスト判断 10-09）**。公式はワーカーの probe・比較用に Volume に残す。（10-09 深夜）咥えている構図で口が閉じる → `krea2filterbypass3` を重ねて解決（デプロイ済み・§4.1(c) のリスクはホスト許容）。
    残り: 本番で 1 本確かめる（admin は許可なしで見える）→ お客さんに admin「機能の許可」で face_swap_head を付ける。
+   ついでに済ませたこと（10-09）: admin のリモートダウンローダーで保存ファイル名にフォルダを書ける（`faceswap/text_encoders/x.safetensors`、33b1488）・
+   Volume を約 1,075GB → 約 1,003GB に（S2V・joycaption・CosyVoice を削除。MiniMax Music は既に無かった）。
    次の候補（ホスト 10-09）: 3〜4 人・横並び以外（位置の言い方で可と手元で確認）／参照の服がうつる・髪が混ざる（参照を頭だけに切り抜く案）。
 2. **お客さんへの返答の下書き**（要望 1〜3 の結果と方法①〜③の提案）＋要望 2（背景の 3D）の別案の調べ物（HunyuanWorld は Tencent の地域制限つき）。
 3. **説明動画 3 本目（部分修正）**→ 4 超解像（安いタイプは公開済み）。
