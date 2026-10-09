@@ -2300,7 +2300,8 @@ class WanAnimateBlackwell:
         try:
             workflow = json.loads(workflow_json)
             files = [(name, base64.b64decode(b64)) for name, b64 in files_b64.items()]
-            _start_model_prefetch(workflow)
+            # モデルの先読み（_start_model_prefetch）は 2026-10-09 に試して逆効果（Photo 1 枚 349s・本来の読み込みも
+            # 速くならず、イメージの import と回線を取り合った）。呼ばない。関数は記録として残す。
             # 指示文の AI（数十秒）の間に ComfyUI を並行で起動する（2026-10-09）。ComfyUI はモデルを最初の
             # 生成まで読まないので、AI と VRAM を取り合わない。下の本来の呼び出しの前に必ず join する
             # （起動途中に同じ処理が重なると「フラグ違い」と見て再起動してしまう）。
