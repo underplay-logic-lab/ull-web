@@ -33,7 +33,7 @@
 - 手元 1 枚: raw 約 170 秒／turbo 約 30 秒（約 6 倍）。
 - `ref_boost` 4.0（ノード作者の推奨）は turbo で目に見える差なし → 使わない。
 
-## 3 人・4 人（2026-10-09 夜・手元 5070 Ti・Krea 2 turbo fp8・`D:\ComfyUI-ullfs	rio.py`・`D:\ComfyUI2\outputfs	ri_sheet_*.jpg`）
+## 3 人・4 人（2026-10-09 夜・手元 5070 Ti・Krea 2 turbo fp8・`D:/ComfyUI-ull/bfs/trio.py`・`D:/ComfyUI2/output/bfs/tri_sheet_*.jpg`）
 全体を渡し、位置をプロンプトの言い方だけで指定して 1 人ずつ順に（本番と同じ方式）。1 人 約 35 秒（手元）。
 - 3 人: 「on the left / in the middle / on the right」でアニメ・写真・白黒漫画とも取り違えなし。大笑い・口を開けた表情は元のまま。
 - 4 人: 「on the far left / second from the left / second from the right / on the far right」で 4 人とも狙いどおり。
