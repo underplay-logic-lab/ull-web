@@ -604,7 +604,9 @@ RTX PRO 6000 は VRAM 56GB で収まり品質同等だが 2.6〜2.9 倍遅く 1 
 先読み（ページキャッシュ）は逆効果で撤回（a602ee6・349s）。ComfyUI の並行起動は残した。
 → **原因は ComfyUI の dynamic VRAM**（v0.35.1・重みをテンソルごとに Volume から GPU へ直読み）。Photo だけ `--disable-dynamic-vram`（85a5203・env PHOTO_DYNAMIC_VRAM=1 で戻す）
 で 349→193s・GPU へ載せるのは 16s に・VRAM 99.6GB で同じ。残りは「受け取り→載せ始め」60〜70s（先読みしても 60s＝CPU 側の組み立て）と指示文の AI。
-AI が書いている間の先読みも効かず撤回（ad763c7）。**未決: B300 の Director 動画にも広げるか**（短い動画で試してから・VRAM 230GB 級で溢れる危険）。3 面図は基本料が無く冷えた 3 枚で原価の約 1.75 倍・小 9C は約 1.3 倍の見込み。
+AI が書いている間の先読みも効かず撤回（ad763c7）。B300 の Director 動画へは**広げない**: 過去ログ（10-08 68 秒）で dynamic VRAM の上乗せは約 70s・TE 49GB は 27s で読めていて
+（H200 の Photo は約 80s）、従来方式でも CPU 側の組み立て 60s 前後が残る＝縮んでも数十秒（12〜60 分のジョブの 1〜2%）で VRAM 230GB 級の危険と見合わない。
+dynamic VRAM を使う他の所: 曲づくり（modal_ace_worker・v0.38.2・起動フラグ無し）。SeedVR2 は --gpu-only で無効。3 面図は基本料が無く冷えた 3 枚で原価の約 1.75 倍・小 9C は約 1.3 倍の見込み。
 **10-09: 説明動画 2 本目（Cinematic Director）公開** https://youtu.be/zrO661jI5T4 ・タブに追加済み（dc5b9b6）。次の撮影は 3 部分修正 → 4 超解像
 （超解像は Real-ESRGAN の安いタイプを本番 RTX PRO 6000 で実測して開放してから・SeedVR2 はプレミアム）。
 
