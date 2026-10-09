@@ -380,6 +380,20 @@ const KNOB_TEXT: Record<KnobKey, Omit<KnobMeta, "value">> = {
     description: "モデルロード等の固定オーバーヘッド分（HD基準、他プリセットはmult_res_2k/4kが乗る）",
     isPublic: true,
   },
+  upscale_video_esrgan_base_credits: {
+    label: "動画超解像 Real-ESRGAN 固定分",
+    category: "feature_credits",
+    unit: "C",
+    description: "Real-ESRGAN（実写・アニメ）で動画を超解像するときの 1 本あたりの固定分（起動・読み込み）。",
+    isPublic: true,
+  },
+  upscale_video_esrgan_per_frame: {
+    label: "動画超解像 Real-ESRGAN 1 コマあたり",
+    category: "feature_credits",
+    unit: "C/コマ",
+    description: "Real-ESRGAN（実写・アニメ）で動画を超解像するときの 1 コマあたり。HD/2K/4K で同じ。",
+    isPublic: true,
+  },
   upscale_video_per_frame: {
     label: "動画超解像（1フレームあたり・限界費用分）",
     category: "feature_credits",

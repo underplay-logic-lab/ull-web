@@ -125,7 +125,7 @@ export const UPSCALE_MODELS: UpscaleModel[] = [
     descJa:
       "実写・写真向けの素直な4倍拡大。AI高精細アップスケールと違いディテールを作り直さないので破綻せず爆速・低コスト。",
     creditMult: 0.25,
-    kind: ["image"],
+    kind: ["image", "video"], // 2026-10-09: 動画にも（実写）
     fixedScale: 4,
   },
   {
@@ -142,7 +142,7 @@ export const UPSCALE_MODELS: UpscaleModel[] = [
     label: "Real-ESRGAN anime 6B",
     descJa: "アニメ・イラスト特化の4倍拡大。線をなめらかに保ったまま、AI高精細アップスケールより軽量・高速。",
     creditMult: 0.25,
-    kind: ["image"],
+    kind: ["image", "video"], // 2026-10-09: 動画にも（アニメ）
     fixedScale: 4,
   },
 ];
@@ -460,7 +460,9 @@ export function estimateVideoOutputSize(
   const short = Math.min(w, h);
   const long = Math.max(w, h);
   const aspect = long / short;
-  const targetShort = model.fixedScale ? short * model.fixedScale : getUpscaleVideoPreset(presetId).targetShort;
+  // 2026-10-09: 動画は固定倍率モデルでもプリセットの大きさで出す（ワーカーが ×4 → 縮小）。
+  void model;
+  const targetShort = getUpscaleVideoPreset(presetId).targetShort;
   const targetLong = Math.round(targetShort * aspect);
   const outW = w <= h ? targetShort : targetLong;
   const outH = w <= h ? targetLong : targetShort;
@@ -480,7 +482,9 @@ export function resolveVideoTargetShort(
   model: UpscaleModel,
 ): number {
   const shortEdge = Math.min(Math.max(1, Math.round(inW || 0)), Math.max(1, Math.round(inH || 0)));
-  if (model.fixedScale) return Math.round(shortEdge * model.fixedScale);
+  // 2026-10-09: 動画は固定倍率モデルでもプリセットの大きさ（ワーカーが ×4 → 縮小）。
+  void model;
+  void shortEdge;
   return getUpscaleVideoPreset(presetId).targetShort;
 }
 
@@ -557,11 +561,15 @@ export function upscaleVideoCostBreakdown(args: {
   // 乖離が指数的に開いていた（実例: 15秒HD動画で実コスト$0.16に対し課金
   // $10.00、約62倍のマークアップ）。固定費（モデルロード等）+ わずかな
   // フレーム比例分、に分離した式へ修正する。
-  const raw = Math.ceil(
-    (knobs.upscale_video_base_credits + knobs.upscale_video_per_frame * frameCount) *
-      model.creditMult *
-      resMult,
-  );
+  // Real-ESRGAN（固定倍率モデル）の動画は別の式（2026-10-09 ホスト了承）: 起動分の固定＋コマ比例。
+  // RTX PRO 6000 実測: 1376×768×1,637 コマ → 4K で 787 秒（0.48 秒/コマ）＋起動 約 5 分＝約 ¥160。HD/2K/4K で時間はほぼ同じ。
+  const raw = model.fixedScale
+    ? Math.ceil(knobs.upscale_video_esrgan_base_credits + knobs.upscale_video_esrgan_per_frame * frameCount)
+    : Math.ceil(
+        (knobs.upscale_video_base_credits + knobs.upscale_video_per_frame * frameCount) *
+          model.creditMult *
+          resMult,
+      );
   const floor = Math.max(1, Math.round(knobs.upscale_video_min_credits));
   return {
     credits: Math.max(floor, raw),

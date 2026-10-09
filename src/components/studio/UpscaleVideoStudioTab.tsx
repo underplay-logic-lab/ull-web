@@ -26,7 +26,6 @@ import {
   UPSCALE_VIDEO_MAX_SECONDS,
   UPSCALE_VIDEO_PRESETS,
   type UpscaleVideoPresetId,
-  getUpscaleModel,
   upscaleVideoCostBreakdown,
   upscalePriorityParallelSurcharge,
   validateVideoInputResolution,
@@ -764,8 +763,6 @@ export function UpscaleVideoStudioTab() {
     };
   }, [job?.id, job?.status, job?.resultUrl, resultReloads]);
 
-  const model = getUpscaleModel(modelKey);
-
   const breakdown = useMemo(
     () =>
       upscaleVideoCostBreakdown({
@@ -951,12 +948,8 @@ export function UpscaleVideoStudioTab() {
 
           <div>
             <p className="mb-2 text-xs font-mono uppercase tracking-widest text-muted">出力解像度</p>
-            {model.fixedScale ? (
-              <p className="flex items-start gap-1.5 rounded-xl border border-border bg-background px-3 py-2.5 text-[11px] leading-relaxed text-muted">
-                <Sparkles size={12} className="mt-0.5 shrink-0 text-neon-violet" />
-                {model.label} は ×{model.fixedScale} 固定です（HD/2K/4K の選択は一部のモデルのみ対応）。
-              </p>
-            ) : (
+            {/* 2026-10-09: Real-ESRGAN も動画では HD/2K/4K に合わせて出す（ワーカーが ×4 → 縮小）ので、どのエンジンでも選べる。 */}
+            {(
               <div className="grid grid-cols-3 gap-2">
                 {UPSCALE_VIDEO_PRESETS.map((p) => (
                   <button

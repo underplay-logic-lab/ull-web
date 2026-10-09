@@ -488,9 +488,9 @@ UPSCALER_REGISTRY: dict = {
         # できた（実写はswinir_l>x4plus>anime、アニメはanime>x4plus>swinir_l）
         # ため、「差別化にならない」という理由だけでは非表示化する根拠が弱いと
         # 判断（ホスト判断）。GPU原価もT4で1回あたり1円未満と無視できる水準。
-        # 動画対応(kind="video")はまだ実機未検証のため画像のみ復活する。
+        # 2026-10-09: 動画にも対応（_esrgan_video_stream で 1 コマずつ・HD/2K/4K に縮めて書き出す）。
         "enabled": True,
-        "kind": ("image",),
+        "kind": ("image", "video"),
         # 2026-09-13: 当初 "ai-forever/Real-ESRGAN"（HF）を指していたが実在しない
         # ファイル名で 404（実測確認）。公式配布元は GitHub Releases のみのため
         # "__url__" センチネルで直接 HTTP ダウンロードする（hf_hub_download 不使用）。
@@ -510,7 +510,7 @@ UPSCALER_REGISTRY: dict = {
         "license": "BSD-3-Clause",
         "node_type": "upscale_model",
         "enabled": True,  # 2026-09-17: real_esrgan_x4plus と同じ理由で復活（上記コメント参照）
-        "kind": ("image",),
+        "kind": ("image", "video"),  # 2026-10-09: 動画にも対応（実写は x4plus・アニメはこちら）
         "model_files": [
             (
                 "upscale_models",
@@ -2250,6 +2250,77 @@ class SeedVR2Worker:
             "stages_ran": len(stage_targets),
         }
 
+    def _esrgan_video_stream(self, in_path: str, reg: dict, p: dict, probe: dict, target_short: float) -> tuple[bytes, str]:
+        """Real-ESRGAN（4 倍固定の CNN）で動画を 1 コマずつ処理する（2026-10-09）。
+        ffmpeg で rgb24 を読み → GPU で ×4（fp16）→ GPU で目的の大きさへ縮小（bicubic・antialias）→ ffmpeg（libx264）へ流す。
+        出力の短辺は target_short（HD/2K/4K の絶対値・入力より小さくはしない）。縦横は偶数に丸める。音声は呼び出し側で戻す。"""
+        import subprocess
+
+        import numpy as np
+        import torch
+        import torch.nn.functional as F
+        from spandrel import ModelLoader
+
+        w, h = int(probe["width"]), int(probe["height"])
+        fps = float(probe.get("fps") or p.get("source_fps") or 24.0)
+        scale = max(1.0, float(target_short) / max(1, min(w, h)))
+        ow, oh = int(round(w * scale / 2)) * 2, int(round(h * scale / 2)) * 2
+        model_name = p.get("model_name") or reg["default_params"]["model_name"]
+        model = ModelLoader().load_from_file(os.path.join(MODELS_DIR, "upscale_models", model_name)).model.eval().cuda().half()
+
+        out_dir = os.path.join(COMFY_DIR, "output")
+        os.makedirs(out_dir, exist_ok=True)
+        filename = f"ull_upscale_video_{uuid.uuid4().hex[:8]}_00001.mp4"
+        out_path = os.path.join(out_dir, filename)
+        reader = subprocess.Popen(
+            ["ffmpeg", "-v", "error", "-i", in_path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE
+        )
+        writer = subprocess.Popen(
+            ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{ow}x{oh}", "-r", f"{fps}",
+             "-i", "-", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p",
+             "-movflags", "+faststart", out_path],
+            stdin=subprocess.PIPE,
+        )
+        frame_bytes = w * h * 3
+        cap = int(p.get("frame_load_cap") or 0)
+        batch = 4
+        n = 0
+        t0 = time.time()
+        try:
+            with torch.inference_mode():
+                while not cap or n < cap:
+                    raws = []
+                    while len(raws) < batch and (not cap or n + len(raws) < cap):
+                        raw = reader.stdout.read(frame_bytes)
+                        if len(raw) < frame_bytes:
+                            break
+                        raws.append(raw)
+                    if not raws:
+                        break
+                    x = torch.from_numpy(np.frombuffer(b"".join(raws), np.uint8).reshape(len(raws), h, w, 3).copy()).cuda()
+                    y = model(x.permute(0, 3, 1, 2).half().div_(255.0))
+                    if (y.shape[-1], y.shape[-2]) != (ow, oh):
+                        y = F.interpolate(y.float(), size=(oh, ow), mode="bicubic", antialias=True)
+                    y = y.clamp_(0, 1).mul_(255.0).round_().to(torch.uint8).permute(0, 2, 3, 1).contiguous().cpu().numpy()
+                    writer.stdin.write(y.tobytes())
+                    n += len(raws)
+                    if n % 200 < batch:
+                        el = time.time() - t0
+                        print(f"[esrgan-video] {n} コマ {el:.0f}s ({el / n:.2f}s/コマ) → {ow}x{oh}", flush=True)
+        finally:
+            try:
+                writer.stdin.close()
+            except Exception:  # noqa: BLE001
+                pass
+            writer.wait()
+            reader.kill()
+            reader.wait()
+        if writer.returncode != 0 or n == 0:
+            raise RuntimeError(f"esrgan video encode failed (rc={writer.returncode}, frames={n})")
+        print(f"[esrgan-video] done {n} コマ in {time.time() - t0:.0f}s → {ow}x{oh}", flush=True)
+        with open(out_path, "rb") as f:
+            return f.read(), filename
+
     def _do_upscale_video(self, video_spec: str, model_key: str, params: dict) -> dict:
         """動画アップスケール本体（v1 最小スコープ: 単一動画・カスケードなし）。
         画像版 _do_upscale と対になるメソッド。"""
@@ -2327,8 +2398,14 @@ class SeedVR2Worker:
         # 係数0.4→0.8）。
         workflow_timeout_s = min(9600, max(1800, 300 + int(p["frame_load_cap"] * out_mp * 0.8)))
         t0 = time.time()
-        with _VramPeak() as vp:
-            data, filename = self._run_workflow(workflow, timeout_s=workflow_timeout_s)
+        if reg["node_type"] == "upscale_model":
+            # Real-ESRGAN（2026-10-09）: 上の VHS_LoadVideo のワークフローは全コマを一度に読み、×4 の出力も丸ごと持つので
+            # 68 秒で 300GB を超える。1 コマずつ読み → ×4 → 選んだ大きさへ縮め → すぐ書き出す（メモリ一定）。
+            with _VramPeak() as vp:
+                data, filename = self._esrgan_video_stream(in_path, reg, p, probe, target_short)
+        else:
+            with _VramPeak() as vp:
+                data, filename = self._run_workflow(workflow, timeout_s=workflow_timeout_s)
         elapsed = round(time.time() - t0, 2)
 
         if has_audio:
@@ -3024,7 +3101,12 @@ def upscale_video_generate_dispatch(item: dict, request: fastapi.Request):
     # プリセット別にGPU tierを選ぶ。.with_options はModalが呼び出し時の
     # 動的configとして正式サポートしている（gpu以外にtimeoutも同時に
     # 上書き可能）。
-    gpu_tier = _resolve_video_gpu_tier(item.get("preset") or "")
+    # Real-ESRGAN（2026-10-09）は CNN で軽く、プリセットに関係なく画像と同じ tier（RTX PRO 6000）で足りる。
+    _mk = item.get("model_key") or ""
+    if UPSCALER_REGISTRY.get(_mk, {}).get("node_type") == "upscale_model" and not os.environ.get("SEEDVR2_WORKER_GPU", "").strip():
+        gpu_tier = UPSCALE_IMAGE_MODEL_GPU.get(_mk, "RTX-PRO-6000")
+    else:
+        gpu_tier = _resolve_video_gpu_tier(item.get("preset") or "")
     worker = SeedVR2Worker.with_options(timeout=modal_timeout, gpu=gpu_tier)
     call = worker().run_upscale_video_job.spawn(item)
     print(
