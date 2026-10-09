@@ -216,14 +216,15 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 単価は B300 と同じ「GPU の時間単価 × 3 倍 ÷ ¥1.66/C」（H200 $4.54・PRO 6000 $3.03・¥170/$）。固定分の秒数は B300 と同じ式（PRO 6000 は実測でより短い＝多め側）。
   director_credits_per_gpu_s_h200: 0.388,
   director_credits_per_gpu_s_pro6000: 0.259,
-  director_step_mult_h200: 1.27,
+  // H200 は大きいほど差が開く（10 秒 1.27 倍・540p 30 秒 36.6 秒÷式の B300 26.7 秒＝1.37 倍）→ 多め側の 1.35。
+  director_step_mult_h200: 1.35,
   director_step_mult_pro6000: 1.68,
   // 列の数の上限（式の列の数＝tokens。参照写真を多めに数えるので実際の列より 1〜2 割多い）。
   // PRO 6000: 540p・10 秒（57k）でピーク 94GB（TE 49GB を載せたまま）。TE は足りなくなれば ComfyUI が自動で外す。
   // 540p・20 秒・参照 9 枚（式 93.3k・実際 85,429 列）: TE を一部自動で外して 1 step 30.1 秒・ピーク 89.3GB・描画中 81.5GB で完走 → 95k。
-  // H200 は 10 秒しか測っていないので 0（使わない）。測ったら上限を入れる。
+  // H200: 540p・30 秒・参照 9 枚（式 129.5k・実際 125,329 列）で 1 step 36.6 秒・ピーク 126.3GB／141GB で完走 → 140k（TE はさらに外せる）。
   director_pro6000_max_tokens: 95000,
-  director_h200_max_tokens: 0,
+  director_h200_max_tokens: 140000,
   // 2026-09-23: 全タブ共通「通常料金 × 率 + 固定」（src/lib/pricing/parallelSurcharge.ts）。
   director_priority_parallel_rate: 1.0,
   // 2026-09-14 は固定 115C（理論値）。2026-09-23 に全タブ共通の「率 + 固定 50C」へ
