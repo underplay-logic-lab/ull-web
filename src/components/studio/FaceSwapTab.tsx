@@ -12,10 +12,11 @@ import { AlertTriangle, Download, ImagePlus, LogIn, Repeat, Sparkles, X, Zap } f
 import { HelpNote } from "./HelpNote";
 import { TopupActions } from "./TopupActions";
 import {
-  FACE_SWAP_MAX_PEOPLE,
+  FACE_SWAP_LAYOUTS,
   FACE_SWAP_STRENGTHS,
   faceSwapCredits,
   faceSwapPriorityParallelSurcharge,
+  type FaceSwapLayout,
   type FaceSwapSide,
   type FaceSwapStrengthId,
 } from "@/lib/faceSwapPricing";
@@ -45,8 +46,6 @@ import { PrevResultPanel } from "@/components/studio/PrevResultPanel";
 import { QueueChoiceModal, QueuedNextBanner, QueueNextButtonLabel, WarmCountdownBanner } from "@/components/studio/QueueChoiceModal";
 
 type Phase = "idle" | "submitting" | "running" | "done" | "error";
-/** 誰を入れ替えるか。"both" は左右 2 人とも（顔を 2 枚入れる）。 */
-type Target = "auto" | "left" | "right" | "both";
 
 const JOB_KEY = "faceswap-active-job";
 const FORM_KEY = "faceswap-form";
@@ -55,14 +54,9 @@ const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_CONSECUTIVE_ERRORS = 8;
 const MAX_INPUT_BYTES = 25 * 1024 * 1024;
 
-const TARGETS: { id: Target; label: string; sub: string }[] = [
-  { id: "auto", label: "1 人だけ", sub: "写っているのが 1 人" },
-  { id: "left", label: "左の人", sub: "2 人のうち左" },
-  { id: "right", label: "右の人", sub: "2 人のうち右" },
-  { id: "both", label: "2 人とも", sub: "左右それぞれ別の顔" },
-];
+const LAYOUT_CHOICES: FaceSwapLayout[] = [1, 2, 3, 4];
 
-type Snapshot = { body: File; faces: { file: File; side: FaceSwapSide }[]; strength: FaceSwapStrengthId };
+type Snapshot = { body: File; layout: FaceSwapLayout; faces: { file: File; side: FaceSwapSide }[]; strength: FaceSwapStrengthId };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -186,9 +180,27 @@ export function FaceSwapTab() {
 
   // --- 入力（File はリロードで戻せないので保存しない） ---
   const [body, setBody] = useState<File | null>(null);
-  const [target, setTarget] = useState<Target>("auto");
-  const [faceA, setFaceA] = useState<File | null>(null);
-  const [faceB, setFaceB] = useState<File | null>(null);
+  // 写っている人数（横並び）と、入れ替える位置（左から順）・位置ごとの顔。
+  const [layout, setLayout] = useState<FaceSwapLayout>(1);
+  const [picked, setPicked] = useState<FaceSwapSide[]>(["auto"]);
+  const [faces, setFaces] = useState<Partial<Record<FaceSwapSide, File>>>({});
+  const positions = FACE_SWAP_LAYOUTS[layout];
+  const pickedInOrder = positions.filter((p) => picked.includes(p.id));
+  const chooseLayout = (n: FaceSwapLayout) => {
+    setLayout(n);
+    // 人数を変えたら位置の意味が変わるので、選び直してもらう（1 人だけは選ぶものが無いので決め打ち）。
+    setPicked(n === 1 ? ["auto"] : []);
+    setFaces({});
+  };
+  const togglePicked = (side: FaceSwapSide) =>
+    setPicked((prev) => (prev.includes(side) ? prev.filter((x) => x !== side) : [...prev, side]));
+  const setFace = (side: FaceSwapSide) => (file: File | null) =>
+    setFaces((prev) => {
+      const next = { ...prev };
+      if (file) next[side] = file;
+      else delete next[side];
+      return next;
+    });
   // 似せる強さ（選んだものは次回も使う。File と違って保存できる）。
   const [strength, setStrength] = useState<FaceSwapStrengthId>(
     () => loadFormState<{ strength: FaceSwapStrengthId }>(FORM_KEY)?.strength ?? "standard",
@@ -197,7 +209,7 @@ export function FaceSwapTab() {
     saveFormState(FORM_KEY, { strength });
   }, [strength]);
   const [inputError, setInputError] = useState<string | null>(null);
-  const people = target === "both" ? FACE_SWAP_MAX_PEOPLE : 1;
+  const people = Math.max(1, pickedInOrder.length);
   const cost = faceSwapCredits(people, knobs);
   const insufficientCredits = Boolean(user) && !creditsLoading && (credits ?? 0) < cost;
 
@@ -250,12 +262,12 @@ export function FaceSwapTab() {
       return null;
     };
     if (!body) return fail("入れ替え先の画像を入れてください。");
-    if (target === "both") {
-      if (!faceA || !faceB) return fail("左の人と右の人の顔を両方入れてください。");
-      return { body, faces: [{ file: faceA, side: "left" }, { file: faceB, side: "right" }], strength };
+    if (pickedInOrder.length === 0) return fail("入れ替える人を選んでください。");
+    const missing = pickedInOrder.filter((p) => !faces[p.id]);
+    if (missing.length) {
+      return fail(layout === 1 ? "顔の画像を入れてください。" : `「${missing.map((p) => p.label).join("」「")}」の人の顔を入れてください。`);
     }
-    if (!faceA) return fail("顔の画像を入れてください。");
-    return { body, faces: [{ file: faceA, side: target }], strength };
+    return { body, layout, faces: pickedInOrder.map((p) => ({ file: faces[p.id] as File, side: p.id })), strength };
   };
 
   const start = useCallback(
@@ -265,7 +277,7 @@ export function FaceSwapTab() {
         const bodyPath = await uploadOnce(s.body);
         const swaps = [];
         for (const f of s.faces) swaps.push({ facePath: await uploadOnce(f.file), side: f.side });
-        return await startFaceSwapJob({ bodyPath, swaps, strength: s.strength, ...opts });
+        return await startFaceSwapJob({ bodyPath, layout: s.layout, swaps, strength: s.strength, ...opts });
       } finally {
         setUploading(false);
       }
@@ -316,7 +328,7 @@ export function FaceSwapTab() {
     setJob(null);
     setJobId(id);
     setPhase("running");
-  }, []);
+  }, [setPeekId]);
 
   const advanceAndFollow = useCallback(
     async (follow: boolean) => {
@@ -473,13 +485,12 @@ export function FaceSwapTab() {
     const blob = await fetchResult();
     if (!blob) return setActionError("画像の取得に失敗しました。時間をおいてもう一度お試しください。");
     setBody(new File([blob], resultFilename(jobId), { type: blob.type || "image/png" }));
-    setFaceA(null);
-    setFaceB(null);
+    setFaces({});
     setPhase("idle");
   };
 
   const reloadsRef = useRef(0);
-  const ready = Boolean(body && faceA && (target !== "both" || faceB));
+  const ready = Boolean(body && pickedInOrder.length > 0 && pickedInOrder.every((p) => faces[p.id]));
   const canRun = ready && phase !== "submitting";
   const chargeFirst = Boolean(user) && insufficientCredits && !busy;
   const resultUrl = job?.imageUrls[0] ?? null;
@@ -509,38 +520,61 @@ export function FaceSwapTab() {
         />
 
         <div>
-          <p className="mb-1.5 text-xs font-medium text-foreground">入れ替える人</p>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {TARGETS.map((t) => (
+          <p className="mb-1.5 text-xs font-medium text-foreground">写っている人数（横並び）</p>
+          <div className="grid grid-cols-4 gap-2">
+            {LAYOUT_CHOICES.map((n) => (
               <button
-                key={t.id}
+                key={n}
                 type="button"
-                onClick={() => setTarget(t.id)}
-                className={`rounded-xl border px-2 py-2 text-xs transition-colors ${
-                  target === t.id
+                onClick={() => chooseLayout(n)}
+                className={`rounded-xl border px-2 py-2 text-xs font-medium transition-colors ${
+                  layout === n
                     ? "border-neon-pink/40 bg-neon-pink/10 text-neon-pink"
                     : "border-border bg-background text-muted hover:border-neon-violet/40 hover:text-foreground"
                 }`}
               >
-                <span className="block font-medium">{t.label}</span>
-                <span className="block text-[10px] opacity-70">{t.sub}</span>
+                {n} 人
               </button>
             ))}
           </div>
         </div>
 
-        <div className={target === "both" ? "grid gap-4 sm:grid-cols-2" : undefined}>
-          <ImageSlot
-            label={target === "both" ? "左の人の顔" : "顔の画像"}
-            hint="顔と髪型がはっきり写った 1 人の画像"
-            file={faceA}
-            onPick={pick(setFaceA)}
-            onClear={() => setFaceA(null)}
-          />
-          {target === "both" && (
-            <ImageSlot label="右の人の顔" hint="顔と髪型がはっきり写った 1 人の画像" file={faceB} onPick={pick(setFaceB)} onClear={() => setFaceB(null)} />
-          )}
-        </div>
+        {layout > 1 && (
+          <div>
+            <p className="mb-1.5 text-xs font-medium text-foreground">入れ替える人（複数選べます）</p>
+            <div className={`grid gap-2 ${layout === 4 ? "grid-cols-2 sm:grid-cols-4" : layout === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
+              {positions.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => togglePicked(p.id)}
+                  className={`rounded-xl border px-2 py-2 text-xs transition-colors ${
+                    picked.includes(p.id)
+                      ? "border-neon-pink/40 bg-neon-pink/10 text-neon-pink"
+                      : "border-border bg-background text-muted hover:border-neon-violet/40 hover:text-foreground"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {pickedInOrder.length > 0 && (
+          <div className={pickedInOrder.length > 1 ? "grid gap-4 sm:grid-cols-2" : undefined}>
+            {pickedInOrder.map((p) => (
+              <ImageSlot
+                key={p.id}
+                label={layout === 1 ? "顔の画像" : `${p.label}の人の顔`}
+                hint="顔と髪型がはっきり写った 1 人の画像"
+                file={faces[p.id] ?? null}
+                onPick={pick(setFace(p.id))}
+                onClear={() => setFace(p.id)(null)}
+              />
+            ))}
+          </div>
+        )}
         {inputError && <p className="text-xs text-red-400">{inputError}</p>}
 
         <div>
@@ -574,7 +608,7 @@ export function FaceSwapTab() {
         >
           <ul className="mt-1 list-disc space-y-1 pl-4">
             <li>白黒の漫画の原稿は、自動で白黒の顔にそろえて入れ替えます（カラーの顔写真のままで大丈夫です）。</li>
-            <li>3 人以上写っている画像は、結果の「この結果をさらに入れ替える」で 1 人ずつ続けてください。</li>
+            <li>横に並んだ 4 人までなら、まとめて入れ替えられます（左から順に 1 人ずつ描き直します）。5 人以上や、前後・上下に重なった画像は、結果の「この結果をさらに入れ替える」で続けてください。</li>
             <li>画像全体を描き直すため、入れ替えた人のすぐ隣の細かい柄などが少し変わることがあります。</li>
           </ul>
         </HelpNote>

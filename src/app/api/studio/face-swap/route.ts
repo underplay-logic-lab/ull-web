@@ -6,11 +6,12 @@ import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import { requireFeature, userFromBearer } from "@/lib/features.server";
 import { assertOwnedPath } from "@/lib/studioUploads.server";
 import {
+  FACE_SWAP_LAYOUTS,
   FACE_SWAP_MAX_PEOPLE,
   faceSwapCredits,
   faceSwapPriorityParallelSurcharge,
   faceSwapStrengthValue,
-  isFaceSwapSide,
+  isFaceSwapLayout,
 } from "@/lib/faceSwapPricing";
 import { dispatchFaceSwapJob, type FaceSwapDispatchSpec } from "@/lib/modalFaceSwap";
 import { rememberGenerationCall } from "@/lib/modalCallRecord.server";
@@ -42,21 +43,25 @@ export async function POST(request: Request) {
   if (rawSwaps.length > FACE_SWAP_MAX_PEOPLE) {
     return NextResponse.json({ error: `一度に入れ替えられるのは ${FACE_SWAP_MAX_PEOPLE} 人までです。` }, { status: 400 });
   }
-  const swaps: FaceSwapDispatchSpec["swaps"] = [];
+  // 写っている人数（横並び）。位置はその人数の並びの中から選ぶ。同じ位置は 1 回だけ（前の結果に重ねるので、2 回だと同じ人を描き直す）。
+  const layout = isFaceSwapLayout(body.layout) ? body.layout : 1;
+  const positions = FACE_SWAP_LAYOUTS[layout].map((p) => p.id as string);
+  const picked: { facePath: string; side: string }[] = [];
   for (const raw of rawSwaps) {
     const r = (raw ?? {}) as Record<string, unknown>;
     const facePath = typeof r.facePath === "string" ? r.facePath : "";
     if (!facePath) return NextResponse.json({ error: "顔の画像を入れてください。" }, { status: 400 });
-    if (!isFaceSwapSide(r.side)) return NextResponse.json({ error: "入れ替える人の指定が正しくありません。" }, { status: 400 });
-    swaps.push({ facePath, side: r.side === "auto" ? "" : r.side });
-  }
-  // 2 人のときは左右を必ず指定し、同じ側を 2 回選ばない（1 人目の結果に 2 人目を重ねるので、同じ人を 2 回描き直すことになる）。
-  if (swaps.length > 1) {
-    const sides = swaps.map((s) => s.side);
-    if (sides.some((s) => !s) || new Set(sides).size !== sides.length) {
-      return NextResponse.json({ error: "2 人を入れ替えるときは、左の人と右の人を 1 人ずつ選んでください。" }, { status: 400 });
+    if (typeof r.side !== "string" || !positions.includes(r.side)) {
+      return NextResponse.json({ error: "入れ替える人の指定が正しくありません。" }, { status: 400 });
     }
+    picked.push({ facePath, side: r.side });
   }
+  if (new Set(picked.map((p) => p.side)).size !== picked.length) {
+    return NextResponse.json({ error: "同じ人を 2 回選んでいます。入れ替える人を選び直してください。" }, { status: 400 });
+  }
+  // 左から順に入れ替える（手元の試験と同じ順）。1 人だけ写っている画像は位置を言わない。
+  picked.sort((a, b) => positions.indexOf(a.side) - positions.indexOf(b.side));
+  const swaps: FaceSwapDispatchSpec["swaps"] = picked.map((p) => ({ facePath: p.facePath, side: p.side === "auto" ? "" : p.side }));
   try {
     assertOwnedPath(user.id, bodyPath);
     for (const s of swaps) assertOwnedPath(user.id, s.facePath);
@@ -114,7 +119,7 @@ export async function POST(request: Request) {
       status: queue ? "reserved" : "queued",
       workflow_type: "face_swap",
       credits_cost: creditsCost,
-      inputs: { body_path: bodyPath, swaps, seed, strength },
+      inputs: { body_path: bodyPath, layout, swaps, seed, strength },
       metadata: { people: swaps.length, priority },
     })
     .select("id")

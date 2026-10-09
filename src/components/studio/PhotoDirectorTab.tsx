@@ -326,7 +326,7 @@ export function PhotoDirectorTab() {
     setJob(null);
     setJobId(id);
     setPhase("running");
-  }, []);
+  }, [setPeekId]);
 
   // 順番が来ていれば次を起動させ、予約一覧を取り直す。follow: このタブで予約したジョブが始まっていれば画面を切り替える。
   const advanceAndFollow = useCallback(

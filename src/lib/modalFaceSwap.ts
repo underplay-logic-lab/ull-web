@@ -10,8 +10,8 @@ export type FaceSwapDispatchSpec = {
   creditsCost: number;
   seed: number;
   bodyPath: string;
-  /** side は "" ＝写っているのが 1 人（左右を言わない）／left／right。 */
-  swaps: { facePath: string; side: "" | "left" | "right" }[];
+  /** side は "" ＝写っているのが 1 人（位置を言わない）、それ以外はワーカーの SIDES のキー（left・second_left 等）。 */
+  swaps: { facePath: string; side: string }[];
   /** 似せる強さ（BFS の LoRA の強さ）。無ければワーカーの既定（1.3）。 */
   strength?: number;
 };

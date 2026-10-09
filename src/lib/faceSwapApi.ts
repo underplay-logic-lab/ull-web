@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
-import type { FaceSwapSide, FaceSwapStrengthId } from "@/lib/faceSwapPricing";
+import type { FaceSwapLayout, FaceSwapSide, FaceSwapStrengthId } from "@/lib/faceSwapPricing";
 
 // 顔入れ替え（2026-10-09・許可制）の画面側 API。開始は /api/studio/face-swap、状態は共通の /api/jobs/[id]。
 // 画像は先に uploadStudioAsset で R2 へ上げ、ここには path だけを渡す（CLAUDE.md §6-4）。
@@ -15,6 +15,8 @@ async function token(): Promise<string> {
 
 export async function startFaceSwapJob(args: {
   bodyPath: string;
+  /** 写っている人数（横並び）。 */
+  layout: FaceSwapLayout;
   swaps: { facePath: string; side: FaceSwapSide }[];
   strength?: FaceSwapStrengthId;
   priority?: boolean;

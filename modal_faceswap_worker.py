@@ -83,7 +83,8 @@ SETTINGS = {
     "vae": "qwen_image_vae.safetensors",
     # BFS の Krea 2 用の決まり文句（docs/krea-2.md）。複数人は左右を足す（手元 multi.py で取り違えなし）。
     "prompt": "head_swap: replace the head with the reference head.",
-    "prompt_side": "head_swap: replace the head of the person on the {side} with the reference head.",
+    # {side} には SIDES の言い方が入る（例: "on the left"・"second from the left"）。
+    "prompt_side": "head_swap: replace the head of the person {side} with the reference head.",
     "negative": "",
     "system_prompt": "",
     "steps": 10,  # turbo（公式ワークフローの値）
@@ -99,8 +100,18 @@ SETTINGS = {
     "gray_threshold": 4.0,
     "gray_output": True,
 }
-SIDES = ("left", "right")
-MAX_SWAPS = 2
+# 横並びの位置（画面の選択肢 → プロンプトの言い方）。2 人は左右、3 人は左・真ん中・右、4 人は左から 1〜4 番目。
+# 手元で 3 人（アニメ・写真・白黒漫画）・4 人とも取り違えなし（2026-10-09、docs/face-swap-eval.md）。
+SIDES = {
+    "left": "on the left",
+    "middle": "in the middle",
+    "right": "on the right",
+    "far_left": "on the far left",
+    "second_left": "second from the left",
+    "second_right": "second from the right",
+    "far_right": "on the far right",
+}
+MAX_SWAPS = 4
 
 image = (
     modal.Image.debian_slim(python_version="3.13")
@@ -232,7 +243,7 @@ def prepare_face(raw: bytes, s: dict, gray: bool):
 
 def build_workflow(s: dict, body_name: str, face_name: str, w: int, h: int, side: str, seed: int) -> dict:
     """手元 swap.py::wf_krea と同じ組み方（BF16 の重みに替えただけ）。side は "" / left / right。"""
-    prompt = s["prompt_side"].format(side=side) if side else s["prompt"]
+    prompt = s["prompt_side"].format(side=SIDES[side]) if side else s["prompt"]
     # 追加の LoRA を BFS の後ろに順につなぐ（ノード id は 2a, 2b, …）。
     extra, model_out = {}, "2"
     for i, (name, strength) in enumerate(s.get("extra_loras") or []):

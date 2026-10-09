@@ -214,7 +214,7 @@ export function SongStudioTab() {
     setJob(null);
     setJobId(id);
     setPhase("running");
-  }, []);
+  }, [setPeekId]);
 
   const advanceAndFollow = useCallback(
     async (follow: boolean) => {
