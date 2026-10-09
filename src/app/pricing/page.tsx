@@ -5,7 +5,7 @@ import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import type { PricingKnobs } from "@/lib/pricing/knobDefaults";
 import { angleCreditsPerAngle } from "@/lib/angleStudio";
 import { upscaleCredits, upscaleVideoCostBreakdown } from "@/lib/upscaleStudio";
-import { directorCostBreakdownForDuration, directorQwenScriptSurcharge } from "@/lib/directorPricing";
+import { directorEstimate, directorQwenScriptSurcharge } from "@/lib/directorPricing";
 import { guiLoraPricingConfig, loraPriceBreakdown } from "@/lib/loraPricing";
 import { autoLoraRankAlpha, autoLoraSteps } from "@/lib/loraCredits";
 import { recommendedResolution, loraPresetById, type LoraBaseArchitecture } from "@/lib/loraModels";
@@ -31,7 +31,7 @@ function yenFrom(credits: number): string {
   return `約 ¥${Math.round(credits * YEN_PER_CREDIT_MIN).toLocaleString("ja-JP")}〜`;
 }
 
-type Row = { label: string; note?: string; credits: number };
+type Row = { label: string; note?: string; credits: number; /** true: 「〜」を付ける（条件で上がる最安値）。 */ from?: boolean };
 
 function loraRow(presetId: string, arch: LoraBaseArchitecture, images: number, knobs: PricingKnobs): Row {
   const steps = autoLoraSteps(images, arch);
@@ -57,19 +57,29 @@ function buildSections(knobs: PricingKnobs) {
   const videoUp = (presetId: string) =>
     upscaleVideoCostBreakdown({ durationSec: 10, fps: 30, inW: 1280, inH: 720, presetId, modelKey: "seedvr2_7b", knobs })
       .credits;
-  const director = (sec: number, mode: "fast" | "quality") =>
-    directorCostBreakdownForDuration({ totalDurationS: sec, mode, knobs }).credits;
+  // 画面・課金と同じ見積もり（推定 GPU 秒 × その GPU の単価、2026-10-08〜）。横長・参照写真 1 枚の例。
+  const director = (sec: number, mode: "fast" | "quality", res: "540p" | "768p") =>
+    directorEstimate(
+      { width: res === "540p" ? 960 : 1376, height: res === "540p" ? 544 : 768, durationS: sec, mode, refImages: 1 },
+      knobs,
+    ).credits;
   const caption = (n: number) => Math.round(knobs.lora_caption_base + knobs.lora_caption_per_image * n);
 
   return [
     {
       title: "🎥 Cinematic Director（動画生成）",
-      lead: "尺（秒）に比例します。高速は無音、高品質は音声・セリフのリップシンク付きです。",
+      lead: "長さ・解像度・参照写真の枚数で決まります（下は参照写真 1 枚の例）。高速は無音、高品質は音声・セリフのリップシンク付きです。",
       rows: [
-        { label: "高速・15 秒", credits: director(15, "fast") },
-        { label: "高品質（音声あり）・15 秒", credits: director(15, "quality") },
-        { label: "高品質（音声あり）・60 秒（最大）", credits: director(60, "quality") },
-        { label: "AI に台本を書かせる（任意の追加）", credits: directorQwenScriptSurcharge(knobs) },
+        { label: "高速・540p・10 秒", credits: director(10, "fast", "540p") },
+        { label: "高速・768p・15 秒", credits: director(15, "fast", "768p") },
+        { label: "高品質（音声あり）・768p・15 秒", credits: director(15, "quality", "768p") },
+        { label: "高品質（音声あり）・768p・60 秒（最大）", credits: director(60, "quality", "768p") },
+        {
+          label: "AI に台本を書かせる（任意の追加）",
+          note: "動画が大きいほど上がります",
+          credits: directorQwenScriptSurcharge(knobs, "RTX-PRO-6000"),
+          from: true,
+        },
       ] as Row[],
     },
     {
@@ -162,7 +172,7 @@ export default async function PricingPage() {
                           {r.note && <span className="mt-0.5 block text-[11px] text-muted">{r.note}</span>}
                         </td>
                         <td className="whitespace-nowrap px-4 py-2.5 text-right font-mono font-semibold text-neon-pink">
-                          {r.credits.toLocaleString("ja-JP")} C
+                          {r.credits.toLocaleString("ja-JP")} C{r.from ? "〜" : ""}
                         </td>
                         <td className="whitespace-nowrap px-4 py-2.5 text-right text-xs text-muted">
                           {yenFrom(r.credits)}
