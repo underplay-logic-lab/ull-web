@@ -9,6 +9,7 @@ import {
   FACE_SWAP_MAX_PEOPLE,
   faceSwapCredits,
   faceSwapPriorityParallelSurcharge,
+  faceSwapStrengthValue,
   isFaceSwapSide,
 } from "@/lib/faceSwapPricing";
 import { dispatchFaceSwapJob, type FaceSwapDispatchSpec } from "@/lib/modalFaceSwap";
@@ -63,6 +64,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "不正なファイル指定です。" }, { status: 400 });
   }
 
+  const strength = faceSwapStrengthValue(body.strength);
   const queue = body.queue === true;
   const priority = !queue && body.priority === true;
   const knobs = await getPricingKnobs();
@@ -112,7 +114,7 @@ export async function POST(request: Request) {
       status: queue ? "reserved" : "queued",
       workflow_type: "face_swap",
       credits_cost: creditsCost,
-      inputs: { body_path: bodyPath, swaps, seed },
+      inputs: { body_path: bodyPath, swaps, seed, strength },
       metadata: { people: swaps.length, priority },
     })
     .select("id")
@@ -122,7 +124,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "ジョブの作成に失敗しました。", remainingCredits: currentCredits }, { status: 500 });
   }
   const jobId = jobRow.id as string;
-  const spec: FaceSwapDispatchSpec = { creditsCost, seed, bodyPath, swaps };
+  const spec: FaceSwapDispatchSpec = { creditsCost, seed, bodyPath, swaps, strength };
 
   if (queue) {
     try {

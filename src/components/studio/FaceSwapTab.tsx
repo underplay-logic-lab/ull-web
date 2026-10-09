@@ -11,7 +11,14 @@ import { createPortal } from "react-dom";
 import { AlertTriangle, Download, ImagePlus, LogIn, Repeat, Sparkles, X, Zap } from "lucide-react";
 import { HelpNote } from "./HelpNote";
 import { TopupActions } from "./TopupActions";
-import { FACE_SWAP_MAX_PEOPLE, faceSwapCredits, faceSwapPriorityParallelSurcharge, type FaceSwapSide } from "@/lib/faceSwapPricing";
+import {
+  FACE_SWAP_MAX_PEOPLE,
+  FACE_SWAP_STRENGTHS,
+  faceSwapCredits,
+  faceSwapPriorityParallelSurcharge,
+  type FaceSwapSide,
+  type FaceSwapStrengthId,
+} from "@/lib/faceSwapPricing";
 import {
   FaceSwapJobNotFoundError,
   fetchFaceSwapImage,
@@ -42,6 +49,7 @@ type Phase = "idle" | "submitting" | "running" | "done" | "error";
 type Target = "auto" | "left" | "right" | "both";
 
 const JOB_KEY = "faceswap-active-job";
+const FORM_KEY = "faceswap-form";
 const RESERVED_KEY = "faceswap-reserved-jobs";
 const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_CONSECUTIVE_ERRORS = 8;
@@ -54,7 +62,7 @@ const TARGETS: { id: Target; label: string; sub: string }[] = [
   { id: "both", label: "2 人とも", sub: "左右それぞれ別の顔" },
 ];
 
-type Snapshot = { body: File; faces: { file: File; side: FaceSwapSide }[] };
+type Snapshot = { body: File; faces: { file: File; side: FaceSwapSide }[]; strength: FaceSwapStrengthId };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -181,6 +189,13 @@ export function FaceSwapTab() {
   const [target, setTarget] = useState<Target>("auto");
   const [faceA, setFaceA] = useState<File | null>(null);
   const [faceB, setFaceB] = useState<File | null>(null);
+  // 似せる強さ（選んだものは次回も使う。File と違って保存できる）。
+  const [strength, setStrength] = useState<FaceSwapStrengthId>(
+    () => loadFormState<{ strength: FaceSwapStrengthId }>(FORM_KEY)?.strength ?? "standard",
+  );
+  useEffect(() => {
+    saveFormState(FORM_KEY, { strength });
+  }, [strength]);
   const [inputError, setInputError] = useState<string | null>(null);
   const people = target === "both" ? FACE_SWAP_MAX_PEOPLE : 1;
   const cost = faceSwapCredits(people, knobs);
@@ -237,10 +252,10 @@ export function FaceSwapTab() {
     if (!body) return fail("入れ替え先の画像を入れてください。");
     if (target === "both") {
       if (!faceA || !faceB) return fail("左の人と右の人の顔を両方入れてください。");
-      return { body, faces: [{ file: faceA, side: "left" }, { file: faceB, side: "right" }] };
+      return { body, faces: [{ file: faceA, side: "left" }, { file: faceB, side: "right" }], strength };
     }
     if (!faceA) return fail("顔の画像を入れてください。");
-    return { body, faces: [{ file: faceA, side: target }] };
+    return { body, faces: [{ file: faceA, side: target }], strength };
   };
 
   const start = useCallback(
@@ -250,7 +265,7 @@ export function FaceSwapTab() {
         const bodyPath = await uploadOnce(s.body);
         const swaps = [];
         for (const f of s.faces) swaps.push({ facePath: await uploadOnce(f.file), side: f.side });
-        return await startFaceSwapJob({ bodyPath, swaps, ...opts });
+        return await startFaceSwapJob({ bodyPath, swaps, strength: s.strength, ...opts });
       } finally {
         setUploading(false);
       }
@@ -527,6 +542,30 @@ export function FaceSwapTab() {
           )}
         </div>
         {inputError && <p className="text-xs text-red-400">{inputError}</p>}
+
+        <div>
+          <p className="mb-1.5 text-xs font-medium text-foreground">似せる強さ</p>
+          <div className="grid grid-cols-3 gap-2">
+            {FACE_SWAP_STRENGTHS.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => setStrength(s.id)}
+                className={`rounded-xl border px-2 py-2 text-xs transition-colors ${
+                  strength === s.id
+                    ? "border-neon-pink/40 bg-neon-pink/10 text-neon-pink"
+                    : "border-border bg-background text-muted hover:border-neon-violet/40 hover:text-foreground"
+                }`}
+              >
+                <span className="block font-medium">{s.label}</span>
+                <span className="block text-[10px] opacity-70">{s.sub}</span>
+              </button>
+            ))}
+          </div>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
+            顔や髪型が元の人と混ざって見えるときは「強め」に。元の絵の雰囲気を残したいときは「弱め」に。料金は同じです。
+          </p>
+        </div>
 
         <HelpNote
           id="faceswap.howto"

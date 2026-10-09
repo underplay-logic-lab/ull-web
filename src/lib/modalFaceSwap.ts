@@ -12,6 +12,8 @@ export type FaceSwapDispatchSpec = {
   bodyPath: string;
   /** side は "" ＝写っているのが 1 人（左右を言わない）／left／right。 */
   swaps: { facePath: string; side: "" | "left" | "right" }[];
+  /** 似せる強さ（BFS の LoRA の強さ）。無ければワーカーの既定（1.3）。 */
+  strength?: number;
 };
 
 export async function dispatchFaceSwapJob(
@@ -32,6 +34,7 @@ export async function dispatchFaceSwapJob(
       seed: spec.seed,
       body_path: spec.bodyPath,
       swaps: spec.swaps.map((s) => ({ face_path: s.facePath, side: s.side })),
+      ...(spec.strength ? { settings: { lora_strength: spec.strength } } : {}),
     }),
     signal: AbortSignal.timeout(30_000),
   });

@@ -73,7 +73,9 @@ WEIGHTS = [
 SETTINGS = {
     "unet": "krea2_turbo_bf16.safetensors",
     "lora": "bfs_head_swap_v1.1_krea2.safetensors",
-    "lora_strength": 1.0,
+    # 1.3（2026-10-09 手元）: 1.0 だと絵柄の差がある組み合わせで顔・髪型が元の人と混ざった。1.3 で目・輪郭が参照に近づき、
+    # 咥える構図・写真の表情・服・背景も崩れない（1.5 も同様）。画面の「似せる強さ」から 1.0／1.3／1.5 を選べる（ジョブの settings で上書き）。
+    "lora_strength": 1.3,
     # BFS の後ろに重ねる LoRA（[ファイル名, 強さ]）。
     "extra_loras": [["krea2filterbypass3.safetensors", 1.0]],
     # 既定は abliterated 版（ホスト判断 2026-10-09。公式との比較で見た目ほぼ同じ）。公式に戻すなら "qwen3vl_4b_bf16.safetensors"。
