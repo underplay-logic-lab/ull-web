@@ -9,6 +9,8 @@ GPU の FaceSwap.run_job が入れ替えを 1 人ずつ順に行い（2 人目�
   - Krea 2 Turbo（`Comfy-Org/Krea-2` の krea2_turbo_bf16・TE qwen3vl_4b_bf16・VAE qwen_image_vae、rev 固定）:
     Krea 2 Community License（2026-10-09 確認）。商用無料は年商 100 万ドル未満。**サービス提供者は合理的なコンテンツフィルターを
     実装する義務**・Krea は 30 日前の通知で終了できる → 一般公開せず許可制にして影響を局所化（ホスト判断 2026-10-09）。
+  - TE の既定は abliterated 版 `Huihui-Qwen3-VL-4B-Instruct-abliterated`（`huihui-ai/...`・Apache-2.0、2026-10-09 確認）。
+    ComfyUI 用の 1 ファイル版（`ahmed22xa/Huihui-Qwen3-VL-4B-Instruct-abliterated-comfy`）をホストが Volume の faceswap/text_encoders/ へ置いた（precache の対象外）。
   - BFS Head Swap v1.1 for Krea 2（`Alissonerdx/BFS-Best-Face-Swap`・MIT、2026-10-09 確認）。作者条件: 有名人・同意のない人には使わない。
   - カスタムノード comfyui-krea2edit（`lbouaraba/comfyui-krea2edit`・Apache-2.0、2026-10-09 確認、コミット固定）。
   - 推論は BF16（CLAUDE.md §1）。手元の評価（5070 Ti）は fp8 だった。
@@ -64,7 +66,8 @@ SETTINGS = {
     "unet": "krea2_turbo_bf16.safetensors",
     "lora": "bfs_head_swap_v1.1_krea2.safetensors",
     "lora_strength": 1.0,
-    "text_encoder": "qwen3vl_4b_bf16.safetensors",
+    # 既定は abliterated 版（ホスト判断 2026-10-09。公式との比較で見た目ほぼ同じ）。公式に戻すなら "qwen3vl_4b_bf16.safetensors"。
+    "text_encoder": "Huihui-Qwen3-VL-4B-Instruct-abliterated.safetensors",
     "vae": "qwen_image_vae.safetensors",
     # BFS の Krea 2 用の決まり文句（docs/krea-2.md）。複数人は左右を足す（手元 multi.py で取り違えなし）。
     "prompt": "head_swap: replace the head with the reference head.",
