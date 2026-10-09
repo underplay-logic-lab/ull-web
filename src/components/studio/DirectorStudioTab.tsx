@@ -161,6 +161,16 @@ const DIRECTOR_SCENE_DURATION_OPTIONS = Array.from(
   (_, j) => DIRECTOR_MIN_SCENE_DURATION_S + j,
 );
 
+// 「指示文」「おまかせ」の尺の選択肢: 5・10 秒と、15 秒刻み。短い動画は安い GPU で作れて安くなったので 5・10 秒を足した（2026-10-09）。
+const DIRECTOR_TOTAL_DURATION_OPTIONS = [
+  5,
+  10,
+  ...Array.from(
+    { length: Math.floor(DIRECTOR_MAX_TOTAL_SECONDS / DIRECTOR_SECONDS_PER_SCENE) },
+    (_, i) => (i + 1) * DIRECTOR_SECONDS_PER_SCENE,
+  ),
+];
+
 /** 音声・動画ファイルの長さ（秒）をブラウザで測る。読めなければ null。 */
 function measureAudioDuration(file: File, kind: "audio" | "video" = "audio"): Promise<number | null> {
   return new Promise((resolve) => {
@@ -1658,13 +1668,7 @@ export function DirectorStudioTab() {
                 >
                   {/* 調整で入ったとき、元の動画の尺（シーンモードの 5 秒など）も選べるようにする。 */}
                   {[
-                    ...new Set([
-                      promptDraftDurationS,
-                      ...Array.from(
-                        { length: Math.floor(DIRECTOR_MAX_TOTAL_SECONDS / DIRECTOR_SECONDS_PER_SCENE) },
-                        (_, i) => (i + 1) * DIRECTOR_SECONDS_PER_SCENE,
-                      ),
-                    ]),
+                    ...new Set([promptDraftDurationS, ...DIRECTOR_TOTAL_DURATION_OPTIONS]),
                   ].sort((a, b) => a - b).map((s) => (
                     <option key={s} value={s}>
                       約{s}秒
@@ -1711,10 +1715,7 @@ export function DirectorStudioTab() {
                   onChange={(e) => setConceptDurationS(Number(e.target.value))}
                   className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-foreground"
                 >
-                  {Array.from(
-                    { length: Math.floor(DIRECTOR_MAX_TOTAL_SECONDS / DIRECTOR_SECONDS_PER_SCENE) },
-                    (_, i) => (i + 1) * DIRECTOR_SECONDS_PER_SCENE,
-                  ).map((s) => (
+                  {DIRECTOR_TOTAL_DURATION_OPTIONS.map((s) => (
                     <option key={s} value={s}>
                       約{s}秒
                     </option>
