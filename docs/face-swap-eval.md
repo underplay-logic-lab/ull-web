@@ -33,6 +33,14 @@
 - 手元 1 枚: raw 約 170 秒／turbo 約 30 秒（約 6 倍）。
 - `ref_boost` 4.0（ノード作者の推奨）は turbo で目に見える差なし → 使わない。
 
+## 3 人・4 人（2026-10-09 夜・手元 5070 Ti・Krea 2 turbo fp8・`D:\ComfyUI-ullfs	rio.py`・`D:\ComfyUI2\outputfs	ri_sheet_*.jpg`）
+全体を渡し、位置をプロンプトの言い方だけで指定して 1 人ずつ順に（本番と同じ方式）。1 人 約 35 秒（手元）。
+- 3 人: 「on the left / in the middle / on the right」でアニメ・写真・白黒漫画とも取り違えなし。大笑い・口を開けた表情は元のまま。
+- 4 人: 「on the far left / second from the left / second from the right / on the far right」で 4 人とも狙いどおり。
+- 最初に漫画の 3 人目・4 人の 4 人目が「変わらない」に見えたのは試験の組み方の誤り（白黒にした参照が元の人とほぼ同じ見た目／カラーの絵に白黒の参照）。
+  見分けやすい参照に替えたら両方とも入れ替わった。
+- 気になる点: 元の髪の一部（ポニーテールの根元など）が後ろに残ることがある。回数を重ねると漫画のスクリーントーンが少し荒れる。
+
 ## 動画の人物入れ替え（`D:\ComfyUI-ull\charswap\csw.py`・`D:\ComfyUI2\output\charswap\strip_*.jpg`）
 H3 Ref2VA int8・576×768・5 秒・20 step・手元 1 本 約 9 分。元動画は手元の画像から FL2VA で作成。
 | | 実写→ひなた | 実写→アニメ顔 | アニメ→アニメ |
