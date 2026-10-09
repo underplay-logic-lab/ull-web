@@ -83,11 +83,27 @@ export function angleRefMultiplier(
   return 1 + knobs.angle_ref_multiplier_per_sub * n;
 }
 
+// 出来上がりのサイズ（2026-10-09）。大 = 今までどおり ~1MP（LoRA の素材の基本）。
+// 小 = 512² 相当（お試し・漫画の素材向け。LoRA の素材には不向き）。縦横比は入力（縦長指定なら縦長）に従う。
+// B300 実測 1 枚: 大 18.7s・小 12.2s。小は画角がやや寄りぎみになり、引きの全身は顔が潰れる。
+export type AngleSize = "large" | "small";
+export const ANGLE_SIZES: { id: AngleSize; label: string; note: string }[] = [
+  { id: "large", label: "大", note: "1024 前後。LoRA の素材はこちら" },
+  { id: "small", label: "小", note: "512 前後。お試し・漫画の素材向け（LoRA の素材には不向き）" },
+];
+export const ANGLE_SMALL_MEGAPIXELS = 0.26;
+
+export function isAngleSize(v: unknown): v is AngleSize {
+  return v === "large" || v === "small";
+}
+
 export function angleCreditsPerAngle(
   knobs: PricingKnobs = DEFAULT_KNOBS,
   subImageCount = 0,
+  size: AngleSize = "large",
 ): number {
-  return Math.ceil(knobs.angle_pro_per_angle * angleRefMultiplier(subImageCount, knobs));
+  const base = size === "small" ? knobs.angle_small_per_angle : knobs.angle_pro_per_angle;
+  return Math.ceil(base * angleRefMultiplier(subImageCount, knobs));
 }
 
 // 構図数の上限は撤廃（無限スケール）。原価の歯止めは「枚数」ではなく「時間」——
@@ -384,8 +400,9 @@ export function angleCombosCredits(
   combos: Pick<AngleCombo, "selection">[],
   scopes: readonly SubRefScope[],
   knobs: PricingKnobs = DEFAULT_KNOBS,
+  size: AngleSize = "large",
 ): number {
-  return combos.reduce((t, c) => t + angleCreditsPerAngle(knobs, angleComboSubRefCount(c, scopes)), 0);
+  return combos.reduce((t, c) => t + angleCreditsPerAngle(knobs, angleComboSubRefCount(c, scopes), size), 0);
 }
 
 /** 構図ごとに使うサブ参照の枚数を見たジョブ全体の生成時間の目安（秒）。 */

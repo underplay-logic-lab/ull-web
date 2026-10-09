@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 import { zipLocalDate } from "@/lib/zipDate";
 import { Check, ChevronDown, Clapperboard, ChevronRight, Download, ImagePlus, Loader2, Sparkles, Wand2, X, Zap, ZoomIn } from "lucide-react";
-import { MAX_SUB_REFERENCE_IMAGES } from "@/lib/angleStudio";
+import { ANGLE_SIZES, MAX_SUB_REFERENCE_IMAGES, isAngleSize, type AngleSize } from "@/lib/angleStudio";
 import {
   AngleJobNotFoundError,
   fetchAngleImageBlob,
@@ -167,6 +167,7 @@ type PersistedForm = {
   sel: SceneSelection;
   count: number;
   confirmFirst: boolean;
+  size?: AngleSize;
   /** 体の設計（顔アップ→全身、2026-09-29）。 */
   body?: BodyDesign;
   routeOverride?: MainRoute | "auto";
@@ -220,6 +221,8 @@ type PersistedRun = {
   pendingTotal?: number;
   /** 確認の後のジョブの区切り（2026-10-03〜。無い＝それ以前の実行で 16）。 */
   restBatchSize?: number;
+  /** 出来上がりのサイズ（2026-10-09〜。無い＝大）。 */
+  size?: AngleSize;
 };
 
 /** run の行ごとの参照・切り出しの設定（料金・バッチ分けに使う）。 */
@@ -233,6 +236,7 @@ function runBatchOpt(r: PersistedRun): SceneBatchOptions {
     hasDiagRef: Boolean(r.hasDiagRef),
     faceRefFor: r.faceRefFor ?? {},
     restSize: r.restBatchSize ?? LEGACY_SCENE_REST_BATCH_SIZE,
+    size: r.size ?? "large",
   };
 }
 
@@ -599,6 +603,7 @@ export function DatasetBuilderTab() {
   const [sel, setSel] = useState<SceneSelection>(() => ({ ...DEFAULT_SCENE_SELECTION, ...(savedForm?.sel ?? {}) }));
   const [count, setCount] = useState<number>(() => savedForm?.count ?? SCENE_DEFAULT_COUNT);
   const [confirmFirst, setConfirmFirst] = useState<boolean>(() => savedForm?.confirmFirst ?? true);
+  const [outSize, setOutSize] = useState<AngleSize>(() => (isAngleSize(savedForm?.size) ? savedForm.size : "large"));
   // 服装の自由指定・追加の指示は「詳細設定 ▸」に畳む（2026-10-01 説明の整理、ホスト判断）。入力があれば開いて出す。
   const [sceneAdvancedOpen, setSceneAdvancedOpen] = useState(false);
   const [bodyDesign, setBodyDesign] = useState<BodyDesign>(() => ({ ...EMPTY_BODY_DESIGN, ...(savedForm?.body ?? {}) }));
@@ -614,6 +619,7 @@ export function DatasetBuilderTab() {
       sel,
       count,
       confirmFirst,
+      size: outSize,
       body: bodyDesign,
       routeOverride,
       mainFraming,
@@ -624,7 +630,7 @@ export function DatasetBuilderTab() {
       adjustBody,
       sourceStyle,
     } satisfies PersistedForm);
-  }, [sel, count, confirmFirst, bodyDesign, routeOverride, mainFraming, sendOriginal, hairNote, precision, sideFaceChoice, adjustBody, sourceStyle]);
+  }, [sel, count, confirmFirst, outSize, bodyDesign, routeOverride, mainFraming, sendOriginal, hairNote, precision, sideFaceChoice, adjustBody, sourceStyle]);
 
   const [loginOpen, setLoginOpen] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
@@ -650,6 +656,7 @@ export function DatasetBuilderTab() {
           faceRefFor: r.faceRefFor && typeof r.faceRefFor === "object" ? r.faceRefFor : {},
           ...(typeof r.pendingSince === "number" ? { pendingSince: r.pendingSince, pendingTotal: Number(r.pendingTotal ?? 0) } : {}),
           restBatchSize: typeof r.restBatchSize === "number" ? r.restBatchSize : LEGACY_SCENE_REST_BATCH_SIZE,
+          size: isAngleSize(r.size) ? r.size : "large",
         }
       : null;
   });
@@ -748,8 +755,10 @@ export function DatasetBuilderTab() {
     });
 
   const subCount = subImages.length;
+  // 候補づくり（基準の全身・真横・後ろ姿）はいつも大で作る。サイズの選択は素材の本番だけ（2026-10-09）。
   const perImage = sceneCreditsPerImage(knobs, 0);
   const perImageWithRef = sceneCreditsPerImage(knobs, 1);
+  const perSceneImage = sceneCreditsPerImage(knobs, 0, outSize);
   const safeCount = Math.max(1, Math.min(SCENE_MAX_COUNT, Math.trunc(count || 0)));
   // 寄りの行（後ろ以外）に添える元の顔アップ（2026-09-30 ホスト判断「アップのときは後ろ以外常に参照」、こだわりのみ）。
   // 顔アップ・上半身から始めた（基準の全身像がある）ときは元の画像、全身から始めたときは切り出したバストアップ。
@@ -780,8 +789,9 @@ export function DatasetBuilderTab() {
       hasSideRef: Boolean(refSide),
       hasDiagRef: Boolean(refDiag),
       faceRefFor,
+      size: outSize,
     }),
-    [subCount, closeMain, derivedFlags, refBack, refSide, refDiag, faceRefFor],
+    [subCount, closeMain, derivedFlags, refBack, refSide, refDiag, faceRefFor, outSize],
   );
   // 料金は行ごと（参照が要る向きだけ係数付き）。指定を変えるたびに計画を組み直して見積もる。
   const previewOrdered = useMemo(() => orderPlanForBatches(buildScenePlan(sel, safeCount), batchOpt), [sel, safeCount, batchOpt]);
@@ -929,6 +939,7 @@ export function DatasetBuilderTab() {
           scenes,
           imageSets: sets,
           negativePrompt: sceneNegativePrompt(sourceStyle),
+          size: r.size ?? "large",
         });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
         const next: PersistedRun = { ...r, jobIds: [...r.jobIds, res.jobId], pendingSince: undefined, pendingTotal: undefined };
@@ -1014,6 +1025,7 @@ export function DatasetBuilderTab() {
       hasSideRef: Boolean(refSide),
       hasDiagRef: Boolean(refDiag),
       faceRefFor,
+      size: outSize,
     };
     setJobs({});
     commitRun(r);
@@ -1851,6 +1863,23 @@ export function DatasetBuilderTab() {
                   className="w-20 rounded-lg border border-border bg-surface px-2 py-1 text-right text-sm text-foreground"
                 />
               </label>
+              <div className="flex items-center gap-1.5 text-xs text-muted" role="group" aria-label="サイズ">
+                サイズ
+                {ANGLE_SIZES.map((sz) => (
+                  <button
+                    key={sz.id}
+                    type="button"
+                    title={sz.note}
+                    onClick={() => setOutSize(sz.id)}
+                    disabled={busy}
+                    className={`rounded-lg border px-2.5 py-1 text-sm ${
+                      outSize === sz.id ? "border-neon-pink text-foreground" : "border-border text-muted hover:text-foreground"
+                    }`}
+                  >
+                    {sz.label}
+                  </button>
+                ))}
+              </div>
               <label className="flex items-center gap-1.5 text-[11px] text-muted">
                 <input type="checkbox" checked={confirmFirst} onChange={(e) => setConfirmFirst(e.target.checked)} />
                 最初の {firstBatch} 枚で一度確認してから残りを作る
@@ -1858,7 +1887,7 @@ export function DatasetBuilderTab() {
               <span className="ml-auto font-mono text-sm text-foreground">
                 合計 <span className="text-neon-pink">{totalCost.toLocaleString()} C</span>
                 <span className="ml-1 text-[10px] text-muted">
-                  （1 枚 {perImage}C
+                  （1 枚 {perSceneImage}C
                   {refRows > 0
                     ? `・真横／後ろの ${refRows} 枚は参照付きで ${Math.max(...previewPlan.map((it) => sceneItemCredits(it, knobs, batchOpt)))}C`
                     : ""}
@@ -1866,6 +1895,11 @@ export function DatasetBuilderTab() {
                 </span>
               </span>
             </div>
+            {outSize === "small" && (
+              <p className="mt-1.5 text-[11px] text-amber-300">
+                小（512 前後）はお試し・漫画の素材向けです。LoRA の素材には不向きなので、LoRA に使うなら大で作ってください。
+              </p>
+            )}
             {confirmFirst && safeCount > SCENE_BATCH_SIZE && (
               <HelpNote
                 id="dataset.first-batch"

@@ -47,6 +47,8 @@ import {
   type AngleCombo,
   type AngleMode,
   type AngleSelection,
+  ANGLE_SIZES,
+  type AngleSize,
 } from "@/lib/angleStudio";
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import {
@@ -798,6 +800,8 @@ export function MultiAngleStudioTab() {
   const [subImages, setSubImages] = useState<File[]>([]);
   // サブ参照 1 枚ごとの使い道（subImages と同じ並び）。true＝全構図／false＝真横・後ろだけ（既定）。
   const [subScopes, setSubScopes] = useState<SubRefScope[]>([]);
+  // 出来上がりのサイズ（2026-10-09）。小は 512² 相当・お試し／漫画の素材向け（LoRA の素材には不向き）。
+  const [outSizeChoice, setOutSize] = useState<AngleSize>("large");
   const [subImageError, setSubImageError] = useState<string | null>(null);
 
   const handleAddSubImage = useCallback((file: File) => {
@@ -873,6 +877,7 @@ export function MultiAngleStudioTab() {
     subScopes: SubRefScope[];
     selection: AngleSelection;
     combos: AngleCombo[];
+    size: AngleSize;
   };
   // 予約（順番待ち）はサーバー側（2026-10-03、lib/studioQueue.server.ts）。予約した時点で課金してジョブ行を
   // reserved で作り、前のジョブが終わるとサーバーが起動する（タブを閉じても進む）。それまでは画面のメモリにだけあり、
@@ -962,6 +967,8 @@ export function MultiAngleStudioTab() {
   const [loraUsed, setLoraUsed] = useState<Set<File>>(new Set());
   const [loraMode, setLoraMode] = useState(false);
   const loraModeRef = useRef(false);
+  // LoRA の素材として作るときは大に固定（小は LoRA の素材には不向き）。
+  const outSize: AngleSize = loraMode ? "large" : outSizeChoice;
   // 連携中に出したジョブだけを候補にする（2026-09-27、ホスト指摘: 復元した前回の結果まで候補に入っていた）。
   const loraJobIdsRef = useRef<Set<string>>(new Set());
   const [loraNotice, setLoraNotice] = useState<string | null>(null);
@@ -1019,7 +1026,7 @@ export function MultiAngleStudioTab() {
   // （user 以外の依存は state setter / import で常に安定）。
   const runGenerate = useCallback(
     async (
-      snapshot: { image: File; subImages: File[]; subScopes: SubRefScope[]; selection: AngleSelection; combos: AngleCombo[] },
+      snapshot: QueuedSnapshot,
       // continuation: 順番待ち／並列で「今回の生成」に続けて出す（一覧に足す）。
       // false = 改めて生成（一覧を新しいジョブ 1 件に置き換える）。
       opts: { priority?: boolean; continuation?: boolean } = {},
@@ -1042,6 +1049,7 @@ export function MultiAngleStudioTab() {
           subScopes: snapshot.subScopes,
           selection: snapshot.selection,
           mode,
+          size: snapshot.size,
           priority: opts.priority,
         });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
@@ -1228,11 +1236,11 @@ export function MultiAngleStudioTab() {
   // Multi-Reference: サブ参照ぶんの生成時間増（B300 実測 ~3.0x @ 3枚）を単価へ反映。
   const subRefCount = subImages.length;
   // サブ参照は真横・後ろ寄りの構図にだけ付く（angleComboUsesSubRefs）。料金・時間は構図ごとに足す（API と同じ関数）。
-  const perAngleBase = angleCreditsPerAngle(knobs);
-  const perAngle = angleCreditsPerAngle(knobs, subRefCount);
+  const perAngleBase = angleCreditsPerAngle(knobs, 0, outSize);
+  const perAngle = angleCreditsPerAngle(knobs, subRefCount, outSize);
   const subRefUse = subScopes;
   const refCombosCount = subRefCount > 0 ? combos.filter(angleComboUsesSubRefs).length : 0;
-  const cost = angleCombosCredits(combos, subRefUse, knobs);
+  const cost = angleCombosCredits(combos, subRefUse, knobs, outSize);
   const angleCap = MAX_ANGLES;
   const overCap = count > angleCap;
   const estMinutes = Math.round(angleCombosEstimatedSeconds(combos, subRefUse) / 60);
@@ -1270,7 +1278,7 @@ export function MultiAngleStudioTab() {
   const doGenerate = async () => {
     if (!image) return;
     markLoraUsed([image]);
-    await runGenerate({ image, subImages, subScopes, selection, combos });
+    await runGenerate({ image, subImages, subScopes, selection, combos, size: outSize });
   };
 
   // 予約する（サーバー側の順番待ち、2026-10-03）。1 件ずつ送る（画像のアップロード込み）。その場で課金され、
@@ -1289,6 +1297,7 @@ export function MultiAngleStudioTab() {
           subScopes: snap.subScopes,
           selection: snap.selection,
           mode,
+          size: snap.size,
           queue: true,
         });
         broadcastCreditsUpdate(user.id, res.remainingCredits);
@@ -1321,7 +1330,7 @@ export function MultiAngleStudioTab() {
   const generateAllLoraSources = () => {
     if (loraRemaining.length === 0 || count === 0 || overCap || underMin) return;
     if (!user) return setLoginOpen(true);
-    const snaps = loraRemaining.map((f) => ({ image: f, subImages: [] as File[], subScopes: [] as SubRefScope[], selection, combos }));
+    const snaps = loraRemaining.map((f) => ({ image: f, subImages: [] as File[], subScopes: [] as SubRefScope[], selection, combos, size: "large" as const }));
     // 予約もその場で課金されるので、全件ぶん足りるか先に見る。
     if (!creditsLoading && (credits ?? 0) < cost * snaps.length) return setChargeOpen(true);
     markLoraUsed(loraRemaining);
@@ -1389,7 +1398,7 @@ export function MultiAngleStudioTab() {
     // 予約はその場で課金される（2026-10-03〜）。
     if (insufficientCredits) return setChargeOpen(true);
     markLoraUsed([image]);
-    void reserveSnapshots([{ image, subImages, subScopes, selection, combos }]);
+    void reserveSnapshots([{ image, subImages, subScopes, selection, combos, size: outSize }]);
   };
 
   // 始まる前の予約を全部取り消す（全額返金）。始まったものは完走する。
@@ -1421,7 +1430,7 @@ export function MultiAngleStudioTab() {
       return;
     }
     markLoraUsed([image]);
-    void runGenerate({ image, subImages, subScopes, selection, combos }, { priority: true, continuation: true });
+    void runGenerate({ image, subImages, subScopes, selection, combos, size: outSize }, { priority: true, continuation: true });
   };
 
   const images = job?.images ?? [];
@@ -1792,6 +1801,33 @@ export function MultiAngleStudioTab() {
             <QueuedNextBanner count={reservedIds.length + reserving} serverSide onCancel={() => void handleCancelQueue()} />
           )}
           {queueError && <p className="-mt-2 text-xs text-red-400">{queueError}</p>}
+
+          {!loraMode && (
+            <div className="-mt-2">
+              <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted" role="group" aria-label="サイズ">
+                サイズ
+                {ANGLE_SIZES.map((sz) => (
+                  <button
+                    key={sz.id}
+                    type="button"
+                    title={sz.note}
+                    onClick={() => setOutSize(sz.id)}
+                    className={`rounded-lg border px-2.5 py-1 text-sm ${
+                      outSize === sz.id ? "border-neon-pink text-foreground" : "border-border text-muted hover:text-foreground"
+                    }`}
+                  >
+                    {sz.label}
+                  </button>
+                ))}
+                <span className="text-[11px]">{ANGLE_SIZES.find((sz) => sz.id === outSize)?.note}</span>
+              </div>
+              {outSize === "small" && (
+                <p className="mt-1.5 text-[11px] text-amber-300">
+                  小（512 前後）はお試し・漫画の素材向けです。LoRA の素材には不向きです。引きの全身では顔が小さく潰れます。
+                </p>
+              )}
+            </div>
+          )}
 
           <p className="-mt-2 flex items-start gap-2 text-xs leading-relaxed text-muted">
             <Sparkles size={14} className="mt-0.5 shrink-0 text-neon-violet" />

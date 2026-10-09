@@ -9,7 +9,7 @@
 // 方向を確認してから残りを作る流れのため）。生成した画像を次の参照に使わない（ユーザーが確定した参照だけを
 // 毎回使う）ので、枚数が増えてもずれが連鎖しない。
 
-import { angleCreditsPerAngle } from "@/lib/angleStudio";
+import { angleCreditsPerAngle, type AngleSize } from "@/lib/angleStudio";
 import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";
 
 export type SceneChip = { id: string; label: string; en: string };
@@ -450,6 +450,8 @@ export function rebodyScenePlan(rest: ScenePlanItem[], sel: SceneSelection, tota
 
 export type SceneBatchOptions = {
   subCount: number;
+  /** 出来上がりのサイズ（2026-10-09）。無ければ大。 */
+  size?: AngleSize;
   /** 確認の後のジョブの区切り（実行ごとに保存した値。無ければ SCENE_REST_BATCH_SIZE）。 */
   restSize?: number;
   closeMain: CloseMainMap;
@@ -568,7 +570,7 @@ export function checkBatchCount(plan: ScenePlanItem[], opt: SceneBatchOptions, p
 }
 
 export function sceneItemCredits(item: ScenePlanItem, knobs: PricingKnobs, opt: SceneBatchOptions): number {
-  return sceneCreditsPerImage(knobs, sceneItemRefCount(item, opt));
+  return sceneCreditsPerImage(knobs, sceneItemRefCount(item, opt), opt.size);
 }
 
 export function scenePlanCredits(plan: ScenePlanItem[], knobs: PricingKnobs, opt: SceneBatchOptions): number {
@@ -576,8 +578,8 @@ export function scenePlanCredits(plan: ScenePlanItem[], knobs: PricingKnobs, opt
 }
 
 /** 参照枚数に応じた 1 枚あたりのクレジット（マルチアングルと同じ単価・同じ係数）。 */
-export function sceneCreditsPerImage(knobs: PricingKnobs = DEFAULT_KNOBS, subImageCount = 0): number {
-  return angleCreditsPerAngle(knobs, subImageCount);
+export function sceneCreditsPerImage(knobs: PricingKnobs = DEFAULT_KNOBS, subImageCount = 0, size: AngleSize = "large"): number {
+  return angleCreditsPerAngle(knobs, subImageCount, size);
 }
 
 export function sceneTotalCredits(count: number, knobs: PricingKnobs = DEFAULT_KNOBS, subImageCount = 0): number {

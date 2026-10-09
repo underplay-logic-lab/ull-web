@@ -37,6 +37,13 @@ const KNOB_TEXT: Record<KnobKey, Omit<KnobMeta, "value">> = {
     description: "1構図あたりの消費クレジット（40ステップ / 最低3構図）",
     isPublic: true,
   },
+  angle_small_per_angle: {
+    label: "Multi-Angle（1構図・小サイズ）",
+    category: "feature_credits",
+    unit: "C/構図",
+    description: "サイズ「小」（512² 相当・お試し／漫画の素材向け）の 1構図あたり。素材づくりも同じ",
+    isPublic: true,
+  },
   angle_ref_multiplier_per_sub: {
     label: "Multi-Angle サブ参照 加算係数",
     category: "feature_credits",

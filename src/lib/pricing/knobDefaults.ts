@@ -17,6 +17,7 @@ export type KnobKey =
   | "image_generate"
   | "angle_turbo_per_angle"
   | "angle_pro_per_angle"
+  | "angle_small_per_angle"
   | "angle_ref_multiplier_per_sub"
   | "angle_priority_parallel_surcharge"
   | "angle_priority_parallel_rate"
@@ -132,6 +133,9 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // + 1構図(60s)でも黒字になる下限。最低 3 構図（MIN_ANGLES）と併せて原価割れを
   // 防ぐ。値は /admin の Pricing で調整可（¥25 なら 15C 等）。
   angle_pro_per_angle: 14, // 2026-09-23 ホストが admin で 12 → 14 に変更（DB が正）。フォールバックも揃える
+  // 小さいサイズ（512² 相当、2026-10-09）の 1 構図。B300 実測 12.2s（大 1MP は 18.7s）→ 原価比例で 14 × 0.65 ≈ 9C。
+  // サブ参照の係数は大と同じく掛かる。
+  angle_small_per_angle: 9,
   // Multi-Reference（Pro）: サブ参照 1 枚ごとに per-構図 単価へ加える係数。
   // 係数 = 1 + これ × サブ枚数。B300 実測でサブ 3 枚 = 生成時間 ×3.0
   // （per-step 463ms→1373ms）→ 0.7 で係数 3.1、粗利 ~69% を維持。

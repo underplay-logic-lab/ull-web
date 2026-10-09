@@ -22,6 +22,8 @@ export type SpawnAngleJobParams = {
   instructionSets?: number[];
   /** 出力サイズ（2026-09-29、顔アップ→全身の候補を縦長で）。~1MP 以内。無ければ入力の縦横比。 */
   outputSize?: { width: number; height: number };
+  /** 面積の指定（2026-10-09、サイズ「小」）。縦横比は outputSize か入力画像に従う。 */
+  targetMegapixels?: number;
   /** ネガティブプロンプト（2026-09-30、素材づくり）。無ければワーカーの既定（空）。 */
   negativePrompt?: string;
 };
@@ -104,6 +106,7 @@ export async function spawnAngleJob(
       ? { image_sets: params.imageSets, instruction_sets: params.instructionSets }
       : {}),
     ...(params.outputSize ? { output_size: params.outputSize } : {}),
+    ...(params.targetMegapixels ? { target_megapixels: params.targetMegapixels } : {}),
     ...(params.negativePrompt ? { negative_prompt: params.negativePrompt } : {}),
     ...(typeof params.seed === "number" && Number.isFinite(params.seed)
       ? { seed: Math.trunc(params.seed) }

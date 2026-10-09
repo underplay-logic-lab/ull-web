@@ -80,6 +80,7 @@ function buildSections(knobs: PricingKnobs) {
         { label: "6 構図（正面・斜め・真横・背面・アオリ・フカン）", credits: perAngle * 6 },
         // 6 構図のうちサブ参照を使うのは真横・背面の 2 構図（angleComboUsesSubRefs）。
         { label: "6 構図・サブ参照画像 1 枚", credits: perAngle * 4 + angleCreditsPerAngle(knobs, 1) * 2 },
+        { label: "6 構図・サイズ「小」（お試し・漫画の素材向け）", credits: angleCreditsPerAngle(knobs, 0, "small") * 6 },
       ] as Row[],
     },
     {

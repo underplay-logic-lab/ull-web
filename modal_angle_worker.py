@@ -2144,6 +2144,17 @@ class QwenImageEditWorker:
                     out_w, out_h = _w, _h
             except (TypeError, ValueError):
                 pass
+        # 小さいサイズ（2026-10-09、漫画の素材向け・LoRA の素材には不向き）: 面積だけ指定し、縦横比は
+        # output_size か入力画像に従う。0.26MP で 1 枚 12.2s（1MP は 18.7s・B300 実測）。
+        target_mp = None
+        try:
+            _mp = float(payload.get("target_megapixels") or 0)
+            if 0.2 <= _mp < 1.0:
+                target_mp = _mp
+        except (TypeError, ValueError):
+            pass
+        if target_mp and out_w and out_h:
+            out_h, out_w = _calculate_dimensions(target_mp * 1_000_000, out_w / out_h, 16)
 
         # --- idempotency ガード（Modal クラッシュ由来リトライの無限ループ対策）---
         # ウォッチドッグ発火 → os._exit(1) → Modal が spawned 入力を再実行 → …
@@ -2402,6 +2413,10 @@ class QwenImageEditWorker:
                     if out_w and out_h:
                         call_kwargs["width"] = out_w
                         call_kwargs["height"] = out_h
+                    elif target_mp:
+                        _first = imgs[-1] if isinstance(imgs, (list, tuple)) else imgs  # パイプライン既定と同じく最後の画像の縦横比
+                        _h, _w = _calculate_dimensions(target_mp * 1_000_000, _first.width / _first.height, 16)
+                        call_kwargs["width"], call_kwargs["height"] = _w, _h
                     if self._supports_step_cb:
                         call_kwargs["callback_on_step_end"] = _heartbeat
                     img = self.pipe(**call_kwargs).images[0]

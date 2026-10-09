@@ -2,7 +2,7 @@ import { supabase } from "@/lib/supabaseClient";
 import type { SubRefScope } from "@/lib/angleStudio";
 import { normalizeAngleReferenceImage } from "@/lib/angleImage";
 import { uploadStudioAsset } from "@/lib/studioUploads";
-import type { AngleMode, AngleSelection } from "@/lib/angleStudio";
+import type { AngleMode, AngleSelection, AngleSize } from "@/lib/angleStudio";
 
 export type AngleApiError = Error & { remainingCredits?: number };
 
@@ -75,6 +75,8 @@ export async function startAngleJob(params: {
   subScopes?: SubRefScope[];
   /** 出力を縦長（832×1248）にする（2026-09-29、顔アップ→全身の候補）。 */
   aspect?: "portrait";
+  /** 出来上がりのサイズ（2026-10-09）。小 = 512² 相当。無ければ大。 */
+  size?: AngleSize;
   /** ネガティブプロンプト（2026-09-30、素材づくり）。 */
   negativePrompt?: string;
 }): Promise<StartAngleJobResult> {
@@ -135,6 +137,7 @@ export async function startAngleJob(params: {
       ...(imageSetIdx ? { imageSets: imageSetIdx } : {}),
       ...(params.subScopes && params.subScopes.length > 0 ? { subRefScopes: params.subScopes } : {}),
       ...(params.aspect ? { aspect: params.aspect } : {}),
+      ...(params.size === "small" ? { size: "small" } : {}),
       ...(params.negativePrompt ? { negativePrompt: params.negativePrompt } : {}),
       mode: params.mode,
       seed: params.seed,

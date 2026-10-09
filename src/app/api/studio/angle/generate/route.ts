@@ -22,6 +22,9 @@ import {
   ELEVATION_OPTIONS,
   DISTANCE_OPTIONS,
   type AngleSelection,
+  type AngleSize,
+  ANGLE_SMALL_MEGAPIXELS,
+  isAngleSize,
 } from "@/lib/angleStudio";
 
 // Fully async now: this route only debits credits, inserts an angle_jobs row
@@ -166,6 +169,7 @@ export async function POST(request: Request) {
   let subRefScopesRaw: unknown;
   // 出力の縦横（2026-09-29）: "portrait" なら 832×1248（~1MP、料金・時間は従来どおり）。顔アップ→全身の候補用。
   let aspectRaw: unknown;
+  let sizeRaw: unknown;
   // ネガティブプロンプト（2026-09-30、素材づくり）。制御文字を落として 600 文字まで。
   let negativeRaw: unknown;
   // 予約（2026-10-03）: true なら課金してジョブ行を reserved で作り、順番が来たらサーバーが起動する
@@ -223,6 +227,7 @@ export async function POST(request: Request) {
     subRefAllRaw = body.subRefAll;
     subRefScopesRaw = body.subRefScopes;
     aspectRaw = body.aspect;
+    sizeRaw = body.size;
     negativeRaw = body.negativePrompt;
   } else {
     let formData: FormData;
@@ -385,10 +390,11 @@ export async function POST(request: Request) {
   // Server-side price — never trusted from the client.
   // サブ参照ぶんの生成コスト増（B300 実測 ~3.0x @ サブ3枚）を単価へ反映。
   const knobs = await getPricingKnobs();
+  const size: AngleSize = isAngleSize(sizeRaw) ? sizeRaw : "large";
   // 行ごとのセットなら、行ごとの参照枚数（セットの枚数 − 1）で単価を出して合計する。
   const baseCost = useSets
-    ? instructionSets!.reduce((t, si) => t + angleCreditsPerAngle(knobs, Math.max(0, jobImageSets![si].length - 1)), 0)
-    : combos.length * angleCreditsPerAngle(knobs, subImageCount);
+    ? instructionSets!.reduce((t, si) => t + angleCreditsPerAngle(knobs, Math.max(0, jobImageSets![si].length - 1), size), 0)
+    : combos.length * angleCreditsPerAngle(knobs, subImageCount, size);
   // 「実行中でも並列で今すぐ実行」を選んだ場合の上乗せ（順番待ち=無料の既定に
   // 対するオプトイン。通常料金 × 率 + 固定分。フロントと同じ関数・同じ baseCost）。
   const generationCost = priority ? baseCost + anglePriorityParallelSurcharge(knobs, baseCost) : baseCost;
@@ -457,6 +463,7 @@ export async function POST(request: Request) {
       metadata: {
         ref_image_count: useSets ? Math.max(...jobImageSets!.map((s) => s.length)) : imageBuffers.length,
         priority,
+        ...(size === "small" ? { size } : {}),
         ...(rawPrompt ? { kind: "scene" } : {}),
         ...(useSets ? { image_sets: jobImageSets!.length } : {}),
       },
@@ -485,6 +492,7 @@ export async function POST(request: Request) {
     rawPrompt,
     ...(useSets ? { imageSets: jobImageSets!, instructionSets: instructionSets! } : {}),
     ...(aspectRaw === "portrait" ? { outputSize: { width: 832, height: 1248 } } : {}),
+    ...(size === "small" ? { targetMegapixels: ANGLE_SMALL_MEGAPIXELS } : {}),
     ...(typeof negativeRaw === "string" && negativeRaw.trim()
       ? { negativePrompt: negativeRaw.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 600) }
       : {}),
