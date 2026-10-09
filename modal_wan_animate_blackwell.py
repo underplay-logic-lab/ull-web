@@ -2312,7 +2312,8 @@ class WanAnimateBlackwell:
                     exec_config = {**_base_cfg, "extra_args": f"{_extra} --disable-dynamic-vram".strip()}
             # モデルの先読み（_start_model_prefetch）: ジョブ開始と同時に始めたら逆効果だった（2026-10-09・349s。dynamic VRAM は
             # ページキャッシュを使わず、イメージの import・指示文の AI の読み込みと回線を取り合った）。従来の読み込み（_legacy_load）
-            # では普通のファイル読み込みなので、指示文の AI を読み込み終えてから「書いている間」（ディスクを使わない数十秒）に先読みする。
+            # でも、指示文の AI が書いている間に先読みして 35 秒で読み終えたのに、ComfyUI の「受け取り → 載せ始め」は 70→60 秒に
+            # しか縮まず（ディスクではなく CPU 側の組み立てが本体）、AI の書く時間が 49→72 秒に延びた（212s）。呼ばない。
             # 指示文の AI（数十秒）の間に ComfyUI を並行で起動する（2026-10-09）。ComfyUI はモデルを最初の
             # 生成まで読まないので、AI と VRAM を取り合わない。下の本来の呼び出しの前に必ず join する
             # （起動途中に同じ処理が重なると「フラグ違い」と見て再起動してしまう）。
@@ -2341,9 +2342,6 @@ class WanAnimateBlackwell:
             if (qwen_concept_text or qwen_text_instruction) and qwen_prompt_node_id:
                 if is_async:
                     _supabase_patch_job(job_id, {"progress_message": "台本を執筆中..."})
-                if _legacy_load:
-                    self._ensure_qwen_loaded()
-                    _start_model_prefetch(workflow)
                 if qwen_text_instruction:
                     script = self._generate_director_text(qwen_text_instruction)
                 else:
