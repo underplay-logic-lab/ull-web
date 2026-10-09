@@ -19,8 +19,8 @@ export default function ResetPasswordPage() {
     e.preventDefault();
     setErrorMessage(null);
 
-    if (password.length < 6) {
-      setErrorMessage("パスワードは6文字以上で入力してください。");
+    if (password.length < 8) {
+      setErrorMessage("パスワードは8文字以上で入力してください。");
       return;
     }
 
@@ -82,10 +82,10 @@ export default function ResetPasswordPage() {
               <PasswordInput
                 id="new-password"
                 required
-                minLength={6}
+                minLength={8}
                 value={password}
                 onChange={setPassword}
-                placeholder="6文字以上"
+                placeholder="8文字以上"
                 autoComplete="new-password"
               />
             </div>
@@ -100,7 +100,7 @@ export default function ResetPasswordPage() {
               <PasswordInput
                 id="confirm-password"
                 required
-                minLength={6}
+                minLength={8}
                 value={confirmPassword}
                 onChange={setConfirmPassword}
                 placeholder="もう一度入力してください"

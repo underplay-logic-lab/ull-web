@@ -91,8 +91,9 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
     setEmailNotice(null);
 
     if (emailMode === "signup") {
-      if (password.length < 6) {
-        setEmailError("パスワードは6文字以上で入力してください。");
+      // 新規登録は 8 文字以上（2026-10-09 点検）。ログインは既存の 6〜7 文字の会員が入れるよう 6 のまま。
+      if (password.length < 8) {
+        setEmailError("パスワードは8文字以上で入力してください。");
         return;
       }
       if (password !== confirmPassword) {
@@ -271,10 +272,10 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
                 <PasswordInput
                   id="login-password"
                   required
-                  minLength={6}
+                  minLength={emailMode === "signup" ? 8 : 6}
                   value={password}
                   onChange={setPassword}
-                  placeholder="6文字以上"
+                  placeholder={emailMode === "signup" ? "8文字以上" : "パスワード"}
                   autoComplete={emailMode === "signup" ? "new-password" : "current-password"}
                 />
               </div>
@@ -288,7 +289,7 @@ export function LoginModal({ open, onClose, message }: LoginModalProps) {
                 <PasswordInput
                   id="signup-confirm-password"
                   required
-                  minLength={6}
+                  minLength={8}
                   value={confirmPassword}
                   onChange={setConfirmPassword}
                   placeholder="もう一度入力してください"
