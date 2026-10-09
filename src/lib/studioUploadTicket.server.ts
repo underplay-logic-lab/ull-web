@@ -11,7 +11,7 @@ import { presignR2Put, r2KeyForRel, r2UploadsEnabled } from "@/lib/r2.server";
 // "<userId>/<filename>" のまま — 各 route の assertOwnedPath 等は無改修。
 //
 // R2 のキーは Volume の相対パスと同じ `studio_uploads/<userId>/<filename>`。
-// 署名付き PUT は host しか署名しない（2026-09-23 実測、SignedHeaders=host）ので、
+// 署名付き PUT は host と content-length だけを署名する（2026-10-09〜。Content-Type は署名しない）ので、
 // ブラウザは Content-Type を自由に付けてよい。
 
 const TICKET_TTL_SECONDS = 60 * 10; // 10分（大きめの動画アップロードでも間に合うよう余裕を持たせる）
@@ -79,9 +79,17 @@ export async function createStudioUploadTicket(
   const path = `${userId}/${filename}`;
 
   if (r2UploadsEnabled() && !opts.forceModal) {
+    // 申告した大きさを署名に含める（2026-10-09 点検）。含めないと申告だけ小さくして 1GB 超（R2 の 1 回の上限 5GB）を
+    // 送れた。含めると R2 が違う大きさの PUT を 403 で弾く（実測: 署名 10B に 20B → 403）。ブラウザの fetch は File の
+    // 大きさそのままの Content-Length を付けるので、正しいクライアントには影響しない。
+    const sizeBytes = opts.sizeBytes;
+    if (typeof sizeBytes !== "number" || !Number.isInteger(sizeBytes) || sizeBytes < 1) {
+      throw new Error("ファイルの大きさを確認できませんでした。");
+    }
     const expiresAt = Math.floor(Date.now() / 1000) + R2_PUT_TTL_SECONDS;
     const uploadUrl = await presignR2Put(await studioUploadR2Key(userId, filename), {
       expiresIn: R2_PUT_TTL_SECONDS,
+      contentLength: sizeBytes,
     });
     return { store: "r2", method: "PUT", uploadUrl, userId, filename, path, expiresAt };
   }
