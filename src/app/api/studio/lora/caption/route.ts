@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { GEMINI_FREE_LIMIT, rateLimitResponse } from "@/lib/rateLimit.server";
 import { createClient } from "@supabase/supabase-js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import {
@@ -78,6 +79,8 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (userError || !userData?.user) {
       return NextResponse.json({ error: "認証に失敗しました。" }, { status: 401 });
     }
+    const limited = await rateLimitResponse(userData.user.id, GEMINI_FREE_LIMIT);
+    if (limited) return limited;
 
     const body = await request.json().catch(() => null);
     const rawImages = Array.isArray(body?.images) ? body.images : null;
