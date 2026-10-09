@@ -136,17 +136,21 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  if (!MODEL_SUBFOLDERS.includes(subfolder as (typeof MODEL_SUBFOLDERS)[number])) {
+  // ファイル名に "/" を含めたら Volume の直下からのパス（例: faceswap/text_encoders/x.safetensors、2026-10-09）。
+  // そのときは保存先の選択は使わない。各部分は英数字と . _ - だけ（ワーカーの _download_dest と同じ規則）。
+  const parts = filename.split("/");
+  if (!filename || parts.length > 8 || parts.some((p: string) => !/^[A-Za-z0-9._-]+$/.test(p) || p === "." || p === "..")) {
+    return NextResponse.json({ error: "ファイル名が不正です（英数字と . _ - 、フォルダの区切りは /）。" }, { status: 400 });
+  }
+  const rootPath = parts.length > 1;
+  if (!rootPath && !MODEL_SUBFOLDERS.includes(subfolder as (typeof MODEL_SUBFOLDERS)[number])) {
     return NextResponse.json(
       { error: `保存先は ${MODEL_SUBFOLDERS.join(" / ")} のいずれかを選択してください。` },
       { status: 400 },
     );
   }
-  if (!filename || filename.includes("/") || filename.includes("..")) {
-    return NextResponse.json({ error: "ファイル名が不正です。" }, { status: 400 });
-  }
 
-  const savePath = `${subfolder}/${filename}`;
+  const savePath = rootPath ? filename : `${subfolder}/${filename}`;
 
   // Row created up front (status 'pending') so the admin's tasks panel has
   // something to show the instant this returns — the actual transfer runs

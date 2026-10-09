@@ -1368,7 +1368,9 @@ export function ModalStorageTab() {
               <select
                 value={downloadSubfolder}
                 onChange={(e) => setDownloadSubfolder(e.target.value)}
-                className="rounded-lg border border-border bg-background px-3 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50"
+                disabled={downloadFilename.includes("/")}
+                title={downloadFilename.includes("/") ? "ファイル名にフォルダを書いたので、この選択は使いません" : undefined}
+                className="rounded-lg border disabled:opacity-40 border-border bg-background px-3 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50"
               >
                 {MODEL_SUBFOLDERS.map((sub) => (
                   <option key={sub} value={sub}>
@@ -1381,7 +1383,7 @@ export function ModalStorageTab() {
               type="text"
               value={downloadFilename}
               onChange={(e) => setDownloadFilename(e.target.value)}
-              placeholder="保存ファイル名（例: my_model.safetensors）"
+              placeholder="保存ファイル名（例: my_model.safetensors ／ フォルダ指定: faceswap/text_encoders/my_model.safetensors）"
               className="mt-3 w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm outline-none transition-colors focus:border-neon-violet/50 focus:ring-1 focus:ring-neon-violet/30"
             />
             <button
@@ -1396,6 +1398,8 @@ export function ModalStorageTab() {
             <p className="mt-2 text-[11px] text-muted">
               許可ドメイン: huggingface.co / civitai.com のみ。ダウンロードは Modal
               側でバックグラウンド実行され、このサーバーは経由しません。URLを貼り付けると保存先フォルダとファイル名を自動入力します。
+              ファイル名に「/」を含めると Volume の直下からのパスとして保存します（右の保存先の選択は使いません。例:
+              faceswap/text_encoders/xxx.safetensors）。
             </p>
           </>
         ) : (

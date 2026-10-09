@@ -674,6 +674,22 @@ def _supabase_patch_download(download_id: str, fields: dict) -> None:
     timeout=3600,
     secrets=[modal.Secret.from_name("supabase-model-downloads")],
 )
+def _download_dest(subfolder: str, filename: str) -> str:
+    """単発ダウンロードの保存先（Volume 内の相対パス）。ファイル名に "/" を含めたら Volume の直下からのパス
+    （例: faceswap/text_encoders/x.safetensors、2026-10-09）で、subfolder は使わない。含まなければ従来どおり subfolder/filename。
+    各部分は英数字と . _ - だけ（".." や空の部分は不可）。不正なら ValueError。Next 側の検証（admin/modal/storage/route.ts）と同じ規則。"""
+    import re
+
+    parts = filename.split("/")
+    if len(parts) > 8 or any(not re.fullmatch(r"[A-Za-z0-9._-]+", p) or p in (".", "..") for p in parts):
+        raise ValueError("Invalid filename.")
+    if len(parts) > 1:
+        return "/".join(parts)
+    if subfolder not in MODEL_SUBFOLDERS:
+        raise ValueError("Invalid subfolder.")
+    return f"{subfolder}/{filename}"
+
+
 def download_model_async(download_id: str, url: str, subfolder: str, filename: str):
     """
     Background half of ModalStorage._download_async — streams `url` into
@@ -689,14 +705,11 @@ def download_model_async(download_id: str, url: str, subfolder: str, filename: s
         _supabase_patch_download(download_id, fields)
 
     try:
-        if subfolder not in MODEL_SUBFOLDERS or "/" in filename or ".." in filename:
-            raise ValueError("Invalid subfolder or filename.")
+        dest_path = os.path.join(MODELS_DIR, _download_dest(subfolder, filename))
 
         update(status="downloading", progress_percent=0)
 
-        dest_dir = os.path.join(MODELS_DIR, subfolder)
-        os.makedirs(dest_dir, exist_ok=True)
-        dest_path = os.path.join(dest_dir, filename)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         tmp_path = dest_path + ".part"
 
         with requests.get(url, stream=True, timeout=60) as r:
@@ -1617,7 +1630,9 @@ class ModalStorage:
         filename = item["filename"]
         download_id = item["download_id"]
         _validate_host(url, ALLOWED_DOWNLOAD_HOSTS, "download")
-        if subfolder not in MODEL_SUBFOLDERS or "/" in filename or ".." in filename:
+        try:
+            _download_dest(subfolder, filename)
+        except ValueError:
             raise fastapi.HTTPException(status_code=400, detail="Invalid subfolder or filename.")
 
         download_model_async.spawn(download_id, url, subfolder, filename)
