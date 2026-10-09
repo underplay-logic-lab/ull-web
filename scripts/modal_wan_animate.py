@@ -667,13 +667,6 @@ def _supabase_patch_download(download_id: str, fields: dict) -> None:
         print(f"[model_downloads] failed to update progress for {download_id}: {exc}")
 
 
-@app.function(
-    scaledown_window=2,
-    image=image,
-    volumes={MODELS_DIR: vol},
-    timeout=3600,
-    secrets=[modal.Secret.from_name("supabase-model-downloads")],
-)
 def _download_dest(subfolder: str, filename: str) -> str:
     """単発ダウンロードの保存先（Volume 内の相対パス）。ファイル名に "/" を含めたら Volume の直下からのパス
     （例: faceswap/text_encoders/x.safetensors、2026-10-09）で、subfolder は使わない。含まなければ従来どおり subfolder/filename。
@@ -690,6 +683,13 @@ def _download_dest(subfolder: str, filename: str) -> str:
     return f"{subfolder}/{filename}"
 
 
+@app.function(
+    scaledown_window=2,
+    image=image,
+    volumes={MODELS_DIR: vol},
+    timeout=3600,
+    secrets=[modal.Secret.from_name("supabase-model-downloads")],
+)
 def download_model_async(download_id: str, url: str, subfolder: str, filename: str):
     """
     Background half of ModalStorage._download_async — streams `url` into
