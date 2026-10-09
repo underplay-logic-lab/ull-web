@@ -2304,13 +2304,15 @@ class WanAnimateBlackwell:
             # 直接読み、Volume（ネットワーク越し）では 0.5〜1GB/s しか出ず、1 枚の 8〜9 割が読み込み待ちだった
             # （v0.35.1 comfy/memory_management.py read_file_to_device）。従来の読み込みに戻す（足りなければ CPU へ逃がす
             # 通常モードの性質はそのまま）。env PHOTO_DYNAMIC_VRAM=1 で元に戻せる。
-            if image_outputs and os.environ.get("PHOTO_DYNAMIC_VRAM", "0") != "1":
+            _legacy_load = image_outputs and os.environ.get("PHOTO_DYNAMIC_VRAM", "0") != "1"
+            if _legacy_load:
                 _base_cfg = exec_config if exec_config is not None else BLACKWELL_EXEC_CONFIG
                 _extra = str(_base_cfg.get("extra_args") or "")
                 if "--disable-dynamic-vram" not in _extra:
                     exec_config = {**_base_cfg, "extra_args": f"{_extra} --disable-dynamic-vram".strip()}
-            # モデルの先読み（_start_model_prefetch）は 2026-10-09 に試して逆効果（Photo 1 枚 349s・本来の読み込みも
-            # 速くならず、イメージの import と回線を取り合った）。呼ばない。関数は記録として残す。
+            # モデルの先読み（_start_model_prefetch）: ジョブ開始と同時に始めたら逆効果だった（2026-10-09・349s。dynamic VRAM は
+            # ページキャッシュを使わず、イメージの import・指示文の AI の読み込みと回線を取り合った）。従来の読み込み（_legacy_load）
+            # では普通のファイル読み込みなので、指示文の AI を読み込み終えてから「書いている間」（ディスクを使わない数十秒）に先読みする。
             # 指示文の AI（数十秒）の間に ComfyUI を並行で起動する（2026-10-09）。ComfyUI はモデルを最初の
             # 生成まで読まないので、AI と VRAM を取り合わない。下の本来の呼び出しの前に必ず join する
             # （起動途中に同じ処理が重なると「フラグ違い」と見て再起動してしまう）。
@@ -2339,6 +2341,9 @@ class WanAnimateBlackwell:
             if (qwen_concept_text or qwen_text_instruction) and qwen_prompt_node_id:
                 if is_async:
                     _supabase_patch_job(job_id, {"progress_message": "台本を執筆中..."})
+                if _legacy_load:
+                    self._ensure_qwen_loaded()
+                    _start_model_prefetch(workflow)
                 if qwen_text_instruction:
                     script = self._generate_director_text(qwen_text_instruction)
                 else:
