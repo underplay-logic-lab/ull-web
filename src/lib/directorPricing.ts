@@ -223,7 +223,8 @@ export function directorCostBreakdownForDuration(args: {
  * 推定 GPU 秒から料金・待ち時間の上限を出す（2026-10-08〜・docs/director-pricing-plan.md・ホスト了承）。
  * 画面の表示・API の課金・待ち時間の上限で同じ関数を使う（LoRA と同じ「課金と見積もりは同じ関数」）。
  * - 1 step の秒数は、モデルが扱う列（動画＋参照写真＋参照動画＋文章）の数で決まる。参照写真の割合の上乗せはこの式に吸収した。
- * - GPU は B300（Director は当面すべて B300）。係数は knob（実績が増えたら knob だけ直す）。
+ * - GPU は列の数が収まる一番安いもの（RTX PRO 6000 → H200 → B300、2026-10-09〜）。GPU ごとに 1 step の倍率と単価を掛ける。
+ *   係数は knob（実績が増えたら knob だけ直す）。
  */
 export type DirectorEstimate = {
   /** 推定 GPU 秒（起動・読み込み・書き出しを含む）。 */
@@ -234,7 +235,20 @@ export type DirectorEstimate = {
   megapixelSeconds: number;
   /** ワーカーが完成を待つ上限（秒）。 */
   pollDeadlineS: number;
+  /** 作る GPU（ワーカーへ渡す。B300 は既定のクラス）。 */
+  gpu: DirectorGpu;
+  /** 全体の列の数（式の値）。 */
+  tokens: number;
 };
+
+export type DirectorGpu = "RTX-PRO-6000" | "H200" | "B300";
+
+/** 列の数が収まる一番安い GPU（上限 0 はその GPU を使わない）。 */
+export function directorGpu(tokens: number, knobs: PricingKnobs = DEFAULT_KNOBS): DirectorGpu {
+  if (knobs.director_pro6000_max_tokens > 0 && tokens <= knobs.director_pro6000_max_tokens) return "RTX-PRO-6000";
+  if (knobs.director_h200_max_tokens > 0 && tokens <= knobs.director_h200_max_tokens) return "H200";
+  return "B300";
+}
 
 /** ワーカー（modal_wan_animate_blackwell.py）の関数の上限 4 時間の手前。 */
 export const DIRECTOR_POLL_DEADLINE_MAX_S = 14_000;
@@ -266,14 +280,26 @@ export function directorEstimate(
     knobs.director_tokens_per_mps * (mp * durationS + DIRECTOR_REF_VIDEO_CANVAS_MP * refVideoS) +
     knobs.director_ref_image_tokens * Math.max(0, Math.floor(args.refImages || 0)) +
     knobs.director_text_tokens;
-  const stepS = knobs.director_step_s_ref * (tokens / knobs.director_step_ref_tokens) ** knobs.director_step_exp;
+  const gpu = directorGpu(tokens, knobs);
+  const stepMult =
+    gpu === "RTX-PRO-6000" ? knobs.director_step_mult_pro6000 : gpu === "H200" ? knobs.director_step_mult_h200 : 1;
+  const creditsPerGpuS =
+    gpu === "RTX-PRO-6000"
+      ? knobs.director_credits_per_gpu_s_pro6000
+      : gpu === "H200"
+        ? knobs.director_credits_per_gpu_s_h200
+        : knobs.director_credits_per_gpu_s;
+  // 基準（68 秒・540p）より列が少ないときは伸び方が緩い（短い動画は 1 step に固定的な重さがある）ので乗数を分ける（2026-10-09 実測）。
+  const ratio = tokens / knobs.director_step_ref_tokens;
+  const stepS =
+    stepMult * knobs.director_step_s_ref * ratio ** (ratio < 1 ? knobs.director_step_exp_small : knobs.director_step_exp);
   const steps = args.mode === "quality" ? 50 : 8;
   const gpuSeconds = Math.round(knobs.director_fixed_s + knobs.director_fixed_s_per_mps * megapixelSeconds + steps * stepS);
   const floor = Math.max(1, Math.round(knobs.director_min_credits));
-  const credits = Math.max(floor, Math.ceil(gpuSeconds * knobs.director_credits_per_gpu_s));
+  const credits = Math.max(floor, Math.ceil(gpuSeconds * creditsPerGpuS));
   // 待ち時間の上限は推定の 1.5 倍＋5 分（CLAUDE.md §0「多めに」）。ワーカーの上限 4 時間の手前で頭打ち。
   const pollDeadlineS = Math.min(DIRECTOR_POLL_DEADLINE_MAX_S, Math.max(600, Math.round(gpuSeconds * 1.5 + 300)));
-  return { gpuSeconds, credits, megapixelSeconds, pollDeadlineS };
+  return { gpuSeconds, credits, megapixelSeconds, pollDeadlineS, gpu, tokens: Math.round(tokens) };
 }
 
 /** 推定 GPU 秒を画面向けの目安に（「約 36 分」「約 3 時間」）。起動待ちも含む。 */

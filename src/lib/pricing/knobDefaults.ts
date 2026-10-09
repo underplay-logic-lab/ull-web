@@ -36,6 +36,13 @@ export type KnobKey =
   | "director_tokens_per_mps"
   | "director_ref_image_tokens"
   | "director_text_tokens"
+  | "director_step_exp_small"
+  | "director_credits_per_gpu_s_h200"
+  | "director_credits_per_gpu_s_pro6000"
+  | "director_step_mult_h200"
+  | "director_step_mult_pro6000"
+  | "director_pro6000_max_tokens"
+  | "director_h200_max_tokens"
   | "director_priority_parallel_surcharge"
   | "director_priority_parallel_rate"
   | "director_qwen_script_credits"
@@ -194,6 +201,9 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   director_step_s_ref: 70,
   director_step_ref_tokens: 266800,
   director_step_exp: 1.65,
+  // 列が基準より少ないとき（短い・低解像度）の乗数（2026-10-09）。1.65 のままだと短い動画の 1 step を少なく見積もっていた
+  // （540p・10 秒・参照 9 枚＝式 57k 列: 式 5.5 秒／B300 実測 9.2 秒）。57k→9.2 秒・93k→17.9 秒（PRO 6000 ÷ 1.68）・266.8k→70 秒から 1.33。
+  director_step_exp_small: 1.33,
   // 固定分（起動・読み込み・書き出し）= director_fixed_s + director_fixed_s_per_mps × 動画の MP·秒。
   director_fixed_s: 90,
   director_fixed_s_per_mps: 5.4,
@@ -201,6 +211,19 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   director_tokens_per_mps: 6925,
   director_ref_image_tokens: 1740,
   director_text_tokens: 5300,
+  // GPU の振り分け（2026-10-09・docs/director-pricing-plan.md「GPU 比較の実測」）: 全体の列の数が収まる一番安い GPU で作る。
+  // 540p・Fast・10 秒の実測（参照 9 枚）: 1 step B300 9.2〜9.5 秒・H200 11.7〜11.9 秒・RTX PRO 6000 15.5 秒 → B300 との比 1.27／1.68。
+  // 単価は B300 と同じ「GPU の時間単価 × 3 倍 ÷ ¥1.66/C」（H200 $4.54・PRO 6000 $3.03・¥170/$）。固定分の秒数は B300 と同じ式（PRO 6000 は実測でより短い＝多め側）。
+  director_credits_per_gpu_s_h200: 0.388,
+  director_credits_per_gpu_s_pro6000: 0.259,
+  director_step_mult_h200: 1.27,
+  director_step_mult_pro6000: 1.68,
+  // 列の数の上限（式の列の数＝tokens。参照写真を多めに数えるので実際の列より 1〜2 割多い）。
+  // PRO 6000: 540p・10 秒（57k）でピーク 94GB（TE 49GB を載せたまま）。TE は足りなくなれば ComfyUI が自動で外す。
+  // 540p・20 秒・参照 9 枚（式 93.3k・実際 85,429 列）: TE を一部自動で外して 1 step 30.1 秒・ピーク 89.3GB・描画中 81.5GB で完走 → 95k。
+  // H200 は 10 秒しか測っていないので 0（使わない）。測ったら上限を入れる。
+  director_pro6000_max_tokens: 95000,
+  director_h200_max_tokens: 0,
   // 2026-09-23: 全タブ共通「通常料金 × 率 + 固定」（src/lib/pricing/parallelSurcharge.ts）。
   director_priority_parallel_rate: 1.0,
   // 2026-09-14 は固定 115C（理論値）。2026-09-23 に全タブ共通の「率 + 固定 50C」へ

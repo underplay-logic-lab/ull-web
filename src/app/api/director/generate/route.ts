@@ -757,6 +757,7 @@ Begin the English prompt with exactly: "${PHOTO_ANIME_SENTENCE}"` : ""),
     out_height: outDims.height,
     resolution,
     estimated_gpu_s: isPhoto ? null : estimate.gpuSeconds,
+    estimated_gpu: isPhoto ? null : estimate.gpu,
   });
 
   const { data: jobRow, error: jobError } = await supabaseAdmin
@@ -854,6 +855,8 @@ Begin the English prompt with exactly: "${PHOTO_ANIME_SENTENCE}"` : ""),
     aspectWidth: aspectDims.width,
     aspectHeight: aspectDims.height,
   });
+  // H200 は Blackwell ではないので、Blackwell 向けにビルドした SageAttention を切る（部分修正・Photo と同じ）。
+  if (!isPhoto && estimate.gpu === "H200") workflow["105:124"].inputs.sage_attention = "disabled";
 
   const spec: DirectorDispatchSpec = {
     storagePath,
@@ -863,7 +866,8 @@ Begin the English prompt with exactly: "${PHOTO_ANIME_SENTENCE}"` : ""),
     pollDeadlineS: isPhoto
       ? photoDirectorPollDeadlineS(photoCount)
       : estimate.pollDeadlineS,
-    ...(isPhoto ? { imageOutputs: true, gpu: PHOTO_GPU } : {}),
+    // 動画は列の数が収まる一番安い GPU（directorEstimate が選ぶ・2026-10-09〜）。B300 は既定のクラスなので渡さない。
+    ...(isPhoto ? { imageOutputs: true, gpu: PHOTO_GPU } : estimate.gpu !== "B300" ? { gpu: estimate.gpu } : {}),
     qwenConceptText: isAdvancedMode ? withConceptNotes(conceptTextInput, promptOpts) : undefined,
     qwenTextInstruction,
     qwenPromptNodeId: isAdvancedMode || qwenTextInstruction ? CINEMATIC_PROMPT_NODE_ID : undefined,
