@@ -62,7 +62,8 @@ BFS_REVISION = "0ca3913ade4b4ada458d60c232354e8586c4c181"
 # (HF リポジトリ, リビジョン, リポジトリ内のパス, ComfyUI のモデル種別フォルダ)
 WEIGHTS = [
     (KREA_REPO, KREA_REVISION, "diffusion_models/krea2_turbo_bf16.safetensors", "diffusion_models"),
-    (KREA_REPO, KREA_REVISION, "text_encoders/qwen3vl_4b_bf16.safetensors", "text_encoders"),
+    # 公式の TE（text_encoders/qwen3vl_4b_bf16.safetensors）は既定を abliterated にしたので Volume から消した（2026-10-10、容量のため）。
+    # 戻すときはこの行を戻して precache し、SETTINGS["text_encoder"] を替える。
     (KREA_REPO, KREA_REVISION, "vae/qwen_image_vae.safetensors", "vae"),
     (BFS_REPO, BFS_REVISION, "bfs_head_swap_v1.1_krea2.safetensors", "loras"),
     (BYPASS_REPO, BYPASS_REVISION, "krea2filterbypass3.safetensors", "loras"),
@@ -78,7 +79,7 @@ SETTINGS = {
     "lora_strength": 1.3,
     # BFS の後ろに重ねる LoRA（[ファイル名, 強さ]）。
     "extra_loras": [["krea2filterbypass3.safetensors", 1.0]],
-    # 既定は abliterated 版（ホスト判断 2026-10-09。公式との比較で見た目ほぼ同じ）。公式に戻すなら "qwen3vl_4b_bf16.safetensors"。
+    # 既定は abliterated 版（ホスト判断 2026-10-09。公式との比較で見た目ほぼ同じ）。公式は Volume から消した（WEIGHTS のコメント参照）。
     "text_encoder": "Huihui-Qwen3-VL-4B-Instruct-abliterated.safetensors",
     "vae": "qwen_image_vae.safetensors",
     # BFS の Krea 2 用の決まり文句（docs/krea-2.md）。複数人は左右を足す（手元 multi.py で取り違えなし）。
