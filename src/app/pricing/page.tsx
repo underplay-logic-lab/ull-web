@@ -160,9 +160,8 @@ export default async function PricingPage() {
           下の表はよくある使い方の例です。実際の消費量は、各機能の画面で実行前に表示されます。
         </p>
         <p className="mt-2 text-xs leading-relaxed text-muted">
-          円は 1 クレジットあたりが最も安い{CHEAPEST_PLAN.name}（¥{CHEAPEST_PLAN.priceYen.toLocaleString("ja-JP")} /{" "}
-          {CHEAPEST_PLAN.credits.toLocaleString("ja-JP")}C）で換算した目安です。ほかのプランや都度チャージでは、これより高くなります。
-          失敗した生成・学習のクレジットは返金されます。
+          エラーなどで生成・学習が最後まで完了せず、結果が出なかった場合は、使ったクレジットをお返しします。
+          完了した結果の出来（思っていた絵と違う等）による返金はできませんので、ご了承ください。
         </p>
         <p className="mt-2 text-xs leading-relaxed text-muted">
           表の金額と画面に出る金額は、初回（準備込み）の料金です。前の生成が終わってから 30 秒以内に続けて出すか、予約で順番に流すと、
@@ -199,6 +198,10 @@ export default async function PricingPage() {
         </div>
 
         <p className="mt-12 text-xs leading-relaxed text-muted">
+          表の円は 1 クレジットあたりが最も安い{CHEAPEST_PLAN.name}（¥{CHEAPEST_PLAN.priceYen.toLocaleString("ja-JP")} /{" "}
+          {CHEAPEST_PLAN.credits.toLocaleString("ja-JP")}C）で換算した目安です。ほかのプランや都度チャージでは、これより高くなります。
+        </p>
+        <p className="mt-2 text-xs leading-relaxed text-muted">
           実行中にもう 1 本を待たずに並列で出す場合は、追加料金がかかります（終わるのを待って出せば追加料金はかかりません）。
           クレジットの購入は{" "}
           <Link href="/#pricing" className="text-neon-pink hover:underline">
