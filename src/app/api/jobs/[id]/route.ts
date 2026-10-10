@@ -216,8 +216,8 @@ export async function GET(request: Request, { params }: RouteParams) {
     const urls = await Promise.all(
       paths.map((p, i) =>
         presignPublishedArtifact(meta, p, {
-          contentType: "image/png",
-          downloadName: `${isFaceSwap ? "faceswap" : isWorldgen ? "room360" : "photo"}-${String(effJob.id).slice(0, 8)}-${i + 1}.png`,
+          contentType: p.endsWith(".jpg") ? "image/jpeg" : "image/png",
+          downloadName: `${isFaceSwap ? "faceswap" : isWorldgen ? "room360" : "photo"}-${String(effJob.id).slice(0, 8)}-${i + 1}.${p.endsWith(".jpg") ? "jpg" : "png"}`,
         }),
       ),
     );

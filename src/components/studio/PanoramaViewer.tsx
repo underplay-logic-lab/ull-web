@@ -1,13 +1,15 @@
 "use client";
 
 // 360 度パノラマ（正距円筒）を見回す軽い表示（2026-10-10・背景づくり用）。三次元の部品は使わず、canvas で 1 画素ずつ引き当てる。
-// ドラッグで向き、ホイール（またはスライダー）で画角。「この向きで保存」は同じ計算を大きな解像度でやり直して PNG にする。
+// ドラッグで向きを変える。画角は 80 度に固定（2026-10-10 ホスト「画角は無い方が良い・画質が悪くなるだけ」。8192 幅のパノラマで
+// 80 度を 1920 幅に切り出すとほぼ等倍）。「この向きで保存」は同じ計算を 1920×1080 でやり直して PNG にする。
 // パノラマ 1 枚から切り出すので、どの向きでも部屋の物の位置は一致する（統一感の確認がこの表示の目的）。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download } from "lucide-react";
 
 type View = { yaw: number; pitch: number; fov: number };
+const FOV = 80;
 
 /** 正距円筒の画素（src）から、向き view の透視投影を out（w×h）に描く。最近傍で十分（保存時は大きく描くので粗さは出ない）。 */
 function renderPerspective(src: ImageData, out: ImageData, view: View) {
@@ -50,7 +52,7 @@ function renderPerspective(src: ImageData, out: ImageData, view: View) {
 export function PanoramaViewer({ src, filenameBase, onError }: { src: string; filenameBase: string; onError?: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pixelsRef = useRef<ImageData | null>(null);
-  const [view, setView] = useState<View>({ yaw: 0, pitch: 0, fov: 80 });
+  const [view, setView] = useState<View>({ yaw: 0, pitch: 0, fov: FOV });
   const [ready, setReady] = useState(false);
   const drag = useRef<{ x: number; y: number; yaw: number; pitch: number } | null>(null);
 
@@ -106,9 +108,6 @@ export function PanoramaViewer({ src, filenameBase, onError }: { src: string; fi
   const onPointerUp = () => {
     drag.current = null;
   };
-  const onWheel = (e: React.WheelEvent) => {
-    setView((v) => ({ ...v, fov: Math.max(30, Math.min(110, v.fov + Math.sign(e.deltaY) * 4)) }));
-  };
 
   const saveView = useCallback(() => {
     const px = pixelsRef.current;
@@ -126,7 +125,7 @@ export function PanoramaViewer({ src, filenameBase, onError }: { src: string; fi
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${filenameBase}_yaw${Math.round(((view.yaw % 360) + 360) % 360)}_fov${Math.round(view.fov)}.png`;
+      a.download = `${filenameBase}_yaw${Math.round(((view.yaw % 360) + 360) % 360)}_pitch${Math.round(view.pitch)}.png`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -144,26 +143,13 @@ export function PanoramaViewer({ src, filenameBase, onError }: { src: string; fi
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onWheel={onWheel}
         className="w-full cursor-grab touch-none rounded-lg bg-black active:cursor-grabbing"
       />
       {!ready && <p className="text-center text-[11px] text-muted">読み込み中…</p>}
       <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted">
-        <label className="flex flex-1 items-center gap-2">
-          画角
-          <input
-            type="range"
-            min={30}
-            max={110}
-            value={view.fov}
-            onChange={(e) => setView((v) => ({ ...v, fov: Number(e.target.value) }))}
-            className="flex-1"
-          />
-          {Math.round(view.fov)}°
-        </label>
         <button
           type="button"
-          onClick={() => setView({ yaw: 0, pitch: 0, fov: 80 })}
+          onClick={() => setView({ yaw: 0, pitch: 0, fov: FOV })}
           className="rounded-md border border-border px-2 py-1 text-foreground hover:bg-surface-hover"
         >
           正面に戻す
@@ -178,7 +164,7 @@ export function PanoramaViewer({ src, filenameBase, onError }: { src: string; fi
           この向きで保存（1920×1080）
         </button>
       </div>
-      <p className="text-[11px] text-muted">ドラッグで見回し、ホイールで画角を変えられます。</p>
+      <p className="text-[11px] text-muted">ドラッグで見回せます（ぐるっと一周つながっています）。</p>
     </div>
   );
 }

@@ -54,8 +54,9 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** 360 度パノラマ（8192×4096 の JPEG。PNG だと大きすぎる）。 */
 function panoFilename(jobId: string): string {
-  return `ull_room360_${jobId.slice(0, 8)}.png`;
+  return `ull_room360_${jobId.slice(0, 8)}.jpg`;
 }
 
 function imageFileError(file: File): string | null {
@@ -368,7 +369,7 @@ export function WorldGenTab() {
     const url = kind === "pano" ? next?.panoUrl : next?.plyUrl;
     if (!url) return setActionError("ファイルの取得に失敗しました。時間をおいてもう一度お試しください。");
     try {
-      saveBlob(await fetchBlob(url), kind === "pano" ? panoFilename(jobId) : panoFilename(jobId).replace(/\.png$/, ".ply"));
+      saveBlob(await fetchBlob(url), kind === "pano" ? panoFilename(jobId) : panoFilename(jobId).replace(/\.jpg$/, ".ply"));
     } catch (err) {
       console.error("[WorldGenTab] download failed:", err);
       setActionError("ダウンロードに失敗しました。");
