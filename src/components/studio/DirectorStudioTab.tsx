@@ -7,6 +7,7 @@ import { RefPhotoPicker, type RefPhoto } from "./RefPhotoPicker";
 import { RestrictedChoiceModal, UnrestrictedToggle } from "./RestrictedChoiceModal";
 import { TopupActions } from "./TopupActions";
 import { PrevResultPanel } from "@/components/studio/PrevResultPanel";
+import { WarmPriceHint } from "@/components/studio/WarmPriceHint";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DIRECTOR_LORA_ENABLED } from "@/lib/featureFlags";
@@ -97,6 +98,7 @@ import {
   type StudioSessionEntry,
 } from "@/components/studio/StudioSessionList";
 import { VramBadge } from "@/components/studio/VramBadge";
+import { WarmRefundNote } from "@/components/studio/WarmRefundNote";
 import AutoDownloadToggle from "@/components/studio/AutoDownloadToggle";
 import GenerationCaveat from "@/components/studio/GenerationCaveat";
 import { armAutoDownload, runAutoDownload, takeAutoDownload } from "@/lib/autoDownload";
@@ -2119,6 +2121,7 @@ export function DirectorStudioTab() {
               )}
             </span>
           </div>
+          <WarmPriceHint />
 
           {uiMode === "scenes" && (
             <div className="mt-3">
@@ -2292,6 +2295,7 @@ export function DirectorStudioTab() {
               )}
               {job.vramUsedGb != null && <VramBadge gb={job.vramUsedGb} />}
             </div>
+            <WarmRefundNote credits={job.warmRefundCredits} />
           </div>
         )}
 

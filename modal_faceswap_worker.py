@@ -138,7 +138,7 @@ image = (
         f"printf 'faceswap:\\n  base_path: {FS_DIR}\\n  diffusion_models: diffusion_models\\n"
         f"  text_encoders: text_encoders\\n  vae: vae\\n  loras: loras\\n' > {COMFY_DIR}/extra_model_paths.yaml"
     )
-    .add_local_python_source("ull_r2", "ull_gpu_monitor", "ull_image_prep")
+    .add_local_python_source("ull_r2", "ull_gpu_monitor", "ull_image_prep", "ull_warm_refund")
 )
 
 
@@ -319,6 +319,8 @@ class FaceSwap:
         else:
             raise RuntimeError("ComfyUI did not come up within 300s")
         self.boot_s = round(time.time() - t, 1)
+        # 温まり返金の判定（2026-10-10）: このコンテナで成功したジョブの数。1 以上ならモデルは載ったまま（毎回同じワークフロー）。
+        self.jobs_ok = 0
         print(f"[faceswap] ComfyUI up in {self.boot_s}s", flush=True)
 
     def _run_workflow(self, workflow: dict) -> str:
@@ -399,6 +401,8 @@ class FaceSwap:
         job: job_id / user_id / credits_cost / seed / body_path / swaps（[{face_path, side}]）/ settings（任意）。
         失敗したら failed にして全額返金。"""
         job_id, user_id = job["job_id"], job["user_id"]
+        warm = getattr(self, "jobs_ok", 0) > 0  # 温まり返金（完了時に _warm_refund）
+        t_job = time.time()
         swaps_in = list(job.get("swaps") or [])[:MAX_SWAPS]
         n = len(swaps_in)
         _patch_job(job_id, {"status": "processing", "started_at": _now_iso(), "progress_message": f"1/{n} 人目" if n > 1 else "入れ替え中"})
@@ -446,6 +450,13 @@ class FaceSwap:
                 meta["vram_used_gb"] = gb
             mon.__exit__(None, None, None)
             meta["vram_peak_gb"] = mon.peak_gb
+            actual_s = round(time.time() - t_job, 1)
+            refunded = _warm_refund(user_id, job, warm, actual_s)
+            meta["run_s"] = actual_s
+            self.jobs_ok += 1
+            meta["warm"] = warm
+            if refunded:
+                meta["warm_refund_credits"] = refunded
             _patch_job(job_id, {"status": "completed", "completed_at": _now_iso(), "progress_percent": 100, "metadata": meta})
             print(f"[faceswap] job {job_id[:8]} done: {n} swap(s)", flush=True)
             return {"ok": True}
@@ -502,6 +513,15 @@ def _refund(user_id: str, amount: int) -> None:
             raise RuntimeError(f"HTTP {r.status_code} {r.text[:200]}")
     except Exception as exc:  # noqa: BLE001
         print(f"[faceswap] refund {amount} to {user_id[:8]} failed: {exc!r}", flush=True)
+
+
+def _warm_refund(user_id: str, job: dict, warm: bool, actual_s: float) -> int:
+    """温まり返金（2026-10-10）: このコンテナで既にジョブを終えていて（＝モデルが載ったまま）、Next が warm_settle を載せていれば、
+    実際にかかった秒数 × 単価で計算し直し、通常料金（compare_credits）との差額を上限（cap）まで返す。返した額（0 か正）を返す。
+    metadata.warm_refund_credits に残し、admin の利益率が差し引く（src/lib/pricing/warmRefund.ts）。"""
+    from ull_warm_refund import settle_refund
+
+    return settle_refund(user_id, job.get("warm_settle"), int(job.get("credits_cost") or 0), warm, actual_s, _refund)
 
 
 def _vram_used_gb():

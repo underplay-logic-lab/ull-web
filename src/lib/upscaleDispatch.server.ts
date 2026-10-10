@@ -1,5 +1,6 @@
 import "server-only";
 import { spawnUpscaleBatchJob, spawnUpscaleJob, spawnUpscaleVideoJob } from "@/lib/modalUpscale";
+import type { WarmSettle } from "@/lib/pricing/warmRefund";
 import { rememberUpscaleCall } from "@/lib/modalCallRecord.server";
 import { createStudioUploadSignedUrl } from "@/lib/studioUploads.server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
@@ -18,6 +19,8 @@ export type UpscaleImageSpec = {
   modelKey: string;
   presetId: string;
   params: UpscaleParams;
+  /** 温まり返金（2026-10-10・src/lib/pricing/warmRefund.ts）。 */
+  warmSettle?: WarmSettle;
 };
 
 export type UpscaleBatchSpec = {
@@ -33,6 +36,8 @@ export type UpscaleBatchSpec = {
     modelKey: string;
     presetId: string;
     params: UpscaleParams;
+    /** 基本料を乗せた先頭の 1 枚だけ（温まり返金・2026-10-10）。 */
+    warmSettle?: WarmSettle;
   }[];
 };
 
@@ -46,6 +51,8 @@ export type UpscaleVideoSpec = {
   modelKey: string;
   presetId: string;
   params: UpscaleParams;
+  /** 温まり返金（2026-10-10）。予約の spec にもそのまま残る。 */
+  warmSettle?: WarmSettle;
 };
 
 /** 画像 1 枚。image を渡せばそれ（base64 / 署名 URL）を使い、無ければ storagePath を署名する。 */
@@ -65,6 +72,7 @@ export async function dispatchUpscaleImage(
     modelKey: spec.modelKey,
     presetId: spec.presetId,
     params: spec.params,
+    warmSettle: spec.warmSettle,
   });
   // admin の中止ボタンが Modal の実行まで止められるよう、実行 id を残す（best-effort）。
   await rememberUpscaleCall({ jobId }, callId);
@@ -96,6 +104,7 @@ export async function dispatchUpscaleBatch(userId: string, spec: UpscaleBatchSpe
       modelKey: it.modelKey,
       presetId: it.presetId,
       params: it.params,
+      warmSettle: it.warmSettle,
     })),
   });
   await rememberUpscaleCall({ batchId: spec.batchId }, callId);
@@ -118,6 +127,7 @@ export async function dispatchUpscaleVideo(
     modelKey: spec.modelKey,
     presetId: spec.presetId,
     params: spec.params,
+    warmSettle: spec.warmSettle,
   });
   await rememberUpscaleCall({ jobId }, callId);
 }

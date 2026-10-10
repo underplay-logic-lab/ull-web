@@ -32,6 +32,8 @@ import { downloadSong, pollSongJob, SongJobNotFoundError, startSongJob, type Son
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { VramBadge } from "@/components/studio/VramBadge";
+import { WarmPriceHint } from "@/components/studio/WarmPriceHint";
+import { WarmRefundNote } from "@/components/studio/WarmRefundNote";
 import AutoDownloadToggle from "@/components/studio/AutoDownloadToggle";
 import GenerationCaveat from "@/components/studio/GenerationCaveat";
 import { armAutoDownload, runAutoDownload, takeAutoDownload } from "@/lib/autoDownload";
@@ -595,6 +597,7 @@ export function SongStudioTab() {
             </span>
             <span className="font-mono font-medium text-neon-pink">{cost} Credits</span>
           </div>
+          <WarmPriceHint />
           {!user ? (
             <button
               type="button"
@@ -784,6 +787,7 @@ export function SongStudioTab() {
                 <VramBadge gb={job.vramUsedGb} />
               </div>
             )}
+            <WarmRefundNote credits={job?.warmRefundCredits} />
           </div>
         )}
         {actionError && <p className="text-xs text-red-400">{actionError}</p>}

@@ -135,7 +135,7 @@ export function angleMaxAllowedTime(args: { creditsCost: number; knobs?: Pricing
 export function upscaleMaxAllowedTime(args: { creditsCost: number; knobs?: PricingKnobs }): number {
   const knobs = args.knobs ?? DEFAULT_KNOBS;
   return Math.ceil(
-    Math.max(0, args.creditsCost) * knobs.upscale_time_per_credit_s +
+    Math.max(0, args.creditsCost) * knobs.upscale_image_guard_s_per_credit +
       knobs.upscale_cold_start_grace_s,
   );
 }

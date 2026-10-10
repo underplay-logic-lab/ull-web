@@ -6,6 +6,7 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { downloadStudioUpload, deleteStudioUploads } from "@/lib/studioUploads.server";
 import { readImageDimensions } from "@/lib/imageDimensions";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
+import { directorWarmSettle, photoDirectorWarmSettle } from "@/lib/pricing/warmRefund";
 import {
   DIRECTOR_MAX_AUDIO_SECONDS,
   DIRECTOR_MAX_TOTAL_SECONDS,
@@ -861,6 +862,8 @@ Begin the English prompt with exactly: "${PHOTO_ANIME_SENTENCE}"` : ""),
   const spec: DirectorDispatchSpec = {
     storagePath,
     creditsCost,
+    // 温まり返金（2026-10-10）: 比べる額は並列の追加料金を除いた通常料金（台本 AI の上乗せも同じ GPU の時間なので含める）。
+    warmSettle: isPhoto ? photoDirectorWarmSettle(baseCreditsCost, knobs) : directorWarmSettle(baseCreditsCost, estimate.gpu, knobs),
     workflow,
     referenceImageName,
     pollDeadlineS: isPhoto

@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
+import { songWarmSettle } from "@/lib/pricing/warmRefund";
 import {
   SONG_IDEA_MAX_LENGTH,
   SONG_LYRICS_MAX_LENGTH,
@@ -158,6 +159,7 @@ export async function POST(request: Request) {
     parts,
     seed,
     params: { tags: plan.tags, lyrics: plan.lyrics, bpm: plan.bpm, keyscale: plan.keyscale, language: plan.language },
+    warmSettle: songWarmSettle(baseCost, knobs),
   };
 
   if (queue) {

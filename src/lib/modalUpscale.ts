@@ -1,4 +1,5 @@
 import "server-only";
+import { warmSettlePayload, type WarmSettle } from "@/lib/pricing/warmRefund";
 
 export type SpawnUpscaleJobParams = {
   jobId: string;
@@ -16,6 +17,8 @@ export type SpawnUpscaleJobParams = {
   presetId: string;
   /** SeedVR2 ワークフローへ渡すパラメータ（target_short / max_resolution 等）。 */
   params: Record<string, number | string | boolean>;
+  /** 温まり返金（2026-10-10・src/lib/pricing/warmRefund.ts）。 */
+  warmSettle?: WarmSettle;
 };
 
 export type SpawnUpscaleBatchItem = {
@@ -26,6 +29,8 @@ export type SpawnUpscaleBatchItem = {
   modelKey: string;
   presetId: string;
   params: Record<string, number | string | boolean>;
+  /** 温まり返金（2026-10-10・src/lib/pricing/warmRefund.ts）。 */
+  warmSettle?: WarmSettle;
 };
 
 export type SpawnUpscaleBatchJobParams = {
@@ -47,6 +52,8 @@ export type SpawnUpscaleVideoJobParams = {
   modelKey: string;
   presetId: string;
   params: Record<string, number | string | boolean>;
+  /** 温まり返金（2026-10-10・src/lib/pricing/warmRefund.ts）。 */
+  warmSettle?: WarmSettle;
 };
 
 const DISPATCH_TIMEOUT_MS = 25_000;
@@ -123,6 +130,7 @@ export async function spawnUpscaleJob(
     model_key: params.modelKey,
     preset: params.presetId,
     params: params.params,
+    ...(params.warmSettle ? { warm_settle: warmSettlePayload(params.warmSettle) } : {}),
   });
 
   const headers = {
@@ -188,6 +196,7 @@ export async function spawnUpscaleBatchJob(
       model_key: it.modelKey,
       preset: it.presetId,
       params: it.params,
+      ...(it.warmSettle ? { warm_settle: warmSettlePayload(it.warmSettle) } : {}),
     })),
   });
 
@@ -252,6 +261,7 @@ export async function spawnUpscaleVideoJob(
     model_key: params.modelKey,
     preset: params.presetId,
     params: params.params,
+    ...(params.warmSettle ? { warm_settle: warmSettlePayload(params.warmSettle) } : {}),
   });
 
   const headers = {

@@ -265,6 +265,10 @@ UPSCALE_IMAGE_MODEL_GPU: dict[str, str] = {
 # 除くと約 1.2GB/MP なので 26MP でも 50GB 弱の見込みだが未確認）。
 UPSCALE_IMAGE_SEEDVR2_GPU = _env_str("SEEDVR2_IMAGE_GPU_SEEDVR2", "RTX-PRO-6000")
 UPSCALE_IMAGE_RTX_MAX_SHORT = _env_int("SEEDVR2_IMAGE_RTX_MAX_SHORT", 3840)
+# 2026-10-10: 出力の画素数（params.out_mp・Next が送る）があればそちらで決める。RTX PRO 6000 で ×4（1024×1536→4096×6144・25.2MP・2 段）が
+# VRAM 81.5GB / 96GB・冷え 79.7s・温まり 54.5s で通った（B300 は 5.6MP でも冷え 135s・温まり 42s と遅い）→ 26MP までは PRO 6000。
+# out_mp が無い古い予約は従来の短辺の規則。料金側（src/lib/upscaleStudio.ts の upscaleImageGpu）と同じ規則にすること。
+UPSCALE_IMAGE_RTX_MAX_MP = _env_int("SEEDVR2_IMAGE_RTX_MAX_MP", 26)
 
 
 def _resolve_image_gpu_tier(model_key: str, params: dict | None = None) -> str:
@@ -280,6 +284,12 @@ def _resolve_image_gpu_tier(model_key: str, params: dict | None = None) -> str:
     mapped = UPSCALE_IMAGE_MODEL_GPU.get(str(model_key or "").lower(), "")
     if mapped:
         return mapped
+    try:
+        out_mp = float((params or {}).get("out_mp") or 0)
+    except (TypeError, ValueError):
+        out_mp = 0.0
+    if out_mp > 0:
+        return UPSCALE_IMAGE_SEEDVR2_GPU if out_mp <= UPSCALE_IMAGE_RTX_MAX_MP else list(_DEFAULT_GPU)[0]
     try:
         short = int(float((params or {}).get("target_short") or 0))
     except (TypeError, ValueError):
@@ -1069,7 +1079,7 @@ image = (
             "PYTHONUNBUFFERED": "1",
         }
     )
-    .add_local_python_source("ull_image_prep", "ull_gpu_monitor")
+    .add_local_python_source("ull_image_prep", "ull_gpu_monitor", "ull_warm_refund")
 )
 
 # CPU プリキャッシュ用の軽量 image（重い DL を GPU にやらせない — CLAUDE.md §1）。
@@ -1958,6 +1968,9 @@ class SeedVR2Worker:
         if not _env_str("SEEDVR2_FORCE_SDPA", ""):
             argv.append("--use-sage-attention")
         self._proc = _start_comfy(argv, wait_timeout=300)
+        # 温まり返金（2026-10-10・ull_warm_refund）: このコンテナで成功したモデル。同じモデルなら重みは載ったまま（--gpu-only・
+        # 1 枚ごとの _comfy_free も重みは残す）。
+        self._warm_models: set[str] = set()
         print(f"[seedvr2] ComfyUI ready (VRAM={_vram_gb()}GB) / {_host_ram_report()}", flush=True)
 
     def _write_input(self, raw: bytes, filename: str, max_edge: int | None = None) -> str:
@@ -2491,6 +2504,7 @@ class SeedVR2Worker:
         image_spec: str,
         finalize_executor=None,
         prefetched: dict | None = None,
+        warm_settle: dict | None = None,
     ) -> dict:
         """1件分の実処理: _do_upscale → upload → upscale_jobs PATCH。
 
@@ -2524,6 +2538,10 @@ class SeedVR2Worker:
         if not _claim_upscale_job(job_id):
             print(f"[upscale-job] {job_id} closed before start (aborted?) — no-op", flush=True)
             return {"ok": True, "skipped": True}
+        # 温まり返金（2026-10-10）: このコンテナで同じモデルを既に処理していれば温まっている。精算は warm_settle がある 1 枚
+        # （単発・まとめの先頭＝基本料を乗せた 1 枚）だけ。
+        _warm = model_key in getattr(self, "_warm_models", set())
+        _t_item = time.time()
 
         # ライブ VRAM 表示: ~8秒毎に metadata.vram_used_gb を更新
         # （studio-vram-badge.md の非同期タブ規約）。job作成時に route.ts が
@@ -2553,11 +2571,13 @@ class SeedVR2Worker:
             return {"ok": False, "error": msg}
         _vram_stop.set()
         _vram_thread.join(timeout=3)
+        _warm_info = {"warm": _warm, "settle": warm_settle, "run_s": round(time.time() - _t_item, 1)}
+        self._warm_models.add(model_key)
 
         def _finalize() -> dict:
             t0 = time.time()
             try:
-                out = self._finalize_upscale_item(job_id, user_id, credits_cost, preset, r)
+                out = self._finalize_upscale_item(job_id, user_id, credits_cost, preset, r, _warm_info)
             except Exception as exc:  # noqa: BLE001 — 保存側の想定外エラーも failed + 返金で閉じる
                 msg = f"{type(exc).__name__}: {exc}"[:500]
                 print(f"[upscale-job] {job_id} finalize FAILED: {msg}", flush=True)
@@ -2571,7 +2591,8 @@ class SeedVR2Worker:
             return {"future": finalize_executor.submit(_finalize)}
         return _finalize()
 
-    def _finalize_upscale_item(self, job_id: str, user_id: str, credits_cost: int, preset: str, r: dict) -> dict:
+    def _finalize_upscale_item(self, job_id: str, user_id: str, credits_cost: int, preset: str, r: dict,
+                               warm_info: dict | None = None) -> dict:
         """計算結果 r を保存し、upscale_jobs を完了（または失敗）にする。GPU を使わない。"""
         _ext = (r.get("filename") or "out.png").rsplit(".", 1)[-1].lower()
         url = _save_upscale_image(user_id, job_id, r["data"], _ext)
@@ -2597,8 +2618,17 @@ class SeedVR2Worker:
                 meta["original_filename"] = saved_name
                 meta["original_bytes"] = len(original_data)
         if url:
+            # 温まり返金（2026-10-10・ull_warm_refund）: 実際の秒数 × 単価で計算し直した差額を上限まで返す。
+            if warm_info:
+                from ull_warm_refund import settle_refund
+
+                meta["warm"] = warm_info["warm"]
+                meta["run_s"] = warm_info["run_s"]
+                _refunded = settle_refund(user_id, warm_info.get("settle"), credits_cost, warm_info["warm"], warm_info["run_s"], _refund_upscale_credits)
+                if _refunded:
+                    meta["warm_refund_credits"] = _refunded
             _finish_upscale_job(job_id, {"status": "completed", "result_url": url}, meta)
-            print(f"[upscale-job] {job_id} completed -> {url}", flush=True)
+            print(f"[upscale-job] {job_id} completed -> {url} (warm={meta.get('warm')} refund {meta.get('warm_refund_credits', 0)}C)", flush=True)
             _spawn_r2_publish(job_id)
             return {"ok": True, "result_url": url}
 
@@ -2620,6 +2650,7 @@ class SeedVR2Worker:
         preset: str,
         params: dict,
         video_spec: str,
+        warm_settle: dict | None = None,
     ) -> dict:
         """動画版 _process_one_upscale_item。処理本体・アップロード・PATCH・
         返金の構造は画像版と同じ（webp再エンコード等の画像専用処理は無い）。"""
@@ -2634,6 +2665,8 @@ class SeedVR2Worker:
             return {"ok": False, "error": "video is required"}
 
         _patch_upscale_job(job_id, {"status": "processing"})
+        _warm = model_key in getattr(self, "_warm_models", set())  # 温まり返金（完了時に精算）
+        _t_job = time.time()
 
         import threading
 
@@ -2697,8 +2730,17 @@ class SeedVR2Worker:
             "gpu_tier": _gpu_tier_label(),
         }
         if url:
+            # 温まり返金（2026-10-10）: 実際の秒数 × 単価で計算し直した差額を上限まで返す（ull_warm_refund）。
+            from ull_warm_refund import settle_refund
+
+            meta["run_s"] = round(time.time() - _t_job, 1)
+            meta["warm"] = _warm
+            _refunded = settle_refund(user_id, warm_settle, credits_cost, _warm, meta["run_s"], _refund_upscale_credits)
+            if _refunded:
+                meta["warm_refund_credits"] = _refunded
+            self._warm_models.add(model_key)
             _finish_upscale_job(job_id, {"status": "completed", "result_url": url}, meta)
-            print(f"[upscale-video-job] {job_id} completed -> {url} / {_host_ram_report()}", flush=True)
+            print(f"[upscale-video-job] {job_id} completed -> {url} (warm={_warm} refund {_refunded}C) / {_host_ram_report()}", flush=True)
             _spawn_r2_publish(job_id)
             return {"ok": True, "result_url": url}
 
@@ -2760,7 +2802,8 @@ class SeedVR2Worker:
 
         try:
             return self._process_one_upscale_item(
-                job_id, user_id, credits_cost, model_key, preset, params, image_spec
+                job_id, user_id, credits_cost, model_key, preset, params, image_spec,
+                warm_settle=payload.get("warm_settle"),
             )
         finally:
             _wd_stop.set()
@@ -2828,7 +2871,7 @@ class SeedVR2Worker:
 
         try:
             return self._process_one_upscale_video_item(
-                job_id, user_id, credits_cost, model_key, preset, params, video_spec
+                job_id, user_id, credits_cost, model_key, preset, params, video_spec, payload.get("warm_settle")
             )
         finally:
             _wd_stop.set()
@@ -2937,6 +2980,7 @@ class SeedVR2Worker:
                     it.get("image") or it.get("image_b64") or "",
                     finalize_executor=executor,
                     prefetched=pre,
+                    warm_settle=it.get("warm_settle"),
                 )
                 # 1 枚ごとに ComfyUI の実行キャッシュを明示的に解放する（2026-09-24）。連続投入だと ComfyUI 自身の
                 # 後片付けが走らず、GPU メモリが 1 枚 0.3GB ずつ溜まっていた（速度への影響は無かったが、長いバッチで
@@ -3070,7 +3114,15 @@ def upscale_batch_generate_dispatch(item: dict, request: fastapi.Request):
     # 2026-09-17（CLAUDE.md §1）: バッチは1リクエスト=単一model_key前提
     # （Next側 upscale/batch/route.ts が全itemに同じmodelKeyを書き込む）。
     # 先頭itemのmodel_keyを代表としてGPU tierを決定する。
-    gpu_tier = _resolve_image_gpu_tier(items[0].get("model_key") or "", items[0].get("params") or {})
+    # まとめは同じ GPU で順に処理するので、一番大きい出力（out_mp の最大）に合わせて決める（2026-10-10）。
+    _p0 = dict(items[0].get("params") or {})
+    try:
+        _max_mp = max(float((it.get("params") or {}).get("out_mp") or 0) for it in items)
+    except (TypeError, ValueError):
+        _max_mp = 0.0
+    if _max_mp > 0:
+        _p0["out_mp"] = _max_mp
+    gpu_tier = _resolve_image_gpu_tier(items[0].get("model_key") or "", _p0)
     worker = SeedVR2Worker.with_options(timeout=modal_timeout, gpu=gpu_tier)
     call = worker().run_upscale_batch_job.spawn(item)
     print(

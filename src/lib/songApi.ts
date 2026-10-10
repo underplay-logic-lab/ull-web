@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabaseClient";
 import type { SongVoiceId } from "@/lib/songPricing";
+import { warmRefundOf } from "@/lib/warmRefundNote";
 
 // 曲づくり（2026-10-06）の画面側 API。生成は /api/song/generate、状態は共通の /api/jobs/[id]。
 
@@ -53,6 +54,8 @@ export type SongJobStatus = {
   progressMessage: string | null;
   progressPercent: number | null;
   vramUsedGb: number | null;
+  /** 温まり返金（2026-10-10）: 温まったコンテナで動いて、完了時に返した額（無ければ null）。 */
+  warmRefundCredits: number | null;
   audioUrls: string[];
   /** WAV（無いジョブは空）。並びは audioUrls と同じ。 */
   audioWavUrls: string[];
@@ -82,6 +85,7 @@ export async function pollSongJob(jobId: string): Promise<SongJobStatus> {
     progressMessage: (data.progressMessage as string | null) ?? null,
     progressPercent: typeof data.progressPercent === "number" ? data.progressPercent : null,
     vramUsedGb: typeof meta.vram_used_gb === "number" ? meta.vram_used_gb : null,
+    warmRefundCredits: warmRefundOf(data.metadata),
     audioUrls: Array.isArray(data.audioUrls) ? (data.audioUrls as unknown[]).filter((u): u is string => typeof u === "string") : [],
     audioWavUrls: Array.isArray(data.audioWavUrls)
       ? (data.audioWavUrls as unknown[]).filter((u): u is string => typeof u === "string")

@@ -7,6 +7,7 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { dispatchUpscaleBatch, type UpscaleBatchSpec } from "@/lib/upscaleDispatch.server";
 import { advanceQueue, saveDispatchSpec } from "@/lib/studioQueue.server";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
+import { upscaleImageWarmSettle } from "@/lib/pricing/warmRefund";
 import { readImageDimensions } from "@/lib/imageDimensions";
 import { downloadStudioUpload, readStudioUploadHead } from "@/lib/studioUploads.server";
 import {
@@ -20,8 +21,11 @@ import {
   getUpscaleModel,
   resolveTargetShort,
   upscaleBatchEstimatedSeconds,
+  upscaleBatchCredits,
   upscaleCostBreakdown,
+  upscaleImageRates,
   upscaleCreditsWorstCase,
+  type UpscaleCostBreakdown,
 } from "@/lib/upscaleStudio";
 
 // 非同期バッチ: N枚まとめて寸法から課金額を出し、合計クレジットを一括で
@@ -133,6 +137,8 @@ export async function POST(request: Request) {
   }
 
   const prepared: PreparedItem[] = [];
+  // 基本料はまとめた分全体で 1 回だけ（2026-10-10・upscaleBatchCredits が先頭の 1 枚に乗せる）。
+  const breakdowns: (UpscaleCostBreakdown | null)[] = [];
   for (let i = 0; i < storagePaths.length; i++) {
     const storagePath = storagePaths[i];
     const { dims, totalBytes } = heads[i];
@@ -145,6 +151,7 @@ export async function POST(request: Request) {
     const filename = storagePath.split("/").pop() || storagePath;
     if (dims && dims.width > 0 && dims.height > 0) {
       const bd = upscaleCostBreakdown({ inW: dims.width, inH: dims.height, modeId, modelKey, knobs });
+      breakdowns.push(bd);
       prepared.push({
         storagePath,
         filename,
@@ -158,6 +165,7 @@ export async function POST(request: Request) {
     } else {
       // 寸法が読めない形式（HEIC 等）。worst-case 課金で受け、worker が実寸法を
       // metadata に書く。
+      breakdowns.push(null);
       prepared.push({
         storagePath,
         filename,
@@ -171,7 +179,17 @@ export async function POST(request: Request) {
     }
   }
 
-  const totalCredits = prepared.reduce((sum, p) => sum + p.creditsCost, 0);
+  const batchCredits = upscaleBatchCredits(breakdowns, knobs);
+  prepared.forEach((p, i) => {
+    p.creditsCost = batchCredits.perItem[i];
+  });
+  // 温まり返金（2026-10-10）: 基本料を乗せた先頭の 1 枚だけ精算する（2 枚目以降は基本料を取っていない）。
+  const baseIdx = breakdowns.findIndex((b) => b && b.credits > 0);
+  const baseBd = baseIdx >= 0 ? breakdowns[baseIdx] : null;
+  const firstWarmSettle = baseBd
+    ? upscaleImageWarmSettle(prepared[baseIdx].creditsCost, baseBd.gpu, upscaleImageRates(model, baseBd.gpu, knobs).warmCap, knobs)
+    : undefined;
+  const totalCredits = batchCredits.total;
   const estimatedSeconds = upscaleBatchEstimatedSeconds(totalCredits, knobs);
   if (estimatedSeconds > knobs.upscale_batch_max_seconds) {
     return NextResponse.json(
@@ -290,7 +308,10 @@ export async function POST(request: Request) {
         target_short: p.targetShort,
         max_resolution: mode.maxEdge,
         batch_size: 1,
+        // 動く GPU の判定（worker はまとめの中の最大で決める・料金の upscaleImageGpu と同じ規則）。
+        out_mp: Math.round(((p.outWidth * p.outHeight) / 1_000_000) * 100) / 100,
       },
+      ...(i === baseIdx && firstWarmSettle ? { warmSettle: firstWarmSettle } : {}),
     })),
   };
 

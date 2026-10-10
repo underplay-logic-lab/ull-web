@@ -105,7 +105,7 @@ image = (
     .run_commands(
         f'python -c "from huggingface_hub import snapshot_download; snapshot_download(\'{WHISPER_REPO}\', revision=\'{WHISPER_REVISION}\')"'
     )
-    .add_local_python_source("ull_r2", "ull_gpu_monitor")
+    .add_local_python_source("ull_r2", "ull_gpu_monitor", "ull_warm_refund")
 )
 
 
@@ -503,6 +503,8 @@ class AceStep:
         else:
             raise RuntimeError("ComfyUI did not come up within 300s")
         self.boot_s = round(time.time() - t, 1)
+        # 温まり返金の判定（2026-10-10）: このコンテナで成功したジョブの数。1 以上ならモデルは載ったまま（毎回同じワークフロー）。
+        self.jobs_ok = 0
         print(f"[ace] ComfyUI up in {self.boot_s}s", flush=True)
 
     @modal.method()
@@ -577,6 +579,8 @@ class AceStep:
         job: job_id / user_id / credits_cost / count / seed / params（tags・lyrics・bpm・keyscale・language・timesignature）。
         1 曲でも失敗したら failed にして全額返金（途中まで出来た曲は使わない＝課金と結果を一致させる）。"""
         job_id, user_id = job["job_id"], job["user_id"]
+        warm = getattr(self, "jobs_ok", 0) > 0  # 温まり返金（完了時に _warm_refund）
+        t_job = time.time()
         count = max(1, min(10, int(job.get("count", 3))))
         seed = int(job.get("seed", 1))
         # 進み具合は「作っている曲の番号」（2026-10-08 ホスト指摘: 完成数だと 1 曲目の間が 0/3・最後の 3/3 は完了に切り替わって見えない）。
@@ -668,6 +672,13 @@ class AceStep:
                 meta["vram_used_gb"] = gb
             mon.__exit__(None, None, None)
             meta["vram_peak_gb"] = mon.peak_gb
+            actual_s = round(time.time() - t_job, 1)
+            refunded = _warm_refund(user_id, job, warm, actual_s)
+            meta["run_s"] = actual_s
+            self.jobs_ok += 1
+            meta["warm"] = warm
+            if refunded:
+                meta["warm_refund_credits"] = refunded
             _patch_job(job_id, {"status": "completed", "completed_at": _now_iso(), "progress_percent": 100, "metadata": meta})
             print(f"[song] job {job_id[:8]} done: {count} song(s)", flush=True)
             return {"ok": True, "count": count}
@@ -724,6 +735,15 @@ def _refund(user_id: str, amount: int) -> None:
             raise RuntimeError(f"HTTP {r.status_code} {r.text[:200]}")
     except Exception as exc:  # noqa: BLE001
         print(f"[song] refund {amount} to {user_id[:8]} failed: {exc!r}", flush=True)
+
+
+def _warm_refund(user_id: str, job: dict, warm: bool, actual_s: float) -> int:
+    """温まり返金（2026-10-10）: このコンテナで既にジョブを終えていて（＝モデルが載ったまま）、Next が warm_settle を載せていれば、
+    実際にかかった秒数 × 単価で計算し直し、通常料金（compare_credits）との差額を上限（cap）まで返す。返した額（0 か正）を返す。
+    metadata.warm_refund_credits に残し、admin の利益率が差し引く（src/lib/pricing/warmRefund.ts）。"""
+    from ull_warm_refund import settle_refund
+
+    return settle_refund(user_id, job.get("warm_settle"), int(job.get("credits_cost") or 0), warm, actual_s, _refund)
 
 
 def _vram_used_gb():

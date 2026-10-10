@@ -3,6 +3,7 @@
 import { HelpNote } from "./HelpNote";
 import { TopupActions } from "./TopupActions";
 import { PrevResultPanel } from "@/components/studio/PrevResultPanel";
+import { WarmPriceHint } from "@/components/studio/WarmPriceHint";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -54,6 +55,7 @@ import {
   type StudioSessionEntry,
 } from "@/components/studio/StudioSessionList";
 import { VramBadge } from "@/components/studio/VramBadge";
+import { WarmRefundNote } from "@/components/studio/WarmRefundNote";
 import AutoDownloadToggle from "@/components/studio/AutoDownloadToggle";
 import { armAutoDownload, runAutoDownload, takeAutoDownload } from "@/lib/autoDownload";
 import { LoginModal } from "@/components/LoginModal";
@@ -1066,6 +1068,7 @@ export function UpscaleVideoStudioTab() {
                 )}
               </span>
             </div>
+            <WarmPriceHint />
 
             {phase === "running" && (
               <div className="mt-3">
@@ -1185,6 +1188,7 @@ export function UpscaleVideoStudioTab() {
                 </span>
                 {job.vramPeakGb != null && <VramBadge gb={job.vramPeakGb} />}
               </div>
+              <WarmRefundNote credits={job.warmRefundCredits} />
               <button
                 type="button"
                 disabled={!playableVideoUrl}

@@ -1,6 +1,7 @@
 import { supabase } from "@/lib/supabaseClient";
 import { normalizeUpscaleInput } from "@/lib/upscaleImage";
 import { uploadStudioAsset } from "@/lib/studioUploads";
+import { warmRefundOf } from "@/lib/warmRefundNote";
 
 export type UpscaleApiError = Error & { remainingCredits?: number };
 
@@ -18,6 +19,8 @@ export type UpscaleJob = {
   /** ライブ実効 VRAM 消費量（GB）。ネタバレ防止 — 分母・％・GPU名なし。 */
   vramUsedGb: number | null;
   vramPeakGb: number | null;
+  /** 温まり返金（2026-10-10）: 温まったコンテナで動いて、完了時に返した額（無ければ null）。 */
+  warmRefundCredits: number | null;
   elapsedTime: number | null;
   outWidth: number | null;
   outHeight: number | null;
@@ -324,6 +327,7 @@ function rowToUpscaleJob(data: UpscaleJobRow): UpscaleJob {
     errorMessage: data.error_message,
     vramUsedGb: metaNumber(data.metadata, "vram_used_gb"),
     vramPeakGb: metaNumber(data.metadata, "vram_peak_gb"),
+    warmRefundCredits: warmRefundOf(data.metadata),
     elapsedTime: metaNumber(data.metadata, "elapsed_time"),
     outWidth: metaNumber(data.metadata, "out_width"),
     outHeight: metaNumber(data.metadata, "out_height"),

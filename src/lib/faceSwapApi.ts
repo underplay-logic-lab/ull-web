@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabaseClient";
 import type { FaceSwapLayout, FaceSwapSide, FaceSwapStrengthId } from "@/lib/faceSwapPricing";
+import { warmRefundOf } from "@/lib/warmRefundNote";
 
 // 顔入れ替え（2026-10-09・許可制）の画面側 API。開始は /api/studio/face-swap、状態は共通の /api/jobs/[id]。
 // 画像は先に uploadStudioAsset で R2 へ上げ、ここには path だけを渡す（CLAUDE.md §6-4）。
@@ -47,6 +48,8 @@ export type FaceSwapJobStatus = {
   errorMessage: string | null;
   progressMessage: string | null;
   vramUsedGb: number | null;
+  /** 温まり返金（2026-10-10）: 温まったコンテナで動いて、完了時に返した額（無ければ null）。 */
+  warmRefundCredits: number | null;
   imageUrls: string[];
 };
 
@@ -69,6 +72,7 @@ export async function pollFaceSwapJob(jobId: string): Promise<FaceSwapJobStatus>
     errorMessage: (data.errorMessage as string | null) ?? null,
     progressMessage: (data.progressMessage as string | null) ?? null,
     vramUsedGb: typeof meta.vram_used_gb === "number" ? meta.vram_used_gb : null,
+    warmRefundCredits: warmRefundOf(data.metadata),
     imageUrls: Array.isArray(data.imageUrls) ? (data.imageUrls as unknown[]).filter((u): u is string => typeof u === "string") : [],
   };
 }

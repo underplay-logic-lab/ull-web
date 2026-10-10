@@ -1,6 +1,7 @@
 "use client";
 
 import { PrevResultPanel } from "@/components/studio/PrevResultPanel";
+import { WarmPriceHint } from "@/components/studio/WarmPriceHint";
 import { TopupActions } from "./TopupActions";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -29,6 +30,7 @@ import {
   estimateOutputSize,
   getUpscaleMode,
   getUpscaleModel,
+  upscaleBatchCredits,
   upscaleCostBreakdown,
   upscalePriorityParallelSurcharge,
   type UpscaleModeId,
@@ -844,11 +846,15 @@ export function UpscaleStudioTab() {
       ),
     [batchItems, modeId, modelKey, knobs],
   );
-  const batchTotalCredits = batchBreakdowns.reduce((sum, b) => sum + b.credits, 0);
+  // 基本料はまとめた分全体で 1 回だけ（2026-10-10・route と同じ upscaleBatchCredits）。
+  const batchTotalCredits = useMemo(
+    () => (batchBreakdowns.some((b) => b.credits > 0) ? upscaleBatchCredits(batchBreakdowns.map((b) => (b.credits > 0 ? b : null)), knobs).total : 0),
+    [batchBreakdowns, knobs],
+  );
   const batchInsufficientCredits =
     Boolean(user) &&
     !creditsLoading &&
-    (credits ?? 0) < (batchTotalCredits > 0 ? batchTotalCredits : knobs.upscale_min_credits);
+    (credits ?? 0) < (batchTotalCredits > 0 ? batchTotalCredits : knobs.upscale_base_credits_seedvr2);
   const batchBusy = batchPhase === "submitting" || batchPhase === "running";
   const batchDoneCount = Object.values(batchJobs).filter(
     (j) => j.status === "completed" || j.status === "failed",
@@ -1331,7 +1337,7 @@ export function UpscaleStudioTab() {
   // 画像・動画を入れる前は料金が決まらないので、最低料金（1 回分の下限）に足りなければ不足とみなしてチャージへ案内する
   // （全タブ共通: 不足ならメインのボタンが「クレジットをチャージ」になり、入力前でも押せる。2026-09-28）。
   const insufficientCredits =
-    Boolean(user) && !creditsLoading && (credits ?? 0) < (cost > 0 ? cost : knobs.upscale_min_credits);
+    Boolean(user) && !creditsLoading && (credits ?? 0) < (cost > 0 ? cost : knobs.upscale_base_credits_seedvr2);
   const busy = phase === "submitting" || phase === "running";
   const canRun = Boolean(image) && cost > 0;
 
@@ -1587,6 +1593,7 @@ export function UpscaleStudioTab() {
               )}
             </span>
           </div>
+          <WarmPriceHint />
 
           {phase === "running" && (
             <div className="mt-3">
@@ -1885,6 +1892,7 @@ export function UpscaleStudioTab() {
                 )}
               </span>
             </div>
+            <WarmPriceHint batch />
 
             {batchPhase === "running" && batchJobIds.length > 0 && (
               <div className="mt-3">
@@ -2085,7 +2093,7 @@ export function UpscaleStudioTab() {
         open={chargeOpen}
         onClose={() => setChargeOpen(false)}
         credits={credits}
-        cost={(uiMode === "batch" ? batchTotalCredits : cost) || knobs.upscale_min_credits}
+        cost={(uiMode === "batch" ? batchTotalCredits : cost) || knobs.upscale_base_credits_seedvr2}
       />
       <QueueChoiceModal
         open={queueChoiceOpen}

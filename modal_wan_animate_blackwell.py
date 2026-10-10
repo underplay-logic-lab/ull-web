@@ -390,7 +390,7 @@ image = (
         f"{COMFY_DIR}/custom_nodes/ull_time_mask",
         copy=True,
     )
-    .add_local_python_source("ull_image_prep", "ull_gpu_monitor")
+    .add_local_python_source("ull_image_prep", "ull_gpu_monitor", "ull_warm_refund")
     .add_local_python_source("ull_video_fix")
     .add_local_python_source("ull_r2")
 )
@@ -1564,6 +1564,8 @@ def download_repo_async(download_id: str, repo_id: str, save_dir: str):
 # `scaledown_window` is this SDK's current name for what used to be
 # `container_idle_timeout` (modal 1.5.4 rejects values below 2).
 # 30s Keep-Warm 規格（CLAUDE.md §1）— 全 GPU クラス/関数一律 30。
+
+
 @app.cls(
     image=image,
     gpu=GPU_TYPE,
@@ -1627,6 +1629,8 @@ class WanAnimateBlackwell:
         # run_custom_workflow instead.
         self._proc = None
         self._comfy_flags = None
+        # 温まり返金（2026-10-10）: 前に成功したジョブの本体モデルの組み合わせ（ull_warm_refund.model_signature）。
+        self._warm_sig = None
 
     def _wait_for_server(self, timeout=120):
         import urllib.request
@@ -2264,6 +2268,7 @@ class WanAnimateBlackwell:
         lora_trigger_word: str = None,
         image_outputs: bool = False,
         video_fix: dict = None,
+        warm_settle: dict = None,
     ) -> dict:
         """
         Generic counterpart to generate_video for admin-authored Custom
@@ -2326,6 +2331,12 @@ class WanAnimateBlackwell:
         try:
             workflow = json.loads(workflow_json)
             files = [(name, base64.b64decode(b64)) for name, b64 in files_b64.items()]
+            # 温まり返金（2026-10-10）: 前に成功したジョブと本体モデルが同じで、ComfyUI を起動し直していなければ「温まっている」。
+            # 起動し直し（起動条件の違い）は下の _ensure_comfy_running の前後で _proc が替わったかで見る。
+            from ull_warm_refund import model_signature, settle_refund
+
+            _sig = model_signature(workflow)
+            _proc_before = self._proc
             # Photo（2026-10-09）: ComfyUI 既定の dynamic VRAM（comfy-aimdo）は重みをテンソルごとにファイルから GPU へ
             # 直接読み、Volume（ネットワーク越し）では 0.5〜1GB/s しか出ず、1 枚の 8〜9 割が読み込み待ちだった
             # （v0.35.1 comfy/memory_management.py read_file_to_device）。従来の読み込みに戻す（足りなければ CPU へ逃がす
@@ -2481,6 +2492,7 @@ class WanAnimateBlackwell:
             if _comfy_boot is not None:
                 _comfy_boot.join()
             self._ensure_comfy_running(exec_config)
+            _warm = _proc_before is not None and self._proc is _proc_before and self._warm_sig == _sig
             try:
                 run_out = self._run_workflow(
                     workflow,
@@ -2515,6 +2527,7 @@ class WanAnimateBlackwell:
 
                     _shutil_vfix.rmtree(_vfix_ctx["work"], ignore_errors=True)
         except Exception as exc:
+            self._warm_sig = None
             if _vram_stop is not None:
                 _vram_stop.set()
             _gpu_mon.__exit__(None, None, None)
@@ -2536,6 +2549,14 @@ class WanAnimateBlackwell:
             _vram_stop.set()
         _gpu_mon.__exit__(None, None, None)
         self._append_log("success", time.time() - started, filename=filename)
+        self._warm_sig = _sig
+        # 温まり返金（2026-10-10）: 実際にかかった秒数 × 単価で計算し直し、通常料金との差額を上限まで返す（非同期のジョブだけ）。
+        # 台本 AI（Qwen）・TE は温まっていても毎回読み直すので、その分は実際の秒数に入って返す額が自動で減る。
+        _run_s = round(time.time() - started, 1)
+        _warm_refunded = 0
+        if is_async and _warm:
+            _warm_refunded = settle_refund(user_id, warm_settle, int(credits_cost or 0), True, _run_s, _refund_credits)
+            print(f"[director] {job_id} warm container run {_run_s}s (refund {_warm_refunded}C)", flush=True)
         if save_to_volume:
             self._save_output_to_volume(filename, result_bytes)
         output_path = self._save_output_temp(filename, result_bytes)
@@ -2567,6 +2588,10 @@ class WanAnimateBlackwell:
             if _vram_used_gb is not None:
                 _photo_meta["vram_used_gb"] = _vram_used_gb
             _photo_meta["vram_peak_gb"] = _gpu_mon.peak_gb
+            _photo_meta["warm"] = _warm
+            _photo_meta["run_s"] = _run_s
+            if _warm_refunded:
+                _photo_meta["warm_refund_credits"] = _warm_refunded
             _supabase_patch_job(job_id, {"status": "completed", "completed_at": _now_iso(), "metadata": _photo_meta})
             _clear_active_job(active_job_id)
             return result
@@ -2593,6 +2618,10 @@ class WanAnimateBlackwell:
                 _completed_fields["metadata"]["vram_used_gb"] = _vram_used_gb
             _completed_fields["metadata"]["vram_peak_gb"] = _gpu_mon.peak_gb
             _completed_fields["metadata"]["host_ram_peak_gb"] = _host_ram_peak_gb()
+            _completed_fields["metadata"]["warm"] = _warm
+            _completed_fields["metadata"]["run_s"] = _run_s
+            if _warm_refunded:
+                _completed_fields["metadata"]["warm_refund_credits"] = _warm_refunded
             if _vfix_ctx:
                 # 動画の部分修正: 窓・区間（フレーム）と、作り直した区間に入ったカットの秒（無ければ []・検出失敗は null）。
                 _p = _vfix_ctx["plan"]
@@ -2679,6 +2708,7 @@ def custom_workflow_async(item: dict, request: fastapi.Request):
         item.get("lora_trigger_word"),
         item.get("image_outputs", False),
         item.get("video_fix"),
+        item.get("warm_settle"),
     )
     return {"ok": True, "job_id": job_id, "call_id": call.object_id}
 

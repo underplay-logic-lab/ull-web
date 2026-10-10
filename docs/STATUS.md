@@ -612,6 +612,23 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
   5 本（blackwell／scripts の wan_animate／seedvr2／ace／faceswap）に `--disable-metadata`、VHS 使用の 3 本は送信時に `save_metadata=False`＋
   `VHS_MetadataImage=False`。過去に渡したファイルは戻せない。seed はファイル名ではなくジョブの記録（inputs.seed）に残る。
   **seed を利用者が固定・指定できる UI は未実装**（ホスト「後で検討」）。
+- **温まり返金（2026-10-10・ホスト判断）**: 送信時は全額を引き、同じモデルが載ったままのコンテナで動いたら完了時に
+  ワーカーが**実際の秒数 × 単価で計算し直して差額を返す**（上限は基本料の読み込み分: knob `*_warm_refund*` Photo 45C／Director 90 秒×GPU 単価／
+  顔入れ替え 10C／曲 9C・単価 knob `face_swap_credits_per_gpu_s` 0.23／`song_credits_per_gpu_s` 0.17・`src/lib/pricing/warmRefund.ts`）。
+  固定額はやめた: 文章 AI（Qwen 27B）・TE は温まっていても毎回読み直す（Photo 冷え: AI なし 111〜126 秒／AI あり 196〜357 秒）。
+  試算: Photo 1 枚 英語直接 30 秒→42C 返す／AI あり 130 秒→3C／顔入れ替え 16 秒→10C／曲 30 秒→8C。過去の本番に温まりの記録はほぼ無い（顔入れ替え 1 件）。
+  判定: 顔入れ替え・曲＝このコンテナで成功済み、Director 系＝前回成功と本体モデル（UNET/CLIP/VAE）が同じ＋ComfyUI 再起動なし。
+  返した額は `metadata.warm_refund_credits`→結果欄に表示・migration `20260902000000_generation_logs_warm_refund.sql`（2026-10-10 適用済み）でログの売上を「料金−返金」に。
+  ワーカー 3 本はデプロイ済み（Next が額を送るまで何も返さない）。予約は前のジョブ直後に起動するのでほぼ返金対象。
+  温まりジョブは metadata の `warm`・`run_s`・`warm_refund_credits` とワーカーのログ（`warm container run …s (refund …)`）で確かめる。
+  **共通化（ホスト方針「料金も仕組みも共通に・LoRA は待機 2 秒なので対象外」）**: 計算と判定は `ull_warm_refund.py`（settle_refund・model_signature）に一本化。
+  部分修正（Director と同じ単価・上限）・動画の超解像（SeedVR2 は基本料×係数が上限・Real-ESRGAN は knob 10C・GPU は HD/2K/ESRGAN＝PRO 6000、4K＝B300）も対象に。
+  超解像のログは migration `20260903000000_upscale_logs_warm_refund.sql`（2026-10-10 適用済み）。価格の見直しはログの集計（日次 Discord・admin Pricing のカード）を見て手で knob を直す運用のまま。
+  **画像の超解像も組み替えた（ホスト「実態に合わせた価格で良い・かかってない費用はもらわない」）**: 「1 回の基本料（まとめて出しても 1 回）＋計算分」。
+  SeedVR2 の計算分は段ごとの式（1 段 19.5 秒＋各段の出力 MP × 0.40 秒）× GPU 単価、出力 26MP まで RTX PRO 6000（旧: 短辺 3840）・超えたら B300。
+  例: ×2 6.3MP 19C→23C／×4 25MP 99C→31C／×8 75MP 338C→180C／×2 を 10 枚 190C→77C／Real-ESRGAN 100 枚 1,900C→314C。実測は `docs/gpu-benchmarks.md` §20。
+  損切りは新 knob `upscale_image_guard_s_per_credit` 8（旧 `upscale_time_per_credit_s` は DB 行 4 のまま未使用）。料金表・各タブに「表示は初回の料金・続けるか予約で安くなる」を追記。
+  **説明動画の案**（ホスト）: 「ばらばらに作るとこれだけ・30 秒以内に続けるか予約でまとめるとこれだけ」＝ULL Studio をお得に使うコツ。本番で返金を確かめてから作る。
 1. **顔入れ替え — 公開済み（作り直さない）。残りは本番の確認 1 本と、お客さんへの許可の付与だけ**（お客さん＝AI 漫画家の要望 1・詳細 `docs/face-swap-eval.md`）
    → **（10-09 夜）実装・実測・公開済み（845999b）**: ワーカー `modal_faceswap_worker.py`（デプロイ済み）・API `/api/studio/face-swap`・タブ `FaceSwapTab.tsx`（許可制）・
    料金 knob `face_swap_*`（基本 17C＋1 人 3C）・マイグレーション `20260900000000_face_swap_jobs.sql`（適用済み）。RTX PRO 6000 実測: 冷えて 55 秒・温まって 1 人 12.5 秒・

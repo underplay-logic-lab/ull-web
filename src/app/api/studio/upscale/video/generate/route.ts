@@ -6,6 +6,7 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { dispatchUpscaleVideo, type UpscaleVideoSpec } from "@/lib/upscaleDispatch.server";
 import { advanceQueue, saveDispatchSpec } from "@/lib/studioQueue.server";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
+import { upscaleVideoWarmSettle, type WarmSettle } from "@/lib/pricing/warmRefund";
 import { probeUpscaleVideo } from "@/lib/modalUpscale";
 import { upscaleVideoMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import { createStudioUploadSignedUrl } from "@/lib/studioUploads.server";
@@ -145,10 +146,16 @@ export async function POST(request: Request) {
 
   let creditsCost: number;
   let frameCount = 0;
+  // 温まり返金（2026-10-10）: 寸法が読めたときだけ（worst-case 課金は精算しない）。比べる額は並列の追加料金を除いた通常料金。
+  let warmSettle: WarmSettle | undefined;
   if (hasValidMeta) {
     const bd = upscaleVideoCostBreakdown({ durationSec, fps, inW: width, inH: height, presetId, modelKey, knobs });
     creditsCost = bd.credits;
     frameCount = bd.frameCount;
+    warmSettle = upscaleVideoWarmSettle(
+      { compareCredits: bd.credits, presetId, fixedScale: Boolean(model.fixedScale), modelMult: bd.modelMult, resMult: bd.resMult },
+      knobs,
+    );
   } else {
     // 申告値が読めなかった（クライアントの metadata 取得失敗等）。
     // worst-case 課金で受け、worker の ffprobe 実測に委ねる。
@@ -277,6 +284,7 @@ export async function POST(request: Request) {
       max_resolution: 8192,
       batch_size: 5,
     },
+    warmSettle,
   };
 
   // --- 予約: 起動の引数を残して、順番が来ていればその場で起動（署名 URL は起動時に作り直す）----

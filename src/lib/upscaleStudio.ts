@@ -61,14 +61,14 @@ export const UPSCALE_BATCH_MAX_ITEMS = 300;
 /**
  * バッチ全体（N枚）の推定処理秒数。コールドスタート猶予は1回分だけ加える
  * （2枚目以降は同じ温まったコンテナで処理されるため）。
- * upscale_time_per_credit_s / upscale_cold_start_grace_s は単発ジョブの
+ * upscale_image_guard_s_per_credit / upscale_cold_start_grace_s は単発ジョブの
  * cost-guard（upscaleMaxAllowedTime）と共有する既存 knob。
  */
 export function upscaleBatchEstimatedSeconds(
   totalCredits: number,
   knobs: PricingKnobs = DEFAULT_KNOBS,
 ): number {
-  return Math.max(0, totalCredits) * knobs.upscale_time_per_credit_s + knobs.upscale_cold_start_grace_s;
+  return Math.max(0, totalCredits) * knobs.upscale_image_guard_s_per_credit + knobs.upscale_cold_start_grace_s;
 }
 
 export type UpscaleModelKey =
@@ -261,17 +261,28 @@ export function estimateOutputSize(
 }
 
 export type UpscaleCostBreakdown = {
+  /** 1 枚だけで出すときの料金（基本料＋この 1 枚の計算分）。 */
   credits: number;
+  /** 1 回（まとめて出した分全体）に 1 度だけかかる基本料（起動・読み込み＋終わった後の待機）。 */
+  baseCredits: number;
+  /** この 1 枚の計算分（1MP あたり × 出力 MP × カスケード係数）。まとめて出すときの 2 枚目以降はこれだけ。 */
+  perImageCredits: number;
+  /** 動く GPU（料金の単価・基本料はこれで決まる。worker の _resolve_image_gpu_tier と同じ規則）。 */
+  gpu: UpscaleImageGpu;
   outputMP: number;
   outputWidth: number;
   outputHeight: number;
   effectiveMult: number;
   perMp: number;
-  modelMult: number;
   cascadeStages: number;
   cascadeMult: number;
   clampedByMp: boolean;
 };
+
+export type UpscaleImageGpu = "RTX-PRO-6000" | "B300";
+
+/** worker の UPSCALE_IMAGE_RTX_MAX_MP と同じ。SeedVR2 系で出力がこれ（MP）を超えると B300（2026-10-10 実測: PRO 6000 で 25.2MP が VRAM 81.5GB / 96GB）。 */
+export const UPSCALE_IMAGE_RTX_MAX_MP = 26;
 
 /** モードのカスケード段数 → 追加課金係数（1段=単発は1.0固定）。 */
 function cascadeCreditMultiplier(stages: number, knobs: PricingKnobs): number {
@@ -280,10 +291,82 @@ function cascadeCreditMultiplier(stages: number, knobs: PricingKnobs): number {
   return 1.0;
 }
 
+/** 動く GPU（worker の _resolve_image_gpu_tier・params.out_mp で判定）: 固定倍率モデルは RTX PRO 6000、SeedVR2 系は出力 26MP 以下なら RTX PRO 6000・超えたら B300。 */
+export function upscaleImageGpu(model: UpscaleModel, outputMP: number): UpscaleImageGpu {
+  if (model.fixedScale) return "RTX-PRO-6000";
+  return outputMP > 0 && outputMP <= UPSCALE_IMAGE_RTX_MAX_MP ? "RTX-PRO-6000" : "B300";
+}
+
+/**
+ * 画像の超解像の単価（2026-10-10 組み替え・他の機能と同じ「基本料（1 回）＋量に比例する分」・原価 × 3）。
+ * 冷えた状態と温まった状態の実測（同じ画像を 2 回・docs/gpu-benchmarks.md）から:
+ *   基本料 = （起動・読み込み ＋ 終わった後の待機 30 秒）× GPU 単価、1MP あたり = 温まった状態の秒/MP × GPU 単価。
+ *   温まり返金の上限 = 起動・読み込みの分（src/lib/pricing/warmRefund.ts）。
+ */
+export function upscaleImageRates(
+  model: UpscaleModel,
+  gpu: UpscaleImageGpu,
+  knobs: PricingKnobs = DEFAULT_KNOBS,
+): { base: number; perMp: number; warmCap: number } {
+  // SeedVR2 の perMp は 0（計算分は upscaleSeedvr2Credits の段ごとの式）。
+  if (gpu === "B300") {
+    return { base: knobs.upscale_base_credits_seedvr2_b300, perMp: 0, warmCap: knobs.upscale_warm_refund_seedvr2_b300 };
+  }
+  switch (model.key) {
+    case "real_esrgan_x4plus":
+      return { base: knobs.upscale_base_credits_esrgan, perMp: knobs.upscale_per_mp_esrgan_x4, warmCap: knobs.upscale_warm_refund_esrgan };
+    case "real_esrgan_anime":
+      return { base: knobs.upscale_base_credits_esrgan, perMp: knobs.upscale_per_mp_esrgan_anime, warmCap: knobs.upscale_warm_refund_esrgan };
+    case "swinir_l":
+      return { base: knobs.upscale_base_credits_swinir, perMp: knobs.upscale_per_mp_swinir, warmCap: knobs.upscale_warm_refund_swinir };
+    default:
+      return { base: knobs.upscale_base_credits_seedvr2, perMp: 0, warmCap: knobs.upscale_warm_refund_seedvr2 };
+  }
+}
+
+/** worker の INPUT_IMG_MAX_EDGE（入力は処理の前に長辺がこれ以下へ縮められる）。 */
+const UPSCALE_INPUT_MAX_EDGE = 2048;
+
+/** worker の _cascade_stage_targets と同じ: 入力の短辺から ×2 刻みで目標の短辺まで。各段の出力 MP を返す。 */
+export function seedvr2StageMPs(inW: number, inH: number, targetShort: number): number[] {
+  const long = Math.max(inW, inH);
+  const short = Math.min(inW, inH);
+  if (long <= 0 || short <= 0 || targetShort <= 0) return [];
+  const aspect = long / short;
+  const s0 = Math.round(short * Math.min(1, UPSCALE_INPUT_MAX_EDGE / long));
+  const targets: number[] = [];
+  if (s0 <= 0 || targetShort <= s0) {
+    targets.push(targetShort);
+  } else {
+    const n = Math.max(1, Math.ceil(Math.log2(targetShort / s0)));
+    let cur = s0;
+    for (let i = 0; i < n; i++) {
+      cur = Math.min(targetShort, cur * 2);
+      targets.push(cur);
+    }
+    targets[targets.length - 1] = targetShort;
+  }
+  return targets.map((t) => (t * t * aspect) / 1_000_000);
+}
+
+/** SeedVR2 の 1 枚の計算分: （段数 × 1 段の秒 ＋ 各段の出力 MP × 秒）× 時間倍率 × GPU 単価。 */
+function upscaleSeedvr2Credits(
+  model: UpscaleModel,
+  gpu: UpscaleImageGpu,
+  stageMPs: number[],
+  knobs: PricingKnobs,
+): number {
+  const sumMp = stageMPs.reduce((t, m) => t + m, 0);
+  const mult = (model.key === "seedvr2_7b_sharp" ? knobs.upscale_seedvr2_sharp_time_mult : 1) * (gpu === "B300" ? knobs.upscale_seedvr2_b300_time_mult : 1);
+  const seconds = (stageMPs.length * knobs.upscale_seedvr2_stage_s + sumMp * knobs.upscale_seedvr2_s_per_mp) * mult;
+  const rate = gpu === "B300" ? knobs.director_credits_per_gpu_s : knobs.director_credits_per_gpu_s_pro6000;
+  return seconds * rate;
+}
+
 /**
  * 純関数: 入力寸法 + モード + モデル + knob → 消費クレジット。
  * UI 表示と API 検証は必ずこれに同じ引数を渡す。入力寸法不明（0）は credits=0。
- * 8K も倍率モードも同じ式（`per_mp × 出力MP × モデル係数`）。
+ * 1 枚だけなら credits（基本料＋計算分）。まとめて出すときは upscaleBatchCredits（基本料は 1 回だけ）。
  */
 export function upscaleCostBreakdown(args: {
   inW: number;
@@ -295,21 +378,25 @@ export function upscaleCostBreakdown(args: {
   const knobs = args.knobs ?? DEFAULT_KNOBS;
   const model = getUpscaleModel(args.modelKey);
   const mode = effectiveUpscaleMode(getUpscaleMode(args.modeId), model);
+  const cascadeMult = cascadeCreditMultiplier(mode.cascadeStages, knobs);
 
   const { width, height } = estimateOutputSize(args.inW, args.inH, mode, model);
   const outputMP = (width * height) / 1_000_000;
 
   if (!args.inW || !args.inH || outputMP <= 0) {
+    const rates = upscaleImageRates(model, "RTX-PRO-6000", knobs);
     return {
       credits: 0,
+      baseCredits: 0,
+      perImageCredits: 0,
+      gpu: "RTX-PRO-6000",
       outputMP: 0,
       outputWidth: 0,
       outputHeight: 0,
       effectiveMult: 0,
-      perMp: knobs.upscale_per_mp,
-      modelMult: model.creditMult,
+      perMp: rates.perMp,
       cascadeStages: mode.cascadeStages,
-      cascadeMult: cascadeCreditMultiplier(mode.cascadeStages, knobs),
+      cascadeMult,
       clampedByMp: false,
     };
   }
@@ -321,19 +408,28 @@ export function upscaleCostBreakdown(args: {
   // なった」ときだけ。
   const clampedByMp = effectiveMult < mode.mult - 0.05;
 
-  const cascadeMult = cascadeCreditMultiplier(mode.cascadeStages, knobs);
-  const raw = Math.ceil(knobs.upscale_per_mp * outputMP * model.creditMult * cascadeMult);
-  const floor = Math.max(1, Math.round(knobs.upscale_min_credits));
-  const credits = Math.max(floor, raw);
+  const gpu = upscaleImageGpu(model, outputMP);
+  const rates = upscaleImageRates(model, gpu, knobs);
+  const baseCredits = Math.max(0, Math.ceil(rates.base));
+  const perImageCredits = Math.max(
+    1,
+    Math.ceil(
+      model.fixedScale
+        ? rates.perMp * outputMP
+        : upscaleSeedvr2Credits(model, gpu, seedvr2StageMPs(args.inW, args.inH, resolveTargetShort(args.inW, args.inH, mode, model)), knobs),
+    ),
+  );
 
   return {
-    credits,
+    credits: baseCredits + perImageCredits,
+    baseCredits,
+    perImageCredits,
+    gpu,
     outputMP,
     outputWidth: width,
     outputHeight: height,
     effectiveMult,
-    perMp: knobs.upscale_per_mp,
-    modelMult: model.creditMult,
+    perMp: rates.perMp,
     cascadeStages: mode.cascadeStages,
     cascadeMult,
     clampedByMp,
@@ -350,11 +446,34 @@ export function upscaleCredits(args: {
   return upscaleCostBreakdown(args).credits;
 }
 
-/** 寸法パース不能時の上限（HEIC 等）。最大 MP × 最悪カスケード係数(×8/3段)。 */
+/**
+ * まとめて出すときの料金: 基本料は 1 回だけ（先頭の 1 枚に乗せる。worker は同じ温まったコンテナで順番に処理する）。
+ * 返す perItem[i] がそのまま各ジョブ行の credits_cost。寸法が読めない 1 枚は worstCase を入れる。
+ */
+export function upscaleBatchCredits(
+  breakdowns: (UpscaleCostBreakdown | null)[],
+  knobs: PricingKnobs = DEFAULT_KNOBS,
+): { perItem: number[]; total: number } {
+  const worst = upscaleCreditsWorstCase(knobs);
+  const firstKnown = breakdowns.find((b) => b && b.credits > 0) ?? null;
+  const base = firstKnown ? firstKnown.baseCredits : 0;
+  let baseCharged = false;
+  const perItem = breakdowns.map((b) => {
+    if (!b || b.credits <= 0) return worst;
+    if (!baseCharged) {
+      baseCharged = true;
+      return base + b.perImageCredits;
+    }
+    return b.perImageCredits;
+  });
+  return { perItem, total: perItem.reduce((t, n) => t + n, 0) };
+}
+
+/** 寸法パース不能時の上限（HEIC 等）。B300 の基本料 ＋ 最大の出力を 3 段（入力 2048 → ×8 相当）で作る分。 */
 export function upscaleCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): number {
-  return Math.ceil(
-    knobs.upscale_per_mp * UPSCALE_MAX_OUTPUT_MP * knobs.upscale_cascade_mult_3stage,
-  );
+  const sharp = getUpscaleModel("seedvr2_7b_sharp");
+  const stageMPs = [UPSCALE_MAX_OUTPUT_MP / 16, UPSCALE_MAX_OUTPUT_MP / 4, UPSCALE_MAX_OUTPUT_MP];
+  return Math.ceil(knobs.upscale_base_credits_seedvr2_b300 + upscaleSeedvr2Credits(sharp, "B300", stageMPs, knobs));
 }
 
 // 実行中のジョブを待たず並列で今すぐ実行する場合の追加料金（既定の「順番待ち」

@@ -32,6 +32,8 @@ import {
 import { usePricingKnobs } from "@/hooks/usePricingKnobs";
 import { loadFormState, saveFormState } from "@/lib/studioFormPersistence";
 import { VramBadge } from "@/components/studio/VramBadge";
+import { WarmPriceHint } from "@/components/studio/WarmPriceHint";
+import { WarmRefundNote } from "@/components/studio/WarmRefundNote";
 import AutoDownloadToggle from "@/components/studio/AutoDownloadToggle";
 import GenerationCaveat from "@/components/studio/GenerationCaveat";
 import { armAutoDownload, runAutoDownload, takeAutoDownload } from "@/lib/autoDownload";
@@ -887,6 +889,7 @@ export function VideoFixTab() {
             </span>
             <span className="font-mono font-medium text-neon-pink">{quote ? `${cost} Credits` : "—"}</span>
           </div>
+          <WarmPriceHint />
           {quote && (
             <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
               作り直す: <span className="font-mono text-foreground">{fmtS(quote.regenStart / 24)}〜{quote.toEnd ? "最後" : fmtS(quote.regenEnd / 24)}</span>
@@ -1043,6 +1046,7 @@ export function VideoFixTab() {
                 <VramBadge gb={job.vramUsedGb} />
               </div>
             )}
+            <WarmRefundNote credits={job.warmRefundCredits} />
           </div>
         )}
         {actionError && <p className="text-xs text-red-400">{actionError}</p>}

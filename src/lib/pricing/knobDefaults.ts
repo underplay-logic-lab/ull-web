@@ -32,6 +32,7 @@ export type KnobKey =
   | "director_step_ref_tokens"
   | "director_step_exp"
   | "director_fixed_s"
+  | "director_warm_refund_s"
   | "director_fixed_s_per_mps"
   | "director_tokens_per_mps"
   | "director_ref_image_tokens"
@@ -51,17 +52,22 @@ export type KnobKey =
   | "director_extra_ref_rate"
   | "director_ref_video_rate"
   | "photo_director_base_credits"
+  | "photo_director_warm_refund_credits"
   | "video_fix_per_second"
   | "video_fix_max_window_s"
   | "video_fix_pro6000_max_mps"
   | "video_fix_h200_max_mps"
   | "song_base_credits"
+  | "song_warm_refund_credits"
+  | "song_credits_per_gpu_s"
   | "song_per_track_credits"
   | "song_per_track_credits_2"
   | "song_per_track_credits_3"
   | "song_priority_parallel_rate"
   | "song_priority_parallel_surcharge"
   | "face_swap_base_credits"
+  | "face_swap_warm_refund_credits"
+  | "face_swap_credits_per_gpu_s"
   | "face_swap_per_person_credits"
   | "face_swap_priority_parallel_rate"
   | "face_swap_priority_parallel_surcharge"
@@ -74,6 +80,22 @@ export type KnobKey =
   | "lora_priority_parallel_rate"
   | "lora_priority_parallel_surcharge"
   | "upscale_per_mp"
+  | "upscale_base_credits_seedvr2"
+  | "upscale_base_credits_seedvr2_b300"
+  | "upscale_base_credits_esrgan"
+  | "upscale_base_credits_swinir"
+  | "upscale_seedvr2_stage_s"
+  | "upscale_seedvr2_s_per_mp"
+  | "upscale_seedvr2_sharp_time_mult"
+  | "upscale_seedvr2_b300_time_mult"
+  | "upscale_per_mp_esrgan_x4"
+  | "upscale_per_mp_esrgan_anime"
+  | "upscale_per_mp_swinir"
+  | "upscale_warm_refund_seedvr2"
+  | "upscale_warm_refund_seedvr2_b300"
+  | "upscale_warm_refund_esrgan"
+  | "upscale_warm_refund_swinir"
+  | "upscale_image_guard_s_per_credit"
   | "upscale_min_credits"
   | "upscale_priority_parallel_surcharge"
   | "upscale_priority_parallel_rate"
@@ -84,6 +106,7 @@ export type KnobKey =
   | "upscale_video_per_frame"
   | "upscale_video_esrgan_base_credits"
   | "upscale_video_esrgan_per_frame"
+  | "upscale_video_esrgan_warm_refund_credits"
   | "upscale_video_min_credits"
   | "upscale_video_mult_res_2k"
   | "upscale_video_mult_res_4k"
@@ -213,6 +236,9 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   director_step_exp_small: 1.33,
   // 固定分（起動・読み込み・書き出し）= director_fixed_s + director_fixed_s_per_mps × 動画の MP·秒。
   director_fixed_s: 90,
+  // 温まり返金（2026-10-10）: 温まったコンテナで動いたら、実際にかかった秒数 × 単価で計算し直して差額を返す（src/lib/pricing/warmRefund.ts）。
+  // 各タブの「… warm_refund」はその上限（基本料のうち起動・読み込みの分）。Director はこの秒数 × その GPU の単価が上限。
+  director_warm_refund_s: 90,
   director_fixed_s_per_mps: 5.4,
   // 列の数: 動画 1 MP·秒あたり（540p×68 秒＝35.5 MP·秒で 245,820 列）・参照写真 1 枚・文章。
   director_tokens_per_mps: 6925,
@@ -295,9 +321,14 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 同日、内訳を実測で組み直し（ホストの 1 本のログ＋参照 9 枚の試験）: 起動・読み込み 約 117s（¥25）、1 枚 描画＋デコード 約 22s（¥4.7）。
   // ×3 ÷ 1.66 → 基本 45C・1 枚 9C（1 枚 54C・2 枚 63C・4 枚 81C・8 枚 117C）。1 枚から出せるようにした（PHOTO_COUNTS）。
   photo_director_base_credits: 45,
+  // 温まり返金の上限: 基本 45C（起動・読み込み 117 秒）。実際に返すのは実測の秒数で計算し直した差額（文章 AI の読み直しがあると減る）。
+  photo_director_warm_refund_credits: 45,
   // 曲づくり（2026-10-06）: 1 回の基本料＋1 曲ごと。原価 3.0×。L40S（¥331/h）・100 秒の曲で
   // 1 曲 24 秒 ≒ ¥2.2 ×3 ÷1.66 ≒ 4C、起動・読み込み 約 55 秒 ≒ ¥5 ×3 ÷1.66 ≒ 9C（docs/STATUS.md）。
   song_base_credits: 9,
+  // 温まり返金の上限: 基本 9C（起動・読み込み 55 秒）。精算の単価は L40S ¥331/h × 3 ÷ 1.66 ÷ 3600 ≒ 0.17 C/秒。
+  song_warm_refund_credits: 9,
+  song_credits_per_gpu_s: 0.17,
   // 1 曲ごと＝長さ別（2026-10-06）。声の無い曲（ハミングだけを含む）は自動で作り直すので、その見込みを含める。
   //   1 番（約 100 秒）: 20 秒 ≒ ¥1.84 × 作り直し込み 1.3 回 × 3 ÷ 1.66 ≒ 5C
   //   2 番（約 230 秒）: 43 秒 ≒ ¥4.0 × 2 回 × 3 ÷ 1.66 ≒ 15C（実測 6 回中 4 回が外れ）
@@ -312,6 +343,10 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 2026-10-09 実測（1MP・10 step・BF16、VRAM 33GB）: 冷えた状態から 1 人目の完了まで 55 秒、温まっていれば 1 人 12.5 秒。
   // 基本 = 起動・読み込みの 42 秒＋終わった後の待機 30 秒 = 72 秒 ≒ ¥9.1 ×3 ÷1.66 ≒ 17C、1 人 13 秒 ≒ ¥1.6 ×3 ÷1.66 ≒ 3C。
   face_swap_base_credits: 17,
+  // 温まり返金の上限: 基本 17C のうち読み込み 42 秒分（待機 30 秒分は残す）＝ 42 秒 × ¥0.126 × 3 ÷ 1.66 ≒ 10C。
+  // 精算の単価は RTX PRO 6000 ¥455/h × 3 ÷ 1.66 ÷ 3600 ≒ 0.23 C/秒。
+  face_swap_warm_refund_credits: 10,
+  face_swap_credits_per_gpu_s: 0.23,
   face_swap_per_person_credits: 3,
   face_swap_priority_parallel_rate: 1.0,
   face_swap_priority_parallel_surcharge: 50,
@@ -326,6 +361,33 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // B300 実測: 出力 ~5MP を warm ~20s / cold ~60s。3 C/MP で 2K プリセット
   // （~5MP）≈ 15C ≈ ¥25、cold 原価 ~¥19・warm ~¥6 → 黒字。
   upscale_per_mp: 3,
+  // 2026-10-10 組み替え（ホスト判断「実態に合わせた価格で良い・原価 × 3」）: 画像も他の機能と同じ「基本料（1 回）＋量に比例する分」へ。
+  // upscale_per_mp・upscale_min_credits・モデルの creditMult（画像分）は使わなくなった（DB 行は残置）。
+  // 実測（2026-10-10・同じ画像を冷え→温まりで 2 回・出力 5.6MP / 7.1MP）:
+  //   SeedVR2 7B（PRO 6000）冷え 62.0s・温まり 24.7s／sharp 54.7s・29.3s／Real-ESRGAN x4 26.9s・4.1s／アニメ 26.1s・3.0s／
+  //   SwinIR 35.2s・4.1s／SeedVR2 7B（B300）135.2s・42.1s。単価 PRO 6000 0.259 C/秒・B300 0.606 C/秒（原価 × 3 ÷ 1.66）。
+  // 基本料 =（冷え − 温まり ＋ 待機 30 秒）× 単価、1MP あたり = 温まりの秒/MP × 単価、温まり返金の上限 =（冷え − 温まり）× 単価。
+  upscale_base_credits_seedvr2: 17,
+  upscale_base_credits_seedvr2_b300: 75,
+  upscale_base_credits_esrgan: 14,
+  upscale_base_credits_swinir: 16,
+  // SeedVR2 は 1 段ごとの固定の時間が大きい（×4 で取りすぎた）→ GPU 秒 = 段数 × stage_s ＋ 各段の出力 MP の合計 × s_per_mp、料金 = GPU 秒 × 単価。
+  // 2 点の温まり実測（RTX PRO 6000: 5.6MP・1 段 24.7s／4096×6144・2 段 54.5s、呼び出しの往復 約 3 秒を除く）から stage 19.5s・0.40 s/MP。
+  // sharp は温まりで 29.3s / 24.7s ≒ 1.2 倍、B300 は 42.1s / 24.7s ≒ 1.7 倍（B300 は 26MP 超の大判だけ）。
+  upscale_seedvr2_stage_s: 19.5,
+  upscale_seedvr2_s_per_mp: 0.4,
+  upscale_seedvr2_sharp_time_mult: 1.2,
+  upscale_seedvr2_b300_time_mult: 1.7,
+  upscale_per_mp_esrgan_x4: 0.15,
+  upscale_per_mp_esrgan_anime: 0.11,
+  upscale_per_mp_swinir: 0.15,
+  upscale_warm_refund_seedvr2: 9,
+  upscale_warm_refund_seedvr2_b300: 56,
+  upscale_warm_refund_esrgan: 6,
+  upscale_warm_refund_swinir: 8,
+  // 画像の損切り: 1C あたりの許容秒数。新しい料金は 1C ≒ PRO 6000 の 3.9 秒分なので、旧 upscale_time_per_credit_s（DB 行 4）だと
+  // 実測ぎりぎりで止まる → 2 倍の 8 秒（CLAUDE.md §0「多めに」）。旧 knob は使わなくなった（DB 行は残置）。
+  upscale_image_guard_s_per_credit: 8,
   // 小さい出力（×2 等）でもコールドスタートを償却できる下限。
   upscale_min_credits: 8,
   // 2026-09-26 ホスト判断: LoRA も他タブと同じ「通常料金 × 率 + 固定」（合計 2 倍 + 50C）。
@@ -379,6 +441,8 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 20C で 10 秒 62C（原価 約 ¥25 の 4.2 倍）・68 秒 299C（約 ¥120 の 4.1 倍）。3.7 秒未満だけ HD の SeedVR2 が数 C 安い。
   upscale_video_esrgan_base_credits: 20,
   upscale_video_esrgan_per_frame: 0.17,
+  // 温まり返金の上限（2026-10-10）: 基本 20C は固定 約 30 秒＋待機 30 秒なので、読み込み分として半分。SeedVR2 の動画は基本料の部分が上限（warmRefund.ts）。
+  upscale_video_esrgan_warm_refund_credits: 10,
   upscale_video_min_credits: 20,
   // 2026-09-17 GPU tier切り替え（HD: L40S→RTX PRO 6000、2K: H200→RTX
   // PRO 6000）に伴い再計算（CLAUDE.md §1）。両プリセットとも同一GPUに

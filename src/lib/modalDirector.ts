@@ -1,4 +1,5 @@
 import "server-only";
+import { warmSettlePayload, type WarmSettle } from "@/lib/pricing/warmRefund";
 
 // ULL Cinematic Director のディスパッチ — modal_wan_animate_blackwell.py の
 // custom_workflow_async（プレーンな @app.function、GPU-less な即時 ACK
@@ -14,6 +15,8 @@ export type SpawnDirectorJobParams = {
   jobId: string;
   userId: string;
   creditsCost: number;
+  /** 温まり返金（2026-10-10）: 温まったコンテナで動いたら、ワーカーが実際の秒数で計算し直して差額を返す（src/lib/pricing/warmRefund.ts）。 */
+  warmSettle?: WarmSettle;
   workflow: Record<string, unknown>;
   referenceImageName: string;
   referenceImageB64: string;
@@ -85,6 +88,7 @@ export async function spawnDirectorJob(params: SpawnDirectorJobParams): Promise<
       job_id: params.jobId,
       user_id: params.userId,
       credits_cost: params.creditsCost,
+      ...(params.warmSettle ? { warm_settle: warmSettlePayload(params.warmSettle) } : {}),
       workflow_json: JSON.stringify(params.workflow),
       files_b64: {
         ...(params.referenceImageName ? { [params.referenceImageName]: params.referenceImageB64 } : {}),

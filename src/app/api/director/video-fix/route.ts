@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
+import { directorWarmSettle } from "@/lib/pricing/warmRefund";
 import {
   directorPollDeadlineS,
   directorPriorityParallelSurcharge,
@@ -318,6 +319,8 @@ export async function POST(request: Request) {
     storagePath: "",
     referenceImageName: "",
     creditsCost,
+    // 温まり返金（2026-10-10）: 比べる額は並列の追加料金を除いた通常料金。単価・上限は Director と同じ（同じワーカー・同じ GPU 単価）。
+    warmSettle: directorWarmSettle(quote.credits, gpu, knobs),
     workflow,
     pollDeadlineS: Math.min(3600, directorPollDeadlineS(quote.winSeconds, "fast") + 300),
     ...(gpu !== "B300" ? { gpu } : {}),

@@ -3,6 +3,7 @@ import { debitCredits, refundCredits } from "@/lib/credits.server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getOrCreateProfile } from "@/lib/profile";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
+import { faceSwapWarmSettle } from "@/lib/pricing/warmRefund";
 import { requireFeature, userFromBearer } from "@/lib/features.server";
 import { assertOwnedPath } from "@/lib/studioUploads.server";
 import {
@@ -129,7 +130,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "ジョブの作成に失敗しました。", remainingCredits: currentCredits }, { status: 500 });
   }
   const jobId = jobRow.id as string;
-  const spec: FaceSwapDispatchSpec = { creditsCost, seed, bodyPath, swaps, strength };
+  const spec: FaceSwapDispatchSpec = { creditsCost, seed, bodyPath, swaps, strength, warmSettle: faceSwapWarmSettle(baseCost, knobs) };
 
   if (queue) {
     try {

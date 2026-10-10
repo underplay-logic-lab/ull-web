@@ -2146,6 +2146,27 @@ v7 の中間チェックポイント 13 本（475MB × 13 = 6.2GB）を Modal �
 
 ---
 
+## 20. 画像の超解像: 冷えた起動と温まった状態（2026-10-10・料金の組み替えと温まり返金のため）
+
+同じ画像を、アプリのコンテナが 0 台の状態から 2 回続けて呼んだ（`run_upscale`・呼び出し側の合計秒。往復 約 3 秒を含む）。GPU 代 合計 約 ¥155。
+
+| モデル | GPU | 出力 | 冷え | 温まり | 差（起動・読み込み） | VRAM 最大 |
+|---|---|---|---|---|---|---|
+| SeedVR2 7B | RTX PRO 6000 | 2048×2730（5.6MP・1 段） | 62.0s | 24.7s | 37s | 20.7GB |
+| SeedVR2 7B sharp | RTX PRO 6000 | 同上 | 54.7s | 29.3s | 25s | 20.7GB |
+| Real-ESRGAN x4plus | RTX PRO 6000 | 2304×3072（7.1MP） | 26.9s | 4.1s | 23s | 4.5GB |
+| Real-ESRGAN アニメ | RTX PRO 6000 | 同上 | 26.1s | 3.0s | 23s | 4.5GB |
+| SwinIR | RTX PRO 6000 | 同上 | 35.2s | 4.1s | 31s | 7.1GB |
+| SeedVR2 7B | B300 | 2048×2730（5.6MP・1 段） | 135.2s | 42.1s | 93s | 20.9GB |
+| SeedVR2 7B（×4） | RTX PRO 6000 | 4096×6144（25.2MP・2 段） | 79.7s | 54.5s | 25s | **81.5GB** |
+
+- **B300 は RTX PRO 6000 より遅い**（温まりでも 42s 対 25s）→ SeedVR2 の静止画は**出力 26MP まで RTX PRO 6000**（worker `UPSCALE_IMAGE_RTX_MAX_MP`・Next `upscaleImageGpu`。
+  旧: 短辺 3840 まで）。25.2MP で 81.5GB / 96GB なので 26MP で約 12GB の余裕。
+- SeedVR2 は 1 段ごとの固定の時間が大きい: 2 点から 1 段 約 19.5 秒＋各段の出力 1MP あたり 約 0.40 秒（往復 3 秒を除く）。
+  「1MP あたりだけ」の式だと ×4 を 2.5 倍取りすぎる → 料金は段ごとの式（`upscaleSeedvr2Credits`）。
+- 料金（原価 × 3）: 基本料 =（冷え − 温まり ＋ 待機 30 秒）× 単価、温まり返金の上限 =（冷え − 温まり）× 単価。knob は `upscale_base_credits_*`・`upscale_warm_refund_*`・
+  `upscale_seedvr2_*`・`upscale_per_mp_esrgan_*/swinir`。
+
 ## CLAUDE.md から移した記録（2026-10-09・35KB の上限のため）
 
 Blackwell の実例（CLAUDE.md §1 から移動）: - ⚠️ **「Blackwellは常に最速」という思い込みを持たない。** Qwen-Image-Edit の A100 6倍退行、超解像2Kで B300 < H200、Multi-Angle で B300 のコールドだけ異常に重い等、世代通りの序列にならない実例が複数ある。GPU選定は必ず**1回あたりの実コスト（時間単価×所要時間）**で判断する。→ `docs/gpu-benchmarks.md`

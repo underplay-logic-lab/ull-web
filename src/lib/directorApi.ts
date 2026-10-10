@@ -11,6 +11,7 @@ import {
   type DirectorScene,
 } from "@/lib/directorPricing";
 import { isDirectorResolution, type DirectorResolution } from "@/lib/cinematicPricing";
+import { warmRefundOf } from "@/lib/warmRefundNote";
 
 /**
  * code "restricted"（2026-10-06）: 表現の制限がある AI に断られた（課金前）。画面は「制限を解除しますか？（+unrestrictedSurcharge C）」を出し、
@@ -641,6 +642,8 @@ export type DirectorJobStatus = {
   videoUrl: string | null;
   errorMessage: string | null;
   vramUsedGb: number | null;
+  /** 温まり返金（2026-10-10）: 温まったコンテナで動いて、完了時に返した額（無ければ null）。 */
+  warmRefundCredits: number | null;
   /** 出力解像度（route が生成時に metadata.out_width/out_height へ記録、2026-09-24〜）。 */
   outWidth: number | null;
   outHeight: number | null;
@@ -721,6 +724,7 @@ export async function pollDirectorJob(jobId: string): Promise<DirectorJobStatus>
     videoUrl: (data.videoUrl as string | null) ?? null,
     errorMessage: userFacingJobError((data.errorMessage as string | null) ?? null),
     vramUsedGb,
+    warmRefundCredits: warmRefundOf(data.metadata),
     outWidth: typeof meta.out_width === "number" ? meta.out_width : typeof data.outWidthIn === "number" ? data.outWidthIn : null,
     outHeight: typeof meta.out_height === "number" ? meta.out_height : typeof data.outHeightIn === "number" ? data.outHeightIn : null,
     combinedPrompt: (data.combinedPrompt as string | null) ?? null,

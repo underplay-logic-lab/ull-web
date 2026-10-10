@@ -6,6 +6,7 @@ import { getOrCreateProfile } from "@/lib/profile";
 import { dispatchUpscaleImage, type UpscaleImageSpec } from "@/lib/upscaleDispatch.server";
 import { advanceQueue, saveDispatchSpec } from "@/lib/studioQueue.server";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
+import { upscaleImageWarmSettle, type WarmSettle } from "@/lib/pricing/warmRefund";
 import { upscaleMaxAllowedTime } from "@/lib/pricing/costGuard.server";
 import { readImageDimensions } from "@/lib/imageDimensions";
 import { downloadStudioUpload, createStudioUploadSignedUrl } from "@/lib/studioUploads.server";
@@ -19,6 +20,7 @@ import {
   getUpscaleModel,
   resolveTargetShort,
   upscaleCostBreakdown,
+  upscaleImageRates,
   upscaleCreditsWorstCase,
   upscalePriorityParallelSurcharge,
 } from "@/lib/upscaleStudio";
@@ -156,6 +158,8 @@ export async function POST(request: Request) {
   let outWidth = 0;
   let outHeight = 0;
   let targetShort = 1920;
+  // 温まり返金（2026-10-10）: 寸法が読めたときだけ。比べる額は並列の追加料金を除いた通常料金（基本料＋この 1 枚）。
+  let warmSettle: WarmSettle | undefined;
   if (dims && dims.width > 0 && dims.height > 0) {
     const bd = upscaleCostBreakdown({
       inW: dims.width,
@@ -168,6 +172,7 @@ export async function POST(request: Request) {
     outWidth = bd.outputWidth;
     outHeight = bd.outputHeight;
     targetShort = resolveTargetShort(dims.width, dims.height, mode, model);
+    warmSettle = upscaleImageWarmSettle(bd.credits, bd.gpu, upscaleImageRates(model, bd.gpu, knobs).warmCap, knobs);
   } else {
     // 寸法が読めない形式（HEIC 等）。worst-case 課金で受け、worker が実寸法を
     // metadata に書く。
@@ -271,7 +276,10 @@ export async function POST(request: Request) {
       target_short: targetShort,
       max_resolution: mode.maxEdge,
       batch_size: 1,
+      // 動く GPU の判定（worker の _resolve_image_gpu_tier・料金の upscaleImageGpu と同じ規則）。寸法が読めないときは 0（短辺の規則）。
+      out_mp: Math.round(((outWidth * outHeight) / 1_000_000) * 100) / 100,
     },
+    warmSettle,
   };
 
   // --- 予約: 起動の引数を残して、順番が来ていればその場で起動 ----------------

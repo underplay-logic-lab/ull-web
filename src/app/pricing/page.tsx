@@ -4,7 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import { getPricingKnobs } from "@/lib/pricing/knobs.server";
 import type { PricingKnobs } from "@/lib/pricing/knobDefaults";
 import { angleCreditsPerAngle } from "@/lib/angleStudio";
-import { upscaleCredits, upscaleVideoCostBreakdown } from "@/lib/upscaleStudio";
+import { upscaleBatchCredits, upscaleCostBreakdown, upscaleCredits, upscaleVideoCostBreakdown } from "@/lib/upscaleStudio";
 import { directorEstimate, directorQwenScriptSurcharge } from "@/lib/directorPricing";
 import { guiLoraPricingConfig, loraPriceBreakdown } from "@/lib/loraPricing";
 import { autoLoraRankAlpha, autoLoraSteps } from "@/lib/loraCredits";
@@ -95,7 +95,7 @@ function buildSections(knobs: PricingKnobs) {
     },
     {
       title: "✨ 4K/8K 超解像（画像）",
-      lead: "出力の画素数に比例します。複数枚をまとめて処理でき、料金は 1 枚ずつの合計です。",
+      lead: "1 回の基本料（準備）＋出力の画素数に比例する分です。複数枚をまとめて処理すると、基本料は 1 回分だけで済みます。",
       rows: [
         {
           label: "1024×1536 → ×2（2048×3072）",
@@ -104,6 +104,14 @@ function buildSections(knobs: PricingKnobs) {
         {
           label: "1024×1536 → ×4（4096×6144）",
           credits: upscaleCredits({ inW: 1024, inH: 1536, modeId: "x4", modelKey: "seedvr2_7b", knobs }),
+        },
+        {
+          label: "1024×1536 → ×2 を 10 枚まとめて",
+          note: "基本料は 1 回分だけ",
+          credits: upscaleBatchCredits(
+            Array.from({ length: 10 }, () => upscaleCostBreakdown({ inW: 1024, inH: 1536, modeId: "x2", modelKey: "seedvr2_7b", knobs })),
+            knobs,
+          ).total,
         },
       ] as Row[],
     },
@@ -155,6 +163,10 @@ export default async function PricingPage() {
           円は 1 クレジットあたりが最も安い{CHEAPEST_PLAN.name}（¥{CHEAPEST_PLAN.priceYen.toLocaleString("ja-JP")} /{" "}
           {CHEAPEST_PLAN.credits.toLocaleString("ja-JP")}C）で換算した目安です。ほかのプランや都度チャージでは、これより高くなります。
           失敗した生成・学習のクレジットは返金されます。
+        </p>
+        <p className="mt-2 text-xs leading-relaxed text-muted">
+          表の金額と画面に出る金額は、初回（準備込み）の料金です。前の生成が終わってから 30 秒以内に続けて出すか、予約で順番に流すと、
+          準備がいらない分、実際にかかった時間で計算し直して差額をお返しします（学習は対象外）。続けて作るほど安くなります。
         </p>
 
         <div className="mt-12 space-y-10">
