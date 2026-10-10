@@ -36,9 +36,9 @@ export function isFaceSwapLayout(v: unknown): v is FaceSwapLayout {
 
 /** 似せる強さ（BFS の LoRA の強さ）。強いほど参照の顔・髪型に寄る。1.5 まで手元で崩れないのを確認済み（2026-10-09）。 */
 export const FACE_SWAP_STRENGTHS = [
-  { id: "weak", value: 1.0, label: "弱め", sub: "元の絵になじませる" },
+  { id: "weak", value: 1.0, label: "弱め", sub: "入れ替え先になじませる" },
   { id: "standard", value: 1.3, label: "標準", sub: "おすすめ" },
-  { id: "strong", value: 1.5, label: "強め", sub: "参照に寄せる" },
+  { id: "strong", value: 1.5, label: "強め", sub: "顔の画像に寄せる" },
 ] as const;
 export type FaceSwapStrengthId = (typeof FACE_SWAP_STRENGTHS)[number]["id"];
 export function faceSwapStrengthValue(id: unknown): number {
