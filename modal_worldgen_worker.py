@@ -18,10 +18,12 @@ ComfyUI を使わないワーカーなので、Python・torch は WorldGen の�
   PYTHONIOENCODING=utf-8 PYTHONUTF8=1 modal run modal_worldgen_worker.py::main --mode i2s --image room.png --out-dir <dir>
 """
 
+import io
 import os
 import pathlib
 import time
 
+import fastapi
 import modal
 
 app = modal.App("ull-worldgen")
@@ -111,7 +113,7 @@ image = (
     .pip_install(
         "diffusers>=0.33.1,<0.40", "transformers>=4.48.3,<5", "py360convert", "einops", "pillow", "scikit-image", "sentencepiece",
         "opencv-python-headless", "peft>=0.7.1", "open3d", "trimesh", "timm", "accelerate", "safetensors", "protobuf", "matplotlib",
-        "huggingface_hub[hf_transfer]", "requests", "loguru",
+        "huggingface_hub[hf_transfer]", "requests", "loguru", "fastapi[standard]",
         f"git+https://github.com/EasternJournalist/utils3d.git@{UTILS3D_COMMIT}",
     )
     .run_commands(
@@ -123,7 +125,7 @@ image = (
     )
     .run_function(_write_shims)
     .env({"HF_HOME": HF_HOME, "HF_HUB_ENABLE_HF_TRANSFER": "1", "PYTHONUNBUFFERED": "1"})
-    .add_local_python_source("ull_gpu_monitor")
+    .add_local_python_source("ull_gpu_monitor", "ull_r2")
 )
 
 
@@ -174,54 +176,191 @@ def precache() -> dict:
 
 
 @app.cls(image=image, gpu=GPU, volumes={MODELS_DIR: vol}, timeout=1800, scaledown_window=30, max_containers=2,
-         secrets=[modal.Secret.from_name("huggingface-worldgen")])
+         secrets=[modal.Secret.from_name("huggingface-worldgen"), modal.Secret.from_name("supabase-model-downloads"),
+                  modal.Secret.from_name("r2-artifacts")])
 class WorldGenRunner:
-    @modal.method()
-    def generate(self, mode: str, prompt: str = "", image_bytes: bytes | None = None, inpaint_bg: bool = True, resolution: int = 1600) -> dict:
-        """パノラマ（PNG）と 3DGS（.ply）を作って返す。"""
-        import io
-
-        import torch
-        from PIL import Image
-
+    @modal.enter()
+    def start(self):
         os.environ.setdefault("TORCH_HOME", f"{MODELS_DIR}/worldgen/torch")
         # HF_HUB_OFFLINE は付けない: diffusers の load_lora_weights はファイルのパスを渡してもオフラインだと weight_name を求めて止まる
         # （2026-10-10）。重みは precache で Volume の HF キャッシュに置いてあるので、ネットには取りに行かない（キャッシュに当たる）。
-        from ull_gpu_monitor import GpuMonitor
+        self.wg = None
+        self.mode = None
+
+    def _world(self, mode: str):
+        """モードごとの WorldGen を使い回す（文章からと画像からで FLUX が違う。両方は 96GB に載らないので切り替え時に捨てる）。"""
+        import gc
+
+        import torch
         from worldgen import WorldGen
 
+        if self.wg is not None and self.mode == mode:
+            return self.wg, 0.0
+        self.wg = None
+        gc.collect()
+        torch.cuda.empty_cache()
+        t0 = time.time()
+        wg = WorldGen(mode=mode, device=torch.device("cuda"), low_vram=False, inpaint_bg=True, resolution=1600)
+        try:
+            wg.pano_gen_model.to("cuda")  # bf16 のまま GPU に置く（WorldGen の既定は VRAM 節約の CPU との行き来）
+        except Exception as exc:  # noqa: BLE001
+            print(f"[worldgen] keep cpu offload: {exc!r}", flush=True)
+        self.wg, self.mode = wg, mode
+        return wg, time.time() - t0
+
+    def _make(self, mode: str, prompt: str, image_bytes: bytes | None) -> dict:
+        import torch
+        from PIL import Image
+
+        wg, load_s = self._world(mode)
+        t1 = time.time()
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB") if image_bytes else None
+        pano = wg.generate_pano(prompt=prompt, image=img)
+        pano_s = time.time() - t1
+        t2 = time.time()
+        with torch.inference_mode():
+            splat = wg._generate_world(pano)
+        splat_s = time.time() - t2
+        ply = f"/tmp/scene_{int(time.time() * 1000)}.ply"
+        splat.save(ply)
+        buf = io.BytesIO()
+        pano.save(buf, format="PNG")
+        print(f"[worldgen] {mode} load {load_s:.1f}s pano {pano_s:.1f}s splat {splat_s:.1f}s", flush=True)
+        return {"pano": buf.getvalue(), "ply_path": ply, "load_s": round(load_s, 1), "pano_s": round(pano_s, 1),
+                "splat_s": round(splat_s, 1), "width": pano.width, "height": pano.height}
+
+    @modal.method()
+    def generate(self, mode: str, prompt: str = "", image_bytes: bytes | None = None, inpaint_bg: bool = True, resolution: int = 1600) -> dict:
+        """試作用: パノラマ（PNG）と 3DGS（.ply）を返す（本番は run_job）。"""
+        from ull_gpu_monitor import GpuMonitor
+
         with GpuMonitor(f"worldgen {mode}") as mon:
-            t0 = time.time()
-            wg = WorldGen(mode=mode, device=torch.device("cuda"), low_vram=False, inpaint_bg=inpaint_bg, resolution=resolution)
-            # bf16 のまま GPU に置く（96GB に載る。WorldGen の既定は VRAM 節約のための CPU との行き来）
-            try:
-                wg.pano_gen_model.to("cuda")
-            except Exception as exc:  # noqa: BLE001
-                print(f"[worldgen] keep cpu offload: {exc!r}", flush=True)
-            load_s = time.time() - t0
-            t1 = time.time()
-            img = Image.open(io.BytesIO(image_bytes)).convert("RGB") if image_bytes else None
-            pano = wg.generate_pano(prompt=prompt, image=img)
-            pano_s = time.time() - t1
-            t2 = time.time()
-            with torch.inference_mode():
-                splat = wg._generate_world(pano)
-            splat_s = time.time() - t2
-            ply = "/tmp/scene.ply"
-            splat.save(ply)
-            buf = io.BytesIO()
-            pano.save(buf, format="PNG")
-        res = {
-            "pano": buf.getvalue(),
-            "ply": pathlib.Path(ply).read_bytes(),
-            "load_s": round(load_s, 1),
-            "pano_s": round(pano_s, 1),
-            "splat_s": round(splat_s, 1),
-            "vram_peak_gb": mon.peak_gb,
-        }
-        print(f"[worldgen] {mode} load {res['load_s']}s pano {res['pano_s']}s splat {res['splat_s']}s peak {mon.peak_gb}GB", flush=True)
+            res = self._make(mode, prompt, image_bytes)
+        res["ply"] = pathlib.Path(res.pop("ply_path")).read_bytes()
+        res["vram_peak_gb"] = mon.peak_gb
         return res
 
+    @modal.method()
+    def run_job(self, job: dict) -> dict:
+        """本番: 部屋を作り、パノラマ（PNG）と 3DGS（.ply）を R2 へ上げて generation_jobs を completed に。失敗は failed＋全額返金。
+        job: job_id / user_id / credits_cost / mode（t2s|i2s）/ prompt / image_path（i2s のとき studio_uploads の "<userId>/<file>"）。"""
+        job_id, user_id = job["job_id"], job["user_id"]
+        mode = "i2s" if job.get("mode") == "i2s" else "t2s"
+        _patch_job(job_id, {"status": "processing", "started_at": _now_iso(), "progress_message": "部屋を作っています"})
+        from ull_gpu_monitor import GpuMonitor
+
+        mon = GpuMonitor(f"worldgen {job_id[:8]}").__enter__()
+        try:
+            import ull_r2
+
+            if not ull_r2.r2_enabled():
+                raise RuntimeError("R2 is not enabled")
+            image_bytes = ull_r2.get_upload_bytes("studio_uploads", job["image_path"]) if mode == "i2s" else None
+            res = self._make(mode, str(job.get("prompt") or ""), image_bytes)
+            rel_png = f"worldgen_results/{user_id}/{job_id}.png"
+            rel_ply = f"worldgen_results/{user_id}/{job_id}.ply"
+            key_png, key_ply = ull_r2.key_for_rel(rel_png, user_id), ull_r2.key_for_rel(rel_ply, user_id)
+            ull_r2.put_bytes(res["pano"], key_png, content_type="image/png")
+            ull_r2.put_file(res["ply_path"], key_ply, content_type="application/octet-stream")
+            meta = {
+                "gpu_tier": job.get("gpu_label") or GPU,
+                "image_paths": [rel_png],
+                "ply_path": rel_ply,
+                "r2_keys": [rel_png, rel_ply],
+                "r2_key_map": {rel_png: key_png, rel_ply: key_ply},
+                "artifact_store": "r2",
+                "mode": mode,
+                "width": res["width"],
+                "height": res["height"],
+                "load_s": res["load_s"],
+                "pano_s": res["pano_s"],
+                "splat_s": res["splat_s"],
+            }
+            gb = _vram_used_gb()
+            if gb is not None:
+                meta["vram_used_gb"] = gb
+            mon.__exit__(None, None, None)
+            meta["vram_peak_gb"] = mon.peak_gb
+            _patch_job(job_id, {"status": "completed", "completed_at": _now_iso(), "progress_percent": 100, "metadata": meta})
+            return {"ok": True}
+        except Exception as exc:
+            print(f"[worldgen] job {job_id[:8]} failed: {exc!r}", flush=True)
+            mon.__exit__(None, None, None)
+            _patch_job(job_id, {"status": "failed", "error_message": str(exc)[:2000], "completed_at": _now_iso(),
+                                "metadata": {"gpu_tier": job.get("gpu_label") or GPU, "refunded": True, "vram_peak_gb": mon.peak_gb}})
+            _refund(user_id, int(job.get("credits_cost") or 0))
+            raise
+
+
+# --- 本番の受け口（顔入れ替えのワーカーと同じ作り） -------------------------------------------------
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _sb(method: str, path: str, **kw):
+    import requests
+
+    url, key = os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        raise RuntimeError("Supabase env not configured")
+    headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json", **kw.pop("headers", {})}
+    return requests.request(method, f"{url}{path}", headers=headers, timeout=10, **kw)
+
+
+def _patch_job(job_id: str, fields: dict) -> None:
+    """generation_jobs の 1 行を更新（3 回まで再試行・失敗しても止めない）。"""
+    for attempt in range(3):
+        try:
+            r = _sb("PATCH", "/rest/v1/generation_jobs", params={"id": f"eq.{job_id}"},
+                    json={**fields, "updated_at": _now_iso()}, headers={"Prefer": "return=minimal"})
+            if r.ok:
+                return
+            print(f"[worldgen] patch {job_id[:8]} HTTP {r.status_code}: {r.text[:200]}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[worldgen] patch {job_id[:8]} failed: {exc!r}", flush=True)
+        time.sleep(0.6 * (attempt + 1))
+
+
+def _refund(user_id: str, amount: int) -> None:
+    """失敗したジョブの全額返金。その場で足す（DB の refund_profile_credits）。"""
+    if not user_id or amount <= 0:
+        return
+    try:
+        r = _sb("POST", "/rest/v1/rpc/refund_profile_credits", json={"p_user_id": user_id, "p_amount": int(amount)})
+        if not r.ok:
+            raise RuntimeError(f"HTTP {r.status_code} {r.text[:200]}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[worldgen] refund {amount} to {user_id[:8]} failed: {exc!r}", flush=True)
+
+
+def _vram_used_gb():
+    """Active VRAM バッジ用（全系統 vram_used_gb で統一、CLAUDE.md §6-3）。"""
+    import subprocess
+
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True).stdout.strip().splitlines()
+        return round(float(out[0]) / 1024, 1) if out else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@app.function(image=image, cpu=1, memory=1024, scaledown_window=2, secrets=[modal.Secret.from_name("wan-animate-auth")])
+@modal.fastapi_endpoint(method="POST")
+def worldgen_async(item: dict, request: fastapi.Request):
+    """Next.js から呼ぶ受け口（GPU なし）: 認証して run_job を spawn し、すぐ返す。"""
+    import hmac
+
+    expected = os.environ.get("MODAL_AUTH_TOKEN", "")
+    provided = request.headers.get("x-modal-secret") or ""
+    if not expected or not hmac.compare_digest(provided, expected):
+        raise fastapi.HTTPException(status_code=401, detail="Unauthorized")
+    if not item.get("job_id") or not item.get("user_id") or item.get("mode") not in ("t2s", "i2s"):
+        raise fastapi.HTTPException(status_code=400, detail="job_id / user_id / mode are required")
+    if item["mode"] == "i2s" and not item.get("image_path"):
+        raise fastapi.HTTPException(status_code=400, detail="image_path is required for i2s")
+    call = WorldGenRunner().run_job.spawn({**item, "gpu_label": GPU})
+    return {"ok": True, "job_id": item["job_id"], "call_id": call.object_id}
 
 
 @app.local_entrypoint()

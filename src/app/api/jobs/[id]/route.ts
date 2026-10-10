@@ -206,19 +206,28 @@ export async function GET(request: Request, { params }: RouteParams) {
   const isPhoto = inputs?.output === "photo";
   // 顔入れ替え（2026-10-09）も同じ形（metadata.image_paths と r2_key_map）。
   const isFaceSwap = effJob.workflow_type === "face_swap";
+  // 背景づくり（WorldGen・2026-10-10）: 360 度パノラマは image_paths、3DGS は ply_path。
+  const isWorldgen = effJob.workflow_type === "worldgen";
   let imageUrls: string[] | null = null;
-  if ((isPhoto || isFaceSwap) && effJob.status === "completed") {
+  let plyUrl: string | null = null;
+  if ((isPhoto || isFaceSwap || isWorldgen) && effJob.status === "completed") {
     const meta = effJob.metadata as Record<string, unknown> | null;
     const paths = Array.isArray(meta?.image_paths) ? (meta.image_paths as unknown[]).filter((p): p is string => typeof p === "string") : [];
     const urls = await Promise.all(
       paths.map((p, i) =>
         presignPublishedArtifact(meta, p, {
           contentType: "image/png",
-          downloadName: `${isFaceSwap ? "faceswap" : "photo"}-${String(effJob.id).slice(0, 8)}-${i + 1}.png`,
+          downloadName: `${isFaceSwap ? "faceswap" : isWorldgen ? "room360" : "photo"}-${String(effJob.id).slice(0, 8)}-${i + 1}.png`,
         }),
       ),
     );
     imageUrls = urls.filter((u): u is string => Boolean(u));
+    if (isWorldgen && typeof meta?.ply_path === "string") {
+      plyUrl = await presignPublishedArtifact(meta, meta.ply_path, {
+        contentType: "application/octet-stream",
+        downloadName: `room360-${String(effJob.id).slice(0, 8)}.ply`,
+      });
+    }
   }
   // 曲づくり（2026-10-06）: 曲はワーカーが R2 へ上げ、metadata.audio_paths と r2_key_map を残す。歌詞・タイトルは inputs.plan。
   const isSong = effJob.workflow_type === "song";
@@ -290,6 +299,7 @@ export async function GET(request: Request, { params }: RouteParams) {
     refImageCount,
     output: isPhoto ? "photo" : inputs?.output === "video_fix" ? "video_fix" : null,
     imageUrls,
+    plyUrl,
     audioUrls,
     audioWavUrls,
     songTitle: typeof songPlan?.title === "string" ? songPlan.title : null,

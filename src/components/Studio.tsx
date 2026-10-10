@@ -9,6 +9,7 @@ import { PhotoDirectorTab } from "@/components/studio/PhotoDirectorTab";
 import { VideoFixTab } from "@/components/studio/VideoFixTab";
 import { SongStudioTab } from "@/components/studio/SongStudioTab";
 import { FaceSwapTab } from "@/components/studio/FaceSwapTab";
+import { WorldGenTab } from "@/components/studio/WorldGenTab";
 import { LoraStudioTab } from "@/components/studio/LoraStudioTab";
 import { MultiAngleStudioTab } from "@/components/studio/MultiAngleStudioTab";
 import { UpscaleStudioTab } from "@/components/studio/UpscaleStudioTab";
@@ -40,7 +41,8 @@ type StudioTab =
   | "video_fix"
   | "photo"
   | "song"
-  | "face_swap";
+  | "face_swap"
+  | "worldgen";
 
 // 2026-09-24: 特化ワークフローは admin だけに表示し、末尾へ寄せた（ホスト判断:
 // ComfyUI で作り込んだワークフローの展開先として用意したが、まだ効果的な
@@ -61,6 +63,8 @@ const STUDIO_TABS: { id: StudioTab; label: string; adminOnly?: boolean; feature?
   { id: "song", label: "🎵 曲づくり" },
   // 2026-10-09: 顔入れ替え（お客さん＝AI 漫画家の要望・ライセンス上の義務があるので許可制）。
   { id: "face_swap", label: "🔁 顔入れ替え", feature: "face_swap_head" },
+  // 2026-10-10: 背景づくり（360°）。非商用ライセンスのモデルを含むので許可制の限定公開。
+  { id: "worldgen", label: "🏠 背景づくり（360°）", feature: "worldgen_trial" },
   { id: "upscale_video", label: "🎬 4K動画超解像" },
   { id: "upscale", label: "✨ 4K/8K超解像" },
   { id: "angle", label: "🎭 マルチアングル" },
@@ -308,6 +312,11 @@ export function Studio() {
                 siteKey="studio_desc_face_swap"
                 fallback="入れ替え先の画像と、顔の画像を入れるだけ。顔と髪型を入れ替え、体・服・ポーズ・背景はそのまま残します。白黒の漫画にも使えます。"
               />
+            ) : activeTab === "worldgen" ? (
+              <EditableText
+                siteKey="studio_desc_worldgen"
+                fallback="どんな部屋かを書くだけで、360 度見回せる部屋を作ります。好きな向きで切り出せるので、同じ部屋を別のアングルで描く背景に使えます。"
+              />
             ) : activeTab === "lora" ? (
               <EditableText
                 siteKey="studio_desc_lora"
@@ -375,6 +384,8 @@ export function Studio() {
           <SongStudioTab />
         ) : shownTab === "face_swap" ? (
           <FaceSwapTab />
+        ) : shownTab === "worldgen" ? (
+          <WorldGenTab />
         ) : shownTab === "lora" ? null : (
           <ImageGenMaintenancePlaceholder />
         )}

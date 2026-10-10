@@ -331,6 +331,27 @@ const KNOB_TEXT: Record<KnobKey, Omit<KnobMeta, "value">> = {
     description: "実行中に並列で今すぐ作るときの固定の上乗せ。",
     isPublic: true,
   },
+  worldgen_credits: {
+    label: "背景づくり（360°）1 部屋",
+    category: "feature_credits",
+    unit: "C",
+    description: "文章または画像から 360 度の部屋を 1 つ作る料金（定額）。",
+    isPublic: true,
+  },
+  worldgen_priority_parallel_rate: {
+    label: "背景づくり 並列実行の上乗せ率",
+    category: "feature_credits",
+    unit: "×",
+    description: "実行中に並列で今すぐ作るときの上乗せ（通常料金 × これ）。",
+    isPublic: true,
+  },
+  worldgen_priority_parallel_surcharge: {
+    label: "背景づくり 並列実行の固定上乗せ",
+    category: "feature_credits",
+    unit: "C",
+    description: "実行中に並列で今すぐ作るときの固定の上乗せ。",
+    isPublic: true,
+  },
   video_fix_per_second: {
     label: "動画の部分修正（窓 1 秒あたり）",
     category: "feature_credits",

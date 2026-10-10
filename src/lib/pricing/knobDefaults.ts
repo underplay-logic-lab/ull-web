@@ -65,6 +65,9 @@ export type KnobKey =
   | "face_swap_per_person_credits"
   | "face_swap_priority_parallel_rate"
   | "face_swap_priority_parallel_surcharge"
+  | "worldgen_credits"
+  | "worldgen_priority_parallel_rate"
+  | "worldgen_priority_parallel_surcharge"
   | "photo_director_per_image_credits"
   | "lora_caption_base"
   | "lora_caption_per_image"
@@ -312,6 +315,11 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   face_swap_per_person_credits: 3,
   face_swap_priority_parallel_rate: 1.0,
   face_swap_priority_parallel_surcharge: 50,
+  // 背景づくり（WorldGen・2026-10-10・許可制）: 1 部屋ごとの定額。原価 3.0×。RTX PRO 6000（¥455/h ≒ ¥0.126/s）。
+  // 実測: 読み込み 15〜26 秒＋パノラマ 25〜29 秒＋3D 化 2 秒＋起動 約 20 秒＋終わった後の待機 30 秒 ≒ 110 秒 ≒ ¥14 ×3 ÷1.66 ≒ 25C。
+  worldgen_credits: 25,
+  worldgen_priority_parallel_rate: 1.0,
+  worldgen_priority_parallel_surcharge: 50,
   photo_director_per_image_credits: 9,
   // 超解像スタジオ（SeedVR2）: 出力の 100 万画素あたりの消費クレジット。
   // credits = max(upscale_min_credits, ceil(これ × 出力MP × モデル係数))。
