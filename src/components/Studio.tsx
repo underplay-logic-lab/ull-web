@@ -64,7 +64,8 @@ const STUDIO_TABS: { id: StudioTab; label: string; adminOnly?: boolean; feature?
   // 2026-10-09: 顔入れ替え（お客さん＝AI 漫画家の要望・ライセンス上の義務があるので許可制）。
   { id: "face_swap", label: "🔁 顔入れ替え", feature: "face_swap_head" },
   // 2026-10-10: 背景づくり（360°）。非商用ライセンスのモデルを含むので許可制の限定公開。
-  { id: "worldgen", label: "🏠 背景づくり（360°）", feature: "worldgen_trial" },
+  // 同日お蔵入り（ホスト「現時点では実用的ではない・言うとおりに生成しない」）。戻すときはこの行を戻すだけ（API・worker・migration は残っている）。
+  // { id: "worldgen", label: "🏠 背景づくり（360°）", feature: "worldgen_trial" },
   { id: "upscale_video", label: "🎬 4K動画超解像" },
   { id: "upscale", label: "✨ 4K/8K超解像" },
   { id: "angle", label: "🎭 マルチアングル" },

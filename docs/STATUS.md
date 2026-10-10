@@ -601,6 +601,8 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
    `LORA_ON_DEMAND_REPOS`（lora_worker_models.py）を学習の前に CPU で取得 → 使った日時を記録 → 毎日 `purge_unused_base_models` が 14 日たったものを消す。
    取得は「要るファイルだけ」の許可の一覧（`_REPO_ALLOW`）で、LTX-2 は 144→約 92GB・Krea-2-Raw 62→26GB・Klein 24→8GB 等。初回の片付けで 460.7GB 空けた。
    版の固定は未（GPU 側が main で読むため、固定するなら学習側もそろえる）。SDXL ワーカーのキャッシュ（hf_home_sdxl 28GB）は対象外のまま。
+   **（10-10）背景づくり（WorldGen）は お蔵入り**（ホスト「現時点では実用的ではない。言うとおりに生成しない」）。タブは Studio.tsx でコメントアウト（戻すのは 1 行）。
+   worker（ull-worldgen・使われなければ費用ゼロ）・API・migration・Volume の FLUX 2 つ（約 64GB）は残置。容量が要るときは /worldgen を消してよい。
    **（10-10）背景の統一感＝WorldGen を試作**（`modal_worldgen_worker.py`・未デプロイ・FLUX.1-dev は許可制の限定公開でリスク許容）: RTX PRO 6000・bf16 で
    1 本 1 分強（パノラマ 25 秒）・VRAM 35GB（文章から）／85GB（画像から）。文章からの部屋は統一感◎・出来良好だが**絵柄は写真**（作者の LoRA が実写パノラマ）。
    画像からは元の部屋が生かされない。手元の 5070 Ti は 8bit でも 24 分・出来も悪く不採用（手元の環境は削除済み）。ORB360（H3 の 360 度 LoRA）はキャラ◎・背景×。
