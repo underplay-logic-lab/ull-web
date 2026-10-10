@@ -1,7 +1,8 @@
 """温まり返金（2026-10-10）の共通部品。GPU ワーカー（顔入れ替え・曲・Director 系・超解像）が import する。
 
 送信時は今までどおり全額を引き、同じモデルを載せたままのコンテナで動いたら（続けて作った・予約の順番が来た）、完了時に
-「実際にかかった秒数 × 単価」で計算し直して差額を返す。上限は基本料のうち起動・読み込みの分。Next 側は src/lib/pricing/warmRefund.ts
+「実際にかかった秒数 × 単価」で計算し直して差額を返す。上限は基本料（起動・読み込み＋終わった後の待機 30 秒。
+続けて作ると前の回の待機は打ち切られて次の処理に使われるので待機分も戻す・2026-10-10 ホスト判断）。Next 側は src/lib/pricing/warmRefund.ts
 （warm_settle = {cap, compare_credits, credits_per_s} をジョブに載せる）。返した額は metadata.warm_refund_credits に残し、
 generation_logs の売上から差し引く（migration 20260902000000）。
 

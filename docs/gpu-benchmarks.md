@@ -2164,7 +2164,7 @@ v7 の中間チェックポイント 13 本（475MB × 13 = 6.2GB）を Modal �
   旧: 短辺 3840 まで）。25.2MP で 81.5GB / 96GB なので 26MP で約 12GB の余裕。
 - SeedVR2 は 1 段ごとの固定の時間が大きい: 2 点から 1 段 約 19.5 秒＋各段の出力 1MP あたり 約 0.40 秒（往復 3 秒を除く）。
   「1MP あたりだけ」の式だと ×4 を 2.5 倍取りすぎる → 料金は段ごとの式（`upscaleSeedvr2Credits`）。
-- 料金（原価 × 3）: 基本料 =（冷え − 温まり ＋ 待機 30 秒）× 単価、温まり返金の上限 =（冷え − 温まり）× 単価。knob は `upscale_base_credits_*`・`upscale_warm_refund_*`・
+- 料金（原価 × 3）: 基本料 =（冷え − 温まり ＋ 待機 30 秒）× 単価、温まり返金の上限 = 基本料（全機能で統一・ホスト判断 B）。knob は `upscale_base_credits_*`・`upscale_warm_refund_*`・
   `upscale_seedvr2_*`・`upscale_per_mp_esrgan_*/swinir`。
 
 ## CLAUDE.md から移した記録（2026-10-09・35KB の上限のため）

@@ -107,6 +107,8 @@ export type KnobKey =
   | "upscale_video_esrgan_base_credits"
   | "upscale_video_esrgan_per_frame"
   | "upscale_video_esrgan_warm_refund_credits"
+  | "upscale_video_startup_credits_pro6000"
+  | "upscale_video_startup_credits_b300"
   | "upscale_video_min_credits"
   | "upscale_video_mult_res_2k"
   | "upscale_video_mult_res_4k"
@@ -235,10 +237,12 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // （540p・10 秒・参照 9 枚＝式 57k 列: 式 5.5 秒／B300 実測 9.2 秒）。57k→9.2 秒・93k→17.9 秒（PRO 6000 ÷ 1.68）・266.8k→70 秒から 1.33。
   director_step_exp_small: 1.33,
   // 固定分（起動・読み込み・書き出し）= director_fixed_s + director_fixed_s_per_mps × 動画の MP·秒。
-  director_fixed_s: 90,
+  // 2026-10-10: 基本料は全機能「起動・読み込み ＋ 終わった後の待機 30 秒」に統一（ホスト判断 B）→ 起動 90 秒＋待機 30 秒 = 120。
+  director_fixed_s: 120,
   // 温まり返金（2026-10-10）: 温まったコンテナで動いたら、実際にかかった秒数 × 単価で計算し直して差額を返す（src/lib/pricing/warmRefund.ts）。
-  // 各タブの「… warm_refund」はその上限（基本料のうち起動・読み込みの分）。Director はこの秒数 × その GPU の単価が上限。
-  director_warm_refund_s: 90,
+  // 各タブの「… warm_refund」はその上限 = 基本料と同じ（起動・読み込み＋待機 30 秒。続けて作ると前の回の待機は打ち切られて使われるので、
+  // 待機分も戻す・ホスト判断 B）。Director はこの秒数 × その GPU の単価が上限。
+  director_warm_refund_s: 120,
   director_fixed_s_per_mps: 5.4,
   // 列の数: 動画 1 MP·秒あたり（540p×68 秒＝35.5 MP·秒で 245,820 列）・参照写真 1 枚・文章。
   director_tokens_per_mps: 6925,
@@ -320,14 +324,16 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 基本 25C は据え置き、1 枚 12C → 14C（4 枚 81C・6 枚 109C・8 枚 137C）。
   // 同日、内訳を実測で組み直し（ホストの 1 本のログ＋参照 9 枚の試験）: 起動・読み込み 約 117s（¥25）、1 枚 描画＋デコード 約 22s（¥4.7）。
   // ×3 ÷ 1.66 → 基本 45C・1 枚 9C（1 枚 54C・2 枚 63C・4 枚 81C・8 枚 117C）。1 枚から出せるようにした（PHOTO_COUNTS）。
-  photo_director_base_credits: 45,
-  // 温まり返金の上限: 基本 45C（起動・読み込み 117 秒）。実際に返すのは実測の秒数で計算し直した差額（文章 AI の読み直しがあると減る）。
-  photo_director_warm_refund_credits: 45,
+  // 2026-10-10: 待機 30 秒（H200 × 0.388 ≒ 12C）を足して 57（基本料の統一・ホスト判断 B）。
+  photo_director_base_credits: 57,
+  // 温まり返金の上限 = 基本料。実際に返すのは実測の秒数で計算し直した差額（文章 AI の読み直しがあると減る）。
+  photo_director_warm_refund_credits: 57,
   // 曲づくり（2026-10-06）: 1 回の基本料＋1 曲ごと。原価 3.0×。L40S（¥331/h）・100 秒の曲で
   // 1 曲 24 秒 ≒ ¥2.2 ×3 ÷1.66 ≒ 4C、起動・読み込み 約 55 秒 ≒ ¥5 ×3 ÷1.66 ≒ 9C（docs/STATUS.md）。
-  song_base_credits: 9,
-  // 温まり返金の上限: 基本 9C（起動・読み込み 55 秒）。精算の単価は L40S ¥331/h × 3 ÷ 1.66 ÷ 3600 ≒ 0.17 C/秒。
-  song_warm_refund_credits: 9,
+  // 2026-10-10: 待機 30 秒（L40S × 0.17 ≒ 5C）を足して 14（基本料の統一・ホスト判断 B）。
+  song_base_credits: 14,
+  // 温まり返金の上限 = 基本料。精算の単価は L40S ¥331/h × 3 ÷ 1.66 ÷ 3600 ≒ 0.17 C/秒。
+  song_warm_refund_credits: 14,
   song_credits_per_gpu_s: 0.17,
   // 1 曲ごと＝長さ別（2026-10-06）。声の無い曲（ハミングだけを含む）は自動で作り直すので、その見込みを含める。
   //   1 番（約 100 秒）: 20 秒 ≒ ¥1.84 × 作り直し込み 1.3 回 × 3 ÷ 1.66 ≒ 5C
@@ -343,9 +349,9 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 2026-10-09 実測（1MP・10 step・BF16、VRAM 33GB）: 冷えた状態から 1 人目の完了まで 55 秒、温まっていれば 1 人 12.5 秒。
   // 基本 = 起動・読み込みの 42 秒＋終わった後の待機 30 秒 = 72 秒 ≒ ¥9.1 ×3 ÷1.66 ≒ 17C、1 人 13 秒 ≒ ¥1.6 ×3 ÷1.66 ≒ 3C。
   face_swap_base_credits: 17,
-  // 温まり返金の上限: 基本 17C のうち読み込み 42 秒分（待機 30 秒分は残す）＝ 42 秒 × ¥0.126 × 3 ÷ 1.66 ≒ 10C。
+  // 温まり返金の上限 = 基本料 17C（読み込み 42 秒＋待機 30 秒・基本料の統一・ホスト判断 B）。
   // 精算の単価は RTX PRO 6000 ¥455/h × 3 ÷ 1.66 ÷ 3600 ≒ 0.23 C/秒。
-  face_swap_warm_refund_credits: 10,
+  face_swap_warm_refund_credits: 17,
   face_swap_credits_per_gpu_s: 0.23,
   face_swap_per_person_credits: 3,
   face_swap_priority_parallel_rate: 1.0,
@@ -366,7 +372,7 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 実測（2026-10-10・同じ画像を冷え→温まりで 2 回・出力 5.6MP / 7.1MP）:
   //   SeedVR2 7B（PRO 6000）冷え 62.0s・温まり 24.7s／sharp 54.7s・29.3s／Real-ESRGAN x4 26.9s・4.1s／アニメ 26.1s・3.0s／
   //   SwinIR 35.2s・4.1s／SeedVR2 7B（B300）135.2s・42.1s。単価 PRO 6000 0.259 C/秒・B300 0.606 C/秒（原価 × 3 ÷ 1.66）。
-  // 基本料 =（冷え − 温まり ＋ 待機 30 秒）× 単価、1MP あたり = 温まりの秒/MP × 単価、温まり返金の上限 =（冷え − 温まり）× 単価。
+  // 基本料 =（冷え − 温まり ＋ 待機 30 秒）× 単価、1MP あたり = 温まりの秒/MP × 単価、温まり返金の上限 = 基本料。
   upscale_base_credits_seedvr2: 17,
   upscale_base_credits_seedvr2_b300: 75,
   upscale_base_credits_esrgan: 14,
@@ -381,10 +387,11 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   upscale_per_mp_esrgan_x4: 0.15,
   upscale_per_mp_esrgan_anime: 0.11,
   upscale_per_mp_swinir: 0.15,
-  upscale_warm_refund_seedvr2: 9,
-  upscale_warm_refund_seedvr2_b300: 56,
-  upscale_warm_refund_esrgan: 6,
-  upscale_warm_refund_swinir: 8,
+  // 温まり返金の上限 = 基本料（起動・読み込み＋待機 30 秒・基本料の統一・ホスト判断 B）。
+  upscale_warm_refund_seedvr2: 17,
+  upscale_warm_refund_seedvr2_b300: 75,
+  upscale_warm_refund_esrgan: 14,
+  upscale_warm_refund_swinir: 16,
   // 画像の損切り: 1C あたりの許容秒数。新しい料金は 1C ≒ PRO 6000 の 3.9 秒分なので、旧 upscale_time_per_credit_s（DB 行 4）だと
   // 実測ぎりぎりで止まる → 2 倍の 8 秒（CLAUDE.md §0「多めに」）。旧 knob は使わなくなった（DB 行は残置）。
   upscale_image_guard_s_per_credit: 8,
@@ -441,8 +448,13 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   // 20C で 10 秒 62C（原価 約 ¥25 の 4.2 倍）・68 秒 299C（約 ¥120 の 4.1 倍）。3.7 秒未満だけ HD の SeedVR2 が数 C 安い。
   upscale_video_esrgan_base_credits: 20,
   upscale_video_esrgan_per_frame: 0.17,
-  // 温まり返金の上限（2026-10-10）: 基本 20C は固定 約 30 秒＋待機 30 秒なので、読み込み分として半分。SeedVR2 の動画は基本料の部分が上限（warmRefund.ts）。
-  upscale_video_esrgan_warm_refund_credits: 10,
+  // 温まり返金の上限（2026-10-10）= 基本料 20C（固定 約 30 秒＋待機 30 秒・基本料の統一・ホスト判断 B）。
+  upscale_video_esrgan_warm_refund_credits: 20,
+  // SeedVR2 の動画の起動分（2026-10-10・基本料の統一）: upscale_video_base_credits（DB 行 4.87）は計算時間の切片で、起動・読み込みと
+  // 待機が入っていなかった。画像の実測（同じモデル）から（冷え − 温まり ＋ 待機 30 秒）× 単価: PRO 6000 (37+30)×0.259 ≒ 17C、
+  // B300（4K）(93+30)×0.606 ≒ 75C。解像度・モデルの係数は掛けずに足す。温まり返金の上限もこれ。
+  upscale_video_startup_credits_pro6000: 17,
+  upscale_video_startup_credits_b300: 75,
   upscale_video_min_credits: 20,
   // 2026-09-17 GPU tier切り替え（HD: L40S→RTX PRO 6000、2K: H200→RTX
   // PRO 6000）に伴い再計算（CLAUDE.md §1）。両プリセットとも同一GPUに

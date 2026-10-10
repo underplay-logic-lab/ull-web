@@ -682,12 +682,12 @@ export function upscaleVideoCostBreakdown(args: {
   // フレーム比例分、に分離した式へ修正する。
   // Real-ESRGAN（固定倍率モデル）の動画は別の式（2026-10-09 ホスト了承）: 起動分の固定＋コマ比例。
   // RTX PRO 6000 実測: 1376×768×1,637 コマ → 4K で 787 秒（0.48 秒/コマ）＋起動 約 5 分＝約 ¥160。HD/2K/4K で時間はほぼ同じ。
+  // 2026-10-10: SeedVR2 は起動・読み込み＋待機 30 秒の分（upscaleVideoStartupCredits）を係数を掛けずに足す（基本料の統一）。
   const raw = model.fixedScale
     ? Math.ceil(knobs.upscale_video_esrgan_base_credits + knobs.upscale_video_esrgan_per_frame * frameCount)
     : Math.ceil(
-        (knobs.upscale_video_base_credits + knobs.upscale_video_per_frame * frameCount) *
-          model.creditMult *
-          resMult,
+        upscaleVideoStartupCredits(args.presetId, knobs) +
+          (knobs.upscale_video_base_credits + knobs.upscale_video_per_frame * frameCount) * model.creditMult * resMult,
       );
   const floor = Math.max(1, Math.round(knobs.upscale_video_min_credits));
   return {
@@ -702,10 +702,16 @@ export function upscaleVideoCostBreakdown(args: {
   };
 }
 
+/** SeedVR2 の動画の起動分（起動・読み込み＋待機 30 秒）。4K は B300、それ以外は RTX PRO 6000（worker の UPSCALE_VIDEO_PRESET_GPU）。 */
+export function upscaleVideoStartupCredits(presetId: string, knobs: PricingKnobs = DEFAULT_KNOBS): number {
+  return presetId === "4k" ? knobs.upscale_video_startup_credits_b300 : knobs.upscale_video_startup_credits_pro6000;
+}
+
 /** 動画の寸法申告が壊れている等で見積り不能なときの上限課金（最も重い4K想定）。 */
 export function upscaleVideoCreditsWorstCase(knobs: PricingKnobs = DEFAULT_KNOBS): number {
   return Math.ceil(
-    (knobs.upscale_video_base_credits + knobs.upscale_video_per_frame * UPSCALE_VIDEO_MAX_FRAMES) *
-      knobs.upscale_video_mult_res_4k,
+    knobs.upscale_video_startup_credits_b300 +
+      (knobs.upscale_video_base_credits + knobs.upscale_video_per_frame * UPSCALE_VIDEO_MAX_FRAMES) *
+        knobs.upscale_video_mult_res_4k,
   );
 }

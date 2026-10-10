@@ -628,6 +628,9 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
   SeedVR2 の計算分は段ごとの式（1 段 19.5 秒＋各段の出力 MP × 0.40 秒）× GPU 単価、出力 26MP まで RTX PRO 6000（旧: 短辺 3840）・超えたら B300。
   例: ×2 6.3MP 19C→23C／×4 25MP 99C→31C／×8 75MP 338C→180C／×2 を 10 枚 190C→77C／Real-ESRGAN 100 枚 1,900C→314C。実測は `docs/gpu-benchmarks.md` §20。
   損切りは新 knob `upscale_image_guard_s_per_credit` 8（旧 `upscale_time_per_credit_s` は DB 行 4 のまま未使用）。料金表・各タブに「表示は初回の料金・続けるか予約で安くなる」を追記。
+  **基本料の統一（ホスト判断 B）**: 全機能「基本料 = 起動・読み込み＋待機 30 秒、温まり返金の上限 = 基本料」（続けて作ると前の回の待機は打ち切られて使われるので待機分も戻す）。
+  足した分: Photo 45→57C／Director 固定 90→120 秒／曲 9→14C／動画の超解像 SeedVR2 に起動分 +17C（4K は +75C・knob `upscale_video_startup_credits_*`・DB の `upscale_video_base_credits` 4.87 は切片のまま）。
+  上限: 顔入れ替え 10→17C・Real-ESRGAN 動画 10→20C・画像の超解像は各基本料と同じ。
   **説明動画の案**（ホスト）: 「ばらばらに作るとこれだけ・30 秒以内に続けるか予約でまとめるとこれだけ」＝ULL Studio をお得に使うコツ。本番で返金を確かめてから作る。
 1. **顔入れ替え — 公開済み（作り直さない）。残りは本番の確認 1 本と、お客さんへの許可の付与だけ**（お客さん＝AI 漫画家の要望 1・詳細 `docs/face-swap-eval.md`）
    → **（10-09 夜）実装・実測・公開済み（845999b）**: ワーカー `modal_faceswap_worker.py`（デプロイ済み）・API `/api/studio/face-swap`・タブ `FaceSwapTab.tsx`（許可制）・

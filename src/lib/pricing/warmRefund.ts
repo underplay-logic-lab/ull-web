@@ -11,7 +11,8 @@ import type { DirectorGpu } from "@/lib/directorPricing";
  *
  * - compareCredits: 料金のうち時間で決まる部分（並列の追加料金を除いた通常料金）。
  * - creditsPerS: 1 秒あたりの単価（料金の元になっている単価そのもの）。
- * - cap: 返す上限（基本料のうち起動・読み込みの分）。見積もりより早く終わっても返しすぎない。
+ * - cap: 返す上限 = 基本料（起動・読み込み＋待機 30 秒・2026-10-10 ホスト判断 B）。続けて作ると前の回の待機は打ち切られて
+ *   次の処理に使われるので、待機分も戻す。見積もりより早く終わっても返しすぎない。
  * ワーカー: 温まっていたら min(cap, max(0, compareCredits − 実際の秒数 × creditsPerS)) を返す。失敗は全額返金なので関係しない。
  */
 export type WarmSettle = { cap: number; compareCredits: number; creditsPerS: number };
@@ -55,8 +56,8 @@ export function warmSettlePayload(w: WarmSettle): { cap: number; compare_credits
 }
 
 /**
- * 動画の超解像: SeedVR2 は「基本料＋コマ数」× モデル係数 × 解像度係数なので、上限は基本料の部分（同じ係数を掛けた分）。
- * Real-ESRGAN（固定倍率）は基本 20C に終わった後の待機も入っているので、上限は読み込み分の knob（既定 10C）。
+ * 動画の超解像: 上限は基本料（起動・読み込み＋待機 30 秒）。SeedVR2 は起動分の knob（upscale_video_startup_credits_*）、
+ * Real-ESRGAN（固定倍率）は基本 20C（knob upscale_video_esrgan_warm_refund_credits）。
  * 単価は実際に動く GPU（worker の UPSCALE_VIDEO_PRESET_GPU: HD/2K と Real-ESRGAN は RTX PRO 6000、SeedVR2 の 4K は B300）。
  */
 export function upscaleVideoWarmSettle(
@@ -64,9 +65,12 @@ export function upscaleVideoWarmSettle(
   knobs: PricingKnobs = DEFAULT_KNOBS,
 ): WarmSettle | undefined {
   const gpu: DirectorGpu = !args.fixedScale && args.presetId === "4k" ? "B300" : "RTX-PRO-6000";
+  // 上限 = 基本料（起動・読み込み＋待機 30 秒）。SeedVR2 は起動分の knob（4K は B300）。
   const cap = args.fixedScale
     ? knobs.upscale_video_esrgan_warm_refund_credits
-    : Math.ceil(knobs.upscale_video_base_credits * args.modelMult * args.resMult);
+    : args.presetId === "4k"
+      ? knobs.upscale_video_startup_credits_b300
+      : knobs.upscale_video_startup_credits_pro6000;
   return settle(cap, args.compareCredits, directorCreditsPerS(knobs, gpu));
 }
 
