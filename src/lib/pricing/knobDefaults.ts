@@ -66,6 +66,12 @@ export type KnobKey =
   | "song_priority_parallel_rate"
   | "song_priority_parallel_surcharge"
   | "face_swap_base_credits"
+  | "restyle_base_credits"
+  | "restyle_per_image_credits"
+  | "restyle_warm_refund_credits"
+  | "restyle_credits_per_gpu_s"
+  | "restyle_priority_parallel_rate"
+  | "restyle_priority_parallel_surcharge"
   | "face_swap_warm_refund_credits"
   | "face_swap_credits_per_gpu_s"
   | "face_swap_per_person_credits"
@@ -356,6 +362,15 @@ export const DEFAULT_KNOBS: PricingKnobs = {
   face_swap_per_person_credits: 3,
   face_swap_priority_parallel_rate: 1.0,
   face_swap_priority_parallel_surcharge: 50,
+  // 画風を変える（構図そのまま・2026-10-10・許可制）: Qwen-Image-2512 bf16＋Fun ControlNet Union＋言語化（Qwen3-VL 8B）。RTX PRO 6000（0.259 C/秒）。
+  // ⚠️ 仮の値（本番の実測前）: 基本 =（起動・読み込み 約 110 秒＋言語化 約 15 秒＋待機 30 秒）× 0.259 ≒ 40C、1 枚 = 40 step・cfg 4・1.6MP 約 75 秒 × 0.259 ≒ 20C。
+  // 実測が出たら直す（docs/STATUS.md）。温まり返金の上限 = 基本料。
+  restyle_base_credits: 40,
+  restyle_per_image_credits: 20,
+  restyle_warm_refund_credits: 40,
+  restyle_credits_per_gpu_s: 0.259,
+  restyle_priority_parallel_rate: 1.0,
+  restyle_priority_parallel_surcharge: 50,
   // 背景づくり（WorldGen・2026-10-10・許可制）: 1 部屋ごとの定額。原価 3.0×。RTX PRO 6000（¥455/h ≒ ¥0.126/s）。
   // 実測: 読み込み 15〜26 秒＋パノラマ 25〜29 秒＋3D 化 2 秒＋起動 約 20 秒＋終わった後の待機 30 秒 ≒ 110 秒 ≒ ¥14 ×3 ÷1.66 ≒ 25C。
   worldgen_credits: 25,

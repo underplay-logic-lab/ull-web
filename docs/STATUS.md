@@ -612,6 +612,13 @@ DB 適用前でもフォールバックで新しい値が使われ、古い価�
   5 本（blackwell／scripts の wan_animate／seedvr2／ace／faceswap）に `--disable-metadata`、VHS 使用の 3 本は送信時に `save_metadata=False`＋
   `VHS_MetadataImage=False`。過去に渡したファイルは戻せない。seed はファイル名ではなくジョブの記録（inputs.seed）に残る。
   **seed を利用者が固定・指定できる UI は未実装**（ホスト「後で検討」）。
+- **「画風を変える（構図そのまま）」タブを本番化中（2026-10-10・お客さんの一気通貫の本命・許可制 `restyle_trial`）**:
+  手元の 2.1 は**非商用**だったので、商用可（Apache-2.0）の **Qwen-Image-2512＋Fun ControlNet Union 2602＋言語化 Qwen3-VL 8B** でやり直し、手元 fp8 で同等以上を確認
+  （`D:\ComfyUI-ull\roomref\restyle2512.py`・出力 `q25_*`・20 step 70 秒）。Qwen2.5-VL は ComfyUI の TextGenerate で動かない（stop_tokens が無い）ので言語化は Qwen3-VL。
+  本番の Volume へ bf16 一式（約 79GB）を CPU で取得（`scripts/modal_precache_restyle.py`）。
+  実装: `src/lib/restyle{Pricing,Workflow,Api}.ts`・`/api/studio/restyle`・`RestyleTab.tsx`（標準 13 項目・予約・前の結果・温まり返金・結果を
+  マルチアングル／Photo Director（「場所」の参照写真）へ渡すボタン）。ジョブは Photo と同じ workflow_type "director"・inputs.output "restyle"・
+  blackwell の custom_workflow_async（image_outputs・RTX PRO 6000）。**料金は仮（基本 40C＋1 枚 20C）→ 本番で 1 回測って直す**。v0.35.1 も QwenFunControlNet・Qwen3-VL の generate に対応（ソースで確認）。
 - **温まり返金（2026-10-10・ホスト判断）**: 送信時は全額を引き、同じモデルが載ったままのコンテナで動いたら完了時に
   ワーカーが**実際の秒数 × 単価で計算し直して差額を返す**（上限は基本料の読み込み分: knob `*_warm_refund*` Photo 45C／Director 90 秒×GPU 単価／
   顔入れ替え 10C／曲 9C・単価 knob `face_swap_credits_per_gpu_s` 0.23／`song_credits_per_gpu_s` 0.17・`src/lib/pricing/warmRefund.ts`）。

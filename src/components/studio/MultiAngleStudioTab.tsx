@@ -77,6 +77,8 @@ import {
   sendLoraAdditions,
   STUDIO_TAB_EVENT,
   takeStudioBatchHandoff,
+  studioHandoffToFile,
+  takeStudioHandoff,
 } from "@/lib/studioHandoff";
 import {
   QueueChoiceModal,
@@ -794,6 +796,19 @@ export function MultiAngleStudioTab() {
     setImageError(null);
     setImage(file);
   }, []);
+
+  // 他のタブから渡された 1 枚（画風を変えた結果など・2026-10-10）をメイン画像に取り込む。取り出しは破壊的なので 1 回だけ。
+  const [handoffNotice, setHandoffNotice] = useState<string | null>(null);
+  useEffect(() => {
+    const h = takeStudioHandoff("image");
+    if (!h) return;
+    studioHandoffToFile(h)
+      .then((f) => {
+        handleImageSelected(f);
+        setHandoffNotice(h.source ? `${h.source}を取り込みました。` : "画像を取り込みました。");
+      })
+      .catch((e: unknown) => setImageError(e instanceof Error ? e.message : "取り込みに失敗しました。"));
+  }, [handleImageSelected]);
 
   // Multi-Reference（Pro）: サブ参照画像（死角補完・最大 MAX_SUB_REFERENCE_IMAGES）。
   // メイン画像と同じく File なので永続化しない。
@@ -1710,6 +1725,7 @@ export function MultiAngleStudioTab() {
             {imageError && (
               <p className="mt-1.5 text-[11px] text-red-400">{imageError}</p>
             )}
+            {handoffNotice && image && <p className="mt-1.5 text-[11px] text-emerald-500">{handoffNotice}</p>}
           </div>
 
           <SubReferenceSlots

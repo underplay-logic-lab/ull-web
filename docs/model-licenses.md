@@ -36,6 +36,15 @@ CLAUDE.md §5（商用利用・SaaS再頒布・地域制限の3点を満たす�
   §2b 商用は model-business@notice.qwencloud.com に申請。2026-10-04 に HF の LICENSE 原文で確認）。生成物の商用可否は明記なし →
   宣伝動画の素材にも使わない。**初代 Qwen-Image / Qwen-Image-Edit 2509・2511 は Apache-2.0 で可のまま**（2.1 で変わった）。
   性能は参照画像からの人物の保持が 2511 より明らかに上・1MP 40 step が 18 秒（ローカル int8、2511 は 102 秒）。
+- **画風を変える（構図そのまま・2026-10-10）で採用（すべて Apache-2.0・HF の cardData で確認）**: **Qwen-Image-2512**（`Qwen/Qwen-Image-2512`、
+  ComfyUI 用は `Comfy-Org/Qwen-Image_ComfyUI` の `qwen_image_2512_bf16`・`qwen_2.5_vl_7b`・`qwen_image_vae`）／
+  **Qwen-Image-2512 Fun ControlNet Union**（`alibaba-pai/Qwen-Image-2512-Fun-Controlnet-Union`・2602）／元画像の言語化に **Qwen3-VL 8B**（`Comfy-Org/Qwen3-VL`）。
+  2.1（非商用）で手元検証した手順を、商用可のこの組み合わせでやり直して同等以上を確認（`D:\ComfyUI-ull\roomref\restyle2512.py`）。線は ComfyUI 本体の Canny（モデルなし）。
+oomref
+estyle2512.py`）。線は ComfyUI 本体の Canny（モデルなし）。
+oomref
+estyle2512.py`）。線は ComfyUI 本体の Canny（モデルなし）。
+  奥行きを使うなら Depth Anything V2 は Small だけ（Base・Large は非商用）。
 - **`nvdiffrast` / `nvdiffrec`**（NVIDIA Source Code License = 非商用）。3Dレンダリングは商用可のものを使う: 3D Gaussian Splatting 出力を **`gsplat`（Apache-2.0）**、メッシュは PyTorch3D（BSD）/ Kaolin（Apache-2.0）。Inria版3DGSラスタライザ（`diff-gaussian-rasterization`）も研究用途限定で不可。
 
 **可（確認済み・商用OK）**

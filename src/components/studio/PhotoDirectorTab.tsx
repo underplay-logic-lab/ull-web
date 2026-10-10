@@ -14,7 +14,7 @@ import { ImageLightbox } from "./ImageLightbox";
 import { PromptLanguageSwitch } from "./PromptLanguageSwitch";
 import { HelpNote } from "./HelpNote";
 import { TopupActions } from "./TopupActions";
-import { RefPhotoPicker, type RefPhoto } from "./RefPhotoPicker";
+import { MAX_EXTRA_REF_PHOTOS, RefPhotoPicker, type RefPhoto } from "./RefPhotoPicker";
 import { RestrictedChoiceModal, UnrestrictedToggle } from "./RestrictedChoiceModal";
 import {
   DIRECTOR_ASPECTS,
@@ -47,7 +47,7 @@ import AutoDownloadToggle from "@/components/studio/AutoDownloadToggle";
 import GenerationCaveat from "@/components/studio/GenerationCaveat";
 import { armAutoDownload, runAutoDownload, takeAutoDownload } from "@/lib/autoDownload";
 import { advanceStudioQueue, cancelStudioQueue } from "@/lib/studioQueue";
-import { requestStudioBatchHandoff } from "@/lib/studioHandoff";
+import { requestStudioBatchHandoff, studioHandoffToFile, takeStudioHandoff } from "@/lib/studioHandoff";
 import { LoginModal } from "@/components/LoginModal";
 import { useSupabaseUser } from "@/hooks/useSupabaseUser";
 import { useProfileCredits, broadcastCreditsUpdate } from "@/hooks/useProfileCredits";
@@ -192,6 +192,17 @@ export function PhotoDirectorTab() {
   // 編集して作り直すときは、元のジョブの写真も欄へ読み戻す（外す・足す・役目を変えるのは普段どおり）。
   const [refsLoading, setRefsLoading] = useState(false);
   const [refsNotice, setRefsNotice] = useState<string | null>(null);
+  // 他のタブから渡された 1 枚（画風を変えた結果など・2026-10-10）は「場所」の参照写真として足す（キャラクターをその場所に置く流れ）。
+  useEffect(() => {
+    const h = takeStudioHandoff("image");
+    if (!h) return;
+    studioHandoffToFile(h)
+      .then((f) => {
+        setRefs((prev) => [...prev, { file: f, role: "place" as const }].slice(0, MAX_EXTRA_REF_PHOTOS));
+        setRefsNotice(`${h.source || "画像"}を「場所」の写真として追加しました。人物の写真を入れて、どんな 1 枚にしたいかを書いてください。`);
+      })
+      .catch((e: unknown) => setImageError(e instanceof Error ? e.message : "取り込みに失敗しました。"));
+  }, []);
   // 制限なしモード（2026-10-06）: 最初から選ぶスイッチと、断られたときの「解除しますか？」。
   const [unrestricted, setUnrestricted] = useState(false);
   // 絵柄（2026-10-06 夜）: 土台が実写寄りなので、アニメにしたいときは明示してもらう。

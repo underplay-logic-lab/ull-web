@@ -11,6 +11,10 @@ export const FEATURES = {
     label: "背景づくり（360°）",
     description: "文章や画像から 360 度の部屋を作る。非商用ライセンスのモデルを含むため、許可した人だけの限定公開。",
   },
+  restyle_trial: {
+    label: "画風を変える（構図そのまま）",
+    description: "元画像の構図だけ借りて、指定の画風で描き直す（お客さんの要望・料金の実測が済むまで許可制）。",
+  },
   qwen21_trial: {
     label: "Qwen Image 2.1 お試し",
     description: "非商用ライセンスのモデル。受注前のお試し・ワークフロー納品の検討用。",

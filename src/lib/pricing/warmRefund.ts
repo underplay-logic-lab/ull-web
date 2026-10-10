@@ -86,3 +86,8 @@ export function upscaleImageWarmSettle(
 ): WarmSettle | undefined {
   return settle(warmCap, compareCredits, directorCreditsPerS(knobs, gpu));
 }
+
+/** 画風を変える（2026-10-10）: 上限 = 基本料。単価は RTX PRO 6000。 */
+export function restyleWarmSettle(compareCredits: number, knobs: PricingKnobs = DEFAULT_KNOBS): WarmSettle | undefined {
+  return settle(knobs.restyle_warm_refund_credits, compareCredits, knobs.restyle_credits_per_gpu_s);
+}

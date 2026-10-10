@@ -9,6 +9,7 @@ import { PhotoDirectorTab } from "@/components/studio/PhotoDirectorTab";
 import { VideoFixTab } from "@/components/studio/VideoFixTab";
 import { SongStudioTab } from "@/components/studio/SongStudioTab";
 import { FaceSwapTab } from "@/components/studio/FaceSwapTab";
+import { RestyleTab } from "@/components/studio/RestyleTab";
 import { WorldGenTab } from "@/components/studio/WorldGenTab";
 import { LoraStudioTab } from "@/components/studio/LoraStudioTab";
 import { MultiAngleStudioTab } from "@/components/studio/MultiAngleStudioTab";
@@ -42,6 +43,7 @@ type StudioTab =
   | "photo"
   | "song"
   | "face_swap"
+  | "restyle"
   | "worldgen";
 
 // 2026-09-24: 特化ワークフローは admin だけに表示し、末尾へ寄せた（ホスト判断:
@@ -63,6 +65,8 @@ const STUDIO_TABS: { id: StudioTab; label: string; adminOnly?: boolean; feature?
   { id: "song", label: "🎵 曲づくり" },
   // 2026-10-09: 顔入れ替え（お客さん＝AI 漫画家の要望・ライセンス上の義務があるので許可制）。
   { id: "face_swap", label: "🔁 顔入れ替え", feature: "face_swap_head" },
+  // 2026-10-10: 画風を変える（構図そのまま）。お客さん（AI 漫画家）の要望。料金の実測が済むまで許可制。
+  { id: "restyle", label: "🖌️ 画風を変える", feature: "restyle_trial" },
   // 2026-10-10: 背景づくり（360°）。非商用ライセンスのモデルを含むので許可制の限定公開。
   // 同日お蔵入り（ホスト「現時点では実用的ではない・言うとおりに生成しない」）。戻すときはこの行を戻すだけ（API・worker・migration は残っている）。
   // { id: "worldgen", label: "🏠 背景づくり（360°）", feature: "worldgen_trial" },
@@ -183,7 +187,9 @@ export function Studio() {
         tab === "angle" ||
         tab === "dataset" ||
         tab === "director" ||
-        tab === "video_fix"
+        tab === "video_fix" ||
+        tab === "photo" ||
+        tab === "restyle"
       )
         goTab(tab);
     };
@@ -313,6 +319,11 @@ export function Studio() {
                 siteKey="studio_desc_face_swap"
                 fallback="入れ替え先の画像と、顔の画像を入れるだけ。顔と髪型を入れ替え、体・服・ポーズ・背景はそのまま残します。白黒の漫画にも使えます。"
               />
+            ) : activeTab === "restyle" ? (
+              <EditableText
+                siteKey="studio_desc_restyle"
+                fallback="写真や素材の画像を入れて、画風を選ぶだけ。配置はそのまま、アニメや漫画の絵柄で描き直します。できた絵は別の向きを作ったり、キャラクターと組み合わせたりできます。"
+              />
             ) : activeTab === "worldgen" ? (
               <EditableText
                 siteKey="studio_desc_worldgen"
@@ -385,6 +396,8 @@ export function Studio() {
           <SongStudioTab />
         ) : shownTab === "face_swap" ? (
           <FaceSwapTab />
+        ) : shownTab === "restyle" ? (
+          <RestyleTab />
         ) : shownTab === "worldgen" ? (
           <WorldGenTab />
         ) : shownTab === "lora" ? null : (

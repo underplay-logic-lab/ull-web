@@ -208,9 +208,11 @@ export async function GET(request: Request, { params }: RouteParams) {
   const isFaceSwap = effJob.workflow_type === "face_swap";
   // 背景づくり（WorldGen・2026-10-10）: 360 度パノラマは image_paths、3DGS は ply_path。
   const isWorldgen = effJob.workflow_type === "worldgen";
+  // 画風を変える（2026-10-10）: Photo Director と同じ形（workflow_type "director"・inputs.output "restyle"）。
+  const isRestyle = inputs?.output === "restyle";
   let imageUrls: string[] | null = null;
   let plyUrl: string | null = null;
-  if ((isPhoto || isFaceSwap || isWorldgen) && effJob.status === "completed") {
+  if ((isPhoto || isRestyle || isFaceSwap || isWorldgen) && effJob.status === "completed") {
     const meta = effJob.metadata as Record<string, unknown> | null;
     const paths = Array.isArray(meta?.image_paths) ? (meta.image_paths as unknown[]).filter((p): p is string => typeof p === "string") : [];
     const urls = await Promise.all(
@@ -297,7 +299,7 @@ export async function GET(request: Request, { params }: RouteParams) {
     outWidthIn,
     outHeightIn,
     refImageCount,
-    output: isPhoto ? "photo" : inputs?.output === "video_fix" ? "video_fix" : null,
+    output: isPhoto ? "photo" : isRestyle ? "restyle" : inputs?.output === "video_fix" ? "video_fix" : null,
     imageUrls,
     plyUrl,
     audioUrls,
