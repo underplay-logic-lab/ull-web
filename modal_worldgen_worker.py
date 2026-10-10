@@ -113,7 +113,7 @@ image = (
     .pip_install(
         "diffusers>=0.33.1,<0.40", "transformers>=4.48.3,<5", "py360convert", "einops", "pillow", "scikit-image", "sentencepiece",
         "opencv-python-headless", "peft>=0.7.1", "open3d", "trimesh", "timm", "accelerate", "safetensors", "protobuf", "matplotlib",
-        "huggingface_hub[hf_transfer]", "requests", "loguru", "fastapi[standard]",
+        "huggingface_hub[hf_transfer]", "requests", "loguru", "fastapi[standard]", "boto3>=1.35",
         f"git+https://github.com/EasternJournalist/utils3d.git@{UTILS3D_COMMIT}",
     )
     .run_commands(
