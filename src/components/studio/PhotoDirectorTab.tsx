@@ -281,6 +281,8 @@ export function PhotoDirectorTab() {
 
   const runGenerate = async (s: Snapshot, opts: { priority?: boolean } = {}) => {
     if (!user) return;
+    // 終わった後に続けて作るときも、直前の結果を「前の結果」に残す（2026-10-10 ホスト指摘「連続生成したら前のが消えた」）。
+    if (job?.status === "completed") setPeekId(job.jobId);
     setPhase("submitting");
     setErrorMessage(null);
     setActionError(null);

@@ -42,6 +42,8 @@ PANO_GEN_WIDTH = 2048
 # 混ぜる処理の終わる位置に段差と二重の物が出た（2026-10-10）→ 生成は既定に戻し、継ぎ目は出来上がってから FLUX Fill で描き直す（_fix_seam）。
 PANO_BLEND_EXTEND = 0
 PANO_STEPS = 50
+# 毎 step 半周回すと部屋が曲線になった（形が決まる前から回したため、2026-10-10）。形が決まってから 1 回だけ半周回し、残りの step で継ぎ目をなじませる。
+PANO_ROLL_AT = int(os.environ.get("WORLDGEN_ROLL_AT", "15"))
 # 継ぎ目（2026-10-10）: 後から帯を描き直す方法は、FLUX Fill は別の部屋を描き、LaMa は縦の筋が残って不可。
 # → 文章から作るときは、描いている途中で 1 step ごとに潜在を半周回す（左右の端が交互に真ん中に来て、つながった絵として描かれる）。
 #   50 step（偶数回）なので最後は元の向きに戻る。作者の「端だけ混ぜる」処理（blend_extend）は使わない（0）。
@@ -230,14 +232,19 @@ def _patch_seamless(wg) -> None:
 
 
 def _gen_pano_rolling(model, prompt="", seed=42, guidance_scale=7.0, num_inference_steps=PANO_STEPS, height=1024, width=2048,
-                      prefix="A high quality 360 panorama photo of", suffix="HDR, RAW, 360 consistent, omnidirectional", **_):
-    """WorldGen の gen_pano_image と同じ指示・設定で、1 step ごとに潜在を半周回しながら描く（継ぎ目を作らない）。"""
+                      prefix="A high quality 360 panorama photo of", suffix="HDR, RAW, 360 consistent, omnidirectional", roll_at=None, **_):
+    """WorldGen の gen_pano_image と同じ指示・設定で描き、roll_at step 目の後に 1 回だけ潜在を半周回す（継ぎ目が真ん中に来て、
+    残りの step でつながった絵になじむ）。最後の step の後に半周戻して元の向きにする。"""
     import torch
 
     h2, w2 = height // 16, width // 16  # 詰めた潜在（2×2 の塊）の縦横
 
+    k = PANO_ROLL_AT if roll_at is None else roll_at
+
     def roll(pipe, i, t, kw):
         lat = kw["latents"]
+        if i != k and i != num_inference_steps - 1:
+            return {"latents": lat}
         b, n, c = lat.shape
         return {"latents": lat.view(b, h2, w2, c).roll(w2 // 2, dims=2).reshape(b, n, c)}
 
@@ -311,13 +318,19 @@ class WorldGenRunner:
             self.esrgan = ModelLoader().load_from_file(ESRGAN_PATH).model.cuda().half().eval()
         return self.esrgan
 
-    def _make(self, mode: str, prompt: str, image_bytes: bytes | None) -> dict:
+    def _make(self, mode: str, prompt: str, image_bytes: bytes | None, roll_at: int | None = None) -> dict:
         import torch
         from PIL import Image
 
         wg, load_s = self._world(mode)
         t1 = time.time()
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB") if image_bytes else None
+        import functools
+
+        import worldgen.worldgen as wgm
+
+        if mode == "t2s":
+            wgm.gen_pano_image = functools.partial(_gen_pano_rolling, roll_at=roll_at)
         pano = wg.generate_pano(prompt=prompt, image=img)
         pano_s = time.time() - t1
         seam_s = 0.0
@@ -337,12 +350,13 @@ class WorldGenRunner:
                 "splat_s": round(splat_s, 1), "upscale_s": round(up_s, 1), "seam_s": round(seam_s, 1), "width": big.width, "height": big.height}
 
     @modal.method()
-    def generate(self, mode: str, prompt: str = "", image_bytes: bytes | None = None, inpaint_bg: bool = True, resolution: int = 1600) -> dict:
+    def generate(self, mode: str, prompt: str = "", image_bytes: bytes | None = None, inpaint_bg: bool = True, resolution: int = 1600,
+                 roll_at: int | None = None) -> dict:
         """試作用: パノラマ（PNG）と 3DGS（.ply）を返す（本番は run_job）。"""
         from ull_gpu_monitor import GpuMonitor
 
         with GpuMonitor(f"worldgen {mode}") as mon:
-            res = self._make(mode, prompt, image_bytes)
+            res = self._make(mode, prompt, image_bytes, roll_at)
         res["ply"] = pathlib.Path(res.pop("ply_path")).read_bytes()
         res["vram_peak_gb"] = mon.peak_gb
         return res
@@ -472,11 +486,12 @@ def worldgen_async(item: dict, request: fastapi.Request):
 
 
 @app.local_entrypoint()
-def main(mode: str = "t2s", prompt: str = "", image: str = "", out_dir: str = "./worldgen_out", inpaint_bg: bool = True):
+def main(mode: str = "t2s", prompt: str = "", image: str = "", out_dir: str = "./worldgen_out", inpaint_bg: bool = True, roll_at: int = -1):
     out = pathlib.Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     t = time.time()
-    res = WorldGenRunner().generate.remote(mode, prompt, pathlib.Path(image).read_bytes() if image else None, inpaint_bg)
+    res = WorldGenRunner().generate.remote(mode, prompt, pathlib.Path(image).read_bytes() if image else None, inpaint_bg, 1600,
+                                           None if roll_at < 0 else roll_at)
     (out / "pano.jpg").write_bytes(res.pop("pano"))
     (out / "scene.ply").write_bytes(res.pop("ply"))
     print(f"[main] wall {time.time() - t:.0f}s -> {out} {res}")
