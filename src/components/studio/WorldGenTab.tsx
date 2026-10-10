@@ -437,8 +437,7 @@ export function WorldGenTab() {
             />
             <div className="mt-1 flex items-start justify-between gap-2 text-[11px] leading-relaxed text-muted">
               <p>
-                部屋の種類 → 置きたい物の順に、短く書いてください。<b className="font-medium text-foreground">大事な物ほど先に</b>
-                （後ろに書いた物ほど出にくくなります）。
+                部屋の種類 → 置きたい物の順に、短く書いてください。大事な物から書くと出やすくなります。
               </p>
               <span className="shrink-0 text-[10px]">
                 {prompt.length} / {WORLDGEN_PROMPT_MAX_LENGTH}
@@ -504,7 +503,7 @@ export function WorldGenTab() {
           <ul className="mt-1 list-disc space-y-1 pl-4">
             <li>出来上がった部屋をドラッグで見回し、「この向きで保存」で背景用の画像を書き出せます。</li>
             <li>絵柄は写真寄りです。漫画の背景にするときは、クリスタの LT 変換などで線画・トーンにしてください。</li>
-            <li>説明は 150 文字まで。部屋の種類（リビング・教室・カフェなど）を最初に、続けて置きたい物を大事な順に並べると出やすくなります。</li>
+            <li>説明は 150 文字まで。部屋の種類（リビング・教室・カフェなど）を最初に、続けて置きたい物を書くと出やすくなります。</li>
             <li>雰囲気（夕方・散らかった・高級な など）も短く足せます。長い文章よりも、名詞を並べる方が効きます。</li>
             <li>「画像から」は、入れた画像の部屋がそのまま残るとは限りません（周りを含めて描き直されます）。</li>
           </ul>
