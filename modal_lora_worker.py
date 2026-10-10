@@ -120,6 +120,11 @@ from lora_worker_models import (  # noqa: F401
     _QWEN_IMAGE_HF_REPO,
     _QWEN_REPO_CRITICAL_FILES,
     _REPO_SNAPSHOT_IGNORE,
+    _snapshot_filter_kwargs,
+    _touch_last_used,
+    _last_used_epoch,
+    LORA_ON_DEMAND_REPOS,
+    LORA_ON_DEMAND_TTL_DAYS,
     _WAN_TOKENIZER_REPO,
     _ensure_minimax_h3_aux,
     _ensure_minimax_h3_weights,
@@ -1769,7 +1774,7 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
         # Repos where a ComfyUI single file already covers the heavy weights
         # (Qwen-Image transformer) are pulled config/other-components-only.
         ignore = _REPO_SNAPSHOT_IGNORE.get(repo)
-        ig_kw = {"ignore_patterns": ignore} if ignore else {}
+        ig_kw = _snapshot_filter_kwargs(repo)  # 除外＋許可の一覧（許可の一覧があるリポジトリは要るファイルだけ落とす、2026-10-10）
         # Qwen/Qwen-Image was already fully fetched + PHYSICALLY verified in the
         # dedicated block above; here it only gets the strict on-disk check
         # (never the lenient listing one that mistook the remnant for a hit).
@@ -1818,6 +1823,12 @@ def ensure_model_cached_cpu(model_arch: str, custom_model_id: str = "") -> dict:
                 "repo": repo,
                 "error": f"{repo}: not fully cached after 3 download passes ({last_err})",
             }
+
+    # 14 日の片付け用に「使った日時」を記録（取得した・既にあった、どちらも。2026-10-10）。下の commit で永続化される。
+    try:
+        _touch_last_used(repos)
+    except Exception as exc:  # noqa: BLE001 — 記録の失敗で学習は止めない
+        print(f"[cache] last-used touch skipped: {exc}", flush=True)
 
     # ALWAYS commit right after the download loop — the GPU only sees Volume
     # state that was explicitly committed here, so this is the single line that
@@ -3151,6 +3162,67 @@ def salvage_lora_job(data: dict, request: fastapi.Request):
         "image_files": image_count,
         "checkpoints": checkpoints,
     }
+
+
+@app.function(
+    image=dispatch_image,
+    volumes={MODELS_DIR: vol},
+    schedule=modal.Period(days=1),
+    timeout=1800,
+    scaledown_window=2,
+    secrets=[modal.Secret.from_name("supabase-model-downloads")],
+)
+def purge_unused_base_models(dry_run: bool = False, ttl_days: int = LORA_ON_DEMAND_TTL_DAYS) -> dict:
+    """毎日: LoRA 専用のベースモデル（LORA_ON_DEMAND_REPOS）のうち、最後に使ってから ttl_days 日たったものを HF キャッシュから消す
+    （2026-10-10 ホスト判断「使うときに落とし、14 日使われなければ消す」）。使った日時は ensure_model_cached_cpu が記録する。
+    記録が無いもの＝この仕組みができてから一度も使われていないものも消す。次に使うときは、学習の前に CPU で自動で落とし直す。
+    名指しの一覧の外（Multi-Angle 等が共有するもの）は絶対に消さない。LoRA の学習が動いている・待っている間は何も消さない。
+
+      modal run modal_lora_worker.py::purge_unused_base_models --dry-run   # 消す候補と容量を表示するだけ
+    """
+    # 1. LoRA の学習が動いている・待っている間はやめる（使っている最中のモデルを消さない）
+    try:
+        r = _supabase_request(
+            "GET", "/rest/v1/generation_jobs",
+            params={"select": "id", "workflow_type": "eq.lora_training", "status": "in.(queued,processing)", "limit": "1"},
+        )
+        if r is None or not r.ok:
+            print(f"[base-ttl] could not check active LoRA jobs ({getattr(r, 'status_code', None)}) — skipping", flush=True)
+            return {"ok": False, "skipped": "job check failed"}
+        if r.json():
+            print("[base-ttl] a LoRA job is queued/processing — skipping today", flush=True)
+            return {"ok": True, "skipped": "active job"}
+    except Exception as exc:  # noqa: BLE001
+        print(f"[base-ttl] job check error: {exc!r} — skipping", flush=True)
+        return {"ok": False, "skipped": "job check error"}
+
+    try:
+        vol.reload()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[base-ttl] vol.reload skipped: {exc}", flush=True)
+
+    now = time.time()
+    removed, kept, freed = [], [], 0
+    for repo in LORA_ON_DEMAND_REPOS:
+        d = pathlib.Path(HF_HUB_CACHE_DIR) / ("models--" + repo.replace("/", "--"))
+        if not d.is_dir():
+            continue
+        last = _last_used_epoch(repo)
+        age_days = None if last is None else (now - last) / 86400
+        if age_days is not None and age_days < ttl_days:
+            kept.append(f"{repo} ({age_days:.1f}d)")
+            continue
+        size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file() and not f.is_symlink())
+        print(f"[base-ttl] {'(dry-run) ' if dry_run else ''}remove {repo} — {size / 1e9:.1f}GB, last used "
+              f"{'never (since tracking)' if age_days is None else f'{age_days:.1f}d ago'}", flush=True)
+        if not dry_run:
+            shutil.rmtree(d, ignore_errors=True)
+        removed.append(repo)
+        freed += size
+    if removed and not dry_run:
+        vol.commit()
+    print(f"[base-ttl] done: removed {len(removed)} ({freed / 1e9:.1f}GB){' [dry-run]' if dry_run else ''}, kept {kept}", flush=True)
+    return {"ok": True, "dry_run": dry_run, "removed": removed, "freed_gb": round(freed / 1e9, 1), "kept": kept}
 
 
 @app.function(

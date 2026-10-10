@@ -93,6 +93,91 @@ _REPO_SNAPSHOT_IGNORE: dict[str, list[str]] = {
     ],
 }
 
+# snapshot_download の「要るファイルだけ」の許可の一覧（2026-10-10）。除外の一覧だけだと、配布元が後から大きなファイル
+# （別の精度の単体ファイル等）を足したとき、次の自動取得でそれも落としてしまう（LTX-2 で 159GB を落とした前例）。
+# 許可の一覧があるリポジトリは、ここに無いファイルは落とさない（除外の一覧と併用可）。読むファイルは本番イメージの
+# ai-toolkit（be99518・2026-08-29）で確認済み。⚠️ ai-toolkit を上げたら読み方が変わっていないか確かめること。
+_REPO_ALLOW: dict[str, list[str]] = {
+    # LTX-2: Diffusers サブフォルダ側を読む（直下の 19B 単体ファイル群は不要）。TE は transformers の from_pretrained
+    # （Gemma3TextEncoder → model.safetensors.index.json → model-*）なので、同じ中身の diffusion_pytorch_model-*（51.6GB）は不要。
+    "Lightricks/LTX-2": [
+        "model_index.json",
+        "scheduler/*",
+        "tokenizer/*",
+        "transformer/*",
+        "text_encoder/config.json",
+        "text_encoder/generation_config.json",
+        "text_encoder/model*",
+        "vae/*",
+        "audio_vae/*",
+        "connectors/*",
+        "vocoder/*",
+    ],
+    # Krea 2: 本体は直下の raw.safetensors を読む（name_or_path の末尾 "Raw" → "raw.safetensors"）。
+    # transformer/（同じ 26GB）・text_encoder/（TE は Qwen/Qwen3-VL-4B-Instruct から）・vae/（Qwen/Qwen-Image から）は不要。
+    "krea/Krea-2-Raw": ["model_index.json", "raw.safetensors"],
+    # FLUX.2 Klein 4B: 本体は直下の単体ファイル（flux2_te_filename）。TE は Qwen/Qwen3-4B、VAE は ai-toolkit/flux2_vae。
+    "black-forest-labs/FLUX.2-klein-base-4B": ["model_index.json", "flux-2-klein-base-4b.safetensors"],
+    # SDXL（Diffusers 形式で読む）: 直下の単体ファイル（13.9GB／7.1GB）は不要。
+    "OnomaAIResearch/Illustrious-xl-early-release-v0": [
+        "model_index.json", "scheduler/*", "tokenizer/*", "tokenizer_2/*", "text_encoder/*", "text_encoder_2/*", "unet/*", "vae/*",
+    ],
+    "RunDiffusion/Juggernaut-XL-v9": [
+        "model_index.json", "scheduler/*", "tokenizer/*", "tokenizer_2/*", "text_encoder/*", "text_encoder_2/*", "unet/*", "vae/*",
+    ],
+}
+
+
+def _snapshot_filter_kwargs(repo_id: str) -> dict:
+    """snapshot_download（取得・揃っているかの判定の両方）に渡す ignore_patterns / allow_patterns。"""
+    kw: dict = {}
+    if _REPO_SNAPSHOT_IGNORE.get(repo_id):
+        kw["ignore_patterns"] = _REPO_SNAPSHOT_IGNORE[repo_id]
+    if _REPO_ALLOW.get(repo_id):
+        kw["allow_patterns"] = _REPO_ALLOW[repo_id]
+    return kw
+
+
+# 使うときに落とし、最後に使ってから 14 日で片付けるベースモデル（2026-10-10 ホスト判断）。LoRA 専用のリポジトリだけを名指しする
+# （同じ HF キャッシュを Multi-Angle 等も使うので、名指し以外は絶対に消さない）。ずっと残すのは minimax_h3（Volume の単一ファイル）と
+# WAI Illustrious（diffusion_models/ の単一ファイル）で、どちらも HF キャッシュの外にあるのでここには載らない。
+LORA_ON_DEMAND_REPOS: tuple[str, ...] = (
+    "ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16",
+    "ai-toolkit/umt5_xxl_encoder",
+    "ai-toolkit/wan2.1-vae",
+    "Lightricks/LTX-2",
+    "black-forest-labs/FLUX.2-klein-base-4B",
+    "Qwen/Qwen3-4B",
+    "ai-toolkit/flux2_vae",
+    "krea/Krea-2-Raw",
+    "Qwen/Qwen3-VL-4B-Instruct",
+    "Qwen/Qwen-Image",
+    "Tongyi-MAI/Z-Image-Turbo",
+    "circlestone-labs/Anima-Base-v1.0-Diffusers",
+    "OnomaAIResearch/Illustrious-xl-early-release-v0",
+    "RunDiffusion/Juggernaut-XL-v9",
+)
+LORA_ON_DEMAND_TTL_DAYS = 14
+_LAST_USED_DIR = f"{HF_HUB_CACHE_DIR}/../_last_used"
+
+
+def _touch_last_used(repos) -> None:
+    """ジョブがベースモデルを使った（取得した・既にあった）日時を記録する。14 日の片付けはこれを見る。commit は呼び出し側。"""
+    d = pathlib.Path(_LAST_USED_DIR)
+    d.mkdir(parents=True, exist_ok=True)
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    for r in repos:
+        if r in LORA_ON_DEMAND_REPOS:
+            (d / ("models--" + r.replace("/", "--"))).write_text(now, encoding="utf-8")
+
+
+def _last_used_epoch(repo_id: str) -> float | None:
+    p = pathlib.Path(_LAST_USED_DIR) / ("models--" + repo_id.replace("/", "--"))
+    try:
+        return time.mktime(time.strptime(p.read_text(encoding="utf-8").strip(), "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
+    except Exception:  # noqa: BLE001 — 記録が無い／壊れている＝「この仕組みができてから使われていない」
+        return None
+
 # The exact files ai-toolkit's qwen_image loader physically opens from the
 # Qwen/Qwen-Image Diffusers snapshot (tokenizer + Qwen2.5-VL text encoder +
 # VAE + scheduler + the diffusers configs). snapshot_download's own
@@ -442,6 +527,8 @@ def _repo_cache_complete(repo_id: str, ignore_patterns: list[str] | None = None)
     except Exception:  # noqa: BLE001
         return False
     kw = {"ignore_patterns": ignore_patterns} if ignore_patterns else {}
+    if _REPO_ALLOW.get(repo_id):
+        kw["allow_patterns"] = _REPO_ALLOW[repo_id]
     try:
         snapshot_download(repo_id=repo_id, local_files_only=True, **kw)
         return True

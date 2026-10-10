@@ -28,6 +28,10 @@ CLAUDE.md §5（商用利用・SaaS再頒布・地域制限の3点を満たす�
   TE `Huihui-Qwen3-VL-4B-Instruct-abliterated`（Apache-2.0。Krea とは別のモデルの差し替えなので §4.1(c) には当たらない）。
   **⚠️ `uzumix/krea2filterbypass3`（ライセンス記載なし・中身は txtfusion.projector の 12 値）**: turbo の抑制を外して咥えている構図の口元を保つ。
   Krea 2 Community License §4.1(c)「security, usage restrictions … を回避・除去しない」に抵触し得る → **ホストがリスク許容（2026-10-09）**。
+- **WorldGen（`ZiYang-xie/WorldGen`・Apache-2.0、2026-10-10 確認）**: 画像・文章 → 360 度パノラマ → 3DGS。後半は商用可（奥行き DA-2・Apache-2.0／
+  切り分け OneFormer ADE20k・MIT／穴埋め LaMa・Apache-2.0／作者の LoRA `LeoXie/WorldGen`・Apache-2.0）。実験的な ml-sharp（Apple）は使わない。
+  **⚠️ パノラマの段が FLUX.1-dev／FLUX.1-Fill-dev（非商用）**。上の「不可」に当たるが、**許可制の限定公開としてホストがリスク許容（2026-10-10）**。
+  料金は通常どおり（試してもらう分のクレジットはホストが裏で付与）。一般公開はしない。
 - **Qwen-Image 2.1（`Qwen/Qwen-Image-2.1`）**: **Qwen Research License = 非商用のみ**（§2a "FOR NON-COMMERCIAL PURPOSES ONLY"、
   §2b 商用は model-business@notice.qwencloud.com に申請。2026-10-04 に HF の LICENSE 原文で確認）。生成物の商用可否は明記なし →
   宣伝動画の素材にも使わない。**初代 Qwen-Image / Qwen-Image-Edit 2509・2511 は Apache-2.0 で可のまま**（2.1 で変わった）。
