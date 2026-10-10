@@ -489,7 +489,7 @@ class AceStep:
 
         t = time.time()
         self.proc = subprocess.Popen(
-            ["python", "main.py", "--listen", "127.0.0.1", "--port", str(COMFY_PORT)], cwd=COMFY_DIR
+            ["python", "main.py", "--disable-metadata", "--listen", "127.0.0.1", "--port", str(COMFY_PORT)], cwd=COMFY_DIR
         )
         deadline = time.time() + 300
         while time.time() < deadline:

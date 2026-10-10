@@ -119,6 +119,19 @@ from urllib.parse import urlparse
 import fastapi
 import modal
 
+
+# 出力ファイルにワークフロー（モデル名・指示文）を埋め込まない（2026-10-10・CLAUDE.md §2）。
+# 画像・動画・音声の標準の保存ノードは起動オプション --disable-metadata で止まるが、VHS_VideoCombine は従わない
+# （mp4 のコメントへ save_metadata 既定オンで書き、1 コマ目の PNG にも prompt を書く）→ ノードと送信時の指定で止める。
+COMFY_NO_METADATA_EXTRA = {"extra_pnginfo": {"workflow": {"extra": {"VHS_MetadataImage": False}}}}
+
+
+def _scrub_workflow_metadata(workflow: dict) -> dict:
+    for node in workflow.values():
+        if isinstance(node, dict) and node.get("class_type") == "VHS_VideoCombine":
+            node.setdefault("inputs", {})["save_metadata"] = False
+    return workflow
+
 app = modal.App("ull-seedvr2-worker")
 
 # ---------------------------------------------------------------------------
@@ -1745,7 +1758,7 @@ def _start_comfy(extra_argv: list, wait_timeout: int = 240) -> "subprocess.Popen
             )
             argv_extra = [a for a in argv_extra if a != "--use-sage-attention"]
 
-    argv = ["python", "main.py", *argv_extra, "--listen", "127.0.0.1", "--port", str(COMFY_PORT)]
+    argv = ["python", "main.py", *argv_extra, "--disable-metadata", "--listen", "127.0.0.1", "--port", str(COMFY_PORT)]
     proc = subprocess.Popen(argv, cwd=COMFY_DIR)
     deadline = time.time() + wait_timeout
     while time.time() < deadline:
@@ -2073,7 +2086,7 @@ class SeedVR2Worker:
         }
         resp = requests.post(
             f"http://127.0.0.1:{COMFY_PORT}/prompt",
-            json={"prompt": workflow, "client_id": str(uuid.uuid4())},
+            json={"prompt": _scrub_workflow_metadata(workflow), "client_id": str(uuid.uuid4()), "extra_data": COMFY_NO_METADATA_EXTRA},
             timeout=30,
         )
         if not resp.ok:
@@ -3370,7 +3383,7 @@ def gpu_smoke_fn(models=None) -> dict:
 
                 r = requests.post(
                     f"http://127.0.0.1:{COMFY_PORT}/prompt",
-                    json={"prompt": wf, "client_id": str(uuid.uuid4())},
+                    json={"prompt": _scrub_workflow_metadata(wf), "client_id": str(uuid.uuid4()), "extra_data": COMFY_NO_METADATA_EXTRA},
                     timeout=30,
                 )
                 r.raise_for_status()
