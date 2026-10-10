@@ -46,8 +46,7 @@ const RESERVED_KEY = "worldgen-reserved-jobs";
 const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_CONSECUTIVE_ERRORS = 8;
 const MAX_INPUT_BYTES = 25 * 1024 * 1024;
-const PROMPT_EXAMPLE =
-  "日本のアパートのリビングとキッチン。窓際に灰色のソファ、低い木のテーブル、部屋の角に背の高い白い冷蔵庫、カーテンのある窓、木の床。";
+const PROMPT_EXAMPLE = "日本のアパートのリビングとキッチン。角に白い冷蔵庫、灰色のソファ、低い木のテーブル、カーテンの窓、木の床";
 
 type Snapshot = { mode: Mode; prompt: string; image: File | null };
 
@@ -436,9 +435,15 @@ export function WorldGenTab() {
               placeholder={PROMPT_EXAMPLE}
               className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-neon-violet/50"
             />
-            <p className="mt-1 text-right text-[10px] text-muted">
-              {prompt.length} / {WORLDGEN_PROMPT_MAX_LENGTH}
-            </p>
+            <div className="mt-1 flex items-start justify-between gap-2 text-[11px] leading-relaxed text-muted">
+              <p>
+                部屋の種類 → 置きたい物の順に、短く書いてください。<b className="font-medium text-foreground">大事な物ほど先に</b>
+                （後ろに書いた物ほど出にくくなります）。
+              </p>
+              <span className="shrink-0 text-[10px]">
+                {prompt.length} / {WORLDGEN_PROMPT_MAX_LENGTH}
+              </span>
+            </div>
           </div>
         ) : (
           <div>
@@ -499,7 +504,8 @@ export function WorldGenTab() {
           <ul className="mt-1 list-disc space-y-1 pl-4">
             <li>出来上がった部屋をドラッグで見回し、「この向きで保存」で背景用の画像を書き出せます。</li>
             <li>絵柄は写真寄りです。漫画の背景にするときは、クリスタの LT 変換などで線画・トーンにしてください。</li>
-            <li>置きたい物（冷蔵庫・ソファ・窓など）は、説明に具体的に書くと出やすくなります。</li>
+            <li>説明は 150 文字まで。部屋の種類（リビング・教室・カフェなど）を最初に、続けて置きたい物を大事な順に並べると出やすくなります。</li>
+            <li>雰囲気（夕方・散らかった・高級な など）も短く足せます。長い文章よりも、名詞を並べる方が効きます。</li>
             <li>「画像から」は、入れた画像の部屋がそのまま残るとは限りません（周りを含めて描き直されます）。</li>
           </ul>
         </HelpNote>

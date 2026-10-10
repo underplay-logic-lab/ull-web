@@ -4,7 +4,9 @@
 import { DEFAULT_KNOBS, type PricingKnobs } from "@/lib/pricing/knobDefaults";
 import { parallelSurcharge } from "@/lib/pricing/parallelSurcharge";
 
-export const WORLDGEN_PROMPT_MAX_LENGTH = 600;
+// 説明の上限（2026-10-10）: FLUX の短い方の文章読み取り（CLIP）は英語で約 60 語（77 トークン）まで。日本語は英語に直すと長くなるので
+// 150 文字に抑える（長い方の T5 は 512 トークンまで読むが、部屋全体の雰囲気を決める CLIP が途中で切れると後ろの物が効きにくい）。
+export const WORLDGEN_PROMPT_MAX_LENGTH = 150;
 
 export function worldgenCredits(knobs: PricingKnobs = DEFAULT_KNOBS): number {
   return Math.ceil(knobs.worldgen_credits);
