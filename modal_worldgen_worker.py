@@ -42,7 +42,8 @@ PANO_GEN_WIDTH = 2048
 # 混ぜる処理の終わる位置に段差と二重の物が出た（2026-10-10）→ 生成は既定に戻し、継ぎ目は出来上がってから FLUX Fill で描き直す（_fix_seam）。
 PANO_BLEND_EXTEND = 0
 PANO_STEPS = 50
-# 毎 step 半周回すと部屋が曲線になった（形が決まる前から回したため、2026-10-10）。形が決まってから 1 回だけ半周回し、残りの step で継ぎ目をなじませる。
+# 継ぎ目（2026-10-10）: 最初から毎 step 半周回すと形が決まる前から回るので部屋が曲線に。1 回だけ回すと、回した後の端が新しい継ぎ目になり、
+# 元の向きに戻すと正面に来た。→ 形が決まるまで（PANO_ROLL_AT step）は回さず、その後は毎 step 半周回す（決まった場所に継ぎ目が居座らない）。
 PANO_ROLL_AT = int(os.environ.get("WORLDGEN_ROLL_AT", "15"))
 # 継ぎ目（2026-10-10）: 後から帯を描き直す方法は、FLUX Fill は別の部屋を描き、LaMa は縦の筋が残って不可。
 # → 文章から作るときは、描いている途中で 1 step ごとに潜在を半周回す（左右の端が交互に真ん中に来て、つながった絵として描かれる）。
@@ -233,17 +234,21 @@ def _patch_seamless(wg) -> None:
 
 def _gen_pano_rolling(model, prompt="", seed=42, guidance_scale=7.0, num_inference_steps=PANO_STEPS, height=1024, width=2048,
                       prefix="A high quality 360 panorama photo of", suffix="HDR, RAW, 360 consistent, omnidirectional", roll_at=None, **_):
-    """WorldGen の gen_pano_image と同じ指示・設定で描き、roll_at step 目の後に 1 回だけ潜在を半周回す（継ぎ目が真ん中に来て、
-    残りの step でつながった絵になじむ）。最後の step の後に半周戻して元の向きにする。"""
+    """WorldGen の gen_pano_image と同じ指示・設定で描く。roll_at step 目までは回さず（部屋の形を決める）、それ以降は毎 step 潜在を
+    半周回す（左右の端が毎回入れ替わり、継ぎ目が居座らない）。回した回数が奇数なら最後にもう 1 回回して元の向きにそろえる。"""
     import torch
 
     h2, w2 = height // 16, width // 16  # 詰めた潜在（2×2 の塊）の縦横
 
     k = PANO_ROLL_AT if roll_at is None else roll_at
 
+    n_rolls = max(0, num_inference_steps - k)  # i = k..steps-1 で回す
+
     def roll(pipe, i, t, kw):
         lat = kw["latents"]
-        if i != k and i != num_inference_steps - 1:
+        last = i == num_inference_steps - 1
+        times = (1 if i >= k else 0) + (1 if last and n_rolls % 2 == 1 else 0)
+        if times % 2 == 0:
             return {"latents": lat}
         b, n, c = lat.shape
         return {"latents": lat.view(b, h2, w2, c).roll(w2 // 2, dims=2).reshape(b, n, c)}
